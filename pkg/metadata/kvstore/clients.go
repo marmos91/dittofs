@@ -13,70 +13,73 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
+// ErrRecordChanged is a conditional client write whose expected record is no
+// longer the stored one: the call writes nothing and returns the current one.
+var ErrRecordChanged = errors.New("kvstore: client record changed")
+
+// maxAdapter bounds a client record's Adapter bytes.
+const maxAdapter = 4 << 10
+
 // Clients is open state's view of its durable client records: one per
-// client instance, found by ID or by the client's own name for itself, and
-// one per shard the client has held state in. The decisions — which
-// verifier is a reboot, which principal may take an owner — are the open
-// state service's; this view keeps the records consistent with each other.
+// client instance, found by ID or by its protocol and name, with one key per
+// shard it holds state in, whose value is that shard's Done instance. Every
+// ID comes from NextID(IDClient), issued before the record is written, since
+// a client may be told its ID before it confirms. The decisions — which Boot
+// is a reboot, which principal may take a name — are open state's; this view
+// keeps the records consistent with each other.
 type Clients struct{ s *Store }
 
 func (s *Store) Clients() Clients { return Clients{s} }
 
-// Create records a new client under a freshly issued ID, with its owner
-// index row, and returns it. An owner already recorded under its protocol
-// is refused as existing: a reboot replaces its record through Reboot.
-func (c Clients) Create(ctx context.Context, cl entity.Client) (entity.Client, error) {
-	if len(cl.Owner) == 0 || cl.Protocol == 0 {
-		return entity.Client{}, merrs.NewInvalidArgumentError("a client needs a protocol and an owner")
+// Create records a new client with its name index row and its shard marks.
+// A name already recorded under its protocol, or an ID already recorded, is
+// refused as existing: a reboot replaces its record through Reboot.
+func (c Clients) Create(ctx context.Context, cl entity.ClientRecord) error {
+	if err := validClient(cl); err != nil {
+		return err
 	}
-	id, err := c.s.nextID(ctx, idClient)
-	if err != nil {
-		return entity.Client{}, err
-	}
-	cl.ID = entity.ClientID(id)
-	return cl, c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		owner := clientOwnerKey(cl.Protocol, cl.Owner)
-		if _, ok, err := get(tx, owner); err != nil {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		name := clientNameKey(cl.Protocol, cl.Name)
+		if _, ok, err := get(tx, name); err != nil {
 			return err
 		} else if ok {
-			return merrs.NewAlreadyExistsError(fmt.Sprintf("%s client %x", cl.Protocol, cl.Owner))
+			return merrs.NewAlreadyExistsError(fmt.Sprintf("%s client %x", cl.Protocol, cl.Name))
 		}
-		if err := tx.Set(owner, encodeClientID(cl.ID)); err != nil {
+		if err := tx.Set(name, encodeClientID(cl.ID)); err != nil {
 			return err
 		}
-		return tx.Set(clientKey(cl.ID), encodeClient(cl))
+		return putClient(tx, cl)
 	})
 }
 
 // Reboot replaces old, the record of a client that came back with a new
-// boot verifier, by cl under a new ID: the owner index moves to it, and old
-// goes with its shard records, in one transaction.
-func (c Clients) Reboot(ctx context.Context, old entity.ClientID, cl entity.Client) (entity.Client, error) {
-	id, err := c.s.nextID(ctx, idClient)
-	if err != nil {
-		return entity.Client{}, err
+// Boot, by cl under its own new ID: the name index moves to it, and old goes
+// with its shard marks, in one transaction. A reboot keeps the protocol and
+// name and changes the Boot.
+func (c Clients) Reboot(ctx context.Context, old entity.ClientID, cl entity.ClientRecord) error {
+	if err := validClient(cl); err != nil {
+		return err
 	}
-	cl.ID = entity.ClientID(id)
-	return cl, c.s.kv.Update(ctx, func(tx kv.Txn) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		prev, err := clientIn(tx, old)
 		if err != nil {
 			return err
 		}
-		if prev.Protocol != cl.Protocol || !bytes.Equal(prev.Owner, cl.Owner) {
-			return merrs.NewInvalidArgumentError("a reboot keeps the client's protocol and owner")
+		if prev.Protocol != cl.Protocol || !bytes.Equal(prev.Name, cl.Name) || prev.Boot == cl.Boot || cl.ID == old {
+			return merrs.NewInvalidArgumentError("a reboot keeps the client's protocol and name and changes its boot and ID")
 		}
 		if err := dropClient(tx, prev, false); err != nil {
 			return err
 		}
-		if err := tx.Set(clientOwnerKey(cl.Protocol, cl.Owner), encodeClientID(cl.ID)); err != nil {
+		if err := tx.Set(clientNameKey(cl.Protocol, cl.Name), encodeClientID(cl.ID)); err != nil {
 			return err
 		}
-		return tx.Set(clientKey(cl.ID), encodeClient(cl))
+		return putClient(tx, cl)
 	})
 }
 
-// Get reads one client record.
-func (c Clients) Get(ctx context.Context, id entity.ClientID) (cl entity.Client, err error) {
+// Get reads one client record, its shard marks included.
+func (c Clients) Get(ctx context.Context, id entity.ClientID) (cl entity.ClientRecord, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		cl, err = clientIn(r, id)
 		return err
@@ -84,17 +87,17 @@ func (c Clients) Get(ctx context.Context, id entity.ClientID) (cl entity.Client,
 	return cl, err
 }
 
-// ByOwner finds the client a protocol's owner name belongs to, after any
-// restart: EXCHANGE_ID, SETCLIENTID and an SMB negotiate name a client this
-// way, not by an ID the server gave.
-func (c Clients) ByOwner(ctx context.Context, p entity.Protocol, owner []byte) (cl entity.Client, err error) {
+// ByName finds the client a protocol's client name belongs to, after any
+// restart: a client names itself by its own string, not by an ID the server
+// gave.
+func (c Clients) ByName(ctx context.Context, p entity.Protocol, name []byte) (cl entity.ClientRecord, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, clientOwnerKey(p, owner))
+		b, ok, err := get(r, clientNameKey(p, name))
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return merrs.NewNotFoundError(fmt.Sprintf("%s client %x", p, owner), "client")
+			return merrs.NewNotFoundError(fmt.Sprintf("%s client %x", p, name), "client")
 		}
 		id, err := decodeClientID(b)
 		if err != nil {
@@ -106,26 +109,97 @@ func (c Clients) ByOwner(ctx context.Context, p entity.Protocol, owner []byte) (
 	return cl, err
 }
 
-// Put rewrites a client record, and writes nothing when no field changed:
-// the record is rewritten only when one does. Its protocol and owner, which
-// the index names it by, never change.
-func (c Clients) Put(ctx context.Context, cl entity.Client) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		prev, err := clientIn(tx, cl.ID)
-		if err != nil {
+// Put rewrites a client record from prev, the record the caller read, to
+// next. When the stored record is no longer prev it writes nothing and
+// returns ErrRecordChanged with the current record; when next changes no
+// field it writes nothing. Its ID, protocol, name and Boot never change, and
+// its shard marks change only through MarkShard and DropShards: Shards is
+// neither compared nor written here.
+func (c Clients) Put(ctx context.Context, prev, next entity.ClientRecord) (cur entity.ClientRecord, err error) {
+	if err := validClient(next); err != nil {
+		return entity.ClientRecord{}, err
+	}
+	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if cur, err = clientIn(tx, next.ID); err != nil {
 			return err
 		}
-		if prev.Protocol != cl.Protocol || !bytes.Equal(prev.Owner, cl.Owner) {
-			return merrs.NewInvalidArgumentError("a client's protocol and owner are fixed")
+		if prev.ID != next.ID || !bytes.Equal(encodeClient(cur), encodeClient(prev)) {
+			return ErrRecordChanged
 		}
-		if b := encodeClient(cl); !bytes.Equal(b, encodeClient(prev)) {
-			return tx.Set(clientKey(cl.ID), b)
+		if cur.Protocol != next.Protocol || !bytes.Equal(cur.Name, next.Name) || cur.Boot != next.Boot {
+			return merrs.NewInvalidArgumentError("a client's protocol, name and boot are fixed")
 		}
+		next.Shards = cur.Shards
+		if err := setClient(tx, cur, next); err != nil {
+			return err
+		}
+		cur = next
 		return nil
+	})
+	return cur, err
+}
+
+// AddSession records that node holds a session of the client and writes next
+// as its Adapter bytes, if they still equal prev, the bytes the caller last
+// read; otherwise it writes nothing and returns ErrRecordChanged with the
+// current record. So a replayed setup call, on any node or after a restart,
+// finds the first call's bytes rather than recording a second session.
+func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity.NodeID, prev, next []byte) (cur entity.ClientRecord, err error) {
+	if len(next) > maxAdapter {
+		return entity.ClientRecord{}, merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", maxAdapter))
+	}
+	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if cur, err = clientIn(tx, id); err != nil {
+			return err
+		}
+		if !bytes.Equal(cur.Adapter, prev) {
+			return ErrRecordChanged
+		}
+		up := cur
+		up.Adapter = next
+		if !slices.Contains(cur.Reach.Sessions, node) {
+			up.Reach.Sessions = append(slices.Clip(cur.Reach.Sessions), node)
+		}
+		if err := setClient(tx, cur, up); err != nil {
+			return err
+		}
+		cur = up
+		return nil
+	})
+	return cur, err
+}
+
+// MarkShard writes the client's mark in one shard: when it first takes state
+// there, and when it finishes reclaiming there. The write commits before the
+// answer granting the client its first state in the shard.
+//
+// ponytail: a client's shard list is unbounded. Record a client past a
+// bound as holding state in every shard of the share, which widens its grace
+// and never loses a reclaim, once shards exist beyond one per share.
+func (c Clients) MarkShard(ctx context.Context, id entity.ClientID, m entity.ShardMark) error {
+	if m.Shard >= entity.ShardLimit {
+		return merrs.NewInvalidArgumentError(fmt.Sprintf("shard %d past the 24-bit shard space", m.Shard))
+	}
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, err := clientIn(tx, id); err != nil {
+			return err
+		}
+		return tx.Set(clientShardKey(id, m.Shard), encodeCounter(m.Done))
 	})
 }
 
-// Delete removes a client record with its owner row and shard records: an
+// DropShards deletes every shard mark of the client, as an administrator's
+// revoke does, so a reclaim after a restart finds none and is refused.
+func (c Clients) DropShards(ctx context.Context, id entity.ClientID) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, err := clientIn(tx, id); err != nil {
+			return err
+		}
+		return deleteUnder(tx, clientShardsPrefix(id))
+	})
+}
+
+// Delete removes a client record with its name row and shard marks: an
 // expired or destroyed client, whose state is already released.
 func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
@@ -137,96 +211,88 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 	})
 }
 
-// CreateSession applies one NFSv4.1 CREATE_SESSION's sequence ID in the
-// client's record. A replay of the last one applied, the same sequence ID,
-// returns its cached reply; the next one records reply as the new cache and
-// returns nil; any other is misordered. A replay that reaches another node,
-// or arrives after a restart, so gets the first reply, not a second session.
-func (c Clients) CreateSession(ctx context.Context, id entity.ClientID, seq uint32, reply []byte) (cached []byte, err error) {
-	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		cached = nil
-		cl, err := clientIn(tx, id)
-		if err != nil {
-			return err
-		}
-		switch seq {
-		case cl.CSSeq:
-			cached = slices.Clone(cl.CSReply)
-			return nil
-		case cl.CSSeq + 1:
-			cl.CSSeq, cl.CSReply = seq, reply
-			return tx.Set(clientKey(id), encodeClient(cl))
-		default:
-			return entity.ErrSeqMisordered
-		}
-	})
-	return cached, err
-}
-
-// PutShard writes the client's record in one shard: when it first takes
-// state there, and when its reclaim or loss state there changes.
-//
-// ponytail: a client's shard list is unbounded. Record a client past a
-// bound as holding state in every shard of the share, which widens its grace
-// and never loses a reclaim, once shards exist beyond one per share.
-func (c Clients) PutShard(ctx context.Context, id entity.ClientID, sh entity.ClientShard) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, err := clientIn(tx, id); err != nil {
-			return err
-		}
-		return tx.Set(clientShardKey(id, sh.Shard), encodeClientShard(sh))
-	})
-}
-
-// Shards lists the client's shard records in shard order: where it may
-// reclaim.
-func (c Clients) Shards(ctx context.Context, id entity.ClientID) (out []entity.ClientShard, err error) {
-	err = c.s.kv.View(ctx, func(r kv.Reader) error {
-		out = nil
-		pre := clientShardsPrefix(id)
-		for row, err := range r.Scan(pre, nil) {
-			if err != nil {
-				return err
-			}
-			shard, err := shardOf(pre, row.Key)
-			if err != nil {
-				return err
-			}
-			sh, err := decodeClientShard(shard, row.Value)
-			if err != nil {
-				return err
-			}
-			out = append(out, sh)
-		}
-		return nil
-	})
-	return out, err
-}
-
-func shardOf(pre, key []byte) (uint64, error) {
-	shard, rest, err := keys.ReadUint64(key[len(pre):])
-	if err != nil || len(rest) != 0 {
-		return 0, fmt.Errorf("%w: client shard key", errMalformed)
+// validClient checks what every written record must hold. An owner mapped to
+// the anonymous principal is recorded as zero, and protects nothing.
+func validClient(cl entity.ClientRecord) error {
+	switch {
+	case cl.ID == 0 || cl.Protocol == 0 || len(cl.Name) == 0:
+		return merrs.NewInvalidArgumentError("a client needs an ID, a protocol and a name")
+	case len(cl.Adapter) > maxAdapter:
+		return merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", maxAdapter))
+	case cl.Protect && cl.Owner == (entity.Principal{}):
+		return merrs.NewInvalidArgumentError("state protection needs an owner")
 	}
-	return shard, nil
+	for _, m := range cl.Shards {
+		if m.Shard >= entity.ShardLimit {
+			return merrs.NewInvalidArgumentError(fmt.Sprintf("shard %d past the 24-bit shard space", m.Shard))
+		}
+	}
+	return nil
 }
 
-func clientIn(r kv.Reader, id entity.ClientID) (entity.Client, error) {
+// putClient writes a new record and its shard marks, refusing an ID already
+// recorded: an ID is issued once, so another record under it is a caller's
+// mistake that would overwrite a live client.
+func putClient(tx kv.Txn, cl entity.ClientRecord) error {
+	if _, ok, err := get(tx, clientKey(cl.ID)); err != nil {
+		return err
+	} else if ok {
+		return merrs.NewAlreadyExistsError(fmt.Sprintf("client %d", cl.ID))
+	}
+	if err := tx.Set(clientKey(cl.ID), encodeClient(cl)); err != nil {
+		return err
+	}
+	for _, m := range cl.Shards {
+		if err := tx.Set(clientShardKey(cl.ID, m.Shard), encodeCounter(m.Done)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// setClient rewrites a record only when one of its fields changes.
+func setClient(tx kv.Txn, cur, next entity.ClientRecord) error {
+	if b := encodeClient(next); !bytes.Equal(b, encodeClient(cur)) {
+		return tx.Set(clientKey(next.ID), b)
+	}
+	return nil
+}
+
+func clientIn(r kv.Reader, id entity.ClientID) (entity.ClientRecord, error) {
 	b, err := r.Get(clientKey(id))
 	if errors.Is(err, kv.ErrNotFound) {
-		return entity.Client{}, merrs.NewNotFoundError(fmt.Sprintf("client %d", id), "client")
+		return entity.ClientRecord{}, merrs.NewNotFoundError(fmt.Sprintf("client %d", id), "client")
 	}
 	if err != nil {
-		return entity.Client{}, err
+		return entity.ClientRecord{}, err
 	}
-	return decodeClient(id, b)
+	cl, err := decodeClient(id, b)
+	if err != nil {
+		return entity.ClientRecord{}, err
+	}
+	pre := clientShardsPrefix(id)
+	for row, err := range r.Scan(pre, nil) {
+		if err != nil {
+			return entity.ClientRecord{}, err
+		}
+		shard, rest, err := keys.ReadUint64(row.Key[len(pre):])
+		if err != nil || len(rest) != 0 || shard >= uint64(entity.ShardLimit) {
+			return entity.ClientRecord{}, fmt.Errorf("%w: client shard key", errMalformed)
+		}
+		done, err := decodeCounter(row.Value)
+		if err != nil {
+			return entity.ClientRecord{}, err
+		}
+		cl.Shards = append(cl.Shards, entity.ShardMark{Shard: entity.ShardID(shard), Done: done})
+	}
+	return cl, nil
 }
 
-// dropClient deletes a client's record and shard records, and its owner row
-// when owner is set; a reboot keeps the row for the record replacing it.
-func dropClient(tx kv.Txn, cl entity.Client, owner bool) error {
-	if owner {
-		if err := tx.Delete(clientOwnerKey(cl.Protocol, cl.Owner)); err != nil {
+// dropClient deletes a client's record and shard marks, and its name row
+// when name is set; a reboot keeps the row for the record replacing it.
+func dropClient(tx kv.Txn, cl entity.ClientRecord, name bool) error {
+	if name {
+		if err := tx.Delete(clientNameKey(cl.Protocol, cl.Name)); err != nil {
 			return err
 		}
 	}

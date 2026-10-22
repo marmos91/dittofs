@@ -22,13 +22,6 @@ type Opens struct{ s *Store }
 
 func (s *Store) Opens() Opens { return Opens{s} }
 
-// NextOpenID issues an open ID never issued before in this installation:
-// every open needs one, a volatile one too.
-func (s *Store) NextOpenID(ctx context.Context) (entity.OpenID, error) {
-	id, err := s.nextID(ctx, idOpen)
-	return entity.OpenID(id), err
-}
-
 // Put writes a durable open of a file of share, with its index entry. The
 // File is read tracked, so an open of a file with no entry conflicts with
 // the release that would delete it, which in turn range-guards the file's
@@ -161,12 +154,6 @@ func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Op
 		out = append(out, op)
 	}
 	return out, nil
-}
-
-// NextLockID issues a lock ID never issued before in this installation.
-func (s *Store) NextLockID(ctx context.Context) (entity.LockID, error) {
-	id, err := s.nextID(ctx, idLock)
-	return entity.LockID(id), err
 }
 
 // PutLock writes a durable lock beneath its open, which must be a
