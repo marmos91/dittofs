@@ -107,6 +107,7 @@ func TestPodman(t *testing.T) {
 		{podman: "5.10.1"},
 		{podman: "6.0.0"},
 		{podman: "5.6.0", docker: true},
+		{podman: "5.5.2", need: "podman 5.5.2: the scenarios need 5.6 or later"},
 		{podman: "4.9.3", need: "podman 4.9.3: the scenarios need 5.6 or later"},
 		{podman: "4.9.3", docker: true, image: true},
 		{podman: "fail", need: failed},
