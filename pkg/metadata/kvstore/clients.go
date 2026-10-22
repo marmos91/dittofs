@@ -29,7 +29,7 @@ func (c Clients) Create(ctx context.Context, cl entity.Client) (entity.Client, e
 	if len(cl.Owner) == 0 || cl.Protocol == 0 {
 		return entity.Client{}, merrs.NewInvalidArgumentError("a client needs a protocol and an owner")
 	}
-	id, err := c.s.nextID(ctx, idClient)
+	id, err := c.s.NextID(ctx, IDClient)
 	if err != nil {
 		return entity.Client{}, err
 	}
@@ -52,7 +52,7 @@ func (c Clients) Create(ctx context.Context, cl entity.Client) (entity.Client, e
 // boot verifier, by cl under a new ID: the owner index moves to it, and old
 // goes with its shard records, in one transaction.
 func (c Clients) Reboot(ctx context.Context, old entity.ClientID, cl entity.Client) (entity.Client, error) {
-	id, err := c.s.nextID(ctx, idClient)
+	id, err := c.s.NextID(ctx, IDClient)
 	if err != nil {
 		return entity.Client{}, err
 	}
