@@ -1,8 +1,9 @@
 # CI Health — develop-red flake self-heal + PR warning
 #
 # Alerting (P0 develop-red issue + email) was removed: it produced a flood of
-# mails/issues on flaky conformance runs. The only alarm surface now is a
-# warn-only comment on PRs.
+# mails/issues on flaky conformance runs. For the workflows here, the only
+# alarm surface now is a warn-only comment on PRs. Tests (tests.yml) posts to
+# its own develop-status issue, after its retry.
 #
 # Two responsibilities:
 #

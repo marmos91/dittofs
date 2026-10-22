@@ -133,7 +133,7 @@ func (r Run) markdown(failuresOnly bool) string {
 		}
 		_, _ = fmt.Fprintf(&b, "### dt run %s\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n", strings.Join(names, ", "))
 		for _, c := range r.Cells {
-			_, _ = fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", code(c.Name), c.Result, c.Took, escape(c.Note))
+			_, _ = fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", Code(c.Name), c.Result, c.Took, escape(c.Note))
 		}
 	}
 	failed := r.newFailures()
@@ -144,7 +144,7 @@ func (r Run) markdown(failuresOnly bool) string {
 		}
 		b.WriteString("#### New failures\n\n| Cell | Test | Message |\n|---|---|---|\n")
 		for _, f := range failed[:min(len(failed), maxRows)] {
-			_, _ = fmt.Fprintf(&b, "| %s | %s | %s |\n", code(f.cell), code(f.test.Title()), code(cut(firstLine(f.test.Message), maxMessage)))
+			_, _ = fmt.Fprintf(&b, "| %s | %s | %s |\n", Code(f.cell), Code(f.test.Title()), Code(cut(firstLine(f.test.Message), maxMessage)))
 		}
 		if more := len(failed) - maxRows; more > 0 {
 			_, _ = fmt.Fprintf(&b, "\nand %d more new failures, all in summary.json\n", more)
@@ -164,9 +164,9 @@ func escape(s string) string {
 	return strings.ReplaceAll(oneLine.Replace(s), "|", `\|`)
 }
 
-// code is s as code in a Markdown table's cell, fenced with one backquote
+// Code is s as code in a Markdown table's cell, fenced with one backquote
 // more than the longest run of them in s, so none can end it; "" stays empty.
-func code(s string) string {
+func Code(s string) string {
 	if s == "" {
 		return ""
 	}
