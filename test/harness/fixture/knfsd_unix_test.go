@@ -24,7 +24,8 @@ import (
 // seconds before it starts the server, and logs that start. The kernel's
 // settings are files in a directory of their own, with lease and grace
 // times of 90 and the grace period on; rpc.nfsd writes the times it is
-// given there and ends the grace period a second later. rpc.mountd runs
+// given there, lists the versions DT_FAKE_VERSIONS names, NFSv4.0, 4.1 and
+// 4.2 by default, and ends the grace period a second later. rpc.mountd runs
 // until SIGTERM, and logs it. dt runs as an ordinary user, and makes its
 // directories in one of the test's. It returns the settings' directory, and
 // a function giving the calls so far.
@@ -35,7 +36,7 @@ func fakeKnfsd(t *testing.T) (nfsd string, calls func() []string) {
 	if err := os.Mkdir(nfsd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, v := range map[string]string{"threads": "0", "nfsv4leasetime": "90", "nfsv4gracetime": "90", "v4_end_grace": "N"} {
+	for name, v := range map[string]string{"threads": "0", "nfsv4leasetime": "90", "nfsv4gracetime": "90", "v4_end_grace": "N", "versions": "+3 +4 +4.1 +4.2"} {
 		if err := os.WriteFile(filepath.Join(nfsd, name), []byte(v+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -59,6 +60,7 @@ while [ $# -gt 1 ]; do
 	shift
 done
 if [ "$1" != 0 ]; then
+	echo "${DT_FAKE_VERSIONS:--3 +4 +4.1 +4.2}" > "$DT_FAKE_NFSD/versions"
 	(sleep 1; echo Y > "$DT_FAKE_NFSD/v4_end_grace") >/dev/null 2>&1 &
 fi`,
 	}
@@ -102,8 +104,9 @@ func listening(t *testing.T, up bool) {
 // write, and with root unsquashed for squash: none. Its lease and grace
 // times are read first; rpc.mountd starts beside the server, which serves
 // NFSv4.0, 4.1 and 4.2 alone over TCP on its port, with a 10-second grace
-// period and the fixture's lease, and the setup returns once the grace
-// period has ended and the server answers. Stop stops the server, then rpc.mountd, removes the
+// period and the fixture's lease. The kernel's list of versions is read
+// then, and the setup returns once the grace period has ended and the
+// server answers. Stop stops the server, then rpc.mountd, removes the
 // export, restores the times, and unmounts and removes the tmpfs. The nfsd
 // file system is mounted first where it isn't yet.
 func TestKnfsd(t *testing.T) {
@@ -142,14 +145,14 @@ func TestKnfsd(t *testing.T) {
 			}
 			want = append(want, "cat "+times,
 				"exportfs -i -o "+tc.opts+" "+server+":"+dir,
-				"rpc.mountd --foreground --no-nfs-version 2 --no-nfs-version 3",
-				"rpc.nfsd --port "+port+" "+tc.nfsd)
-			// rpc.mountd starts aside, so its line may come after rpc.nfsd's:
-			// the server doesn't wait for it, since a request that comes first
-			// waits for rpc.mountd's answer.
-			n := len(want) - 2
-			if len(setup) != len(want) || !slices.Equal(setup[:n], want[:n]) || !slices.Equal(slices.Sorted(slices.Values(setup[n:])), slices.Sorted(slices.Values(want[n:]))) {
-				t.Errorf("setup\n%s\nwant\n%s", strings.Join(setup, "\n"), strings.Join(want, "\n"))
+				"rpc.nfsd --port "+port+" "+tc.nfsd,
+				"cat "+filepath.Join(nfsd, "versions"))
+			// rpc.mountd starts aside, so its line may come anywhere after the
+			// export's: the server doesn't wait for it, since a request that
+			// comes first waits for rpc.mountd's answer.
+			mountd := "rpc.mountd --foreground --no-nfs-version 2 --no-nfs-version 3"
+			if i := slices.Index(setup, mountd); i < len(want)-2 || !slices.Equal(slices.Delete(slices.Clone(setup), i, i+1), want) {
+				t.Errorf("setup\n%s\nwant\n%s\nwith %s after the export", strings.Join(setup, "\n"), strings.Join(want, "\n"), mountd)
 			}
 			if got := k.Placeholders(); len(got) != 2 || got["nfs-port"] != port || net.ParseIP(server) == nil {
 				t.Errorf("placeholders %v", got)
@@ -184,27 +187,33 @@ func TestKnfsd(t *testing.T) {
 
 // A setup that fails undoes what it did, the last step first, and the step
 // it failed in: a failed mount of the tmpfs is unmounted, a failed export
-// leaves rpc.mountd and the server unstarted, a server that doesn't answer
-// is stopped with the rest, and an rpc.nfsd the setup's limit ends is ended
-// before the undoing, so it starts nothing after.
+// leaves rpc.mountd and the server unstarted, a server that doesn't answer,
+// or that serves no NFSv4.0, is stopped with the rest, and an rpc.nfsd the
+// setup's limit ends is ended before the undoing, so it starts nothing
+// after.
 func TestKnfsdFails(t *testing.T) {
 	f := registry.Fixture{Server: "knfsd", NFS: registry.NFS{Version: "export"}, Squash: "none", Lease: "30s"}
 	for _, tc := range []struct {
 		name, fail string
 		hang, up   bool
+		versions   string // the kernel's list once rpc.nfsd ran, when not the default
 		err        string
 		undo       []string // after the setup's calls, with DIR for the export's directory
 	}{
-		{"the tmpfs", "mount", false, true, "mount failed", []string{"umount DIR"}},
-		{"the export", "exportfs", false, true, "exportfs failed", []string{"exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
-		{"no answer", "", false, false, "knfsd doesn't answer", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
-		{"the limit ends during rpc.nfsd", "", true, true, "deadline exceeded", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"the tmpfs", "mount", false, true, "", "mount failed", []string{"umount DIR"}},
+		{"the export", "exportfs", false, true, "", "exportfs failed", []string{"exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"no answer", "", false, false, "", "knfsd doesn't answer", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"the kernel refuses 4.0", "", false, true, "-3 +4 -4.0 +4.1 +4.2", "doesn't serve NFSv4.0, 4.1 and 4.2", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"the limit ends during rpc.nfsd", "", true, true, "", "deadline exceeded", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			nfsd, calls := fakeKnfsd(t)
 			t.Setenv("DT_FAKE_FAIL", tc.fail)
 			if tc.hang {
 				t.Setenv("DT_FAKE_HANG", "1")
+			}
+			if tc.versions != "" {
+				t.Setenv("DT_FAKE_VERSIONS", tc.versions)
 			}
 			listening(t, tc.up)
 			limit := 10 * time.Second

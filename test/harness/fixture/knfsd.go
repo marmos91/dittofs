@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,6 +163,15 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	k.undo = append(k.undo, func() { _ = runFor(context.Background(), 0, asRoot("rpc.nfsd", "0")) })
 	if err := waitStep(ctx, w, asRoot(nfsd...)); err != nil {
 		return nil, err
+	}
+	// rpc.nfsd only logs a version the kernel refuses, so the kernel's list
+	// is read: it gives 4.0 as -4.0 when it is off, and not at all when it
+	// is on.
+	cat = asRoot("cat", filepath.Join(nfsdDir, "versions"))
+	vers, err := exec.CommandContext(ctx, cat[0], cat[1:]...).Output()
+	on := strings.Fields(string(vers))
+	if err != nil || slices.Contains(on, "-4.0") || !slices.Contains(on, "+4.1") || !slices.Contains(on, "+4.2") {
+		return nil, fmt.Errorf("knfsd doesn't serve NFSv4.0, 4.1 and 4.2: %q, %v", vers, err)
 	}
 	for {
 		state, err := os.ReadFile(filepath.Join(nfsdDir, "v4_end_grace"))

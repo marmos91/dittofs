@@ -136,7 +136,8 @@ func Check(root, n string) error {
 				// decision: a port below those an ordinary user may bind is
 				// checked by connecting to it on loopback, so something that
 				// listens only on another address goes unseen, and the
-				// fixture that binds it then fails to start.
+				// fixture that binds it then fails to start. A knfsd fixture
+				// starts instead, on the host's NFS server, and stops it.
 				conn, err := net.DialTimeout("tcp", "127.0.0.1:"+arg, time.Second)
 				if err != nil {
 					return nil
