@@ -532,9 +532,9 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
+| `conformance.yml` | PR, push, nightly | cthon04, nfstest, Kerberos smbtorture | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pynfs so far, decided by one `gate` check | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pjdfstest, pynfs, WPTS and smbtorture so far, decided by one `gate` check | ~20 min |
 | `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
@@ -576,8 +576,8 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **lint.yml** -- Go formatting, vetting, and linting
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
-- **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **tests.yml** -- pynfs NFSv4.0 + NFSv4.1 protocol conformance (badger-s3), through `dt`
+- **conformance.yml** -- cthon04, through its scripts (see the table above)
+- **tests.yml** -- pjdfstest, pynfs, WPTS and smbtorture (over two runners), on badger-s3, through `dt`
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)
@@ -585,7 +585,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- The same cells as on PRs except cthon04, plus Kerberos smbtorture
+- **conformance.yml** -- Kerberos smbtorture
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 - **integration-tests.yml** -- Backend-specific integration tests
 
@@ -605,7 +605,8 @@ All workflows support `workflow_dispatch` for manual triggering:
 ```bash
 # Trigger via GitHub CLI
 gh workflow run conformance.yml
-gh workflow run conformance.yml -f suite=smbtorture
+gh workflow run conformance.yml -f suite=cthon04
+gh workflow run tests.yml -f tier=nightly
 gh workflow run smb-client-compat.yml
 gh workflow run e2e-tests.yml
 ```
@@ -616,11 +617,11 @@ Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", an
 
 When a conformance test fails in CI:
 
-1. **Check the step summary** -- GitHub Actions provides a table with pass/fail/known counts
-2. **Download artifacts** -- TRX files (WPTS) and log files (smbtorture) are uploaded as artifacts
-3. **Check KNOWN_FAILURES.md** -- If the failing test is in the known failures list, it was expected
+1. **Check the step summary** -- `dt report` gives each cell's new and known failures and unexpected skips
+2. **Download artifacts** -- each cell's results, with its tool's own output (WPTS's TRX, smbtorture's log), are uploaded as artifacts
+3. **Check the suite's known file** -- the `known` file `test/suites.yaml` names; a test listed there was expected to fail
 4. **For new failures:**
-   - If the failure is in a genuinely unimplemented feature, add it to `KNOWN_FAILURES.md`
+   - If the failure is in a genuinely unimplemented feature, add it to the suite's known file, with its reason
    - If the failure is in an implemented feature, it is a regression and needs fixing
    - Use `--keep` flag locally to leave containers running for debugging
 

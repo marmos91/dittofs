@@ -51,7 +51,7 @@ reliable way to tell what they found.
 
 **Decided:** Go from the start, CTRF, and GitHub issues with the project board for tracking (team
 call and reviews, 2026-10-08).
-**Settled (§9, 2026-10-13):** smbtorture is sharded on PRs, merge runs queue and the test set
+**Settled (§9, 2026-10-13):** smbtorture is sharded, merge runs queue and the test set
 never changes with load, a fixture's setup is never retried, the Go suites grade their skips
 package by package from e2e, the dedicated host is `ditto`, and the gate becomes required after
 two green weeks.
@@ -607,6 +607,7 @@ suites:
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
+    shards: 2                           # over two runners, in every tier (§9)
     needs: [linux, docker]
     options:
       kerberos:                         # dt run smbtorture --kerberos
@@ -618,6 +619,7 @@ suites:
         fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
+        shards: 1                       # its three tests in one cell
 
   # #3008's suites: what a kernel client sees through an untuned mount, one change at a time.
   # Each runs as the user dt runs as, on a namespaced client, so NFSv3 locks reach the server.
@@ -983,7 +985,7 @@ block, such as the Windows unit run on PRs (§9). `blocking` may differ per tier
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
 made on measured numbers. Two things didn't fit, and §9 settles both: smbtorture alone took 21
-and 23 minutes on a PR run on 2026-10-12, over the `pr` budget, so it is sharded on PRs; and the
+and 23 minutes on a PR run on 2026-10-12, over the `pr` budget, so it is sharded; and the
 budgets are wall clock per run, while every run draws on the same shared runners, so merge runs
 queue rather than change what they test. `dt plan --estimate` gives a tier's runner-minutes from
 `dt history`, so a tier's cost is known before it changes.
@@ -1599,14 +1601,15 @@ green PRs that break each other. If the repository moves to an organization: ena
 tests against the kernel's server. Neither changes from one night to the next: the smbtorture
 file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
-  from that cell's results in a run, and it lands through a pull request like any change. It counts
-  each result as the nightly job's script did: a failure by its grade, `known` or `new`, and a
-  `quarantined` one as known; a pass by the tool's own status, so an unexpected pass is a pass; and
-  anything else as a skip. Its header gives the run's date, commit and platform, the cell, and the
-  smbtorture version from the cell's log. It refuses a run of a checkout with changes, whose commit
-  doesn't say what ran, and a cell that didn't run to its end, whose lost tests would leave the
-  file without a trace: one whose note gives any reason but new failures and unexpected passes, as
-  a `not run` cell always does, such as a limit that stopped it, a crash or a test that didn't run;
+  from that cell's results in a run, its shards' together, and it lands through a pull request
+  like any change. It counts each result as the nightly job's script did: a failure by its grade,
+  `known` or `new`, and a `quarantined` one as known; a pass by the tool's own status, so an
+  unexpected pass is a pass; and anything else as a skip. Its header gives the run's date, commit
+  and platform, the cell, and the smbtorture version from the cell's log. It refuses a run of a
+  checkout with changes, whose commit doesn't say what ran, and a cell or shard that didn't run
+  to its end, whose lost tests would leave the file without a trace: one whose note gives any
+  reason but new failures and unexpected passes, as a `not run` cell always does, such as a limit
+  that stopped it, a crash or a test that didn't run;
 - `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
   failures are the tests both servers fail, its new failures those only the kernel's server fails,
   and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
@@ -1820,8 +1823,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
-     workflow run, so develop's status is still the scripts'. A suite's parity jobs go with its
-     scripts, when it moves into `tests.yml` (step 3).
+     workflow run, so develop's status is still the scripts'. A suite's parity jobs go when it
+     moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
      `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
@@ -1840,11 +1843,13 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      retry replaces that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
-     the old job deletes that suite's scripts.
+     the old job deletes that suite's scripts. A script that an old job still running uses stays
+     until that job moves too: smbtorture's, which its Kerberos job runs, until the Kerberos runs
+     move.
    - `dt docs` replaces `check-docs.sh` as the conformance suites move, and not before, so the
      documentation's suite tables always describe what CI runs (§4.1).
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
-     the last of them.
+     the last of them; a target whose script goes earlier goes with that script.
    - `dt known baseline` replaces the nightly job that pushes smbtorture's baseline file to
      develop, which fails every night (#2997).
    - Make the gate required, in the same change that drops `Unit Tests (1.26.x)` and
@@ -1876,10 +1881,11 @@ Changing any of them is a pull request to this section.
 From the third review:
 
 - **The PR budget against smbtorture.** smbtorture took 23 minutes on `memory` and 21 on `badger`
-  on a PR run on 2026-10-12, over the 20-minute p90 on its own. Decided: on PRs it is split over
-  two runners (`shards: 2`, the same tests), measured with `dt plan --estimate`. Runners are
-  shared, so sharding helps only while they aren't the bottleneck. If it doesn't pay off, or turns
-  out complicated, PRs run a `select.pr` subset and the full set runs after merge.
+  on a PR run on 2026-10-12, over the 20-minute p90 on its own. Decided: it is split over two
+  runners (`shards: 2`, the same tests), in every tier, since `shards` isn't set per tier, and
+  measured with `dt plan --estimate`. Runners are shared, so sharding helps only while they
+  aren't the bottleneck. If it doesn't pay off, or turns out complicated, PRs run a `select.pr`
+  subset and the full set runs after merge.
 - **The merge tier on shared runners.** Every run draws on the same runner pool. On the full run
   set of #2652 (2026-09-15, 29 jobs), no more than 10 jobs ran at once, jobs spent longer queued
   (9,664 s) than running (9,014 s), and protocol conformance was 91% of the job-seconds. Decided:
