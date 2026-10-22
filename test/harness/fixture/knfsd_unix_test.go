@@ -25,7 +25,8 @@ import (
 // settings are files in a directory of their own, with lease and grace
 // times of 90 and the grace period on; rpc.nfsd writes the times it is
 // given there, lists the versions DT_FAKE_VERSIONS names, NFSv4.0, 4.1 and
-// 4.2 by default, and ends the grace period a second later. rpc.mountd runs
+// 4.2 by default, or removes the list for -, and ends the grace period a
+// second later. rpc.mountd runs
 // until SIGTERM, and logs it. dt runs as an ordinary user, and makes its
 // directories in one of the test's. It returns the settings' directory, and
 // a function giving the calls so far.
@@ -60,7 +61,7 @@ while [ $# -gt 1 ]; do
 	shift
 done
 if [ "$1" != 0 ]; then
-	echo "${DT_FAKE_VERSIONS:--3 +4 +4.1 +4.2}" > "$DT_FAKE_NFSD/versions"
+	if [ "$DT_FAKE_VERSIONS" = - ]; then rm "$DT_FAKE_NFSD/versions"; else echo "${DT_FAKE_VERSIONS:--3 +4 +4.1 +4.2}" > "$DT_FAKE_NFSD/versions"; fi
 	(sleep 1; echo Y > "$DT_FAKE_NFSD/v4_end_grace") >/dev/null 2>&1 &
 fi`,
 	}
@@ -191,15 +192,17 @@ func TestKnfsd(t *testing.T) {
 // A setup that fails undoes what it did, the last step first, and the step
 // it failed in: a failed mount of the tmpfs is unmounted, a failed export
 // leaves rpc.mountd and the server unstarted, a server that doesn't answer,
-// or that serves no NFSv4.0, is stopped with the rest, and an rpc.nfsd the
-// setup's limit ends is ended before the undoing, so it starts nothing
-// after.
+// that serves no NFSv4.0, or whose list of versions can't be read, is
+// stopped with the rest, and an rpc.nfsd the setup's limit ends is ended
+// before the undoing, so it starts nothing after. The fake sudo execs its
+// command, so a plain kill passes that too: that real sudo relays the
+// group's SIGTERM was checked by hand.
 func TestKnfsdFails(t *testing.T) {
 	f := registry.Fixture{Server: "knfsd", NFS: registry.NFS{Version: "export"}, Squash: "none", Lease: "30s"}
 	for _, tc := range []struct {
 		name, fail string
 		hang, up   bool
-		versions   string // the kernel's list once rpc.nfsd ran, when not the default
+		versions   string // the kernel's list once rpc.nfsd ran, when not the default; - for none
 		err        string
 		undo       []string // after the setup's calls, with DIR for the export's directory
 	}{
@@ -207,6 +210,7 @@ func TestKnfsdFails(t *testing.T) {
 		{"the export", "exportfs", false, true, "", "exportfs failed", []string{"exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 		{"no answer", "", false, false, "", "knfsd doesn't answer", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 		{"the kernel refuses 4.0", "", false, true, "-3 +4 -4.0 +4.1 +4.2", "doesn't serve NFSv4.0, 4.1 and 4.2", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"no list of versions", "", false, true, "-", "reading the kernel's NFS versions", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 		{"the limit ends during rpc.nfsd", "", true, true, "", "deadline exceeded", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

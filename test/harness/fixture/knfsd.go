@@ -169,9 +169,11 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	// is on.
 	cat = asRoot("cat", filepath.Join(nfsdDir, "versions"))
 	vers, err := exec.CommandContext(ctx, cat[0], cat[1:]...).Output()
-	on := strings.Fields(string(vers))
-	if err != nil || slices.Contains(on, "-4.0") || !slices.Contains(on, "+4.1") || !slices.Contains(on, "+4.2") {
-		return nil, fmt.Errorf("knfsd doesn't serve NFSv4.0, 4.1 and 4.2: %q, %v", vers, err)
+	if err != nil {
+		return nil, fmt.Errorf("reading the kernel's NFS versions: %w", err)
+	}
+	if on := strings.Fields(string(vers)); slices.Contains(on, "-4.0") || !slices.Contains(on, "+4.1") || !slices.Contains(on, "+4.2") {
+		return nil, fmt.Errorf("knfsd doesn't serve NFSv4.0, 4.1 and 4.2: %q", vers)
 	}
 	for {
 		state, err := os.ReadFile(filepath.Join(nfsdDir, "v4_end_grace"))
@@ -225,7 +227,10 @@ func (k *Knfsd) Stop() error {
 // waitStep waits for the command to end.
 //
 // decision: that wait has no limit, since SIGKILL would end sudo alone and
-// leave its command going.
+// leave its command going. The cost: a command stuck in an uninterruptible
+// wait in the kernel, or ignoring SIGTERM, holds dt past the setup's limit,
+// and Ctrl-C doesn't help, since dt keeps catching the interrupt until the
+// run ends. A bound comes if a setup is ever seen hung there.
 func waitStep(ctx context.Context, w io.Writer, argv []string) error {
 	_, _ = fmt.Fprintf(w, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
