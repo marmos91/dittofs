@@ -397,6 +397,10 @@ func loadKnown(root, path string, where map[string][]string) ([]known.Entry, err
 // now is a variable so the tests can set the day.
 var now = time.Now
 
+// quarantineDays is how far ahead an entry of the quarantine list may expire,
+// so an entry can't stay forever: it is renewed while its issue is open.
+const quarantineDays = 90
+
 // loadQuarantine reads and checks the quarantine list, and returns the
 // entries that hold for each suite, each naming one of suites, and why each
 // expired one excuses nothing. A missing list has no entries.
@@ -418,14 +422,17 @@ func loadQuarantine(root string, suites map[string]bool) (map[string][]known.Ent
 	}
 	list, err := known.ParseQuarantine(QuarantinePath, data)
 	errs := []error{err}
-	today := now().UTC().Format(time.DateOnly)
+	today := now().UTC()
+	last := today.AddDate(0, 0, quarantineDays).Format(time.DateOnly)
 	entries := map[string][]known.Entry{}
 	var expired []string
 	for _, q := range list {
 		switch {
 		case !suites[q.Suite]:
 			errs = append(errs, fmt.Errorf("%s:%d: no suite %q", QuarantinePath, q.Line, q.Suite))
-		case q.Expires <= today:
+		case q.Expires > last:
+			errs = append(errs, fmt.Errorf("%s:%d: expires %s is more than %d days away: give it %s at the latest, and renew it while %s is open", QuarantinePath, q.Line, q.Expires, quarantineDays, last, q.Issue))
+		case q.Expires <= today.Format(time.DateOnly):
 			expired = append(expired, fmt.Sprintf("%s:%d: %s expired on %s, so it fails as new: fix it (%s) and remove the entry, or give it a later date", QuarantinePath, q.Line, q.Test, q.Expires, q.Issue))
 		default:
 			entries[q.Suite] = append(entries[q.Suite], q.Entry())

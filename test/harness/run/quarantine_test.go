@@ -13,6 +13,11 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
+// soon is a date the quarantine list takes as an expiry: a month ahead.
+func soon() string {
+	return time.Now().UTC().AddDate(0, 0, 30).Format(time.DateOnly)
+}
+
 // A test the quarantine list holds still runs, and its failure is recorded,
 // graded quarantined, but fails no cell and gets no annotation: in its
 // suite's cells and its options', not in another suite's. A known-failure
@@ -25,8 +30,8 @@ func TestQuarantinedTestNeverFails(t *testing.T) {
 `, map[string]string{
 		"t/flaky.sh": "exit 1\n",
 		"k.yaml":     "- { test: t/flaky.sh, status: fail, fix: wontfix, category: env, reason: r }\n",
-		registry.QuarantinePath: "- { suite: s, test: t/flaky.sh, issue: '#1', expires: 2999-12-31 }\n" +
-			"- { suite: listed, test: t/flaky.sh, issue: '#1', expires: 2999-12-31 }\n",
+		registry.QuarantinePath: "- { suite: s, test: t/flaky.sh, issue: '#1', expires: " + soon() + " }\n" +
+			"- { suite: listed, test: t/flaky.sh, issue: '#1', expires: " + soon() + " }\n",
 	})
 	var cells []Cell
 	for _, unit := range [][2]string{{"s", ""}, {"s", "o"}, {"listed", ""}, {"other", ""}} {
@@ -72,7 +77,7 @@ func TestQuarantinedTestNeverFails(t *testing.T) {
 // known, not as failed.
 func TestGoJSONQuarantined(t *testing.T) {
 	root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n",
-		map[string]string{registry.QuarantinePath: "- { suite: g, test: TestFlaky, issue: '#1', expires: 2999-12-31 }\n"})
+		map[string]string{registry.QuarantinePath: "- { suite: g, test: TestFlaky, issue: '#1', expires: " + soon() + " }\n"})
 	fakeGo(t, `{"Action":"run","Package":"p","Test":"TestFlaky"}
 {"Action":"fail","Package":"p","Test":"TestFlaky"}
 {"Action":"run","Package":"p","Test":"TestPass"}

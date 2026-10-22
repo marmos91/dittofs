@@ -55,7 +55,7 @@ func TestRetryRunsTheNewFailuresAgain(t *testing.T) {
 		"t/quarantined.sh": logRun + "exit 1\n",
 		"k.yaml": "- { test: t/known.sh, status: fail, fix: wontfix, category: env, reason: r }\n" +
 			"- { test: t/fixed.sh, status: fail, fix: wontfix, category: env, reason: r }\n",
-		registry.QuarantinePath: "- { suite: s, test: t/quarantined.sh, issue: '#1', expires: 2999-12-31 }\n",
+		registry.QuarantinePath: "- { suite: s, test: t/quarantined.sh, issue: '#1', expires: " + soon() + " }\n",
 	})
 	o := retryRun(t, context.Background(), root, r, "s", 2)
 	for test, want := range map[string]int{"broken": 3, "fixed": 1, "flaky": 2, "known": 1, "pass": 1, "quarantined": 1} {

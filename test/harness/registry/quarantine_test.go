@@ -10,9 +10,9 @@ import (
 
 // The quarantine list is read and checked as the registry loads, and its
 // entries kept by suite. An entry names a suite and keeps the list's own
-// rules. It expires at the start of its date in UTC: from then on it excuses
-// nothing, and the registry says so, for dt doctor and the lint, but still
-// loads. Here it is 00:30 on 23 October where the clock is, two hours ahead,
+// rules. It expires at the start of its date in UTC, at most 90 days ahead,
+// so it can't stay forever: from then on it excuses nothing, and the registry
+// says so, for dt doctor and the lint, but still loads. Here it is 00:30 on 23 October where the clock is, two hours ahead,
 // so 22 October in UTC.
 func TestQuarantine(t *testing.T) {
 	now = func() time.Time { return time.Date(2026, 10, 23, 0, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60)) }
@@ -27,6 +27,9 @@ func TestQuarantine(t *testing.T) {
 		{"an entry expires at the start of its date, and excuses nothing", "2026-10-22", "s", false,
 			"test/harness/quarantine.yaml:1: t expired on 2026-10-22", ""},
 		{"an entry names a suite", "2026-10-23", "nope", false, "", `test/harness/quarantine.yaml:1: no suite "nope"`},
+		{"an entry lasts up to 90 days from today in UTC", "2027-01-20", "s", true, "", ""},
+		{"and no longer", "2027-01-21", "s", false, "", "test/harness/quarantine.yaml:1: expires 2027-01-21 is more than 90 days away"},
+		{"so it can't stay forever", "9999-12-31", "s", false, "", "test/harness/quarantine.yaml:1: expires 9999-12-31 is more than 90 days away"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, err := Parse(quarantined(t, "- { suite: "+c.suite+", test: t, issue: '#1', expires: "+c.expires+" }\n"), []byte(y))
