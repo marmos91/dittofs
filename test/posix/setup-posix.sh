@@ -558,12 +558,6 @@ main() {
     log_info "Server log:  /tmp/dittofs-posix-server.log"
     log_info "Data dir:    $DATA_DIR"
     log_info ""
-    if [[ "$NO_MOUNT" != true ]]; then
-        log_info "To run POSIX tests:"
-        log_info "  cd $MOUNT_POINT"
-        log_info "  sudo env PATH=\"\$PATH\" $SCRIPT_DIR/run-posix.sh"
-        log_info ""
-    fi
     log_info "To clean up:"
     log_info "  sudo $SCRIPT_DIR/teardown-posix.sh"
 }

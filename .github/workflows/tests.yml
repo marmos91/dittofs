@@ -7,8 +7,9 @@
 # always runs, and is the check that decides.
 #
 # The suites move in from their own workflows one at a time, each running here
-# beside its old job until their results match on 5 consecutive runs. pynfs is
-# the first, so plan keeps only its cells. A suite joins by being added to the
+# beside its old job until their results match on 5 consecutive runs. plan
+# keeps only the cells of those that have: pynfs, pjdfstest, WPTS, and
+# smbtorture without its Kerberos option. A suite joins by being added to the
 # select in plan, with any step its cells need that run doesn't give yet, such
 # as another service; the select goes once every suite runs here.
 name: Tests
@@ -82,7 +83,7 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c '[(.cells // [])[] | select(.suite == "pynfs")
+            jq -c '[(.cells // [])[] | select(.suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or (.suite == "smbtorture" and .option == null))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           echo "blocking=$(jq -c 'map(select(.blocking))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
@@ -127,6 +128,13 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
+
+      # The kernel NFS client, for a cell whose fixture mounts the share.
+      - name: Install NFS client utilities
+        if: contains(matrix.needs, 'nfs-client')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them

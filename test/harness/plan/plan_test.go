@@ -30,9 +30,9 @@ func names(cells []Cell) []string {
 }
 
 // The pr tier is today's pull-request checks, with the conformance suites on
-// the production profile, badger-s3, only. With no change given, the Kerberos
-// e2e run, which has paths, is planned too. A cell names the test tools it
-// takes from {tools}.
+// the production profile, badger-s3, only, and smbtorture over two runners.
+// With no change given, the Kerberos e2e run, which has paths, is planned too.
+// A cell names the test tools it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -46,7 +46,7 @@ func TestPRTier(t *testing.T) {
 		"e2e/kerberos",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
-		"wpts/badger-s3", "smbtorture/badger-s3",
+		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
 		"cthon04/badger-s3/default", "cthon04/badger-s3/v3", "cthon04/badger-s3/v4.0", "cthon04/badger-s3/v4.1", "cthon04/badger-s3/v4.1-noac", "cthon04/badger-s3/v4.1-smallio",
 		"bench-smoke",
 	}
