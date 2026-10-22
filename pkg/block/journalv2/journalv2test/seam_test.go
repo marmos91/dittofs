@@ -338,6 +338,22 @@ func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
 	}
 }
 
+func TestTornDropsEarlierWritesOfTheTornFile(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 0)   // lost: an earlier write to the torn file
+	write(t, f, "cccc", 4) // the last write, torn
+
+	crash(t, s, Torn(2))
+
+	if got := onDisk(t, s, "seg"); got != "aaaacc" {
+		t.Fatalf("seg holds %q, want the synced %q and the torn %q only", got, "aaaa", "cc")
+	}
+}
+
 func TestReorderedNeverPutsAnOlderWriteOverANewerOne(t *testing.T) {
 	// Two overlapping writes: older "aaaaaaaa" at 0, newer "bbbbbbbb" at 4.
 	// A device may keep either, both or neither, but where both are kept the
