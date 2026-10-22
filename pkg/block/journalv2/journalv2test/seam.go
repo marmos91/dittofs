@@ -75,6 +75,7 @@ type Seam struct {
 	calls    map[string]int
 	callsFor map[[2]string]int
 	stashed  int
+	holds    []*Hold
 
 	mu sync.Mutex
 }
@@ -229,14 +230,15 @@ func applies(k sim.FaultKind, op string) bool {
 	}
 }
 
-// enter counts op on name and consults the fault. It returns the fault's
-// action holding mu, unless the fault fails the call: then it returns the
-// fault's error, without mu.
+// enter counts op on name, waits at any hold that matches it, then consults
+// the fault. It returns the fault's action holding mu, unless the fault fails
+// the call: then it returns the fault's error, without mu.
 func (s *Seam) enter(op, name string) (sim.FaultAction, error) {
 	s.mu.Lock()
 	s.count(op, name)
 	s.mu.Unlock()
 
+	s.hold(op, name)
 	a := s.consult(op, name)
 
 	s.mu.Lock()
@@ -926,9 +928,9 @@ type seamFile struct {
 var _ storage.File = (*seamFile)(nil)
 
 // enter is Seam.enter for a call on the file. A call on a closed file fails
-// with ErrClosed before the fault is consulted, and again after it: a Crash
-// may have closed the file while the fault delayed the call, and the call
-// must not then act on the node a new handle is using.
+// with ErrClosed before it is held or the fault is consulted, and again after
+// both: a Crash may have closed the file while the call was held or delayed,
+// and the call must not then act on the node a new handle is using.
 func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	s := sf.seam
 
@@ -941,6 +943,7 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 		return sim.FaultAction{}, sf.closedErr(op)
 	}
 
+	s.hold(op, sf.name)
 	a := s.consult(op, sf.name)
 
 	s.mu.Lock()
