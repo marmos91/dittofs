@@ -498,6 +498,46 @@ func TestStaleReadsCoversHandlesOpenedLater(t *testing.T) {
 	}
 }
 
+func TestDurableReadsOfAnUnlinkedFile(t *testing.T) {
+	// Both ways a file leaves the directory while open: Remove, and being
+	// replaced by a Rename. SyncDir then unlinks it for good.
+	for _, tc := range []struct {
+		how    string
+		unlink func(s *Seam) error
+	}{
+		{"removed", func(s *Seam) error { return s.Remove("seg") }},
+		{"replaced by a rename", func(s *Seam) error {
+			create(t, s, "other")
+			return s.Rename("other", "seg")
+		}},
+	} {
+		s := newSeam(t)
+		f := create(t, s, "seg")
+
+		write(t, f, "synced", 0)
+		syncFile(t, f)
+		write(t, f, "UNSYNC", 0)
+		s.StaleReads("seg")
+
+		if err := tc.unlink(s); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := s.SyncDir(); err != nil {
+			t.Fatal(err)
+		}
+
+		p := make([]byte, 6)
+		if _, err := f.ReadAtDirect(p, 0); err != nil || string(p) != "synced" {
+			t.Fatalf("ReadAtDirect on an open file %s: %q, %v; want the durable %q", tc.how, p, err, "synced")
+		}
+
+		if _, err := f.ReadAt(p, 0); err != nil || string(p) != "synced" {
+			t.Fatalf("stale ReadAt on an open file %s: %q, %v; want the durable %q", tc.how, p, err, "synced")
+		}
+	}
+}
+
 func TestCrashClosesEveryOpenFile(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")

@@ -550,18 +550,23 @@ func (s *Seam) undoDir() error {
 	return nil
 }
 
-// durableImage returns the file's bytes with every unsynced change undone,
-// newest first.
-//
-// ponytail: it reads the whole file on every call, which is fine for the
-// small segments tests run with. Upgrade to undoing only the range asked for
-// if a test reads large files through ReadAtDirect in a loop.
+// durableImage returns the file's bytes, read by path, with every unsynced
+// change undone.
 func (n *node) durableImage() ([]byte, error) {
 	img, err := os.ReadFile(n.path)
 	if err != nil {
 		return nil, err
 	}
+	return n.undone(img), nil
+}
 
+// undone returns img, the file's current bytes, with every unsynced change
+// undone, newest first.
+//
+// ponytail: it works on the whole file on every call, which is fine for the
+// small segments tests run with. Upgrade to undoing only the range asked for
+// if a test reads large files through ReadAtDirect in a loop.
+func (n *node) undone(img []byte) []byte {
 	for i := range slices.Backward(n.undo) {
 		c := n.undo[i]
 
@@ -577,7 +582,7 @@ func (n *node) durableImage() ([]byte, error) {
 
 		img = resize(img, c.oldSize)
 	}
-	return img, nil
+	return img
 }
 
 // resize returns b cut or zero-extended to size.
@@ -655,11 +660,19 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 	return sf.readDurable(p, off)
 }
 
+// readDurable reads through the open file rather than by path, so a file
+// removed or replaced while open still serves its durable image.
 func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
-	img, err := sf.node.durableImage()
+	size, err := sf.size()
 	if err != nil {
 		return 0, err
 	}
+
+	img := make([]byte, size)
+	if _, err := sf.f.ReadAt(img, 0); err != nil {
+		return 0, err
+	}
+	img = sf.node.undone(img)
 
 	if off >= int64(len(img)) {
 		return 0, io.EOF
