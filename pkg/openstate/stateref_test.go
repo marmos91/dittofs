@@ -1,19 +1,38 @@
 package openstate
 
 import (
+	"crypto/rand"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
+func newTable(t *testing.T) *Table {
+	t.Helper()
+	tab, err := New(Deps{Rand: rand.Reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tab
+}
+
+// entryOf is file f's entry, or nil if it has none.
+func (t *Table) entryOf(f entity.FileID) *entry {
+	fs := &t.files[f[0]]
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.entries[f]
+}
+
 func mintIn(t *testing.T, tab *Table, f entity.FileID, c entity.ClientID, s ShardID) StateRef {
 	t.Helper()
 	var ref StateRef
-	if err := tab.step(f, func(e *entry) error {
-		ref = tab.mint(e, f, c, s, StateOpen)
-		return nil
+	if err := tab.step(f, func(e *entry) (err error) {
+		ref, err = tab.mint(e, f, c, s, StateOpen)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +49,7 @@ func releaseIn(t *testing.T, tab *Table, f entity.FileID, ref StateRef) {
 // No flip of one of a reference's 64 random bits names another record: the
 // token is random, not a counter, so holding one reveals no other.
 func TestStateRefTokenIsUnguessable(t *testing.T) {
-	tab := New()
+	tab := newTable(t)
 	f := entity.NewFileID()
 	refs := make([]StateRef, 1<<16)
 	for i := range refs {
@@ -61,7 +80,7 @@ func TestMissIsStaleOrBad(t *testing.T) {
 		{"earlier instance", shardGrace{instance: 4}, ErrStaleState},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tab := New()
+			tab := newTable(t)
 			tab.shards[9] = shardGrace{instance: 3}
 			ref := mintIn(t, tab, f, 1, 9)
 			releaseIn(t, tab, f, ref)
@@ -76,7 +95,7 @@ func TestMissIsStaleOrBad(t *testing.T) {
 // A reference resolves only for its own client and, when the request names a
 // file, only for its own file.
 func TestResolveChecksClientAndFile(t *testing.T) {
-	tab := New()
+	tab := newTable(t)
 	f, other := entity.NewFileID(), entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
 	if _, err := tab.resolve(1, f, ref); err != nil {
@@ -101,15 +120,15 @@ func TestResolveChecksClientAndFile(t *testing.T) {
 // A file's entry exists while it holds state and is freed with its last
 // piece, also when steps on the file run concurrently.
 func TestEntryFreedWithLastState(t *testing.T) {
-	tab := New()
+	tab := newTable(t)
 	f := entity.NewFileID()
 	a, b := mintIn(t, tab, f, 1, 0), mintIn(t, tab, f, 1, 0)
 	releaseIn(t, tab, f, a)
-	if tab.files[f] == nil {
+	if tab.entryOf(f) == nil {
 		t.Fatal("entry freed while it still holds state")
 	}
 	releaseIn(t, tab, f, b)
-	if tab.files[f] != nil {
+	if tab.entryOf(f) != nil {
 		t.Fatal("entry kept after its last state was released")
 	}
 
@@ -118,14 +137,32 @@ func TestEntryFreedWithLastState(t *testing.T) {
 		wg.Go(func() {
 			for range 100 {
 				var ref StateRef
-				_ = tab.step(f, func(e *entry) error { ref = tab.mint(e, f, 1, 0, StateOpen); return nil })
+				_ = tab.step(f, func(e *entry) (err error) { ref, err = tab.mint(e, f, 1, 0, StateOpen); return err })
 				_ = tab.step(f, func(e *entry) error { tab.release(e, ref); return nil })
 			}
 		})
 	}
 	wg.Wait()
-	if len(tab.files) != 0 || len(tab.refs) != 0 {
-		t.Fatalf("after concurrent steps: %d entries, %d references; want none", len(tab.files), len(tab.refs))
+	if tab.entryOf(f) != nil || len(tab.refs) != 0 {
+		t.Fatalf("after concurrent steps: entry %v, %d references; want none", tab.entryOf(f), len(tab.refs))
+	}
+}
+
+// Every random bit of a token is read from Deps.Rand, and a failed read
+// mints nothing: no reference is held and the file keeps no entry.
+func TestMintReadsDepsRand(t *testing.T) {
+	tab, err := New(Deps{Rand: io.LimitReader(rand.Reader, 8)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := entity.NewFileID()
+	mintIn(t, tab, f, 1, 0)
+	g := entity.NewFileID()
+	if err := tab.step(g, func(e *entry) error { _, err := tab.mint(e, g, 1, 0, StateOpen); return err }); err == nil {
+		t.Fatal("a mint past the end of Deps.Rand succeeded")
+	}
+	if tab.entryOf(g) != nil || len(tab.refs) != 1 {
+		t.Fatalf("after a failed mint: entry %v, %d references; want none and the first one", tab.entryOf(g), len(tab.refs))
 	}
 }
 
@@ -133,7 +170,7 @@ func TestEntryFreedWithLastState(t *testing.T) {
 // one pass, an older one is ErrOldState, a newer one ErrBadState, across the
 // wrap from the highest value to 1 too.
 func TestStateRefSequence(t *testing.T) {
-	tab := New()
+	tab := newTable(t)
 	f := entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
 	var now uint32
@@ -171,15 +208,17 @@ func TestStateRefSequence(t *testing.T) {
 // A grant's and a watch's IDs resolve by shard and token with no file handle,
 // each only as its own kind and only for its own client.
 func TestGrantAndWatchIDsResolveWithoutAHandle(t *testing.T) {
-	tab := New()
+	tab := newTable(t)
 	f := entity.NewFileID()
 	var g GrantID
 	var gref StateRef
 	var w WatchID
-	if err := tab.step(f, func(e *entry) error {
-		g, gref = tab.mintGrant(e, f, 1, 4)
-		w = tab.mintWatch(e, f, 1, 4)
-		return nil
+	if err := tab.step(f, func(e *entry) (err error) {
+		if g, gref, err = tab.mintGrant(e, f, 1, 4); err != nil {
+			return err
+		}
+		w, err = tab.mintWatch(e, f, 1, 4)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -1,14 +1,16 @@
 package openstate
 
 import (
-	"crypto/rand"
 	"encoding/binary"
+	"fmt"
+	"io"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// ShardID names the shard a file's state is held under.
-type ShardID uint64
+// ShardID names the shard a file's state is held under. 24 of its bits are
+// usable, so an installation numbers at most 2^24 shards.
+type ShardID uint32
 
 // StateType is what a state reference names.
 type StateType uint8
@@ -40,7 +42,7 @@ type StateRef struct {
 
 // GrantID and WatchID name a caching grant and a watch by their shard and
 // token, as a StateRef does, so a call naming one with no file handle, such as
-// AckBreak or Unwatch, resolves from the ID alone.
+// AckRecall or Unwatch, resolves from the ID alone.
 type (
 	GrantID struct {
 		Shard ShardID
@@ -73,14 +75,17 @@ type shardGrace struct {
 }
 
 // mint issues a reference to a new piece of state of file f, held by client
-// c, under file f's step, which e is.
-func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, typ StateType) StateRef {
+// c, under file f's step, which e is. Its token is 64 bits read from
+// Deps.Rand; a failed read mints nothing.
+func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	ref := StateRef{Type: typ, Shard: s, Instance: t.shards[s].instance}
 	for {
 		var b [8]byte
-		_, _ = rand.Read(b[:]) // never fails: crypto/rand aborts the process instead
+		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
+			return StateRef{}, fmt.Errorf("openstate: minting a reference: %w", err)
+		}
 		ref.Token = binary.LittleEndian.Uint64(b[:])
 		if _, taken := t.refs[refKey{s, ref.Token}]; !taken {
 			break
@@ -89,20 +94,20 @@ func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, ty
 	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: f, client: c, seq: 1}
 	e.states++
 	ref.Seq = 1
-	return ref
+	return ref, nil
 }
 
 // mintGrant issues a caching grant's ID, which is also its delegation stateid's
 // reference, under file f's step, which e is.
-func (t *Table) mintGrant(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (GrantID, StateRef) {
-	ref := t.mint(e, f, c, s, StateGrant)
-	return GrantID{ref.Shard, ref.Token}, ref
+func (t *Table) mintGrant(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (GrantID, StateRef, error) {
+	ref, err := t.mint(e, f, c, s, StateGrant)
+	return GrantID{ref.Shard, ref.Token}, ref, err
 }
 
 // mintWatch issues a watch's ID under directory f's step, which e is.
-func (t *Table) mintWatch(e *entry, f entity.FileID, c entity.ClientID, s ShardID) WatchID {
-	ref := t.mint(e, f, c, s, stateWatch)
-	return WatchID{ref.Shard, ref.Token}
+func (t *Table) mintWatch(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (WatchID, error) {
+	ref, err := t.mint(e, f, c, s, stateWatch)
+	return WatchID{ref.Shard, ref.Token}, err
 }
 
 // advance raises the sequence of the state ref names, under its file's step,
