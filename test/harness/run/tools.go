@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/marmos91/dittofs/test/harness/registry"
@@ -22,8 +23,8 @@ var dtcTools = "/opt"
 
 // layOutTools makes {tools} at dir, with a link {tools}/NAME for each tool in
 // names, to the directory registry.ToolDirs gives in the tool at the revision
-// flake.lock pins. Each link is made once per run: one already there, from an
-// earlier cell, is kept.
+// flake.lock pins, or a writable copy of it for registry.ToolCopies. Each is
+// made once per run: one already there, from an earlier cell, is kept.
 func layOutTools(ctx context.Context, root, dir string, names []string, w io.Writer) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -37,7 +38,15 @@ func layOutTools(ctx context.Context, root, dir string, names []string, w io.Wri
 		if err != nil {
 			return err
 		}
-		if err := os.Symlink(filepath.Join(out, registry.ToolDirs[name]), link); err != nil && !errors.Is(err, fs.ErrExist) {
+		src := filepath.Join(out, registry.ToolDirs[name])
+		if slices.Contains(registry.ToolCopies, name) {
+			if err := os.CopyFS(link, os.DirFS(src)); err != nil {
+				_ = os.RemoveAll(link) // so the next cell doesn't keep half a copy
+				return err
+			}
+			continue
+		}
+		if err := os.Symlink(src, link); err != nil && !errors.Is(err, fs.ErrExist) {
 			return err
 		}
 	}
