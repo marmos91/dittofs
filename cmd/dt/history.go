@@ -162,18 +162,24 @@ func newKnownPrune() *cobra.Command {
 					_, _ = fmt.Fprintf(out, "%s: left as is: no cell it grades has results in the runs read\n", file)
 					continue
 				}
-				// decision: an entry is kept when its test matched a result of
-				// the same kind, a failure or a skip, in any cell the file
-				// grades, whatever its where. That keeps every entry a run
-				// needed, and maybe one whose where no longer applies
-				// anywhere, as a dropped matrix value leaves. Judge each
-				// entry in the cells it applies to when such entries
+				// decision: an entry goes only when results in the cells the
+				// file grades matched its test and none of them was of its
+				// kind, a failure or a skip, whatever its where. An entry no
+				// result matched stays: its test wasn't run or reached, as
+				// on a laptop that ran part of a suite. So every entry a run
+				// needed stays, and so may one whose test is gone or whose
+				// where no longer applies anywhere; remove those by hand, or
+				// judge each entry in the cells it applies to when they
 				// outlive prune.
 				removed, err := known.Prune(filepath.Join(root, file), func(e known.Entry) bool {
 					want := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
-					return slices.ContainsFunc(tests, func(t report.Test) bool {
-						return history.Outcome(t) == want && known.Match(e.Test, t.Name)
-					})
+					matched, needed := false, false
+					for _, t := range tests {
+						if known.Match(e.Test, t.Name) {
+							matched, needed = true, needed || history.Outcome(t) == want
+						}
+					}
+					return !matched || needed
 				})
 				if err != nil {
 					return err

@@ -68,9 +68,10 @@ func TestHistory(t *testing.T) {
 }
 
 // dt known prune removes from each known file of the suite and its options
-// the entries whose test matched no result of their kind, a failure or a
-// skip, in the cells the file grades, and leaves a file whose cells have no
-// results as it is.
+// the entries whose test matched results in the cells the file grades, none
+// of them of the entry's kind, a failure or a skip. An entry whose test has no
+// result there stays, and a file whose cells have no results is left as it
+// is.
 func TestKnownPrune(t *testing.T) {
 	root := t.TempDir()
 	entry := func(test, status string) string {
@@ -79,7 +80,7 @@ func TestKnownPrune(t *testing.T) {
 	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
 		"  s: { cmd: \"true\", known: s.yaml, options: { shares: { cmd: \"true\" }, own: { cmd: \"true\", known: own.yaml }, idle: { cmd: \"true\", known: idle.yaml } } }\n"+
 		"  other: { cmd: \"true\" }\n")
-	writeFile(t, filepath.Join(root, "s.yaml"), entry("a", "fail")+entry("pat/*", "fail")+entry("gone", "fail")+entry("b", "skip")+entry("c", "fail")+entry("z", "fail"))
+	writeFile(t, filepath.Join(root, "s.yaml"), entry("a", "fail")+entry("pat/*", "fail")+entry("gone", "fail")+entry("b", "skip")+entry("c", "fail")+entry("z", "fail")+entry("absent", "fail"))
 	writeFile(t, filepath.Join(root, "own.yaml"), entry("z", "fail"))
 	writeFile(t, filepath.Join(root, "idle.yaml"), entry("x", "fail"))
 	t.Chdir(root)
@@ -89,6 +90,7 @@ func TestKnownPrune(t *testing.T) {
 			{Name: "gone", Status: report.Passed},
 			{Name: "b", Status: report.Skipped, Grade: report.ExpectedSkip},
 			{Name: "c", Status: report.Other, RawStatus: report.Skipped, Grade: report.UnexpectedSkip},
+			{Name: "z", Status: report.Passed},
 		}},
 		{Name: "s/shares", Result: report.Failed, Tests: []report.Test{{Name: "pat/x", Status: report.Failed, Grade: report.New}}},
 		{Name: "s/own", Result: report.Passed, Tests: []report.Test{{Name: "z", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}}},
@@ -102,7 +104,7 @@ func TestKnownPrune(t *testing.T) {
 		t.Errorf("dt known prune s: %v\n%s\nwant\n%s", err, out, want)
 	}
 	for file, want := range map[string]string{
-		"s.yaml":    entry("a", "fail") + entry("pat/*", "fail") + entry("b", "skip"),
+		"s.yaml":    entry("a", "fail") + entry("pat/*", "fail") + entry("b", "skip") + entry("absent", "fail"),
 		"own.yaml":  entry("z", "fail"),
 		"idle.yaml": entry("x", "fail"),
 	} {
