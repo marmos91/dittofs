@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -437,15 +438,20 @@ func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
 	}
 }
 
-// failNextSync makes the next sync fail with EIO and every later call pass.
-func failNextSync(t *testing.T, s *Seam) {
+// failNext makes the next call of op fail with EIO and every later call pass.
+func failNext(t *testing.T, s *Seam, op string) {
 	t.Helper()
 
-	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpSync, Key: "*", Count: 1, Action: eio})
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: op, Key: "*", Count: 1, Action: eio})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.SetFault(sched)
+}
+
+func failNextSync(t *testing.T, s *Seam) {
+	t.Helper()
+	failNext(t, s, OpSync)
 }
 
 func TestFailedSyncLosesThePendingWritesForGood(t *testing.T) {
@@ -651,4 +657,264 @@ func TestSyncAfterAFailedSyncOnAnUnlinkedFile(t *testing.T) {
 	if _, err := f.ReadAtDirect(p, 0); err != nil || string(p) != "ab" {
 		t.Fatalf("ReadAtDirect: %q, %v; want the durable %q", p, err, "ab")
 	}
+}
+
+// failSyncDir runs a SyncDir that fails, then lets every later call pass.
+func failSyncDir(t *testing.T, s *Seam) {
+	t.Helper()
+
+	failNext(t, s, OpSyncDir)
+	wantEIO(t, OpSyncDir, s.SyncDir())
+}
+
+func syncDir(t *testing.T, s *Seam) {
+	t.Helper()
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wantDurable checks what a crash now would leave in name: want, or no file
+// when want is nil.
+func wantDurable(t *testing.T, s *Seam, name string, want *string) {
+	t.Helper()
+
+	got, err := s.Durable(name)
+	switch {
+	case want == nil && !errors.Is(err, fs.ErrNotExist):
+		t.Fatalf("Durable(%q): %q, %v; want fs.ErrNotExist", name, got, err)
+	case want != nil && (err != nil || string(got) != *want):
+		t.Fatalf("Durable(%q): %q, %v; want %q", name, got, err, *want)
+	}
+}
+
+// wantNames checks the directory's names, read past the seam.
+func wantNames(t *testing.T, s *Seam, want ...string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the directory holds %v, want %v", got, want)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+func TestFailedSyncDirLosesItsChangesForGood(t *testing.T) {
+	s := newSeam(t)
+	if _, err := s.Create("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	failSyncDir(t, s)
+	syncDir(t, s) // succeeds, and must not stand in for the failed one
+	wantDurable(t, s, "a", nil)
+
+	// A second failure drops what was logged since, and keeps what the first
+	// one left durable.
+	if _, err := s.Create("b"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s)
+	syncDir(t, s)
+	wantDurable(t, s, "b", nil)
+
+	crash(t, s)
+	wantNames(t, s)
+}
+
+// durableFile creates name holding data, durable in the directory and on
+// disk.
+func durableFile(t *testing.T, s *Seam, name, data string) storage.File {
+	t.Helper()
+
+	f := create(t, s, name)
+	write(t, f, data, 0)
+	syncFile(t, f)
+	return f
+}
+
+func TestARenameAfterAFailedSyncDirIsDurable(t *testing.T) {
+	s := newSeam(t)
+	f, err := s.Create("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "x", 0)
+	syncFile(t, f)
+
+	failSyncDir(t, s) // loses the create
+	if err := s.Rename("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", nil)
+	wantDurable(t, s, "b", ptr("x"))
+
+	crash(t, s)
+	wantNames(t, s, "b")
+}
+
+func TestARemoveLostByAFailedSyncDirIsUndoneByACrash(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "keep")
+
+	if err := s.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s)
+	syncDir(t, s) // must not unlink the removed file: a crash brings it back
+
+	wantDurable(t, s, "a", ptr("keep"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "a"); got != "keep" {
+		t.Fatalf("after the crash a holds %q, want %q", got, "keep")
+	}
+}
+
+func TestAReplacingRenameLostByAFailedSyncDirIsUndoneByACrash(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "x", "new")
+	durableFile(t, s, "a", "old")
+
+	if err := s.Rename("x", "a"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s)
+	syncDir(t, s)
+
+	wantDurable(t, s, "x", ptr("new"))
+	wantDurable(t, s, "a", ptr("old"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "x") + "," + onDisk(t, s, "a"); got != "new,old" {
+		t.Fatalf("after the crash x,a hold %q, want %q", got, "new,old")
+	}
+}
+
+func TestAFileReappendedAfterAFailedSyncDirIsDurable(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "old")
+
+	if err := s.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s)
+
+	f, err := s.Create("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "new", 0)
+	syncFile(t, f)
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", ptr("new"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "a"); got != "new" {
+		t.Fatalf("after the crash a holds %q, want %q", got, "new")
+	}
+}
+
+func TestARenameAfterALostRenameTakesTheFileFromItsDurableName(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "data")
+
+	if err := s.Rename("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s)
+	if err := s.Rename("b", "c"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", nil)
+	wantDurable(t, s, "b", nil)
+	wantDurable(t, s, "c", ptr("data"))
+
+	crash(t, s)
+	wantNames(t, s, "c")
+}
+
+func TestARemoveAfterAFailedSyncDirDeletesTheDurableName(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "old")
+
+	if err := s.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create("a"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s) // loses the remove and the create
+
+	if err := s.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", nil)
+
+	crash(t, s)
+	wantNames(t, s)
+}
+
+func TestTornAfterAFailedSyncDirPicksOnlyDurableFiles(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "a", "aaaa")
+	write(t, f, "bbbb", 4)
+
+	g, err := s.Create("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, g, "cc", 0) // the last write, on a file whose create is lost
+	failSyncDir(t, s)
+
+	crash(t, s, Torn(1))
+
+	if got := onDisk(t, s, "a"); got != "aaaab" {
+		t.Fatalf("a holds %q, want its last write torn to %q", got, "aaaab")
+	}
+	wantNames(t, s, "a")
+}
+
+func TestARenameAfterAFailedSyncDirDeletesTheDurableOldName(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "old")
+
+	if err := s.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.Create("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "new", 0)
+	syncFile(t, f)
+	failSyncDir(t, s) // loses the remove and the create: a is still "old"
+
+	if err := s.Rename("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", nil)
+	wantDurable(t, s, "b", ptr("new"))
+
+	crash(t, s)
+	wantNames(t, s, "b")
 }

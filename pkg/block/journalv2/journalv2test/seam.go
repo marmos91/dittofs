@@ -41,13 +41,16 @@ const (
 // last Sync, and every Create, Rename and Remove since the last SyncDir. A
 // change a failed Sync covered is lost: the file keeps serving it, but no
 // later Sync makes it durable, so from then on the seam keeps that file's
-// durable image and replays onto it what each later Sync covers. Crash puts
-// every file back to its durable image, undoes the directory changes, closes
-// every open file, and leaves the directory as a power loss would have, so a
-// journal can be opened on it again.
+// durable image and replays onto it what each later Sync covers. A failed
+// SyncDir does the same for the directory: its changes are lost, and the seam
+// keeps the durable directory and replays onto it what each later SyncDir
+// covers. Crash puts every file back to its durable image and the directory
+// back to its durable names, closes every open file, and leaves the directory
+// as a power loss would have, so a journal can be opened on it again.
 //
-// A removed or replaced file is not unlinked until the next SyncDir: it is
-// moved to a stash directory beside dir, so a crash can bring it back. The
+// A removed or replaced file is not unlinked while a crash could bring it
+// back: it is moved to a stash directory beside dir, and unlinked by the
+// first SyncDir after which the durable directory no longer holds it. The
 // stash lives in dir's parent, which a test's temporary directory already
 // cleans up.
 //
@@ -55,12 +58,19 @@ const (
 // record, not the device's, and nothing here survives a real power loss, so an
 // fsync would only slow every test down.
 type Seam struct {
-	dir      string
-	stash    string
-	fault    sim.Fault
-	seq      uint64
-	names    map[string]*node // the directory as it is now
-	dirLog   []dirOp          // Create, Rename and Remove since the last SyncDir
+	dir    string
+	stash  string
+	fault  sim.Fault
+	seq    uint64
+	names  map[string]*node // the directory as it is now
+	dirLog []dirOp          // Create, Rename and Remove since the last SyncDir
+
+	// dirSnap is the durable directory, kept from the first failed SyncDir
+	// until the next Crash: the directory then holds changes no SyncDir will
+	// make durable, so undoing dirLog no longer gives the durable names. Nil
+	// otherwise.
+	dirSnap map[string]*node
+
 	open     map[*seamFile]struct{}
 	calls    map[string]int
 	callsFor map[[2]string]int
@@ -161,7 +171,8 @@ var _ storage.FS = (*Seam)(nil)
 //   - Fail: performs nothing and returns the action's Err. A failed sync
 //     also marks every pending change of the file lost: ReadAt still
 //     serves it, and no later Sync makes it durable. A failed sync_dir
-//     keeps its directory changes pending (see SyncDir).
+//     loses its directory changes the same way: they stay in the directory,
+//     and no later SyncDir makes them durable.
 //
 // Any other kind panics, naming the kind and the op: it is a mistake in the
 // test, not a storage fault.
@@ -201,11 +212,18 @@ func (s *Seam) enter(op, name string) error {
 	s.count(op, name)
 	s.mu.Unlock()
 
-	if a := s.consult(op, name); a.Kind == sim.Fail {
+	a := s.consult(op, name)
+
+	s.mu.Lock()
+	if a.Kind == sim.Fail {
+		if op == OpSyncDir {
+			s.loseDirLog()
+		}
+
+		s.mu.Unlock()
 		return &fs.PathError{Op: op, Path: name, Err: a.Err}
 	}
 
-	s.mu.Lock()
 	return nil
 }
 
@@ -372,35 +390,85 @@ func (s *Seam) List() ([]string, error) {
 }
 
 func (s *Seam) SyncDir() error {
-	// ponytail: a failed SyncDir keeps the directory log, so a later SyncDir that
-	// succeeds makes those changes durable, which storage.FS says it must not.
-	// A journal that retries SyncDir after a failure and trusts the retry passes
-	// here. Mark the logged changes lost on failure, as a failed Sync does for
-	// writes, when a test needs that case.
 	if err := s.enter(OpSyncDir, ""); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
 
+	if s.dirSnap != nil {
+		s.replayDirLog()
+	}
 	s.dirLog = nil
 
 	// decision: SyncDir's result is the commit of the directory log, which cannot
-	// fail here; unlinking the stash is cleanup, and what it leaves is removed by
-	// the next SyncDir or Crash.
+	// fail here. Unlinking the stashed files the durable directory no longer
+	// holds is cleanup, and what it leaves is removed by a later SyncDir or Crash.
 	_ = s.emptyStash()
 	return nil
 }
 
-// emptyStash unlinks every stashed file, now that nothing can bring one
-// back; the caller holds mu.
+// loseDirLog drops every pending directory change, after a SyncDir that
+// failed. The first failure keeps the durable directory in dirSnap; a later
+// one leaves dirSnap as it is. The caller holds mu.
+//
+// decision: a later success does not stand in for a SyncDir that failed, as
+// for a file's Sync. The changes stay in the directory, so List and Open
+// still see them, but only what is logged after the failure can become
+// durable, so code that retries a failed SyncDir and trusts the retry is
+// caught.
+func (s *Seam) loseDirLog() {
+	if s.dirSnap == nil {
+		s.dirSnap = s.durableNames()
+	}
+	s.dirLog = nil
+}
+
+// replayDirLog applies the pending directory changes to dirSnap, oldest
+// first, after a SyncDir that succeeded; dirSnap stays set. The caller holds
+// mu.
+//
+// decision: a change is replayed by name, whatever the durable directory
+// holds under that name: a create or a rename sets the name, a remove deletes
+// it. Replaying only changes whose node the durable directory still holds
+// would dead-end the re-append path: once the removal of an old file is lost,
+// a new file under its name could never become durable, and removing the name
+// again would act on the new file, which the durable directory never held. A
+// node keeps one name, so a rename also takes it away from any name it held.
+func (s *Seam) replayDirLog() {
+	for _, op := range s.dirLog {
+		switch op.kind {
+		case dirCreate:
+			s.dirSnap[op.name] = op.node
+		case dirRemove:
+			delete(s.dirSnap, op.name)
+		case dirRename:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			delete(s.dirSnap, op.oldName)
+			s.dirSnap[op.name] = op.node
+		}
+	}
+}
+
+// emptyStash unlinks every stashed file the durable directory does not hold,
+// now that nothing can bring one back; the caller holds mu.
 func (s *Seam) emptyStash() error {
+	held := map[string]bool{}
+	for _, n := range s.dirSnap {
+		held[n.path] = true
+	}
+
 	entries, err := os.ReadDir(s.stash)
 	if err != nil {
 		return err
 	}
 
 	for _, e := range entries {
-		if err := os.Remove(filepath.Join(s.stash, e.Name())); err != nil {
+		path := filepath.Join(s.stash, e.Name())
+		if held[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil {
 			return err
 		}
 	}
@@ -434,9 +502,14 @@ func (s *Seam) Durable(name string) ([]byte, error) {
 	return n.durableImage()
 }
 
-// durableNames returns the directory as the last SyncDir left it; the caller
-// holds mu.
+// durableNames returns the directory as the last SyncDir left it: dirSnap
+// when it is set, otherwise the current names with every pending change
+// undone. The caller holds mu.
 func (s *Seam) durableNames() map[string]*node {
+	if s.dirSnap != nil {
+		return maps.Clone(s.dirSnap)
+	}
+
 	names := make(map[string]*node, len(s.names))
 	maps.Copy(names, s.names)
 
@@ -503,7 +576,9 @@ func Reordered(seed uint64) CrashOption {
 
 // Crash simulates a power loss: it closes every open file, puts every file
 // back to its durable image, and undoes every Create, Rename and Remove made
-// since the last SyncDir. With no option, every unsynced write is lost. After
+// since the last SyncDir or lost by a failed one. The files it keeps, and the
+// only ones Torn and Reordered pick writes from, are those of the durable
+// directory. With no option, every unsynced write is lost. After
 // it returns, every call on a file opened before it fails with an error
 // matching fs.ErrClosed, and the seam serves the directory as the crash left
 // it. A Crash refused for its options returns an error and changes nothing.
@@ -604,16 +679,44 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		n.undo, n.snap = nil, nil
 	}
 
-	if err := s.undoDir(); err != nil {
+	restore := s.undoDir
+	if s.dirSnap != nil {
+		restore = func() error { return s.restoreDir(survivors) }
+	}
+	if err := restore(); err != nil {
 		return err
 	}
 
-	s.names = survivors
+	s.names, s.dirSnap = survivors, nil
 	for _, n := range survivors {
 		n.undo, n.snap = nil, nil
 	}
 
 	return s.emptyStash()
+}
+
+// restoreDir makes the directory hold exactly names, the durable directory
+// dirSnap keeps: every file now in it moves to the stash, and every durable
+// one back under its name. Undoing dirLog cannot do it once a SyncDir failed,
+// since the directory then holds changes the log no longer records. The
+// caller holds mu.
+func (s *Seam) restoreDir(names map[string]*node) error {
+	for _, n := range s.names {
+		if err := s.toStash(n); err != nil {
+			return err
+		}
+	}
+
+	for name, n := range names {
+		path := filepath.Join(s.dir, name)
+		if err := os.Rename(n.path, path); err != nil {
+			return err
+		}
+		n.path = path
+	}
+
+	s.dirLog = nil
+	return nil
 }
 
 // undoDir puts the directory back as the last SyncDir left it, newest change
