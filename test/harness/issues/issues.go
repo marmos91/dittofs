@@ -234,6 +234,10 @@ func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, o
 			return fmt.Errorf("issue #%d: %w", status.Number, err)
 		}
 		if was.Run == id {
+			// decision: a re-run of a run already posted posts nothing, so it
+			// can't count the run twice. A job re-run because its machine was
+			// lost therefore leaves its cell's not-run entry until the cell's
+			// next run.
 			_, _ = fmt.Fprintf(out, "#%d: run %s is posted already\n", status.Number, id)
 			return nil
 		}

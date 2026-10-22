@@ -253,6 +253,10 @@ jobs:
   #
   # decision: the non-blocking cells don't post. They never fail the gate, so
   # they never make develop red; their failures show on their own jobs.
+  #
+  # decision: post runs whatever run did, so a merge plan with no blocking cell
+  # would fail it every time, with nothing to post. Today's merge tier always
+  # has one.
   post:
     name: post
     needs: [plan, gate]
@@ -285,9 +289,10 @@ jobs:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
 
-      # Every run those jobs made, each attempt's: dt counts a cell from its
-      # last run by name, which is its latest attempt's, and a planned cell
-      # whose job wrote no run as not run.
+      # Every run those jobs made, each attempt's, with a planned cell whose
+      # job wrote no run counted as not run. A run already posted posts
+      # nothing, so a cell counts from its latest attempt only when post itself
+      # is re-run after an attempt that posted nothing.
       - name: Post
         env:
           GITHUB_TOKEN: ${{ github.token }}
