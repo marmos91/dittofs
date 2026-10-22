@@ -33,7 +33,6 @@ For the end-user guide to connecting a Windows client, see
 - [Conformance test suites](#conformance-test-suites)
   - [WPTS (Windows Protocol Test Suites)](#wpts-windows-protocol-test-suites)
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
-  - [Running both SMB suites](#running-both-smb-suites)
   - [pynfs (NFSv4 protocol)](#pynfs-nfsv4-protocol)
   - [cthon04 and nfstest (NFS mount options)](#cthon04-and-nfstest-nfs-mount-options)
 - [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
@@ -392,10 +391,13 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 ## Conformance test suites
 
 DittoFS is validated against industry-standard conformance suites for SMB and
-NFS. The table comes from the test registry, `test/suites.yaml`. pynfs runs
-through `dt` (below); every other one runs through `test/conformance/run.sh`, as
-`test/conformance/suites.json` describes, until it moves to `dt`. Until then
-cthon04 runs on pull requests and nightly, not after merge as its tier says:
+NFS. The table comes from the test registry, `test/suites.yaml`. pjdfstest
+([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS and smbtorture
+run through `dt` (below); cthon04 and nfstest run through
+`test/conformance/run.sh`, as `test/conformance/suites.json` describes, and
+smbtorture's Kerberos option through `smbtorture/run.sh --kerberos`, until each
+moves to `dt`. Until then cthon04 runs on pull requests and nightly, not after
+merge as its tier says:
 
 <!-- conformance-suites:begin -->
 <!-- Generated from test/suites.yaml by test/harness/bin/dt docs. Do not edit by hand. -->
@@ -418,37 +420,32 @@ Each runs in its tier and the wider ones, `pr` then `merge` then `nightly`; a `m
 ### WPTS (Windows Protocol Test Suites)
 
 - **Suite:** MS-SMB2 BVT (Build Verification Tests)
-- **Known failures:** see
-  [`../../test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md)
+- **Image:** `mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8`
+- **Known failures and expected skips:**
+  [`../../test/smb-conformance/known.yaml`](../../test/smb-conformance/known.yaml)
 - **Run locally:**
   ```bash
-  cd test/smb-conformance
-  make test        # Run WPTS BVT suite
-  make test-quick  # Quick run (memory profile only)
+  test/harness/bin/dt run wpts/badger-s3    # badger-s3 needs Localstack
   ```
+
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR.
 
 ### smbtorture (Samba Test Suite)
 
-- **Suite:** Full SMB2 test suite (`smb2.*`)
+- **Suite:** the SMB2 tests of
+  [`tests.txt`](../../test/smb-conformance/smbtorture/tests.txt), split over two shards
 - **Image:** `quay.io/samba.org/samba-toolbox:v0.8`
-- **Known failures:** see
-  [`../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md)
+- **Known failures and expected skips:**
+  [`../../test/smb-conformance/smbtorture/known.yaml`](../../test/smb-conformance/smbtorture/known.yaml)
 - **Run locally:**
   ```bash
-  cd test/smb-conformance
-  make smbtorture        # Run full smbtorture suite
-  make smbtorture-quick  # Quick run (memory profile only)
+  test/harness/bin/dt run smbtorture/badger-s3            # both shards; badger-s3 needs Localstack
+  test/harness/bin/dt run smbtorture/badger-s3/shard-1    # one of them
   ```
 
-### Running both SMB suites
-
-```bash
-cd test/smb-conformance
-make test smbtorture     # Run WPTS + smbtorture in sequence
-```
-
-Both SMB suites run in CI via `.github/workflows/conformance.yml` on every PR touching
-SMB-related code.
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR, each shard on a
+runner of its own. Its Kerberos option still runs in `.github/workflows/conformance.yml`,
+through `smbtorture/run.sh --kerberos`, after a merge and nightly.
 
 ### pynfs (NFSv4 protocol)
 

@@ -213,6 +213,9 @@ suites:
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
+    # Over two runners: in one cell it takes about 20 minutes, the pr tier's whole budget.
+    # decision: in every tier, since shards isn't set per tier.
+    shards: 2
     needs: [linux, docker]
     options:
       # The suite's options, as run.sh --kerberos gives them too. smbtorture finds the KDC in
@@ -230,6 +233,7 @@ suites:
         fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
+        shards: 1                       # its three tests in one cell
 
   # What a kernel client sees through an untuned mount, one change at a time: the named
   # mount-option sets. Both run as the user dt runs as, on a client in a network namespace

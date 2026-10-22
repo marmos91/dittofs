@@ -1,5 +1,5 @@
 # Docker Compose configuration for SMB Conformance Testing
-# Orchestrates DittoFS + Microsoft WindowsProtocolTestSuites (WPTS) + smbtorture
+# Orchestrates DittoFS + smbtorture
 #
 # Usage:
 #   Source compose-env.sh first. The harness names its Compose project after the
@@ -9,14 +9,12 @@
 #
 #   . ./compose-env.sh
 #   docker compose up -d dittofs                   # Start DittoFS only
-#   docker compose --profile test up               # Start DittoFS + WPTS
 #   docker compose --profile smbtorture up         # Start DittoFS + smbtorture
 #   docker compose --profile s3 up -d              # Start with Localstack for S3 profiles
 #   docker compose --profile kerberos up -d kdc    # Start the self-contained KDC
 #
 # Environment variables:
 #   PROFILE              - DittoFS config profile (default: memory)
-#   WPTS_FILTER          - WPTS test filter (default: TestCategory=BVT)
 #   DITTOFS_CONTROLPLANE_SECRET - JWT secret / admin password (min 32 chars)
 
 services:
@@ -48,27 +46,6 @@ services:
       - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
       - DITTOFS_ADMIN_INITIAL_PASSWORD=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
     # Healthcheck is defined in Dockerfile.dittofs
-
-  wpts:
-    image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
-    platform: linux/amd64
-    depends_on:
-      dittofs:
-        condition: service_healthy
-    volumes:
-      - ./ptfconfig-generated:/data/fileserver
-    network_mode: "service:dittofs"
-    environment:
-      Usage: RunTestCases
-      Filter: ${WPTS_FILTER:-TestCategory=BVT}
-      DryRun: "false"
-      SutComputerName: localhost
-      SutIPAddress: localhost
-      DomainName: localhost
-      AdminUserName: wpts-admin
-      PasswordForAllUsers: ${TEST_PASSWORD:-TestPassword01!}
-    profiles:
-      - test
 
   smbtorture:
     image: quay.io/samba.org/samba-toolbox:v0.8

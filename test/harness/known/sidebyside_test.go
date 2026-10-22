@@ -14,9 +14,6 @@ var sideBySide = []struct {
 	md, known, axis string
 	values          []string
 }{
-	{"../../posix/KNOWN_FAILURES.md", "../../posix/known.yaml", "nfs", []string{"3"}},
-	{"../../posix/KNOWN_FAILURES_V4.md", "../../posix/known.yaml", "nfs", []string{"4", "4.1"}},
-	{"../../smb-conformance/KNOWN_FAILURES.md", "../../smb-conformance/known.yaml", "", nil},
 	{"../../smb-conformance/smbtorture/KNOWN_FAILURES.md", "../../smb-conformance/smbtorture/known.yaml", "", nil},
 	{"../../smb-conformance/smbtorture/KNOWN_FAILURES_KERBEROS.md", "../../smb-conformance/smbtorture/known-kerberos.yaml", "", nil},
 }

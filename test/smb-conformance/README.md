@@ -64,80 +64,40 @@ Runs Microsoft [Windows Protocol Test Suites (WPTS)](https://github.com/microsof
 
 ### Running
 
+The suite runs through `dt`, from the test registry (`test/suites.yaml`), and CI runs it in
+`.github/workflows/tests.yml`. `dt` starts the server on the `badger-s3` profile with the
+shares in `shares.yaml`, fills in the `ptfconfig/` templates, and runs WPTS's container:
+
 ```bash
-# Quick test with memory profile (fastest)
-./run.sh --profile memory
-
-# With verbose output
-./run.sh --profile memory --verbose
-
-# With specific filter
-./run.sh --filter "TestCategory=BVT"
-
-# With specific test category
-./run.sh --category BVT
-
-# Run all profiles sequentially
-make test-full
-
-# See configuration without running
-make dry-run
+test/harness/bin/dt run wpts/badger-s3    # badger-s3 needs Localstack: dt services up localstack
 ```
 
-### Storage Profiles
-
-| Profile | Metadata Store | Block Store | Extra Services |
-|---------|---------------|---------------|----------------|
-| `memory` | BadgerDB (in memory) | Memory | None |
-| `badger` | BadgerDB (on disk) | Memory | None |
-| `badger-s3` | BadgerDB (on disk) | S3 | Localstack |
-
-### Flags Reference
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile to use |
-| `--mode MODE` | `compose` | Execution mode (`compose` or `local`) |
-| `--filter FILTER` | `TestCategory=BVT` | WPTS test filter expression |
-| `--category CAT` | - | Alias for `--filter "TestCategory=CAT"` |
-| `--keep` | off | Leave containers running after tests |
-| `--dry-run` | off | Show configuration and exit |
-| `--verbose` | off | Enable verbose output |
+It needs Linux, Docker and port 445; on macOS, run it in the Linux container,
+`test/harness/bin/dtc run wpts/badger-s3`. The filled-in configuration and the TRX file are in
+the cell's results directory, under `test/harness/results/`.
 
 ### Known Failures
 
-`KNOWN_FAILURES.md` tracks tests that are expected to fail. Each entry is an individual test name (no wildcards). The `parse-results.sh` script reads test names from the first column of the markdown table.
-
-**How known failures work:**
-- Tests in KNOWN_FAILURES.md that fail are classified as `KNOWN` (yellow) -- not a CI failure
-- Tests NOT in KNOWN_FAILURES.md that fail are classified as `FAIL` (red) -- CI fails
-- Tests that pass are `PASS` (green)
-- Tests not executed are `SKIP` (dim)
-
-**Adding new known failures:**
-
-1. Run tests and identify the failing test name from parse-results output
-2. Verify the failure is due to a genuinely unimplemented feature (not a bug)
-3. Add the exact test name to the table in `KNOWN_FAILURES.md`:
-   ```
-   | ExactTestName | Category | Reason | #issue |
-   ```
-4. Re-run to confirm the failure is now classified as `KNOWN`
-
-### Understanding Results
-
-| Status | Color | Meaning |
-|--------|-------|---------|
-| `PASS` | Green | Test passed |
-| `KNOWN` | Yellow | Test failed, listed in KNOWN_FAILURES.md |
-| `FAIL` | Red | Test failed, NOT in KNOWN_FAILURES.md (new failure) |
-| `SKIP` | Dim | Test was not executed |
+`known.yaml` lists the tests that are expected to fail, and the tests WPTS is expected not to
+execute, each with its reason. A failure it doesn't list is a new failure, and fails the run; a
+listed test that passes is an unexpected pass, and fails it too, until its entry goes.
 
 ## smbtorture
 
 Runs Samba's [smbtorture](https://wiki.samba.org/index.php/Smbtorture) test suite against DittoFS for wire-level SMB2/3 protocol testing.
 
 ### Running
+
+The suite runs through `dt`, from the test registry (`test/suites.yaml`), and CI runs it in
+`.github/workflows/tests.yml`, its tests split over two shards:
+
+```bash
+test/harness/bin/dt run smbtorture/badger-s3            # both shards; badger-s3 needs Localstack
+test/harness/bin/dt run smbtorture/badger-s3/shard-1    # one of them
+```
+
+`smbtorture/run.sh` stays for the Kerberos option, which CI still runs through it, in
+`.github/workflows/conformance.yml`, until that option moves to `dt` too:
 
 ```bash
 # Run full suite with memory profile
@@ -180,7 +140,7 @@ cd smbtorture
 
 ### Known Failures
 
-`smbtorture/KNOWN_FAILURES.md` tracks expected failures with the same format as WPTS. Each entry is an individual test name. The `parse-results.sh` script reads these automatically.
+`smbtorture/known.yaml` lists the known failures and expected skips `dt` grades against. `smbtorture/KNOWN_FAILURES.md`, which `parse-results.sh` reads, holds the same failures, and a test of `dt` fails while the two differ, until `run.sh` goes.
 
 Categories of expected smbtorture failures:
 - **Multi-channel** - Not implemented
@@ -368,7 +328,8 @@ Each platform runs the same core operations:
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `conformance.yml` | PR, push, nightly | WPTS BVT + smbtorture on `badger-s3`, Kerberos | ~20 min |
+| `conformance.yml` | push, nightly | Kerberos smbtorture | ~5 min |
+| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt` | ~15 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol) | ~15 min |
 
@@ -380,8 +341,7 @@ Each platform runs the same core operations:
 
 ### Results
 
-- WPTS results: uploaded as GitHub Actions artifacts (30-day retention)
-- smbtorture results: uploaded as artifacts with summary
+- WPTS and smbtorture results: `dt`'s report in the job summary, each cell's results uploaded as artifacts
 - E2E results: logged to `e2e.log` artifact
 - Weekly regression failures auto-create GitHub issues
 
@@ -389,12 +349,10 @@ Each platform runs the same core operations:
 
 ```
 test/smb-conformance/
-├── run.sh                    # Main WPTS orchestrator (compose + local modes)
-├── parse-results.sh          # TRX XML parser with failure classification
-├── KNOWN_FAILURES.md         # WPTS expected test failures (machine-readable)
+├── known.yaml                # WPTS's known failures and expected skips, graded by dt
 ├── Makefile                  # Convenience targets
 ├── README.md                 # This file
-├── docker-compose.yml        # Service definitions (DittoFS, WPTS, Localstack, KDC)
+├── docker-compose.yml        # Service definitions for smbtorture's scripts (DittoFS, Localstack, KDC)
 ├── Dockerfile.dittofs        # DittoFS image with dfs + dfsctl
 ├── bootstrap.sh              # DittoFS provisioning (stores, shares, users, SMB adapter)
 ├── shares.yaml               # The same shares as data, for dt's fixture
@@ -403,11 +361,10 @@ test/smb-conformance/
 │   ├── badger.yaml
 │   ├── badger-s3.yaml
 │   └── badger-s3-kerberos.yaml
-├── ptfconfig/                # WPTS configuration templates
+├── ptfconfig/                # WPTS configuration templates, which dt fills in
 │   ├── CommonTestSuite.deployment.ptfconfig.template
 │   └── MS-SMB2_ServerTestSuite.deployment.ptfconfig.template
-├── ptfconfig-generated/      # (gitignored) Rendered ptfconfig files
-├── results/                  # (gitignored) Test results per run
+├── results/                  # (gitignored) smbtorture's scripts' results per run
 └── smbtorture/               # smbtorture sub-suite
     ├── run.sh                # smbtorture orchestrator
     ├── KNOWN_FAILURES.md     # smbtorture expected failures
@@ -429,33 +386,24 @@ When working on fixing a specific test failure:
 # 0. Address this checkout's stack
 source ./compose-env.sh
 
-# 1. Run tests and keep containers alive
-./run.sh --profile memory --keep
+# 1. Run smbtorture's scripts and keep containers alive
+./smbtorture/run.sh --profile memory --keep --filter smb2.lock
 
 # 2. Check DittoFS logs
 docker compose logs -f dittofs
 
-# 3. Inspect generated ptfconfig
-cat ptfconfig-generated/MS-SMB2_ServerTestSuite.deployment.ptfconfig
-
-# 4. Run a specific test category — a kept stack cannot be reused, because
-#    bootstrap would run a second time against an already-bootstrapped server,
-#    so tear it down first
-docker compose down -v
-./run.sh --profile memory --keep --category BVT
-
-# 5. When done, clean up
+# 3. When done, clean up: a kept stack cannot be reused, because bootstrap
+#    would run a second time against an already-bootstrapped server
 docker compose down -v
 ```
 
 ### Debugging Tips
 
 - **DittoFS logs:** Set `DITTOFS_LOGGING_LEVEL=DEBUG` (already set in docker-compose.yml)
-- **TRX output:** Check `results/<timestamp>/*.trx` for detailed WPTS error messages
+- **TRX output:** WPTS's TRX file, with each test's error message, is in its `dt` cell's results directory
 - **smbtorture output:** Check `results/smbtorture-<timestamp>/` for test logs
-- **Network:** WPTS shares the DittoFS network namespace (`network_mode: service:dittofs`)
 - **One stack at a time:** the published host ports are a single set and the
   suites assert on sub-second lease and oplock breaks, so the runners refuse to
   start while any stack is live — another checkout's, or one this checkout left
   behind with `--keep` — and name the directory holding it
-- **ptfconfig:** Generated from templates in `ptfconfig/`. Edit templates, then re-run
+- **ptfconfig:** `dt` fills in the templates in `ptfconfig/`. Edit them, then re-run
