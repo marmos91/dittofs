@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// Prune removes the entries keep refuses and leaves the rest of the file as
-// it was. A removed entry's comment heads the entries after it, so the last
+// Prune removes the entries the results show stale and leaves the rest of
+// the file as it was. A removed entry's comment heads the entries after it, so the last
 // such comment moves to the next entry kept, and goes with the last entry it
 // headed. A file with nothing to remove isn't written.
 func TestPrune(t *testing.T) {
@@ -23,7 +25,8 @@ func TestPrune(t *testing.T) {
 		"- {test: e, status: skip, fix: wontfix, category: env, reason: gone}\n"
 	path := write(t, filepath.Join(t.TempDir(), "known.yaml"), file)
 
-	removed, err := Prune(path, func(e Entry) bool { return e.Reason != "gone" })
+	passed := []Result{{Name: "a", Outcome: report.Passed}, {Name: "c", Outcome: report.Passed}, {Name: "e", Outcome: report.Passed}}
+	removed, err := Prune(path, passed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +48,7 @@ func TestPrune(t *testing.T) {
 	if err := os.Chmod(path, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := Prune(path, func(Entry) bool { return true }); err != nil || removed != nil {
+	if removed, err := Prune(path, passed); err != nil || removed != nil {
 		t.Errorf("nothing to remove: %v, %v", removed, err)
 	}
 }

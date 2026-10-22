@@ -1035,10 +1035,11 @@ pass on a retry a pass that is also flaky. Without SUITE it gives a row per suit
 p90 of its cells' durations (§4.3); with SUITE, a row per test, with the p50 and p90 of its own; and
 with SUITE/TEST, also each of that test's results, run by run, which shows since when it fails.
 `dt known prune` reads the same runs. From each known file of the suite and its options it removes
-the entries whose `test` matched results in the cells the file grades, none of them of the entry's
-kind, a failure or a skip, whatever their `where`. An entry no result matched stays, since its test
-wasn't run or reached in those runs, so a prune of a laptop's partial runs is safe; a file none of
-whose cells has results in those runs is left as it is. It edits the YAML only: while a suite keeps
+the entries whose `test` matched results in the cells the file grades and the entry's `where`
+applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it, none of them
+of the entry's kind, a failure or a skip. An entry no such result matched stays, since its test
+wasn't run or reached where it applies; a file none of whose cells has results in those runs is
+left as it is. It edits the YAML only: while a suite keeps
 its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the

@@ -32,11 +32,15 @@ func summary(t *testing.T, dir string, r report.Run) []byte {
 	return data
 }
 
-// names is each run's name, and its cells' names and results.
+// names is each run's name, its OS when it has one, and its cells' names and
+// results.
 func names(runs []report.Run) []string {
 	var out []string
 	for _, r := range runs {
 		s := r.Name
+		if r.OS != "" {
+			s += " on " + r.OS
+		}
 		for _, c := range r.Cells {
 			s += " " + c.Name + "=" + c.Result
 		}
@@ -72,18 +76,19 @@ func TestLocal(t *testing.T) {
 
 // CI reads the last n finished develop runs of the tests workflow, through
 // every page of the API, oldest first, leaving out a pull request's and a
-// cancelled one, and all of them when there are fewer. Of each
-// run it reads the artifacts of the blocking and the non-blocking jobs, with
-// suite only those of its cells, not the expired ones, and in each artifact
-// only the first attempt's summary.json. Every request carries the token.
+// cancelled one, and all of them when there are fewer. Of each run it reads
+// the artifacts of the blocking and the non-blocking jobs, with suite only
+// those of its cells, not the expired ones, and in each artifact only the
+// first attempt's summary.json: each job's run, with its own OS, under the
+// workflow run's name. Every request carries the token.
 func TestCI(t *testing.T) {
 	dir := t.TempDir()
-	cell := func(run, name, result string) []byte {
+	cell := func(run, name, result, os string) []byte {
 		var b bytes.Buffer
 		z := zip.NewWriter(&b)
 		w, err := z.Create(run + "/summary.json")
 		if err == nil {
-			_, err = w.Write(summary(t, dir, report.Run{Name: run, Cells: []report.Cell{{Name: name, Result: result}}}))
+			_, err = w.Write(summary(t, dir, report.Run{Name: run, OS: os, Cells: []report.Cell{{Name: name, Result: result}}}))
 		}
 		if err == nil {
 			err = z.Close()
@@ -94,11 +99,11 @@ func TestCI(t *testing.T) {
 		return b.Bytes()
 	}
 	downloads := map[string][]byte{
-		"31": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/4.1", "failed"),
-		"32": cell("20261021T130000Z-33333333-a2", "pjdfstest/badger-s3/4.1", "passed"),
-		"33": cell("20261021T120100Z-33333333", "pynfs/badger-s3/0", "passed"),
-		"34": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/3", "passed"),
-		"11": cell("20261020T221400Z-11111111", "pjdfstest/badger-s3/3", "not run"),
+		"31": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/4.1", "failed", "linux"),
+		"32": cell("20261021T130000Z-33333333-a2", "pjdfstest/badger-s3/4.1", "passed", "linux"),
+		"33": cell("20261021T120100Z-33333333", "pynfs/badger-s3/0", "passed", "windows"),
+		"34": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/3", "passed", "linux"),
+		"11": cell("20261020T221400Z-11111111", "pjdfstest/badger-s3/3", "not run", "linux"),
 	}
 	artifact := func(id, name string, expired bool) map[string]any {
 		return map[string]any{"name": name, "expired": expired, "archive_download_url": "/download/" + id}
@@ -165,11 +170,14 @@ func TestCI(t *testing.T) {
 		fetched string
 	}{
 		{"pjdfstest", 2, []string{
-			"20261020T221300Z-11111111 pjdfstest/badger-s3/3=not run",
-			"20261021T120000Z-33333333 pjdfstest/badger-s3/4.1=failed",
-		}, "32 31 11"},
-		{"", 1, []string{"20261021T120000Z-33333333 pynfs/badger-s3/0=passed pjdfstest/badger-s3/4.1=failed"}, "33 32 31"},
-		{"pynfs", 5, []string{"20261020T221300Z-11111111", "20261021T120000Z-33333333 pynfs/badger-s3/0=passed"}, "33"},
+			"20261020T221300Z-11111111 on linux pjdfstest/badger-s3/3=not run",
+			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
+		}, "11 32 31"},
+		{"", 1, []string{
+			"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed",
+			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
+		}, "33 32 31"},
+		{"pynfs", 5, []string{"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed"}, "33"},
 	} {
 		fetched = nil
 		runs, err := CI(context.Background(), c.suite, c.n)
@@ -202,7 +210,7 @@ func TestCounts(t *testing.T) {
 	flaky := test("a.t", report.Passed, "", "", 5*time.Second)
 	flaky.Flaky = true
 	runs := []report.Run{
-		{Cells: []report.Cell{
+		{Name: "r1", Cells: []report.Cell{
 			{Name: "pjdfstest/badger-s3/3", Result: report.Failed, Took: 10 * time.Second, Tests: []report.Test{
 				test("a.t", report.Passed, "", "", time.Second),
 				test("b.t", report.Skipped, report.Failed, report.Known, 2*time.Second),
@@ -211,7 +219,7 @@ func TestCounts(t *testing.T) {
 				test("e.t", report.Other, "", report.Incomplete, 0),
 			}},
 		}},
-		{Cells: []report.Cell{
+		{Name: "r2", Cells: []report.Cell{
 			{Name: "pjdfstest/badger-s3/3", Result: report.Passed, Took: 30 * time.Second, Tests: []report.Test{
 				flaky, test("b.t", report.Skipped, report.Failed, report.Known, 4*time.Second),
 			}},
@@ -224,8 +232,8 @@ func TestCounts(t *testing.T) {
 				{Name: "TestY", Suite: []string{"m/b"}, Status: report.Passed},
 			}},
 		}},
-		{Cells: []report.Cell{{Name: "pjdfstest/badger-s3/3", Result: report.NotRun, Took: 20 * time.Second}}},
-		{Cells: []report.Cell{{Name: "pjdfstest/badger-s3/3", Result: report.Skipped}}},
+		{Name: "r3", Cells: []report.Cell{{Name: "pjdfstest/badger-s3/3", Result: report.NotRun, Took: 20 * time.Second}}},
+		{Name: "r4", Cells: []report.Cell{{Name: "pjdfstest/badger-s3/3", Result: report.Skipped}}},
 	}
 	show := func(counts map[string]*Count) map[string]string {
 		out := map[string]string{}

@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -53,9 +54,10 @@ func Local(results string, n int) ([]report.Run, error) {
 }
 
 // CI returns the last n finished runs of the tests workflow on develop,
-// oldest first, each named as dt names a run, by when it started and its
-// commit, with the cells of its jobs' first attempts. A run of a pull request
-// is left out, since one from a fork's branch called develop is listed as
+// oldest first, as the runs their jobs made, each with its own tier and OS,
+// and the workflow run's name as dt names a run, by when it started and its
+// commit; only each job's first attempt is read. A run of a pull request is
+// left out, since one from a fork's branch called develop is listed as
 // develop's too, and so is a cancelled run, as a push replaced while it
 // waited is, with no results. Each job uploads its cell's results as the
 // artifact dt-JOB-CELL-ATTEMPT, the cell's name with - for /, so with suite
@@ -129,9 +131,9 @@ func CI(ctx context.Context, suite string, n int) ([]report.Run, error) {
 		Expired bool   `json:"expired"`
 		URL     string `json:"archive_download_url"`
 	}
-	runs := make([]report.Run, len(found))
-	for i, w := range found {
-		run := report.Run{Name: w.CreatedAt.UTC().Format("20060102T150405Z") + "-" + w.HeadSHA[:8]}
+	var runs []report.Run
+	for _, w := range slices.Backward(found) {
+		name := w.CreatedAt.UTC().Format("20060102T150405Z") + "-" + w.HeadSHA[:8]
 		var artifacts []artifact
 		for page, total := 1, 1; len(artifacts) < total; page++ {
 			var got struct {
@@ -154,22 +156,27 @@ func CI(ctx context.Context, suite string, n int) ([]report.Run, error) {
 			if err != nil {
 				return nil, err
 			}
-			if run.Cells, err = addCells(run.Cells, a.Name, data); err != nil {
+			jobs, err := jobRuns(a.Name, data)
+			if err != nil {
 				return nil, err
 			}
+			for _, r := range jobs {
+				r.Name = name
+				runs = append(runs, r)
+			}
 		}
-		runs[len(found)-1-i] = run
 	}
 	return runs, nil
 }
 
-// addCells adds the cells of the run an artifact holds: a job's results
-// directory, with the one run it made, unless it's a re-run's.
-func addCells(cells []report.Cell, name string, data []byte) ([]report.Cell, error) {
+// jobRuns are the runs an artifact holds: a job's results directory, with
+// the one run it made, unless it's a re-run's.
+func jobRuns(name string, data []byte) ([]report.Run, error) {
 	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
+	var runs []report.Run
 	for _, f := range z.File {
 		dir, file := path.Split(f.Name)
 		if file != "summary.json" || strings.Count(dir, "/") != 1 || reRun.MatchString(strings.TrimSuffix(dir, "/")) {
@@ -188,7 +195,7 @@ func addCells(cells []report.Cell, name string, data []byte) ([]report.Cell, err
 		if err != nil {
 			return nil, err
 		}
-		cells = append(cells, r.Cells...)
+		runs = append(runs, r)
 	}
-	return cells, nil
+	return runs, nil
 }

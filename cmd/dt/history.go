@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/test/harness/history"
 	"github.com/marmos91/dittofs/test/harness/known"
+	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
@@ -135,52 +136,63 @@ func newKnownPrune() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Each known file of the suite and its options, with the results
-			// of the cells it grades.
-			units := r.Units(s)
+			// Each cell the suite and its options plan, by name, with its
+			// unit and where it runs, but for the tier and OS of the run it
+			// ran in. A cell no longer planned tells nothing.
+			type planned struct {
+				unit *registry.Suite
+				at   map[string]string
+			}
+			cells := map[string]planned{}
 			var files []string
-			results := map[string][]report.Test{}
-			for _, u := range units {
+			for _, u := range r.Units(s) {
 				if u.Known != "" && !slices.Contains(files, u.Known) {
 					files = append(files, u.Known)
+				}
+				list, err := plan.UnitCells(root, u, "manual", true)
+				if err != nil {
+					return err
+				}
+				for _, c := range list {
+					at := map[string]string{"option": c.Option}
+					maps.Copy(at, c.Matrix)
+					cells[c.Name] = planned{u, at}
 				}
 			}
 			if len(files) == 0 {
 				return fmt.Errorf("%s has no known file", s.Name)
 			}
+			// Each known file's results: those of the cells it grades, each
+			// where its cell ran, as dt run grades them: at the run's tier,
+			// or the unit's own when wider, and on the run's OS, named as
+			// the platform needs name it.
+			results := map[string][]known.Result{}
 			for _, run := range runs {
 				for _, c := range run.Cells {
-					if u := unitOf(units, c.Name); u != nil && u.Known != "" {
-						results[u.Known] = append(results[u.Known], c.Tests...)
+					p, ok := cells[c.Name]
+					if !ok || p.unit.Known == "" {
+						continue
+					}
+					at := maps.Clone(p.at)
+					at["tier"], at["os"] = run.Tier, run.OS
+					if !plan.RunsIn(p.unit.Tier, run.Tier) {
+						at["tier"] = p.unit.Tier
+					}
+					if run.OS == "darwin" {
+						at["os"] = "macos"
+					}
+					for _, t := range c.Tests {
+						results[p.unit.Known] = append(results[p.unit.Known], known.Result{Name: t.Name, Outcome: history.Outcome(t), At: at})
 					}
 				}
 			}
 			out := cmd.OutOrStdout()
 			for _, file := range files {
-				tests := results[file]
-				if len(tests) == 0 {
+				if len(results[file]) == 0 {
 					_, _ = fmt.Fprintf(out, "%s: left as is: no cell it grades has results in the runs read\n", file)
 					continue
 				}
-				// decision: an entry goes only when results in the cells the
-				// file grades matched its test and none of them was of its
-				// kind, a failure or a skip, whatever its where. An entry no
-				// result matched stays: its test wasn't run or reached, as
-				// on a laptop that ran part of a suite. So every entry a run
-				// needed stays, and so may one whose test is gone or whose
-				// where no longer applies anywhere; remove those by hand, or
-				// judge each entry in the cells it applies to when they
-				// outlive prune.
-				removed, err := known.Prune(filepath.Join(root, file), func(e known.Entry) bool {
-					want := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
-					matched, needed := false, false
-					for _, t := range tests {
-						if known.Match(e.Test, t.Name) {
-							matched, needed = true, needed || history.Outcome(t) == want
-						}
-					}
-					return !matched || needed
-				})
+				removed, err := known.Prune(filepath.Join(root, file), results[file])
 				if err != nil {
 					return err
 				}
@@ -196,16 +208,4 @@ func newKnownPrune() *cobra.Command {
 	}
 	historyFlags(cmd, &ci, &last)
 	return cmd
-}
-
-// unitOf is the suite or option of units whose cell is named cell, or nil
-// when the cell is another suite's. The options come first, since the names
-// of their cells begin with the suite's too.
-func unitOf(units []*registry.Suite, cell string) *registry.Suite {
-	for _, u := range slices.Backward(units) {
-		if cell == u.Name || strings.HasPrefix(cell, u.Name+"/") {
-			return u
-		}
-	}
-	return nil
 }

@@ -5,14 +5,24 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// Prune removes from the known file at path each entry keep refuses, and
-// returns them. The rest of the file stays as it was, comments included: the
-// comment above a removed entry, which heads the entries after it, moves to
-// the next entry kept, unless that one has its own. A file with nothing to
-// remove isn't written.
-func Prune(path string, keep func(Entry) bool) ([]Entry, error) {
+// Result is what a test did in a cell of a past run, passed, failed, skipped
+// or other, before it was graded, and where the cell ran: its option, matrix
+// values, tier and OS, as an entry's where names them.
+type Result struct {
+	Name, Outcome string
+	At            map[string]string
+}
+
+// Prune removes from the known file at path each entry the results show
+// stale, and returns them. The rest of the file stays as it was, comments
+// included: the comment above a removed entry, which heads the entries after
+// it, moves to the next entry kept, unless that one has its own. A file with
+// nothing to remove isn't written.
+func Prune(path string, results []Result) ([]Entry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -30,7 +40,7 @@ func Prune(path string, keep func(Entry) bool) ([]Entry, error) {
 	var removed []Entry
 	comment := ""
 	for i, n := range list.Content {
-		if keep(entries[i]) {
+		if !entries[i].stale(results) {
 			if n.HeadComment == "" {
 				n.HeadComment = comment
 			}
@@ -57,4 +67,23 @@ func Prune(path string, keep func(Entry) bool) ([]Entry, error) {
 		return nil, err
 	}
 	return removed, os.WriteFile(path, out.Bytes(), 0o644)
+}
+
+// stale reports whether the results show the entry no longer needed: some
+// of those in cells it applies to matched its test, and none of them was of
+// its kind, a failure or a skip. An entry no such result matched stays: its
+// test wasn't run or reached where it applies.
+func (e Entry) stale(results []Result) bool {
+	want := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
+	matched := false
+	for _, r := range results {
+		if !e.applies(r.At) || !Match(e.Test, r.Name) {
+			continue
+		}
+		if r.Outcome == want {
+			return false
+		}
+		matched = true
+	}
+	return matched
 }

@@ -68,45 +68,60 @@ func TestHistory(t *testing.T) {
 }
 
 // dt known prune removes from each known file of the suite and its options
-// the entries whose test matched results in the cells the file grades, none
-// of them of the entry's kind, a failure or a skip. An entry whose test has no
-// result there stays, and a file whose cells have no results is left as it
-// is.
+// the entries whose test matched results in the cells the file grades and
+// the entry applies to, by its option, matrix value, tier (the run's, or the
+// unit's own when wider) and OS, none of them of the entry's kind, a failure
+// or a skip. An entry whose test has no such result stays, and a file whose
+// cells have no results is left as it is.
 func TestKnownPrune(t *testing.T) {
 	root := t.TempDir()
-	entry := func(test, status string) string {
-		return "- {test: " + test + ", status: " + status + ", fix: wontfix, category: proto, reason: r}\n"
+	entry := func(test, status, where string) string {
+		return "- {test: " + test + ", status: " + status + ", fix: wontfix, category: proto, reason: r" + where + "}\n"
 	}
 	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
-		"  s: { cmd: \"true\", known: s.yaml, options: { shares: { cmd: \"true\" }, own: { cmd: \"true\", known: own.yaml }, idle: { cmd: \"true\", known: idle.yaml } } }\n"+
+		"  s: { cmd: \"true {v}\", matrix: { v: [\"1\", \"2\"] }, known: s.yaml, options: {\n"+
+		"    shares: { cmd: \"true {v}\" },\n"+
+		"    own: { cmd: \"true\", matrix: {}, known: own.yaml, tier: merge },\n"+
+		"    idle: { cmd: \"true\", matrix: {}, known: idle.yaml } } }\n"+
 		"  other: { cmd: \"true\" }\n")
-	writeFile(t, filepath.Join(root, "s.yaml"), entry("a", "fail")+entry("pat/*", "fail")+entry("gone", "fail")+entry("b", "skip")+entry("c", "fail")+entry("z", "fail")+entry("absent", "fail"))
-	writeFile(t, filepath.Join(root, "own.yaml"), entry("z", "fail"))
-	writeFile(t, filepath.Join(root, "idle.yaml"), entry("x", "fail"))
+	s := entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("gone", "fail", "") + entry("b", "skip", "") + entry("c", "fail", "") +
+		entry("z", "fail", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}") +
+		entry("v2", "fail", ", where: {v: [\"2\"]}") + entry("mac", "fail", ", where: {os: [macos]}") + entry("ws", "fail", ", where: {option: [shares]}")
+	own := entry("z", "fail", "") + entry("tm", "fail", ", where: {tier: [merge]}")
+	writeFile(t, filepath.Join(root, "s.yaml"), s)
+	writeFile(t, filepath.Join(root, "own.yaml"), own)
+	writeFile(t, filepath.Join(root, "idle.yaml"), entry("x", "fail", ""))
 	t.Chdir(root)
-	writeRuns(t, root, report.Run{Name: "20261019T100000Z-aaaaaaaa", Cells: []report.Cell{
-		{Name: "s", Result: report.Passed, Tests: []report.Test{
-			{Name: "a", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known},
-			{Name: "gone", Status: report.Passed},
-			{Name: "b", Status: report.Skipped, Grade: report.ExpectedSkip},
-			{Name: "c", Status: report.Other, RawStatus: report.Skipped, Grade: report.UnexpectedSkip},
-			{Name: "z", Status: report.Passed},
-		}},
-		{Name: "s/shares", Result: report.Failed, Tests: []report.Test{{Name: "pat/x", Status: report.Failed, Grade: report.New}}},
-		{Name: "s/own", Result: report.Passed, Tests: []report.Test{{Name: "z", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}}},
+	passed := func(names ...string) []report.Test {
+		var out []report.Test
+		for _, n := range names {
+			out = append(out, report.Test{Name: n, Status: report.Passed})
+		}
+		return out
+	}
+	writeRuns(t, root, report.Run{Name: "20261019T100000Z-aaaaaaaa", Tier: "pr", OS: "darwin", Cells: []report.Cell{
+		{Name: "s/1", Result: report.Passed, Tests: append(passed("gone", "z", "w", "mac"),
+			report.Test{Name: "a", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known},
+			report.Test{Name: "b", Status: report.Skipped, Grade: report.ExpectedSkip},
+			report.Test{Name: "c", Status: report.Other, RawStatus: report.Skipped, Grade: report.UnexpectedSkip},
+		)},
+		{Name: "s/2", Result: report.Passed, Tests: passed("v2")},
+		{Name: "s/shares/1", Result: report.Failed, Tests: append(passed("ws"), report.Test{Name: "pat/x", Status: report.Failed, Grade: report.New})},
+		{Name: "s/own", Result: report.Passed, Tests: append(passed("tm"), report.Test{Name: "z", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known})},
 		{Name: "other", Result: report.Failed, Tests: []report.Test{{Name: "c", Status: report.Failed, Grade: report.New}}},
 	}})
 
 	out, err := dt(t, "known", "prune", "s")
 	want := "s.yaml:3: removed gone, a fail entry\ns.yaml:5: removed c, a fail entry\ns.yaml:6: removed z, a fail entry\n" +
-		"own.yaml: nothing to remove\nidle.yaml: left as is: no cell it grades has results in the runs read\n"
+		"s.yaml:9: removed v2, a fail entry\ns.yaml:10: removed mac, a fail entry\ns.yaml:11: removed ws, a fail entry\n" +
+		"own.yaml:2: removed tm, a fail entry\nidle.yaml: left as is: no cell it grades has results in the runs read\n"
 	if err != nil || out != want {
 		t.Errorf("dt known prune s: %v\n%s\nwant\n%s", err, out, want)
 	}
 	for file, want := range map[string]string{
-		"s.yaml":    entry("a", "fail") + entry("pat/*", "fail") + entry("b", "skip") + entry("absent", "fail"),
-		"own.yaml":  entry("z", "fail"),
-		"idle.yaml": entry("x", "fail"),
+		"s.yaml":    entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("b", "skip", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}"),
+		"own.yaml":  entry("z", "fail", ""),
+		"idle.yaml": entry("x", "fail", ""),
 	} {
 		if got, _ := os.ReadFile(filepath.Join(root, file)); string(got) != want {
 			t.Errorf("%s:\n%s\nwant\n%s", file, got, want)

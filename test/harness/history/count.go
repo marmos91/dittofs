@@ -31,7 +31,7 @@ type Count struct {
 	Runs                    int
 	Pass, Fail, Skip, Flaky int
 	Times                   []time.Duration // a suite's cells' or a test's results'
-	last                    int             // the last run counted, from 1
+	last                    string          // the last run counted
 }
 
 // P50 and P90 are the median and the 90th percentile of the times, by
@@ -52,12 +52,12 @@ func percentile(times []time.Duration, p int) time.Duration {
 // so it doesn't count.
 func Suites(runs []report.Run) map[string]*Count {
 	out := map[string]*Count{}
-	for i, r := range runs {
+	for _, r := range runs {
 		for _, c := range r.Cells {
 			if c.Result == report.Skipped {
 				continue
 			}
-			n := at(out, Suite(c), i)
+			n := at(out, Suite(c), r.Name)
 			n.Times = append(n.Times, c.Took)
 			for _, t := range c.Tests {
 				n.add(t)
@@ -71,14 +71,14 @@ func Suites(runs []report.Run) map[string]*Count {
 // test's package too, and with name only the tests called that.
 func Tests(runs []report.Run, suite, name string) map[string]*Count {
 	out := map[string]*Count{}
-	for i, r := range runs {
+	for _, r := range runs {
 		for _, c := range r.Cells {
 			if Suite(c) != suite {
 				continue
 			}
 			for _, t := range c.Tests {
 				if name == "" || t.Name == name {
-					n := at(out, t.Title(), i)
+					n := at(out, t.Title(), r.Name)
 					n.Times = append(n.Times, t.Duration)
 					n.add(t)
 				}
@@ -94,15 +94,16 @@ func Suite(c report.Cell) string {
 	return suite
 }
 
-// at is the count of key, counting run i once.
-func at(counts map[string]*Count, key string, i int) *Count {
+// at is the count of key, counting the run once: a run is the runs that
+// follow each other under one name, as a workflow run's jobs do.
+func at(counts map[string]*Count, key, run string) *Count {
 	n := counts[key]
 	if n == nil {
 		n = &Count{}
 		counts[key] = n
 	}
-	if n.last != i+1 {
-		n.Runs, n.last = n.Runs+1, i+1
+	if n.last != run {
+		n.Runs, n.last = n.Runs+1, run
 	}
 	return n
 }
