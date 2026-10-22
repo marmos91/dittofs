@@ -36,6 +36,7 @@ suites:
     tier: pr
     cmd:
       - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
+      - test/harness/bin/dt doctor             # fails on an expired quarantine entry, here alone
       - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
       - test/smb-conformance/compose-env_test.sh

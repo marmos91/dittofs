@@ -20,6 +20,10 @@ const version = 1
 // Path is the registry's location, relative to the repository root.
 const Path = "test/suites.yaml"
 
+// QuarantinePath is the quarantine list's location, relative to the
+// repository root.
+const QuarantinePath = "test/harness/quarantine.yaml"
+
 // ToolDirs maps each test tool {tools} holds to the directory of its output
 // that {tools}/NAME links to: pjdfstest's share/pjdfstest holds its binary
 // beside its tests, where misc.sh looks for it, pynfs's and nfstest's whole
@@ -36,6 +40,12 @@ type Registry struct {
 	// Known holds the entries of each known file a suite names, by its path,
 	// read and checked as the registry loads.
 	Known map[string][]known.Entry `yaml:"-"`
+	// Quarantine holds the quarantine list's entries for each suite, by its
+	// name, as the entries its cells' results are graded by.
+	Quarantine map[string][]known.Entry `yaml:"-"`
+	// Expired says why each expired entry of the quarantine list excuses
+	// nothing, as path:line: why, for dt doctor to report.
+	Expired []string `yaml:"-"`
 }
 
 // Suites keeps the file's order.

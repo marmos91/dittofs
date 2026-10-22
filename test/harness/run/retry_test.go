@@ -38,24 +38,27 @@ func byName(c report.Cell) map[string]report.Test {
 }
 
 // A retry runs only the tests that failed new again, each up to the number
-// of retries: a known failure, a pass and an unexpected pass run once. One
-// that passes on a retry is flaky, a pass named in the note, and one that
-// fails every time stays a new failure; both count their retries.
+// of retries: a known failure, a quarantined one, a pass and an unexpected
+// pass run once. One that passes on a retry is flaky, a pass named in the
+// note, and one that fails every time stays a new failure; both count their
+// retries.
 func TestRetryRunsTheNewFailuresAgain(t *testing.T) {
 	logRun := `echo x >> "$0.runs"` + "\n"
 	root, r := repo(t, `suites:
   s: { cmd: "sh {test}", tests: "t/*.sh", known: k.yaml }
 `, map[string]string{
-		"t/broken.sh": logRun + "exit 1\n",
-		"t/fixed.sh":  logRun + "exit 0\n",
-		"t/flaky.sh":  logRun + `[ "$(wc -l < "$0.runs")" -gt 1 ]` + "\n",
-		"t/known.sh":  logRun + "exit 1\n",
-		"t/pass.sh":   logRun,
+		"t/broken.sh":      logRun + "exit 1\n",
+		"t/fixed.sh":       logRun + "exit 0\n",
+		"t/flaky.sh":       logRun + `[ "$(wc -l < "$0.runs")" -gt 1 ]` + "\n",
+		"t/known.sh":       logRun + "exit 1\n",
+		"t/pass.sh":        logRun,
+		"t/quarantined.sh": logRun + "exit 1\n",
 		"k.yaml": "- { test: t/known.sh, status: fail, fix: wontfix, category: env, reason: r }\n" +
 			"- { test: t/fixed.sh, status: fail, fix: wontfix, category: env, reason: r }\n",
+		registry.QuarantinePath: "- { suite: s, test: t/quarantined.sh, issue: '#1', expires: " + soon() + " }\n",
 	})
 	o := retryRun(t, context.Background(), root, r, "s", 2)
-	for test, want := range map[string]int{"broken": 3, "fixed": 1, "flaky": 2, "known": 1, "pass": 1} {
+	for test, want := range map[string]int{"broken": 3, "fixed": 1, "flaky": 2, "known": 1, "pass": 1, "quarantined": 1} {
 		if runs, _ := os.ReadFile(filepath.Join(root, "t", test+".sh.runs")); len(runs) != 2*want {
 			t.Errorf("t/%s.sh ran %d times, want %d", test, len(runs)/2, want)
 		}
