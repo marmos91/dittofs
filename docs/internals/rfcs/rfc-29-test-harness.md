@@ -1835,7 +1835,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
      which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
-     the schedule and on a dispatch naming a suite, and `merge` on another dispatch. A last job
+     the schedule and on a dispatch naming a suite, and `merge` on another dispatch. cthon04 and
+     nfstest, whose scripts run after no merge, have parity cells at `nightly` only. A last job
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
