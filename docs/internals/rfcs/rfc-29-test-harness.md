@@ -1574,8 +1574,10 @@ One workflow, `tests.yml`, runs every registered suite:
   `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
   `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
   When `plan` fails they run, so a required check never passes on a plan that wasn't made.
-  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and
-  `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
+  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and runs
+  `integration`'s Kerberos and portmap options as steps after the suite, each even when one
+  before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
+  for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
   the unit job did, unless a retry rewrote it with the retried tests' alone. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
@@ -1598,7 +1600,8 @@ One workflow, `tests.yml`, runs every registered suite:
 `Tests / gate` replaces the per-workflow test checks as the required one, once the `pr` tier has
 been green for two weeks (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
 `Integration Tests (1.26.x)` from the ruleset and their `job` names from the registry, in one
-change, so no PR waits for a check that no longer reports. A single gate that always runs avoids
+change, so no PR waits for a check that no longer reports, and `integration`'s Kerberos and portmap
+options go back to being cells of the plan. A single gate that always runs avoids
 GitHub's path-filter trap by construction.
 
 GitHub's merge queue is "available in any public repository owned by an organization". This
@@ -1869,7 +1872,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - `dt known baseline` replaces the nightly job that pushes smbtorture's baseline file to
      develop, which fails every night (#2997).
    - Make the gate required, in the same change that drops `Unit Tests (1.26.x)` and
-     `Integration Tests (1.26.x)` from the ruleset (§4.8).
+     `Integration Tests (1.26.x)` from the ruleset and makes `integration`'s options plan cells
+     again (§4.8).
 
    *Exit:* PR p90 ≤ 20 min over a week, the gate required, and none of §3's 35 scripts left.
 4. **System scenarios, clients and fio.** The `system` suite, its known list, its exit 75 read as not

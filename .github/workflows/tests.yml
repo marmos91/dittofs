@@ -100,7 +100,7 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or (.suite == "smbtorture" and .option == null) or IN(.name; "unit/windows", "integration/portmap", "integration/kerberos"))
+                or (.suite == "smbtorture" and .option == null) or .name == "unit/windows")
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
@@ -174,19 +174,6 @@ jobs:
           access-key-id: ${{ github.event_name == 'push' && secrets.NIX_CACHE_ACCESS_KEY_ID || '' }}
           secret-access-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SECRET_ACCESS_KEY || '' }}
           signing-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SIGNING_KEY || '' }}
-
-      # The image has no rpcbind. apt and needrestart both prompt on a machine
-      # without a terminal if left to their defaults, and a prompt blocks with
-      # no output until the job's limit.
-      - name: Install rpcbind
-        if: contains(matrix.needs, 'rpcbind')
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpcbind
-          sudo systemctl start rpcbind || sudo rpcbind
 
       - name: Build dt
         id: build
@@ -283,10 +270,14 @@ jobs:
         name: Run ${{ github.job }}
         run: '"$RUNNER_TEMP/dt" run "$GITHUB_JOB" --tier "$TIER" --ci --retry "$RETRY"'
 
+      # Every run of the job: integration's has three.
       - &report
         name: Report
         if: always() && steps.build.outcome == 'success'
-        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+        run: |
+          for run in test/harness/results/*/; do
+            "$RUNNER_TEMP/dt" report "$run" --format md
+          done >> "$GITHUB_STEP_SUMMARY"
 
       - &upload
         name: Upload results
@@ -397,6 +388,33 @@ jobs:
         run: '"$RUNNER_TEMP/dt" services up postgres kmip'
 
       - *suite
+
+      # decision: integration's Kerberos and portmap options run as steps of
+      # the job the ruleset requires, after the suite, rather than as run
+      # cells, which only gate waits for. They go back to being plan cells when
+      # the ruleset requires gate. Each runs even when a step before it
+      # failed, so the job reports every failure.
+      - name: Run integration/kerberos
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run integration/kerberos --tier "$TIER" --ci --retry "$RETRY"'
+
+      # The image has no rpcbind. apt and needrestart both prompt on a machine
+      # without a terminal if left to their defaults, and a prompt blocks with
+      # no output until the job's limit.
+      - name: Install rpcbind
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind
+          sudo systemctl start rpcbind || sudo rpcbind
+
+      - name: Run integration/portmap
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run integration/portmap --tier "$TIER" --ci --retry "$RETRY"'
+
       - *report
       - *upload
 
