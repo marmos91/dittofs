@@ -617,3 +617,30 @@ func TestCrashRefusesTornOutOfRange(t *testing.T) {
 		t.Fatalf("WriteAt after a refused crash: %v, want the file still open", err)
 	}
 }
+
+func TestTornAcceptsTheWholeRange(t *testing.T) {
+	// Torn(n) is valid from 0 to the write's length: 0 keeps none of the last
+	// write, its length keeps all of it.
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{
+		{0, "aaaa"},
+		{4, "bbbb"},
+	} {
+		s := newSeam(t)
+		f := create(t, s, "seg")
+
+		write(t, f, "aaaa", 0)
+		syncFile(t, f)
+		write(t, f, "bbbb", 0)
+
+		if err := s.Crash(Torn(tc.n)); err != nil {
+			t.Fatalf("Crash(Torn(%d)) of a 4-byte write: %v, want it accepted", tc.n, err)
+		}
+
+		if got := onDisk(t, s, "seg"); got != tc.want {
+			t.Fatalf("Crash(Torn(%d)) of a 4-byte write left %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
