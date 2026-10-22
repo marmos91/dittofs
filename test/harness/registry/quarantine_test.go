@@ -12,8 +12,8 @@ import (
 // entries kept by suite. An entry names a suite and keeps the list's own
 // rules. It expires at the start of its date in UTC, at most 90 days ahead,
 // so it can't stay forever: from then on it excuses nothing, and the registry
-// says so, for dt doctor and the lint, but still loads. Here it is 00:30 on 23 October where the clock is, two hours ahead,
-// so 22 October in UTC.
+// says so, for dt doctor, but still loads. Here it is 00:30 on 23 October
+// where the clock is, two hours ahead, so 22 October in UTC.
 func TestQuarantine(t *testing.T) {
 	now = func() time.Time { return time.Date(2026, 10, 23, 0, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60)) }
 	t.Cleanup(func() { now = time.Now })
@@ -47,17 +47,6 @@ func TestQuarantine(t *testing.T) {
 	}
 	if _, err := Parse(quarantined(t, "- { suite: s, test: t, expires: 2026-10-23 }\n"), []byte(y)); err == nil || !strings.Contains(err.Error(), "test/harness/quarantine.yaml:1: issue is required") {
 		t.Errorf("the list's own rules: got %v", err)
-	}
-}
-
-// The lint: no entry of the repository's quarantine list has expired.
-func TestQuarantineListHasNoExpiredEntry(t *testing.T) {
-	r, err := Load("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range r.Expired {
-		t.Error(e)
 	}
 }
 

@@ -467,6 +467,7 @@ suites:
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
       - dt docs --check                         # was check-docs.sh
+      - dt doctor                               # fails on an expired quarantine entry (§4.7)
       - .github/scripts/combined-tree.sh selftest
       - go test ./test/harness/...              # dt's own tests, which absorb the shell self-tests
   shellcheck:                           # *.sh, and the executables without an extension that start with a shell's #!
@@ -1470,10 +1471,10 @@ flags leave out: a test of another minor version, and one whose own check fails,
   `dt history` show whether the test still fails, and an entry whose test only passes can go. A
   crash or a hang of the code under test isn't such a failure: it stays new, since no entry
   excuses it (§4.6). A skip is graded as any skip.
-- An expired entry is an error from `dt doctor` and the registry check, a test of `dt` that
-  `lint-repo` runs, so the list can't become a dumping ground. An entry expires at the start of its
-  date in UTC. From then on it excuses nothing, so its test fails as new and the gate goes red on
-  that test, while every other `dt` command still runs.
+- An expired entry is an error from `dt doctor`, which `lint-repo` runs, so the list can't become a
+  dumping ground: the registry check finds it, and only `dt doctor` fails on it. An entry expires
+  at the start of its date in UTC. From then on it excuses nothing, so its test fails as new and
+  the gate goes red on that test and on Repo Checks, while every other `dt` command still runs.
 
 The AD-DC keytab race (#2968) is what it's for, once that suite reports through `dt`. The other
 AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` failed on every run

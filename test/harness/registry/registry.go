@@ -44,7 +44,7 @@ type Registry struct {
 	// name, as the entries its cells' results are graded by.
 	Quarantine map[string][]known.Entry `yaml:"-"`
 	// Expired says why each expired entry of the quarantine list excuses
-	// nothing, as path:line: why, for dt doctor and the lint to report.
+	// nothing, as path:line: why, for dt doctor to report.
 	Expired []string `yaml:"-"`
 }
 

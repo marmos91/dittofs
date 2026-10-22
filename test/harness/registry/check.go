@@ -408,7 +408,7 @@ const quarantineDays = 90
 // decision: an entry expires at the start of its date, in UTC, so every
 // machine agrees on the day its test fails as new again. An expired entry
 // doesn't stop the registry loading, so every other command still runs: dt
-// doctor and the lint report it. An entry names a suite and covers the
+// doctor reports it, and lint-repo runs dt doctor. An entry names a suite and covers the
 // suite's options too, since its test's name already narrows it; give it a
 // where, as a known entry has, when a test is flaky in one option or on one
 // OS only.
