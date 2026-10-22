@@ -4,7 +4,8 @@
 # plan lists the tier's cells with dt plan. Each cell runs as a job of its own,
 # dt run CELL, on the runner the plan names: the blocking cells in run, the
 # others in non-blocking, which nothing waits for. gate waits for plan and run,
-# always runs, and is the check that decides.
+# always runs, and is the check that decides. post, after a merge and on the
+# schedule, posts the blocking cells' failures to the develop-status issue.
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
@@ -464,3 +465,67 @@ jobs:
         run: |
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
+
+  # After the retry, on develop only, pushed or scheduled: dt report --post
+  # writes the new failures and unexpected passes of every job gate waits for,
+  # and the cells that failed or didn't run, to the develop-status issue, and
+  # gives a test failing 2 runs in a row an issue of its own. Waiting for gate
+  # covers its jobs, whichever they are. The token can write issues and nothing
+  # else. A cancelled run posts nothing, as it has no result. It runs when plan
+  # or gate failed too, and fails when it has nothing to post. A failed post
+  # doesn't fail the run, whose result is what CI Health reads as develop's.
+  # Posts run one at a time, so a merge run's and a nightly run's never
+  # overwrite each other's.
+  #
+  # decision: the non-blocking cells don't post. They never fail the gate, so
+  # they never make develop red; their failures show on their own jobs.
+  #
+  # decision: post runs whatever run did, so a merge plan with no blocking cell
+  # would fail it every time, with nothing to post. Today's merge tier always
+  # has one.
+  post:
+    name: post
+    needs: [plan, gate]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/develop' }}
+    continue-on-error: true
+    concurrency: { group: tests-post, cancel-in-progress: false }
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      # Every job gate waits for uploads its results as dt-run-*; a pattern
+      # that matches none downloads none, and doesn't fail.
+      - name: Download the results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: dt-run-*
+          path: ${{ runner.temp }}/results
+
+      # Every run those jobs made, each attempt's. A planned cell, matrix or
+      # fixed job, whose job wrote no run counts as not run. A run already
+      # posted posts nothing, so a cell counts from its latest attempt only when
+      # post itself is re-run after an attempt that posted nothing.
+      - name: Post
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BLOCKING: ${{ needs.plan.outputs.blocking }}
+          FIXED: ${{ needs.plan.outputs.fixed }}
+        run: |
+          shopt -s nullglob
+          runs=("$RUNNER_TEMP"/results/dt-run-*/*/summary.json)
+          cells=$(jq -rn --argjson b "${BLOCKING:-[]}" --argjson f "${FIXED:-[]}" '($b | map(.name)) + $f | join(",")')
+          "$RUNNER_TEMP/dt" report --failures --post "$cells" "${runs[@]%/summary.json}"

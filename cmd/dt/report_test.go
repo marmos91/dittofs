@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +82,7 @@ func TestReport(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &doc) != nil || len(doc.Results.Tests) != 1 || doc.Results.Tests[0].Name != "false" {
 		t.Errorf("json --failures: %v\n%s", err, out)
 	}
-	for _, args := range [][]string{{"report", "nope"}, {"report", "--format", "html"}} {
+	for _, args := range [][]string{{"report", "nope"}, {"report", "--format", "html"}, {"report", first, first}} {
 		if _, err := dt(t, append(args, "--results", results)...); err == nil {
 			t.Errorf("dt %s: no error", strings.Join(args, " "))
 		}
@@ -151,5 +154,59 @@ func TestReportAfterAKilledRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(runs[0], "junit", "first.xml")); err != nil {
 		t.Error(err)
+	}
+}
+
+// dt report --failures --post CELLS RUN... posts the runs it's given together,
+// as the cells of one tier run, each of which a CI job wrote, with the token
+// from the environment: the develop-status issue it opens lists the new
+// failures of both, and a planned cell with no run as not run. --post needs
+// --failures, and with no run at all it fails.
+func TestReportPost(t *testing.T) {
+	checkout(t)
+	results := filepath.Join(t.TempDir(), "results")
+	var runs []string
+	for _, cell := range []string{"pynfs/badger-s3/0", "pynfs/badger-s3/1"} {
+		r := report.Run{Name: "20261022T1000" + strconv.Itoa(len(runs)) + "0Z-abcdef12", Commit: "abcdef12", Branch: "develop", Tier: "merge", Cells: []report.Cell{
+			{Name: cell, Result: report.Failed, Tests: []report.Test{{Name: "LOCK1", Status: report.Failed, Grade: report.New}}},
+		}}
+		if err := r.Write(filepath.Join(results, r.Name)); err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, r.Name)
+	}
+	var opened string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "Bearer tok":
+			http.Error(w, "Bad credentials", http.StatusUnauthorized)
+		case r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, "[]")
+		case r.Method == http.MethodPost:
+			var in struct{ Body string }
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			opened = in.Body
+			_ = json.NewEncoder(w).Encode(map[string]any{"number": 1, "state": "open", "body": in.Body})
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("GITHUB_TOKEN", "tok")
+
+	planned := "pynfs/badger-s3/0,pynfs/badger-s3/1,pynfs/badger-s3/2"
+	if _, err := dt(t, append([]string{"report", "--post", planned, "--results", results}, runs...)...); err == nil || opened != "" {
+		t.Fatalf("--post without --failures: %v, opened %q", err, opened)
+	}
+	if _, err := dt(t, "report", "--failures", "--post", planned, "--results", t.TempDir()); err == nil || opened != "" {
+		t.Fatalf("no run: %v, opened %q", err, opened)
+	}
+	if _, err := dt(t, append([]string{"report", "--failures", "--post", planned, "--results", results}, runs...)...); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| `pynfs/badger-s3/0` | `LOCK1` | new | 1 |", "| `pynfs/badger-s3/1` | `LOCK1` | new | 1 |", "| `pynfs/badger-s3/2` |  | not run | 1 |"} {
+		if !strings.Contains(opened, row) {
+			t.Errorf("no row %q in\n%s", row, opened)
+		}
 	}
 }
