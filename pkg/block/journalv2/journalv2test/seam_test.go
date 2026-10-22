@@ -276,6 +276,46 @@ func TestSyncDirCoversEveryPendingChange(t *testing.T) {
 	}
 }
 
+func TestSyncDirEmptiesTheStash(t *testing.T) {
+	s := newSeam(t)
+	create(t, s, "gone")
+	create(t, s, "a")
+	create(t, s, "b")
+
+	if err := s.Remove("gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rename("a", "b"); err != nil { // replaces b
+		t.Fatal(err)
+	}
+
+	stashed := func() int {
+		t.Helper()
+
+		entries, err := os.ReadDir(s.stash)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return len(entries)
+	}
+
+	// check if the stash had the files before the SyncDir
+	if n := stashed(); n != 2 {
+		t.Fatalf("before the SyncDir the stash holds %d files, want the removed and the replaced one", n)
+	}
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	// No crash first: a crash empties the stash on its own.
+	if n := stashed(); n != 0 {
+		t.Fatalf("after a SyncDir the stash holds %d files, want none", n)
+	}
+}
+
 func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
