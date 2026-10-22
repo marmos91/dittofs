@@ -1246,3 +1246,41 @@ func TestASyncedMarkedWriteIsNeverDrawn(t *testing.T) {
 		t.Fatal("no seed kept the unmarked write: a synced mark still narrowed the draw")
 	}
 }
+
+func TestTearWithAnErrorIsAShortWrite(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 3, Err: syscall.EIO})
+	n, err := f.WriteAt([]byte("ABCDE"), 2)
+
+	var pe *fs.PathError
+	if n != 3 || !errors.Is(err, syscall.EIO) || !errors.As(err, &pe) || pe.Path != "seg" {
+		t.Fatalf("a write torn at 3 with EIO returned %d, %v; want 3 and EIO in a PathError on seg", n, err)
+	}
+
+	if got := readAt(t, f, 16); got != "xxABCxxx" {
+		t.Fatalf("ReadAt: %q, want the part written, %q", got, "xxABCxxx")
+	}
+	wantDurable(t, s, "seg", new("xxxxxxxx")) // written, not yet synced
+
+	syncFile(t, f)
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxABCxxx" {
+		t.Fatalf("after a sync and a crash the file holds %q, want %q", got, "xxABCxxx")
+	}
+}
+
+func TestTearWithAnErrorPastTheWriteWritesItWhole(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 4096, Err: syscall.EIO})
+	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
+		t.Fatalf("a write shorter than its tear returned %d, %v; want 2, nil: nothing was torn", n, err)
+	}
+
+	if got := readAt(t, f, 16); got != "xABx" {
+		t.Fatalf("ReadAt: %q, want %q", got, "xABx")
+	}
+}

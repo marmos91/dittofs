@@ -174,8 +174,10 @@ var _ storage.FS = (*Seam)(nil)
 //     durable, and Torn and Reordered never keep them.
 //   - Drop on sync or sync_dir: reports success and does nothing, so what
 //     was pending stays pending and a later sync can make it durable.
-//   - Tear on write: writes only the first N bytes, and reports the whole
-//     write done. A write of N bytes or fewer is written whole.
+//   - Tear on write: writes only the first N bytes. With the action's Err
+//     nil it reports the whole write done; with Err set it is a short write,
+//     returning N and Err. With N at or past the write's length nothing is
+//     torn, and the write is reported whole.
 //   - Reorder on write: performs it and marks it. While any pending write
 //     is marked, Reordered draws only among the marked ones; a plain Crash
 //     and Torn ignore marks. A Sync that covers the write clears its mark.
@@ -1096,7 +1098,12 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	}
 
 	// A torn write reports itself whole, as a device that acknowledged it
-	// and kept only part would.
+	// and kept only part would, unless it carries an error: then it is a
+	// write that failed part-way.
+	if a.Kind == sim.Tear && a.Err != nil && a.N < int64(len(p)) {
+		return n, &fs.PathError{Op: OpWrite, Path: sf.name, Err: a.Err}
+	}
+
 	return len(p), nil
 }
 

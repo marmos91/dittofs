@@ -29,7 +29,10 @@ const (
 	// Drop reports success, and the operation does not become durable. What
 	// that leaves behind for each operation is the seam's contract.
 	Drop
-	// Tear performs a write with only its first N bytes, and reports it whole.
+	// Tear performs a write with only its first N bytes. With Err nil it
+	// reports the write whole; with Err set it reports the bytes it wrote and
+	// returns Err, as a write that failed part-way. With N at or past the
+	// write's length nothing is torn, and the write is reported whole.
 	Tear
 	// Reorder performs a write and marks it as one a crash may keep or lose
 	// out of order.
@@ -53,8 +56,8 @@ func (k FaultKind) String() string {
 	return kindNames[k]
 }
 
-// FaultAction is what a Fault decides for one operation. Only the field of
-// its Kind is read: Err for Fail, Delay for Delay, N for Tear.
+// FaultAction is what a Fault decides for one operation. Only the fields of
+// its Kind are read: Err for Fail, Delay for Delay, N and Err for Tear.
 //
 // decision: one struct for every kind, not one type per kind, so a schedule's
 // rules are plain data that a test can build in a literal and compare with ==.
@@ -64,7 +67,7 @@ func (k FaultKind) String() string {
 // should see. A kind is added only together with a seam that applies it.
 type FaultAction struct {
 	Kind  FaultKind
-	Err   error         // Fail: the error returned
+	Err   error         // Fail, and Tear when set: the error returned
 	Delay time.Duration // Delay: how long At waits on the Fault's clock
 	N     int64         // Tear: the bytes kept
 }
