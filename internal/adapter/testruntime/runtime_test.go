@@ -20,10 +20,10 @@ import (
 // and it needs a block store that exists, so an id that was never created
 // fails here too.
 //
-// It does not cover the share-removal cleanup, and cannot: dropping that block
-// leaves this test green. Only a platform that refuses to unlink a file still
-// open fails when a share's journal outlives the temp dir, so that ordering is
-// checked by the Windows CI run, not here.
+// It does not cover the journal half of the share-removal cleanup, and cannot:
+// only a platform that refuses to unlink a file still open fails when a share's
+// journal outlives the temp dir. The store half is
+// TestNew_RemovesSharesBeforeTheirStoreCloses.
 func TestNewWithShareStore_AddsAShare(t *testing.T) {
 	rt, bsID := NewWithShareStore(t)
 
@@ -42,5 +42,38 @@ func TestNewWithShareStore_AddsAShare(t *testing.T) {
 
 	if _, err := rt.GetRootHandle("/fixture"); err != nil {
 		t.Fatalf("GetRootHandle on the share just added: %v", err)
+	}
+}
+
+// TestNew_RemovesSharesBeforeTheirStoreCloses pins the removal to run before
+// the cleanup of a store opened after the runtime is built. A share's engine
+// reads its metadata store until the share is removed, so a removal registered
+// once in New runs after that store closes, and a download still in flight
+// reads a closed store.
+//
+// The probe is registered right after the store, so it runs just before the
+// store closes and sees whether the share is still served.
+func TestNew_RemovesSharesBeforeTheirStoreCloses(t *testing.T) {
+	const name = "/fixture"
+	var live bool
+	t.Run("fixture", func(t *testing.T) {
+		rt, bsID := NewWithShareStore(t)
+		meta := badgertest.NewInMemory(t)
+		t.Cleanup(func() { live = rt.ShareExists(name) })
+
+		if err := rt.RegisterMetadataStore("test-meta", meta); err != nil {
+			t.Fatalf("RegisterMetadataStore: %v", err)
+		}
+		if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+			Name:          name,
+			MetadataStore: "test-meta",
+			BlockStoreID:  bsID,
+			RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0755},
+		}); err != nil {
+			t.Fatalf("AddShare: %v", err)
+		}
+	})
+	if live {
+		t.Fatalf("share %q was still served when its metadata store closed", name)
 	}
 }

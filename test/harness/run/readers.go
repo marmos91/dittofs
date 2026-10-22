@@ -92,7 +92,7 @@ func readTAP(r report.Ran) ([]report.Test, error) {
 // so it doesn't count as a run.
 func readJUnit(r report.Ran) ([]report.Test, error) {
 	var tests []report.Test
-	for _, f := range resultFiles(r.Out, ".xml") {
+	for _, f := range resultFiles(r.Out, resultExt["junit"]) {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			return nil, err
@@ -157,7 +157,7 @@ func readJUnit(r report.Ran) ([]report.Test, error) {
 func readTRX(r report.Ran) ([]report.Test, error) {
 	var tests []report.Test
 	var runErrs []error
-	for _, f := range resultFiles(r.Out, ".trx") {
+	for _, f := range resultFiles(r.Out, resultExt["trx"]) {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			return nil, err
@@ -199,6 +199,10 @@ func readTRX(r report.Ran) ([]report.Test, error) {
 	}
 	return tests, errors.Join(runErrs...)
 }
+
+// resultExt is the extension of the files the formats read from files under
+// {out} read their results from.
+var resultExt = map[string]string{"junit": ".xml", "trx": ".trx"}
 
 // resultFiles lists the files with extension ext under dir, where a tool
 // writes its results. A directory it can't read is passed over: what it

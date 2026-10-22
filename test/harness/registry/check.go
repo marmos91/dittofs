@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -25,7 +26,7 @@ var (
 	metrics    = set("fio-json", "dfsbench-json")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "test-args", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
+	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
 
 	// runFlags are dt run's flags, the planned ones included, which no option
 	// may share a name with.
@@ -94,6 +95,10 @@ func (r *Registry) check(root string) []error {
 			errs = append(errs, err)
 		}
 		r.Known[path] = entries
+	}
+	var err error
+	if r.Quarantine, r.Expired, err = loadQuarantine(root, seen); err != nil {
+		errs = append(errs, err)
 	}
 	for g, members := range r.Groups {
 		if !nameRE.MatchString(g) {
@@ -182,6 +187,12 @@ func checkUnit(root string, u *Suite) []error {
 	if f := u.Fixture; f != nil {
 		if f.Profile == "" && (f.Server == "" || f.Server == "dfs") {
 			fail("fixture: a dfs fixture names its profile")
+		}
+		if f.Server == "knfsd" {
+			only := Fixture{Server: "knfsd", NFS: NFS{Version: "export"}, Squash: f.Squash, Lease: f.Lease}
+			if !reflect.DeepEqual(*f, only) || f.Squash != "" && f.Squash != "none" {
+				fail("fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease")
+			}
 		}
 		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
 		// squash decides, not a user to create, and the fixture's own test
@@ -381,6 +392,53 @@ func loadKnown(root, path string, where map[string][]string) ([]known.Entry, err
 		}
 	}
 	return entries, errors.Join(errs...)
+}
+
+// now is a variable so the tests can set the day.
+var now = time.Now
+
+// quarantineDays is how far ahead an entry of the quarantine list may expire,
+// so an entry can't stay forever: it is renewed while its issue is open.
+const quarantineDays = 90
+
+// loadQuarantine reads and checks the quarantine list, and returns the
+// entries that hold for each suite, each naming one of suites, and why each
+// expired one excuses nothing. A missing list has no entries.
+//
+// decision: an entry expires at the start of its date, in UTC, so every
+// machine agrees on the day its test fails as new again. An expired entry
+// doesn't stop the registry loading, so every other command still runs: dt
+// doctor reports it, and lint-repo runs dt doctor. An entry names a suite and covers the
+// suite's options too, since its test's name already narrows it; give it a
+// where, as a known entry has, when a test is flaky in one option or on one
+// OS only.
+func loadQuarantine(root string, suites map[string]bool) (map[string][]known.Entry, []string, error) {
+	data, err := os.ReadFile(filepath.Join(root, QuarantinePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	list, err := known.ParseQuarantine(QuarantinePath, data)
+	errs := []error{err}
+	today := now().UTC()
+	last := today.AddDate(0, 0, quarantineDays).Format(time.DateOnly)
+	entries := map[string][]known.Entry{}
+	var expired []string
+	for _, q := range list {
+		switch {
+		case !suites[q.Suite]:
+			errs = append(errs, fmt.Errorf("%s:%d: no suite %q", QuarantinePath, q.Line, q.Suite))
+		case q.Expires > last:
+			errs = append(errs, fmt.Errorf("%s:%d: expires %s is more than %d days away: give it %s at the latest, and renew it while %s is open", QuarantinePath, q.Line, q.Expires, quarantineDays, last, q.Issue))
+		case q.Expires <= today.Format(time.DateOnly):
+			expired = append(expired, fmt.Sprintf("%s:%d: %s expired on %s, so it fails as new: fix it (%s) and remove the entry, or give it a later date", QuarantinePath, q.Line, q.Test, q.Expires, q.Issue))
+		default:
+			entries[q.Suite] = append(entries[q.Suite], q.Entry())
+		}
+	}
+	return entries, expired, errors.Join(errs...)
 }
 
 // Placeholders returns the {name} placeholders in s, leaving out a shell

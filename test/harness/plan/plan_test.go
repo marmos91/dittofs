@@ -30,8 +30,9 @@ func names(cells []Cell) []string {
 }
 
 // The pr tier is today's pull-request checks, with the conformance suites on
-// the production profile, badger-s3, only. With no change given, the Kerberos
-// e2e run, which has paths, is planned too.
+// the production profile, badger-s3, only, and smbtorture over two runners.
+// With no change given, the Kerberos e2e run, which has paths, is planned too.
+// A cell names the test tools it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -45,7 +46,7 @@ func TestPRTier(t *testing.T) {
 		"e2e/kerberos",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
-		"wpts/badger-s3", "smbtorture/badger-s3",
+		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
 		"cthon04/badger-s3/default", "cthon04/badger-s3/v3", "cthon04/badger-s3/v4.0", "cthon04/badger-s3/v4.1", "cthon04/badger-s3/v4.1-noac", "cthon04/badger-s3/v4.1-smallio",
 		"bench-smoke",
 	}
@@ -56,6 +57,13 @@ func TestPRTier(t *testing.T) {
 		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
+		}
+		var tools []string
+		if c.Suite == "pjdfstest" || c.Suite == "pynfs" || c.Suite == "cthon04" {
+			tools = []string{c.Suite}
+		}
+		if !slices.Equal(c.Tools, tools) {
+			t.Errorf("%s: tools %q, want %q", c.Name, c.Tools, tools)
 		}
 	}
 }
@@ -167,6 +175,7 @@ func TestFixtureNeeds(t *testing.T) {
 	y := `version: 1
 defaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }
 suites:
+  n: { cmd: "true", fixture: { server: knfsd, nfs: export }, needs: [linux] }
   a:
     cmd: "true"
     matrix: { profile: [memory, badger-s3], nfs: ["export", "4.1"] }
@@ -187,6 +196,7 @@ suites:
 		t.Fatal(err)
 	}
 	want := map[string][]string{
+		"n":                  {"linux", "root", "knfsd", "port:2049"},
 		"a/memory/export":    {"linux", "root"},
 		"a/memory/4.1":       {"linux", "root", "nfs-client"},
 		"a/badger-s3/export": {"linux", "root", "service:localstack"},
