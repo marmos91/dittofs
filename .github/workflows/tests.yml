@@ -267,7 +267,7 @@ jobs:
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
       - &suite
-        name: Run ${{ github.job }}
+        name: Run the suite
         run: '"$RUNNER_TEMP/dt" run "$GITHUB_JOB" --tier "$TIER" --ci --retry "$RETRY"'
 
       # Every run of the job: integration's has three.
