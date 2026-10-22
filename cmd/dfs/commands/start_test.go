@@ -480,6 +480,10 @@ func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	}
 }
 
+// krbMetaStore names the metadata store persistKerberosShare writes, which the
+// tests register by the same name.
+const krbMetaStore = "krb-meta"
+
 // persistKerberosShare writes the share row, its metadata and block store, and
 // the NFS adapter config an operator leaves behind by setting require_kerberos
 // while Kerberos is configured.
@@ -487,7 +491,7 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	t.Helper()
 
 	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		Name: "krb-meta", Type: "badger", Config: `{"in_memory":true}`,
+		Name: krbMetaStore, Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -499,7 +503,7 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	}
 	shareID, err := s.CreateShare(ctx, &models.Share{
 		Name:            name,
-		MetadataStoreID: "krb-meta",
+		MetadataStoreID: krbMetaStore,
 		BlockStoreID:    blockStoreID,
 	})
 	if err != nil {
@@ -544,7 +548,7 @@ func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 	// InitializeFromStore would; without it every share is skipped and the
 	// assertion below would fail for a reason unrelated to the ordering.
 	rt := testruntime.New(t, s)
-	if err := rt.RegisterMetadataStore("krb-meta", badgertest.NewInMemory(t)); err != nil {
+	if err := rt.RegisterMetadataStore(krbMetaStore, badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
