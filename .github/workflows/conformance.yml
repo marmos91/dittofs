@@ -552,6 +552,8 @@ jobs:
 
       # This workflow's suites, narrowed as a dispatch naming one narrows the
       # scripts' jobs. Options are left out, as the harness RFC's parity has them.
+      # decision: cthon04 and nfstest only at nightly: their scripts run after no
+      # merge, so a dispatch naming no suite has no cells of theirs to compare.
       - name: Plan the cells
         id: plan
         env:
@@ -559,7 +561,8 @@ jobs:
         run: |
           set -o pipefail
           cells="$(go run ./cmd/dt plan --tier "$TIER" --json | jq -c --arg only "$ONLY" '[.cells[]
-            | select(.option == null and (.suite == "pjdfstest" or .suite == "wpts" or .suite == "smbtorture"))
+            | select(.option == null and (.suite == "pjdfstest" or .suite == "wpts" or .suite == "smbtorture"
+                or (env.TIER == "nightly" and (.suite == "cthon04" or .suite == "nfstest"))))
             | select($only == "" or .suite == $only)]')"
           echo "$cells" | jq .
           echo "cells=${cells}" >> "$GITHUB_OUTPUT"
@@ -604,13 +607,14 @@ jobs:
         with:
           go-version: "1.26.x"
 
-      # dt builds pjdfstest from flake.lock with nix, as the scripts' job does.
+      # dt builds the test tools a cell names from flake.lock with nix, as the
+      # scripts' pjdfstest job does.
       - name: Install Nix
-        if: matrix.suite == 'pjdfstest'
+        if: matrix.tools
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Nix cache
-        if: matrix.suite == 'pjdfstest'
+        if: matrix.tools
         uses: ./.github/actions/nix-cache
 
       - name: Install NFS client utilities
@@ -618,6 +622,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
+
+      # A namespaced client runs rpcbind and rpc.statd, and a second one sshd.
+      # cthon04's general group compiles against libtirpc on the mount and
+      # shells out to time(1); nfstest captures packets with tcpdump.
+      - name: Install the namespaced clients' tools
+        if: contains(matrix.needs, 'rpcbind')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind openssh-server libtirpc-dev pkg-config time tcpdump
 
       # And the cell's name as one path element, for its artifact's name.
       - name: Build dt
@@ -658,7 +671,7 @@ jobs:
   parity:
     name: dt and the scripts, cell by cell
     runs-on: ubuntu-latest
-    needs: [dt-plan, dt, wpts, smbtorture, pjdfstest]
+    needs: [dt-plan, dt, wpts, smbtorture, pjdfstest, nfs-mount]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 10
     continue-on-error: true
@@ -683,7 +696,7 @@ jobs:
           CELLS: ${{ needs.dt-plan.outputs.cells }}
         run: |
           set -o pipefail
-          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" pjdfstest wpts smbtorture | tee -a "$GITHUB_STEP_SUMMARY"
+          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" pjdfstest wpts smbtorture cthon04 nfstest | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   summary:
