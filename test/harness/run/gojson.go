@@ -160,8 +160,12 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 // buildBin builds dfs and dfsctl from the checkout at root, as the user, into
 // {bin}, the run's bin directory, once per run: for a cell with a fixture, and
 // for a suite whose tests run as root, which take the binaries from
-// DITTOFS_E2E_BIN, so root never runs go build.
+// DITTOFS_E2E_BIN, so root never runs go build. A cell without {bin}, as a
+// knfsd fixture's, builds nothing.
 func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) error {
+	if bin == "" {
+		return nil
+	}
 	names := []string{"dfs", "dfsctl"}
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
 		return nil // an earlier cell of this run built them
@@ -451,9 +455,9 @@ func (r *results) failures() int {
 // failures, without a parent whose subtest failed; then the broken packages
 // and the problems.
 //
-// decision: a test whose failures are all known is counted as known, not as
-// failed, so "N failed" counts only what fails the cell. A test with several
-// results, one of them new, is still counted as failed.
+// decision: a test whose failures are all known or quarantined is counted as
+// known, not as failed, so "N failed" counts only what fails the cell. A test
+// with several results, one of them new, is still counted as failed.
 func (r *results) note(problems []string) string {
 	grades := map[string]map[string]bool{} // "package test" to its results' grades
 	for _, tc := range r.cases {
@@ -471,7 +475,7 @@ func (r *results) note(problems []string) string {
 	for k, a := range r.tests {
 		switch {
 		case a != "fail" || grades[k][report.New]:
-		case grades[k][report.Known]:
+		case grades[k][report.Known], grades[k][report.Quarantined]:
 			a = "known"
 		case grades[k]["flaky"]:
 			a = "flaky"

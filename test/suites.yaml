@@ -35,6 +35,7 @@ suites:
     tier: pr
     cmd:
       - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
+      - test/harness/bin/dt doctor             # fails on an expired quarantine entry, here alone
       - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
       - test/smb-conformance/compose-env_test.sh
@@ -149,9 +150,9 @@ suites:
     tier: pr
     needs: [linux]
     options:
-      knfsd:
+      knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }
-        fixture: { server: knfsd, nfs: export }
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }
         tier: manual
         blocking: false
   wpts:

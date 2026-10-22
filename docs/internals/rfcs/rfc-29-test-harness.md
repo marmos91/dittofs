@@ -324,7 +324,7 @@ What goes: 35 of the 92 shell scripts under `test/` and `.github/scripts/`, abou
 - **Each suite's setup, run and grading scripts:**
   - `setup-posix.sh`, `run-posix.sh`, `teardown-posix.sh`;
   - the two `bootstrap.sh`, `compose-env.sh`;
-  - `smb-conformance/run.sh`, `smbtorture/run.sh`, `run-pynfs.sh`, `baseline-knfsd.sh`;
+  - `smb-conformance/run.sh`, `smbtorture/run.sh`, `run-pynfs.sh`, pynfs's `baseline-knfsd.sh`;
   - `nfs-conformance/run.sh`;
   - the four `parse-results.sh` and `common/known-failures.sh`, with their tests.
 - **#3008's cthon04 and nfstest entries** in `suites.json`, with their glue and Markdown lists. They
@@ -346,6 +346,11 @@ What stays, because it isn't an entry point:
 - the repository checks lint runs: `required-tests.sh`, `new-package-tests.sh`,
   `commit-type-matches-diff.sh` and `no-ai-attribution.sh`;
 - `combined-tree.sh`.
+
+nfstest's `baseline-knfsd.sh` stays too, though it is an entry point, with `nfs-knfsd-baseline.yml`:
+a dispatch-only evidence job outside the registry, which nfstest's known list cites. Its export goes
+to namespaced clients and its report compares each known-failure row, so it stays until a `knfsd`
+fixture has `clients` and `dt` has a per-row comparison.
 
 ### Getting `dt`
 
@@ -462,6 +467,7 @@ suites:
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
       - dt docs --check                         # was check-docs.sh
+      - dt doctor                               # fails on an expired quarantine entry (§4.7)
       - .github/scripts/combined-tree.sh selftest
       - go test ./test/harness/...              # dt's own tests, which absorb the shell self-tests
   shellcheck:                           # *.sh, and the executables without an extension that start with a shell's #!
@@ -566,7 +572,7 @@ suites:
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as baseline-knfsd.sh sets knfsd up
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as pynfs's baseline-knfsd.sh sets knfsd up
         tier: manual
         blocking: false
   wpts:
@@ -835,7 +841,7 @@ carry a script that builds it.
 
 | Field | Meaning |
 |---|---|
-| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
+| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison: the kernel's NFS server, serving NFSv4.0, 4.1 and 4.2 over TCP on 2049, its `{nfs-port}`, and not NFSv3. `rpc.nfsd` still reads the host's `/etc/nfs.conf` for the rest, so a listener it adds there, such as RDMA's, is the host's. It exports a tmpfs of its own to `{server}` alone, as the NFSv4 root, with `/export` in it, since the kernel won't export the overlay file system a container's `/tmp` is. Where the kernel's tmpfs has no POSIX ACLs, as Docker Desktop's, the server has none either, and pynfs's ACL tests skip, which the cell reports. A `knfsd` fixture sets `nfs: export`, and at most `squash: none` and `lease`; it gives `{server}` and `{nfs-port}`, and no `{bin}`. It implies `root`, `knfsd` and `port:2049` (below), so the kernel's server that `dt` starts and stops is its own. It fails when the kernel's list of versions lacks one of the three, since `rpc.nfsd` only logs a version the kernel refuses. It sets the server's grace period to 10 seconds, the least, and waits it out before the first test. The lease and grace times are the kernel's for every server on that network stack, so `dt` restores them when it stops the server |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. In the mapping the version may be left out, for options that name it: their `vers=` gives it, and with none the kernel negotiates it, as cthon04's `default` set does. `export` exports the share without a mount, for pynfs and nfstest, which mounts by itself |
 | `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
@@ -1297,7 +1303,8 @@ and never grade a run on their own (§4.10).
 |---|---|---|---|---|
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
-| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `quarantined` | failed or passed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | failed: `skipped`, `rawStatus: failed`; passed: `passed`; in `extra` the reason "quarantined as flaky, see #N" and the entry's issue | failed: `<skipped>` with the reason; passed: a pass with a `quarantined` property, the issue | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
@@ -1452,11 +1459,22 @@ flags leave out: a test of another minor version, and one whose own check fails,
 `--security sys`; pynfs's entries say which.
 
 **Quarantine.** For a flaky test, failing some runs and not others:
-- `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date.
-- A quarantined test still runs and its result is recorded, but it never fails a run and never
-  alerts.
-- An expired entry is an error from `dt doctor` and the registry check, so the list can't become a
-  dumping ground.
+- `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date:
+  `{ suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }`. An entry covers
+  the suite's options too. Its test is one test's name, matched exactly, not a pattern as a known
+  entry's may be, so a Go test's name never covers its subtests; a name with `*`, `?` or `[`, or a
+  suite's test listed twice, is a registry error. The date is at most 90 days ahead, and a later
+  one is a registry error, so an entry can't stay forever: it is renewed while its issue is open.
+- A quarantined test still runs and its result is recorded, but its failure never fails a run and
+  never alerts: the failure is graded `quarantined` (§4.6), unless a known-failure entry for the
+  test grades it `known` first. A pass passes, graded `quarantined` too, so CTRF, JUnit and
+  `dt history` show whether the test still fails, and an entry whose test only passes can go. A
+  crash or a hang of the code under test isn't such a failure: it stays new, since no entry
+  excuses it (§4.6). A skip is graded as any skip.
+- An expired entry is an error from `dt doctor`, which `lint-repo` runs, so the list can't become a
+  dumping ground: the registry check finds it, and only `dt doctor` fails on it. An entry expires
+  at the start of its date in UTC. From then on it excuses nothing, so its test fails as new and
+  the gate goes red on that test and on Repo Checks, while every other `dt` command still runs.
 
 The AD-DC keytab race (#2968) is what it's for, once that suite reports through `dt`. The other
 AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` failed on every run
@@ -1582,14 +1600,18 @@ tests against the kernel's server. Neither changes from one night to the next: t
 file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
-  each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
-  the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
-  gives the run's date, commit and platform, the cell, and the smbtorture version from the cell's
-  log. It refuses a run of a checkout with changes, whose commit doesn't say what ran, and a cell
-  that didn't run to its end, whose lost tests would leave the file without a trace: one whose
-  note gives any reason but new failures and unexpected passes, as a `not run` cell always does,
-  such as a limit that stopped it, a crash or a test that didn't run;
-- `dt run pynfs --knfsd` runs the comparison.
+  each result as the nightly job's script did: a failure by its grade, `known` or `new`, and a
+  `quarantined` one as known; a pass by the tool's own status, so an unexpected pass is a pass; and
+  anything else as a skip. Its header gives the run's date, commit and platform, the cell, and the
+  smbtorture version from the cell's log. It refuses a run of a checkout with changes, whose commit
+  doesn't say what ran, and a cell that didn't run to its end, whose lost tests would leave the
+  file without a trace: one whose note gives any reason but new failures and unexpected passes, as
+  a `not run` cell always does, such as a limit that stopped it, a crash or a test that didn't run;
+- `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
+  failures are the tests both servers fail, its new failures those only the kernel's server fails,
+  and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
+  results are a run's like any other's; pynfs's `baseline-knfsd.sh` and the `baseline-knfsd.md`
+  it writes go with `nfs-pynfs.yml`'s baseline job (§8 step 3).
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
@@ -1598,11 +1620,12 @@ began requiring pull requests.
 registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
 then they keep running as they are.
 
-Three things stay outside the registry:
+Four things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
 - **combined-tree,** which picks open PRs to merge and build together (its self-test runs in
   `lint-repo`);
-- **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit.
+- **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
+- **nfstest's knfsd baseline,** `nfs-knfsd-baseline.yml`, a dispatch-only evidence job (§3).
 
 `smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
 
