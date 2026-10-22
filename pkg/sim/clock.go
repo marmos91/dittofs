@@ -69,6 +69,14 @@ func (c *TestClock) After(d time.Duration) <-chan struct{} {
 	return ch
 }
 
+// Pending returns how many channels from After are not yet closed: the
+// waits a test can release with Advance.
+func (c *TestClock) Pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending)
+}
+
 // Advance moves the clock by d scaled by its rate, and closes every After
 // channel whose deadline it reaches. A timer armed while Advance runs, by a
 // goroutine one of its channels woke, waits for the next Advance. A negative

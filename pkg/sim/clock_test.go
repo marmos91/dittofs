@@ -195,3 +195,19 @@ func TestConcurrentAfterAndAdvance(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingCountsOpenTimers(t *testing.T) {
+	c := NewTestClock(start)
+	c.After(time.Second)
+	c.After(2 * time.Second)
+	c.After(0) // closed at once, never pending
+
+	if got := c.Pending(); got != 2 {
+		t.Fatalf("Pending = %d with two timers set, want 2", got)
+	}
+
+	c.Advance(time.Second)
+	if got := c.Pending(); got != 1 {
+		t.Fatalf("Pending = %d after one timer fired, want 1", got)
+	}
+}
