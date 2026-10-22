@@ -1034,13 +1034,14 @@ grade: a known or quarantined failure is a fail, an unexpected pass a pass, ever
 pass on a retry a pass that is also flaky. Without SUITE it gives a row per suite, with the p50 and
 p90 of its cells' durations (§4.3); with SUITE, a row per test, with the p50 and p90 of its own; and
 with SUITE/TEST, also each of that test's results, run by run, which shows since when it fails.
-`dt known prune` reads the same runs. From each known file of the suite and its options it removes
-the entries whose `test` matched results in the cells the file grades and the entry's `where`
-applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it, none of them
-of the entry's kind, a failure or a skip. An entry no such result matched stays, since its test
-wasn't run or reached where it applies, and an `intermittent` one is never removed, since its test
-passes on some runs by definition; a file none of whose cells has results in those runs is left as
-it is. It edits the YAML only: while a suite keeps
+`dt known prune` reads the same runs. It judges each entry of the known files of the suite and its
+options on the results that matched its `test` in the cells the file grades and the entry's `where`
+applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it. It removes a
+known failure when one of them passed and none failed, and an expected skip when one of them ran,
+passing or failing, and none skipped. Any other result shows nothing, so an entry stays unless its
+test ran where it applies and did otherwise, and an `intermittent` one is never removed, since its
+test passes on some runs by definition; a file none of whose cells has results in those runs is
+left as it is. It edits the YAML only: while a suite keeps
 its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the

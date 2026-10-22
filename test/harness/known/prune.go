@@ -69,10 +69,11 @@ func Prune(path string, results []Result) ([]Entry, error) {
 	return removed, os.WriteFile(path, out.Bytes(), 0o644)
 }
 
-// stale reports whether the results show the entry no longer needed: some
-// of those in cells it applies to matched its test, and none of them was of
-// its kind, a failure or a skip. An entry no such result matched stays: its
-// test wasn't run or reached where it applies.
+// stale reports whether the results show the entry no longer holds, judged
+// on those that matched its test in cells it applies to: a known failure
+// one of them passed and none failed, or an expected skip one of them ran,
+// passing or failing, and none skipped. Any other result shows nothing, so
+// an entry stays unless its test ran where it applies and did otherwise.
 func (e Entry) stale(results []Result) bool {
 	// decision: an intermittent entry is never removed: its test passes on
 	// some runs by definition, so no window of runs shows it stale. Remove
@@ -80,16 +81,18 @@ func (e Entry) stale(results []Result) bool {
 	if e.Intermittent {
 		return false
 	}
-	want := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
-	matched := false
+	holds := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
+	shown := false
 	for _, r := range results {
 		if !e.applies(r.At) || !Match(e.Test, r.Name) {
 			continue
 		}
-		if r.Outcome == want {
+		switch r.Outcome {
+		case holds:
 			return false
+		case report.Passed, report.Failed:
+			shown = true // it ran: for a known failure, that it passed
 		}
-		matched = true
 	}
-	return matched
+	return shown
 }

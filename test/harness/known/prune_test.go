@@ -54,15 +54,30 @@ func TestPrune(t *testing.T) {
 }
 
 // Prune judges an entry on the results that matched its test in cells it
-// applies to.
+// applies to: a known failure goes when one of them passed and none failed,
+// an expected skip when one ran, passing or failing, and none skipped. A
+// result with no outcome, or a skip of a known failure, shows nothing.
 func TestPruneRule(t *testing.T) {
-	pass := Result{Name: "x", Outcome: report.Passed}
+	const fail, skip = "{test: x, status: fail, fix: wontfix, category: proto, reason: r", "{test: x, status: skip, fix: wontfix, category: env, reason: r"
+	result := func(outcomes ...string) []Result {
+		var out []Result
+		for _, o := range outcomes {
+			out = append(out, Result{Name: "x", Outcome: o})
+		}
+		return out
+	}
 	for _, c := range []struct {
 		name, entry string
 		results     []Result
 		removed     bool
 	}{
-		{"an intermittent entry is never removed", "{test: x, status: fail, fix: wontfix, category: proto, reason: r, intermittent: true}", []Result{pass}, false},
+		{"a known failure that passed goes", fail + "}", result(report.Passed), true},
+		{"a known failure that also failed stays", fail + "}", result(report.Passed, report.Failed), false},
+		{"a known failure that only skipped or had no result stays", fail + "}", result(report.Skipped, report.Other), false},
+		{"an expected skip that ran and failed goes", skip + "}", result(report.Failed), true},
+		{"an expected skip that also skipped stays", skip + "}", result(report.Passed, report.Skipped), false},
+		{"an expected skip with no result stays", skip + "}", result(report.Other), false},
+		{"an intermittent entry is never removed", fail + ", intermittent: true}", result(report.Passed), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := write(t, filepath.Join(t.TempDir(), "known.yaml"), "- "+c.entry+"\n")

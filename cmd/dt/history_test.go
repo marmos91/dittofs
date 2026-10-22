@@ -67,12 +67,12 @@ func TestHistory(t *testing.T) {
 	}
 }
 
-// dt known prune removes from each known file of the suite and its options
-// the entries whose test matched results in the cells the file grades and
-// the entry applies to, by its option, matrix value, tier (the run's, or the
-// unit's own when wider) and OS, none of them of the entry's kind, a failure
-// or a skip. An entry whose test has no such result stays, and a file whose
-// cells have no results is left as it is.
+// dt known prune judges each known file of the suite and its options on the
+// results of the cells the file grades, and each entry on those of cells it
+// applies to, by its option, matrix value, tier (the run's, or the unit's own
+// when wider) and OS: a known failure goes when one passed and none failed,
+// and one that only skipped proves nothing. A file whose cells have no
+// results is left as it is.
 func TestKnownPrune(t *testing.T) {
 	root := t.TempDir()
 	entry := func(test, status, where string) string {
@@ -112,14 +112,14 @@ func TestKnownPrune(t *testing.T) {
 	}})
 
 	out, err := dt(t, "known", "prune", "s")
-	want := "s.yaml:3: removed gone, a fail entry\ns.yaml:5: removed c, a fail entry\ns.yaml:6: removed z, a fail entry\n" +
+	want := "s.yaml:3: removed gone, a fail entry\ns.yaml:6: removed z, a fail entry\n" +
 		"s.yaml:9: removed v2, a fail entry\ns.yaml:10: removed mac, a fail entry\ns.yaml:11: removed ws, a fail entry\n" +
 		"own.yaml:2: removed tm, a fail entry\nidle.yaml: left as is: no cell it grades has results in the runs read\n"
 	if err != nil || out != want {
 		t.Errorf("dt known prune s: %v\n%s\nwant\n%s", err, out, want)
 	}
 	for file, want := range map[string]string{
-		"s.yaml":    entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("b", "skip", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}"),
+		"s.yaml":    entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("b", "skip", "") + entry("c", "fail", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}"),
 		"own.yaml":  entry("z", "fail", ""),
 		"idle.yaml": entry("x", "fail", ""),
 	} {
