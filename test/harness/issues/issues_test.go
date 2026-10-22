@@ -360,6 +360,27 @@ func TestTestIssueErrorsDontStopThePost(t *testing.T) {
 	}
 }
 
+// A re-run of a workflow run posts again, and the run counts once: the
+// develop-status issue keeps the run it last posted, and a post of that run
+// changes nothing. The next run counts.
+func TestRerunCountsOnce(t *testing.T) {
+	g, c := newTracker(t)
+	cell := report.Cell{Name: "unit", Result: report.Failed, Tests: []report.Test{newFailure("TestA", "boom")}}
+	post := func(workflowRun, name, runs string, issues int) {
+		t.Helper()
+		c.Run = workflowRun
+		if err := c.Post(context.Background(), []report.Run{run(name, "merge", cell)}, nil, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		if body := g.titled(statusTitle)[0].Body; !strings.Contains(body, "| `unit` | `TestA` | new | "+runs+" |") || len(g.issues) != issues {
+			t.Errorf("run %s, %s: %d issues and\n%s", workflowRun, name, len(g.issues), body)
+		}
+	}
+	post("7", "20261022T100000Z-iiiiiii1", "1", 1)
+	post("7", "20261022T110000Z-iiiiiii1-a2", "1", 1)
+	post("8", "20261022T120000Z-iiiiiii2", "2", 2)
+}
+
 // A post GitHub refuses fails, as a token that can't write issues makes it,
 // so a lost alert shows as a failed job.
 func TestPostFailsWhenGitHubRefuses(t *testing.T) {
@@ -412,7 +433,7 @@ func TestStatusIssueKeepsItsBodyInBounds(t *testing.T) {
 }
 
 // The environment gives the API, the repository, DittoFS's by default, the
-// token, which posting needs, and the workflow run's page as the log.
+// token, which posting needs, and the workflow run, with its page as the log.
 func TestFromEnv(t *testing.T) {
 	t.Setenv("GITHUB_API_URL", "")
 	t.Setenv("GITHUB_REPOSITORY", "")
@@ -427,7 +448,7 @@ func TestFromEnv(t *testing.T) {
 	}
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 	t.Setenv("GITHUB_RUN_ID", "42")
-	if c, err := FromEnv(); err != nil || c.Log != "https://github.com/marmos91/dittofs/actions/runs/42" {
+	if c, err := FromEnv(); err != nil || c.Run != "42" || c.Log != "https://github.com/marmos91/dittofs/actions/runs/42" {
 		t.Errorf("%+v, %v", c, err)
 	}
 }

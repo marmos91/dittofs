@@ -49,8 +49,9 @@ const (
 	// and maxTitle the most of a title, which GitHub refuses longer.
 	maxLine  = 200
 	maxTitle = 256
-	// marker begins the failing set, as JSON, in a comment at the end of the
-	// develop-status issue's body, where the next post reads it.
+	// marker begins the last run posted and the failing set, as JSON, in a
+	// comment at the end of the develop-status issue's body, where the next
+	// post reads them.
 	marker = "<!-- dt failing set: "
 )
 
@@ -60,12 +61,13 @@ type Client struct {
 	Repo  string // owner/name
 	Token string // one that can write issues
 	Log   string // where the runs' logs are, such as a workflow run's page; "" when nowhere public
+	Run   string // the tier run posted, as its workflow run's ID; "" for the last run's name
 }
 
 // FromEnv is the client GitHub's environment variables give: the API at
 // GITHUB_API_URL, the repository GITHUB_REPOSITORY, DittoFS's by default, the
-// token GITHUB_TOKEN, which must be set, and as Log the workflow run's page
-// when GITHUB_RUN_ID names one.
+// token GITHUB_TOKEN, which must be set, and as Run and Log the workflow run
+// GITHUB_RUN_ID names, and its page.
 func FromEnv() (Client, error) {
 	c := Client{
 		API:   cmp.Or(os.Getenv("GITHUB_API_URL"), "https://api.github.com"),
@@ -75,8 +77,8 @@ func FromEnv() (Client, error) {
 	if c.Token == "" {
 		return Client{}, errors.New("posting needs a token that can write issues, in GITHUB_TOKEN")
 	}
-	if id := os.Getenv("GITHUB_RUN_ID"); id != "" {
-		c.Log = os.Getenv("GITHUB_SERVER_URL") + "/" + c.Repo + "/actions/runs/" + id
+	if c.Run = os.Getenv("GITHUB_RUN_ID"); c.Run != "" {
+		c.Log = os.Getenv("GITHUB_SERVER_URL") + "/" + c.Repo + "/actions/runs/" + c.Run
 	}
 	return c, nil
 }
@@ -169,7 +171,8 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 // for it, once: the develop-status issue links it from then on. A test's issue
 // GitHub refuses doesn't stop the rest: Post returns its error with any
 // other. Post refuses any run but develop's merge and nightly runs, and says
-// on out what it posted.
+// on out what it posted. A re-run of a tier run already posted, the same Run,
+// posts nothing: the run counts once.
 //
 // decision: two posts at once, as a merge run's and a nightly run's ending
 // together, can lose one's update of the develop-status issue: the next run of
@@ -220,11 +223,18 @@ func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, o
 			open[is.Title] = is.Number
 		}
 	}
+	id := cmp.Or(c.Run, last.Name)
 	var old []entry
 	if status != nil {
-		if old, err = failingSet(status.Body); err != nil {
+		was, err := failingSet(status.Body)
+		if err != nil {
 			return fmt.Errorf("issue #%d: %w", status.Number, err)
 		}
+		if was.Run == id {
+			_, _ = fmt.Fprintf(out, "#%d: run %s is posted already\n", status.Number, id)
+			return nil
+		}
+		old = was.Set
 		if status.State != "open" {
 			// decision: a closed issue keeps only its cells not run once.
 			// dt closes it only when nothing else is left, so the rest were
@@ -260,15 +270,15 @@ func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, o
 		set[i].Issue = n
 		_, _ = fmt.Fprintf(out, "#%d: %s, %s\n", n, did, title)
 	}
-	return errors.Join(append(errs, c.writeStatus(ctx, status, old, set, more, last, out))...)
+	return errors.Join(append(errs, c.writeStatus(ctx, status, old, set, more, last, id, out))...)
 }
 
 // writeStatus writes the failing set to the develop-status issue, creating the
 // issue the first time: open while an entry alerts, else closed. While it
 // stays open, a comment says how the alerting entries changed; opening and
 // closing it notify by themselves.
-func (c Client) writeStatus(ctx context.Context, is *issue, old, set []entry, more int, last report.Run, out io.Writer) error {
-	body := statusBody(set, more)
+func (c Client) writeStatus(ctx context.Context, is *issue, old, set []entry, more int, last report.Run, id string, out io.Writer) error {
+	body := statusBody(posted{id, set}, more)
 	wasOpen := is != nil && is.State == "open"
 	if is == nil {
 		if len(set) == 0 {
@@ -303,10 +313,18 @@ func (c Client) writeStatus(ctx context.Context, is *issue, old, set []entry, mo
 	return nil
 }
 
+// posted is what the develop-status issue keeps for the next post: the run it
+// last posted and the failing set.
+type posted struct {
+	Run string  `json:"run"`
+	Set []entry `json:"set"`
+}
+
 // statusBody is the develop-status issue's body: whether develop is red, a
-// table of the failing set, and the set itself, for the next post. JSON
-// escapes < and >, so nothing in it ends the comment that holds it.
-func statusBody(set []entry, more int) string {
+// table of the failing set, and p, for the next post. JSON escapes < and >, so
+// nothing in it ends the comment that holds it.
+func statusBody(p posted, more int) string {
+	set := p.Set
 	var b strings.Builder
 	if slices.ContainsFunc(set, entry.alerts) {
 		b.WriteString("develop is red.\n")
@@ -327,23 +345,24 @@ func statusBody(set []entry, more int) string {
 	if more > 0 {
 		_, _ = fmt.Fprintf(&b, "\nand %d more, not kept: the runs' job summaries name them.\n", more)
 	}
-	data, _ := json.Marshal(set)
+	data, _ := json.Marshal(p)
 	_, _ = fmt.Fprintf(&b, "\n%s%s -->\n", marker, data)
 	return b.String()
 }
 
-// failingSet is the failing set body holds, none when it holds none.
-func failingSet(body string) ([]entry, error) {
+// failingSet is what body keeps for the next post, nothing when it keeps
+// nothing.
+func failingSet(body string) (posted, error) {
+	var p posted
 	at := strings.LastIndex(body, marker)
 	if at < 0 {
-		return nil, nil
+		return p, nil
 	}
 	data, _, _ := strings.Cut(body[at+len(marker):], " -->")
-	var set []entry
-	if err := json.Unmarshal([]byte(data), &set); err != nil {
-		return nil, fmt.Errorf("the failing set in its body: %w", err)
+	if err := json.Unmarshal([]byte(data), &p); err != nil {
+		return p, fmt.Errorf("the failing set in its body: %w", err)
 	}
-	return set, nil
+	return p, nil
 }
 
 // changes lists how the alerting entries changed from old to set, "" when
