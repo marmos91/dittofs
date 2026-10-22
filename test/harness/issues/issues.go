@@ -404,22 +404,32 @@ func (c Client) labelled(ctx context.Context) ([]issue, error) {
 
 // call sends in, as JSON, to path in the repository, and decodes the answer
 // into out unless out is nil.
+//
+// decision: a 5xx is sent once more, for GitHub's passing outages, and
+// nothing else is. A create the first attempt made anyway is then made twice,
+// rare enough to close the second by hand.
 func (c Client) call(ctx context.Context, method, path string, in, out any) error {
-	var body io.Reader
+	var data []byte
 	if in != nil {
-		data, err := json.Marshal(in)
-		if err != nil {
+		var err error
+		if data, err = json.Marshal(in); err != nil {
 			return err
 		}
-		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.API+"/repos/"+c.Repo+path, body)
-	if err != nil {
-		return err
+	send := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, method, c.API+"/repos/"+c.Repo+path, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		return http.DefaultClient.Do(req)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := send()
+	if err == nil && resp.StatusCode >= 500 {
+		_ = resp.Body.Close()
+		resp, err = send()
+	}
 	if err != nil {
 		return err
 	}

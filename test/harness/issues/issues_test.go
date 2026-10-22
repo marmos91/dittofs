@@ -22,6 +22,7 @@ type tracker struct {
 	issues   []*tracked // issue N is issues[N-1]
 	comments map[int][]string
 	requests int
+	outage   int // how many requests to come it answers 502 Bad Gateway
 }
 
 type tracked struct {
@@ -33,6 +34,11 @@ func newTracker(t *testing.T) (*tracker, Client) {
 	g := &tracker{comments: map[int][]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.requests++
+		if g.outage > 0 {
+			g.outage--
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			return
+		}
 		switch auth := r.Header.Get("Authorization"); {
 		case auth == "Bearer read-only" && r.Method != http.MethodGet:
 			http.Error(w, "Resource not accessible by integration", http.StatusForbidden)
@@ -330,6 +336,23 @@ func TestPostFailsWhenGitHubRefuses(t *testing.T) {
 	c.Token = "read-only"
 	if err := c.Post(context.Background(), red("20261022T110000Z-eeeeeee2", "TestB"), nil, io.Discard); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("a refused edit: %v", err)
+	}
+}
+
+// A request GitHub answers with a 5xx is sent once more, so a passing outage
+// doesn't lose a post; a second 5xx in a row fails it.
+func TestPostRetriesA5xxOnce(t *testing.T) {
+	g, c := newTracker(t)
+	red := func(name string) []report.Run {
+		return []report.Run{run(name, "merge", report.Cell{Name: "unit", Result: report.Failed})}
+	}
+	g.outage = 1
+	if err := c.Post(context.Background(), red("20261022T100000Z-ggggggg1"), nil, io.Discard); err != nil || len(g.titled(statusTitle)) != 1 {
+		t.Fatalf("one 502: %v, %d develop-status issues", err, len(g.titled(statusTitle)))
+	}
+	g.outage = 2
+	if err := c.Post(context.Background(), red("20261022T110000Z-ggggggg2"), nil, io.Discard); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Errorf("two 502s in a row: %v", err)
 	}
 }
 

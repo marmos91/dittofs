@@ -1070,8 +1070,9 @@ comments on the one already open for it, and lists them in the develop-status is
 takes the cells one tier run planned, and its runs, as in CI each cell's job writes a run of its
 own. A cell in several runs, a job re-run by hand, counts from the last by name, and a planned cell
 with no run, as one whose job died before it wrote its results, didn't run. With no run at all it
-fails and posts nothing, since no run shows it is develop's. Its token is `GITHUB_TOKEN`. The first
-version is narrow, so it can't flood the tracker as #1705's alarm did:
+fails and posts nothing, since no run shows it is develop's. Its token is `GITHUB_TOKEN`, and a
+request GitHub answers with a 5xx is sent once more. The first version is narrow, so it can't flood
+the tracker as #1705's alarm did:
 - it posts only from develop and nightly runs, never from PRs or laptops: it refuses a run whose
   checkout wasn't on `develop` or whose tier isn't `merge` or `nightly`, and only `tests.yml`'s
   `post` job and the dedicated host pass `--post`;
@@ -1562,8 +1563,9 @@ One workflow, `tests.yml`, runs every registered suite:
   - `post` runs after `run`, on a push to develop and on the schedule only, and not for a cancelled
     run: `dt report --failures --post` over the blocking cells `plan` gave and every one's results,
     with a token that can write issues and nothing else (§4.4). It runs when `plan` failed too,
-    and fails then, with nothing to post. Non-blocking cells don't post: they never fail the gate,
-    so they never make develop red.
+    and fails then, with nothing to post. It has `continue-on-error`, so a failed post, as when
+    GitHub answers a request with a 5xx twice in a row, doesn't turn the run red. Non-blocking
+    cells don't post: they never fail the gate, so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
   any step its cells need that `run` doesn't give yet, such as a service; the filter goes once

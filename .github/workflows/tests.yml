@@ -245,7 +245,8 @@ jobs:
   # didn't run, to the develop-status issue, and gives a test failing 2 runs in
   # a row an issue of its own. The token can write issues and nothing else. A
   # cancelled run posts nothing, as it has no result. It runs when plan failed
-  # too, and fails then, with nothing to post.
+  # too, and fails then, with nothing to post. A failed post doesn't fail the
+  # run, whose result is what CI Health reads as develop's.
   #
   # decision: the non-blocking cells don't post. They never fail the gate, so
   # they never make develop red; their failures show on their own jobs.
@@ -253,6 +254,7 @@ jobs:
     name: post
     needs: [plan, run]
     if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') }}
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
