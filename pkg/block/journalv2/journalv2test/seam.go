@@ -711,7 +711,16 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 		}
 	}
 
-	sf.record(change{kind: changeWrite, off: off, data: append([]byte(nil), p...), old: old, oldSize: size})
+	// decision: an empty write is not recorded: it changes nothing, and past the
+	// end of the file its undo would have nothing to restore. Any other write is
+	// recorded whole, even if it fails part-way, because os.File.WriteAt reports
+	// n == 0 when a partial write then fails. The undo stays exact (old holds only
+	// bytes that existed before); Torn and Reordered may replay bytes a failed
+	// write never landed. Narrow it if tests come to rely on failed writes.
+	if len(p) > 0 {
+		sf.record(change{kind: changeWrite, off: off, data: append([]byte(nil), p...), old: old, oldSize: size})
+	}
+
 	return sf.f.WriteAt(p, off)
 }
 

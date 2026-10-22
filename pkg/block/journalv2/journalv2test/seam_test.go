@@ -658,6 +658,47 @@ func TestCrashRefusesTornOutOfRange(t *testing.T) {
 	}
 }
 
+func TestEmptyWritePastTheEndIsNotRecorded(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+
+	if n, err := f.WriteAt(nil, 16); n != 0 || err != nil {
+		t.Fatalf("WriteAt(nil, 16): %d, %v; want 0, nil", n, err)
+	}
+
+	// A panic is caught so it fails here, as this test's own failure.
+	recovered := func(fn func()) (p any) {
+		defer func() { p = recover() }()
+		fn()
+		return nil
+	}
+
+	var got []byte
+	var err error
+	if p := recovered(func() { got, err = s.Durable("seg") }); p != nil {
+		t.Fatalf("Durable after an empty write past the end panicked: %v; want %q", p, "ab")
+	}
+
+	if err != nil || string(got) != "ab" {
+		t.Fatalf("Durable after an empty write past the end: %q, %v; want %q", got, err, "ab")
+	}
+
+	if p := recovered(func() { err = s.Crash() }); p != nil {
+		t.Fatalf("Crash after an empty write past the end panicked: %v; want it to succeed", p)
+	}
+
+	if err != nil {
+		t.Fatalf("Crash after an empty write past the end: %v; want it to succeed", err)
+	}
+
+	if got := onDisk(t, s, "seg"); got != "ab" {
+		t.Fatalf("after the crash seg holds %q (%d bytes), want the synced %q", got, len(got), "ab")
+	}
+}
+
 func TestTornZeroLeavesTheSizeAlone(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
