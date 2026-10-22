@@ -219,9 +219,17 @@ func (s *Seam) Rename(oldName, newName string) error {
 
 	path := filepath.Join(s.dir, newName)
 	if err := os.Rename(n.path, path); err != nil {
+		if replaced != nil {
+			back := filepath.Join(s.dir, newName)
+			if rerr := os.Rename(replaced.path, back); rerr != nil {
+				return errors.Join(err, rerr)
+			}
+
+			replaced.path = back
+		}
+
 		return err
 	}
-
 	n.path = path
 	delete(s.names, oldName)
 

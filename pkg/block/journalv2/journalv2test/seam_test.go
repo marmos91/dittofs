@@ -210,6 +210,45 @@ func TestRenameSurvivesOnlyAfterSyncDir(t *testing.T) {
 	}
 }
 
+func TestFailedRenameKeepsTheDestination(t *testing.T) {
+	s := newSeam(t)
+	a := create(t, s, "a")
+	b := create(t, s, "b")
+
+	write(t, a, "new", 0)
+	syncFile(t, a)
+	write(t, b, "old", 0)
+	syncFile(t, b)
+
+	// a vanishes under the seam, so the real rename fails after the seam has
+	// already moved b, the file it would replace, to the stash.
+	if err := os.Remove(filepath.Join(s.dir, "a")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rename("a", "b"); err == nil {
+		t.Fatal("Rename of a file removed under the seam succeeded, want it to fail")
+	}
+
+	if !exists(s, "b") {
+		t.Fatal("after a failed rename b is missing, want it back in place")
+	}
+
+	if got := onDisk(t, s, "b"); got != "old" {
+		t.Fatalf("after a failed rename b holds %q, want its own %q", got, "old")
+	}
+
+	crash(t, s)
+
+	if !exists(s, "b") {
+		t.Fatal("a crash after a failed rename lost b, want it kept")
+	}
+
+	if got := onDisk(t, s, "b"); got != "old" {
+		t.Fatalf("a crash after a failed rename left b holding %q, want %q", got, "old")
+	}
+}
+
 func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
