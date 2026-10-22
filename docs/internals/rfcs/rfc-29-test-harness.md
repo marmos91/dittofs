@@ -1007,7 +1007,7 @@ dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exi
    [--tier T] [--only A,B] [--skip A,B] [--parallel N]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
-dt report [RUN] --failures [--post]            only the new failures; --post opens or updates an issue per failure
+dt report [RUN...] --failures [--post]         only the new failures; --post posts them, given a tier run's runs
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE                           remove entries that matched no failing or skipping test in recent runs
@@ -1065,17 +1065,26 @@ of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a pu
 `unit` without `-short`, as today.
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
-comments on the one already open for it, and lists them in the develop-status issue (§4.8). The
-first version is narrow, so it can't flood the tracker as #1705's alarm did:
-- it posts only from develop and nightly runs, never from PRs or laptops;
-- a test gets an issue only after it fails 2 runs in a row;
-- known, quarantined and flaky tests never get one;
-- issues are found again by a label and the test's ID, so a test has one issue;
-- a run with more than 10 new failing tests posts no issue per test: something systemic broke, and
-  the failing set goes to the develop-status issue only;
-- an issue carries the test, the failing line, the commit and the log link, and nothing about
-  customers or deployments, because issues are public. Planning detail of that kind goes in the
-  project board's private draft items.
+comments on the one already open for it, and lists them in the develop-status issue (§4.8). It
+takes the runs of one tier run, as in CI each cell's job writes a run of its own; a cell in several
+runs, a job re-run by hand, counts from the last by name. Its token is `GITHUB_TOKEN`. The first
+version is narrow, so it can't flood the tracker as #1705's alarm did:
+- it posts only from develop and nightly runs, never from PRs or laptops: it refuses a run whose
+  checkout wasn't on `develop` or whose tier isn't `merge` or `nightly`, and only `tests.yml`'s
+  `post` job and the dedicated host pass `--post`;
+- a test gets an issue only after it fails 2 runs in a row of its cell, which the develop-status
+  issue counts; an issue already open for it gets a comment instead. Either happens once: the
+  develop-status issue links the issue from then on. `dt` never closes a test's issue; whoever
+  fixes the test does;
+- known, quarantined and flaky tests never get one: only a result graded `new` does;
+- issues are found again by a label and the test's ID, so a test has one issue: the label
+  `develop-red`, and the title `CELL TEST fails on develop`. The ID is the cell and the test, as
+  CTRF names a test by its suite, so a test failing in two cells has an issue in each;
+- a tier run with more than 10 new failing tests posts no issue per test: something systemic broke,
+  and the failing set goes to the develop-status issue only;
+- an issue carries the test, the failing line (its message's first line), the commit and the log
+  link (its workflow run's page), and nothing about customers or deployments, because issues are
+  public. Planning detail of that kind goes in the project board's private draft items.
 
 | Flag | Effect |
 |---|---|
@@ -1547,6 +1556,10 @@ One workflow, `tests.yml`, runs every registered suite:
     `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them. It has
     `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
     `ci-health.yml` reads as develop's.
+  - `post` runs after `run`, on a push to develop and on the schedule only, and not for a cancelled
+    run: `dt report --failures --post` over every blocking cell's results, with a token that can
+    write issues and nothing else (§4.4). Non-blocking cells don't post: they never fail the gate,
+    so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
   any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
@@ -1629,20 +1642,32 @@ Four things stay outside the registry:
 
 `smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
 
-**Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
-outside it:
+**Develop goes red.** `tests.yml`'s `post` job does this for `tests.yml`, and the dedicated host for
+its own cells (§4.5). A workflow still outside `tests.yml` runs no `dt`, so it has no failing set
+to post: it keeps `ci-health.yml`'s warning on pull requests until it moves in.
 
 - A merge-tier or nightly run that still exits 1 after `dt`'s retry, with new failures or
-  unexpected passes, opens one issue labelled `develop-red`, or updates it if one is open.
+  unexpected passes, opens one issue labelled `develop-red`, or updates it if one is open. It is
+  the develop-status issue, titled `develop is red`, since the earlier alarm's issues carry the
+  label too. It is always the same issue: the first post creates it, and later posts reopen and
+  close it, so it remembers a cell not run once while develop is green.
 - The issue body is the current failing set, from `summary.json`, with links to each failure's own
-  issue (§4.4). It's rewritten, not commented, so watchers get one notification per change, not per
-  run. A comment is added only when the set of failing tests changes.
-- It closes once nothing in its failing set fails a run on develop any more, in whichever tier runs
-  it: each new failure has passed again, or been listed as a known failure or quarantined; each
-  unexpected pass has had its entry removed; and a test that no longer exists (renamed or deleted)
-  leaves the set. A green run of another tier doesn't close it: a merge-tier run doesn't include the
-  nightly suites, so it would close a nightly failure that reopens the next night.
-- Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs.
+  issue (§4.4), and the set as JSON in a comment at its end, which the next post reads. A cell that
+  failed with no test to name is in the set as itself, as `dt run --ci` annotates it. The body is
+  rewritten, not commented, so watchers get one notification per change, not per run. A comment is
+  added only when the set of failing tests changes while the issue stays open; opening and closing
+  it notify by themselves. The body keeps the first 50 entries by cell and test, within what GitHub
+  allows.
+- A run sets the entries of the cells it ran and keeps the rest; a cell that didn't run keeps its
+  tests' entries, since it says nothing of them. The issue closes once nothing in its failing set
+  fails a run on develop any more, in whichever tier runs it: each new failure has passed again, or
+  been listed as a known failure or quarantined; each unexpected pass has had its entry removed; and
+  a test that no longer exists (renamed or deleted) leaves the set. A green run of another tier
+  doesn't close it: a merge-tier run doesn't include the nightly suites, so it would close a nightly
+  failure that reopens the next night. Closing the issue by hand clears its set but for the cells
+  not run once: that is how the entries of a cell that no longer exists leave it.
+- Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs of the
+  cell.
 - Known failures, expected skips and quarantined tests never alert.
 - E-mail comes from GitHub's own issue notifications: repository watchers, and anyone the issue
   mentions. No mail secrets in the repository.

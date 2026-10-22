@@ -4,7 +4,8 @@
 # plan lists the tier's cells with dt plan. Each cell runs as a job of its own,
 # dt run CELL, on the runner the plan names: the blocking cells in run, the
 # others in non-blocking, which nothing waits for. gate waits for plan and run,
-# always runs, and is the check that decides.
+# always runs, and is the check that decides. post, after a merge and on the
+# schedule, posts the blocking cells' failures to the develop-status issue.
 #
 # The suites move in from their own workflows one at a time, each running here
 # beside its old job until their results match on 5 consecutive runs. pynfs is
@@ -238,3 +239,49 @@ jobs:
         run: |
           echo "plan: $PLAN; blocking cells: $RUN"
           [ "$PLAN" = success ] && { [ "$RUN" = success ] || [ "$RUN" = skipped ]; }
+
+  # After the retry, on develop only: dt report --post writes the blocking
+  # cells' new failures and unexpected passes, and the cells that failed or
+  # didn't run, to the develop-status issue, and gives a test failing 2 runs in
+  # a row an issue of its own. The token can write issues and nothing else. A
+  # cancelled run posts nothing, as it has no result.
+  #
+  # decision: the non-blocking cells don't post. They never fail the gate, so
+  # they never make develop red; their failures show on their own jobs.
+  post:
+    name: post
+    needs: [plan, run]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') && needs.run.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      - name: Download the results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: dt-run-*
+          path: ${{ runner.temp }}/results
+
+      # Every blocking cell's run, each attempt's: dt counts a cell from its
+      # last run by name, which is its latest attempt's.
+      - name: Post
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          runs=("$RUNNER_TEMP"/results/dt-run-*/*/summary.json)
+          "$RUNNER_TEMP/dt" report --failures --post "${runs[@]%/summary.json}"
