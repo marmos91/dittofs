@@ -1303,7 +1303,7 @@ and never grade a run on their own (§4.10).
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
 | `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
-| `quarantined` | failed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | `skipped`, `rawStatus: failed`, the entry's issue in `extra` | `<skipped>` | passes |
+| `quarantined` | failed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | `skipped`, `rawStatus: failed`, in `extra` the reason "quarantined as flaky, see #N" and the entry's issue | `<skipped>` with the reason | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |

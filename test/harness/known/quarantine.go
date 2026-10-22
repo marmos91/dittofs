@@ -90,8 +90,9 @@ func parseQuarantine(n *yaml.Node) (Quarantine, []string) {
 }
 
 // Entry is what Grade grades the test's results by, after the suite's known
-// file's entries: a known failure that grades a failure quarantined, and is
-// intermittent, so a pass is reported, not failed.
+// file's entries: a known failure that grades a failure quarantined, with a
+// reason that says so and names the issue, and is intermittent, so a pass is
+// reported, not failed.
 //
 // decision: it grades failures only, as a known-failure entry does: a crash
 // or a hang of the code under test, which its reader grades, stays new, since
@@ -100,5 +101,5 @@ func parseQuarantine(n *yaml.Node) (Quarantine, []string) {
 // as between two known entries, the known file's first. Revisit if a flake
 // that hangs needs quarantining.
 func (q Quarantine) Entry() Entry {
-	return Entry{Test: q.Test, Status: "fail", Issue: q.Issue, Intermittent: true, quarantined: true}
+	return Entry{Test: q.Test, Status: "fail", Reason: "quarantined as flaky, see " + q.Issue, Issue: q.Issue, Intermittent: true, quarantined: true}
 }

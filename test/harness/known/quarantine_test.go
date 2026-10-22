@@ -45,8 +45,8 @@ func TestParseQuarantineRules(t *testing.T) {
 	}
 }
 
-// A quarantine entry grades a failure of its test quarantined, with its
-// issue, and its parent through it, as a known failure would; its pass is
+// A quarantine entry grades a failure of its test quarantined, with a reason
+// that says so and names its issue, and its parent through it, as a known failure would; its pass is
 // reported, not failed. It grades nothing else: a crash or a hang stays new,
 // and a skip is graded as any skip.
 func TestGradeQuarantined(t *testing.T) {
@@ -55,11 +55,11 @@ func TestGradeQuarantined(t *testing.T) {
 		results []string
 		want    []string
 	}{
-		{"a failure is quarantined, with its entry's issue", []string{"a failed", "b failed"},
-			[]string{"a: skipped (failed) [quarantined] #12", "b: failed [new]"}},
+		{"a failure is quarantined, with a reason naming its entry's issue", []string{"a failed", "b failed"},
+			[]string{"a: skipped (failed) [quarantined] quarantined as flaky, see #12 #12", "b: failed [new]"}},
 		{"a pass is reported, not failed", []string{"a passed"}, []string{"a: passed"}},
 		{"a parent that failed only through it is known", []string{"TestP/a failed", "TestP failed"},
-			[]string{"TestP/a: skipped (failed) [quarantined] #12", "TestP: skipped (failed) [known] " + throughSubtests}},
+			[]string{"TestP/a: skipped (failed) [quarantined] quarantined as flaky, see #12 #12", "TestP: skipped (failed) [known] " + throughSubtests}},
 		{"a crash or a hang stays new", []string{"a failed new"}, []string{"a: failed [new]"}},
 		{"a skip or a stopped result is graded as any", []string{"a skipped", "a other"},
 			[]string{"a: other (skipped) [unexpected_skip]", "a: other [incomplete]"}},

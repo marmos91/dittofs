@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,7 +20,8 @@ func soon() string {
 }
 
 // A test the quarantine list holds still runs, and its failure is recorded,
-// graded quarantined, but fails no cell and gets no annotation: in its
+// graded quarantined, its JUnit skip saying so and naming the issue, but
+// fails no cell and gets no annotation: in its
 // suite's cells and its options', not in another suite's. A known-failure
 // entry for the same test grades it first.
 func TestQuarantinedTestNeverFails(t *testing.T) {
@@ -61,6 +63,9 @@ func TestQuarantinedTestNeverFails(t *testing.T) {
 	}
 	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) {
 		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	if junit, err := os.ReadFile(filepath.Join(rep.Dir, "junit", "s.xml")); err != nil || !strings.Contains(string(junit), `<skipped message="quarantined as flaky, see #1">`) {
+		t.Errorf("s's JUnit file doesn't say the test is quarantined, and why: %v\n%s", err, junit)
 	}
 	var annotated []string
 	for _, line := range strings.Split(out.String(), "\n") {
