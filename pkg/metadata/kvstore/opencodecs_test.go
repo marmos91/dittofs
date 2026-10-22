@@ -19,10 +19,11 @@ func hexU32(n uint32) string {
 func openCodecCases() []codecCase {
 	alice := entity.Principal{Kind: entity.PrincipalUser, ID: pid}
 	ph, gh := "01"+hex.EncodeToString(pid[:]), "02"+hex.EncodeToString(gid[:])
-	cl := entity.Client{ID: 7, Protocol: entity.ProtocolNFSv4, Owner: []byte("host"), Verifier: [8]byte{7: 1},
-		Principal: alice, MachCred: &entity.MachCred{Principal: group, Ops: []byte{0x0F}}, CSSeq: 3, CSReply: []byte{0xAB}, Revoked: true}
-	smb := entity.Client{ID: 8, Protocol: entity.ProtocolSMB, Owner: []byte{0x11, 0x22}, CSReply: []byte{}}
-	sh := entity.ClientShard{Shard: 2, Reclaimed: 5, LossPending: true, Revoked: true, Notify: []byte("n")}
+	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
+	cl := entity.ClientRecord{ID: 7, Protocol: entity.ProtocolNFSv4, Name: []byte("host"), Boot: [8]byte{7: 1},
+		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
+		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1, n2}}, Ended: true, Adapter: []byte{0x01, 0xAB}}
+	smb := entity.ClientRecord{ID: 8, Protocol: entity.ProtocolSMB, Name: []byte{0x11, 0x22}, Adapter: []byte{}}
 	op := entity.Open{ID: 9, Client: 7, Principal: alice, File: fid, Access: 0x1F, Privileged: true, Deny: 0x02,
 		Durability: entity.DurabilityPersistent, DeleteOnClose: true, DeleteBy: group,
 		Lease:     &entity.Lease{Key: [16]byte{15: 1}, ParentKey: [16]byte{15: 2}, State: 7, Epoch: 4},
@@ -36,14 +37,13 @@ func openCodecCases() []codecCase {
 	f16 := func(b byte) string { return strings.Repeat("00", 15) + hex.EncodeToString([]byte{b}) }
 	return []codecCase{
 		{"client", cl, encodeClient(cl),
-			"01" + "01" + "04" + hex.EncodeToString([]byte("host")) + "0000000000000001" + ph + "01" + gh + "010f" +
-				hexU32(3) + "01ab" + "01",
+			"01" + "01" + "04" + hex.EncodeToString([]byte("host")) + "0000000000000001" + ph + "01" + "02" +
+				f16(1) + f16(2) + "01" + "02" + f16(1) + f16(2) + "01" + "0201ab",
 			func(b []byte) (any, error) { return decodeClient(7, b) }},
 		{"smb client", smb, encodeClient(smb),
-			"01" + "02" + "021122" + "0000000000000000" + "00" + strings.Repeat("00", 16) + "00" + hexU32(0) + "00" + "00",
+			"01" + "02" + "021122" + "0000000000000000" + "00" + strings.Repeat("00", 16) + "00" + "00" +
+				f16(0) + f16(0) + "00" + "00" + "00" + "00",
 			func(b []byte) (any, error) { return decodeClient(8, b) }},
-		{"client shard", sh, encodeClientShard(sh), "01" + hexU32(5) + "01" + "01" + "016e",
-			func(b []byte) (any, error) { return decodeClientShard(2, b) }},
 		{"client id", entity.ClientID(7), encodeClientID(7), "01" + hexU64(7),
 			func(b []byte) (any, error) { return decodeClientID(b) }},
 		{"open", op, encodeOpen(op),
@@ -98,7 +98,7 @@ func TestOpenKeyGolden(t *testing.T) {
 		{"delete pending", deletePendingKey(sid, fid), "01" + s + f + "0f"},
 		{"client", clientKey(7), "35" + hexU64(7)},
 		{"client shard", clientShardKey(7, 2), "35" + hexU64(7) + "01" + hexU64(2)},
-		{"client owner", clientOwnerKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "02" + "1100ff" + "0001"},
+		{"client name", clientNameKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "02" + "1100ff" + "0001"},
 		{"nsm", nsmKey(), "2a"},
 		{"ids", idKey(byte(IDOpen)), "3a02"},
 	} {

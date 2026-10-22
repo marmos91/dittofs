@@ -192,16 +192,16 @@ func durableOpenIndexKey(share entity.ShareID, shard uint64, file entity.FileID,
 
 func clientKey(id entity.ClientID) []byte { return keys.Uint64([]byte{keys.KindCL}, uint64(id)) }
 
-func clientShardKey(id entity.ClientID, shard uint64) []byte {
-	return keys.Uint64(append(clientKey(id), keys.CLSh), shard)
+func clientShardKey(id entity.ClientID, shard entity.ShardID) []byte {
+	return keys.Uint64(append(clientKey(id), keys.CLSh), uint64(shard))
 }
 
 func clientShardsPrefix(id entity.ClientID) []byte { return append(clientKey(id), keys.CLSh) }
 
-// clientOwnerKey is the owner index: a client's own name for itself, under
-// its protocol, to its ClientID.
-func clientOwnerKey(p entity.Protocol, owner []byte) []byte {
-	return keys.String([]byte{keys.KindCLO, byte(p)}, owner)
+// clientNameKey is the name index: a client's own name for itself, under its
+// protocol, to its ClientID.
+func clientNameKey(p entity.Protocol, name []byte) []byte {
+	return keys.String([]byte{keys.KindCLO, byte(p)}, name)
 }
 
 func nsmKey() []byte { return []byte{keys.KindNSM} }
