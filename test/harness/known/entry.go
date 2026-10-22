@@ -23,6 +23,7 @@ type Entry struct {
 	Where        map[string][]string `yaml:"where,omitempty"`        // where it applies; everywhere when empty
 	Intermittent bool                `yaml:"intermittent,omitempty"` // it fails on some runs only, so a pass isn't unexpected
 	Line         int                 `yaml:"-"`                      // its line in the file
+	quarantined  bool                // it comes from the quarantine list, so it grades a failure quarantined
 }
 
 // The values an entry's fields take.
@@ -132,4 +133,13 @@ func (e Entry) applies(at map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// matches reports whether the entry stands for the result named name: as
+// Match has it, or, for a quarantine entry, which names one test, exactly.
+func (e Entry) matches(name string) bool {
+	if e.quarantined {
+		return e.Test == name
+	}
+	return Match(e.Test, name)
 }

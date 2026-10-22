@@ -22,11 +22,12 @@ var failures = regexp.MustCompile(`^\d+ (failed|passed unexpectedly): `)
 // Baseline is the results of the cell named cell, in the run in dir, as
 // smbtorture's baseline file: a snapshot of them, which grades nothing. Each
 // result counts as smbtorture's scripts counted it: a failure, known or new,
-// by its grade; a pass by the tool's own status, so an unexpected pass is a
-// pass; and anything else as a skip, an expected skip and the draw its reader
-// excuses included. A sub-suite is a name's first two dot-separated parts,
-// and suites and names sort byte by byte, so the file is the same on every
-// machine. smbtorture's version comes from the cell's log.
+// by its grade, and a quarantined one as known; a pass, quarantined or not,
+// by the tool's own status, so an unexpected pass is a pass; and anything
+// else as a skip, an expected skip and the draw its reader excuses included.
+// A sub-suite is a name's first two dot-separated parts, and suites and names
+// sort byte by byte, so the file is the same on every machine. smbtorture's
+// version comes from the cell's log.
 //
 // A run of a checkout with changes is an error, since its commit doesn't say
 // what ran. So is a cell that didn't run to its end, whose lost tests would
@@ -66,7 +67,7 @@ func Baseline(dir, cell string) ([]byte, error) {
 		case t.Grade == New:
 			class, line = fail, t.Name+" **(NEW)**"
 			newFails++
-		case t.Grade == Known:
+		case t.Grade == Known, t.Grade == Quarantined && t.RawStatus == Failed:
 			class, line = fail, t.Name+" _(known)_"
 			knownFails++
 		case cmp.Or(t.RawStatus, t.Status) == Passed:

@@ -1,0 +1,8 @@
+# test/harness/quarantine.yaml: flaky tests, failing on some runs and not others. A test listed
+# here still runs and its result is recorded, graded quarantined, but its failure never fails a run
+# and never alerts. Each entry names the test's suite (its options included), the test (one name,
+# matched exactly, never a pattern), the issue tracking the flake, and the date the entry expires,
+# at most 90 days ahead: from that day it excuses nothing, and dt doctor, which lint-repo runs,
+# fails on it.
+#
+#   - { suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }

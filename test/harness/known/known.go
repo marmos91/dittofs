@@ -3,7 +3,8 @@
 // known-failure lists the scripts still use, and matches test names against
 // either as test/common/known-failures.sh does: kf_load is Load and
 // kf_match_pattern is Match. Both run on the cases in test/common/testdata.
-// Import converts such a list into a known file, once.
+// Import converts such a list into a known file, once. ParseQuarantine reads
+// the quarantine list, whose entries grade a cell's results beside it.
 package known
 
 import (
