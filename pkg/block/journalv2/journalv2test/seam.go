@@ -168,14 +168,21 @@ var _ storage.FS = (*Seam)(nil)
 //
 // How the seam applies each action:
 //   - Pass, Delay: performs the operation.
+//   - Drop on write: reports the whole write done, and the bytes reach the
+//     file, so ReadAt sees them, but they are lost: no Sync makes them
+//     durable, and Torn and Reordered never keep them.
+//   - Drop on sync or sync_dir: reports success and does nothing, so what
+//     was pending stays pending and a later sync can make it durable.
+//   - Tear on write: writes only the first N bytes, and reports the whole
+//     write done. A write of N bytes or fewer is written whole.
 //   - Fail: performs nothing and returns the action's Err. A failed sync
 //     also marks every pending change of the file lost: ReadAt still
 //     serves it, and no later Sync makes it durable. A failed sync_dir
 //     loses its directory changes the same way: they stay in the directory,
 //     and no later SyncDir makes them durable.
 //
-// Any other kind panics, naming the kind and the op: it is a mistake in the
-// test, not a storage fault.
+// Any other kind, or Drop or Tear on any other op, panics, naming the kind and
+// the op: it is a mistake in the test, not a storage fault.
 func (s *Seam) SetFault(f sim.Fault) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,19 +202,31 @@ func (s *Seam) consult(op, key string) sim.FaultAction {
 	}
 
 	a := f.At(op, []byte(key))
-	switch a.Kind {
-	case sim.Pass, sim.Delay, sim.Fail:
-	default:
+	if !applies(a.Kind, op) {
 		panic(fmt.Sprintf("journalv2test: a %v fault on %s is not supported", a.Kind, op))
 	}
 
 	return a
 }
 
-// enter counts op on name and consults the fault. It returns holding mu,
-// unless the fault fails the call: then it returns the fault's error, without
-// mu.
-func (s *Seam) enter(op, name string) error {
+// applies reports whether the seam can apply a fault of kind k to op.
+func applies(k sim.FaultKind, op string) bool {
+	switch k {
+	case sim.Pass, sim.Delay, sim.Fail:
+		return true
+	case sim.Drop:
+		return op == OpWrite || op == OpSync || op == OpSyncDir
+	case sim.Tear:
+		return op == OpWrite
+	default:
+		return false
+	}
+}
+
+// enter counts op on name and consults the fault. It returns the fault's
+// action holding mu, unless the fault fails the call: then it returns the
+// fault's error, without mu.
+func (s *Seam) enter(op, name string) (sim.FaultAction, error) {
 	s.mu.Lock()
 	s.count(op, name)
 	s.mu.Unlock()
@@ -221,10 +240,10 @@ func (s *Seam) enter(op, name string) error {
 		}
 
 		s.mu.Unlock()
-		return &fs.PathError{Op: op, Path: name, Err: a.Err}
+		return a, &fs.PathError{Op: op, Path: name, Err: a.Err}
 	}
 
-	return nil
+	return a, nil
 }
 
 // count records one call of op on name; the caller holds mu.
@@ -248,7 +267,7 @@ func (s *Seam) CallsFor(op, name string) int {
 }
 
 func (s *Seam) Create(name string) (storage.File, error) {
-	if err := s.enter(OpCreate, name); err != nil {
+	if _, err := s.enter(OpCreate, name); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -267,7 +286,7 @@ func (s *Seam) Create(name string) (storage.File, error) {
 }
 
 func (s *Seam) Open(name string) (storage.File, error) {
-	if err := s.enter(OpOpen, name); err != nil {
+	if _, err := s.enter(OpOpen, name); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -292,7 +311,7 @@ func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
 }
 
 func (s *Seam) Rename(oldName, newName string) error {
-	if err := s.enter(OpRename, oldName); err != nil {
+	if _, err := s.enter(OpRename, oldName); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -343,7 +362,7 @@ func (s *Seam) Rename(oldName, newName string) error {
 }
 
 func (s *Seam) Remove(name string) error {
-	if err := s.enter(OpRemove, name); err != nil {
+	if _, err := s.enter(OpRemove, name); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -373,7 +392,7 @@ func (s *Seam) toStash(n *node) error {
 }
 
 func (s *Seam) List() ([]string, error) {
-	if err := s.enter(OpList, ""); err != nil {
+	if _, err := s.enter(OpList, ""); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -390,10 +409,15 @@ func (s *Seam) List() ([]string, error) {
 }
 
 func (s *Seam) SyncDir() error {
-	if err := s.enter(OpSyncDir, ""); err != nil {
+	a, err := s.enter(OpSyncDir, "")
+	if err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
+
+	if a.Kind == sim.Drop {
+		return nil
+	}
 
 	if s.dirSnap != nil {
 		s.replayDirLog()
@@ -888,7 +912,7 @@ var _ storage.File = (*seamFile)(nil)
 // with ErrClosed before the fault is consulted, and again after it: a Crash
 // may have closed the file while the fault delayed the call, and the call
 // must not then act on the node a new handle is using.
-func (sf *seamFile) enter(op string) error {
+func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	s := sf.seam
 
 	s.mu.Lock()
@@ -897,7 +921,7 @@ func (sf *seamFile) enter(op string) error {
 	s.mu.Unlock()
 
 	if closed {
-		return sf.closedErr(op)
+		return sim.FaultAction{}, sf.closedErr(op)
 	}
 
 	a := s.consult(op, sf.name)
@@ -905,7 +929,7 @@ func (sf *seamFile) enter(op string) error {
 	s.mu.Lock()
 	if sf.closed {
 		s.mu.Unlock()
-		return sf.closedErr(op)
+		return sim.FaultAction{}, sf.closedErr(op)
 	}
 
 	if a.Kind == sim.Fail {
@@ -914,10 +938,10 @@ func (sf *seamFile) enter(op string) error {
 		}
 
 		s.mu.Unlock()
-		return &fs.PathError{Op: op, Path: sf.name, Err: a.Err}
+		return a, &fs.PathError{Op: op, Path: sf.name, Err: a.Err}
 	}
 
-	return nil
+	return a, nil
 }
 
 func (sf *seamFile) closedErr(op string) error {
@@ -927,7 +951,7 @@ func (sf *seamFile) closedErr(op string) error {
 func (sf *seamFile) Name() string { return sf.name }
 
 func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
-	if err := sf.enter(OpRead); err != nil {
+	if _, err := sf.enter(OpRead); err != nil {
 		return 0, err
 	}
 	defer sf.seam.mu.Unlock()
@@ -943,7 +967,7 @@ func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
 // what is known to have reached it is what a Sync covered. A device may hold
 // more, but a test cannot rely on that, so the seam returns the durable image.
 func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
-	if err := sf.enter(OpReadDirect); err != nil {
+	if _, err := sf.enter(OpReadDirect); err != nil {
 		return 0, err
 	}
 	defer sf.seam.mu.Unlock()
@@ -996,10 +1020,17 @@ func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
 }
 
 func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
-	if err := sf.enter(OpWrite); err != nil {
+	a, err := sf.enter(OpWrite)
+	if err != nil {
 		return 0, err
 	}
 	defer sf.seam.mu.Unlock()
+
+	// A torn write lands, and is recorded, only up to its tear.
+	data := p
+	if a.Kind == sim.Tear && a.N < int64(len(p)) {
+		data = p[:a.N]
+	}
 
 	size, err := sf.size()
 	if err != nil {
@@ -1008,19 +1039,23 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 
 	var old []byte
 	if off < size {
-		old = make([]byte, min(int64(len(p)), size-off))
+		old = make([]byte, min(int64(len(data)), size-off))
 		if _, err := sf.f.ReadAt(old, off); err != nil {
 			return 0, err
 		}
 	}
 
-	// decision: a failed write records the part of p the file's size after
-	// the call allows, not p[:n]. os.File.WriteAt reports n == 0 when a write
-	// fails part-way, even if some of p reached the file, and a byte left
+	// decision: a failed write records the part of data the file's size after
+	// the call allows, not data[:n]. os.File.WriteAt reports n == 0 when a write
+	// fails part-way, even if some of it reached the file, and a byte left
 	// unrecorded would survive a crash. Recording a byte that never landed is
 	// harmless: its undo restores what old holds, which was there anyway.
-	n, err := sf.f.WriteAt(p, off)
-	landed := int64(len(p))
+	//
+	// A dropped write is recorded lost: it reaches the file, as a write the
+	// device acknowledged and never stored, so ReadAt sees it and no Sync
+	// makes it durable.
+	n, err := sf.f.WriteAt(data, off)
+	landed := int64(len(data))
 	if err != nil {
 		after, serr := sf.size()
 		if serr != nil {
@@ -1033,13 +1068,20 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 		sf.record(change{
 			kind:    changeWrite,
 			off:     off,
-			data:    append([]byte(nil), p[:landed]...),
+			data:    append([]byte(nil), data[:landed]...),
 			old:     old[:min(int64(len(old)), landed)],
 			oldSize: size,
+			lost:    a.Kind == sim.Drop,
 		})
 	}
 
-	return n, err
+	if err != nil {
+		return n, err
+	}
+
+	// A torn write reports itself whole, as a device that acknowledged it
+	// and kept only part would.
+	return len(p), nil
 }
 
 // Allocate extends the file to cover the n bytes at off, as sparse space that
@@ -1049,7 +1091,7 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 // test components may use the standard library only. A full device is a
 // fault the test injects, not something this call reaches.
 func (sf *seamFile) Allocate(off, n int64) error {
-	if err := sf.enter(OpAllocate); err != nil {
+	if _, err := sf.enter(OpAllocate); err != nil {
 		return err
 	}
 	defer sf.seam.mu.Unlock()
@@ -1068,7 +1110,7 @@ func (sf *seamFile) Allocate(off, n int64) error {
 }
 
 func (sf *seamFile) Truncate(size int64) error {
-	if err := sf.enter(OpTruncate); err != nil {
+	if _, err := sf.enter(OpTruncate); err != nil {
 		return err
 	}
 	defer sf.seam.mu.Unlock()
@@ -1101,10 +1143,15 @@ func (sf *seamFile) Truncate(size int64) error {
 }
 
 func (sf *seamFile) Sync() error {
-	if err := sf.enter(OpSync); err != nil {
+	a, err := sf.enter(OpSync)
+	if err != nil {
 		return err
 	}
 	defer sf.seam.mu.Unlock()
+
+	if a.Kind == sim.Drop {
+		return nil
+	}
 
 	return sf.sync()
 }
@@ -1126,7 +1173,7 @@ func (sf *seamFile) Size() (int64, error) {
 // frees the descriptor whatever it returns. Keeping the handle would show
 // up as a descriptor leak in the code under test that the seam caused.
 func (sf *seamFile) Close() error {
-	err := sf.enter(OpClose)
+	_, err := sf.enter(OpClose)
 	if err == nil {
 		defer sf.seam.mu.Unlock()
 		return sf.closeLocked()

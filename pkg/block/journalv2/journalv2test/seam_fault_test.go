@@ -414,8 +414,15 @@ func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
 		call func(s *Seam, f storage.File)
 	}{
 		{OpRename, sim.Drop, func(s *Seam, f storage.File) { s.Rename("seg", "other") }},
+		{OpRemove, sim.Drop, func(s *Seam, f storage.File) { s.Remove("seg") }},
+		{OpCreate, sim.Drop, func(s *Seam, f storage.File) { s.Create("new") }},
 		{OpClose, sim.Drop, func(s *Seam, f storage.File) { f.Close() }},
+		{OpAllocate, sim.Drop, func(s *Seam, f storage.File) { f.Allocate(0, 8) }},
+		{OpTruncate, sim.Drop, func(s *Seam, f storage.File) { f.Truncate(0) }},
+		{OpRead, sim.Drop, func(s *Seam, f storage.File) { f.ReadAt(make([]byte, 1), 0) }},
 		{OpSync, sim.Tear, func(s *Seam, f storage.File) { f.Sync() }},
+		{OpReadDirect, sim.Tear, func(s *Seam, f storage.File) { f.ReadAtDirect(make([]byte, 1), 0) }},
+		{OpSyncDir, sim.Tear, func(s *Seam, f storage.File) { s.SyncDir() }},
 		{OpRead, sim.Reorder, func(s *Seam, f storage.File) { f.ReadAt(make([]byte, 1), 0) }},
 	}
 	for _, tc := range cases {
@@ -707,8 +714,6 @@ func wantNames(t *testing.T, s *Seam, want ...string) {
 	}
 }
 
-func ptr(s string) *string { return &s }
-
 func TestFailedSyncDirLosesItsChangesForGood(t *testing.T) {
 	s := newSeam(t)
 	if _, err := s.Create("a"); err != nil {
@@ -759,7 +764,7 @@ func TestARenameAfterAFailedSyncDirIsDurable(t *testing.T) {
 	syncDir(t, s)
 
 	wantDurable(t, s, "a", nil)
-	wantDurable(t, s, "b", ptr("x"))
+	wantDurable(t, s, "b", new("x"))
 
 	crash(t, s)
 	wantNames(t, s, "b")
@@ -775,7 +780,7 @@ func TestARemoveLostByAFailedSyncDirIsUndoneByACrash(t *testing.T) {
 	failSyncDir(t, s)
 	syncDir(t, s) // must not unlink the removed file: a crash brings it back
 
-	wantDurable(t, s, "a", ptr("keep"))
+	wantDurable(t, s, "a", new("keep"))
 
 	crash(t, s)
 	if got := onDisk(t, s, "a"); got != "keep" {
@@ -794,8 +799,8 @@ func TestAReplacingRenameLostByAFailedSyncDirIsUndoneByACrash(t *testing.T) {
 	failSyncDir(t, s)
 	syncDir(t, s)
 
-	wantDurable(t, s, "x", ptr("new"))
-	wantDurable(t, s, "a", ptr("old"))
+	wantDurable(t, s, "x", new("new"))
+	wantDurable(t, s, "a", new("old"))
 
 	crash(t, s)
 	if got := onDisk(t, s, "x") + "," + onDisk(t, s, "a"); got != "new,old" {
@@ -820,7 +825,7 @@ func TestAFileReappendedAfterAFailedSyncDirIsDurable(t *testing.T) {
 	syncFile(t, f)
 	syncDir(t, s)
 
-	wantDurable(t, s, "a", ptr("new"))
+	wantDurable(t, s, "a", new("new"))
 
 	crash(t, s)
 	if got := onDisk(t, s, "a"); got != "new" {
@@ -843,7 +848,7 @@ func TestARenameAfterALostRenameTakesTheFileFromItsDurableName(t *testing.T) {
 
 	wantDurable(t, s, "a", nil)
 	wantDurable(t, s, "b", nil)
-	wantDurable(t, s, "c", ptr("data"))
+	wantDurable(t, s, "c", new("data"))
 
 	crash(t, s)
 	wantNames(t, s, "c")
@@ -913,8 +918,224 @@ func TestARenameAfterAFailedSyncDirDeletesTheDurableOldName(t *testing.T) {
 	syncDir(t, s)
 
 	wantDurable(t, s, "a", nil)
-	wantDurable(t, s, "b", ptr("new"))
+	wantDurable(t, s, "b", new("new"))
 
 	crash(t, s)
 	wantNames(t, s, "b")
+}
+
+// actOnce makes the next call of op take the action a, and every later call
+// pass.
+func actOnce(t *testing.T, s *Seam, op string, a sim.FaultAction) {
+	t.Helper()
+
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: op, Key: "*", Count: 1, Action: a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(sched)
+}
+
+var drop = sim.FaultAction{Kind: sim.Drop}
+
+func readAt(t *testing.T, f storage.File, n int) string {
+	t.Helper()
+
+	p := make([]byte, n)
+	got, err := f.ReadAt(p, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	return string(p[:got])
+}
+
+func readDirect(t *testing.T, f storage.File, n int) string {
+	t.Helper()
+
+	p := make([]byte, n)
+	got, err := f.ReadAtDirect(p, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	return string(p[:got])
+}
+
+func TestADroppedWriteIsReadButNeverDurable(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, drop)
+	if n, err := f.WriteAt([]byte("BB"), 2); n != 2 || err != nil {
+		t.Fatalf("a dropped write returned %d, %v; want 2, nil", n, err)
+	}
+	syncFile(t, f) // succeeds, and must not make the dropped write durable
+
+	if got := readAt(t, f, 16); got != "xxBBxxxx" {
+		t.Fatalf("ReadAt: %q, want the page cache's %q", got, "xxBBxxxx")
+	}
+	if got := readDirect(t, f, 16); got != "xxxxxxxx" {
+		t.Fatalf("ReadAtDirect: %q, want the durable %q", got, "xxxxxxxx")
+	}
+	wantDurable(t, s, "seg", new("xxxxxxxx"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxxxxxxx" {
+		t.Fatalf("after the crash the file holds %q, want %q", got, "xxxxxxxx")
+	}
+}
+
+func TestASyncedWriteOverADroppedOneIsDurable(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, drop)
+	write(t, f, "BB", 2)
+	write(t, f, "C", 3) // over half of the dropped write
+	syncFile(t, f)
+
+	wantDurable(t, s, "seg", new("xxxCxxxx"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxxCxxxx" {
+		t.Fatalf("after the crash the file holds %q, want %q", got, "xxxCxxxx")
+	}
+}
+
+func TestADroppedWriteThenAnExtendingWrite(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, drop)
+	write(t, f, "BBBB", 8) // extends the file, dropped
+	syncFile(t, f)
+	wantDurable(t, s, "seg", new("xxxxxxxx"))
+
+	write(t, f, "Z", 12) // past the dropped bytes
+	syncFile(t, f)
+
+	want := "xxxxxxxx\x00\x00\x00\x00Z" // the dropped bytes are a hole
+	wantDurable(t, s, "seg", &want)
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != want {
+		t.Fatalf("after the crash the file holds %q, want %q", got, want)
+	}
+}
+
+func TestADroppedWriteThenATruncate(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, drop)
+	write(t, f, "BB", 2)
+	if err := f.Truncate(4); err != nil {
+		t.Fatal(err)
+	}
+	syncFile(t, f)
+
+	wantDurable(t, s, "seg", new("xxxx"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxxx" {
+		t.Fatalf("after the crash the file holds %q, want %q", got, "xxxx")
+	}
+}
+
+func TestADroppedSyncLeavesTheWritesPending(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "aaaa")
+	write(t, f, "bb", 4)
+
+	actOnce(t, s, OpSync, drop)
+	if err := f.Sync(); err != nil {
+		t.Fatalf("a dropped sync returned %v, want nil", err)
+	}
+	wantDurable(t, s, "seg", new("aaaa"))
+
+	syncFile(t, f) // a later sync still covers the writes
+	wantDurable(t, s, "seg", new("aaaabb"))
+}
+
+func TestADroppedSyncDirLeavesTheCreatePending(t *testing.T) {
+	s := newSeam(t)
+	if _, err := s.Create("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	actOnce(t, s, OpSyncDir, drop)
+	if err := s.SyncDir(); err != nil {
+		t.Fatalf("a dropped SyncDir returned %v, want nil", err)
+	}
+	wantDurable(t, s, "a", nil)
+
+	crash(t, s)
+	wantNames(t, s)
+}
+
+func TestADroppedSyncDirLosesNothing(t *testing.T) {
+	s := newSeam(t)
+	if _, err := s.Create("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	actOnce(t, s, OpSyncDir, drop)
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s) // unlike after a failure, covers the create
+
+	wantDurable(t, s, "a", new(""))
+}
+
+func TestTearWritesOnlyTheFirstNBytes(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxxxxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 3})
+	if n, err := f.WriteAt([]byte("ABCDE"), 2); n != 5 || err != nil {
+		t.Fatalf("a write torn at 3 returned %d, %v; want the whole 5, nil", n, err)
+	}
+
+	if got := readAt(t, f, 16); got != "xxABCxxx" {
+		t.Fatalf("ReadAt: %q, want %q", got, "xxABCxxx")
+	}
+
+	syncFile(t, f)
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxABCxxx" {
+		t.Fatalf("after a sync and a crash the file holds %q, want %q", got, "xxABCxxx")
+	}
+}
+
+func TestTearPastTheWriteWritesItWhole(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 4096})
+	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
+		t.Fatalf("a write shorter than its tear returned %d, %v; want 2, nil", n, err)
+	}
+
+	syncFile(t, f)
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xABx" {
+		t.Fatalf("after a sync and a crash the file holds %q, want %q", got, "xABx")
+	}
+}
+
+func TestTornWriteRecordsOnlyTheBytesWritten(t *testing.T) {
+	// Reordered replays the bytes a write recorded; a torn write must offer
+	// only the ones that reached the file.
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := durableFile(t, s, "seg", "")
+
+		actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 2})
+		f.WriteAt([]byte("ABCD"), 0)
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "seg"); got != "" && got != "AB" {
+			t.Fatalf("seed %d left %q, want nothing or the 2 bytes written", seed, got)
+		}
+	}
 }
