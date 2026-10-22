@@ -184,22 +184,15 @@ func TestServicesUpOnLoopback(t *testing.T) {
 	}
 }
 
-// kmip reads its pins from start-pykmip.sh, quoted or not, and writes its
-// environment file whole or not at all: a failed provisioning leaves none.
+// kmip runs its pinned PyKMIP on loopback with certificates of its own, and
+// writes its environment file whole or not at all: a failed provisioning
+// leaves none.
 func TestKMIP(t *testing.T) {
 	script, _ := envCopy(t)
 	calls := fakeTools(t)
 	t.Setenv("FAKE_DOCKER_STATUS", "0")
-	repo := t.TempDir()
-	gen, err := os.ReadFile("../../test/kmip/gen-certs.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(repo, "test", "kmip", "gen-certs.sh"), string(gen))
-	writeFile(t, filepath.Join(repo, "test", "kmip", "start-pykmip.sh"),
-		"IMAGE=\"python:3.11-slim\"\nPYKMIP_VERSION='0.10.0'  # pinned\n")
-	t.Setenv("DITTOFS_REPO", repo)
-	envFile := filepath.Join(filepath.Dir(script), "state", "kmip.env")
+	state := filepath.Join(filepath.Dir(script), "state")
+	envFile := filepath.Join(state, "kmip.env")
 
 	if out, status := envRun(t, script, "services", "up", "kmip"); status != 0 {
 		t.Fatalf("services up kmip: exit status %d\n%s", status, out)
@@ -207,6 +200,16 @@ func TestKMIP(t *testing.T) {
 	got := takeCalls(t, calls)
 	if !strings.Contains(got, "-p 127.0.0.1:5696:5696 ") || !strings.Contains(got, "docker.io/library/python:3.11-slim sh -c pip install --no-cache-dir pykmip==0.10.0 ") {
 		t.Errorf("the run doesn't use the pins on loopback:\n%s", got)
+	}
+	certs := filepath.Join(state, "kmip-certs")
+	if !strings.Contains(got, "-v "+certs+":/certs:ro ") {
+		t.Errorf("the run doesn't mount %s:\n%s", certs, got)
+	}
+	for _, name := range []string{"server", "client"} {
+		cert := filepath.Join(certs, name+"-cert.pem")
+		if out, err := exec.Command("openssl", "verify", "-CAfile", filepath.Join(certs, "ca-cert.pem"), cert).CombinedOutput(); err != nil {
+			t.Errorf("%s isn't the CA's: %v\n%s", cert, err, out)
+		}
 	}
 	if env, _ := os.ReadFile(envFile); !strings.HasPrefix(string(env), "DITTOFS_TEST_KMIP=1\n") {
 		t.Errorf("kmip.env: %q", env)
