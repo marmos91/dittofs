@@ -1662,13 +1662,13 @@ to post: it keeps `ci-health.yml`'s warning on pull requests until it moves in.
   label too. It is always the same issue: the first post creates it, and later posts reopen and
   close it, so it remembers a cell not run once while develop is green.
 - The issue body is the current failing set, from `summary.json`, with links to each failure's own
-  issue (§4.4), and, as JSON in a comment at its end, the set and the run posted last, which the next
-  post reads: a re-run of the same workflow run posts nothing, so a run counts once. A cell that
-  failed with no test to name is in the set as itself, as `dt run --ci` annotates it. The body is
-  rewritten, not commented, so watchers get one notification per change, not per run. A comment is
-  added only when the set of failing tests changes while the issue stays open; opening and closing
-  it notify by themselves. The body keeps 50 entries, the alerting ones first, then by cell and
-  test, within what GitHub allows.
+  issue (§4.4), and, as JSON in a comment at its end, the set and the run posted last, which the
+  next post reads: a re-run of the same workflow run posts nothing, so a run counts once. A cell
+  that failed with no test to name is in the set as itself, as `dt run --ci` annotates it. The body
+  is rewritten, not commented, so watchers get one notification per change, not per run. A comment
+  is added only when the set of failing tests changes while the issue stays open; opening and
+  closing it notify by themselves. The body keeps 50 entries, the alerting ones first, then by cell
+  and test, within what GitHub allows.
 - A run sets the entries of the cells it ran and keeps the rest; a cell that didn't run keeps its
   tests' entries, since it says nothing of them. The issue closes once nothing in its failing set
   fails a run on develop any more, in whichever tier runs it: each new failure has passed again, or
