@@ -1082,8 +1082,10 @@ the tracker as #1705's alarm did:
   fixes the test does;
 - known, quarantined and flaky tests never get one: only a result graded `new` does;
 - issues are found again by a label and the test's ID, so a test has one issue: the label
-  `develop-red`, and the title `CELL TEST fails on develop`. The ID is the cell and the test, as
-  CTRF names a test by its suite, so a test failing in two cells has an issue in each;
+  `develop-red`, and the title `CELL TEST fails on develop`, cut to the 256 characters GitHub
+  allows. The ID is the cell and the test, as CTRF names a test by its suite, so a test failing in
+  two cells has an issue in each. A test's issue GitHub refuses doesn't stop the post: the other
+  tests' issues and the develop-status issue are still written, and the post fails after them;
 - a tier run with more than 10 new failing tests posts no issue per test: something systemic broke,
   and the failing set goes to the develop-status issue only;
 - an issue carries the test, the failing line (its message's first line), the commit and the log

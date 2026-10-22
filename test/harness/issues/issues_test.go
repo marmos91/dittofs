@@ -17,7 +17,8 @@ import (
 // tracker answers the calls Post makes as GitHub's REST API does: it lists
 // issues by label and state a page at a time, creates, edits and comments,
 // and refuses a request without the token, a write with a token that can only
-// read, and a body longer than GitHub allows.
+// read, a body or a title longer than GitHub allows, and a comment on a locked
+// issue.
 type tracker struct {
 	issues   []*tracked // issue N is issues[N-1]
 	comments map[int][]string
@@ -28,6 +29,7 @@ type tracker struct {
 type tracked struct {
 	issue
 	labels []string
+	locked bool
 }
 
 func newTracker(t *testing.T) (*tracker, Client) {
@@ -52,12 +54,16 @@ func newTracker(t *testing.T) (*tracker, Client) {
 			Labels             []string
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
-		if len(in.Body) > 65536 {
-			http.Error(w, "body is too long (maximum is 65536 characters)", http.StatusUnprocessableEntity)
+		if len(in.Body) > 65536 || len([]rune(in.Title)) > 256 {
+			http.Error(w, "body or title is too long", http.StatusUnprocessableEntity)
 			return
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/repos/o/r/issues")
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/comments"))
+		if n > 0 && g.issues[n-1].locked && strings.HasSuffix(path, "/comments") {
+			http.Error(w, "Issue is locked", http.StatusForbidden)
+			return
+		}
 		var out any
 		switch {
 		case r.Method == http.MethodGet && path == "":
@@ -72,7 +78,7 @@ func newTracker(t *testing.T) (*tracker, Client) {
 			}
 			out = all[min(max(page-1, 0)*per, len(all)):min(max(page, 1)*per, len(all))]
 		case r.Method == http.MethodPost && path == "":
-			g.issues = append(g.issues, &tracked{issue{Number: len(g.issues) + 1, Title: in.Title, Body: in.Body, State: "open"}, in.Labels})
+			g.issues = append(g.issues, &tracked{issue{Number: len(g.issues) + 1, Title: in.Title, Body: in.Body, State: "open"}, in.Labels, false})
 			out = g.issues[len(g.issues)-1].issue
 		case r.Method == http.MethodPatch && n > 0:
 			is := g.issues[n-1]
@@ -93,7 +99,7 @@ func newTracker(t *testing.T) (*tracker, Client) {
 
 // add puts an issue in the tracker, as someone or something before dt did.
 func (g *tracker) add(title, state string) {
-	g.issues = append(g.issues, &tracked{issue{Number: len(g.issues) + 1, Title: title, State: state}, []string{label}})
+	g.issues = append(g.issues, &tracked{issue{Number: len(g.issues) + 1, Title: title, State: state}, []string{label}, false})
 }
 
 // titled are the issues titled title.
@@ -320,6 +326,37 @@ func TestPlannedCellWithoutARun(t *testing.T) {
 		if is := g.titled(statusTitle); len(is) != 1 || is[0].State != state || !strings.Contains(is[0].Body, row) {
 			t.Errorf("post %d: want the issue %s with %q, have %+v", i+1, state, row, is)
 		}
+	}
+}
+
+// A test's issue GitHub refuses, as a comment on a locked issue, doesn't stop
+// the post: the other tests' issues and the develop-status issue are still
+// written, and Post returns the error. A title longer than GitHub's 256
+// characters, as a Go subtest's under its package path, is cut to fit.
+func TestTestIssueErrorsDontStopThePost(t *testing.T) {
+	g, c := newTracker(t)
+	g.add("unit pkg TestLocked fails on develop", "open")
+	g.issues[0].locked = true
+	pkg := "github.com/marmos91/dittofs/pkg/block/engine"
+	long := "TestLong/" + strings.Repeat("a_case_", 40)
+	cell := report.Cell{Name: "unit", Result: report.Failed, Tests: []report.Test{
+		{Name: "TestLocked", Suite: []string{"pkg"}, Status: report.Failed, Grade: report.New},
+		{Name: long, Suite: []string{pkg}, Status: report.Failed, Grade: report.New},
+	}}
+	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-hhhhhhh1", "merge", cell)}, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Post(context.Background(), []report.Run{run("20261022T110000Z-hhhhhhh2", "merge", cell)}, nil, io.Discard); err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Errorf("a refused comment: %v", err)
+	}
+	status := g.titled(statusTitle)[0]
+	for _, row := range []string{"| `unit` | `pkg TestLocked` | new | 2 |  |", " " + long + "` | new | 2 | #3 |"} {
+		if !strings.Contains(status.Body, row) {
+			t.Errorf("no row %q in\n%s", row, status.Body)
+		}
+	}
+	if title := g.issues[2].Title; !strings.HasPrefix(title, "unit "+pkg+" "+long[:100]) || len([]rune(title)) > 256 {
+		t.Errorf("the long test's issue: %q", title)
 	}
 }
 

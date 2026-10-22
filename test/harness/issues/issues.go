@@ -45,8 +45,10 @@ const (
 	// together. A run with more broke something systemic: its job summaries
 	// name the rest, and an entry left out counts its runs from 1 again.
 	maxEntries = 50
-	// maxLine is the most characters of a failing line a test's issue shows.
-	maxLine = 200
+	// maxLine is the most characters of a failing line a test's issue shows,
+	// and maxTitle the most of a title, which GitHub refuses longer.
+	maxLine  = 200
+	maxTitle = 256
 	// marker begins the failing set, as JSON, in a comment at the end of the
 	// develop-status issue's body, where the next post reads it.
 	marker = "<!-- dt failing set: "
@@ -164,9 +166,10 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 // the failing set.
 // Unless more than maxFailing tests failed anew, each new failure that has
 // failed 2 runs in a row gets an issue of its own, or a comment on the one open
-// for it, once: the develop-status issue links it from then on. Post refuses
-// any run but develop's merge and nightly runs, and says on out what it
-// posted.
+// for it, once: the develop-status issue links it from then on. A test's issue
+// GitHub refuses doesn't stop the rest: Post returns its error with any
+// other. Post refuses any run but develop's merge and nightly runs, and says
+// on out what it posted.
 //
 // decision: two posts at once, as a merge run's and a nightly run's ending
 // together, can lose one's update of the develop-status issue: the next run of
@@ -234,28 +237,30 @@ func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, o
 	more := max(0, len(set)-maxEntries)
 	set = set[:len(set)-more]
 
+	var errs []error
 	for i, e := range set {
 		t, now := failing[e.key()]
 		if !now || e.Runs < 2 || e.Issue != 0 || len(failing) > maxFailing {
 			continue
 		}
-		title := e.Cell + " " + e.Test + " fails on develop"
+		title := cut(e.Cell+" "+e.Test+" fails on develop", maxTitle)
 		text := c.testText(e, t, last)
-		if n := open[title]; n != 0 {
+		n, did := open[title], "commented"
+		if n != 0 {
 			err = c.call(ctx, http.MethodPost, fmt.Sprintf("/issues/%d/comments", n), map[string]string{"body": text}, nil)
-			set[i].Issue = n
-			_, _ = fmt.Fprintf(out, "#%d: commented, %s\n", n, title)
 		} else {
 			var created issue
 			err = c.call(ctx, http.MethodPost, "/issues", map[string]any{"title": title, "body": text, "labels": []string{label}}, &created)
-			set[i].Issue = created.Number
-			_, _ = fmt.Fprintf(out, "#%d: opened, %s\n", created.Number, title)
+			n, did = created.Number, "opened"
 		}
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
+		set[i].Issue = n
+		_, _ = fmt.Fprintf(out, "#%d: %s, %s\n", n, did, title)
 	}
-	return c.writeStatus(ctx, status, old, set, more, last, out)
+	return errors.Join(append(errs, c.writeStatus(ctx, status, old, set, more, last, out))...)
 }
 
 // writeStatus writes the failing set to the develop-status issue, creating the
@@ -371,12 +376,17 @@ func changes(old, set []entry) string {
 // public.
 func (c Client) testText(e entry, t report.Test, last report.Run) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(t.Message), "\n")
-	line = strings.TrimSpace(line)
-	if r := []rune(line); len(r) > maxLine {
-		line = string(r[:maxLine]) + " ..."
-	}
+	line = cut(strings.TrimSpace(line), maxLine)
 	return fmt.Sprintf("%s in %s has failed %d runs in a row on develop.\n\n- Failing line: %s\n- Commit: %s\n- Log: %s\n",
 		report.Code(e.Test), report.Code(e.Cell), e.Runs, report.Code(line), last.Commit, cmp.Or(c.Log, "run "+last.Name))
+}
+
+// cut keeps s to n characters, and says when it dropped the rest.
+func cut(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-4]) + " ..."
+	}
+	return s
 }
 
 // issue is an issue as GitHub's API gives it, with the fields Post reads.
