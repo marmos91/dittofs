@@ -78,6 +78,10 @@ suites:
         # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
+        # decision: non-blocking, so a tripped gate shows on its job without turning develop red:
+        # the throughput gate measures on a shared runner, where a busy neighbour can trip it.
+        # Make it blocking once it runs on a host of its own.
+        blocking: false
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -88,7 +92,10 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      # decision: non-blocking, so a flaky run doesn't turn develop red: its tests against the Samba
+      # domain failed about one develop run in seven until the fixture started the domain once. Make
+      # it blocking once dt history gives it two weeks of runs with no failed or flaky test.
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge, blocking: false }
   operator:
     dir: k8s/dittofs-operator
     cmd:

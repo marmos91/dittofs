@@ -500,6 +500,7 @@ suites:
       nonrace:                          # the throughput and allocation gates that skip under -race
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
+        blocking: false                 # a tripped gate shows without turning develop red (§4.10)
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -510,7 +511,7 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge, blocking: false }   # until it has been green for two weeks (§4.3)
   operator:                             # its own Go module; the kustomize render check becomes a make target
     cmd: make -C k8s/dittofs-operator test lint manifests-verify
     tier: pr
@@ -1010,7 +1011,11 @@ its macOS and Windows options stay on `memory`, since their hosted runners can't
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
 wait for it (§4.8). That's the place for a check that should be seen before it can be trusted to
-block, such as the Windows unit run on PRs (§9). `blocking` may differ per tier.
+block, such as the Windows unit run on PRs (§9), and AD-DC: from 2026-10-08 to 2026-10-20 its
+tests against the Samba domain failed 14 of 95 develop runs, until the fixture started the domain
+once, and it blocks once `dt history` gives it two weeks of runs with no failed or flaky test. It's
+also the place for a check a shared runner can trip, such as the performance gates (§4.10).
+`blocking` may differ per tier.
 
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
@@ -1810,8 +1815,9 @@ a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
   PRs, non-blocking, as `bench-smoke.yml` did, and writes its results to its `{out}` (§4.6).
-  `unit --nonrace` runs nightly, as `perf-gates.yml` did: the throughput and allocation gates that
-  skip under `-race` and `-short` (#2999). The aggregate random-write gate joins once it has a
+  `unit --nonrace` runs nightly, non-blocking, as `perf-gates.yml` did in a workflow of its own, so
+  a tripped gate doesn't turn develop red: the throughput and allocation gates that skip under
+  `-race` and `-short` (#2999). The aggregate random-write gate joins once it has a
   baseline: without one it passes whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
