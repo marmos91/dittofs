@@ -12,10 +12,10 @@
 # tested by the e2e suite (e2e-tests.yml), which runs its Kerberos tests on PRs
 # that touch Kerberos code.
 #
-# The jobs differ in what they need around the suite — Docker Compose, a kernel
-# NFS mount and root, a localstack service — because the suites
-# genuinely differ there. What they share is the manifest, test/conformance/run.sh,
-# and the KNOWN_FAILURES grading contract.
+# The jobs differ in what they need around the suite, a kernel NFS mount and
+# root or a localstack service, because the suites genuinely differ there. What
+# they share is the manifest, test/conformance/run.sh, and the KNOWN_FAILURES
+# grading contract.
 
 name: Conformance Suites
 
@@ -54,7 +54,6 @@ on:
           - ''
           - cthon04
           - nfstest
-          - smbtorture    # its Kerberos option, the one smbtorture job left here
         default: ''
 
 permissions:
@@ -115,8 +114,8 @@ jobs:
   # The graders decide whether a suite is red at all, so they are guarded on
   # their own in about a second rather than only through a 40-minute run that
   # would have to fail first to reveal a grading regression. The common
-  # runner's, the known-failures parser's and the admission lease's tests run
-  # in Repo Checks (tests.yml).
+  # runner's and the known-failures parser's tests run in Repo Checks
+  # (tests.yml).
   graders:
     name: Grading logic
     runs-on: ubuntu-latest
@@ -124,9 +123,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Test the smbtorture grader
-        run: ./test/smb-conformance/smbtorture/parse-results_test.sh
 
       - name: Test the cthon04 grader
         run: ./test/nfs-mount/cthon04/parse-results_test.sh
@@ -221,97 +217,14 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Extra SMB jobs that are not a profile cell of any suite. smbtorture's own
-  # cells run in tests.yml; its Kerberos option runs here, through the
-  # suite's scripts, until it moves there too.
-  # ---------------------------------------------------------------------------
-  smbtorture-kerberos:
-    name: smbtorture Kerberos
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Off on presubmit: Kerberos is expensive and rarely regressing on an
-    # ordinary PR. Runs on push to develop, nightly, and a manual dispatch
-    # naming no suite or smbtorture.
-    if: github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'smbtorture')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # The self-contained KDC (test/smb-conformance/kdc) is started via the
-      # docker-compose "kerberos" profile by run.sh --kerberos, and Localstack
-      # with the bucket for badger-s3, the production profile, which dt's
-      # kerberos option runs too. No external KDC or secrets required.
-      #
-      # The filters cover Kerberos-sensitive operations, not just session setup:
-      # a truncated or garbled GSS session key surfaces on read and lock too.
-      # run.sh takes a single --filter, so iterate — one suite per invocation —
-      # to keep each run inside the harness's per-suite timeout budget.
-      #
-      # smb2.create is deliberately excluded: its known failures are catalogued
-      # only in the non-Kerberos KNOWN_FAILURES.md, so they would grade as NEW
-      # failures under --kerberos. Re-add once the Kerberos list covers it.
-      #
-      # Each filter grades into a results directory of its own. The parity
-      # jobs get them as one cell, smbtorture/kerberos, as the common runner
-      # writes one: the exit status, and the filters' grades, with the tests
-      # run only when every filter's grader counted them.
-      - name: Run smbtorture Kerberos
-        run: |
-          cd test/smb-conformance/smbtorture
-          filters=(smb2.session smb2.read smb2.lock)
-          rc=0
-          for f in "${filters[@]}"; do
-            DITTOFS_RESULTS_DIR="$PWD/../results/smbtorture-kerberos-$f" \
-              ./run.sh --profile badger-s3 --kerberos --filter "$f" --verbose || rc=$?
-          done
-          cell="$GITHUB_WORKSPACE/test/conformance/results/smbtorture/kerberos"
-          mkdir -p "$cell"
-          echo "$rc" > "$cell/status"
-          shopt -s nullglob
-          awk -v want="${#filters[@]}" -v out="$cell/grades" \
-            '$1 == "ran" { n += $2; r++; next } { print > out } END { if (r == want) print "ran", n > out }' \
-            ../results/smbtorture-kerberos-*/grades /dev/null
-          exit "$rc"
-
-      - name: Add step summary
-        if: always()
-        run: |
-          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
-          {
-            echo "## smbtorture Kerberos"
-            if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
-              cat "$RESULTS_DIR/summary.txt"
-            else
-              echo "No results found."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload results
-        if: always()
-        # A lost diagnostics zip must not invert a verdict the suite has already
-        # produced: the run step above decides pass or fail, this upload only
-        # preserves the evidence.
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: smbtorture-kerberos
-          path: |
-            test/smb-conformance/results/smbtorture-*/
-            test/conformance/results/
-          retention-days: 30
-
-  # ---------------------------------------------------------------------------
-  # Parity: cthon04's and nfstest's cells, and smbtorture's Kerberos one,
-  # through dt, beside the scripts' nfs-mount and Kerberos jobs, until the two
-  # give the same results on 5 consecutive runs
+  # Parity: cthon04's and nfstest's cells through dt, beside the scripts'
+  # nfs-mount job, until the two give the same results on 5 consecutive runs
   # (docs/internals/rfcs/rfc-29-test-harness.md). Never blocking: a red cell
   # or a difference fails its own job, and never the workflow run. They go
   # when the suites move into tests.yml.
   #
-  # decision: only at nightly, on the schedule and a dispatch naming a suite:
-  # cthon04's and nfstest's scripts run after no merge, so a dispatch naming
-  # no suite has no cells of theirs to compare. The Kerberos cell follows the
-  # same rule.
+  # decision: cthon04 and nfstest only at nightly: their scripts run after no
+  # merge, so a dispatch naming no suite has no cells of theirs to compare.
   # ---------------------------------------------------------------------------
   dt-plan:
     name: dt plan
@@ -339,7 +252,7 @@ jobs:
         run: |
           set -o pipefail
           cells="$(go run ./cmd/dt plan --tier nightly --json | jq -c --arg only "$ONLY" '[.cells[]
-            | select(.suite == "cthon04" or .suite == "nfstest" or .name == "smbtorture/kerberos")
+            | select(.suite == "cthon04" or .suite == "nfstest")
             | select($only == "" or .suite == $only)]')"
           echo "$cells" | jq .
           echo "cells=${cells}" >> "$GITHUB_OUTPUT"
@@ -447,7 +360,7 @@ jobs:
   parity:
     name: dt and the scripts, cell by cell
     runs-on: ubuntu-latest
-    needs: [dt-plan, dt, nfs-mount, smbtorture-kerberos]
+    needs: [dt-plan, dt, nfs-mount]
     if: ${{ !cancelled() && needs.dt-plan.result == 'success' }}
     timeout-minutes: 10
     continue-on-error: true
@@ -472,7 +385,7 @@ jobs:
           CELLS: ${{ needs.dt-plan.outputs.cells }}
         run: |
           set -o pipefail
-          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" cthon04 nfstest smbtorture | tee -a "$GITHUB_STEP_SUMMARY"
+          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" cthon04 nfstest | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   summary:
@@ -481,7 +394,7 @@ jobs:
     # Not on a cancelled run: its cells report `cancelled`, which says nothing
     # about the code.
     if: ${{ !cancelled() }}
-    needs: [matrix, graders, nfs-mount, smbtorture-kerberos]
+    needs: [matrix, graders, nfs-mount]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
