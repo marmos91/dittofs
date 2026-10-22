@@ -357,8 +357,11 @@ func (c *clients) down() {
 }
 
 // run runs a step of the clients' setup, logging it.
-func (c *clients) run(ctx context.Context, argv []string) error {
-	_, _ = fmt.Fprintf(c.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
+func (c *clients) run(ctx context.Context, argv []string) error { return step(ctx, c.out, argv) }
+
+// step runs argv, a step of a fixture's setup, and logs it to w.
+func step(ctx context.Context, w io.Writer, argv []string) error {
+	_, _ = fmt.Fprintf(w, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
 	if err := runFor(ctx, 0, argv); err != nil {
 		return fmt.Errorf("`%s`: %w", strings.Join(argv, " "), err)
 	}

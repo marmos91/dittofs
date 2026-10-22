@@ -26,6 +26,13 @@ type fixtureServer interface {
 
 // startFixture starts a cell's server; the tests replace it.
 var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+	if f.Server == "knfsd" {
+		k, err := fixture.StartKnfsd(ctx, f, out, w)
+		if err != nil {
+			return nil, err
+		}
+		return k, nil
+	}
 	s, err := fixture.Start(ctx, f, services, bin, out, w)
 	if err != nil {
 		return nil, err

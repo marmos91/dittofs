@@ -219,7 +219,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
 	}
 	if c.Unit.Fixture != nil {
-		vals["bin"] = filepath.Join(dir, "bin")
+		if spec.Server != "knfsd" { // the kernel's server runs no dfs
+			vals["bin"] = filepath.Join(dir, "bin")
+		}
 		for _, k := range fixture.Placeholders(spec) {
 			vals[k] = "" // filled once the server is up
 		}

@@ -149,9 +149,9 @@ suites:
     tier: pr
     needs: [linux]
     options:
-      knfsd:
+      knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }
-        fixture: { server: knfsd, nfs: export }
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }
         tier: manual
         blocking: false
   wpts:
