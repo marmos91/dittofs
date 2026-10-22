@@ -703,13 +703,13 @@ suites:
     timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: per shard (below)
     shards: 4                           # split over 4 CI jobs
   fio-verify:
-    # The job files are dfsbench's templates: fio doesn't expand their ${VAR:-default}s, so perl
-    # fills them from the environment into a copy below {out}, which fio runs.
+    # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
+    # perl fills them from the environment into a copy below {out}, which fio runs.
     cmd:
       - cp {test} {out}/{test}
       - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
       - fio --output-format=json --output={out}/{test}.json {out}/{test}
-    tests: bench/workloads/*.fio
+    tests: bench/*/*.fio                # dfsbench's workloads, and the verify jobs, which read their data back
     exclude: [bench/workloads/layout.fio]   # a preparation job, not a test
     fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }       # the job files write to ${BENCH_DIR:-/mnt/bench}
@@ -1784,9 +1784,12 @@ only when the failing set changes.
   shows it, and `dt run nfs-mount-smoke` runs it. A variant of an existing suite is an option of
   it, not a new suite.
 - **A test to an existing suite:** add its file. A scenario script, a fio job file
-  (`bench/workloads/*.fio`, which `dfsbench` also embeds), or a Go test. No registry change.
+  (`bench/workloads/*.fio`, which `dfsbench` also embeds, or `bench/verify/*.fio`), or a Go test.
+  No registry change.
 - **New fio workloads,** such as mailbox-style I/O mixes: job files in `bench/workloads/`.
-  `fio-verify` checks their data, and `dfsbench` can measure them.
+  `fio-verify` runs them, and `dfsbench` can measure them. A job that reads its data back to check
+  it, with `verify=`, goes in `bench/verify/`, not into a workload, whose numbers would then
+  include the reads.
 - **A known failure or an expected skip:** one entry in the suite's `known.yaml`, with its reason,
   and an issue if it's a bug.
 - **A component:** its RFC under `docs/internals/rfcs/` names the suites and groups that cover it

@@ -1,0 +1,28 @@
+# Writes, then reads back what it wrote and checks each block's crc32c: a block
+# that comes back changed fails its job with error 84. Not in bench/workloads,
+# whose job files dfsbench measures.
+[global]
+direct=1
+ioengine=${FIO_ENGINE:-libaio}
+numjobs=4
+directory=${BENCH_DIR:-/mnt/bench}
+verify=crc32c
+do_verify=1
+verify_fatal=1
+# fio would leave each job's verify state in the directory it runs in, the checkout.
+verify_state_save=0
+group_reporting
+
+[seq-write-verify]
+rw=write
+bs=1m
+size=1g
+
+# Checks every 1024 blocks as it writes, then the rest at the end.
+[rand-write-verify]
+stonewall
+rw=randwrite
+bs=4k
+iodepth=32
+size=32m
+verify_backlog=1024
