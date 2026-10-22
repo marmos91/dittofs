@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
+	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // The seam's operation names, as Calls and CallsFor count them.
@@ -54,6 +55,7 @@ type Seam struct {
 	stash string
 
 	mu       sync.Mutex
+	fault    sim.Fault
 	seq      uint64
 	names    map[string]*node // the directory as it is now
 	dirLog   []dirOp          // Create, Rename and Remove since the last SyncDir
@@ -133,6 +135,66 @@ func NewSeam(dir string) (*Seam, error) {
 
 var _ storage.FS = (*Seam)(nil)
 
+// SetFault makes the seam consult f before every operation, and apply the
+// action it returns. A nil f, the default, passes every call.
+//
+// Each operation is named by one of the Op constants, and its key is the name
+// of the file it acts on: the old name for a rename, and empty for list and
+// sync_dir. Size and Name are not operations and consult nothing. A call on a
+// closed file fails with fs.ErrClosed before f is consulted, so it never
+// counts in a rule. f is called without the seam's lock held, so a Delay
+// stalls only its own call.
+//
+// How the seam applies each action:
+//   - Pass, Delay: performs the operation.
+//   - Fail: performs nothing, records nothing, and returns the action's Err.
+//
+// Any other kind panics, naming the kind and the op: it is a mistake in the
+// test, not a storage fault.
+func (s *Seam) SetFault(f sim.Fault) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fault = f
+}
+
+// consult asks the seam's fault what to do with op on key, and panics on an
+// action the seam cannot apply to op. The caller must not hold mu, because a
+// Delay waits inside At.
+func (s *Seam) consult(op, key string) sim.FaultAction {
+	s.mu.Lock()
+	f := s.fault
+	s.mu.Unlock()
+
+	if f == nil {
+		return sim.FaultAction{}
+	}
+
+	a := f.At(op, []byte(key))
+	switch a.Kind {
+	case sim.Pass, sim.Delay, sim.Fail:
+	default:
+		panic(fmt.Sprintf("journalv2test: a %v fault on %s is not supported", a.Kind, op))
+	}
+
+	return a
+}
+
+// enter counts op on name and consults the fault. It returns holding mu,
+// unless the fault fails the call: then it returns the fault's error, without
+// mu.
+func (s *Seam) enter(op, name string) error {
+	s.mu.Lock()
+	s.count(op, name)
+	s.mu.Unlock()
+
+	if a := s.consult(op, name); a.Kind == sim.Fail {
+		return &fs.PathError{Op: op, Path: name, Err: a.Err}
+	}
+
+	s.mu.Lock()
+	return nil
+}
+
 // count records one call of op on name; the caller holds mu.
 func (s *Seam) count(op, name string) {
 	s.calls[op]++
@@ -154,9 +216,10 @@ func (s *Seam) CallsFor(op, name string) int {
 }
 
 func (s *Seam) Create(name string) (storage.File, error) {
-	s.mu.Lock()
+	if err := s.enter(OpCreate, name); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpCreate, name)
 
 	path := filepath.Join(s.dir, name)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
@@ -172,9 +235,10 @@ func (s *Seam) Create(name string) (storage.File, error) {
 }
 
 func (s *Seam) Open(name string) (storage.File, error) {
-	s.mu.Lock()
+	if err := s.enter(OpOpen, name); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpOpen, name)
 
 	n, ok := s.names[name]
 	if !ok {
@@ -196,9 +260,10 @@ func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
 }
 
 func (s *Seam) Rename(oldName, newName string) error {
-	s.mu.Lock()
+	if err := s.enter(OpRename, oldName); err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpRename, oldName)
 
 	n, ok := s.names[oldName]
 	if !ok {
@@ -246,9 +311,10 @@ func (s *Seam) Rename(oldName, newName string) error {
 }
 
 func (s *Seam) Remove(name string) error {
-	s.mu.Lock()
+	if err := s.enter(OpRemove, name); err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpRemove, name)
 
 	n, ok := s.names[name]
 	if !ok {
@@ -275,9 +341,10 @@ func (s *Seam) toStash(n *node) error {
 }
 
 func (s *Seam) List() ([]string, error) {
-	s.mu.Lock()
+	if err := s.enter(OpList, ""); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpList, "")
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -291,9 +358,10 @@ func (s *Seam) List() ([]string, error) {
 }
 
 func (s *Seam) SyncDir() error {
-	s.mu.Lock()
+	if err := s.enter(OpSyncDir, ""); err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpSyncDir, "")
 
 	s.dirLog = nil
 
@@ -634,30 +702,49 @@ type seamFile struct {
 
 var _ storage.File = (*seamFile)(nil)
 
-// begin counts op and returns ErrClosed for a closed file. The caller holds
-// the seam's mu.
-func (sf *seamFile) begin(op string) error {
-	sf.seam.count(op, sf.name)
+// enter is Seam.enter for a call on the file. A call on a closed file fails
+// with ErrClosed before the fault is consulted, and again after it: a Crash
+// may have closed the file while the fault delayed the call, and the call
+// must not then act on the node a new handle is using.
+func (sf *seamFile) enter(op string) error {
+	s := sf.seam
 
+	s.mu.Lock()
+	s.count(op, sf.name)
+	closed := sf.closed
+	s.mu.Unlock()
+
+	if closed {
+		return sf.closedErr(op)
+	}
+
+	a := s.consult(op, sf.name)
+
+	s.mu.Lock()
 	if sf.closed {
-		return &fs.PathError{
-			Op:   op,
-			Path: sf.name,
-			Err:  fs.ErrClosed,
-		}
+		s.mu.Unlock()
+		return sf.closedErr(op)
+	}
+
+	if a.Kind == sim.Fail {
+		s.mu.Unlock()
+		return &fs.PathError{Op: op, Path: sf.name, Err: a.Err}
 	}
 
 	return nil
 }
 
+func (sf *seamFile) closedErr(op string) error {
+	return &fs.PathError{Op: op, Path: sf.name, Err: fs.ErrClosed}
+}
+
 func (sf *seamFile) Name() string { return sf.name }
 
 func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpRead); err != nil {
+	if err := sf.enter(OpRead); err != nil {
 		return 0, err
 	}
+	defer sf.seam.mu.Unlock()
 	if sf.node.stale {
 		return sf.readDurable(p, off)
 	}
@@ -670,11 +757,10 @@ func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
 // what is known to have reached it is what a Sync covered. A device may hold
 // more, but a test cannot rely on that, so the seam returns the durable image.
 func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpReadDirect); err != nil {
+	if err := sf.enter(OpReadDirect); err != nil {
 		return 0, err
 	}
+	defer sf.seam.mu.Unlock()
 	return sf.readDurable(p, off)
 }
 
@@ -710,11 +796,10 @@ func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
 }
 
 func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpWrite); err != nil {
+	if err := sf.enter(OpWrite); err != nil {
 		return 0, err
 	}
+	defer sf.seam.mu.Unlock()
 
 	size, err := sf.size()
 	if err != nil {
@@ -764,12 +849,10 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 // test components may use the standard library only. A full device is a
 // fault the test injects, not something this call reaches.
 func (sf *seamFile) Allocate(off, n int64) error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpAllocate); err != nil {
+	if err := sf.enter(OpAllocate); err != nil {
 		return err
 	}
+	defer sf.seam.mu.Unlock()
 
 	size, err := sf.size()
 	if err != nil {
@@ -785,12 +868,10 @@ func (sf *seamFile) Allocate(off, n int64) error {
 }
 
 func (sf *seamFile) Truncate(size int64) error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpTruncate); err != nil {
+	if err := sf.enter(OpTruncate); err != nil {
 		return err
 	}
+	defer sf.seam.mu.Unlock()
 
 	cur, err := sf.size()
 	if err != nil {
@@ -819,12 +900,10 @@ func (sf *seamFile) Truncate(size int64) error {
 }
 
 func (sf *seamFile) Sync() error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpSync); err != nil {
+	if err := sf.enter(OpSync); err != nil {
 		return err
 	}
+	defer sf.seam.mu.Unlock()
 
 	sf.node.undo = nil
 	return nil
@@ -835,20 +914,32 @@ func (sf *seamFile) Size() (int64, error) {
 	defer sf.seam.mu.Unlock()
 
 	if sf.closed {
-		return 0, &fs.PathError{Op: "size", Path: sf.name, Err: fs.ErrClosed}
+		return 0, sf.closedErr("size")
 	}
 
 	return sf.size()
 }
 
+// Close releases the file, even when the fault fails it.
+//
+// decision: a failed close still releases the handle, as close(2) on Linux
+// frees the descriptor whatever it returns. Keeping the handle would show
+// up as a descriptor leak in the code under test that the seam caused.
 func (sf *seamFile) Close() error {
+	err := sf.enter(OpClose)
+	if err == nil {
+		sf.seam.mu.Unlock()
+		return sf.closeLocked()
+	}
+
 	sf.seam.mu.Lock()
 	defer sf.seam.mu.Unlock()
 
-	if err := sf.begin(OpClose); err != nil {
-		return err
+	if !sf.closed {
+		sf.closeLocked()
 	}
-	return sf.closeLocked()
+
+	return err
 }
 
 // closeLocked closes the file. The caller holds the seam's mu.
