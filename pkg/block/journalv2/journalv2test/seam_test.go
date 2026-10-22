@@ -556,3 +556,25 @@ func TestRefusedCrashChangesNothing(t *testing.T) {
 		t.Fatalf("after a refused crash and a real one, seg holds %q; want it empty", got)
 	}
 }
+
+func TestCrashRefusesTornWithReordered(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bbbb", 0)
+
+	if err := s.Crash(Torn(1), Reordered(0)); err == nil {
+		t.Fatal("Crash(Torn, Reordered) succeeded, want it refused")
+	}
+
+	// The refused crash must leave the file open and its write in place.
+	if got := onDisk(t, s, "seg"); got != "bbbb" {
+		t.Fatalf("after a refused crash seg holds %q, want the unsynced %q", got, "bbbb")
+	}
+
+	if _, err := f.WriteAt([]byte("c"), 0); err != nil {
+		t.Fatalf("WriteAt after a refused crash: %v, want the file still open", err)
+	}
+}
