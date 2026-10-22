@@ -709,3 +709,27 @@ four -- test -d {out}
 		t.Errorf("n: %+v\n%s", o, out)
 	}
 }
+
+// A size-timed cell's first scenario, which fills setup.sh's images and
+// caches, also gets the fixture's setup time; the scenarios after it, one
+// with no bound, and a suite timed otherwise don't.
+func TestFirstScenarioLimit(t *testing.T) {
+	size := Cell{Unit: &registry.Suite{Timeout: registry.Timeout{Test: "size"}}}
+	fixed := Cell{Unit: &registry.Suite{Timeout: registry.Timeout{Test: "30m"}}}
+	xs := 2*10*time.Second + 2*time.Minute
+	for _, c := range []struct {
+		cell  Cell
+		test  string
+		first bool
+		want  time.Duration
+	}{
+		{size, "t/00-a-xs.sh", true, xs + fixtureSetup},
+		{size, "t/00-a-xs.sh", false, xs},
+		{size, "t/90-a-xxl.sh", true, 0},
+		{fixed, "t/00-a-xs.sh", true, 30 * time.Minute},
+	} {
+		if got := c.cell.limit(c.test, nil, c.first); got != c.want {
+			t.Errorf("%s %q, first %t: %s, want %s", c.cell.Unit.Timeout.Test, c.test, c.first, got, c.want)
+		}
+	}
+}
