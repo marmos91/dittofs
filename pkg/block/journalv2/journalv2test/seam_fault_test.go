@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -271,6 +272,41 @@ func TestFailedOpReturnsItsErrorAndDoesNothing(t *testing.T) {
 	}
 }
 
+// TestCloseCrashAndCreateRunConcurrently guards against data races only when
+// run under -race.
+func TestCloseCrashAndCreateRunConcurrently(t *testing.T) {
+	s := newSeam(t)
+	files := make([]storage.File, 16)
+	for i := range files {
+		files[i] = create(t, s, fmt.Sprint("seg-", i))
+	}
+
+	// Half the closes fail, so both of Close's paths run.
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpClose, Key: "*", Prob: 0.5, Action: eio})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(sched)
+
+	var wg sync.WaitGroup
+	for _, f := range files {
+		wg.Go(func() { f.Close() }) // fs.ErrClosed when Crash got there first
+	}
+	wg.Go(func() {
+		if err := s.Crash(); err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Go(func() {
+		for i := range 16 {
+			if _, err := s.Create(fmt.Sprint("new-", i)); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	wg.Wait()
+}
+
 func TestCallOnAClosedFileIsNotCountedByTheFault(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "a")
@@ -398,5 +434,221 @@ func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
 			}()
 			tc.call(s, f)
 		})
+	}
+}
+
+// failNextSync makes the next sync fail with EIO and every later call pass.
+func failNextSync(t *testing.T, s *Seam) {
+	t.Helper()
+
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpSync, Key: "*", Count: 1, Action: eio})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(sched)
+}
+
+func TestFailedSyncLosesThePendingWritesForGood(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "data", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+	syncFile(t, f) // succeeds, and must not stand in for the failed one
+
+	p := make([]byte, 4)
+	if _, err := f.ReadAt(p, 0); err != nil || string(p) != "data" {
+		t.Fatalf("ReadAt after the failed sync: %q, %v; want the page cache's %q", p, err, "data")
+	}
+
+	if got, err := s.Durable("seg"); err != nil || len(got) != 0 {
+		t.Fatalf("Durable: %q, %v; want it empty", got, err)
+	}
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("after the crash the file holds %q, want it empty", got)
+	}
+}
+
+func TestFailedSyncLosesAnAllocation(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	if err := f.Allocate(0, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+	syncFile(t, f)
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("an allocation a failed sync covered left %d bytes after the crash, want 0", len(got))
+	}
+}
+
+func TestWritesAfterAFailedSyncBecomeDurable(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+
+	write(t, f, "bb", 1) // over the lost write
+	syncFile(t, f)
+	write(t, f, "cc", 4) // after a sync that lost nothing
+	syncFile(t, f)
+
+	want := "\x00bb\x00cc" // the lost bytes read as zeros: they never existed durably
+	if got, err := s.Durable("seg"); err != nil || string(got) != want {
+		t.Fatalf("Durable: %q, %v; want %q", got, err, want)
+	}
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != want {
+		t.Fatalf("after the crash the file holds %q, want %q", got, want)
+	}
+}
+
+func TestDurableReadsServeTheImageAfterALostSync(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	write(t, f, "XYZW", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+	syncFile(t, f) // nothing pending is left to undo: only the image knows
+
+	p := make([]byte, 4)
+	if n, err := f.ReadAtDirect(p, 0); n != 2 || !errors.Is(err, io.EOF) || string(p[:n]) != "ab" {
+		t.Fatalf("ReadAtDirect: %q, %v; want %q and io.EOF", p[:n], err, "ab")
+	}
+
+	if _, err := f.ReadAtDirect(p, 2); !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadAtDirect at the durable end: %v, want io.EOF", err)
+	}
+
+	if _, err := f.ReadAtDirect(p, -1); err == nil {
+		t.Fatal("ReadAtDirect at a negative offset succeeded")
+	}
+
+	s.StaleReads("seg")
+	if n, _ := f.ReadAt(p, 0); string(p[:n]) != "ab" {
+		t.Fatalf("ReadAt with stale reads: %q, want %q", p[:n], "ab")
+	}
+}
+
+func TestTornNeverPicksALostWrite(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	g := create(t, s, "other")
+
+	write(t, g, "bbbb", 0) // pending, and older than the lost write
+	write(t, f, "aaaa", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+
+	crash(t, s, Torn(1))
+
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("seg holds %q after the crash: a lost write was torn", got)
+	}
+	if got := onDisk(t, s, "other"); got != "b" {
+		t.Fatalf("other holds %q, want the last write that was not lost, torn to %q", got, "b")
+	}
+}
+
+func TestReorderedNeverKeepsALostWrite(t *testing.T) {
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := create(t, s, "seg")
+		write(t, f, "lost", 0)
+
+		failNextSync(t, s)
+		wantEIO(t, OpSync, f.Sync())
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "seg"); got != "" {
+			t.Fatalf("seed %d kept the lost write: %q", seed, got)
+		}
+	}
+}
+
+func TestResizesAfterAFailedSyncBecomeDurable(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "abcd", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+
+	if err := f.Truncate(6); err != nil {
+		t.Fatal(err)
+	}
+	syncFile(t, f)
+	if got, _ := s.Durable("seg"); string(got) != "\x00\x00\x00\x00\x00\x00" {
+		t.Fatalf("after a synced Truncate(6) the durable image is %q, want 6 zeros", got)
+	}
+
+	if err := f.Allocate(0, 8); err != nil {
+		t.Fatal(err)
+	}
+	syncFile(t, f)
+	if got, _ := s.Durable("seg"); len(got) != 8 {
+		t.Fatalf("after a synced Allocate(0, 8) the durable image has %d bytes, want 8", len(got))
+	}
+}
+
+func TestDurableReturnsACopy(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	write(t, f, "XY", 0)
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+	syncFile(t, f)
+
+	got, err := s.Durable("seg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got[0] = 'Z'
+
+	if again, _ := s.Durable("seg"); string(again) != "ab" {
+		t.Fatalf("changing the bytes Durable returned changed the durable image to %q", again)
+	}
+}
+
+func TestSyncAfterAFailedSyncOnAnUnlinkedFile(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	write(t, f, "XY", 0)
+
+	if err := s.Remove("seg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncDir(); err != nil { // unlinks the file: only the handle reaches it
+		t.Fatal(err)
+	}
+
+	failNextSync(t, s)
+	wantEIO(t, OpSync, f.Sync())
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync on an open, unlinked file after a failed one: %v", err)
+	}
+
+	p := make([]byte, 2)
+	if _, err := f.ReadAtDirect(p, 0); err != nil || string(p) != "ab" {
+		t.Fatalf("ReadAtDirect: %q, %v; want the durable %q", p, err, "ab")
 	}
 }

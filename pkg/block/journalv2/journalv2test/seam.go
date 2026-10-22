@@ -38,9 +38,13 @@ const (
 //
 // Every call reaches the real files. Alongside, the seam remembers what is not
 // yet durable: per file, every WriteAt, Allocate and Truncate since that file's
-// last Sync, and every Create, Rename and Remove since the last SyncDir. Crash
-// discards exactly those, closes every open file, and leaves the directory as
-// a power loss would have, so a journal can be opened on it again.
+// last Sync, and every Create, Rename and Remove since the last SyncDir. A
+// change a failed Sync covered is lost: the file keeps serving it, but no
+// later Sync makes it durable, so from then on the seam keeps that file's
+// durable image and replays onto it what each later Sync covers. Crash puts
+// every file back to its durable image, undoes the directory changes, closes
+// every open file, and leaves the directory as a power loss would have, so a
+// journal can be opened on it again.
 //
 // A removed or replaced file is not unlinked until the next SyncDir: it is
 // moved to a stash directory beside dir, so a crash can bring it back. The
@@ -51,10 +55,8 @@ const (
 // record, not the device's, and nothing here survives a real power loss, so an
 // fsync would only slow every test down.
 type Seam struct {
-	dir   string
-	stash string
-
-	mu       sync.Mutex
+	dir      string
+	stash    string
 	fault    sim.Fault
 	seq      uint64
 	names    map[string]*node // the directory as it is now
@@ -63,6 +65,8 @@ type Seam struct {
 	calls    map[string]int
 	callsFor map[[2]string]int
 	stashed  int
+
+	mu sync.Mutex
 }
 
 // node is one file, followed across renames: its undo log stays with it.
@@ -70,6 +74,11 @@ type node struct {
 	path  string   // where the file is now, in dir or in the stash
 	undo  []change // what its last Sync did not cover, oldest first
 	stale bool     // ReadAt serves the durable image
+
+	// snap is the file's durable image, kept once a change was lost: the
+	// file then holds bytes no Sync will make durable, so undoing the
+	// unsynced changes no longer gives the durable image. Nil otherwise.
+	snap []byte
 }
 
 type changeKind int
@@ -87,6 +96,8 @@ type change struct {
 	data    []byte // write: the bytes written
 	old     []byte // the bytes it overwrote or cut off, at off for a write and at the new size for a shrink
 	oldSize int64  // the file's size before it
+	newSize int64  // resize: the file's size after it
+	lost    bool   // a failed Sync covered it, so no Sync ever makes it durable
 }
 
 type dirOpKind int
@@ -147,7 +158,10 @@ var _ storage.FS = (*Seam)(nil)
 //
 // How the seam applies each action:
 //   - Pass, Delay: performs the operation.
-//   - Fail: performs nothing, records nothing, and returns the action's Err.
+//   - Fail: performs nothing and returns the action's Err. A failed sync
+//     also marks every pending change of the file lost: ReadAt still
+//     serves it, and no later Sync makes it durable. A failed sync_dir
+//     keeps its directory changes pending (see SyncDir).
 //
 // Any other kind panics, naming the kind and the op: it is a mistake in the
 // test, not a storage fault.
@@ -358,6 +372,11 @@ func (s *Seam) List() ([]string, error) {
 }
 
 func (s *Seam) SyncDir() error {
+	// ponytail: a failed SyncDir keeps the directory log, so a later SyncDir that
+	// succeeds makes those changes durable, which storage.FS says it must not.
+	// A journal that retries SyncDir after a failure and trusts the retry passes
+	// here. Mark the logged changes lost on failure, as a failed Sync does for
+	// writes, when a test needs that case.
 	if err := s.enter(OpSyncDir, ""); err != nil {
 		return err
 	}
@@ -454,7 +473,8 @@ type crashConfig struct {
 }
 
 // Torn keeps the last unsynced write, across every file, cut to its first n
-// bytes. Every other unsynced operation is lost as usual.
+// bytes. A write a failed Sync lost never counts. Every other unsynced
+// operation is lost as usual.
 func Torn(n int) CrashOption {
 	return func(c *crashConfig) {
 		c.torn, c.tornBytes = true, n
@@ -462,14 +482,19 @@ func Torn(n int) CrashOption {
 }
 
 // Reordered keeps a subset of the unsynced writes, chosen from seed, as a
-// device that wrote them in another order and lost power part-way would. The
-// kept writes land in the order they were issued, so a write never ends up
-// under an older one it overlapped. Unsynced allocations, truncations and
-// directory changes are lost as usual.
+// device that wrote them in another order and lost power part-way would. A
+// write a failed Sync lost is never among them. The kept writes land in the
+// order they were issued, so a write never ends up under an older one it
+// overlapped. Unsynced allocations, truncations and directory changes are
+// lost as usual.
 //
-// decision: only data writes are reordered. Directory changes are undone
-// whole, because a filesystem's metadata journal does not apply them out of
-// order.
+// decision: only data writes are reordered, as the format's crash model lists
+// reordering for writes only. Directory changes since the last SyncDir are
+// undone whole.
+//
+// ponytail: a filesystem may keep a prefix of those directory changes, for
+// example a create without the rename after it. The seam keeps none. Add a
+// crash option that keeps a seeded prefix if a test needs that state.
 func Reordered(seed uint64) CrashOption {
 	return func(c *crashConfig) {
 		c.reordered, c.seed = true, seed
@@ -506,7 +531,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		for n := range alive {
 			for i := range n.undo {
 				c := &n.undo[i]
-				if c.kind == changeWrite && (torn == nil || c.seq > torn.seq) {
+				if c.kind == changeWrite && !c.lost && (torn == nil || c.seq > torn.seq) {
 					torn, tornNode = c, n
 				}
 			}
@@ -534,7 +559,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 
 		for n := range alive {
 			for i := range n.undo {
-				if n.undo[i].kind == changeWrite {
+				if n.undo[i].kind == changeWrite && !n.undo[i].lost {
 					writes = append(writes, &n.undo[i])
 				}
 			}
@@ -551,7 +576,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	}
 
 	for n := range alive {
-		if len(n.undo) == 0 {
+		if len(n.undo) == 0 && n.snap == nil {
 			continue
 		}
 
@@ -576,7 +601,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 			return err
 		}
 
-		n.undo = nil
+		n.undo, n.snap = nil, nil
 	}
 
 	if err := s.undoDir(); err != nil {
@@ -585,7 +610,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 
 	s.names = survivors
 	for _, n := range survivors {
-		n.undo = nil
+		n.undo, n.snap = nil, nil
 	}
 
 	return s.emptyStash()
@@ -631,14 +656,68 @@ func (s *Seam) undoDir() error {
 	return nil
 }
 
-// durableImage returns the file's bytes, read by path, with every unsynced
-// change undone.
+// durableImage returns the file's durable image: a copy of snap when it is
+// set, otherwise the file's bytes, read by path, with every unsynced change
+// undone.
 func (n *node) durableImage() ([]byte, error) {
+	if n.snap != nil {
+		return slices.Clone(n.snap), nil
+	}
+
 	img, err := os.ReadFile(n.path)
 	if err != nil {
 		return nil, err
 	}
 	return n.undone(img), nil
+}
+
+// loseUndo marks every pending change lost, after a Sync that failed.
+//
+// decision: a later success does not stand in for a Sync that failed. A
+// filesystem may drop the dirty pages a failed sync could not write and mark
+// them clean, so a retried sync succeeds with the data gone; the seam does
+// the same, so code that retries a failed sync and trusts the retry is caught.
+// The pages stay readable, as the page cache keeps serving them.
+func (n *node) loseUndo() {
+	for i := range n.undo {
+		n.undo[i].lost = true
+	}
+}
+
+// sync makes every pending change of the file that is not lost durable.
+//
+// While no change was ever lost, the durable image is the file with its
+// pending changes undone, so clearing them is enough. Once one is lost, the
+// file holds bytes that must never become durable, so the durable image is
+// kept in snap and each Sync replays onto it the changes it covers, in the
+// order they were made.
+func (sf *seamFile) sync() error {
+	n := sf.node
+	if n.snap == nil && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
+		n.undo = nil
+		return nil
+	}
+
+	img, err := sf.durableImage()
+	if err != nil {
+		return err
+	}
+
+	for _, c := range n.undo {
+		if c.lost {
+			continue
+		}
+
+		switch c.kind {
+		case changeWrite:
+			img = writeInto(img, c.off, c.data)
+		case changeResize:
+			img = resize(img, c.newSize)
+		}
+	}
+
+	n.snap, n.undo = img, nil
+	return nil
 }
 
 // undone returns img, the file's current bytes, with every unsynced change
@@ -727,6 +806,10 @@ func (sf *seamFile) enter(op string) error {
 	}
 
 	if a.Kind == sim.Fail {
+		if op == OpSync {
+			sf.node.loseUndo()
+		}
+
 		s.mu.Unlock()
 		return &fs.PathError{Op: op, Path: sf.name, Err: a.Err}
 	}
@@ -764,6 +847,26 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 	return sf.readDurable(p, off)
 }
 
+// durableImage is node.durableImage read through the open file rather than
+// by path, so a file removed or replaced while open, whose path may no longer
+// exist, still has one.
+func (sf *seamFile) durableImage() ([]byte, error) {
+	if sf.node.snap != nil {
+		return slices.Clone(sf.node.snap), nil
+	}
+
+	size, err := sf.size()
+	if err != nil {
+		return nil, err
+	}
+
+	img := make([]byte, size)
+	if _, err := sf.f.ReadAt(img, 0); err != nil {
+		return nil, err
+	}
+	return sf.node.undone(img), nil
+}
+
 // readDurable reads through the open file rather than by path, so a file
 // removed or replaced while open still serves its durable image.
 func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
@@ -772,16 +875,10 @@ func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
 		return 0, &fs.PathError{Op: "readat", Path: sf.name, Err: errors.New("negative offset")}
 	}
 
-	size, err := sf.size()
+	img, err := sf.durableImage()
 	if err != nil {
 		return 0, err
 	}
-
-	img := make([]byte, size)
-	if _, err := sf.f.ReadAt(img, 0); err != nil {
-		return 0, err
-	}
-	img = sf.node.undone(img)
 
 	if off >= int64(len(img)) {
 		return 0, io.EOF
@@ -863,7 +960,7 @@ func (sf *seamFile) Allocate(off, n int64) error {
 		return nil
 	}
 
-	sf.record(change{kind: changeResize, oldSize: size})
+	sf.record(change{kind: changeResize, oldSize: size, newSize: off + n})
 	return sf.f.Truncate(off + n)
 }
 
@@ -894,6 +991,7 @@ func (sf *seamFile) Truncate(size int64) error {
 		kind:    changeResize,
 		old:     old,
 		oldSize: cur,
+		newSize: size,
 	})
 
 	return nil
@@ -905,8 +1003,7 @@ func (sf *seamFile) Sync() error {
 	}
 	defer sf.seam.mu.Unlock()
 
-	sf.node.undo = nil
-	return nil
+	return sf.sync()
 }
 
 func (sf *seamFile) Size() (int64, error) {
@@ -928,7 +1025,7 @@ func (sf *seamFile) Size() (int64, error) {
 func (sf *seamFile) Close() error {
 	err := sf.enter(OpClose)
 	if err == nil {
-		sf.seam.mu.Unlock()
+		defer sf.seam.mu.Unlock()
 		return sf.closeLocked()
 	}
 
