@@ -432,6 +432,23 @@ func TestStatusIssueKeepsItsBodyInBounds(t *testing.T) {
 	}
 }
 
+// The entries the body keeps are the alerting ones first, so a set the cut
+// shortens still alerts when it should: 50 cells not run once that sort before
+// a new failure leave the issue open.
+func TestStatusIssueKeepsAlertingEntries(t *testing.T) {
+	g, c := newTracker(t)
+	cells := []report.Cell{{Name: "unit", Result: report.Failed, Tests: []report.Test{newFailure("TestA", "boom")}}}
+	for i := range 50 {
+		cells = append(cells, report.Cell{Name: "cthon04/" + strconv.Itoa(10+i), Result: report.NotRun})
+	}
+	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-jjjjjjj1", "merge", cells...)}, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if is := g.titled(statusTitle)[0]; is.State != "open" || !strings.Contains(is.Body, "| `unit` | `TestA` | new | 1 |") || !strings.Contains(is.Body, "and 1 more") {
+		t.Errorf("%s:\n%s", is.State, is.Body)
+	}
+}
+
 // The environment gives the API, the repository, DittoFS's by default, the
 // token, which posting needs, and the workflow run, with its page as the log.
 func TestFromEnv(t *testing.T) {

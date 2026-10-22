@@ -1667,8 +1667,8 @@ to post: it keeps `ci-health.yml`'s warning on pull requests until it moves in.
   failed with no test to name is in the set as itself, as `dt run --ci` annotates it. The body is
   rewritten, not commented, so watchers get one notification per change, not per run. A comment is
   added only when the set of failing tests changes while the issue stays open; opening and closing
-  it notify by themselves. The body keeps the first 50 entries by cell and test, within what GitHub
-  allows.
+  it notify by themselves. The body keeps 50 entries, the alerting ones first, then by cell and
+  test, within what GitHub allows.
 - A run sets the entries of the cells it ran and keeps the rest; a cell that didn't run keeps its
   tests' entries, since it says nothing of them. The issue closes once nothing in its failing set
   fails a run on develop any more, in whichever tier runs it: each new failure has passed again, or

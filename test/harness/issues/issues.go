@@ -127,7 +127,8 @@ func entries(c report.Cell) []entry {
 	return out
 }
 
-// next is the failing set after one tier run's cells, sorted. A cell that ran
+// next is the failing set after one tier run's cells, sorted with the
+// alerting entries first, so a cut of it keeps them. A cell that ran
 // replaces its entries with its own, each counting on from the old entry of
 // its test and kind; one that didn't run keeps its tests' entries, since it
 // says nothing of them, and counts its own; and the entries of cells the run
@@ -155,8 +156,14 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 			set = append(set, e)
 		}
 	}
+	quiet := func(e entry) int {
+		if e.alerts() {
+			return 0
+		}
+		return 1
+	}
 	slices.SortFunc(set, func(a, b entry) int {
-		return cmp.Or(strings.Compare(a.Cell, b.Cell), strings.Compare(a.Test, b.Test), strings.Compare(a.Kind, b.Kind))
+		return cmp.Or(quiet(a)-quiet(b), strings.Compare(a.Cell, b.Cell), strings.Compare(a.Test, b.Test), strings.Compare(a.Kind, b.Kind))
 	})
 	return set
 }
