@@ -190,7 +190,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(why)
 		}
 	}
-	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
+	// Docker meets a podman need the machine's own podman can't, and the
+	// commands then run in podman's image: the need's one check decides both.
+	podman := false
+	check := func(n string) (err error) {
+		if n != "podman" {
+			return needs.Check(o.Root, n)
+		}
+		podman, err = needs.Podman()
+		return err
+	}
+	if why, unmet := Blocked(c.Unit, c.Needs, check); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
@@ -356,8 +366,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return setupFailed("the image", err)
 		}
 	}
+	if podman {
+		if err := preparePodman(setup, o.Root, os.Environ(), w); err != nil {
+			return setupFailed("podman's image", err)
+		}
+	}
 	setupDone()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, podman: podman, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests, o.Retry)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -367,6 +382,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	timedOut := map[string]string{} // why each test that timed out failed
 	interrupted := false
 	first := vals["share"] // the fixture's first share, which a test's share= replaces
+	cold := true           // until the cell's first test runs
 	// attempt runs one test, and returns its results and why it ran nothing,
 	// when it didn't.
 	attempt := func(test string) ([]report.Test, []string) {
@@ -390,7 +406,8 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			t.capture = &output
 		}
 		start := time.Now()
-		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, lines))
+		r := t.run(test, c.limit(test, lines, cold))
+		cold = false
 		interrupted = interrupted || r.interrupted
 		var why []string
 		if len(r.notRun) > 0 {
@@ -586,6 +603,18 @@ func retried(cases, graded, again []report.Test, n int) {
 	}
 }
 
+// limit is a test's limit, zero for none. A scenario's size limit assumes
+// setup.sh's images and caches are there, so the cell's first scenario, which
+// fills them, also gets the fixture's setup time, which the cell's limit
+// counts though the suite has no fixture.
+func (c Cell) limit(test string, lines map[string]plan.Line, first bool) time.Duration {
+	limit := plan.TestLimit(c.Unit.Timeout, test, lines)
+	if first && limit > 0 && c.Unit.Timeout.Test == "size" {
+		limit += fixtureSetup
+	}
+	return limit
+}
+
 // grade grades the cell's results against its suite's known file, at the
 // cell's matrix values, its tier, its option and this machine's OS.
 func (c Cell) grade(cases []report.Test) {
@@ -635,6 +664,7 @@ type tester struct {
 	root     string   // the repository
 	dir      string   // where the commands run, or the docker client for an image
 	inside   string   // where the commands run in the image, when dir sets it
+	podman   bool     // the commands run in podman's image
 	env      []string // dt's environment and the suite's
 	own      []string // the suite's alone
 	vals     map[string]string
@@ -714,6 +744,10 @@ func (t tester) run(test string, limit time.Duration) testRun {
 			}
 			printed = strings.Join(argv, " ")
 		}
+		if t.podman {
+			argv, container = t.inPodman(argv)
+			printed = strings.Join(argv, " ")
+		}
 		if t.server != nil {
 			wrapped, err := t.server.Command(argv, t.dir, t.own)
 			if err != nil {
@@ -772,7 +806,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		case code == exitNotRun:
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
 			continue
-		case image != "" && notStarted(code):
+		case (image != "" || t.podman) && notStarted(code):
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: its container didn't start", firstLine(shown), code))
 			continue
 		case code != 0:
