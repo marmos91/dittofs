@@ -422,8 +422,7 @@
           curl # health checks in bootstrap/local mode
 
           # NFSv4 conformance suite. Pure Python speaking NFSv4 over TCP, so it
-          # needs no kernel mount and runs on every platform. Kept on PATH so
-          # run-pynfs.sh finds it instead of rebuilding it per invocation.
+          # needs no kernel mount and runs on every platform.
           pynfs
 
           # PostgreSQL test container helpers. They only drive the docker CLI,
@@ -681,14 +680,13 @@
           # They run against synthetic output in about a second each, with no
           # server and no network, so they belong in the pre-push check.
           conformance-graders = pkgs.runCommand "check-conformance-graders" { } ''
-            mkdir -p test/smb-conformance test/nfs-conformance
+            mkdir -p test/smb-conformance
             cp -r ${./test/common} test/common
             cp -r ${./test/smb-conformance/smbtorture} test/smb-conformance/smbtorture
-            cp -r ${./test/nfs-conformance/pynfs} test/nfs-conformance/pynfs
             chmod -R u+w test
 
             status=0
-            for suite in test/smb-conformance/smbtorture test/nfs-conformance/pynfs; do
+            for suite in test/smb-conformance/smbtorture; do
               echo "== $suite/parse-results_test.sh"
               report="$(bash "$suite/parse-results_test.sh" 2>&1)" || status=1
               printf '%s\n' "$report"

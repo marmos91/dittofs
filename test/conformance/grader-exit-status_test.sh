@@ -91,17 +91,6 @@ for count in 0 1 254 255 256 257 512; do
     # Include a pass and a known failure in every fixture, so the requested
     # count must be the NEW failures rather than the total number of results.
     {
-        echo '**************************************************'
-        echo 'PASS1 st_sample.pass : PASS'
-        echo 'KNOWN st_sample.known : FAILURE'
-        for ((i = 1; i <= count; i++)); do
-            echo "NEW$i st_sample.new$i : FAILURE"
-        done
-        echo '**************************************************'
-        echo "Of those: 0 Skipped, $((count + 1)) Failed, 0 Warned, 1 Passed"
-    } >"$WORK/pynfs.log"
-
-    {
         echo 'Test Summary Report'
         echo '-------------------'
         echo '/fixture/tests/known/00.t (Wstat: 0 Tests: 1 Failed: 1)'
@@ -119,10 +108,9 @@ for count in 0 1 254 255 256 257 512; do
     done
     write_wpts_fixture "${results[@]}"
 
-    for suite in pynfs posix wpts; do
+    for suite in posix wpts; do
         known=KNOWN new=NEW suffix=
         case "$suite" in
-            pynfs) parser="$TEST_DIR/nfs-conformance/pynfs/parse-results.sh"; input="$WORK/pynfs.log" ;;
             posix) parser="$TEST_DIR/posix/parse-results.sh"; input="$WORK/prove.log"; known=known/00.t new=new/ suffix=.t ;;
             wpts) parser="$TEST_DIR/smb-conformance/parse-results.sh"; input="$WORK/wpts.trx" ;;
         esac

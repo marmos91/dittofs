@@ -351,7 +351,7 @@ run_fake() {
 # The real manifest describes the repo it ships with.
 # ---------------------------------------------------------------------------
 REAL_LIST="$("$RUNNER" --list 2>&1)"
-for suite in wpts smbtorture pjdfstest pynfs; do
+for suite in wpts smbtorture pjdfstest; do
     assert_contains "manifest lists ${suite}" "$suite" "$REAL_LIST"
 done
 
@@ -467,7 +467,7 @@ assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
 # Only the suites that put a dfs on the host may be failed by a listener on the
 # adapter port. A suite that runs entirely in Docker publishes no host port, so
 # this keys off `host_adapter`, not `protocol`.
-assert_eq "suites owning the host adapter port" "pjdfstest pynfs cthon04 nfstest" \
+assert_eq "suites owning the host adapter port" "pjdfstest cthon04 nfstest" \
     "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
 # The CI matrix is the manifest's cross product, not a hand-kept list.
@@ -624,16 +624,12 @@ assert_contains "a missing table in a list is refused" \
     "blacklist declared but missing: test/fake/KNOWN_FAILURES_NONE.md" "$OUT"
 
 # ---------------------------------------------------------------------------
-# Privilege is a property of a step, not of a run. pynfs is its own NFSv4
-# client and has to stay runnable with no mount and no root.
+# Privilege is a property of a step, not of a run: a step that needs no root
+# stays runnable without it.
 # ---------------------------------------------------------------------------
 OUT="$(run_fake --suite privileged --profile memory --dry-run)"
 assert_contains "a root step is elevated" "setup: sudo -E" "$OUT"
 assert_not_contains "a non-root step is not" "run: sudo -E" "$OUT"
-
-OUT="$("$RUNNER" --suite pynfs --profile badger-s3 --variant 4.1 --dry-run 2>&1)"
-assert_not_contains "no step of pynfs asks for root" "sudo" "$OUT"
-assert_contains "pynfs pins its minor version" "--minor-version 4.1" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Refusals

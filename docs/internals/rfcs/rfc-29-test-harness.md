@@ -819,7 +819,7 @@ tables always describe what CI runs, and until then CI runs those suites from `s
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
 workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
 the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
-and any workflow still outside it (§4.8).
+and any workflow still outside it (§4.8). Until then `suites.json`'s list names `tests.yml` too.
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -903,11 +903,11 @@ The fixture gives the command these placeholders:
   server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
   step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
   comes from the address, or from where the server runs, has its cause listed beforehand. The
-  scripts stay as they are, except that pynfs's reference run is given the host's address as its
-  `--server`, through `PYNFS_SERVER`, so a difference in the delegation tests isn't hidden behind
-  the address, and that they save each cell's exit status and grades for the comparison (§8).
-  With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client names the
-  server's principal after: Samba's client never uses Kerberos with an address.
+  scripts stay as they are, except that they save each cell's exit status and grades for the
+  comparison (§8), and that pynfs's, until they went in step 3, gave its reference run the host's
+  address as its `--server`, so a difference in the delegation tests wasn't hidden behind the
+  address. With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client
+  names the server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
@@ -1040,9 +1040,9 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
     "notes": ["cell timeout raised from 90m to 5h7m: the sum of its tests' limits plus 5m for the fixture"] } ] }
 ```
 
-A cell lists `tests` only when it runs part of its suite's; `matrix`, `option` and `job` appear
-when the cell has them. CI turns `place` into the job's runner and `timeout_minutes` into its
-`timeout-minutes`.
+A cell lists `tests` only when it runs part of its suite's; `matrix`, `option`, `job` and `tools`,
+the test tools it takes from `{tools}`, appear when the cell has them. CI turns `place` into the
+job's runner and `timeout_minutes` into its `timeout-minutes`.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -1310,9 +1310,10 @@ it is `known`. A subtest that crashed or hung is `new`, and so is its parent. go
 parent that also failed on its own assertion the same way, so that failure is excused as well.
 
 A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
-pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
-grade `quarantined`. A reader of CTRF or JUnit then counts as failed only what makes the cell exit
-1, and as an error only what makes it exit 2.
+pass with a `flaky` property in JUnit; the summary's `flaky` counts them. A new failure that failed
+every retry keeps its grade, with its `retries`. A quarantined test is shown as a known failure,
+with the grade `quarantined`. A reader of CTRF or JUnit then counts as failed only what makes the
+cell exit 1, and as an error only what makes it exit 2.
 
 **Why CTRF, with JUnit beside it.** Decided in the 2026-10-08 call.
 - JUnit XML began with Java's JUnit. It has no formal specification, tools write it in their own
@@ -1340,8 +1341,8 @@ data branch when they do.
 ### 4.7 Grading: known failures, expected skips, quarantine, retries
 
 **Known failures and expected skips** live in one YAML file per suite (`known:`). It replaces the
-Markdown lists, which `dt docs` renders from it for the documentation, and `dt known import`
-converts the old lists once.
+Markdown lists: the documentation's suite table, which `dt docs` writes, links each suite's known
+file, and `dt known import` converts the old lists once.
 
 ```yaml
 # test/posix/known.yaml
@@ -1465,7 +1466,21 @@ from #2914 on, and is fixed in #2980.
 so a PR can't merge a flaky test it introduced. On develop and the schedule, `--retry 1` runs only
 the failed tests again: `go test -run '^(A|B)$'`, the one scenario, the one test file or test code.
 A pass on retry there is flaky: it doesn't open the develop-red issue, and `dt history` counts it.
-An unexpected pass isn't retried.
+An unexpected pass isn't retried, nor is a known failure: only new failures are.
+
+- **How a test is named.** Each format's own way: a Go test by its top-level test, through `-run`;
+  a test of a tool that takes test names, as pynfs takes codes, through `{names}`; and any other by
+  the `{test}` that reported it, so an smbtorture failure runs its whole `tests.txt` entry again. A
+  test none of these can name isn't retried: a command of a list without `tests`, a test of WPTS's
+  one run, and a Go package that failed outside its tests.
+- **Where it runs.** On the cell's own fixture, before it stops, and within the cell's limit. A
+  new failure whose test passed in every result of a retry passes, flaky; the results its retry
+  gives for other tests, and what else it meets, such as a skip or no results, don't count.
+  Only a retry that runs a test whole again clears the test's timeout: a retry by name runs the
+  failed tests, not those the timeout left unrun, so the timeout still fails the cell. A retry by
+  name runs the same command, so the result files the attempt before it wrote under `{out}` are
+  kept as `FILE.attempt-N`, a name no reader reads.
+
 A test flaky twice in a week on develop is a quarantine candidate.
 
 That retry replaces `ci-health.yml`'s re-run of failed jobs for `tests.yml`: re-running a job as
@@ -1492,16 +1507,37 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 One workflow, `tests.yml`, runs every registered suite:
 
 - **Triggers:** `pull_request` runs tier `pr`, a push to develop `merge`, the schedule `nightly`,
-  and `workflow_dispatch` the tier it's given.
+  and `workflow_dispatch` the tier it's given. Pull requests are those to `develop`, `main` and
+  `feat/storage-v2`, as the workflows it replaces take them.
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
-    named, with `--retry 1` on develop and the schedule, never on PRs.
+    named (`ubuntu-latest` for `ubuntu`), with `--retry 1` on develop and the schedule, never on
+    PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
+    artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
+    A cell with `tools` gets nix and the shared nix cache; on a push it builds them as
+    `.#NAME` and publishes them to the cache, as the old jobs did, and a pull request or a
+    dispatch only reads it.
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
-    into one report, and fails unless every blocking cell exited 0.
+    into one report: its job summary is each blocking cell's `report.md`, one after another, from
+    the cell's latest attempt. It
+    fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
+    exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
-    and a failed job still shows on the PR.
+    and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
+    `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them. It has
+    `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
+    `ci-health.yml` reads as develop's.
+- **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
+  of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
+  any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
+  every suite runs there.
+- **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
+  a scheduled run has a group of its own, so it and a push never replace each other. A push waits
+  for the run in progress, and a newer push replaces it while it waits: pushes that land faster
+  than a run are tested together by the next one (§9), and the replaced run, cancelled, has no
+  result, which `ci-health.yml` passes over.
 
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).
@@ -1666,8 +1702,9 @@ a percentage.
   placeholder as one value. That breaks a list placeholder such as `{packages}`, and leaves `dt`
   editing free text to add `-json -count=1`. Commands are argument lists, with `{ sh: ... }` when a
   shell is needed (§4.1).
-- **Markdown known-failure lists.** Kept as the rendered view only (§4.7): the source is YAML,
-  which `dt` checks against a schema.
+- **Markdown known-failure lists.** Not kept, not even as a rendered view: the documentation's
+  suite table links each suite's known file (§4.7). The source is YAML, which `dt` checks against
+  a schema, and a rendered copy would only restate it.
 - **JUnit XML as the main result format, or a JSON schema of our own.** JUnit has no field for a
   retry or a flaky pass, and our own schema would be one more format to specify and render. CTRF
   has both fields and a GitHub reporter, and JUnit is generated from it (§4.6).
@@ -1748,7 +1785,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
      alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
      grading each test, as it does when one has no result, compares only its verdict, and differs
-     when the scripts pass it. pynfs's scripts reach the server at the host's address, as `dt`
+     when the scripts pass it. pynfs's scripts reached the server at the host's address, as `dt`
      does (§4.2); a test whose difference comes from where its server runs is named, with the
      cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
@@ -1759,17 +1796,21 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
-     workflow run, so develop's status is still the scripts'.
+     workflow run, so develop's status is still the scripts'. A suite's parity jobs go with its
+     scripts, when it moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
-     name, as the scripts' results directories name them (`pynfs/badger-s3-4.1` for `dt`'s
-     `pynfs/badger-s3/1`). For it, `run.sh` saves each cell's exit status, and each grader its
+     name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
+     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
      grades: each failure, known or new, and the tests run.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`.
+     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
+     cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
+     `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
+     longer tests a commit.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.

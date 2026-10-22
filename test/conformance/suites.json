@@ -2,8 +2,7 @@
   "_comment": [
     "Every conformance suite, described once. test/conformance/run.sh dispatches",
     "from this file, .github/workflows/conformance.yml builds its matrix from it,",
-    "ci-health.yml derives the workflows it monitors from it, and",
-    "test/conformance/check-docs.sh keeps the documentation tables honest against it.",
+    "and ci-health.yml derives the workflows it monitors from it.",
     "Adding a suite means adding an entry here, not a workflow plus four tables.",
     "",
     "JSON rather than YAML so GitHub Actions can fromJSON() it directly and the",
@@ -26,9 +25,9 @@
     "                 against the wrong build. Docker-only suites publish no",
     "                 host port and must not be failed by a listener on it.",
     "  steps          ordered steps. Each declares its own privilege need, per",
-    "                 step on purpose: pynfs speaks NFSv4 itself and must stay",
-    "                 runnable with no mount and no root, so nothing may hoist",
-    "                 a root precondition to the whole run."
+    "                 step on purpose, so a step that needs no root stays",
+    "                 runnable without it: nothing may hoist a root",
+    "                 precondition to the whole run."
   ],
 
   "defaults": {
@@ -38,7 +37,6 @@
   "suites": {
     "wpts": {
       "description": "Windows Protocol Test Suites FileServer BVT",
-      "protocol": "SMB",
       "profiles": ["badger-s3"],
       "known_failures": "smb-conformance/KNOWN_FAILURES.md",
       "timeout_minutes": 30,
@@ -54,7 +52,6 @@
 
     "smbtorture": {
       "description": "Samba smbtorture SMB2/3 protocol suite",
-      "protocol": "SMB",
       "profiles": ["badger-s3"],
       "known_failures": "smb-conformance/smbtorture/KNOWN_FAILURES.md",
       "timeout_minutes": 45,
@@ -71,7 +68,6 @@
     "pjdfstest": {
       "description": "pjdfstest POSIX filesystem semantics over NFS",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "nfs-version",
@@ -106,33 +102,9 @@
       ]
     },
 
-    "pynfs": {
-      "description": "pynfs NFSv4.0/4.1 protocol conformance",
-      "host_adapter": true,
-      "protocol": "NFS",
-      "profiles": ["badger-s3"],
-      "variant": {
-        "name": "minor-version",
-        "values": ["4.0", "4.1"]
-      },
-      "known_failures": {
-        "4.0": "nfs-conformance/pynfs/KNOWN_FAILURES_V40.md",
-        "4.1": "nfs-conformance/pynfs/KNOWN_FAILURES_V41.md"
-      },
-      "timeout_minutes": 45,
-      "steps": [
-        {
-          "name": "run",
-          "cmd": "nfs-conformance/pynfs/run-pynfs.sh",
-          "args": ["--profile", "{profile}", "--minor-version", "{variant}"],
-          "root": false
-        }
-      ]
-    },
     "cthon04": {
       "description": "Connectathon basic/general/special/lock over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",
@@ -173,7 +145,6 @@
     "nfstest": {
       "description": "NetApp nfstest modules over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",
@@ -220,7 +191,7 @@
   ],
   "workflows": {
     "conformance.yml": "Conformance Suites",
-    "nfs-pynfs.yml": "NFS Protocol Conformance",
-    "e2e-tests.yml": "E2E Tests"
+    "e2e-tests.yml": "E2E Tests",
+    "tests.yml": "Tests"
   }
 }

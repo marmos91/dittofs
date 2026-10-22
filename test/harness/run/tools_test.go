@@ -247,7 +247,7 @@ func TestRegistryNamesItsTools(t *testing.T) {
 				continue
 			}
 			vals := map[string]string{"tools": tools, "server": "10.0.0.1", "nfs-port": "12049", "out": "/out", "minor": c.Matrix["minor"]}
-			argv, err := fill(c.Unit.Cmd[0], vals, nil)
+			argv, err := fill(c.Unit.Cmd[0], vals, map[string][]string{"names": strings.Fields(c.Unit.Names)})
 			if err != nil {
 				t.Fatal(err)
 			}

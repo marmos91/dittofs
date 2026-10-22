@@ -7,12 +7,13 @@
       "name": "dt"
     },
     "summary": {
-      "tests": 8,
-      "passed": 2,
+      "tests": 9,
+      "passed": 3,
       "failed": 2,
       "skipped": 3,
       "pending": 0,
       "other": 1,
+      "flaky": 1,
       "start": 1791460800000,
       "stop": 1791460912000
     },
@@ -97,6 +98,19 @@
         "status": "other",
         "duration": 0,
         "message": "panic: boom"
+      },
+      {
+        "name": "TestFlaky",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/c"
+        ],
+        "status": "passed",
+        "duration": 20,
+        "message": "c_test.go:7: timed out",
+        "retries": 1,
+        "flaky": true
       },
       {
         "name": "example.com/m/c",

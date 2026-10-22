@@ -91,7 +91,6 @@ jobs:
       wpts: ${{ steps.resolve.outputs.wpts }}
       smbtorture: ${{ steps.resolve.outputs.smbtorture }}
       pjdfstest: ${{ steps.resolve.outputs.pjdfstest }}
-      pynfs: ${{ steps.resolve.outputs.pynfs }}
       # cthon04 and nfstest share one job, so their cells are also published
       # together; the per-suite outputs above still exist for both.
       nfs_mount: ${{ steps.resolve.outputs.nfs_mount }}

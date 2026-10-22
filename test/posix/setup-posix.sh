@@ -28,9 +28,9 @@
 #   4.0 - NFSv4.0 (explicit minor version)
 #   4.1 - NFSv4.1
 #
-# --no-mount provisions the server but skips the NFS mount, for clients that
-# speak the protocol themselves (pynfs). Nothing then needs privilege, so the
-# root check is skipped too.
+# --no-mount provisions the server but skips the NFS mount, for suites that
+# mount it themselves. Nothing then needs privilege, so the root check is
+# skipped too.
 #
 # The remaining flags serve suites that run as an ordinary user on a client in
 # its own network namespace (test/nfs-mount/), and change nothing for pjdfstest:
@@ -112,7 +112,7 @@ while [[ $# -gt 0 ]]; do
             echo "  sudo $0 memory                     # NFSv3 with memory stores"
             echo "  sudo $0 memory --nfs-version 4     # NFSv4.0 with memory stores"
             echo "  sudo $0 badger --nfs-version 4.1   # NFSv4.1 with BadgerDB stores"
-            echo "  $0 memory --no-mount               # server only, for pynfs"
+            echo "  $0 memory --no-mount               # server only"
             exit 0
             ;;
         -*)
@@ -558,15 +558,12 @@ main() {
     log_info "Server log:  /tmp/dittofs-posix-server.log"
     log_info "Data dir:    $DATA_DIR"
     log_info ""
-    if [[ "$NO_MOUNT" == true ]]; then
-        log_info "To run pynfs protocol tests:"
-        log_info "  $REPO_ROOT/test/nfs-conformance/pynfs/run-pynfs.sh --no-setup"
-    else
+    if [[ "$NO_MOUNT" != true ]]; then
         log_info "To run POSIX tests:"
         log_info "  cd $MOUNT_POINT"
         log_info "  sudo env PATH=\"\$PATH\" $SCRIPT_DIR/run-posix.sh"
+        log_info ""
     fi
-    log_info ""
     log_info "To clean up:"
     log_info "  sudo $SCRIPT_DIR/teardown-posix.sh"
 }

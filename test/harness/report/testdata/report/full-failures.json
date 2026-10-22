@@ -13,6 +13,7 @@
       "skipped": 0,
       "pending": 0,
       "other": 0,
+      "flaky": 0,
       "start": 1791460800000,
       "stop": 1791460912000
     },
