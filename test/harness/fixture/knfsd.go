@@ -1,6 +1,7 @@
 package fixture
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -79,13 +80,14 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 			_, _ = fmt.Fprintf(w, "[dt] fixture: %v; unmount it with: sudo umount %s\n", err, dir)
 		}
 	})
-	// A step's undoing is added before the step: a step that ctx ends goes
-	// on by itself, and undoing one that didn't happen does nothing.
+	// A step's undoing is added before the step: a step that ctx ends may
+	// have done part of its work, and undoing one that didn't happen does
+	// nothing.
 	//
 	// decision: the export is a tmpfs, which the kernel exports wherever dt
 	// runs, while it refuses the overlay file system a container's /tmp is.
 	k.undo = append(k.undo, func() { _ = runFor(context.Background(), 0, asRoot("umount", dir)) })
-	if err := step(ctx, w, asRoot("mount", "-t", "tmpfs", "-o", "mode=0777", "tmpfs", dir)); err != nil {
+	if err := waitStep(ctx, w, asRoot("mount", "-t", "tmpfs", "-o", "mode=0777", "tmpfs", dir)); err != nil {
 		return nil, err
 	}
 	share := filepath.Join(dir, Share)
@@ -99,7 +101,7 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	// rpc.nfsd sets the lease and grace times for every server on this
 	// network stack, so they are read first and restored once it stops.
 	if _, err := os.Stat(filepath.Join(nfsdDir, "threads")); err != nil {
-		if err := step(ctx, w, asRoot("mount", "-t", "nfsd", "nfsd", nfsdDir)); err != nil {
+		if err := waitStep(ctx, w, asRoot("mount", "-t", "nfsd", "nfsd", nfsdDir)); err != nil {
 			return nil, err
 		}
 	}
@@ -127,7 +129,7 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	}
 	export := server + ":" + dir
 	k.undo = append(k.undo, func() { _ = runFor(context.Background(), 0, asRoot("exportfs", "-u", export)) })
-	if err := step(ctx, w, asRoot("exportfs", "-i", "-o", opts, export)); err != nil {
+	if err := waitStep(ctx, w, asRoot("exportfs", "-i", "-o", opts, export)); err != nil {
 		return nil, err
 	}
 
@@ -158,7 +160,7 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	})
 
 	k.undo = append(k.undo, func() { _ = runFor(context.Background(), 0, asRoot("rpc.nfsd", "0")) })
-	if err := step(ctx, w, asRoot(nfsd...)); err != nil {
+	if err := waitStep(ctx, w, asRoot(nfsd...)); err != nil {
 		return nil, err
 	}
 	for {
@@ -205,4 +207,28 @@ func (k *Knfsd) Stop() error {
 		}
 	})
 	return nil
+}
+
+// waitStep is step for a command that has to end before its undoing runs:
+// an rpc.nfsd left going would start the server after Stop stopped it. When
+// ctx ends first, the command's group gets SIGTERM, which sudo relays, and
+// waitStep waits for the command to end.
+//
+// decision: that wait has no limit, since SIGKILL would end sudo alone and
+// leave its command going.
+func waitStep(ctx context.Context, w io.Writer, argv []string) error {
+	_, _ = fmt.Fprintf(w, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	ownGroup(cmd)
+	cmd.Cancel = func() error { stopGroup(cmd, false); return nil }
+	out, err := cmd.CombinedOutput()
+	switch {
+	case ctx.Err() != nil:
+		err = ctx.Err()
+	case err != nil:
+		err = fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
+	default:
+		return nil
+	}
+	return fmt.Errorf("`%s`: %w", strings.Join(argv, " "), err)
 }

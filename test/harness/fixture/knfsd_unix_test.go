@@ -20,13 +20,14 @@ import (
 // fakeKnfsd puts on PATH a sudo that logs and runs its command, and a mount,
 // exportfs, rpc.nfsd and rpc.mountd that succeed, unless DT_FAKE_FAIL names
 // the program, and a umount that empties the directory it is given, as
-// unmounting the tmpfs would. With DT_FAKE_HANG set, rpc.nfsd hangs for 3
-// seconds rather than start the server. The kernel's settings are files in a directory
-// of their own, with lease and grace times of 90 and the grace period on;
-// rpc.nfsd writes the times it is given there and ends the grace period a
-// second later. rpc.mountd runs until SIGTERM, and logs it. dt runs as an
-// ordinary user, and makes its directories in one of the test's. It returns
-// the settings' directory, and a function giving the calls so far.
+// unmounting the tmpfs would. With DT_FAKE_HANG set, rpc.nfsd waits 3
+// seconds before it starts the server, and logs that start. The kernel's
+// settings are files in a directory of their own, with lease and grace
+// times of 90 and the grace period on; rpc.nfsd writes the times it is
+// given there and ends the grace period a second later. rpc.mountd runs
+// until SIGTERM, and logs it. dt runs as an ordinary user, and makes its
+// directories in one of the test's. It returns the settings' directory, and
+// a function giving the calls so far.
 func fakeKnfsd(t *testing.T) (nfsd string, calls func() []string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,7 +50,7 @@ func fakeKnfsd(t *testing.T) (nfsd string, calls func() []string) {
 trap 'echo "rpc.mountd stopped" >> "$DT_FAKE_LOG"; exit 0' TERM
 while :; do sleep 0.1; done`,
 		"rpc.nfsd": fail + `
-[ -z "$DT_FAKE_HANG" ] || [ "$1" = 0 ] || exec sleep 3
+[ -z "$DT_FAKE_HANG" ] || [ "$1" = 0 ] || { sleep 3; echo "rpc.nfsd starts the server" >> "$DT_FAKE_LOG"; }
 while [ $# -gt 1 ]; do
 	case "$1" in
 	--lease-time) echo "$2" > "$DT_FAKE_NFSD/nfsv4leasetime" ;;
@@ -183,9 +184,9 @@ func TestKnfsd(t *testing.T) {
 
 // A setup that fails undoes what it did, the last step first, and the step
 // it failed in: a failed mount of the tmpfs is unmounted, a failed export
-// leaves rpc.mountd and the server unstarted,
-// a server that doesn't answer is stopped with the rest, and so is one whose
-// start the setup's limit ended, since rpc.nfsd goes on by itself.
+// leaves rpc.mountd and the server unstarted, a server that doesn't answer
+// is stopped with the rest, and an rpc.nfsd the setup's limit ends is ended
+// before the undoing, so it starts nothing after.
 func TestKnfsdFails(t *testing.T) {
 	f := registry.Fixture{Server: "knfsd", NFS: registry.NFS{Version: "export"}, Squash: "none", Lease: "30s"}
 	for _, tc := range []struct {
@@ -213,9 +214,13 @@ func TestKnfsdFails(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), limit)
 			defer cancel()
 			var w bytes.Buffer
+			start := time.Now()
 			_, err := StartKnfsd(ctx, f, t.TempDir(), &w)
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Fatalf("StartKnfsd: %v, want %q\n%s", err, tc.err, w.String())
+			}
+			if tc.hang { // past rpc.nfsd's 3 seconds, so a start it went on with is in the calls
+				time.Sleep(time.Until(start.Add(4 * time.Second)))
 			}
 			got := calls()
 			dir := strings.TrimPrefix(got[0], "mount -t tmpfs -o mode=0777 tmpfs ")
