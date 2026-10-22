@@ -1466,9 +1466,10 @@ flags leave out: a test of another minor version, and one whose own check fails,
   test grades it `known` first, and a pass is reported, as an intermittent entry's is. A crash or a
   hang of the code under test isn't such a failure: it stays new, since no entry excuses it (§4.6).
   A skip is graded as any skip.
-- An expired entry is an error from `dt doctor` and the registry check, so the list can't become a
-  dumping ground. An entry expires at the start of its date in UTC, and from then on every `dt`
-  command refuses the registry (exit 3), until the entry goes or gets a later date.
+- An expired entry is an error from `dt doctor` and the registry check, a test of `dt` that
+  `lint-repo` runs, so the list can't become a dumping ground. An entry expires at the start of its
+  date in UTC. From then on it excuses nothing, so its test fails as new and the gate goes red on
+  that test, while every other `dt` command still runs.
 
 The AD-DC keytab race (#2968) is what it's for, once that suite reports through `dt`. The other
 AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` failed on every run

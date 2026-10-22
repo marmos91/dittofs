@@ -43,6 +43,9 @@ type Registry struct {
 	// Quarantine holds the quarantine list's entries for each suite, by its
 	// name, as the entries its cells' results are graded by.
 	Quarantine map[string][]known.Entry `yaml:"-"`
+	// Expired says why each expired entry of the quarantine list excuses
+	// nothing, as path:line: why, for dt doctor and the lint to report.
+	Expired []string `yaml:"-"`
 }
 
 // Suites keeps the file's order.
