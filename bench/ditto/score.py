@@ -46,6 +46,16 @@ MAILBOX = {
     "ost-full-sync": "p99",
     "logoff-compaction": "wall",
 }
+# What the summary shows of each area beside its score: {point} is DittoFS vs Samba on that point.
+FIGURES = {
+    "sequential": "1M x 8 threads, read {seq-read-1m-t8}, write {seq-write-1m-t8}",
+    "random": "4K x 1 thread, read {rand-read-4k-t1}, write {rand-write-4k-t1}; "
+              "4K x 8 threads, read {rand-read-4k-t8}, write {rand-write-4k-t8}",
+    "small files": "4K create {files-4k-create}, read {files-4k-read}; 64K create {files-64k-create}, "
+                   "read {files-64k-read}; 1.75M create {files-1792k-create}, read {files-1792k-read}",
+    "mailbox": "16 users, search re-index {mailbox-search-reindex-u16}, "
+               "mail flow p99 {mailbox-mail-flow-u16} ms, OST full sync p99 {mailbox-ost-full-sync-u16} ms",
+}
 
 
 def load(path):
@@ -151,6 +161,17 @@ def label(name):
 
 def pct(x):
     return f"{x * 100:.0f}%" if x is not None else "n/a"
+
+
+def figure(name, points):
+    """DittoFS vs Samba on a point, each the median of its repeats, files/s as MiB/s (times the file
+    size) and the rest in its own unit; n/a for a point without a value."""
+    if name not in points:
+        return "n/a"
+    p = points[name]
+    scale = FILE_SIZES[name.split("-")[1]] / 2**20 if p["unit"] == "files/s" else 1
+    values = (statistics.median(p[t]) * scale for t in TARGETS)
+    return " vs ".join(f"{v:.0f}" if v >= 10 else f"{v:.2g}" for v in values)
 
 
 def history(work, night):
@@ -331,7 +352,11 @@ def main():
             n = logons[-1]
             line += f" Mailbox, {n.rsplit('-u', 1)[1]} users: logon {1 / points[n]['ratio']:.1f}x Samba's time."
         lines.append(line)
-        lines.append(" · ".join(f"{a} {pct(v) if v is not None else 'incomplete'}" for a, v in areas.items()).capitalize())
+        median = f" (median of {len(repeats)} repeats)" if len(repeats) > 1 else ""
+        lines.append(f"By area, DittoFS vs Samba in MiB/s{median}:")
+        for a, v in areas.items():
+            shown = re.sub(r"\{([\w-]+)\}", lambda m: figure(m.group(1), points), FIGURES[a])
+            lines.append(f"{a.capitalize()} {pct(v) if v is not None else 'incomplete'}: {shown}")
     if mode == "night" and not bands:
         lines.append("No noise band yet, so no flags: it comes from the calibration nights.")
     elif flags:
