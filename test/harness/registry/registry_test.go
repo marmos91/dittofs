@@ -74,6 +74,16 @@ func TestLoadRules(t *testing.T) {
 				"a: fixture holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test"},
 		{"a dfs fixture names its profile", ok + "suites:\n  a: { cmd: true, fixture: { server: dfs, nfs: export } }\n  b: { cmd: true, fixture: { nfs: export } }\n",
 			"a: fixture: a dfs fixture names its profile\nb: fixture: a dfs fixture names its profile"},
+		{"a knfsd fixture exports, with squash none and a lease at most", ok + "suites:\n" +
+			"  a: { cmd: true, fixture: { server: knfsd, nfs: export, squash: none, lease: 30s } }\n" +
+			"  b: { cmd: true, fixture: { server: knfsd, nfs: export, users: [1] } }\n" +
+			"  c: { cmd: true, fixture: { server: knfsd, nfs: export, squash: root_to_admin } }\n" +
+			"  d: { cmd: true, fixture: { server: knfsd, nfs: '4.1' } }\n" +
+			"  e: { cmd: true, fixture: { server: knfsd, profile: memory, nfs: export } }\n",
+			"b: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"c: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"d: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"e: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
