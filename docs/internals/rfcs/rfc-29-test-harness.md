@@ -1009,7 +1009,7 @@ every merge.
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
 dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
    [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
-   [--estimate]                                and the tier's runner-minutes, from dt history
+   [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)

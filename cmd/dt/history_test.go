@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,5 +136,64 @@ func TestKnownPrune(t *testing.T) {
 	}
 	if _, err := dt(t, "known", "prune", "nosuch"); err == nil {
 		t.Error("an unknown suite accepted")
+	}
+}
+
+// dt plan --estimate gives each planned cell its p50, not its p90, over the
+// runs dt history reads, by the cell's name, so each shard counts as the
+// runner it takes. A cell with no results there says so and counts in no
+// sum, and the tier's runner-minutes are the sum of the others', the same in
+// text and in JSON. --ci and --last only say which runs it reads.
+func TestPlanEstimate(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 1m, cell: 10m } }\nsuites:\n"+
+		"  a: { cmd: \"true\" }\n  s: { cmd: \"true {test}\", tests: \"t/*.sh\", shards: 2 }\n  b: { cmd: \"true\" }\n")
+	writeFile(t, filepath.Join(root, "t", "1.sh"), "")
+	writeFile(t, filepath.Join(root, "t", "2.sh"), "")
+	t.Chdir(root)
+	cell := func(name string, took time.Duration) report.Cell {
+		return report.Cell{Name: name, Result: report.Passed, Took: took}
+	}
+	writeRuns(t, root,
+		report.Run{Name: "20261019T100000Z-aaaaaaaa", Cells: []report.Cell{cell("a", time.Minute), cell("s/shard-1", 3*time.Minute), cell("s/shard-2", 5*time.Minute)}},
+		report.Run{Name: "20261019T110000Z-bbbbbbbb", Cells: []report.Cell{cell("a", 2*time.Minute)}},
+		report.Run{Name: "20261019T120000Z-cccccccc", Cells: []report.Cell{cell("a", 10*time.Minute)}},
+	)
+
+	out, err := dt(t, "plan", "--tier", "pr", "--estimate")
+	for _, want := range []string{
+		"a          ubuntu  true      10m      2.0m ",
+		"s/shard-1  ubuntu  true      10m      3.0m ",
+		"s/shard-2  ubuntu  true      10m      5.0m ",
+		"b          ubuntu  true      10m      no history ",
+		"\nrunner-minutes: 10.0, the sum of 3 cells' p50; cells with no history: 1\n",
+	} {
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("dt plan --estimate: %v\n%s\nwant %q", err, out, want)
+		}
+	}
+
+	out, err = dt(t, "plan", "--tier", "pr", "--estimate", "--json")
+	var got struct {
+		Cells []struct {
+			Name string          `json:"name"`
+			P50  json.RawMessage `json:"p50_minutes"`
+		} `json:"cells"`
+		RunnerMinutes float64 `json:"runner_minutes"`
+		NoHistory     int     `json:"cells_without_history"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(out), &got)
+	}
+	var p50 []string
+	for _, c := range got.Cells {
+		p50 = append(p50, c.Name+"="+string(c.P50))
+	}
+	if err != nil || strings.Join(p50, " ") != "a=2 s/shard-1=3 s/shard-2=5 b=null" || got.RunnerMinutes != 10 || got.NoHistory != 1 {
+		t.Errorf("dt plan --estimate --json: %v\n%s", err, out)
+	}
+
+	if _, err := dt(t, "plan", "--tier", "pr", "--ci"); err == nil {
+		t.Error("--ci accepted without --estimate")
 	}
 }
