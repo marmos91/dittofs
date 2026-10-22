@@ -1857,7 +1857,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
      which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
      the schedule and on a dispatch naming a suite, and `merge` on another dispatch. cthon04 and
-     nfstest, whose scripts run after no merge, have parity cells at `nightly` only. A last job
+     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, and so does
+     smbtorture's Kerberos option, which joins in step 3. A last job
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
@@ -1866,7 +1867,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
      `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run.
+     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which runs
+     its three filters one at a time without `run.sh`, saves the same for its one cell, with the
+     tests run only when each filter's grader counted them.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
