@@ -718,7 +718,13 @@ suites:
     needs: [linux, root, nfs-client, fio]
     options:
       smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
-  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }   # bench-smoke.yml today
+  bench-smoke:                          # bench-smoke.yml's two steps
+    cmd:
+      - go run ./cmd/bench run --smoke --results {out}
+      - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }   # they only parse: dfsbench doesn't run them
+    metrics: dfsbench-json
+    tier: pr
+    blocking: false
 ```
 
 | Field | Meaning | Default |
@@ -1802,10 +1808,11 @@ only when the failing set changes.
 Performance is tracked, not gated. Hosted runners share hardware and are too noisy to fail a PR on
 a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
-  needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
-  runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
-  whatever it measures.
+  needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
+  PRs, non-blocking, as `bench-smoke.yml` did, and writes its results to its `{out}` (§4.6).
+  `unit --nonrace` runs nightly, as `perf-gates.yml` did: the throughput and allocation gates that
+  skip under `-race` and `-short` (#2999). The aggregate random-write gate joins once it has a
+  baseline: without one it passes whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
@@ -1872,7 +1879,8 @@ a percentage.
 
 - **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
   job (§8), so the old job is there until then, unless it ran the commands `dt` runs, as the unit,
-  integration, operator and lint jobs did. `dt`'s own tests run in `lint-repo` on every PR.
+  integration, operator, lint, AD-DC, performance-gate and smoke-benchmark jobs did. `dt`'s own
+  tests run in `lint-repo` on every PR.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
@@ -1965,10 +1973,12 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
-     that keeps its check name can't report beside an old job of that name. Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
-     cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
-     `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
-     longer tests a commit.
+     that keeps its check name can't report beside an old job of that name. So do AD-DC, the
+     performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
+     with the mailbox job files' parse. Then the Kerberos runs: smbtorture's Kerberos job runs its
+     scripts, so its option moves after 5 matching runs. When pynfs's cells move, `nfs-pynfs.yml`
+     keeps only its knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8),
+     and leaves `ci-health.yml`'s lists, since it no longer tests a commit.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.

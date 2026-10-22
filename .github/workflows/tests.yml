@@ -9,10 +9,11 @@
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
-# consecutive runs; unit, integration, operator and lint, whose old jobs ran
-# the commands dt runs, move in at once. plan keeps only the cells of those
-# that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
-# option, operator, the Windows unit run, the suites with a job of their own,
+# consecutive runs; unit, integration, operator, lint, AD-DC, the performance
+# gates and bench-smoke, whose old jobs ran the commands dt runs, move in at
+# once. plan keeps only the cells of those that have moved: pynfs, pjdfstest,
+# WPTS, smbtorture with its Kerberos option, operator, the Windows and
+# no-race unit runs, AD-DC, bench-smoke, the suites with a job of their own,
 # the system scenarios, which had no workflow, less the cells the dedicated
 # host runs itself, and clients, which runs beside smb-client-compat.yml until
 # their results match. A suite joins by being added to the select in
@@ -107,8 +108,9 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients")
+                or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
+                or .suite == "clients"
+                or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
@@ -179,6 +181,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cifs-utils smbclient
+
+      # dfsbench's smoke run and the mailbox job files call fio.
+      - name: Install fio
+        if: matrix.suite == 'bench-smoke'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fio
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them
