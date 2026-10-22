@@ -515,16 +515,17 @@ jobs:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
 
-      # Every run those jobs made, each attempt's, with a planned cell whose
-      # job wrote no run counted as not run. A run already posted posts
-      # nothing, so a cell counts from its latest attempt only when post itself
-      # is re-run after an attempt that posted nothing.
+      # Every run those jobs made, each attempt's. A planned cell, matrix or
+      # fixed job, whose job wrote no run counts as not run. A run already
+      # posted posts nothing, so a cell counts from its latest attempt only when
+      # post itself is re-run after an attempt that posted nothing.
       - name: Post
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BLOCKING: ${{ needs.plan.outputs.blocking }}
+          FIXED: ${{ needs.plan.outputs.fixed }}
         run: |
           shopt -s nullglob
           runs=("$RUNNER_TEMP"/results/dt-run-*/*/summary.json)
-          cells=$(jq -r 'map(.name) | join(",")' <<<"${BLOCKING:-[]}")
+          cells=$(jq -rn --argjson b "${BLOCKING:-[]}" --argjson f "${FIXED:-[]}" '($b | map(.name)) + $f | join(",")')
           "$RUNNER_TEMP/dt" report --failures --post "$cells" "${runs[@]%/summary.json}"
