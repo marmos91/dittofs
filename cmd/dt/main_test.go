@@ -311,3 +311,19 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 		t.Errorf("dt run: %v\n%s", err, out)
 	}
 }
+
+// --retry runs a test that failed new again, so one that fails only once
+// passes.
+func TestRunRetry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs sh")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  once: { cmd: \"sh {test}\", tests: \"t/*.sh\" }\n")
+	writeFile(t, filepath.Join(root, "t", "a.sh"), "[ -e \"$0.ran\" ] || { touch \"$0.ran\"; exit 1; }\n")
+	t.Chdir(root)
+	if out, err := dt(t, "run", "once", "--retry", "1", "--results", t.TempDir()); err != nil {
+		t.Errorf("dt run: %v\n%s", err, out)
+	}
+}

@@ -67,6 +67,7 @@ type Suite struct {
 	Packages    *Packages            `yaml:"packages"`
 	Env         Env                  `yaml:"env"`
 	Args        map[string]string    `yaml:"args"`
+	Names       string               `yaml:"names"` // what {names} holds when a run names no tests
 	Known       string               `yaml:"known"`
 	Shards      int                  `yaml:"shards"`
 	Job         string               `yaml:"job"`
