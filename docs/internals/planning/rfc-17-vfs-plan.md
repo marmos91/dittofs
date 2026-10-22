@@ -10,11 +10,14 @@ it in stage 5.
 
 ## 1. What already exists
 
-- **The store** (`pkg/metadata/kvstore`, merged): the views the server calls. `Namespace`,
-  `Files` and `Capacity` (RFC 7); `Existence` and `Content` (RFC 6); `Clients` and `Opens`
-  (RFC 14's durable records); `Principals`; `ControlPlane`.
+- **The store** (`pkg/metadata/kvstore`, merged) has every RFC 16 view; the server calls only
+  `Namespace`, `Files` and `Capacity` (RFC 7). The others are its dependencies' (RFC 16 §3):
+  open state holds `OpenRecords` (`Clients`, `Opens`), the engine `Existence` and `Content`,
+  identity `Principals`, `Records` and `Minter`, and the API `ControlPlane`.
 - **Open state** (`pkg/openstate`): pieces 1 and 2 of stage 1 in review (#3256, #3258), the
-  rest planned in #3202. The server holds `*openstate.Table` and implements its `Sink`.
+  rest planned in #3202. `vfs.New` takes `*openstate.Table` in `Deps.Open` but keeps only its
+  seven views (RFC 17 §2.3); the server implements its `Sink`, which the node hands to
+  `Table.Start` with the server's admission lock.
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
 - **Today's server** on `develop`: `pkg/metadata.Service`, the protocol handlers that each
@@ -23,7 +26,7 @@ it in stage 5.
 ## 2. Decisions to settle
 
 **D1. Route B: the server is built over the new store, not over today's `metadata.Service`.**
-`Deps.Meta` is `*kvstore.Store` from the first piece. RFC 17 §9's slices 1–3, which first
+`Deps.Meta` is `*kvstore.Store`, RFC 16's `metadata.Store`, from the first piece. RFC 17 §9's slices 1–3, which first
 delegate to today's `metadata.Service` and lock manager, are a migration of today's server;
 on `feat/storage-v2` they would build a second server that route B then deletes. RFC 17 §9 now
 says the same in a `decision:`: slice 1's delegation and slice 3's shim are skipped, and slice 0's
@@ -38,10 +41,13 @@ methods §3.5's table calls, no more. A fake implements it until stage 3; the re
 `*engine.Engine` then satisfies it unchanged. The method list (§4) is the contract to agree
 with the journal v2 team before either side builds against it.
 
-**D4. Identity through a resolver fake.** `Deps.Identity` is RFC 18's `Resolver` (#3144, in
-review). Until it exists, the server takes a small resolver over `kvstore.Principals` that maps
-an `Identity` to principals and groups, enough for admission and the chokepoint, replaced
-when RFC 18 lands.
+**D4. Identity through fakes of RFC 18's exact signatures.** `Deps.Identity` is RFC 18 §6.1's
+`Resolver`, `Resolve(ctx, id Identity, p metadata.SharePolicy, readOnly bool) (*Caller, error)`
+(RFC 18 is on #3142). Until identity lands, a fake implements that signature over
+`Principals.SharePolicy`, `Groups` and `Grant`, filling `Caller.Mapped` before squash and
+`Principal` after it, so open state receives the unsquashed principal (RFC 14's
+`Caller.Principal`). `Deps.Auth` (`identity.Authenticator`) and `Deps.Names`
+(`identity.Identities`), behind the `Principals` area, are faked the same way.
 
 **D5. Packages as RFC 17 §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID
 codecs, `Service`, `Callbacks`, `Events`) plus `vfstest` (`Record`, `Null`,
@@ -54,7 +60,10 @@ integration tier needs the real engine, so it starts with stage 3; until then it
 against the fake. Every case is revert-checked, and tests that cannot fail are not written.
 
 **D7. The RFC moves with the code** (RFC 17 §9): a piece that needs a signature change edits
-the RFC in the same PR.
+the RFC in the same PR. Three are known now, where RFC 17 lags RFC 14 and RFC 8: §5.1's
+`Write` sketch passes a reader and length where RFC 8 §12.1 takes `p []byte` (piece 8);
+`Clients.ReclaimComplete` lacks RFC 14's `shown []GraceRef` (piece 4); `Locking.AckRecall`
+lacks RFC 14's `epoch` (piece 9).
 
 ## 3. Pieces, in build order
 
@@ -62,29 +71,32 @@ the RFC in the same PR.
 |---|---|---|---|
 | 1 | Contract | §3.0–§3.4, §4.3 | nothing |
 | 2 | Server skeleton | §2.3, §2.5, §5.0 | piece 1 |
-| 3 | Shares and admission | §4.6, §4.9 | piece 2 |
-| 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | stage 1 pieces 2, 5 |
+| 3 | Shares, admission and principals | §3.1 `Shares`, `Principals`, §4.6, §4.9 | piece 2 |
+| 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | stage 1 pieces 2, 4, 5, 6, 7 |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 piece 3 (`CheckChange`) |
-| 6 | Attributes | §5.5, §5.7 | piece 3 |
+| 6 | Attributes | §5.5, §5.7 | piece 3; stage 1 piece 3 (`CheckChange`, `Opens.Update`) |
 | 7 | Open and close | §5.3 | stage 1 piece 3 |
 | 8 | Data | §5.1, §5.2, §5.6, §5.8 | piece 7; the `Content` contract (§4) |
 | 9 | Locks, grants, watches | §5.11, §3.2 | stage 1 pieces 4, 5, 8 |
-| 10 | Copy and clone | §5.9 | piece 8 |
+| 10 | Copy and clone | §5.9 | piece 8; stage 1 piece 6 (`CloneOpen`, `CloneClose`) |
 | 11 | Grace and release recovery | §2.5, §5.3 | stage 1 piece 6 |
 
 What each piece carries:
 
-1. **Contract:** `pkg/vfs`'s value types and the aliases of open state's (`StateRef`,
-   `Revocation`, `ClientStatus`, `LockRange`); the error set with `Delay`, `StateError` and
-   `CrossError`; the codecs of every client-held ID, checked against RFC 21's and RFC 22's
-   golden bytes; `Service` as its six areas; `vfstest`'s `Record`, `Null` and
+1. **Contract:** `pkg/vfs`'s value types and the aliases RFC 17 §3.0 lists from the metadata
+   store and open state (`StateRef`, `Revocation`, `RevokeReason`, `ClientStatus`, `LockRange`,
+   `LockWaiter` among them, and `ClientRecord` for RFC 14's `Client`); the error set with
+   `Delay`, `StateError`, `CrossError`, `AccessError` and `QuotaError`, `vfs.Errors()` and
+   `vfs.Mutates`; the codecs of every client-held ID, checked against RFC 21's and RFC 22's
+   golden bytes; `Service` as its seven areas; `vfstest`'s `Record`, `Null` and
    `RecordingCallbacks`.
 2. **Server skeleton:** `Deps`, `New`, and the four states (`Start`, `Drain`, `Close`); the
    `lockorder` sorter that takes open-state steps, fold admission and accept locks in one
    order; `Content` and its fake; the architecture test (imports and call sites).
-3. **Shares and admission:** `Root`, `SecInfo`, `ListShares`, the pseudo-filesystem as a pure
-   function of the share list, admission on every call with its cache key, and `authz` as the
-   one caller of `Authorize`.
+3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS`, `Quota` and
+   `Snapshots`; the pseudo-filesystem as a pure function of the share list; admission on every
+   call with its cache key; `authz` as the one caller of `Authorize` and `Granted`; and the
+   `Principals` area, `SignIn`, `Spell` and `Find`, over `Deps.Auth` and `Deps.Names`.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's
    `Sink`, handed to `Table.Start` with the server's admission lock. Each area holds only the open
@@ -92,8 +104,8 @@ What each piece carries:
    only those in its unit tests.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change.
-6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams, `Access` and
-   `StatFS`, each returning the `WCC` its reply needs.
+6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams and `Access`,
+   each returning the `WCC` its reply needs.
 7. **Open and close:** opens, deny modes, delete on close and the four moments of release.
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, the write
    verifier, and quota reservations.
@@ -116,10 +128,17 @@ build against before either is done. From RFC 17 §3.5 and RFC 8 §12.1:
 | `Delete` | an orphaned file's content, at its last close or unlink (§5.3); kept apart from the journal's own `Release`, which evicts |
 | `Copy`, `Clone` | server-side copy and clone (§5.9) |
 
+The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Suspend, Done})
+(Verifier, error)`, where `Done` releases the quota reservation, and `Commit(ctx, f, off, n)
+(Verifier, lossSeq uint64, error)`, whose loss sequence `Opens.Flushed` reads. RFC 17 §5.1's
+reader-taking sketch is edited to match in piece 8 (D7).
+
 Proposal: stage 2 writes the fake and a short check that any `Content` passes, such as
 verified bytes back, a version above the last drawn, and nothing returned before its stage.
-Stage 3's engine runs the same check, so the fake cannot drift from the engine. `SetShare`,
-`StopShare`, `ForgetShare`, `Start` and `Close` are the node's to call, not the server's.
+Stage 3's engine runs the same check, so the fake cannot drift from the engine. `Apply`,
+`Start`, `Close`, the storage-binding calls `Bind`, `Unbind` and `Drop`, and the controls
+`PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats` are the node's (or a removal's,
+or a cut's) to call, not the server's.
 
 ## 5. What stays out of stage 2
 
@@ -135,12 +154,14 @@ Stage 3's engine runs the same check, so the fake cannot drift from the engine. 
 2. **D4:** when does RFC 18's resolver land, and is the store-backed fake enough until then?
 3. **Gaps below the server** (RFC 17 §10.4): RFC 16 has no read view of the share indexes or
    of quota records other than `ControlPlane`, which the server must not call. Both are store
-   work, and so ours, before pieces 3 and 8. RFC 16 on #3142 now adds `SharePolicy`, read
-   through identity's `Records` view: a share's squash, anonymous principal and cache versions
-   in one snapshot. That covers admission's policy read; the share list and path index, and
-   quota records, are still without one.
-4. **ID widths** (RFC 17 §10.3): the shard and `OpenID` widths in the stateid and the SMB
-   `FileId` are one choice, which stage 1's stateid layout also depends on.
+   work, and so ours, before pieces 3 and 8. RFC 16 on #3142 now adds `Principals.SharePolicy`:
+   a share's squash, anonymous principal and cache versions in one snapshot, enough for
+   admission's step 4 (resolution). Steps 1–3 — the share's state, the export policy's
+   minimums, client rules and netgroups — and the share list, path index and quota records still
+   have no read view.
+
+ID widths are settled: RFC 14 §2.11 fixes a 24-bit shard, 5 grace-instance bits and a 40-bit
+`OpenID` in the stateid and the SMB `FileId` (RFC 17 §10.3).
 
 ## 7. Size and what sets the pace
 
@@ -148,5 +169,6 @@ About fifteen PRs, roughly one per piece and two for the larger ones (5, 8, 9). 
 pace, as for stage 1. What blocks what:
 
 - the `Content` contract agreed before piece 8;
-- stage 1 pieces 2, 3, 4, 5 and 6 before stage 2 pieces 4, 5, 7, 9 and 11;
+- stage 1 pieces 2–8 before stage 2 pieces 4 (2, 4, 5, 6, 7), 5–7 (3), 9 (4, 5, 8), 10 (6)
+  and 11 (6);
 - the store's share and quota read views (open question 3) before pieces 3 and 8.
