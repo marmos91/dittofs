@@ -15,7 +15,7 @@ import (
 
 func newKnown() *cobra.Command {
 	cmd := &cobra.Command{Use: "known", Short: "Work on the suites' known files"}
-	cmd.AddCommand(newKnownImport(), newKnownBaseline())
+	cmd.AddCommand(newKnownImport(), newKnownBaseline(), newKnownPrune())
 	return cmd
 }
 

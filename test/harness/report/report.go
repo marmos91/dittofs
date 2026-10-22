@@ -160,14 +160,19 @@ func (r Run) Write(dir string) error {
 }
 
 // Read reads the run in dir back from its summary.json, as Write wrote it.
-// A test goes back to the cell whose name begins its suite, the longest such
-// name when one cell's name begins another's.
 func Read(dir string) (Run, error) {
 	path := filepath.Join(dir, "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Run{}, err
 	}
+	return Parse(path, data)
+}
+
+// Parse reads a run from data, a summary.json as Write writes it, named path
+// in its errors. A test goes back to the cell whose name begins its suite, the
+// longest such name when one cell's name begins another's.
+func Parse(path string, data []byte) (Run, error) {
 	var doc document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Run{}, fmt.Errorf("%s: %w", path, err)
