@@ -92,6 +92,7 @@ func Run(t *testing.T, open Opener) {
 		{"DurableLocks", testDurableLocks},
 		{"DeletePending", testDeletePending},
 		{"NSMState", testNSMState},
+		{"NextID", testNextID},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

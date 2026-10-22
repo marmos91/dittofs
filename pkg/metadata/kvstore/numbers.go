@@ -3,10 +3,12 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 )
 
@@ -51,27 +53,42 @@ func (s *Store) nextNumber(ctx context.Context, share entity.ShareID) (uint64, e
 	return s.numbers.next(ctx, s.kv, numberKey(share), false, maxNumber, ErrNumbersExhausted)
 }
 
-// The server-wide ID allocators, each under IDS‖kind.
+// IDKind names one server-wide ID allocator, kept under IDS‖kind.
+type IDKind byte
+
 const (
-	idClient byte = 1
-	idOpen   byte = 2
-	idLock   byte = 3
+	IDClient IDKind = 1
+	IDOpen   IDKind = 2
+	IDLock   IDKind = 3
 )
 
-// nextID issues a client, open or lock ID never issued before in this
-// installation, never zero, which names none. The IDs come from server-wide
-// counters under IDS‖kind, reserved in ranges as file numbers are, so an open
-// does not write the counter. A lock ID needs to differ only from the other
-// locks under its open and offset; the server-wide counter gives more than
-// that, at no extra cost. An NFSv4 lock state's ID is random, never one of
-// these.
+// maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
+// SMB's 8-byte persistent FileId.
+const maxOpenID = 1 << 40
+
+// NextID issues a client, open or lock ID never issued before in this
+// installation, never zero, which names none: one for every client, open and
+// lock, volatile ones too. The IDs come from server-wide counters under
+// IDS‖kind, reserved in ranges as file numbers are, so issuing one does not
+// write the counter, and a range a process leaves unused is abandoned. A lock
+// ID needs to differ only from the other locks under its open and offset; the
+// server-wide counter gives more than that, at no extra cost. An NFSv4 lock
+// state's ID is random, never one of these. Any other kind is refused.
 //
 // ponytail: in a cluster these three keys are the only server-wide keys
 // opens contend on, once per range. Widen the ranges, or give each node its
 // own, if their reservations show in a profile.
-func (s *Store) nextID(ctx context.Context, kind byte) (uint64, error) {
+func (s *Store) NextID(ctx context.Context, kind IDKind) (uint64, error) {
+	bound := uint64(math.MaxUint64)
+	switch kind {
+	case IDClient, IDLock:
+	case IDOpen:
+		bound = maxOpenID
+	default:
+		return 0, merrs.NewInvalidArgumentError(fmt.Sprintf("no ID allocator of kind %d", kind))
+	}
 	for {
-		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64, ErrIDsExhausted)
+		n, err := s.numbers.next(ctx, s.kv, idKey(byte(kind)), true, bound, ErrIDsExhausted)
 		if err != nil || n != 0 {
 			return n, err
 		}

@@ -100,7 +100,7 @@ func TestOpenKeyGolden(t *testing.T) {
 		{"client shard", clientShardKey(7, 2), "35" + hexU64(7) + "01" + hexU64(2)},
 		{"client owner", clientOwnerKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "02" + "1100ff" + "0001"},
 		{"nsm", nsmKey(), "2a"},
-		{"ids", idKey(idOpen), "3a02"},
+		{"ids", idKey(byte(IDOpen)), "3a02"},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
