@@ -527,16 +527,11 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
-| `lint.yml` | PR, push | Go lint + vet + spec citations | ~2 min |
-| `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
-| `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
-| `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
 | `conformance.yml` | PR, push, nightly | cthon04, nfstest, Kerberos smbtorture | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pjdfstest, pynfs, WPTS and smbtorture so far, decided by one `gate` check | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS and smbtorture so far | ~20 min |
 | `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
-| `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
 ### Conformance suites
@@ -573,11 +568,8 @@ them is a second prose copy here.
 
 These workflows gate pull request merges and should complete in under 5 minutes:
 
-- **lint.yml** -- Go formatting, vetting, and linting
-- **unit-tests.yml** -- All unit tests with race detection
-- **windows-build.yml** -- Windows cross-compilation verification
 - **conformance.yml** -- cthon04, through its scripts (see the table above)
-- **tests.yml** -- pjdfstest, pynfs, WPTS and smbtorture (over two runners), on badger-s3, through `dt`
+- **tests.yml** -- Through `dt`: lint, unit tests with the race detector (on Windows too, non-blocking), integration, operator, and pjdfstest, pynfs, WPTS and smbtorture (over two runners) on badger-s3
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)
@@ -587,7 +579,6 @@ These run after merging to develop and should complete in under 30 minutes:
 - Everything from PR checks
 - **conformance.yml** -- Kerberos smbtorture
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
-- **integration-tests.yml** -- Backend-specific integration tests
 
 ### What Runs Weekly (Full Matrix)
 
@@ -595,7 +586,6 @@ The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
 - **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
-- **operator-tests.yml** -- Operational scenarios
 - Auto-creates GitHub issues for regressions
 
 ### How to Manually Trigger Workflows

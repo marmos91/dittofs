@@ -6,12 +6,18 @@
 # others in non-blocking, which nothing waits for. gate waits for plan and run,
 # always runs, and is the check that decides.
 #
-# The suites move in from their own workflows one at a time, each running here
-# beside its old job until their results match on 5 consecutive runs. plan
-# keeps only the cells of those that have: pynfs, pjdfstest, WPTS, and
-# smbtorture without its Kerberos option. A suite joins by being added to the
-# select in plan, with any step its cells need that run doesn't give yet, such
-# as another service; the select goes once every suite runs here.
+# The suites move in from their own workflows one at a time. A conformance
+# suite runs here beside its old job until their results match on 5
+# consecutive runs; unit, integration, operator and lint, whose old jobs ran
+# the commands dt runs, move in at once. plan keeps only the cells of those
+# that have moved: pynfs, pjdfstest, WPTS, smbtorture without its Kerberos
+# option, operator, the Windows unit run, and the suites with a job of their
+# own. A suite joins by being added to the select in plan, with any step its
+# cells need that run doesn't give yet, such as another service; the select
+# goes once every suite runs here.
+#
+# The suites with a job of their own, named as the checks the develop ruleset
+# requires, run in the jobs after non-blocking, which gate waits for too.
 name: Tests
 
 on:
@@ -49,6 +55,11 @@ env:
   TIER: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'merge' || github.event_name == 'schedule' && 'nightly' || inputs.tier }}
   RETRY: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && '1' || '0' }}
 
+# Every run step in bash, whatever shell its runner would pick.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   plan:
     name: plan
@@ -57,6 +68,7 @@ jobs:
     outputs:
       blocking: ${{ steps.plan.outputs.blocking }}
       non-blocking: ${{ steps.plan.outputs.non-blocking }}
+      fixed: ${{ steps.plan.outputs.fixed }}
     steps:
       # Full history: on a pull request, dt plan --base compares the branch
       # with where it left its base, so a docs-only change plans no cell.
@@ -75,7 +87,9 @@ jobs:
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
       # Each cell gets its name as one path element, for its artifact's name,
-      # and the tools dt builds for it as nix installables, for the cache.
+      # and the tools dt builds for it as nix installables, for the cache. A
+      # cell with a job of its own runs there, so fixed lists their suites
+      # rather than either matrix.
       - name: Plan the cells
         id: plan
         env:
@@ -83,11 +97,15 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c '[(.cells // [])[] | select(.suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or (.suite == "smbtorture" and .option == null))
+            jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
+                or (.suite == "smbtorture" and .option == null) or IN(.name; "unit/windows", "integration/portmap", "integration/kerberos"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
-          echo "blocking=$(jq -c 'map(select(.blocking))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
-          echo "non-blocking=$(jq -c 'map(select(.blocking | not))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
+          {
+            echo "blocking=$(jq -c 'map(select(.blocking and .job == null))' "$RUNNER_TEMP/cells.json")"
+            echo "non-blocking=$(jq -c 'map(select(.blocking | not))' "$RUNNER_TEMP/cells.json")"
+            echo "fixed=$(jq -c 'map(select(.job) | .suite)' "$RUNNER_TEMP/cells.json")"
+          } >> "$GITHUB_OUTPUT"
 
   run:
     name: ${{ matrix.name }}
@@ -155,6 +173,19 @@ jobs:
           secret-access-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SECRET_ACCESS_KEY || '' }}
           signing-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SIGNING_KEY || '' }}
 
+      # The image has no rpcbind. apt and needrestart both prompt on a machine
+      # without a terminal if left to their defaults, and a prompt blocks with
+      # no output until the job's limit.
+      - name: Install rpcbind
+        if: contains(matrix.needs, 'rpcbind')
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind
+          sudo systemctl start rpcbind || sudo rpcbind
+
       - name: Build dt
         id: build
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
@@ -199,18 +230,186 @@ jobs:
     services: *services
     steps: *cell
 
-  # Fails unless plan passed and every blocking cell's job did, which a job
-  # does only when its dt run exited 0. A plan with no blocking cell, as a
-  # docs-only change gives, passes.
+  # The suites with a job of their own, each named for the check the develop
+  # ruleset requires, with its suite's name as its id. Each runs its suite as
+  # a cell runs, dt run SUITE with the run's tier and retry, and names its
+  # results as a run cell's, so gate reports them with the rest.
+  #
+  # decision: the lint jobs don't wait for plan, so a docs-only change, which
+  # plans no cell, still has its commits and the suite tables checked.
+  lint-go:
+    name: Go Checks
+    runs-on: ubuntu-latest
+    # A hang detector, not a budget: its checks have summed to about 380s.
+    timeout-minutes: 20
+    steps:
+      - &checkout
+        name: Checkout
+        uses: actions/checkout@v7
+
+      # Its Go problem matcher turns vet and golangci-lint findings in dt's
+      # output into annotations on the pull request.
+      - &go
+        name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-only: true
+          # Analyse cold every run. The action restores and saves its analysis
+          # cache even when it only installs, and dt's run reads it. Its cache
+          # key covers go.mod, but its restore-key fallback does not: when a
+          # dependency bump changes go.mod the run misses its own key, restores
+          # the pre-bump analysis cache, and then saves a fact set built from it
+          # under the new key. Every later run gets an exact hit on that entry,
+          # and staticcheck loses the cross-package fact that t.Fatal never
+          # returns, which turns every `if x == nil { t.Fatal(...) }` guard into
+          # a spurious SA5011 nil-dereference report. Restoring is what breaks
+          # it, so the cache is skipped rather than pinned: costs ~20s.
+          skip-cache: true
+
+      - &build
+        name: Build dt
+        id: build
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      - &suite
+        name: Run ${{ github.job }}
+        run: '"$RUNNER_TEMP/dt" run "$GITHUB_JOB" --tier "$TIER" --ci --retry "$RETRY"'
+
+      - &report
+        name: Report
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+
+      - &upload
+        name: Upload results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dt-run-${{ github.job }}-${{ github.run_attempt }}
+          path: test/harness/results/
+          if-no-files-found: ignore
+
+  lint-repo:
+    name: Repo Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history: the checks that compare with {base} diff against a
+      # merge base. On a push that base is the commit before it, which is
+      # how commits pushed straight to develop are checked too.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Only to build dt and run its own tests, which need a few modules, so
+      # no cache to restore.
+      - &go-uncached
+        name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - *build
+      - *suite
+      - *report
+      - *upload
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - *checkout
+      - *go-uncached
+
+      # Pinned by version and checksum, so a new release can't turn the job
+      # red on its own.
+      - name: Install ShellCheck
+        env:
+          VERSION: v0.11.0
+          SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$VERSION/shellcheck-$VERSION.linux.x86_64.tar.xz"
+          echo "$SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-$VERSION" >> "$GITHUB_PATH"
+
+      - *build
+      - *suite
+      - *report
+      - *upload
+
+  # unit and integration skip when the plan has no cell of theirs, as for a
+  # docs-only change, and a skipped job passes the check the ruleset requires.
+  # decision: they run when plan fails, so a check the ruleset requires never
+  # passes on a plan that wasn't made.
+  unit:
+    name: Unit Tests (1.26.x)
+    needs: plan
+    if: ${{ !cancelled() && (needs.plan.result != 'success' || contains(fromJSON(needs.plan.outputs.fixed), 'unit')) }}
+    runs-on: ubuntu-latest
+    # go test caps itself at 25m; this catches a wedged setup.
+    timeout-minutes: 35
+    steps:
+      - *checkout
+      - *go
+      - *build
+      - *suite
+      - *report
+      - *upload
+
+      # A retry rewrites the coverage profile with the retried tests' alone,
+      # so a run that retried uploads none.
+      - name: Upload coverage to Codecov
+        if: hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
+        uses: codecov/codecov-action@v7
+        with:
+          files: test/harness/results/*/unit/coverage.txt
+          flags: unittests
+          name: codecov-unit-tests
+        continue-on-error: true
+
+  integration:
+    name: Integration Tests (1.26.x)
+    needs: plan
+    if: ${{ !cancelled() && (needs.plan.result != 'success' || contains(fromJSON(needs.plan.outputs.fixed), 'integration')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - *checkout
+      - *go
+      - *build
+
+      # The services its needs name, which dt run checks answer before the
+      # tests start.
+      - name: Start PostgreSQL and PyKMIP
+        run: '"$RUNNER_TEMP/dt" services up postgres kmip'
+
+      - *suite
+      - *report
+      - *upload
+
+  # Fails unless plan passed and every other job it needs passed or skipped:
+  # a run job passes only when its cell's dt run exited 0, and a fixed job
+  # skips when the plan has no cell of its suite. A plan with no blocking
+  # cell, as a docs-only change gives, passes.
   gate:
     name: gate
-    needs: [plan, run]
+    needs: [plan, run, lint-go, lint-repo, shellcheck, unit, integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Download the results
-        if: needs.run.result != 'skipped'
         uses: actions/download-artifact@v7
         with:
           pattern: dt-run-*
@@ -241,8 +440,7 @@ jobs:
       - name: Verdict
         if: always()
         env:
-          PLAN: ${{ needs.plan.result }}
-          RUN: ${{ needs.run.result }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "plan: $PLAN; blocking cells: $RUN"
-          [ "$PLAN" = success ] && { [ "$RUN" = success ] || [ "$RUN" = skipped ]; }
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null

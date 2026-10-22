@@ -62,7 +62,7 @@ jobs:
       # with GOTOOLCHAIN=local, so a toolchain below a module's floor does not
       # downgrade the analysis, it drops the module: the operator failed to
       # extract on every run between its go directive reaching 1.26.0 and this
-      # change. Matches operator-tests.yml and release.yml.
+      # change. Matches release.yml.
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v7

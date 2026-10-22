@@ -115,7 +115,7 @@ jobs:
   # their own in about a second rather than only through a 40-minute run that
   # would have to fail first to reveal a grading regression. The common
   # runner's, the known-failures parser's and the admission lease's tests run
-  # in Repo Checks (lint.yml).
+  # in Repo Checks (tests.yml).
   graders:
     name: Grading logic
     runs-on: ubuntu-latest

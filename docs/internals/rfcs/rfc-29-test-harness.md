@@ -453,6 +453,7 @@ suites:
     job: Go Checks
     tier: pr
     cmd:
+      - go mod verify                           # the module cache still matches go.sum
       - { sh: 'test -z "$(gofmt -s -l .)"' }   # a command that needs a shell says so
       - go vet ./...
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...   # tagged tests compile
@@ -488,7 +489,7 @@ suites:
   unit:
     job: Unit Tests (1.26.x)            # the name the ruleset requires, until it requires the gate (§4.8)
     format: go-json
-    cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...   # the profile Codecov gets (§4.8)
     args: { pr: "-short" }              # pull requests run the short suite, as today
     tier: pr
     options:
@@ -1541,8 +1542,9 @@ One workflow, `tests.yml`, runs every registered suite:
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
     into one report: its job summary is each blocking cell's `report.md`, one after another, from
     the cell's latest attempt. It
-    fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
-    exited 0.
+    fails unless `plan` passed and every other job it needs passed or was skipped: a `run` job
+    passes only when its cell exited 0, and a fixed job (below) is skipped when the plan has no
+    cell of its suite.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
@@ -1550,9 +1552,9 @@ One workflow, `tests.yml`, runs every registered suite:
     `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
     `ci-health.yml` reads as develop's.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
-  of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
-  any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
-  every suite runs there.
+  of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
+  the options that move later, with any step its cells need that `run` doesn't give yet, such as
+  a service or a package; the filter goes once every suite runs there.
 - **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
   a scheduled run has a group of its own, so it and a push never replace each other. A push waits
   for the run in progress, and a newer push replaces it while it waits: pushes that land faster
@@ -1562,10 +1564,19 @@ One workflow, `tests.yml`, runs every registered suite:
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).
 - **Lint:** the suites with a `job` run as fixed jobs of that name: `Go Checks`, `Repo Checks` and
-  `ShellCheck`, each `dt run NAME --tier T --ci`, with the workflow run's tier. They move here from `lint.yml` with their names, so the
-  develop ruleset's required checks don't change. `Go Checks` also vets every build-tagged test,
-  as #3002 added. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
-  `Integration Tests (1.26.x)`, until the ruleset requires the gate. On a push to develop,
+  `ShellCheck`, each `dt run NAME --tier T --ci`, with the workflow run's tier and retry. They move here from `lint.yml` with their names, so the
+  develop ruleset's required checks don't change. They don't wait for `plan`, so a docs-only
+  change, which plans no cell, still has its commits and the suite tables checked. `Go Checks`
+  also vets every build-tagged test, as #3002 added, and runs `go mod verify`, as the unit jobs
+  did. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
+  `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
+  `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
+  When `plan` fails they run, so a required check never passes on a plan that wasn't made.
+  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and
+  `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
+  the unit job did, unless a retry rewrote it with the retried tests' alone. A fixed job's
+  artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
+  too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
   to develop. The new-package check, which runs on pull requests only today, runs on pushes too,
   by intent: the commit before a push is as good a base for its merge base. Where there is no
@@ -1619,9 +1630,10 @@ file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
 
-**What moves when.** The AD-DC, Kerberos and Windows runs and the performance gates are options of
+**What moves when.** The AD-DC and Kerberos runs and the performance gates are options of
 registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
-then they keep running as they are.
+then they keep running as they are. The Windows run, and integration's Kerberos and portmap
+options, ran in the unit and integration workflows, and move with them.
 
 Four things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -1745,7 +1757,8 @@ a percentage.
 ## 7. Risks
 
 - **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
-  job (§8), so the old job is there until then. `dt`'s own tests run in `lint-repo` on every PR.
+  job (§8), so the old job is there until then, unless it ran the commands `dt` runs, as the unit,
+  integration, operator and lint jobs did. `dt`'s own tests run in `lint-repo` on every PR.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
@@ -1834,7 +1847,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
+     These move without running beside their old jobs: those ran the commands `dt` runs, and a job
+     that keeps its check name can't report beside an old job of that name. Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
      cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
      `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
      longer tests a commit.
