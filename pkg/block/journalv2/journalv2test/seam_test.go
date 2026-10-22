@@ -476,6 +476,28 @@ func TestDurableAndStaleReads(t *testing.T) {
 	}
 }
 
+func TestStaleReadsCoversHandlesOpenedLater(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "synced", 0)
+	syncFile(t, f)
+	write(t, f, "UNSYNC", 0)
+
+	s.StaleReads("seg")
+
+	g, err := s.Open("seg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	p := make([]byte, 6)
+	if _, err := g.ReadAt(p, 0); err != nil || string(p) != "synced" {
+		t.Fatalf("ReadAt on a handle opened after StaleReads: %q, %v; want the durable %q", p, err, "synced")
+	}
+}
+
 func TestCrashClosesEveryOpenFile(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
