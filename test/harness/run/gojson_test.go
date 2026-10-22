@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
@@ -217,6 +218,29 @@ func TestGoPackages(t *testing.T) {
 	}
 	if _, err := goPackages(root, "nosuchtag"); err == nil {
 		t.Error("a tag that changes nothing gave no error")
+	}
+}
+
+// The integration suite runs the KMIP key provider's live tests: its packages
+// include the key provider's, and it needs the KMIP service, without which
+// those tests skip. A tag dropped from their file, or the need from the
+// registry, would leave them out of every run with nothing going red.
+func TestIntegrationRunsTheKMIPTests(t *testing.T) {
+	r, err := registry.Load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := r.Suite("integration")
+	if !slices.Contains(u.Needs, "service:kmip") {
+		t.Errorf("integration needs %q, without service:kmip", u.Needs)
+	}
+	pkgs, err := goPackages("../../..", u.Packages.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const keyProvider = "github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
+	if !slices.Contains(pkgs, keyProvider) {
+		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
 	}
 }
 
