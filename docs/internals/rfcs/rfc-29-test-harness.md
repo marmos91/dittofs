@@ -1814,7 +1814,8 @@ Performance is tracked, not gated. Hosted runners share hardware and are too noi
 a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
-  PRs, non-blocking, as `bench-smoke.yml` did, and writes its results to its `{out}` (§4.6).
+  every PR but a docs-only one, non-blocking, where `bench-smoke.yml` ran only on those that
+  touched the benchmark paths, and writes its results to its `{out}` (§4.6).
   `unit --nonrace` runs nightly, non-blocking, as `perf-gates.yml` did in a workflow of its own, so
   a tripped gate doesn't turn develop red: the throughput and allocation gates that skip under
   `-race` and `-short` (#2999). The aggregate random-write gate joins once it has a
@@ -2128,6 +2129,6 @@ assumption was wrong, the design follows what was found. It records how the desi
 | smbtorture fits a 20-minute PR tier | No: 23 min on `memory` and 21 on `badger` on a PR run on 2026-10-12 | run 38241347064 |
 | The Go suites skip rarely | No: 331 `Skip` calls on develop, and 71 test files branch on `testing.Short()` | `git grep` on `7d6acc81` |
 | `fio-verify` tests DittoFS | Not as revision 3 wrote it: no fixture or mount, so the jobs write to `/mnt/bench`; none of the 8 job files sets `verify`; `layout.fio` prepares files and isn't a test | `bench/workloads/*.fio` |
-| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on PRs and develop pushes | `internal/dfsbench/run/bench.go:44` |
+| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on the PRs and develop pushes that touch the benchmark paths | `internal/dfsbench/run/bench.go:44` |
 | cthon04 and nfstest wait for the harness | No: #3008 added them to `suites.json`, with their own glue and named mount-option sets; cthon04 runs on PRs on `memory` | `test/conformance/suites.json` |
 | The CI tools come from the images | On runners, from Nix: `nix build .#pjdfstest` and `.#pynfs`; the images copy the same revisions | `conformance.yml:352`, `nfs-pynfs.yml:164` |
