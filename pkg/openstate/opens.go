@@ -433,8 +433,11 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, confirming bool, fn func(
 	err := fn()
 	a := sequence.Granted
 	switch {
-	case errors.Is(err, ErrStaleClient), errors.Is(err, ErrBadState), errors.Is(err, ErrBadSeqID):
-		a = sequence.Exempt // the request named no record of the owner's, as the client counts it
+	case errors.Is(err, ErrStaleClient), errors.Is(err, ErrBadState), errors.Is(err, ErrNotYours), errors.Is(err, ErrBadSeqID):
+		// The request named no record of the owner's, as the client counts
+		// it, or was another principal's, which may not move the owner's
+		// sequence.
+		a = sequence.Exempt
 	case err != nil:
 		a = sequence.Refused
 	}
