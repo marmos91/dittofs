@@ -46,7 +46,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 	if write {
 		want = entity.WriteData
 	}
-	if !o.anonymous() {
+	if o.Kind != RefAnonymous {
 		return t.withOpen(who, o, func(_ *entry, op *open) error {
 			if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
 				return ErrAccess
@@ -54,10 +54,11 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 			return nil
 		})
 	}
-	if o.File.IsZero() {
+	f, err := o.file()
+	if err != nil || f.IsZero() {
 		return ErrBadState
 	}
-	return t.step(o.File, func(e *entry) error {
+	return t.step(f, func(e *entry) error {
 		for _, h := range e.opens {
 			if !conflict.Shares(want, 0, h.Mode.Access, h.Mode.Deny) {
 				return ErrShareViolation

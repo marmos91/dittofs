@@ -71,16 +71,40 @@ type OpenUpdate struct {
 	Suspend, Resume entity.TimeMask
 }
 
-// OpenRef names the open a call acts through: by its reference, as an NFSv4
-// stateid carries it, by its ID, as an SMB FileId carries it, or by neither,
-// which is the anonymous open of NFSv3 I/O and of NFSv4's anonymous stateid.
+// OpenRef names what a call acts through, by Kind: an open, a lock state, a
+// delegation, or the anonymous open of NFSv3 I/O and of NFSv4's anonymous
+// stateid. An NFS reference names it by State, with the sequence presented;
+// an SMB one by Open, its FileId's ID, at its current sequence. Handle is
+// the file handle the request carried, whose file must be the state's.
 type OpenRef struct {
-	Ref  StateRef      // Type StateOpen, with the sequence presented
-	ID   entity.OpenID // nonzero: the open of that ID, at its current sequence
-	File entity.FileID // the file the request's handle names; zero: none, which an anonymous open may not be
+	Kind   RefKind
+	State  StateRef      // NFS: the open, lock state or delegation; SMB: only the shard
+	Open   entity.OpenID // SMB: the open; zero for NFS
+	Handle entity.Handle // nil: none, which an anonymous open may not be
 }
 
-func (r OpenRef) anonymous() bool { return r.Ref.Type == 0 && r.ID == 0 }
+// RefKind is what an OpenRef names.
+type RefKind uint8
+
+const (
+	RefOpened RefKind = iota + 1
+	RefLocked
+	RefDelegated
+	RefAnonymous
+)
+
+// file is the file r's handle names; zero when it carries none, and
+// ErrBadState for a handle that names no file.
+func (r OpenRef) file() (entity.FileID, error) {
+	if len(r.Handle) == 0 {
+		return entity.FileID{}, nil
+	}
+	_, f, err := r.Handle.Parse()
+	if err != nil {
+		return entity.FileID{}, ErrBadState
+	}
+	return f, nil
+}
 
 // CloseResult is what a close leaves the service to run: open state never
 // releases or unlinks a file itself.
@@ -276,19 +300,26 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 // key. A reference is judged as resolve judges it; an ID that names no open
 // is ErrBadState.
 func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error) {
+	if ref.Kind != RefOpened {
+		return entity.FileID{}, refKey{}, ErrBadState
+	}
+	f, err := ref.file()
+	if err != nil {
+		return entity.FileID{}, refKey{}, err
+	}
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	if ref.ID == 0 {
-		h, err := t.resolveLocked(who.Client, ref.File, ref.Ref)
-		return h.file, refKey{ref.Ref.Shard, ref.Ref.Token}, err
+	if ref.Open == 0 {
+		h, err := t.resolveLocked(who.Client, f, ref.State)
+		return h.file, refKey{ref.State.Shard, ref.State.Token}, err
 	}
-	k, ok := t.byID[ref.ID]
+	k, ok := t.byID[ref.Open]
 	if !ok {
 		return entity.FileID{}, refKey{}, ErrBadState
 	}
 	h := t.refs[k]
 	switch {
-	case !ref.File.IsZero() && h.file != ref.File:
+	case !f.IsZero() && h.file != f:
 		return entity.FileID{}, refKey{}, ErrBadState
 	case h.client != who.Client:
 		return entity.FileID{}, refKey{}, ErrNotYours
@@ -300,9 +331,6 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 // the open is found again there and who may use it: its opener, or its
 // client's owner where the client protects its state.
 func (t *Table) withOpen(who Caller, ref OpenRef, fn func(e *entry, o *open) error) error {
-	if ref.anonymous() {
-		return ErrBadState
-	}
 	f, _, err := t.findOpen(who, ref)
 	if err != nil {
 		return err
@@ -360,7 +388,7 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	if _, err := t.running(); err != nil {
 		return err
 	}
-	return t.withOpen(who, OpenRef{ID: id}, func(e *entry, o *open) error {
+	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, func(e *entry, o *open) error {
 		if u.Delete != nil {
 			if o.Mode.Access&entity.Delete == 0 {
 				return ErrAccess
