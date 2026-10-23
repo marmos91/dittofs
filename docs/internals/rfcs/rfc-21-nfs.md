@@ -980,7 +980,7 @@ recall deadline — answering `NFS4_OK` through the service's `FreeState`
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)),
 and releases a lock state with no locks held; a lock state still holding
 locks, or a live open, delegation or layout, is refused with
-`NFS4ERR_LOCKS_HELD`, and a stateid that resolves to nothing is answered by
+`NFS4ERR_LOCKS_HELD` (`ErrState` (`LocksHeld`)), and a stateid that resolves to nothing is answered by
 rule 1 — `NFS4ERR_STALE_STATEID` or `NFS4ERR_BAD_STATEID` — never success. `RECLAIM_COMPLETE` maps to `ReclaimComplete`
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), naming the (shard, instance)
 pairs the session's `SEQUENCE` replies have shown in `ClientStatus.Reclaim`,
@@ -2374,6 +2374,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR`, where only the principal is checked (§5.2); `NFS4ERR_BAD_STATEID` otherwise | — |
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrState` (`BadSeqID`) | `NFS4ERR_BAD_SEQID` | — |
+| `ErrState` (`LocksHeld`) — `RELEASE_LOCKOWNER` of an owner still holding locks, `FREE_STATEID` of a lock state holding locks or of a live open or delegation; nothing changed | `NFS4ERR_LOCKS_HELD` | — |
 | `ErrLocked` | `NFS4ERR_DENIED` for `LOCK` / `LOCKT`; `NFS4ERR_LOCKED` for I/O | `NFS3ERR_ACCES`; NLM: `NLM4_DENIED` |
 | `ErrRangeNotLocked` | never answered: an NFSv4 lock-owner's locks merge and split ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)), so a `LOCKU` releases what the owner holds of its range and succeeds on a range it holds none of, as a POSIX unlock does. RFC 8881 §18.12.4 and RFC 7530 §16.12.5 let a server answer `NFS4ERR_LOCK_RANGE` there; this one does not, so a client never has to split its unlock into the ranges it holds | NLM: never answered; `NLMPROC4_UNLOCK` likewise succeeds, `NLMPROC4_GRANTED` |
 | `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLMPROC4_SHARE` |
@@ -2790,12 +2791,12 @@ method then calls below is
 | `LINK`, `REMOVE`, `RENAME` | `Link`, `Unlink`, `Rename` | `change_info4` from the `WCC` |
 | `READDIR` | `ReadDir` | |
 | `READLINK` | `GetAttr` | |
-| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
-| `OPEN_CONFIRM` | `ConfirmOpen` | NFSv4.0 |
-| `OPEN_DOWNGRADE` | `Downgrade` | |
+| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `OPEN4_RESULT_CONFIRM` is `OpenResult.Confirm` |
+| `OPEN_CONFIRM` | `ConfirmOpen` | NFSv4.0; the reply's stateid carries the seqid it returns |
+| `OPEN_DOWNGRADE` | `Downgrade` | the reply's stateid carries the seqid it returns |
 | `CLOSE` | `Close` | |
 | `READ`, `WRITE`, `COMMIT` | `Read`, `Write`, `Commit` | |
-| `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `LOCK` answers the lock stateid `Lock` returns, `LOCKU` the seqid `Unlock` returns |
 | `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | |
 | `DELEGRETURN` | `AckRecall` to `GrantNone` | |
 | `DELEGPURGE`, `WANT_DELEGATION`, `GET_DIR_DELEGATION`, `OPENATTR`, `SET_SSV` | not supported, answered as this RFC says of each | |
