@@ -223,6 +223,33 @@ func TestUnlinkMakesOpensDurable(t *testing.T) {
 	}
 }
 
+// An open of a file with no entry is written durable whether or not this
+// table saw the unlink: after the entry was freed with its last open, and
+// after a restart.
+func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file, req := f.fileIn(t, "a")
+	first := f.mustOpen(t, a, file, req)
+	f.unlink(t, file, "a")
+	if r := f.close(t, a, first); !r.Orphan {
+		t.Fatal("the last close did not report the file orphaned")
+	}
+
+	req.Unlinked = true
+	again := f.mustOpen(t, a, file, req)
+	if got := f.stored(t, file); len(got) != 1 || got[0].ID != again.ID {
+		t.Errorf("stored opens after an open of the file once its entry was freed: %v", ids(got))
+	}
+
+	g := reopen(t, f.fs, f.clock)
+	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
+	later := g.mustOpen(t, b, file, req)
+	if got := f.stored(t, file); len(got) != 2 || got[1].ID != later.ID {
+		t.Errorf("stored opens after an open of the file after a restart: %v", ids(got))
+	}
+}
+
 // Opening and closing a linked file writes no open record, and writes
 // the client record's shard list once per client and shard, even across a
 // restart; only the first open reads the record.
