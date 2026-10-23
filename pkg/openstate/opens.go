@@ -525,7 +525,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(repla
 	err := fn(replaces)
 	a := sequence.Granted
 	switch {
-	case errors.Is(err, ErrStaleClient), errors.Is(err, ErrBadState), errors.Is(err, ErrNotYours), errors.Is(err, ErrBadSeqID):
+	case errors.Is(err, ErrStaleClient), errors.Is(err, ErrStaleState), errors.Is(err, ErrBadState), errors.Is(err, ErrNotYours), errors.Is(err, ErrBadSeqID):
 		// The request named no record of the owner's, as the client counts
 		// it, or was another principal's, which may not move the owner's
 		// sequence.

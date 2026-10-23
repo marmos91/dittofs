@@ -9,6 +9,7 @@ import (
 // The filesystem service maps each of these once to its own neutral errors.
 var (
 	ErrBadState    = errors.New("openstate: reference names no record")
+	ErrStaleState  = errors.New("openstate: state lost with its shard's open state")
 	ErrNotYours    = errors.New("openstate: state held by another client or principal")
 	ErrOldState    = errors.New("openstate: reference sequence older than the state's")
 	ErrStaleClient = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
