@@ -62,7 +62,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 	case RefLocked:
 		return t.throughLockState(who, o, through)
 	default:
-		return t.withOpen(who, o, nil, false, through)
+		return t.withOpen(who, o, nil, seqOther, through)
 	}
 	f, err := o.file()
 	if err != nil || f.IsZero() {

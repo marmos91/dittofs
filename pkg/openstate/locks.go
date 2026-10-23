@@ -463,7 +463,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 		if introduces {
 			seq = opensOwner(op.Owner)
 		}
-		return t.sequenced(seq, r.Seqs.Owner, false, func() (err error) {
+		return t.sequenced(seq, r.Seqs.Owner, seqOther, func(bool) (err error) {
 			if err := seqErr(cur, r.Open.State.Seq); err != nil {
 				return err
 			}
@@ -637,7 +637,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 		case !sameOwner(ls.owner, o):
 			return ErrBadState
 		}
-		return t.sequenced(locksOwner(o), q.Owner, false, func() error {
+		return t.sequenced(locksOwner(o), q.Owner, seqOther, func(bool) error {
 			if err := seqErr(cur, ref.State.Seq); err != nil {
 				return err
 			}

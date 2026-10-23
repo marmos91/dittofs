@@ -41,15 +41,17 @@ const (
 type Book map[Owner]Slot
 
 // Check reports whether o may send a request numbered n: the number its slot
-// expects, and for an owner of opens not yet confirmed, only a confirm.
-//
-// decision: an unconfirmed owner's request other than its confirm is refused
-// as out of sequence, which advances nothing, so its client starts over with
-// a new owner. Treat it instead as a new owner replacing the unconfirmed one
-// if a client is seen retrying under the same owner.
-func (b Book) Check(o Owner, n uint32, confirming bool) bool {
+// expects, or any number for a new owner.
+func (b Book) Check(o Owner, n uint32) bool {
 	s, ok := b[o]
-	return !ok || s.Next == n && (s.Confirmed || confirming)
+	return !ok || s.Next == n
+}
+
+// Unconfirmed reports whether o is an owner of opens whose first open has
+// not been confirmed.
+func (b Book) Unconfirmed(o Owner) bool {
+	s, ok := b[o]
+	return ok && !s.Confirmed
 }
 
 // Answer records how o's request numbered n, which Check admitted, was
