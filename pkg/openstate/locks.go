@@ -3,7 +3,6 @@ package openstate
 import (
 	"bytes"
 	"context"
-	"maps"
 	"slices"
 	"time"
 
@@ -343,6 +342,12 @@ func (t *Table) dropWaiter(e *entry, i int) *LockWaiter {
 // nothing refuses now is served, a callback waiter granted its lock and
 // reported to out, a poll waiter its range reserved for a lease period.
 func (t *Table) serve(e *entry, out *outbox) {
+	if out.timer {
+		if !slices.Contains(out.serve, e.file) {
+			out.serve = append(out.serve, e.file)
+		}
+		return
+	}
 	now := t.d.Clock.Elapsed()
 	for i := 0; i < len(e.waiters); {
 		if lapsed(e.waiters[i], now) {
@@ -369,13 +374,11 @@ func (t *Table) serve(e *entry, out *outbox) {
 	}
 }
 
-// servePolls serves the waiters of every file holding a poll waiter, so one
-// past its deadline is dropped and the waiters behind it are considered. Each
-// file's step takes the file's admission lock first, since it may grant.
-func (t *Table) servePolls(sink Sink) {
-	t.idx.Lock()
-	files := slices.Collect(maps.Keys(t.polls))
-	t.idx.Unlock()
+// serveFiles serves the waiters of files, for the timer: a poll waiter past
+// its deadline is dropped and the waiters behind it are considered, and a
+// range the timer freed is granted. Each file's step takes the file's
+// admission lock first, since it may grant, and holds no other table lock.
+func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
 	for _, f := range files {
 		var out outbox
 		unlock := t.order(f)

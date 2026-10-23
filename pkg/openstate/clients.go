@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -436,8 +438,12 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 // state is released, then its record deleted, then its lease dropped, and
 // ClientEnded raised once the client step is released. A renewal or a
 // confirm that landed meanwhile keeps it.
-func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) error {
-	var out outbox
+//
+// It runs on the timer, so the waiters the release frees are not served
+// here: their files are returned, to be served under each file's admission
+// lock.
+func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) ([]entity.FileID, error) {
+	out := outbox{timer: true}
 	t.cstep.Lock()
 	rec, ended, err := t.expireLocked(ctx, c, &out)
 	t.cstep.Unlock()
@@ -445,7 +451,7 @@ func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) 
 		sink.ClientEnded(c, shardsOf(rec), RevokedLeaseExpired)
 	}
 	out.raise(sink)
-	return err
+	return out.serve, err
 }
 
 func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox) (entity.ClientRecord, bool, error) {
@@ -508,7 +514,8 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 }
 
 // sweep expires every client whose lease has ended, drops every proposal a
-// lease period old, and serves the files holding a poll waiter.
+// lease period old, and serves the files holding a poll waiter and those
+// whose waiters an expiry freed.
 func (t *Table) sweep(ctx context.Context) {
 	sink, err := t.running()
 	if err != nil {
@@ -529,14 +536,22 @@ func (t *Table) sweep(ctx context.Context) {
 		}
 	}
 	t.cmu.Unlock()
+	t.idx.Lock()
+	serve := slices.Collect(maps.Keys(t.polls))
+	t.idx.Unlock()
 	for _, c := range lapsed {
 		// A failed expiry is tried again at the next sweep: the lease stays
 		// lapsed, so the client is already refused.
-		_ = t.expireLapsed(ctx, sink, c)
+		files, _ := t.expireLapsed(ctx, sink, c)
+		for _, f := range files {
+			if !slices.Contains(serve, f) {
+				serve = append(serve, f)
+			}
+		}
 	}
 	// On a goroutine of its own, so the sweep never waits on an admission
 	// lock.
-	t.timer.Go(func() { t.servePolls(sink) })
+	t.timer.Go(func() { t.serveFiles(sink, serve) })
 }
 
 // held is one piece of state a client holds.
