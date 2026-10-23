@@ -457,8 +457,8 @@ does not read it through the delegation.
 **A reference's sequence is state.** The table numbers the changes to one
 open — an upgrade, a downgrade, a close — and to one lock state; a request
 naming an older number than the current one is refused `ErrOldState`, a newer
-one `ErrBadState`, and zero means the current one. `Open.Seq` and
-`LockState.Seq` hold them and change in the step that applies the request; the
+one `ErrBadState`, and zero means the current one, so one past 2³²−1 is 1.
+`Open.Seq` and `LockState.Seq` hold them and change in the step that applies the request; the
 presented number reaches that step once, as `StateRef.Seq`, alone or inside an
 `OpenRef`; a call that raises it returns the new value, which the protocol
 answers in its new reference.
@@ -505,7 +505,7 @@ type LockState struct {
 type LockOwner struct {
 	Client ClientID
 	Name   []byte // the owner the client names, at most 1,024 bytes, compared and never interpreted
-	Stack  bool   // its locks stack, and an exclusive one conflicts with its own; else they merge and never conflict with each other
+	Stack  bool   // its locks stack, an exclusive one conflicts with its own, and they are mandatory against I/O (§7); else they merge, never conflict with each other, and are advisory
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -521,8 +521,22 @@ type LockedError struct{ Holder Lock }
 
 Two owners of one client conflict like two clients. A **merging** owner's lock
 over its own range replaces, merges or splits it; a **stacking** owner's locks
-stack, as each of its opens is its own owner. Each adapter fills `Name` and
+stack, as each of its opens is its own owner.
+
+> ponytail: one flag, `Stack`, carries two rules that today go together by
+> protocol: stacking locks are mandatory, merging ones advisory. Split it into
+> two flags when a protocol is served whose locks stack but are advisory, or
+> merge but are mandatory. Each adapter fills `Name` and
 `Stack` from its protocol ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)).
+
+**A range is [offset, last] over 64 bits.** A length meaning "to end of
+file" — an NFSv4 length of all ones, an NLM length of 0 — is held as reaching
+2⁶⁴−1, and never computed as offset plus length, so it cannot overflow. Any
+other range's last byte is offset + length − 1, a zero-length one's included
+(MS-FSA 2.1.4.10): a zero-length range at X ends at X − 1, so it conflicts only
+with a range holding both X − 1 and X, held or asked, and one at 0 conflicts
+with nothing. It is still held, and released by an unlock of the same offset
+and length.
 
 A lock may name no open: it is then held by its owner alone and released by
 unlock, by its host's restart ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)) or by revocation. Every other lock
@@ -664,7 +678,7 @@ type Sequence struct {
 	Owner     LockOwner // the client and the owner name it sends
 	Kind      OwnerKind // an owner of opens or of locks
 	Next      uint32    // the next request must carry it; any other is ErrBadSeqID and changes nothing
-	Confirmed bool      // owner of opens only: until set, only ConfirmOpen is accepted
+	Confirmed bool      // owner of opens only: set by ConfirmOpen; while clear, the owner's state is usable by nothing else (below)
 }
 ```
 
@@ -687,6 +701,34 @@ Every in-sequence answer advances `Next`, refusals included, except
 advance nothing; a request naming a record the primary does not hold therefore
 never advances an owner's sequence. The adapter maps the protocol's own exempt
 list onto these ([RFC 21 §4.2](rfc-21-nfs.md#4.2%20Owner%20sequence%20IDs)).
+
+**No refused request creates a `Sequence`**, of either kind: the first granted
+open of an owner of opens creates its owner's, and the first granted lock of an
+owner of locks its owner's (above). A refused first request leaves the owner
+new, so its retry is checked as a first request again.
+
+**An unconfirmed owner of opens holds one open, usable only by its confirm.**
+Where the protocol confirms owners, a new owner's first open creates its
+`Sequence` unconfirmed and answers `OpenResult.Confirm`. Until `ConfirmOpen`:
+
+- an open from that owner replaces it: the unconfirmed open is released, and
+  the new open is taken as the owner's first, whatever number it carries;
+- any other request naming the owner's state — a confirm with the wrong
+  reference, a downgrade, a close, a lock, I/O — is `ErrBadState` and advances
+  nothing.
+
+A `ConfirmOpen` naming an owner already confirmed is `ErrBadState` too
+(RFC 7530 §16.18.5).
+
+**An owner's number wraps to 0.** One past 2³²−1, `Next` is 0.
+
+> decision: the owner sequence wraps from 2³²−1 to 0, as the Linux client and
+> server do, where RFC 7530 §9.1.3 says it wraps to 1. A client that
+> follows the specification sends 1 there, is answered `ErrBadSeqID` once per
+> 2³² requests on one owner, and recovers as from any bad sequence, with a new
+> owner. Wrap to 1 if a client is seen doing that at a measurable rate. A
+> reference's own `Seq` (§2.2) is another counter and wraps to 1, since 0
+> means "current".
 
 **Where it is held.** An owner's `Sequence` is held at its **home primary**:
 the primary of the file of the owner's first sequenced request. **(cluster)** A
@@ -1433,9 +1475,14 @@ side spells and sends the notice
   ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)), and a non-reclaim
   lock in grace is refused with `ErrGrace`.
 - **An NLM record goes with its last lock.** A record of a client whose
-  `Recovery` is notice that holds no lock and has no notice outstanding is
-  deleted in the step of its last unlock, so the monitor list holds only hosts
-  that hold something, and a failover notifies none that hold nothing.
+  `Recovery` is notice that has no notice outstanding is deleted in the step of
+  its last unlock, and only if it still holds no lock, waiter included, when
+  that step runs, so the monitor list holds only hosts that hold something, and
+  a failover notifies none that hold nothing. A lock or waiter asked for a
+  client whose record that step is deleting is refused `ErrStaleClient`, never
+  granted under a record about to vanish; the adapter connects the host afresh
+  and asks again
+  ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)).
 - **An address arrives from another installation.** A namespace move raises the
   number when the move's address arrives
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
@@ -2712,7 +2759,7 @@ Deleted numbers are not reused.
 | L24 | A reclaim restores only modes, locks and grants the client held, authorised like a new open against the file as it is now; it never grants more. Only a reclaim of volatile state is ever refused for memory ([RFC 24 §4.6](rfc-24-resources.md#4.6%20Open%20state)). | Open read-only with deny-none; fail over. Reclaim read-write with deny-write: refused. Remove the principal's read access, fail over, reclaim the original: refused. Reclaim exactly what was held: granted. Fill the pool past its allowance: a volatile reclaim is `ErrDelay` (`DelayResources`), a persistent open's reconnect succeeds. |
 | L25 | A client record is found by (protocol, name); where it has an `Owner`, the same name from another principal is refused `ErrClientInUse`, and the record keeps its `Boot`, `Owner` and `Protect` durably. An SMB record, and one whose owner maps to the anonymous principal, holds no `Owner`. | Connect a name, again with the same `Boot` through another node: the same ID; with a new `Boot`: a new ID and the old state released; from another principal: refused; after a restart: the same ID. Two principals negotiate one SMB name: one record, no `Owner`; the second presenting or reconnecting the first's open is refused. Two hosts whose uids map to nobody propose different names: two clients, neither able to `Destroy` or `Rebind` the other. |
 | L26 | Every call using an open or lock state is refused unless its caller is the opener's principal, or the client's `Owner` with `Protect`; every bearer ID with room carries at least 64 random bits, and an ID without room is honoured only with its principal and session. | Mint 2¹⁶ references from a seeded `Deps.Rand` and flip each of the 64 random bits of each: no flip names a record. A counter fails at the low bits. The opener-only half is RFC 17 V18. |
-| L27 | A reference's sequence and an open-owner's confirmation are held as state and change in the step that applies the request. | Upgrade an open, then `Downgrade` with the pre-upgrade seqid: `ErrOldState`, and `TestState` with it too. A new NFSv4.0 open-owner's read before `ConfirmOpen`: refused; after it: accepted. |
+| L27 | A reference's sequence and an open-owner's confirmation are held as state and change in the step that applies the request; until its confirm, an owner's open is replaced by its next open and usable by nothing else; no refused request creates a `Sequence`. | Upgrade an open, then `Downgrade` with the pre-upgrade seqid: `ErrOldState`, and `TestState` with it too. A new NFSv4.0 open-owner's read before `ConfirmOpen`: `ErrBadState`, no advance; after it: accepted. A second open from the unconfirmed owner with any seqid: granted, the first released, `Confirm` set again. `ConfirmOpen` twice: the second `ErrBadState`. A reclaim open and an open offered a delegation: `Confirm` clear. A first open refused `ErrShareViolation`: no `Sequence`, and its retry with the same seqid is checked as a first open. |
 | L28 | (cluster) One node, the lease owner, renews and expires each client; no primary expires a client on its own. Recalls route to the client's back-channel node, and a lost one is signalled until the client rebinds. | A client holds state at two primaries and talks only to the first for two lease periods: the second does not expire it, and the lease owner receives at most one activity report per renewal interval from each serving node, however many requests arrive; kill the client: it is expired once and both release. Kill its back-channel node: `Reach.Down` is reported through another node, no grant is offered until `Rebind`, and a recall then reaches the new node. |
 | L28b | (cluster) A partition between the lease owner and a gateway never expires a client that gateway still serves. | Partition the lease owner from the client's only gateway, not from the store, for two lease periods: the client is not expired while the gateway receives its renewals, and the gateway answers its open-state requests `ErrUnavailable` from half a lease on. |
 | L29 | `ReclaimComplete` is tracked per (client, shard, grace instance), every node start raises every shard's incarnation, and a loss signals every client its records name to reclaim. | An NFSv4.1 client completes, its shard fails over: `ClientStatus.ReclaimNeeded`, its reclaim accepted, grace not ended before it completes again; a reclaim at a shard that lost nothing returns its state, delegations included. On one node, restart twice: the incarnation rises each time (the verifier is RFC 8 E27) and each grace waits for a new completion. An NFSv4.0 client is answered `ErrStaleClient` until it confirms again, across a lease-owner restart. A handover whose old primary dies before the table arrives: `GraceInstance` = the new incarnation before serving. A failover writes no client record. |
@@ -2742,7 +2789,7 @@ Deleted numbers are not reused.
 | L55 | Watches are bounded per client, and a watch's undelivered changes are bounded. | Register watches past 1,024: `ErrDelay` (`DelayResources`). A burst of 10⁵ changes under one watch whose client does not read leaves one pending `ChangeEnumerate` and a bounded heap. |
 | L56 | A check and the I/O it admits are never separated by a grant, on a file with or without state; a file never has two entries. | Model layer, 10⁴ times: a deny-write `Open` races an anonymous write on a file with no state: the write is refused, or the open is ordered after the write is staged. Free and recreate an entry while a caller waits on it: one entry. A timer that frees a range a callback waiter waits on, racing a write admitted on that range: the waiter is granted only after the write. |
 | L57 | A release across files never holds an index while it waits for an entry. | Expire a client holding 10⁴ opens while 64 openers open the same files, under `-race` with a watchdog: it completes and L54 holds. |
-| L58 | An NLM record that holds nothing goes with its last unlock. | 10⁴ NLM hosts lock and unlock once: no NLM record remains, and a failover notifies none of them. |
+| L58 | An NLM record that holds nothing goes with its last unlock, and a lock racing that deletion is refused `ErrStaleClient`, never granted under the deleted record. | 10⁴ NLM hosts lock and unlock once: no NLM record remains, and a failover notifies none of them. Race a host's last unlock against its next lock 10⁴ times: either the record stays and holds the lock, or the lock is `ErrStaleClient` and the record is gone. |
 | L59 | (cluster) No node writes `Adapter` bytes an older node of the installation cannot read. | Multi-node simulation: a mixed-release cluster writes and reads every record kind: no `ErrAdapterVersion` before the schema version is raised, and a failover onto the older node notifies every NLM host. |
 | L60 | A client's first state in a shard is answered only after its shard list commits; a persistent open's every change commits before the answer that reveals it. | The fault KV drops the shard-list commit: the request is refused, never answered as granted. For each field of a persistent open, fail its commit: the client is refused, and a reconnect after a failover shows the state that was answered. |
 | L61 | (cluster) A client's ended record outlives the fan-out until every shard has released its state. | Partition one primary during an expiry, heal it: its state for the client is released within one renewal interval of healing, and the record is deleted only then. |
@@ -2752,6 +2799,7 @@ Deleted numbers are not reused.
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
 | L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |
 | L67 | An open asking none of read, execute, write, append or delete is granted against any deny mode and its deny refuses nothing. | Hold an open with all access and share none; open the file asking only read-attributes with share none: granted, with no break of any grant. Reverse the order: the all-access open is granted, and an anonymous write through NFS succeeds. |
+| L68 | A range's last byte is offset + length − 1, a zero-length range's included; to end of file is held as reaching 2⁶⁴−1 without overflow. | Over SMB, hold [10, 20); a zero-length lock at 15: refused; at 10: granted, since byte 9 is not held; at 20: granted; at 0: granted against a lock on [0, 2⁶⁴−1). Hold a zero-length lock at 15: an exclusive lock on [14, 16) is refused, on [15, 16) granted. An NLM lock at offset 2⁶⁴−2 with length 0: held to 2⁶⁴−1, conflicting with an NFSv4 lock on [2⁶⁴−2, all ones). |
 
 ## 13. Conformance
 
@@ -2783,10 +2831,12 @@ the suite's values; the reference codecs are `pkg/vfs`'s, fuzzed by
 
 - **range algebra** (`ranges`): lock and unlock sequences over two owners and
   ranges in [0, 2⁶⁴), drawn from the input, agree with a per-byte model over a
-  256-byte window plus the endpoints 2⁶⁴−1 and length 0 = to end of file; no
-  offset+length overflow is accepted;
+  256-byte window plus the endpoint 2⁶⁴−1, to end of file, and zero-length
+  ranges as §2.3 bounds them; no offset+length overflow is accepted;
 - **owner sequence** (`sequence`): a request stream for one sequenced owner,
-  including wrap at 2³² and every exempt answer, agrees with a model of §2.8;
+  including the wrap from 2³²−1 to 0, a reference's `Seq` from 2³²−1 to 1, an
+  unconfirmed owner's requests and every exempt answer, agrees with a model of
+  §2.8;
 - **lock replay sequence** (`sequence`): `LockSeq` index and value from
   arbitrary bytes, replayed or not, agree with a model of §8.1;
 - **adapter records**: `Adapter` bytes truncated, corrupt, past the bound, or
@@ -2938,8 +2988,9 @@ registry:
    [§13.3](#13.3%20Benchmarks) measures it.
 3. **Byte-range lock splitting** across protocols with different range
    semantics (SMB's 64-bit ranges against NFS's end-of-file locks). Default:
-   every range is held as [offset, end] over 64 bits, an NFS length of all
-   ones or zero meaning to end of file; conflicts are computed on that form.
+   every range is held as [offset, end] over 64 bits, an NFSv4 length of all
+   ones or an NLM length of 0 meaning to end of file (§2.3); conflicts are
+   computed on that form.
    Open: whether a lock past 2⁶³ from an NFS client and an SMB one must ever
    meet.
 4. **A file's table through the management API.** Whether it reads a file's
