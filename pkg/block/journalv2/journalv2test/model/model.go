@@ -170,8 +170,9 @@ type fileState struct {
 	change  version        // the highest version of a record that changed the file
 
 	// inexact reports that the journal may answer with a change version
-	// above change: a crash may have dropped a record of the file the model
-	// cannot see, or a reopen raised the file to the floor.
+	// above change: a reopen raised the file to the floor, and a crash before
+	// it may have dropped a record the model cannot see. The file's next
+	// change draws a version above both.
 	inexact bool
 }
 
@@ -192,7 +193,6 @@ func derive(f *file, keep func(*record) bool) *fileState {
 
 	st := &fileState{held: map[int64]cell{}, bit: map[int64]bool{}}
 	var marks []*record
-	var dropped version // the newest change a crash may have dropped
 	for _, r := range recs {
 		switch {
 		case r.kind == kindWrite || r.kind == kindFill:
@@ -214,15 +214,13 @@ func derive(f *file, keep func(*record) bool) *fileState {
 		if r.kind.changes() && !r.markerOptional && !r.markerGone && !r.uncounted {
 			st.change = maxVersion(st.change, r.ver)
 		}
-		if r.kind.changes() && (r.markerOptional || r.markerGone || r.uncounted) {
-			dropped = maxVersion(dropped, r.ver)
-		}
+
 		if r.hasMarker() {
 			st.markers = append(st.markers, r)
 		}
 	}
 
-	st.inexact = f.reopened || dropped.Compare(st.change) > 0
+	st.inexact = f.reopened
 
 	// A mark sets the bit of the content of its version only, so it never
 	// marks a newer write over the bytes it names. Filled content came from

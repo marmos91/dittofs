@@ -149,11 +149,8 @@ func (m *Model) Sync(tag shareTag, ids []fileID, err error) error {
 			return m.mismatch(op, id, "synced through share %d a file share %d holds", tag, f.tag)
 		}
 	}
-	if refused {
-		return m.mismatch(op, fileID{}, "refused with ErrOtherShare, but no other share holds a file named")
-	}
 	if err != nil {
-		return m.mismatch(op, fileID{}, "returned %v, but the model takes no failed sync window", err)
+		return m.mismatch(op, fileID{}, "returned %v, which the model has no rule for: no other share holds a file named, and a failed sync window is outside the model", err)
 	}
 	for _, id := range ids {
 		f := m.files[id]

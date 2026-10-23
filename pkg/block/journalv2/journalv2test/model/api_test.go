@@ -238,13 +238,8 @@ func TestAsOfIsTheChangeVersionOfAFileWithAnEntry(t *testing.T) {
 
 	for _, x := range []*Model{m, j} {
 		ok(t, x.WriteAt(shareA, fid(1), 0, fill('C', 4), 0, ver(11), nil))
+		ok(t, x.WriteAt(shareB, fid(2), 0, fill('D', 4), 0, ver(12), nil))
 	}
 	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(11)}))
-	diverged(t, m.Compare(t.Context(), shareA, planted{modelView: modelView{j, shareA}, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-		n, mi, he, as, err := modelView{j, shareA}.ReadAt(t.Context(), id, off, p)
-		if id == fid(1) {
-			as = ver(10)
-		}
-		return n, mi, he, as, err
-	}}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(12)}))
 }
