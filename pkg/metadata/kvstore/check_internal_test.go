@@ -14,7 +14,7 @@ func TestCheckDurableOpenIndex(t *testing.T) {
 	f := newContentFix(t, nil)
 	ctx := context.Background()
 	file := f.file(0)
-	op := entity.Open{ID: 7, File: file, Durability: entity.DurabilityPersistent}
+	op := entity.OpenRecord{ID: 7, File: file, Durability: entity.DurabilityPersistent}
 	put := func() {
 		if err := f.s.Opens().Put(ctx, f.share, op); err != nil {
 			t.Fatal(err)

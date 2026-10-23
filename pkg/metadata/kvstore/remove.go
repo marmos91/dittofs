@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"context"
+	"errors"
 	"iter"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -21,11 +22,12 @@ type Orphaned struct{ File entity.FileID }
 // guard of its entries while writing its record: a create racing into it
 // conflicts in either commit order.
 //
-// open is the file's opens, held only in memory at its primary: when this
-// unlink takes the file's last entry, each is written durable in the same
-// transaction, since an open is the second holder of a file and the release
-// finds its holders only in the store.
-func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.Open) (_ Orphaned, err error) {
+// open is the file's opens, held only in memory at its primary, each of the
+// file or of one of its named streams; an open of any other file is
+// refused. When this unlink takes the file's last entry, each is written
+// durable in the same transaction, since an open is the second holder of a
+// file and the release finds its holders only in the store.
+func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.OpenRecord) (_ Orphaned, err error) {
 	defer opError(&err, "unlink", dir, name)
 	var out Orphaned
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
@@ -69,10 +71,27 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 }
 
 // dropEntry deletes the entry at key naming child and takes one from
-// child's Nlink, refusing a non-empty directory. A last entry writes the
-// pending release, and makes durable each of open that opens child. A
-// delete-pending record naming this entry goes with it.
-func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.Open) (Orphaned, error) {
+// child's Nlink, refusing a non-empty directory and an open of neither child
+// nor one of its named streams. A last entry writes the pending release, and
+// makes each of open durable under the file it opens. A delete-pending
+// record naming this entry goes with it.
+func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.OpenRecord) (Orphaned, error) {
+	shards := make([]uint64, len(open))
+	for i, op := range open {
+		shards[i] = child.Shard
+		if op.File == child.ID {
+			continue
+		}
+		// An open of one of child's named streams keeps child alive too.
+		s, err := fileIn(tx, child.Share, op.File)
+		if errors.Is(err, entity.ErrStale) || err == nil && s.StreamOf != child.ID {
+			return Orphaned{}, merrs.NewInvalidArgumentError("an unlink's opens are of the file or its named streams")
+		}
+		if err != nil {
+			return Orphaned{}, err
+		}
+		shards[i] = s.Shard
+	}
 	if child.IsDir() {
 		if err := provedEmpty(tx, child); err != nil {
 			return Orphaned{}, err
@@ -97,11 +116,8 @@ func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.
 	if child.Nlink > 0 {
 		return Orphaned{}, nil
 	}
-	for _, op := range open {
-		if op.File != child.ID {
-			continue
-		}
-		if err := putOpen(tx, child.Share, child.Shard, op); err != nil {
+	for i, op := range open {
+		if err := putOpen(tx, child.Share, shards[i], op); err != nil {
 			return Orphaned{}, err
 		}
 	}
