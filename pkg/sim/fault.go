@@ -29,9 +29,10 @@ const (
 	// Drop reports success, and the operation does not become durable. What
 	// that leaves behind for each operation is the seam's contract.
 	Drop
-	// Tear performs a write with only its first N bytes. With Err nil it
-	// reports the write whole; with Err set it reports the bytes it wrote and
-	// returns Err, as a write that failed part-way. With N at or past the
+	// Tear tears a write after its first N bytes. With Err nil it performs
+	// the write and reports it whole, but only the first N bytes can become
+	// durable; with Err set only those bytes are written, and it reports them
+	// and returns Err, as a write that failed part-way. With N at or past the
 	// write's length nothing is torn, and the write is reported whole.
 	Tear
 	// Reorder performs a write and marks it as one a crash may keep or lose

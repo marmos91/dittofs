@@ -1178,23 +1178,94 @@ func TestADroppedSyncDirLosesNothing(t *testing.T) {
 	wantDurable(t, s, "a", new(""))
 }
 
-func TestTearWritesOnlyTheFirstNBytes(t *testing.T) {
+func TestASilentTearIsWholeUntilACrash(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 2})
+	if n, err := f.WriteAt([]byte("hello"), 2); n != 5 || err != nil {
+		t.Fatalf("a write torn at 2 returned %d, %v; want the whole 5, nil", n, err)
+	}
+
+	// The acknowledged write sits whole in the page cache.
+	if size, err := f.Size(); err != nil || size != 7 {
+		t.Fatalf("Size after a silent tear: %d, %v; want the whole write's 7", size, err)
+	}
+
+	if got := readAt(t, f, 16); got != "xxhello" {
+		t.Fatalf("ReadAt after a silent tear: %q, want %q", got, "xxhello")
+	}
+
+	// Only its head can become durable: the file comes back short, as a
+	// device that kept the head and never extended the file further would.
+	syncFile(t, f)
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxhe" {
+		t.Fatalf("after a sync and a crash the file holds %q, want %q", got, "xxhe")
+	}
+}
+
+func TestASyncAfterASilentTearLeavesTheTailLost(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxxxxxx")
 
 	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 3})
-	if n, err := f.WriteAt([]byte("ABCDE"), 2); n != 5 || err != nil {
-		t.Fatalf("a write torn at 3 returned %d, %v; want the whole 5, nil", n, err)
+	if _, err := f.WriteAt([]byte("ABCDE"), 2); err != nil {
+		t.Fatal(err)
+	}
+	syncFile(t, f)
+
+	if got := readAt(t, f, 16); got != "xxABCDEx" {
+		t.Fatalf("ReadAt after the sync: %q, want the page cache's %q", got, "xxABCDEx")
 	}
 
-	if got := readAt(t, f, 16); got != "xxABCxxx" {
-		t.Fatalf("ReadAt: %q, want %q", got, "xxABCxxx")
+	if got := readDirect(t, f, 16); got != "xxABCxxx" {
+		t.Fatalf("ReadAtDirect after the sync: %q, want only the head durable, %q", got, "xxABCxxx")
+	}
+
+	wantDurable(t, s, "seg", new("xxABCxxx"))
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "xxABCxxx" {
+		t.Fatalf("after the crash the file holds %q, want %q", got, "xxABCxxx")
+	}
+}
+
+func TestASilentTearAtZeroLosesTheWholeWrite(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "xxxx")
+
+	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 0})
+	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
+		t.Fatalf("a write torn at 0 returned %d, %v; want the whole 2, nil", n, err)
+	}
+
+	if got := readAt(t, f, 16); got != "xABx" {
+		t.Fatalf("ReadAt after a tear at 0: %q, want %q", got, "xABx")
 	}
 
 	syncFile(t, f)
-	crash(t, s)
-	if got := onDisk(t, s, "seg"); got != "xxABCxxx" {
-		t.Fatalf("after a sync and a crash the file holds %q, want %q", got, "xxABCxxx")
+	wantDurable(t, s, "seg", new("xxxx"))
+}
+
+func TestASilentTearPastTheEndLeavesTheFileAsItWas(t *testing.T) {
+	for _, n := range []int64{0, 2} { // all of it lost, or a head kept
+		t.Run(fmt.Sprint("torn at ", n), func(t *testing.T) {
+			s := newSeam(t)
+			f := durableFile(t, s, "seg", "xx")
+
+			actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: n})
+			if _, err := f.WriteAt([]byte("hello"), 4); err != nil { // past the end
+				t.Fatal(err)
+			}
+
+			wantDurable(t, s, "seg", new("xx")) // nothing synced yet
+
+			crash(t, s)
+			if got := onDisk(t, s, "seg"); got != "xx" {
+				t.Fatalf("after a crash with nothing synced the file holds %q, want %q", got, "xx")
+			}
+		})
 	}
 }
 

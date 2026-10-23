@@ -176,10 +176,11 @@ var _ storage.FS = (*Seam)(nil)
 //     durable, and Torn and Reordered never keep them.
 //   - Drop on sync or sync_dir: reports success and does nothing, so what
 //     was pending stays pending and a later sync can make it durable.
-//   - Tear on write: writes only the first N bytes. With the action's Err
-//     nil it reports the whole write done; with Err set it is a short write,
-//     returning N and Err. With N at or past the write's length nothing is
-//     torn, and the write is reported whole.
+//   - Tear on write: with the action's Err nil, a silent tear, performs the
+//     write whole and reports it done, but only its first N bytes can become
+//     durable: the rest is lost, as a dropped write is. With Err set it is a
+//     short write: only the first N bytes land, and it returns N and Err.
+//     With N at or past the write's length nothing is torn.
 //   - Reorder on write: performs it and marks it. While any pending write
 //     is marked, Reordered draws only among the marked ones; a plain Crash
 //     and Torn ignore marks. A Sync that covers the write clears its mark.
@@ -1091,9 +1092,9 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	}
 	defer sf.seam.mu.Unlock()
 
-	// A torn write lands, and is recorded, only up to its tear.
+	// A short write, a tear with an error, lands only up to its tear.
 	data := p
-	if a.Kind == sim.Tear && a.N < int64(len(p)) {
+	if a.Kind == sim.Tear && a.Err != nil && a.N < int64(len(p)) {
 		data = p[:a.N]
 	}
 
@@ -1119,6 +1120,12 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	// A dropped write is recorded lost: it reaches the file, as a write the
 	// device acknowledged and never stored, so ReadAt sees it and no Sync
 	// makes it durable.
+	//
+	// decision: a silent tear tears the write's durability, not the write. The
+	// acknowledged write lands whole in the page cache, so Size and ReadAt see
+	// all of it; its first N bytes are recorded as a write and the rest as a
+	// dropped one, so a Sync makes only the head durable and a crash leaves
+	// the file no longer than the head reaches.
 	n, err := sf.f.WriteAt(data, off)
 	landed := int64(len(data))
 	if err != nil {
@@ -1129,15 +1136,36 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 		landed = min(landed, max(max(size, after)-off, 0))
 	}
 
-	if landed > 0 {
+	tear := landed
+	if a.Kind == sim.Tear && a.Err == nil {
+		tear = min(a.N, landed)
+	}
+
+	if tear > 0 {
 		sf.record(change{
 			kind:    changeWrite,
 			off:     off,
-			data:    append([]byte(nil), data[:landed]...),
-			old:     old[:min(int64(len(old)), landed)],
+			data:    append([]byte(nil), data[:tear]...),
+			old:     old[:min(int64(len(old)), tear)],
 			oldSize: size,
 			lost:    a.Kind == sim.Drop,
 			reorder: a.Kind == sim.Reorder,
+		})
+	}
+
+	if tear < landed {
+		tailSize := size // the file's size before the tail landed
+		if tear > 0 {
+			tailSize = max(size, off+tear)
+		}
+
+		sf.record(change{
+			kind:    changeWrite,
+			off:     off + tear,
+			data:    append([]byte(nil), data[tear:landed]...),
+			old:     old[min(int64(len(old)), tear):min(int64(len(old)), landed)],
+			oldSize: tailSize,
+			lost:    true,
 		})
 	}
 
