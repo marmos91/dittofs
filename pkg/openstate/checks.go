@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/openstate/ranges"
 )
 
-// ByteRange is Length bytes from Offset: zero is empty, and a length of all
-// ones reaches the last byte.
+// ByteRange is Length bytes from Offset, ending at Offset+Length-1, a zero
+// Length's included; a length of all ones reaches the last byte.
 type ByteRange = ranges.Range
 
 // ChangeMask names what a change does to a file or directory.
