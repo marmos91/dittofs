@@ -26,7 +26,9 @@ import (
 // learns of a change made by another client, for each mutation type: entry
 // added, removed, renamed, and attribute changed. A holder that asked for that
 // notification type must get a CB_NOTIFY; one that did not must have the
-// delegation recalled.
+// delegation recalled, except for an entry's attribute change: the delegation
+// covers the directory's attributes and entries, not its entries' attributes,
+// so RFC 8881 lets the server keep it then.
 //
 // The holder is a v4.1 mount, which reads the directory to provoke a
 // GET_DIR_DELEGATION. The mutating client is a v4.0 mount: two v4.1 mounts of
@@ -93,10 +95,12 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 	entries := framework.ListDir(t, holderDir)
 	require.Len(t, entries, len(files), "holder should list the directory")
 
-	// decision: skipping when the client requests no directory delegation is
-	// what keeps these tests green today. The server recalls a directory
-	// delegation on every change instead of notifying, so once a client does
-	// request one, every notification test here fails together.
+	// decision: the kernel client asks for no notification types (each grant
+	// here logs mask 0x0), so these tests take the recall branch. Another
+	// client's create recalls the delegation through OPEN's conflict check on
+	// the directory, and its remove or rename through the lock manager's
+	// directory-change break, before any CB_NOTIFY is queued: the CB_NOTIFY
+	// branch would fail for a client that asked for those types.
 	if !waitForLog(t, sp, readdirSince, getDirDelegationOp, 1, 2*time.Second) {
 		t.Skip("the kernel NFS client sent no GET_DIR_DELEGATION, so there is no directory delegation to observe")
 	}
@@ -105,6 +109,7 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 	m := dirDelegGranted.FindStringSubmatch(extractNewLogs(readdirSince, readLogFile(t, sp)))
 	mask, err := strconv.ParseUint(m[1], 16, 32)
 	require.NoError(t, err, "parse notification mask %q", m[1])
+	t.Logf("directory delegation granted with notification mask 0x%x", mask)
 
 	return &dirDelegFixture{
 		sp:         sp,
@@ -204,7 +209,9 @@ func TestNFSv41DirDelegationEntryRenamed(t *testing.T) {
 // =============================================================================
 
 // A mode change is a significant attribute change; atime/ctime changes alone
-// do not notify.
+// do not notify. A holder that did not ask for that notification keeps its
+// delegation and learns of the new mode through its attribute cache, as
+// without a delegation.
 func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping directory delegation attr-changed test in short mode")
@@ -216,7 +223,12 @@ func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	target := filepath.Join(f.otherDir, "attr_test.txt")
 	framework.WaitForFile(t, target, 5*time.Second)
 	require.NoError(t, os.Chmod(target, 0755), "other client: should chmod file")
-	f.requireNotified(t, "changing an entry's mode", notifyChangeChildAttrs)
+	if f.notifMask&(1<<notifyChangeChildAttrs) != 0 {
+		f.requireNotified(t, "changing an entry's mode", notifyChangeChildAttrs)
+	} else {
+		assert.False(t, waitForLog(t, f.sp, f.mutateFrom, cbRecallAny, 1, 2*time.Second),
+			"changing an entry's mode should not recall the directory delegation")
+	}
 
 	holderFile := filepath.Join(f.holderDir, "attr_test.txt")
 	require.True(t, framework.WaitFor(5*time.Second, func() bool {
