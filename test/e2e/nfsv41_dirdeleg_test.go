@@ -95,9 +95,12 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 	entries := framework.ListDir(t, holderDir)
 	require.Len(t, entries, len(files), "holder should list the directory")
 
-	// decision: the server recalls a directory delegation on every entry change
-	// instead of notifying, so a test here passes when the client asked for no
-	// notification of its change type and fails when it asked for one.
+	// decision: the kernel client asks for no notification types (each grant
+	// here logs mask 0x0), so these tests take the recall branch. Another
+	// client's create recalls the delegation through OPEN's conflict check on
+	// the directory, and its remove or rename through the lock manager's
+	// directory-change break, before any CB_NOTIFY is queued: the CB_NOTIFY
+	// branch would fail for a client that asked for those types.
 	if !waitForLog(t, sp, readdirSince, getDirDelegationOp, 1, 2*time.Second) {
 		t.Skip("the kernel NFS client sent no GET_DIR_DELEGATION, so there is no directory delegation to observe")
 	}
