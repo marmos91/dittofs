@@ -791,7 +791,15 @@ func (sf *seamFile) Truncate(size int64) error {
 		}
 	}
 
-	sf.record(change{kind: changeResize, old: old, oldSize: cur})
+	if err := sf.f.Truncate(size); err != nil {
+		return err
+	}
+
+	sf.record(change{
+		kind:    changeResize,
+		old:     old,
+		oldSize: cur,
+	})
 
 	return nil
 }

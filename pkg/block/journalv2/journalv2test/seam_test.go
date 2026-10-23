@@ -110,6 +110,34 @@ func TestCrashUndoesUnsyncedAllocate(t *testing.T) {
 	}
 }
 
+func TestTruncateResizesTheFile(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "abcdef", 0)
+
+	// Before any crash: the crash rebuilds the file from the undo log, which
+	// would hide a Truncate that never reached it.
+	for _, tc := range []struct {
+		size int64
+		want string
+	}{
+		{2, "ab"},
+		{4, "ab\x00\x00"},
+	} {
+		if err := f.Truncate(tc.size); err != nil {
+			t.Fatal(err)
+		}
+
+		if got, err := f.Size(); err != nil || got != tc.size {
+			t.Fatalf("Size after Truncate(%d): %d, %v; want %d", tc.size, got, err, tc.size)
+		}
+
+		if got := onDisk(t, s, "seg"); got != tc.want {
+			t.Fatalf("after Truncate(%d) the file holds %q, want %q", tc.size, got, tc.want)
+		}
+	}
+}
+
 func TestCrashUndoesUnsyncedTruncate(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
