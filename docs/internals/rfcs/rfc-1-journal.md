@@ -394,7 +394,7 @@ type SyncPolicy uint8 // the share's sync policy (§5.2): Bounded, the default, 
 ```
 
 One journal serves several shares. Each share's engine works through its own
-`Handle`, and every operation below is a method of it. The handle's tag is
+`Handle`, and every operation below is a method of it, except `Stats`, which is the journal's: the node reads it before any share attaches. The handle's tag is
 written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), so recovery rebuilds each
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
@@ -1060,7 +1060,7 @@ walk can produce is omitted.
 | `DirtyBytes` | gauge | held bytes whose offloaded bit is unset |
 | `OldestDirty` | value | when the oldest held extent whose offloaded bit is unset was written; the age of the upload backlog |
 | `Files` | gauge | files with at least one held extent |
-| `ExtentCount` | gauge | held extents |
+| `ExtentCount` | gauge | placement index entries: held and retained extents and removal markers ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `spare_refusals` | counter | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `DropRanges` | gauge | ranges the removal-drop test keeps per file and segment ([§7.2](#7.2%20Repack)) |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
@@ -1592,11 +1592,10 @@ without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
 state, allocated storage, held bytes, and whether it holds records that do not verify. `Stats`
-([§3.7](#3.7%20State%20introspection)) is the `O(1)` total; this is the breakdown behind it.
+([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
-that the segments do not support, the records the segments hold that the index
-does not reference, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
+that the segments do not support, the records precedence says the index must hold, retain or mark but which it lacks, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
 separate, explicit action.
 
 ### 4.5 Rebuilding one file from its records, by example
@@ -2675,7 +2674,7 @@ sync pattern. The targets are proposed, and the first run replaces them under
 | J4 | offload offer | `Offload` over files of many small extents and of few large ones, `fn` returning at once | ≤ 1 µs per offered extent; index insertion at 10^6 ≤ 2 µs |
 | J5 | reclamation under load | release and repack ([§7](#7.%20Reclamation%20mechanisms)) while J1 runs | J1's p99 ≤ 1.5× J1 alone |
 | J8 | repack write amplification | eviction-heavy load: J1 against a capacity well below the data written, the engine releasing offloaded content continuously; report `repacked_bytes` per `released_bytes` and J1's throughput against J1 alone | none yet; the gate of [§7.1](#7.1%20Releasing%20storage)'s marker |
-| — | `Stats` | polled under write load | O(1), ≤ 1 µs |
+| — | `Stats` | polled under write load | grows with the number of shares, never with extents or segments; ≤ 1 µs at one share |
 
 J6, J7 and J9 measure recovery, reseed and the journal's shape, and are
 [RFC 28 §4.3](rfc-28-journal-format.md#4.3%20Benchmarks)'s; the setup and method here apply to
