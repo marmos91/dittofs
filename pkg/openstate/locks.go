@@ -217,9 +217,18 @@ func (e *entry) waiterOf(o LockOwner) int {
 // blocker is the lock that refuses owner o's lock r on e, or nil: a held lock
 // r conflicts with; a reservation it conflicts with; or, where r conflicts
 // with the request of one of the first upto waiters, a lock of another owner
-// that r overlaps and that blocks that waiter. So a stream of locks cannot
-// starve a waiter, and a waiter bars only the ranges that block it. o's own
-// waiter is never in its way.
+// that r overlaps and that blocks that waiter. So a stream of shared locks on
+// the range blocking a waiter cannot starve it. o's own waiter is never in
+// its way.
+//
+// decision: a waiter bars only the ranges of the locks that block it, not
+// its whole range: over the whole range, one client holding one byte and
+// parking a whole-file exclusive waiter under a second owner would refuse
+// every other client's lock on the file for as long as it renews. The
+// ceiling: shared locks taken beside the blocker, inside the waiter's range,
+// can keep an exclusive waiter waiting for as long as they overlap in time.
+// Widen the barrier to a bounded margin if exclusive lock waits are seen
+// starving there.
 func (e *entry) blocker(o LockOwner, r LockRange, upto int) *Lock {
 	for _, ls := range e.lstates {
 		for _, l := range ls.locks {
