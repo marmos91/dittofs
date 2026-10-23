@@ -188,7 +188,7 @@ type ClientRecord struct {
 	Owner    Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
 	Protect  bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
 	Recovery RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
-	Lease    Lease
+	Lease    ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
 	Reach    Reach        // how a recall reaches it (§4.1)
 	Shards   []ShardMark  // where it holds state; bounded, then every shard of the share (§8)
 	Ended    bool         // (cluster) expired, kept until every shard it names has released its state (§4.3)
@@ -203,7 +203,7 @@ type Client struct {
 	Pending *Pending      // volatile: a proposed instance awaiting its confirm (§2.9)
 }
 
-type Lease struct {
+type ClientLease struct {
 	Node NodeID // (cluster) the one node that renews and expires the client: its lease owner
 }
 
