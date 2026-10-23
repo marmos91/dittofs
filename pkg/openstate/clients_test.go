@@ -462,9 +462,9 @@ func TestStartAndStop(t *testing.T) {
 		"Expire":     func() error { return g.Expire(ctx, id) },
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
 		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
-		"Downgrade":  func() error { return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{ID: 1}, Seqs{}, 0, 0) },
+		"Downgrade":  func() error { return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{ID: 1}, 0, 0) },
 		"Update":     func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
-		"Close":      func() error { _, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{ID: 1}, Seqs{}); return err },
+		"Close":      func() error { _, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{ID: 1}); return err },
 		"Durable":    func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
 	}
 	check := func(when string) {

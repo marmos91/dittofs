@@ -77,13 +77,6 @@ type OpenRef struct {
 
 func (r OpenRef) anonymous() bool { return r.Ref.Type == 0 && r.ID == 0 }
 
-// Seqs is the owner sequence numbers a request presents; zero where the
-// protocol has none. Owner sequences are not checked yet: no call reads it.
-type Seqs struct {
-	Owner    *uint32
-	NewOwner uint32
-}
-
 // CloseResult is what a close leaves the service to run: open state never
 // releases or unlinks a file itself.
 type CloseResult struct {
@@ -103,12 +96,12 @@ type Opens interface {
 	// never grants less than was asked.
 	Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequest) (OpenResult, error)
 	// Downgrade narrows an open's access and deny to masks within them.
-	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) error
+	Downgrade(ctx context.Context, who Caller, o OpenRef, access, deny entity.AccessMask) error
 	// Update sets or clears the file's delete pending, through an open
 	// holding delete access, and suspends or resumes the open's times.
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
-	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
+	Close(ctx context.Context, who Caller, o OpenRef) (CloseResult, error)
 	// Durable is the records of f's opens, for the unlink
 	// that may take f's last entry to write in its transaction. The service
 	// calls commit once, true when that transaction committed and took the
@@ -337,7 +330,7 @@ func (t *Table) mayUse(o *open, who Caller) bool {
 	return !owner.IsZero() && who.Principal == owner
 }
 
-func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, _ Seqs, access, deny entity.AccessMask) error {
+func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, access, deny entity.AccessMask) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
 		return err
@@ -378,7 +371,7 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	})
 }
 
-func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, _ Seqs) (CloseResult, error) {
+func (v opens) Close(ctx context.Context, who Caller, ref OpenRef) (CloseResult, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
 		return CloseResult{}, err
