@@ -23,9 +23,8 @@ const (
 	leasePeriod = 90 * time.Second
 
 	// maxName is the longest name a client may give itself, the protocols'
-	// own opaque limit; maxAdapter bounds an adapter's record.
-	maxName    = 1024
-	maxAdapter = 4 << 10
+	// own opaque limit.
+	maxName = 1024
 
 	// ponytail: a node holds at most maxPending proposals, and maxPerSource
 	// from one source; past either a proposal is answered ErrDelay. Raise
@@ -124,7 +123,7 @@ func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, strin
 // protocol is served whose anonymous callers the table can tell apart.
 func admit(c Client) (entity.ClientRecord, error) {
 	rec := c.ClientRecord
-	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > maxAdapter {
+	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > kvstore.MaxAdapter {
 		return entity.ClientRecord{}, ErrInvalid
 	}
 	if rec.Owner.IsZero() {
@@ -348,7 +347,7 @@ func (v clients) AddSession(ctx context.Context, c entity.ClientID, node entity.
 	if _, err := v.t.running(); err != nil {
 		return Client{}, err
 	}
-	if len(next) > maxAdapter {
+	if len(next) > kvstore.MaxAdapter {
 		return Client{}, ErrInvalid
 	}
 	rec, err := v.t.d.Records.Clients().AddSession(ctx, c, node, prev, next)
