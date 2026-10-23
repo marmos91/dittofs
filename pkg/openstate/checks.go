@@ -23,7 +23,8 @@ const (
 
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
-	// CheckIO admits I/O through o: a granted open is used only by its
+	// CheckIO admits I/O through o, an open or a lock state, which is judged
+	// as the open it was taken under: a granted open is used only by its
 	// opener and only for the access it holds, ErrAccess otherwise, and its
 	// deny modes were judged once, at open; an anonymous read or write is
 	// judged against every deny mode held, per operation. Either is refused
@@ -47,16 +48,21 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 	if write {
 		want = entity.WriteData
 	}
-	if o.Kind != RefAnonymous {
-		return t.withOpen(who, o, nil, false, func(e *entry, op *open) error {
-			if !t.confirmed(op) {
-				return ErrBadState
-			}
-			if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
-				return ErrAccess
-			}
-			return e.lockedOut(op.Ref.Token, r, write)
-		})
+	through := func(e *entry, op *open) error {
+		if !t.confirmed(op) {
+			return ErrBadState
+		}
+		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
+			return ErrAccess
+		}
+		return e.lockedOut(op.Ref.Token, r, write)
+	}
+	switch o.Kind {
+	case RefAnonymous:
+	case RefLocked:
+		return t.throughLockState(who, o, through)
+	default:
+		return t.withOpen(who, o, nil, false, through)
 	}
 	f, err := o.file()
 	if err != nil || f.IsZero() {
@@ -115,5 +121,34 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, what Cha
 			return ErrShareViolation
 		}
 		return nil
+	})
+}
+
+// throughLockState runs fn, as I/O through the open the lock state ref
+// names was taken under, once that open is found and who may use it. A lock
+// state taken under no open names nothing I/O runs through.
+func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *open) error) error {
+	f, err := ref.file()
+	if err != nil {
+		return err
+	}
+	h, err := t.resolve(who.Client, f, StateRef{Type: ref.State.Type, Shard: ref.State.Shard, Token: ref.State.Token})
+	if err != nil {
+		return err
+	}
+	return t.step(h.file, func(e *entry) error {
+		op, _, cur, err := t.lockTarget(e, who, ref)
+		switch {
+		case err != nil:
+			return err
+		case op == nil:
+			return ErrBadState
+		case !t.mayUse(op, who):
+			return ErrNotYours
+		}
+		if err := seqErr(cur, ref.State.Seq); err != nil {
+			return err
+		}
+		return fn(e, op)
 	})
 }
