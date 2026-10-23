@@ -703,16 +703,21 @@ suites:
     timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: per shard (below)
     shards: 4                           # split over 4 CI jobs
   fio-verify:
-    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
-    tests: bench/workloads/*.fio
+    # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
+    # perl fills them from the environment into a copy below {out}, which fio runs.
+    cmd:
+      - cp {test} {out}/{test}
+      - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
+      - fio --output-format=json --output={out}/{test}.json {out}/{test}
+    tests: bench/*/*.fio                # dfsbench's workloads, and the verify jobs, which read their data back
     exclude: [bench/workloads/layout.fio]   # a preparation job, not a test
-    fixture: { profile: badger-s3, nfs: "4.1" }
+    fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }       # the job files write to ${BENCH_DIR:-/mnt/bench}
     metrics: fio-json                   # numbers recorded; a job with a non-zero `error` fails, a failed verify included
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }   # bench-smoke.yml today
 ```
 
@@ -762,7 +767,7 @@ fixture are filled before the first test, when neither has a value.
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link, but for cthon04: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is a copy of cthon04's built tree that the user `dt` runs as can write, as the scripts' copy is, since its general tests `cp` their sources to the mount, keeping their modes, and Nix's store holds them read-only, and `{tools}/nfstest` holds a `bin` with a program per module, on Python 3.12, since nfstest's remote execution, which its lock and delegation modules set up first, breaks from 3.13 on |
-| `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
+| `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do. Before a command runs, `dt` makes the directories of each path below `{out}` that one of its arguments names, so a test named by its path, as `fio-verify`'s `bench/workloads/seq-write.fio`, can write `{out}/{test}.json`. A `{ sh: "..." }` command makes its own, since its values are quoted |
 | `{packages}` | the package list `packages` gives |
 | `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{bucket}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
@@ -1159,7 +1164,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
   run it in its own image, below);
 - **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
-  `nfs4-acl-tools`, `kerberos`, `dm-flakey`;
+  `nfs4-acl-tools`, `kerberos`, `dm-flakey`, `fio`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
@@ -1368,7 +1373,13 @@ dedicated host's schedule, keep their messages.
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
 included. `dfsbench-json` takes dfsbench's per-cell results. Numbers are recorded for `dt history`
-and never grade a run on their own (§4.10).
+and never grade a run on their own (§4.10). `fio-json` reads the report fio writes to
+`{out}/{test}.json`, and records each job's `bw_bytes`, `iops` and mean `lat_ns` for each direction
+it did I/O in, in its test's `extra.metrics`, keyed `JOB/DIRECTION/NAME`, as
+`seq-write/write/bw_bytes`. A job whose `error` isn't 0 fails its test even when fio exits 0, as it
+does for a job that continues on errors, which logs them in the report's file before the report. A
+test that passes without a report has no numbers, which is lost coverage: its cell is not run, exit
+2. `dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
 
 **Grades in CTRF and JUnit.** `dt` grades each result of each test, and writes the grade in
 `extra.grade`:
@@ -1773,9 +1784,12 @@ only when the failing set changes.
   shows it, and `dt run nfs-mount-smoke` runs it. A variant of an existing suite is an option of
   it, not a new suite.
 - **A test to an existing suite:** add its file. A scenario script, a fio job file
-  (`bench/workloads/*.fio`, which `dfsbench` also embeds), or a Go test. No registry change.
+  (`bench/workloads/*.fio`, which `dfsbench` also embeds, or `bench/verify/*.fio`), or a Go test.
+  No registry change.
 - **New fio workloads,** such as mailbox-style I/O mixes: job files in `bench/workloads/`.
-  `fio-verify` checks their data, and `dfsbench` can measure them.
+  `fio-verify` runs them, and `dfsbench` can measure them. A job that reads its data back to check
+  it, with `verify=`, goes in `bench/verify/`, not into a workload, whose numbers would then
+  include the reads.
 - **A known failure or an expected skip:** one entry in the suite's `known.yaml`, with its reason,
   and an issue if it's a bug.
 - **A component:** its RFC under `docs/internals/rfcs/` names the suites and groups that cover it
