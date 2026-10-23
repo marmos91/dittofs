@@ -15,19 +15,7 @@ import (
 func TestStreamOpenKeepsBaseAlive(t *testing.T) {
 	f := newContentFix(t, nil)
 	ctx := context.Background()
-	cp := f.s.ControlPlane()
-	admin := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "admin"}
-	if err := cp.PutUser(ctx, admin); err != nil {
-		t.Fatal(err)
-	}
-	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: admin.Principal, Access: entity.AccessAdmin}); err != nil {
-		t.Fatal(err)
-	}
-	id := entity.Identity{Principal: admin.Principal, Privileged: true}
-	root, _, err := f.s.Files().Root(ctx, id, f.share)
-	if err != nil {
-		t.Fatal(err)
-	}
+	admin, id, root := adminRoot(t, f)
 	_, base, err := f.s.Namespace().Create(ctx, id, root, []byte("a"), NewFile{Type: entity.Regular, Mode: 0o644})
 	if err != nil {
 		t.Fatal(err)
@@ -67,4 +55,50 @@ func TestStreamOpenKeepsBaseAlive(t *testing.T) {
 	}
 	closeOpen(base.ID, onBase, Orphaned{}) // the stream's open still holds it
 	closeOpen(stream.ID, again, Orphaned{File: base.ID})
+}
+
+// An unlink's opens are of the file or of its named streams: an open of any
+// other file, existing or gone, is a caller's error, refused before the
+// name goes.
+func TestUnlinkRefusesAnUnrelatedOpen(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	admin, id, root := adminRoot(t, f)
+	if _, _, err := f.s.Namespace().Create(ctx, id, root, []byte("a"), NewFile{Type: entity.Regular, Mode: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	_, other, err := f.s.Namespace().Create(ctx, id, root, []byte("b"), NewFile{Type: entity.Regular, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]entity.FileID{"another file's": other.ID, "a missing file's": entity.NewFileID()} {
+		op := entity.OpenRecord{ID: 1, File: file, Client: 1, Principal: admin.Principal}
+		if _, err := f.s.Namespace().Unlink(ctx, id, root, []byte("a"), op); !isInvalid(err) {
+			t.Errorf("an unlink carrying %s open: %v", name, err)
+		}
+	}
+	if _, _, err := f.s.Namespace().Lookup(ctx, id, root, []byte("a")); err != nil {
+		t.Errorf("the name after the refused unlinks: %v", err)
+	}
+}
+
+// adminRoot makes a privileged administrator of f's share and returns it,
+// its identity and the share's root.
+func adminRoot(t *testing.T, f *cfix) (entity.User, entity.Identity, entity.Handle) {
+	t.Helper()
+	ctx := context.Background()
+	cp := f.s.ControlPlane()
+	admin := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "admin"}
+	if err := cp.PutUser(ctx, admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: admin.Principal, Access: entity.AccessAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	id := entity.Identity{Principal: admin.Principal, Privileged: true}
+	root, _, err := f.s.Files().Root(ctx, id, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return admin, id, root
 }
