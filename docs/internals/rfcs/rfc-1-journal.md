@@ -394,7 +394,7 @@ type SyncPolicy uint8 // the share's sync policy (§5.2): Bounded, the default, 
 ```
 
 One journal serves several shares. Each share's engine works through its own
-`Handle`, and every operation below is a method of it. The handle's tag is
+`Handle`, and every operation below is a method of it, except `Stats`, which is the journal's: the node reads it before any share attaches. The handle's tag is
 written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), so recovery rebuilds each
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
