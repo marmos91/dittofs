@@ -110,6 +110,7 @@ func TestOwnerlessRecordIsFoundByName(t *testing.T) {
 // A proposal changes no state until its confirm: a new Boot writes nothing,
 // keeps the old ID current with its state, and is held at this node; only its
 // own principal, naming its ID and confirm within a lease period, confirms it.
+// Another principal's confirm is ErrClientInUse and leaves the proposal.
 func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 	f := newFixture(t)
 	alice := entity.NewUser()
@@ -137,12 +138,17 @@ func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 		t.Errorf("the old ID's state after a proposal: %v", err)
 	}
 
+	if _, err := f.Connect(ctx, nfs("host-a", 2, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
+		t.Errorf("confirm from another principal: %v, want ErrClientInUse", err)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || rec.Pending == nil {
+		t.Errorf("after another principal's confirm: pending %+v, %v; want the proposal kept", rec.Pending, err)
+	}
 	for _, tc := range []struct {
 		name string
 		c    Client
 		p    Proposal
 	}{
-		{"another principal", nfs("host-a", 2, entity.NewUser()), p},
 		{"another client ID", reboot, Proposal{Client: p.Client + 1, Confirm: p.Confirm}},
 		{"another confirm", reboot, Proposal{Client: p.Client, Confirm: [8]byte{^p.Confirm[0]}}},
 	} {

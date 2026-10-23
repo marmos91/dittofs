@@ -225,7 +225,11 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		key := keyOf(*rec)
 		t.cmu.Lock()
 		pd, ok := t.pending[key]
-		ok = ok && pd.ID == p.Client && pd.Confirm == p.Confirm && pd.Owner == rec.Owner && t.d.Clock.Elapsed() < pd.Expires
+		ok = ok && pd.ID == p.Client && pd.Confirm == p.Confirm && t.d.Clock.Elapsed() < pd.Expires
+		if ok && pd.Owner != rec.Owner {
+			t.cmu.Unlock()
+			return nil, ErrClientInUse // the proposal stays for its own principal
+		}
 		if ok {
 			delete(t.pending, key)
 			t.uncharge(pd.source)
