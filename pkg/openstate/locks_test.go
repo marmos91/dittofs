@@ -773,14 +773,18 @@ func TestOwnerRequestsAreSerial(t *testing.T) {
 	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
 	for i := range 300 {
 		oo := owner(a, fmt.Sprint("open-owner-", i))
+		o := f.mustOpen(t, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)})
+		if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(o), num(2)); err != nil {
+			t.Fatal(err)
+		}
 		var errs [2]error
 		var wg sync.WaitGroup
 		for j := range errs {
-			wg.Go(func() { _, errs[j] = f.open(a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)}) })
+			wg.Go(func() { _, errs[j] = f.open(a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(3)}) })
 		}
 		wg.Wait()
 		if errs[0] == nil && errs[1] == nil {
-			t.Fatalf("round %d: two opens of one owner numbered 1 were both granted", i)
+			t.Fatalf("round %d: two opens of one owner numbered 3 were both granted", i)
 		}
 		for _, err := range errs {
 			if err != nil && !errors.Is(err, ErrDelay) && !errors.Is(err, ErrBadSeqID) {
@@ -831,6 +835,43 @@ func errOf(_ LockResult, err error) error { return err }
 func errOf2(_ uint32, err error) error { return err }
 
 func ptr[T any](v T) *T { return &v }
+
+// Until its confirm, an owner's one open is usable by nothing else: a
+// close, a downgrade or a lock under it is ErrBadState and advances nothing,
+// and a new open from the owner, whatever its number, replaces it, the first
+// released and the confirm asked again.
+func TestUnconfirmedOwner(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	oo := owner(a, "open-owner")
+	res, err := f.Opens().Open(ctx, a, file, OpenRequest{Access: rd | wr, Deny: wr, Owner: oo, Seqs: num(1)})
+	if err != nil || !res.Confirm {
+		t.Fatalf("a new owner's open: Confirm %v, %v", res.Confirm, err)
+	}
+	first := res.Open
+	if _, err := f.Opens().Close(ctx, a, refOf(first), num(2)); !errors.Is(err, ErrBadState) {
+		t.Errorf("a close under the unconfirmed owner: %v, want ErrBadState", err)
+	}
+	if _, err := f.Opens().Downgrade(ctx, a, refOf(first), num(2), rd, 0); !errors.Is(err, ErrBadState) {
+		t.Errorf("a downgrade under the unconfirmed owner: %v, want ErrBadState", err)
+	}
+	lock := LockReq{Owner: owner(a, "lo"), Open: refOf(first), Ranges: []LockRange{x(0, 10)}, Seqs: Seqs{Owner: ptr(uint32(2)), NewOwner: 1}}
+	if _, err := f.lock(a, file, lock); !errors.Is(err, ErrBadState) {
+		t.Errorf("a lock under the unconfirmed owner: %v, want ErrBadState", err)
+	}
+
+	res, err = f.Opens().Open(ctx, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(40)})
+	if err != nil || !res.Confirm {
+		t.Fatalf("a second open from the unconfirmed owner: Confirm %v, %v; want granted, the confirm asked again", res.Confirm, err)
+	}
+	if _, err := f.open(f.caller(t, smb("pc")), file, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open of the first open's file once it was replaced: %v; want its deny-write gone", err)
+	}
+	if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(res.Open), num(41)); err != nil {
+		t.Errorf("the confirm of the replacing open, numbered after it: %v", err)
+	}
+}
 
 // An owner holds one open of a file: its second open of the file is that
 // open, upgraded, its modes widened and its sequence raised, judged against

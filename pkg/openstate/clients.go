@@ -638,10 +638,7 @@ func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbo
 				t.release(e, h.ref)
 				return nil
 			}
-			var r CloseResult
-			r.Orphan, _ = t.unrecord(ctx, o)
-			r.Unlink = t.closeOpen(e, o, out)
-			out.close(h.file, r)
+			t.closeByTable(ctx, e, o, out)
 			return nil
 		})
 	}
