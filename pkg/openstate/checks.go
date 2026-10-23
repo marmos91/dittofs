@@ -26,8 +26,9 @@ const (
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
 	// CheckIO admits I/O through o: a granted open is used only by its
-	// opener, and its deny modes were judged once, at open; an anonymous
-	// read or write is judged against every deny mode held, per operation.
+	// opener and only for the access it holds, ErrAccess otherwise, and its
+	// deny modes were judged once, at open; an anonymous read or write is
+	// judged against every deny mode held, per operation.
 	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f: what the open state of f refuses.
 	CheckChange(ctx context.Context, who Caller, f entity.FileID, what ChangeMask) error
@@ -43,15 +44,20 @@ func (t *Table) Checks() Checks { return checks{t} }
 // without creating it when CheckIO shows in a profile.
 func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange, write bool) error {
 	t := v.t
-	if !o.anonymous() {
-		return t.withOpen(who, o, func(*entry, *open) error { return nil })
-	}
-	if o.File.IsZero() {
-		return ErrBadState
-	}
 	want := entity.ReadData
 	if write {
 		want = entity.WriteData
+	}
+	if !o.anonymous() {
+		return t.withOpen(who, o, func(_ *entry, op *open) error {
+			if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
+				return ErrAccess
+			}
+			return nil
+		})
+	}
+	if o.File.IsZero() {
+		return ErrBadState
 	}
 	return t.step(o.File, func(e *entry) error {
 		for _, h := range e.opens {

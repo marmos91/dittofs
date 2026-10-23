@@ -133,7 +133,8 @@ func TestDenyModesAtOpen(t *testing.T) {
 }
 
 // A downgrade narrows an open to masks within its own, applies at once, and
-// raises its reference's sequence, so the reference as it was is old.
+// raises its reference's sequence, so the reference as it was is old; I/O
+// through the open is held to what it holds now.
 func TestDowngrade(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
@@ -149,6 +150,13 @@ func TestDowngrade(t *testing.T) {
 	}
 	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
 		t.Errorf("the reference as it was before the downgrade: %v, want ErrOldState", err)
+	}
+	now := OpenRef{Ref: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, File: file}
+	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
+		t.Errorf("a write through the open downgraded to read: %v, want ErrAccess", err)
+	}
+	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, false); err != nil {
+		t.Errorf("a read through the open downgraded to read: %v", err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open once the deny-write was downgraded away: %v", err)
