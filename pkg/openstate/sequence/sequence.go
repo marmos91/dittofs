@@ -56,7 +56,14 @@ func (b Book) Unconfirmed(o Owner) bool {
 
 // Answer records how o's request numbered n, which Check admitted, was
 // answered. Only a granted request gives a new owner its slot, one past n, and
-// a new owner of opens starts unconfirmed. Numbers wrap modulo 2^32.
+// a new owner of opens starts unconfirmed.
+//
+// decision: the number after 2^32-1 is 0, as the Linux client and server
+// have it, where RFC 7530 says 1. A client that follows the RFC sends 1
+// there, is answered out of sequence once per 2^32 requests of one owner,
+// and recovers as from any bad sequence, with a new owner. Wrap to 1 if a
+// client is seen doing that at a measurable rate. A reference's own sequence
+// is another counter, and wraps to 1, since 0 there means the current one.
 //
 // decision: a refused first request leaves its owner new, so the owner's next
 // request is accepted whatever its number, which suits a client that counted
