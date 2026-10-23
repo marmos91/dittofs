@@ -586,6 +586,30 @@ func TestNLMRecordGoesWithLastLock(t *testing.T) {
 	}
 }
 
+// An NLM host's last unlock racing its next lock either keeps the record,
+// which then holds the lock, or deletes it and refuses the lock
+// ErrStaleClient: no lock is ever held under a deleted record.
+func TestNLMLastUnlockRacesLock(t *testing.T) {
+	f := newFixture(t)
+	for i := range 300 {
+		h := f.host(t, fmt.Sprint("h", i), 1)
+		first, next := anyFile(), anyFile()
+		f.mustLock(t, h, first, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}})
+		var err error
+		var wg sync.WaitGroup
+		wg.Go(func() { f.unlock(t, h, first, owner(h, "h"), br(0, 10)) })
+		wg.Go(func() { _, err = f.lock(h, next, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}}) })
+		wg.Wait()
+		_, gone := f.Record(ctx, h.Client)
+		switch held := f.holder(t, next, br(0, 10)) != nil; {
+		case err == nil && (gone != nil || !held):
+			t.Fatalf("round %d: the lock was granted, held %v, and the record read %v", i, held, gone)
+		case err != nil && (!errors.Is(err, ErrStaleClient) || !errors.Is(gone, ErrStaleClient) || held):
+			t.Fatalf("round %d: the lock was refused %v, held %v, and the record read %v", i, err, held, gone)
+		}
+	}
+}
+
 func num(n uint32) Seqs { return Seqs{Owner: &n} }
 
 // An owner's sequence takes its requests in order across files. A stale
