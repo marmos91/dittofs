@@ -120,18 +120,22 @@ func (c Clients) ByName(ctx context.Context, p entity.Protocol, name []byte) (cl
 // Put rewrites a client record from prev, the record the caller read, to
 // next. When the stored record is no longer prev it writes nothing and
 // returns ErrRecordChanged with the current record; when next changes no
-// field it writes nothing. Its ID, protocol, name and Boot never change, and
+// field it writes nothing. Its ID, protocol, name and Boot never change, so
+// prev and next naming two IDs is refused as invalid before any read, and
 // its shard marks change only through MarkShard and DropShards: Shards is
 // neither compared nor written here.
 func (c Clients) Put(ctx context.Context, prev, next entity.ClientRecord) (cur entity.ClientRecord, err error) {
 	if err := validClient(next); err != nil {
 		return entity.ClientRecord{}, err
 	}
+	if prev.ID != next.ID {
+		return entity.ClientRecord{}, merrs.NewInvalidArgumentError("a put names one client in prev and next")
+	}
 	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if cur, err = clientIn(tx, next.ID); err != nil {
 			return err
 		}
-		if prev.ID != next.ID || !bytes.Equal(encodeClient(cur), encodeClient(prev)) {
+		if !bytes.Equal(encodeClient(cur), encodeClient(prev)) {
 			return ErrRecordChanged
 		}
 		if cur.Protocol != next.Protocol || !bytes.Equal(cur.Name, next.Name) || cur.Boot != next.Boot {
