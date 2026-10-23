@@ -701,7 +701,11 @@ memory. Two rules hold a proposal:
 2. a name has at most one, and a later proposal replaces it.
 
 A confirm is accepted only at the answering node, from `Pending.Owner`, naming
-`Pending.ID` and `Confirm`, and it runs `Connect` in one step. A proposal for a
+`Pending.ID` and `Confirm`, and it runs `Connect` in one step. A new
+`Pending.ID` is taken from `NextID` (§11.1) when the proposal is made, so the
+client hears it before anything is written; an ID left unused by a proposal
+that is replaced or never confirmed is abandoned, as `IDS‖kind` abandons an
+unused range. A proposal for a
 name a confirmed record holds under another principal is refused
 `ErrClientInUse` and leaves nothing pending. The wire walk is
 [RFC 21 §3.5](rfc-21-nfs.md#3.5%20Confirming%20a%20client)'s.
@@ -2239,6 +2243,63 @@ import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
 request's ranges into it whole. The import rule — only the filesystem service
 imports this package — is held by the architecture test
 ([RFC 20](rfc-20-adapters.md)), as is the count of `*Table`'s exported methods.
+
+**The store views open state writes through.** `Deps.Records` is the metadata
+store's `OpenRecords`: its two views, `metadata.Clients` and `metadata.Opens`,
+declared here where their rules are and listed by
+[RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer). Only
+the table calls them. Each method is one store transaction over the keys
+[RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)
+names, and a step writes in the order §8 gives: a client's shard mark commits
+before the answer that grants its first state there.
+
+```go
+package metadata // the store's side; open state's views of the same names are its own (§11.3)
+
+type OpenRecords interface {
+	Clients
+	Opens
+	NextID(ctx, k IDKind) (uint64, error)  // client, open or lock: from a range reserved at IDS‖kind; never issued twice
+	NoticeState(ctx) (uint32, error)        // the restart-notice number (NSM), §4.5
+	RaiseNoticeState(ctx) (uint32, error)   // raised durably, and returned, before a grace that lost a notice client's locks
+}
+
+// Clients is the client records: CL‖clientID, its CL‖clientID‖sh‖shard marks,
+// and the CLO‖protocol‖name index.
+type Clients interface {
+	Create(ctx, r ClientRecord) error                        // record and name index together; ErrExist if the name is held
+	Reboot(ctx, old ClientID, next ClientRecord) error        // a confirmed reboot: writes next, moves the name index to it and marks old Ended, in one transaction (§4.3)
+	Get(ctx, c ClientID) (ClientRecord, error)
+	ByName(ctx, p protocol.Kind, name []byte) (ClientRecord, error)
+	Put(ctx, prev, next ClientRecord) (ClientRecord, error)   // compare-and-swap: writes next only if the stored record equals prev, else ErrRecordChanged with the stored one; AddSession, Rebind and the lease owner's move are each one
+	MarkShard(ctx, c ClientID, m ShardMark) error             // writes CL‖c‖sh‖shard with its Done (§4.4)
+	DropShards(ctx, c ClientID) error                         // deletes every mark: an administrator's revoke (§5.3)
+	Delete(ctx, c ClientID) error                             // the record, its marks and its name index
+	ByShard(ctx, s ShardID) iter.Seq2[ClientRecord, error]   // every record with a mark for s: a scan of CL (below)
+}
+
+// Opens is the durable opens: F‖id‖op‖openID with its locks beneath it, the
+// S‖id‖do index written and deleted with each, and F‖id‖dp.
+type Opens interface {
+	Put(ctx, r OpenRecord) error                                // the record and its index entry; for an open of a file with no entry, guards the File (§9.1)
+	Delete(ctx, f FileID, o OpenID) error                       // the record, its locks and its index entry
+	ByFile(ctx, f FileID) ([]OpenRecord, error)                 // the file's and its streams' durable opens
+	ByShard(ctx, share ShareID, s ShardID) iter.Seq2[OpenRecord, error] // the shard's range of S‖id‖do: ServeShard installs from it, grace end closes from it (§9.2)
+	PutLock(ctx, f FileID, o OpenID, l LockRecord) error         // only under a persistent open (§8)
+	DeleteLock(ctx, f FileID, o OpenID, l LockRecord) error
+	SetDeletePending(ctx, f FileID, d *DeleteRecord) error       // nil clears it; written only while the file has a persistent open (§9.4)
+}
+```
+
+`Opens.Durable` (§11.3) returns records for the unlink to write in its own
+transaction, so the unlink's half of §9.1 is the namespace's write, not this
+view's.
+
+> ponytail: `Clients.ByShard` scans every client record, since a mark's key
+> puts the shard last; a shard runs it once, when its grace begins, to tell each
+> client to reclaim. 10⁵ records are one sequential read of a few megabytes.
+> Add a shard-first index, `CLS‖shard‖clientID`, written and deleted with each
+> mark, if a profile of `Recovery.ServeShard` shows the scan.
 
 ```text
 pkg/openstate/
