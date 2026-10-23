@@ -99,7 +99,7 @@ func (f *fixture) stored(t *testing.T, file entity.FileID) []entity.OpenRecord {
 	return got
 }
 
-// L6: a deny mode is checked both ways, once, at open; an anonymous read or
+// A deny mode is checked both ways, once, at open; an anonymous read or
 // write is checked against the deny modes held, per operation; a conflicting
 // open is refused, never granted narrower.
 func TestDenyModesAtOpen(t *testing.T) {
@@ -155,7 +155,7 @@ func TestDowngrade(t *testing.T) {
 	}
 }
 
-// RFC 14 §2.2: an open is used only by its opener, or by its client's owner
+// An open is used only by its opener, or by its client's owner
 // where the client protects its state.
 func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	f := newFixture(t)
@@ -177,7 +177,7 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	}
 }
 
-// L7: an open that keeps an unlinked file alive is durable by the time the
+// An open that keeps an unlinked file alive is durable by the time the
 // unlink commits, and an aborted unlink leaves it volatile. An open of the
 // file after it has no entry is written durable too, and the last close
 // reports the file orphaned.
@@ -215,7 +215,7 @@ func TestUnlinkMakesOpensDurable(t *testing.T) {
 	}
 }
 
-// L7: opening and closing a linked file writes no open record, and writes
+// Opening and closing a linked file writes no open record, and writes
 // the client record's shard list once per client and shard, even across a
 // restart; only the first open reads the record.
 func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
@@ -245,7 +245,7 @@ func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
 	}
 }
 
-// L14 and L34: a file is delete pending once an open with delete on close
+// A file is delete pending once an open with delete on close
 // closes; then every new open and every rename is refused, and the last
 // close hands the service the unlink of the marking open's entry, run as the
 // principal that marked it, never as the last closer. A delete-pending
@@ -304,7 +304,7 @@ func TestDeletePending(t *testing.T) {
 	}
 }
 
-// L21: an open's suspended times are its own: suspending one open's modify
+// An open's suspended times are its own: suspending one open's modify
 // time leaves another's alone, and a resume clears it. They are carried in
 // the durable record an unlink writes.
 func TestSuspendedTimesArePerOpen(t *testing.T) {
@@ -334,7 +334,7 @@ func TestSuspendedTimesArePerOpen(t *testing.T) {
 	}
 }
 
-// RFC 14 §7, §9.5 and L23: an NFS remove or rename of a file is refused
+// An NFS remove or rename of a file is refused
 // against a deny-delete, which an SMB caller's own open was judged against at
 // open. An SMB rename or delete of a directory is refused while an open made
 // through it exists, an NFS one is not, and an open two levels below does
@@ -368,7 +368,7 @@ func TestChangeChecks(t *testing.T) {
 	}
 }
 
-// L36: an open of a named stream is an open of its base file for deny
+// An open of a named stream is an open of its base file for deny
 // modes, and its durable record names the stream.
 func TestStreamOpenIsAnOpenOfItsBase(t *testing.T) {
 	f := newFixture(t)
@@ -383,7 +383,7 @@ func TestStreamOpenIsAnOpenOfItsBase(t *testing.T) {
 	}
 }
 
-// RFC 14 §11.1: an expiry closes the client's opens itself, and hands the
+// An expiry closes the client's opens itself, and hands the
 // service, through Closed, each file it left orphaned or to unlink; a client
 // whose lease has ended is granted no open, swept or not.
 func TestExpiryClosesOpens(t *testing.T) {

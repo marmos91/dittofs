@@ -6,9 +6,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// RFC 14 §6's table, cell by cell: a new open asking one access or denying
-// one, against a held open denying one or holding one. The cells the table
-// marks "—" pair a new open's access with a held open's access, or a deny
+// The access and deny table, cell by cell: a new open asking one access or
+// denying one, against a held open denying one or holding one. The cells
+// marked "—" pair a new open's access with a held open's access, or a deny
 // with a deny, which never conflict.
 func TestMatrix(t *testing.T) {
 	read, write, del := entity.ReadData, entity.WriteData, entity.Delete
