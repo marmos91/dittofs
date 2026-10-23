@@ -493,6 +493,47 @@ func TestReleaseLockOwner(t *testing.T) {
 	}
 }
 
+// An NLM host's record goes with its last lock or its last waiter, and a
+// record whose losses are not reported by a restart notice stays.
+func TestNLMRecordGoesWithLastLock(t *testing.T) {
+	f := newFixture(t)
+	f1, f2 := anyFile(), anyFile()
+	for _, n := range []string{"h1", "h2", "h3"} {
+		h := f.host(t, n, 1)
+		f.mustLock(t, h, f1, LockReq{Owner: owner(h, n), Ranges: []LockRange{x(0, 10)}})
+		f.mustLock(t, h, f2, LockReq{Owner: owner(h, n), Ranges: []LockRange{x(0, 10)}})
+		f.unlock(t, h, f1, owner(h, n), br(0, 10))
+		if rec, err := f.Record(ctx, h.Client); err != nil || len(rec.Shards) != 1 || rec.Shards[0].Shard != 1 {
+			t.Fatalf("host %s still holding a lock: %+v, %v; want its record kept, listing the lock's shard", n, rec.Shards, err)
+		}
+		f.unlock(t, h, f2, owner(h, n), br(0, 10))
+		if _, err := f.Record(ctx, h.Client); !errors.Is(err, ErrStaleClient) {
+			t.Errorf("host %s after its last unlock: %v, want its record gone", n, err)
+		}
+	}
+	h, w := f.host(t, "holder", 1), f.host(t, "waiter", 1)
+	f.mustLock(t, h, f1, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, w, f1, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	if _, err := f.Locks().CancelLock(ctx, w, f1.ID, owner(w, "w"), br(0, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, w.Client); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("a host whose only waiter was cancelled: %v, want its record gone", err)
+	}
+	f.unlock(t, h, f1, owner(h, "h"), br(0, 10))
+
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	o := f.mustOpen(t, a, f1, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, f1, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	f.close(t, a, o)
+	if err := f.Locks().ReleaseLockOwner(ctx, a, owner(a, "lo")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, a.Client); err != nil {
+		t.Errorf("an NFSv4 client holding nothing after releasing its owner of locks: %v, want its record kept", err)
+	}
+}
+
 func errOf(_ LockResult, err error) error { return err }
 
 // Every lock call names its caller's client and acts only on that client's

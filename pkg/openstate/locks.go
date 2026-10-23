@@ -539,6 +539,7 @@ func (v locks) CancelLock(ctx context.Context, who Caller, f entity.FileID, o Lo
 		return nil
 	})
 	out.raise(sink)
+	t.dropIdle(ctx, o.Client)
 	return granted, nil
 }
 
@@ -564,6 +565,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		return nil
 	})
 	out.raise(sink)
+	t.dropIdle(ctx, who.Client)
 	return nil
 }
 
@@ -621,6 +623,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref Open
 		return err
 	})
 	out.raise(sink)
+	t.dropIdle(ctx, who.Client)
 	return err
 }
 
@@ -653,5 +656,40 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 		})
 	}
 	out.raise(sink)
+	t.dropIdle(ctx, o.Client)
 	return nil
+}
+
+// dropIdle deletes client c's record once c holds nothing here, if a restart
+// notice is how a loss of its state reaches it: an NLM host's record goes with
+// its last lock, so the hosts a failover notifies are the ones holding
+// something. c is then no longer current here, and its next call connects it
+// again. The check and the drop share the index lock, so no state is minted
+// for c between them.
+//
+// decision: the record is deleted without asking whether a restart notice to
+// the host is outstanding, since the table records none. A failed delete
+// leaves the record, which only adds a host to the next failover's notices.
+// Check for an outstanding notice once one is recorded.
+func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
+	t.cmu.Lock()
+	notice := t.known[c].recovery == entity.RecoverNotice
+	t.cmu.Unlock()
+	if !notice {
+		return
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	t.idx.Lock()
+	idle := !t.holdsAnyLocked(c)
+	if idle {
+		t.cmu.Lock()
+		delete(t.known, c)
+		delete(t.leases, c)
+		t.cmu.Unlock()
+	}
+	t.idx.Unlock()
+	if idle {
+		_ = t.d.Records.Clients().Delete(ctx, c)
+	}
 }

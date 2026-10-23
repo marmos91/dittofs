@@ -80,8 +80,9 @@ type entry struct {
 // known is what the table holds of a client's record while it is current
 // here.
 type known struct {
-	owner  entity.Principal // the owner that may act on all its state; zero unless it protects it
-	shards []ShardID        // shards seen listed in its record
+	recovery entity.RecoveryKind
+	owner    entity.Principal // the owner that may act on all its state; zero unless it protects it
+	shards   []ShardID        // shards seen listed in its record
 }
 
 // New builds an empty table. It starts nothing: Start does.
