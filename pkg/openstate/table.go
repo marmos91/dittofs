@@ -66,9 +66,9 @@ type entry struct {
 	users  int // steps running or waiting on this entry, guarded by its file stripe's mutex
 	states int // pieces of state held, guarded by mu
 
-	opens    map[uint64]*open // by reference token
-	pending  *PendingUnlink   // the file is delete pending; nil: not
-	unlinked bool             // an unlink made the opens durable: the file has no entry, and every new open is written durable
+	opens    map[uint64]*open     // by reference token
+	pending  *entity.DeleteRecord // the file is delete pending; nil: not
+	unlinked bool                 // an unlink made the opens durable: the file has no entry, and every new open is written durable
 }
 
 // known is what the table holds of a client's record while it is current
