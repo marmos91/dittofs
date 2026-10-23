@@ -147,6 +147,12 @@ func (g *Grant) Ack(to Kind, epoch uint16) (next bool, err error) {
 
 // Timeout ends the recall in flight unanswered: the grant is cut to none,
 // keeping what the recall took away for a late acknowledgement.
+//
+// decision: the cut raises no epoch. The epoch numbers the changes sent to
+// the holder, and a cut is sent nothing; a late acknowledgement still names
+// the recall's epoch and is judged by Lapsed, where a raised epoch would
+// answer it as an older change and accept it unjudged. Raise it here if a
+// protocol is served that announces a timed-out break.
 func (g *Grant) Timeout() {
 	if g.Recall == nil {
 		return

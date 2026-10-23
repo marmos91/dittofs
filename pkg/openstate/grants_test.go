@@ -51,6 +51,16 @@ func (f *fixture) pass(t *testing.T, d time.Duration, keep ...entity.ClientID) {
 	f.serveFiles(f.sink, files)
 }
 
+// ordered reports whether the file's admission lock was taken, since the last
+// call, for file.
+func (f *fixture) ordered(file FileKey) bool {
+	f.order.mu.Lock()
+	defer f.order.mu.Unlock()
+	taken := slices.Contains(f.order.files, file.ID)
+	f.order.files = nil
+	return taken
+}
+
 func delayedFor(err error) DelayCause {
 	var d *DelayError
 	if errors.As(err, &d) {
@@ -170,6 +180,14 @@ func TestRecallDeadline(t *testing.T) {
 	if s, _ := f.Renew(ctx, a.Client); !s.RecallableRevoked || s.AdminRevoked {
 		t.Errorf("renewal %+v, want RecallableRevoked alone", s)
 	}
+	wrong := d.ID.ref()
+	wrong.Type = StateOpen
+	if errs := f.Recovery().TestState(ctx, a, []StateRef{wrong}); !errors.Is(errs[0], ErrBadState) {
+		t.Errorf("the revoked delegation named as an open: %v, want ErrBadState", errs[0])
+	}
+	if err := f.Recovery().FreeState(ctx, b, d.ID.ref()); !errors.Is(err, ErrNotYours) {
+		t.Errorf("another client freeing the revoked delegation: %v, want ErrNotYours", err)
+	}
 	if err := f.Recovery().FreeState(ctx, a, d.ID.ref()); err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +216,12 @@ func TestRecallDeadline(t *testing.T) {
 	}
 	if r := f.sink.takeRevoked(); len(r) != 0 {
 		t.Errorf("a lease cut to none was reported revoked: %+v", r)
+	}
+	f.idx.Lock()
+	counted := f.granted[s.Client]
+	f.idx.Unlock()
+	if counted != 0 {
+		t.Errorf("a lease cut to none still counts %d against its client's budget", counted)
 	}
 }
 
@@ -307,27 +331,37 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 }
 
 // A primary holds at most 4,096 grants per client; past it the client is
-// offered none and keeps those it holds, and is offered one again once its
-// count falls.
+// offered none and keeps those it holds, and is offered one again once one
+// of them caches nothing.
 func TestGrantBudget(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
-	var first Open
+	var first *CachingGrant
+	firstFile := anyFile()
 	for i := range maxGrants {
-		o, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{byte(i), byte(i >> 8)}, Want: rh})
+		file := anyFile()
+		if i == 0 {
+			file = firstFile
+		}
+		_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{byte(i), byte(i >> 8), 1}, Want: rh})
 		if g == nil {
 			t.Fatalf("grant %d not offered", i)
 		}
 		if i == 0 {
-			first = o
+			first = g
 		}
 	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xff, 0xff}, Want: rh}); g != nil {
 		t.Fatal("a grant past the budget")
 	}
-	f.close(t, a, first)
+	if err := f.ack(a, first, GrantNone, 0); err != nil {
+		t.Fatal(err)
+	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xfe, 0xff}, Want: rh}); g == nil {
-		t.Fatal("no grant once the count fell")
+		t.Fatal("no grant once a lease went to none")
+	}
+	if _, g := f.grantOpen(t, a, firstFile, OpenRequest{Access: rd, Lease: first.Key, Want: rh}); g == nil || g.Kind != GrantNone {
+		t.Errorf("a lease at none widened past the budget: %+v", g)
 	}
 }
 
@@ -362,11 +396,15 @@ func TestLockRecallsGrants(t *testing.T) {
 	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
 	h2 := f.host(t, "nlm-c", 1)
 	f.mustLock(t, h2, file, LockReq{Owner: owner(h2, "r"), Ranges: []LockRange{x(30, 5)}, Wait: WaitCallback})
+	f.ordered(file)
 	if err := f.ack(a, d, GrantNone, 0); err != nil {
 		t.Fatal(err)
 	}
 	if w := f.sink.takeWaits(); len(w) != 1 || w[0].w.Owner.Client != h2.Client {
 		t.Fatalf("waiters granted on the return: %+v; want the one no lock blocks, not the one under the holder's flushed lock", w)
+	}
+	if !f.ordered(file) {
+		t.Error("the return granted a waiter without the file's admission lock")
 	}
 	f.pass(t, 2*leasePeriod, a.Client)
 	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead}); g != nil {
@@ -391,8 +429,14 @@ func TestRevoke(t *testing.T) {
 	file.Shard = 1
 	o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd, Deny: wr, Want: GrantRead})
 	f.mustOpen(t, b, file, OpenRequest{Access: rd})
+	h := f.host(t, "nlm-h", 1)
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.ordered(file)
 	if err := f.Revoke(ctx, a.Client); err != nil {
 		t.Fatal(err)
+	}
+	if w := granted(t, f.sink.takeWaits()); len(w) != 1 || !f.ordered(file) {
+		t.Errorf("waiters granted by the revoke: %v; want one, under the file's admission lock", w)
 	}
 	f.mustOpen(t, b, file, OpenRequest{Access: wr})
 	for _, ref := range []StateRef{o.Ref, d.ID.ref()} {
@@ -525,12 +569,11 @@ func TestHandleBreaksBeforeSharingViolation(t *testing.T) {
 	}
 }
 
-// A client whose back channel is down is offered no grant until it rebinds,
+// A client whose back channel is lost is offered no grant until it rebinds,
 // which only its owner may do.
 func TestRebind(t *testing.T) {
 	f := newFixture(t)
-	alice := entity.NewUser()
-	c := nfs("host-a", 1, alice)
+	c := nfs("host-a", 1, entity.NewUser())
 	c.Reach.Down = true
 	a := f.caller(t, c)
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Want: GrantRead}); g != nil {
@@ -635,7 +678,8 @@ func TestRecallSinkMayCallBack(t *testing.T) {
 
 // No grant is offered beyond what another holder's open or grant allows:
 // none beside another's writer, no write caching beside another's reader or
-// read delegation, and none past 16 grants on a file.
+// read delegation, none past 16 grants caching on a file, and none while a
+// recall runs there.
 func TestOfferedBesideOthers(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
@@ -657,10 +701,132 @@ func TestOfferedBesideOthers(t *testing.T) {
 		t.Errorf("beside a read delegation: %+v, want RH", g)
 	}
 	file = anyFile()
+	var c0 Caller
+	var g0 *CachingGrant
 	for i := range maxShared + 1 {
-		_, g := f.grantOpen(t, f.caller(t, smb(fmt.Sprint("pc-", i))), file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+		c := f.caller(t, smb(fmt.Sprint("pc-", i)))
+		_, g := f.grantOpen(t, c, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 		if (g != nil) != (i < maxShared) {
 			t.Fatalf("grant %d on one file: %+v", i, g)
+		}
+		if i == 0 {
+			c0, g0 = c, g
+		}
+	}
+	if err := f.ack(c0, g0, GrantNone, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, g := f.grantOpen(t, f.caller(t, smb("pc-late")), file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh}); g == nil {
+		t.Error("no grant once one of 16 on the file went to none")
+	}
+	// A recall in flight on the file holds back every new grant, even one
+	// it would not conflict with.
+	file = anyFile()
+	f.grantOpen(t, c0, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: GrantRead})
+	if _, err := f.open(f.caller(t, smb("pc-x")), file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{4}, Want: GrantRead}); g != nil {
+		t.Errorf("a grant while a recall is in flight on the file: %+v", g)
+	}
+}
+
+// A callback lock waiter blocked only by another client's lease is served
+// when the holder answers the recall by closing the lease's last open,
+// whether the recall was handed to the Sink before the close or not.
+func TestLeaseClosedServesWaiter(t *testing.T) {
+	for _, early := range []bool{true, false} {
+		f := newFixture(t)
+		a := f.caller(t, smb("pc-a"))
+		h := f.host(t, "nlm-b", 1)
+		file := anyFile()
+		file.Shard = 1
+		ao, _ := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+		if early {
+			f.sink.onRecall = func(CachingGrant, GrantKind) { f.sink.onRecall = nil; f.close(t, a, ao) }
+		}
+		if res, err := f.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+			t.Fatalf("%+v, %v; want Waiting", res, err)
+		}
+		if !early {
+			f.close(t, a, ao)
+		}
+		if w := f.sink.takeWaits(); len(w) != 1 {
+			t.Errorf("closing before the recall was sent %v: waiters granted at the close %+v, want 1", early, w)
+		}
+	}
+}
+
+// A holder that answers a recall by closing and opening again is not granted
+// again ahead of the request the recall delayed.
+func TestRecallNotRacedByCloseAndReopen(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	ao, _ := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{1}, Want: rwh})
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	f.close(t, a, ao)
+	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{1}, Want: rwh}); g != nil {
+		t.Fatalf("the holder was granted again at once after closing: %+v", g)
+	}
+}
+
+// A lock through one of a client's lease keys recalls its lease under
+// another key, as another client's would be, and waits on it.
+func TestLockRecallsOwnClientsOtherLease(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	file := anyFile()
+	file.Shard = 1
+	o2 := f.mustOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}})
+	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+	under2 := OpenRef{Kind: RefOpened, Open: o2.ID, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}
+	_, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o2), Open: under2, Ranges: []LockRange{x(0, 10)}})
+	if r := f.sink.takeRecalls(); delayedFor(err) != DelayRecall || len(r) != 1 || r[0].to != GrantNone {
+		t.Fatalf("a lock under key 2: %v, recalls %+v; want key 1's lease recalled to none", err, r)
+	}
+	res, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o2), Open: under2, Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	if err != nil || !res.Waiting {
+		t.Fatalf("a waiting lock under key 2: %+v, %v", res, err)
+	}
+	h := f.host(t, "nlm-h", 1)
+	_, _ = f.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(50, 10)}}) // serves the file's waiters first
+	if w := f.sink.takeWaits(); len(w) != 0 {
+		t.Errorf("a waiter under key 2 granted while key 1's lease still caches: %+v", w)
+	}
+}
+
+// A recall not yet handed to the Sink is never revoked, while another on the
+// same file that was handed over is.
+func TestOnlyASentRecallLapses(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead})
+	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead})
+	release, held := make(chan struct{}), make(chan entity.ClientID, 1)
+	calls := 0
+	f.sink.onRecall = func(g CachingGrant, _ GrantKind) {
+		if calls++; calls == 2 {
+			held <- g.Client
+			<-release
+		}
+	}
+	done := make(chan error)
+	go func() { _, err := f.open(f.caller(t, smb("pc-c")), file, OpenRequest{Access: wr}); done <- err }()
+	slow := <-held
+	f.pass(t, 2*coversDeadline)
+	close(release)
+	<-done
+	f.sink.onRecall = nil
+	for _, c := range []entity.ClientID{a.Client, b.Client} {
+		f.cmu.Lock()
+		fenced := f.fenced[c] != 0
+		f.cmu.Unlock()
+		if fenced != (c != slow) {
+			t.Errorf("client %d fenced %v; want only the one whose recall was sent", c, fenced)
 		}
 	}
 }
