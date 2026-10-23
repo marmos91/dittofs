@@ -573,9 +573,13 @@ func TestHandleBreaksBeforeSharingViolation(t *testing.T) {
 // which only its owner may do.
 func TestRebind(t *testing.T) {
 	f := newFixture(t)
-	c := nfs("host-a", 1, entity.NewUser())
-	c.Reach.Down = true
-	a := f.caller(t, c)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	if err := f.ChannelDown(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := f.Record(ctx, a.Client); !rec.Reach.Down {
+		t.Errorf("record after ChannelDown: %+v", rec.Reach)
+	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Want: GrantRead}); g != nil {
 		t.Fatalf("a grant with the back channel down: %+v", g)
 	}
