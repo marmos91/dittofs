@@ -53,7 +53,7 @@ func decodeClientID(b []byte) (entity.ClientID, error) {
 	return id, r.Done()
 }
 
-func encodeOpen(o entity.Open) []byte {
+func encodeOpen(o entity.OpenRecord) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(o.Client))
 	putPrincipal(w, o.Principal).Uint32(uint32(o.Access)).Bool(o.Privileged).Uint32(uint32(o.Deny)).
 		Uint8(uint8(o.Durability)).Bool(o.DeleteOnClose)
@@ -69,12 +69,12 @@ func encodeOpen(o entity.Open) []byte {
 	return w.Encode()
 }
 
-func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, error) {
+func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Open{}, err
+		return entity.OpenRecord{}, err
 	}
-	o := entity.Open{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
+	o := entity.OpenRecord{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
 	o.Principal = readPrincipal(r)
 	o.Access, o.Privileged, o.Deny = entity.AccessMask(r.Uint32()), r.Bool(), entity.AccessMask(r.Uint32())
 	o.Durability, o.DeleteOnClose = entity.Durability(r.Uint8()), r.Bool()
