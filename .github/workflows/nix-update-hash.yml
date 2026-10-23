@@ -35,10 +35,12 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      # decision: the same Go release as tests.yml rather than 1.26.x, which
+      # resolves to whichever 1.26 the machine already has. Bump the pins together.
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           # The helper uses only the standard library; Nix builds the modules
           # in its own store. Saving here can claim the shared immutable Go
           # cache key before the test jobs populate their dependency caches.
