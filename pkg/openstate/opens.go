@@ -45,6 +45,7 @@ type OpenRequest struct {
 	// record.
 	Share         entity.ShareID
 	Shard         ShardID
+	Unlinked      bool          // the file has no entry, as the service resolved it: the open is written durable
 	Stream        entity.FileID // the named stream opened, whose base file the call names; zero: none
 	Via           entity.FileID // the directory it was opened through; zero: by handle
 	Name          []byte        // its name in Via, which a deferred delete unlinks
@@ -181,7 +182,7 @@ func (v opens) Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequ
 		if err := t.mintOpen(e, o, r.Shard); err != nil {
 			return err
 		}
-		if e.unlinked {
+		if e.unlinked || r.Unlinked {
 			// The file has no entry and this open holds it: it is written
 			// durable before the answer, guarding the File against the
 			// release, which finds its holders only in the store.
