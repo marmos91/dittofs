@@ -93,7 +93,7 @@ type Locks interface {
 	// refusal releases the lock as an unlock would.
 	WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refused bool) error
 	// TestLock is the lock that would refuse o's lock of r, or nil; it
-	// changes nothing.
+	// changes nothing. o is the caller's client's owner.
 	TestLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
@@ -590,6 +590,9 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 
 func (v locks) TestLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) {
 	t := v.t
+	if o.Client != who.Client {
+		return nil, ErrNotYours
+	}
 	var held *Lock
 	err := t.step(f, func(e *entry) error {
 		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
