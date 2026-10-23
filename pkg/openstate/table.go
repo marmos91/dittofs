@@ -41,6 +41,7 @@ type fileShard struct {
 // entry is one file's state. Its mutex is the file's open-state step: every
 // call that reads or changes the file's state runs under it.
 type entry struct {
+	file   entity.FileID
 	mu     sync.Mutex
 	users  int // steps running or waiting on this entry, guarded by its file shard's mutex
 	states int // pieces of state held, guarded by mu
@@ -65,7 +66,7 @@ func (t *Table) step(f entity.FileID, fn func(e *entry) error) error {
 	fs.mu.Lock()
 	e := fs.entries[f]
 	if e == nil {
-		e = &entry{}
+		e = &entry{file: f}
 		fs.entries[f] = e
 	}
 	e.users++
