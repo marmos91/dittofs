@@ -529,8 +529,8 @@ func TestSinkMayCallBack(t *testing.T) {
 }
 
 // Expire is node-local: it releases the client's state here and drops its
-// lease here, but deletes no record and raises no ClientEnded, which are the
-// lease timer's.
+// lease here, so it is granted nothing more here, but deletes no record and
+// raises no ClientEnded, which are the lease timer's.
 func TestExpireIsNodeLocal(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
@@ -553,5 +553,8 @@ func TestExpireIsNodeLocal(t *testing.T) {
 	f.cmu.Unlock()
 	if leased {
 		t.Error("Expire kept the lease")
+	}
+	if f.current(id) {
+		t.Error("Expire left the client current here, so it could still be granted an open")
 	}
 }
