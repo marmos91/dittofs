@@ -298,7 +298,7 @@ cluster is several over one replicated store.
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
 	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
-		Transport: transportFor(boot), Clock: clock.Real(), ...})
+		Transport: transportFor(boot), Clock: systemClock{}, ...}) // the one production clock: time.Now, a monotonic origin, time.After
 	if err != nil {
 		return err                               // nothing was started
 	}
