@@ -51,26 +51,28 @@ type holder struct {
 }
 
 // mint issues a reference to a new piece of state of e's file, held by client
-// c, under that file's step. Its token is 64 bits read from
-// Deps.Rand; a failed read mints nothing.
+// c, under that file's step. Its token is 64 bits read from Deps.Rand, outside
+// idx; a failed read mints nothing.
+//
+// ponytail: one mutex guards the reference index for every file, so mints and
+// resolves on different files serialise on it. Split it by shard like files
+// when step-wait time on unrelated files shows contention on idx.
 func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
-	t.idx.Lock()
-	defer t.idx.Unlock()
-	ref := StateRef{Type: typ, Shard: s}
+	var b [8]byte
 	for {
-		var b [8]byte
 		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
 			return StateRef{}, fmt.Errorf("openstate: minting a reference: %w", err)
 		}
-		ref.Token = binary.LittleEndian.Uint64(b[:])
-		if _, taken := t.refs[refKey{s, ref.Token}]; !taken {
-			break
+		k := refKey{s, binary.LittleEndian.Uint64(b[:])}
+		t.idx.Lock()
+		if _, taken := t.refs[k]; !taken {
+			t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1}
+			t.idx.Unlock()
+			e.states++
+			return StateRef{Type: typ, Shard: s, Token: k.token, Seq: 1}, nil
 		}
+		t.idx.Unlock()
 	}
-	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: e.file, client: c, seq: 1}
-	e.states++
-	ref.Seq = 1
-	return ref, nil
 }
 
 // advance raises the sequence of the state ref names, under its file's step,
