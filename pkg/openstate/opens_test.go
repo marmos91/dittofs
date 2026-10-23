@@ -311,6 +311,31 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 	}
 }
 
+// A lease expiry is a timer step and takes no admission lock, so it can
+// close an open between Durable and commit; the record the unlink wrote for
+// that open must not outlive it.
+func TestExpiryDuringUnlinkLeavesNoRecord(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file, req := f.fileIn(t, "a")
+	f.mustOpen(t, a, file, req)
+	recs, commit, err := f.Opens().Durable(ctx, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Expire(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	u, err := f.fs.Store.Namespace().Unlink(ctx, f.fs.Admin, f.fs.Root, []byte("a"), recs...)
+	commit(err == nil && u.File == file.ID)
+	if got := f.stored(t, file); len(got) != 0 {
+		t.Errorf("records after the only open's client expired: %v", ids(got))
+	}
+	if n := len(f.sink.closed); n == 0 || !f.sink.closed[n-1].r.Orphan {
+		t.Errorf("closes raised: %v, want the file's orphan last", f.sink.closed)
+	}
+}
+
 // Only an open something names by ID takes one: an SMB open, and an NFS
 // open once an unlink makes it durable, whose record is keyed by it. An NFS
 // open is named by its reference alone, and an aborted unlink leaves it so.
