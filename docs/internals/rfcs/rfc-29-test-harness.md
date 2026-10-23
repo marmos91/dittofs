@@ -499,8 +499,7 @@ suites:
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        tier: nightly
-        blocking: false                 # a tripped gate shows without turning develop red (§4.10)
+        tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -511,7 +510,7 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge, blocking: false }   # until it has been green for two weeks (§4.3)
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
   operator:                             # its own Go module; the kustomize render check becomes a make target
     cmd: make -C k8s/dittofs-operator test lint manifests-verify
     tier: pr
@@ -725,7 +724,7 @@ suites:
       - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }   # they only parse: dfsbench doesn't run them
     metrics: dfsbench-json
     tier: pr
-    blocking: false
+    blocking: { pr: false }             # reported on PRs, blocking after merge (§4.10)
 ```
 
 | Field | Meaning | Default |
@@ -1011,11 +1010,9 @@ its macOS and Windows options stay on `memory`, since their hosted runners can't
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
 wait for it (§4.8). That's the place for a check that should be seen before it can be trusted to
-block, such as the Windows unit run on PRs (§9), and AD-DC: from 2026-10-08 to 2026-10-20 its
-tests against the Samba domain failed 14 of 95 develop runs, until the fixture started the domain
-once, and it blocks once `dt history` gives it two weeks of runs with no failed or flaky test. It's
-also the place for a check a shared runner can trip, such as the performance gates (§4.10).
-`blocking` may differ per tier.
+block, such as the Windows unit run and `bench-smoke` on PRs (§9, §4.10). `blocking` may differ
+per tier: both block after a merge and nightly, since a non-blocking cell's failure there posts
+nowhere.
 
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
@@ -1814,12 +1811,13 @@ Performance is tracked, not gated. Hosted runners share hardware and are too noi
 a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
-  every PR but a docs-only one, non-blocking, where `bench-smoke.yml` ran only on those that
-  touched the benchmark paths, and writes its results to its `{out}` (§4.6).
-  `unit --nonrace` runs nightly, non-blocking, as `perf-gates.yml` did in a workflow of its own, so
-  a tripped gate doesn't turn develop red: the throughput and allocation gates that skip under
-  `-race` and `-short` (#2999). The aggregate random-write gate joins once it has a
-  baseline: without one it passes whatever it measures.
+  every PR but a docs-only one, where `bench-smoke.yml` ran only on those that touched the
+  benchmark paths, and after every merge and nightly. It is non-blocking on PRs and blocks after a
+  merge and nightly, and writes its results to its `{out}` (§4.6). `unit --nonrace` runs nightly,
+  and blocks there: the throughput and allocation gates that skip under `-race` and `-short`
+  (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
+  `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
+  has a baseline: without one it passes whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
