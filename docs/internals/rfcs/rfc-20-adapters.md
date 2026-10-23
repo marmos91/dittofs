@@ -1367,7 +1367,9 @@ protocol and that it is total (§7.3).
 ### 4.6 Held requests
 
 Where the protocol has no retry signal, as for SMB, the adapter holds a request
-answered `ErrDelay`, sends the interim response, and re-drives the call
+whose answer [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) says to hold, by its
+error and cause, and answers every other at once; a held one gets the interim
+response, and the call is re-driven
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). The re-drive is a pipeline
 mechanism in `core/hold.go`, not handler code, and the adapter alone counts what
 it holds — the service counts nothing about holds:
@@ -1504,7 +1506,7 @@ from resolve, and the compound runner can loop over operations:
 type OpTable struct {
 	Ops    map[uint32]*Op
 	Errors *ErrorTable // §4.5; per operation table, so NFSv3 and NFSv4 map differently
-	Holds  bool        // §4.6: ErrDelay is held and re-driven (SMB), not answered at once (NFS)
+	Holds  bool        // §4.6: SMB holds and re-drives what RFC 22 §16.5 holds, by error and cause; NFS answers every error at once
 }
 
 type Op struct {
