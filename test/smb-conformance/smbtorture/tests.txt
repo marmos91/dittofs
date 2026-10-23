@@ -3,13 +3,12 @@
 # first in test/smb-conformance/shares.yaml. prefix= is what smbtorture leaves off the names
 # it reports: run as smb2.oplock it reports batch1, and prefix=oplock makes that
 # smb2.oplock.batch1, as the known-failure list names it. A line may give its own limit, as
-# 10m; the suite gives each line 5 minutes. It holds what smbtorture/run.sh runs, until
-# that script goes.
+# 10m; the suite gives each line 5 minutes.
 #
 # Skipped: smb2.hold-oplock (waits 5 minutes for oplock events, no real test) and
 # smb2.hold-sharemode (blocks until SIGINT) are interactive hold tests. smb2.bench and
-# smb2.create.bench-path-contention-shared are benchmarks (below). Run any of them by hand
-# with run.sh --filter.
+# smb2.create.bench-path-contention-shared are benchmarks (below). To run one by hand, add
+# its line and name it: dt run smbtorture/badger-s3 NAME.
 
 # Top-level tests, whose reported names need no prefix.
 smb2.connect

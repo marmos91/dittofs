@@ -407,25 +407,10 @@ is_dfs_start() {
     [[ "$cmd" =~ ^([^[:space:]]*/)?dfs([[:space:]].*)?[[:space:]]start([[:space:]]|$) ]]
 }
 
-# An SMB conformance stack a killed run left behind (its own cleanup tears down
-# every profile, but a SIGKILL skips it), which makes every later run refuse with
-# "another instance of this stack is live".
-smb_stack_down() {
-    local dir="$REPO/test/smb-conformance" proj
-    proj="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
-        awk -F'|' -v d="$dir" '$1 ~ /^smb-conformance/ && $2 == d {print $1; exit}')"
-    [[ -n "$proj" ]] || return 0
-    if (cd "$dir" && docker compose -p "$proj" --profile '*' down -v >/dev/null 2>&1); then
-        info "removed leftover SMB conformance stack $proj"
-    else
-        warn "could not remove leftover SMB conformance stack $proj: in $dir, docker compose -p $proj --profile '*' down -v shows why"
-    fi
-}
-
 # Stop everything the harness can leave running: a host dfs, the compose stack
-# and its mounts, a leftover SMB conformance stack and the services. --volumes
-# also drops the stack's data volumes. dtc sessions are listed, not stopped. A
-# stop that fails is reported, and the rest still run.
+# and its mounts and the services. --volumes also drops the stack's data
+# volumes. dtc sessions are listed, not stopped. A stop that fails is reported,
+# and the rest still run.
 cmd_cleanup() {
     local volumes=false
     case "$#:${1:-}" in
@@ -445,10 +430,9 @@ cmd_cleanup() {
             warn "could not stop the compose stack: 'dt stack ${down[*]}' shows why"
         fi
     fi
-    smb_stack_down
     cmd_services down
     local left
-    left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-|smb-conformance-)' |
+    left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-)' |
         grep -vxF "${DT_CONTAINER_NAME:-none}" || true)"
     if [[ -n "$left" ]]; then warn "still running: $(tr '\n' ' ' <<<"$left")"; else info "no harness containers running"; fi
 }

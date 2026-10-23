@@ -93,7 +93,7 @@ EOF
 # "category failures truncations no_result". The exit status is the aggregate.
 cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
 #!/usr/bin/env bash
-# cd first, the way the SMB runners do before writing their sidecar: a relative
+# cd first, as a runner may before writing its sidecar: a relative
 # DITTOFS_RESULTS_DIR resolves against THIS directory, not the caller's.
 cd / || exit 9
 echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict" || exit 9

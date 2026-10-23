@@ -11,7 +11,7 @@
 # suite runs here beside its old job until their results match on 5
 # consecutive runs; unit, integration, operator and lint, whose old jobs ran
 # the commands dt runs, move in at once. plan keeps only the cells of those
-# that have moved: pynfs, pjdfstest, WPTS, smbtorture without its Kerberos
+# that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
 # option, operator, the Windows unit run, the suites with a job of their own,
 # and the system scenarios, which had no workflow, less the cells the
 # dedicated host runs itself. A suite joins by being added to the select in
@@ -106,7 +106,7 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or (.suite == "smbtorture" and .option == null) or .name == "unit/windows" or (.suite == "system" and .place != "dedicated"))
+                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
