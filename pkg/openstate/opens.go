@@ -13,7 +13,7 @@ import (
 // written only while it keeps an unlinked file alive, is an
 // entity.OpenRecord.
 type Open struct {
-	ID        entity.OpenID // 40 bits from NextID, unique across the installation, never reused
+	ID        entity.OpenID // only an SMB open's, or a durable one's, whose record is keyed by it: 40 bits from NextID, unique across the installation, never reused; zero: an NFS open, named by Ref
 	Client    entity.ClientID
 	Principal entity.Principal // the opener, mapped before squashing; any other caller through the open is refused
 	File      entity.FileID    // the file whose table holds it: a named stream's base file
@@ -129,11 +129,12 @@ type Opens interface {
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef) (CloseResult, error)
-	// Durable is the records of f's opens, for the unlink
-	// that may take f's last entry to write in its transaction. The service
-	// calls commit once, true when that transaction committed and took the
-	// last entry, so it wrote the records; only then does the table hold
-	// the opens durable. It holds f's admission lock throughout.
+	// Durable is the records of f's opens, for the unlink that may take
+	// f's last entry to write in its transaction; an open with no ID is
+	// issued one for its record. The service calls commit once, true when
+	// that transaction committed and took the last entry, so it wrote the
+	// records; only then does the table hold the opens durable. It holds f's
+	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
 }
 
@@ -179,18 +180,22 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
 		return OpenResult{}, ErrAccess
 	}
-	n, err := t.d.Records.NextID(ctx, kvstore.IDOpen)
-	if err != nil {
-		return OpenResult{}, err
+	var id entity.OpenID
+	if who.Protocol == entity.ProtocolSMB {
+		// An SMB FileId names the open across a reconnect.
+		var err error
+		if id, err = t.nextOpenID(ctx); err != nil {
+			return OpenResult{}, err
+		}
 	}
 	o := &open{share: f.Share, Open: Open{
-		ID: entity.OpenID(n), Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
+		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged},
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
-	err = t.step(f.ID, func(e *entry) error {
+	err := t.step(f.ID, func(e *entry) error {
 		if e.pending != nil {
 			return ErrDeletePending
 		}
@@ -208,8 +213,16 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		if e.unlinked || r.Unlinked {
 			// The file has no entry and this open holds it: it is written
 			// durable before the answer, guarding the File against the
-			// release, which finds its holders only in the store.
-			if err := t.d.Records.Opens().Put(ctx, o.share, o.record()); err != nil {
+			// release, which finds its holders only in the store. Its record
+			// is keyed by an ID, which an NFS open takes now.
+			err := error(nil)
+			if o.ID == 0 {
+				o.ID, err = t.nextOpenID(ctx)
+			}
+			if err == nil {
+				err = t.d.Records.Opens().Put(ctx, o.share, o.record())
+			}
+			if err != nil {
 				t.dropOpen(e, o)
 				return err
 			}
@@ -232,7 +245,9 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		if !t.current(o.Client) {
 			return ErrStaleClient
 		}
-		t.byID[o.ID] = refKey{s, ref.Token}
+		if o.ID != 0 {
+			t.byID[o.ID] = refKey{s, ref.Token}
+		}
 		if !o.Via.IsZero() {
 			t.via[o.Via]++
 		}
@@ -459,9 +474,20 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 		return nil, nil, err
 	}
 	var recs []entity.OpenRecord
+	var held []*open
 	err := t.step(f.ID, func(e *entry) error {
 		for _, o := range e.opens {
-			recs = append(recs, o.record())
+			rec := o.record()
+			if rec.ID == 0 {
+				// An NFS open's record is keyed by an ID it takes now; an
+				// aborted unlink leaves the ID unused.
+				id, err := t.nextOpenID(ctx)
+				if err != nil {
+					return err
+				}
+				rec.ID = id
+			}
+			recs, held = append(recs, rec), append(held, o)
 		}
 		return nil
 	})
@@ -473,16 +499,19 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 			return
 		}
 		_ = t.step(f.ID, func(e *entry) error {
-			for _, rec := range recs {
-				for _, o := range e.opens {
-					if o.ID == rec.ID {
-						o.durable = true
-					}
-				}
+			for i, o := range held {
+				o.ID, o.durable = recs[i].ID, true
 			}
 			e.unlinked = true
 			return nil
 		})
 	}
 	return recs, commit, nil
+}
+
+// nextOpenID issues an open's ID, unique across the installation and never
+// reused.
+func (t *Table) nextOpenID(ctx context.Context) (entity.OpenID, error) {
+	n, err := t.d.Records.NextID(ctx, kvstore.IDOpen)
+	return entity.OpenID(n), err
 }
