@@ -726,6 +726,38 @@ func TestConfirmOpen(t *testing.T) {
 	}
 }
 
+// I/O may name a lock state, as a client holding locks does: it is judged
+// as I/O through the open the lock state was taken under, used only by that
+// open's opener and only for the access it holds, and its own owner's locks
+// never refuse it.
+func TestIOThroughALockState(t *testing.T) {
+	f := newFixture(t)
+	n, s := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.caller(t, smb("pc"))
+	file := anyFile()
+	ro := f.mustOpen(t, n, file, OpenRequest{Access: rd})
+	res := f.mustLock(t, n, file, LockReq{Owner: owner(n, "lo"), Open: refOf(ro), Ranges: []LockRange{sh(0, 10)}})
+	os := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+	sres := f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(100, 10)}})
+	io := func(who Caller, st StateRef, off uint64, write bool) error {
+		return f.Checks().CheckIO(ctx, who, OpenRef{Kind: RefLocked, State: st, Handle: handle(file.ID)}, br(off, 1), write)
+	}
+	if err := io(n, res.Ref, 5, false); err != nil {
+		t.Errorf("a read through the lock state: %v", err)
+	}
+	if err := io(n, res.Ref, 5, true); !errors.Is(err, ErrAccess) {
+		t.Errorf("a write through the lock state of a read-only open: %v, want ErrAccess", err)
+	}
+	if err := io(Caller{Client: n.Client, Principal: entity.NewUser()}, res.Ref, 5, false); !errors.Is(err, ErrNotYours) {
+		t.Errorf("a read through the lock state by another principal: %v, want ErrNotYours", err)
+	}
+	if err := io(s, sres.Ref, 105, true); err != nil {
+		t.Errorf("a write through the lock state of the exclusive lock it holds: %v", err)
+	}
+	if err := io(n, res.Ref, 105, false); !errors.Is(err, ErrLocked) {
+		t.Errorf("a read through another open's lock state under the exclusive lock: %v, want ErrLocked", err)
+	}
+}
+
 // Every lock call names its caller's client and acts only on that client's
 // owners and lock states, a test of a lock included: an owner of another
 // client is ErrNotYours, a lock
