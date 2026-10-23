@@ -558,40 +558,132 @@ func TestDurableReadsServeTheImageAfterALostSync(t *testing.T) {
 	}
 }
 
-func TestTornNeverPicksALostWrite(t *testing.T) {
+func TestTornCanTearAFailedSyncWrite(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
-	g := create(t, s, "other")
-
-	write(t, g, "bbbb", 0) // pending, and older than the lost write
-	write(t, f, "aaaa", 0)
+	write(t, f, "AAAA", 0)
 
 	failNextSync(t, s)
 	wantEIO(t, OpSync, f.Sync())
 
-	crash(t, s, Torn(1))
-
-	if got := onDisk(t, s, "seg"); got != "" {
-		t.Fatalf("seg holds %q after the crash: a lost write was torn", got)
+	// Still unsynced, and the last unsynced write: a crash may keep part of it.
+	if err := s.Crash(Torn(2)); err != nil {
+		t.Fatalf("Crash(Torn(2)) after a failed sync: %v, want the failed write torn", err)
 	}
-	if got := onDisk(t, s, "other"); got != "b" {
-		t.Fatalf("other holds %q, want the last write that was not lost, torn to %q", got, "b")
+
+	if got := onDisk(t, s, "seg"); got != "AA" {
+		t.Fatalf("after the crash seg holds %q, want the failed write torn to %q", got, "AA")
 	}
 }
 
-func TestReorderedNeverKeepsALostWrite(t *testing.T) {
+func TestAFailedSyncWriteCanSurviveAReorderedCrash(t *testing.T) {
+	kept, lost := false, false
 	for seed := range uint64(64) {
 		s := newSeam(t)
 		f := create(t, s, "seg")
-		write(t, f, "lost", 0)
+		write(t, f, "AAAA", 0)
 
 		failNextSync(t, s)
 		wantEIO(t, OpSync, f.Sync())
 
 		crash(t, s, Reordered(seed))
-		if got := onDisk(t, s, "seg"); got != "" {
-			t.Fatalf("seed %d kept the lost write: %q", seed, got)
+		switch got := onDisk(t, s, "seg"); got {
+		case "AAAA":
+			kept = true
+		case "":
+			lost = true
+		default:
+			t.Fatalf("seed %d left %q, want the failed write whole or not at all", seed, got)
 		}
+	}
+
+	if !kept || !lost {
+		t.Fatalf("over 64 seeds a failed-sync write was kept: %v, lost: %v; want both", kept, lost)
+	}
+}
+
+func TestAFailedSegmentCanHoldItsWriteAfterACrash(t *testing.T) {
+	// The seam half of "a bad copy does not mask a good one": A's sync fails
+	// on the old segment, A is re-appended to a new one and synced, and a
+	// crash can still find A on the old segment, for a check to corrupt it.
+	// The format's check corrupts the original before the crash. Crash
+	// rewrites each file from its durable image and the writes it keeps, so a
+	// corruption made before it can be undone; a journal test corrupts the old
+	// segment after a crash that kept A, which leaves the same bytes on disk.
+	found := false
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		old := create(t, s, "old")
+		write(t, old, "AAAA", 0)
+
+		failNextSync(t, s)
+		wantEIO(t, OpSync, old.Sync())
+
+		next := create(t, s, "new") // the re-append
+		write(t, next, "AAAA", 0)
+		syncFile(t, next)
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "new"); got != "AAAA" {
+			t.Fatalf("seed %d: the re-appended copy holds %q after the crash, want %q", seed, got, "AAAA")
+		}
+		if onDisk(t, s, "old") == "AAAA" {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Fatal("over 64 seeds no crash left A on the failed segment, so no check can corrupt it there")
+	}
+}
+
+func TestTornNeverPicksADroppedWrite(t *testing.T) {
+	cases := map[string]sim.FaultAction{
+		"drop":        drop,
+		"silent tear": {Kind: sim.Tear, N: 0},
+	}
+	for name, a := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := newSeam(t)
+			f := create(t, s, "seg")
+			g := create(t, s, "other")
+
+			write(t, g, "bbbb", 0) // pending, and older than the dropped write
+			actOnce(t, s, OpWrite, a)
+			write(t, f, "aaaa", 0)
+
+			crash(t, s, Torn(1))
+
+			if got := onDisk(t, s, "seg"); got != "" {
+				t.Fatalf("seg holds %q after the crash: a dropped write was torn", got)
+			}
+			if got := onDisk(t, s, "other"); got != "b" {
+				t.Fatalf("other holds %q, want the last write that was not dropped, torn to %q", got, "b")
+			}
+		})
+	}
+}
+
+func TestReorderedNeverKeepsADroppedWrite(t *testing.T) {
+	cases := map[string]sim.FaultAction{
+		"drop":        drop,
+		"silent tear": {Kind: sim.Tear, N: 0},
+	}
+	for name, a := range cases {
+		t.Run(name, func(t *testing.T) {
+			for seed := range uint64(64) {
+				s := newSeam(t)
+				f := create(t, s, "seg")
+
+				actOnce(t, s, OpWrite, a)
+				write(t, f, "gone", 0)
+
+				crash(t, s, Reordered(seed))
+				if got := onDisk(t, s, "seg"); got != "" {
+					t.Fatalf("seed %d kept the dropped write: %q", seed, got)
+				}
+			}
+		})
 	}
 }
 
