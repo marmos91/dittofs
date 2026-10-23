@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // Config is the journal's configuration as its internal packages read it,
 // filled from the options the journal is opened with.
@@ -8,6 +11,8 @@ type Config struct {
 	Settings
 	Clock  Clock
 	Budget *DescriptorBudget
+	Tracer Tracer
+	Logger *slog.Logger
 }
 
 // Settings are the journal's settings. A zero field takes its default; a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"iter"
+	"log/slog"
 	"time"
 )
 
@@ -77,9 +78,47 @@ var (
 	_ = func(h *Handle) error { return h.Stamp(context.Context(nil), FileID{}, Version{}, SnapshotCut(0)) }
 	_ = func(j *Journal) (int64, error) { return j.Repack(context.Context(nil), int64(0), RepackScope{}) }
 
+	_ = func(j *Journal) Stats { return j.Stats() }
+	_ = func(j *Journal) Inspector { return j.Inspect() }
+	_ = func(in Inspector) ([]IndexEntry, error) { return in.File(FileID{}) }
+	_ = func(in Inspector) iter.Seq2[FileID, []IndexEntry] { return in.All() }
+	_ = func(in Inspector) []SegmentInfo { return in.Segments() }
+	_ = func(in Inspector) (VerifyReport, error) { return in.Verify(context.Context(nil)) }
+	_ = Tracer(func(ctx context.Context, op SpanOp, attrs ...slog.Attr) (context.Context, func(err error)) {
+		return ctx, nil
+	})
+
 	_ = Offer{ID: FileID{}, Dirty: []OfferedExtent(nil), Neighbours: []Held(nil), Superseded: []OfferedExtent(nil),
 		Oldest: Version{}, Newest: Version{}, Offered: io.ReaderAt(nil)}
 	_ = OfferedExtent{Extent: Extent{}, Version: Version{}, Cut: SnapshotCut(0), Stamped: false}
 	_ = Capture{ID: FileID{}, Through: Version{}}
 	_ = RepackScope{Share: ShareTag(0), Segments: []SegmentID(nil)}
+	_ = Stats{
+		MaxBytes: 0, UsedBytes: 0, ReservedBytes: 0, HeldBytes: 0, DirtyBytes: 0,
+		OldestDirty: time.Time{}, Files: 0, ExtentCount: 0, DropRanges: 0,
+		Segments: 0, Sealed: 0, UnreclaimedBytes: 0,
+		HeadroomBytes: 0, RepackReserveBytes: 0, PinnedSegments: 0,
+		OpenDescriptors: 0, DescriptorLimit: 0, DamagedSegments: 0,
+		LastSyncError: (*SyncFailure)(nil), SyncDuration: Histogram{},
+		RemovalMarkers: 0, VersionLimit: Version{}, VersionsLeft: 0, NextVersion: Version{},
+		ExtentLimit: 0, Counters: Counters{}, RejectedSegments: 0,
+		Recovery: RecoveryStats{}, Losses: []LossEvent(nil), LossGeneration: 0,
+		TagConflicts: []TagConflict(nil), Shares: map[ShareTag]ShareStats(nil),
+	}
+	_ = ShareStats{Limit: 0, UsedBytes: 0, ReservedBytes: 0, HeldBytes: 0, DirtyBytes: 0, UnreclaimedBytes: 0}
+	_ = Counters{
+		WrittenBytes: 0, FilledBytes: 0, FillRefused: 0, OfferedBytes: 0, MarkedBytes: 0,
+		ReleasedBytes: 0, FreedBytes: 0, RepackedBytes: 0, ReservationRefused: 0,
+		Syncs: 0, SyncFailures: 0, SyncReappendedBytes: 0, HeadroomDraws: 0,
+		CorruptExtentsDataLoss: 0, CorruptExtentsRepairable: 0, StaleExtents: 0,
+		TornTails: 0, ScanResyncs: 0, IndexRefusals: 0, SegmentReopens: 0,
+		SpareRefusals: 0, DoubleRetires: 0,
+	}
+	_ = Histogram{Bounds: []time.Duration(nil), Counts: []uint64(nil)}
+	_ = RecoveryStats{CatalogSegments: 0, ScannedSegments: 0, Duration: time.Duration(0)}
+	_ = SyncFailure{Err: error(nil), At: time.Time{}}
+	_ = LossEvent{SeqNum: 0, Share: ShareTag(0), File: FileID{}, Extent: Extent{}, Version: Version{},
+		Reason: LossCorrupt, Offloaded: false, AtOpen: false}
+	_ = []LossReason{LossCorrupt, LossStale, LossFailedWindow}
+	_ = TagConflict{File: FileID{}, Tags: [2]ShareTag{}}
 )

@@ -94,6 +94,9 @@ func (h *Handle) Offload(ctx context.Context, id FileID, through Version, limit,
 // reserved headroom it appends none. After fn returns, report fails with
 // ErrOfferEnded.
 //
+// Once fn has been called, the call returns fn's error, possibly wrapped, or
+// nil: every append happened inside report.
+//
 // fn receives a context derived from ctx, so the work fn does under it, such
 // as an upload, ends with the call's deadline. report ignores ctx: what it
 // records has already committed, and refusing it would cost a second upload.
