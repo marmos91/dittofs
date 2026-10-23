@@ -162,8 +162,8 @@ access to download the scanner and query the Go vulnerability database, and
 can use several GiB of memory. Results depend on the active Go toolchain,
 platform, build settings, and current database; tests are not included in the
 scan. Check `go version` when a report identifies standard-library issues.
-The initial Go 1.26.0 baseline reports standard-library vulnerabilities, so a
-nonzero result is expected until the compiler is updated and findings reviewed.
+Both modules' `toolchain` line selects Go 1.26.10, so a report of
+standard-library issues usually means an older toolchain is active.
 
 ## Testing
 
