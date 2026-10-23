@@ -48,7 +48,10 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 		want = entity.WriteData
 	}
 	if o.Kind != RefAnonymous {
-		return t.withOpen(who, o, func(e *entry, op *open) error {
+		return t.withOpen(who, o, nil, false, func(e *entry, op *open) error {
+			if !t.confirmed(op) {
+				return ErrBadState
+			}
 			if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
 				return ErrAccess
 			}
