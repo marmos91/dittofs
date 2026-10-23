@@ -58,6 +58,12 @@ type holder struct {
 // resolves on different files serialise on it. Split it by shard like files
 // when step-wait time on unrelated files shows contention on idx.
 func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
+	return t.mintUnder(e, c, s, typ, nil)
+}
+
+// mintUnder is mint, running under, if set, with idx held once the token is
+// free and before the reference is added: an error from it adds nothing.
+func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
 	var b [8]byte
 	for {
 		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
@@ -65,13 +71,21 @@ func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (Sta
 		}
 		k := refKey{s, binary.LittleEndian.Uint64(b[:])}
 		t.idx.Lock()
-		if _, taken := t.refs[k]; !taken {
-			t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1}
+		if _, taken := t.refs[k]; taken {
 			t.idx.Unlock()
-			e.states++
-			return StateRef{Type: typ, Shard: s, Token: k.token, Seq: 1}, nil
+			continue
 		}
+		ref := StateRef{Type: typ, Shard: s, Token: k.token, Seq: 1}
+		if under != nil {
+			if err := under(ref); err != nil {
+				t.idx.Unlock()
+				return StateRef{}, err
+			}
+		}
+		t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1}
 		t.idx.Unlock()
+		e.states++
+		return ref, nil
 	}
 }
 
@@ -113,6 +127,11 @@ func (t *Table) release(e *entry, ref StateRef) {
 func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
+	return t.resolveLocked(c, f, ref)
+}
+
+// resolveLocked is resolve, with idx held.
+func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
 	h, ok := t.refs[refKey{ref.Shard, ref.Token}]
 	if !ok {
 		// decision: a miss is always ErrBadState, never stale: the

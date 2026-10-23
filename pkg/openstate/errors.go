@@ -14,9 +14,13 @@ var (
 	ErrStaleClient = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
 	ErrClientInUse = errors.New("openstate: client name held by another principal")
 	ErrClientBusy  = errors.New("openstate: client still holds a session or state")
-	ErrInvalid     = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes")
+	ErrInvalid     = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes, delete on close without delete access")
 	ErrDelay       = errors.New("openstate: retry later")
 	ErrStopped     = errors.New("openstate: table not started, or stopped")
+
+	ErrShareViolation = errors.New("openstate: deny mode conflict")
+	ErrDeletePending  = errors.New("openstate: file is delete pending")
+	ErrAccess         = errors.New("openstate: the open was not granted the access the request needs")
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.

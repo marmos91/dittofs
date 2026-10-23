@@ -10,8 +10,8 @@ import (
 // Deps is what the table is built over.
 type Deps struct {
 	// Records is the store whose open-state views hold the durable records:
-	// the Clients view and NextID. It is the concrete store, since its
-	// open-state views have no interface of their own.
+	// the Clients and Opens views and NextID. It is the concrete store, since
+	// its open-state views have no interface of their own.
 	Records *kvstore.Store
 	Clock   Clock
 	Rand    io.Reader // every random bit of a token or confirm; crypto/rand in production

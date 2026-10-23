@@ -53,7 +53,7 @@ func decodeClientID(b []byte) (entity.ClientID, error) {
 	return id, r.Done()
 }
 
-func encodeOpen(o entity.Open) []byte {
+func encodeOpen(o entity.OpenRecord) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(o.Client))
 	putPrincipal(w, o.Principal).Uint32(uint32(o.Access)).Bool(o.Privileged).Uint32(uint32(o.Deny)).
 		Uint8(uint8(o.Durability)).Bool(o.DeleteOnClose)
@@ -69,12 +69,12 @@ func encodeOpen(o entity.Open) []byte {
 	return w.Encode()
 }
 
-func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, error) {
+func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Open{}, err
+		return entity.OpenRecord{}, err
 	}
-	o := entity.Open{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
+	o := entity.OpenRecord{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
 	o.Principal = readPrincipal(r)
 	o.Access, o.Privileged, o.Deny = entity.AccessMask(r.Uint32()), r.Bool(), entity.AccessMask(r.Uint32())
 	o.Durability, o.DeleteOnClose = entity.Durability(r.Uint8()), r.Bool()
@@ -99,32 +99,32 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, er
 	return o, r.Done()
 }
 
-func encodeLock(l entity.Lock) []byte {
+func encodeLock(l entity.LockRecord) []byte {
 	return codec.NewWriter(v1).Uint64(uint64(l.Owner.Client)).Bytes(l.Owner.Owner).Uint64(uint64(l.Length)).Bool(l.Exclusive).Encode()
 }
 
-func decodeLock(o entity.OpenID, offset int64, id entity.LockID, b []byte) (entity.Lock, error) {
+func decodeLock(o entity.OpenID, offset int64, id entity.LockID, b []byte) (entity.LockRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Lock{}, err
+		return entity.LockRecord{}, err
 	}
-	l := entity.Lock{ID: id, Open: o, Offset: offset}
+	l := entity.LockRecord{ID: id, Open: o, Offset: offset}
 	l.Owner = entity.LockOwner{Client: entity.ClientID(r.Uint64()), Owner: r.Bytes()}
 	l.Length, l.Exclusive = int64(r.Uint64()), r.Bool()
 	return l, r.Done()
 }
 
-func encodeDeletePending(d entity.DeletePending) []byte {
+func encodeDeletePending(d entity.DeleteRecord) []byte {
 	w := codec.NewWriter(v1).Fixed(d.Parent[:]).Bytes(d.Name)
 	return putPrincipal(w, d.By).Uint32(uint32(d.Access)).Bool(d.Privileged).Encode()
 }
 
-func decodeDeletePending(b []byte) (entity.DeletePending, error) {
+func decodeDeletePending(b []byte) (entity.DeleteRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.DeletePending{}, err
+		return entity.DeleteRecord{}, err
 	}
-	d := entity.DeletePending{Parent: readFileID(r), Name: r.Bytes(), By: readPrincipal(r)}
+	d := entity.DeleteRecord{Parent: readFileID(r), Name: r.Bytes(), By: readPrincipal(r)}
 	d.Access, d.Privileged = entity.AccessMask(r.Uint32()), r.Bool()
 	return d, r.Done()
 }

@@ -174,7 +174,7 @@ func TestConfirmAfterExpiryIsStale(t *testing.T) {
 			f.sweep(ctx)
 		},
 		"destroyed": func(t *testing.T, f *fixture, c Client, id entity.ClientID) {
-			if err := f.Destroy(ctx, Caller{id, c.Owner}); err != nil {
+			if err := f.Destroy(ctx, Caller{Client: id, Principal: c.Owner}); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -426,7 +426,7 @@ func TestDestroy(t *testing.T) {
 	idle := f.connect(t, nfs("idle", 1, alice))
 
 	for _, c := range []entity.ClientID{withSession, withState} {
-		if err := f.Destroy(ctx, Caller{c, alice}); !errors.Is(err, ErrClientBusy) {
+		if err := f.Destroy(ctx, Caller{Client: c, Principal: alice}); !errors.Is(err, ErrClientBusy) {
 			t.Errorf("Destroy of client %d: %v, want ErrClientBusy", c, err)
 		}
 		if _, err := f.Record(ctx, c); err != nil {
@@ -436,10 +436,10 @@ func TestDestroy(t *testing.T) {
 	if _, err := f.resolve(withState, file, ref); err != nil {
 		t.Errorf("state after a refused Destroy: %v", err)
 	}
-	if err := f.Destroy(ctx, Caller{idle, entity.NewUser()}); !errors.Is(err, ErrNotYours) {
+	if err := f.Destroy(ctx, Caller{Client: idle, Principal: entity.NewUser()}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("Destroy of a protected client by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Destroy(ctx, Caller{idle, alice}); err != nil {
+	if err := f.Destroy(ctx, Caller{Client: idle, Principal: alice}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Renew(ctx, idle); !errors.Is(err, ErrStaleClient) {
@@ -453,6 +453,7 @@ func TestStartAndStop(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
 	g := unstarted(t, f.fs, f.clock)
+	file := anyFile()
 	calls := map[string]func() error{
 		"Propose":    func() error { _, err := g.Propose(ctx, nfs("host-b", 1, entity.NewUser()), addr); return err },
 		"Connect":    func() error { _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },
@@ -460,6 +461,16 @@ func TestStartAndStop(t *testing.T) {
 		"Renew":      func() error { _, err := g.Renew(ctx, id); return err },
 		"Expire":     func() error { return g.Expire(ctx, id) },
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
+		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
+		"Downgrade": func() error {
+			return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, 0, 0)
+		},
+		"Update": func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
+		"Close": func() error {
+			_, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1})
+			return err
+		},
+		"Durable": func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
 	}
 	check := func(when string) {
 		for name, call := range calls {
@@ -523,8 +534,8 @@ func TestSinkMayCallBack(t *testing.T) {
 }
 
 // Expire is node-local: it releases the client's state here and drops its
-// lease here, but deletes no record and raises no ClientEnded, which are the
-// lease timer's.
+// lease here, so it is granted nothing more here, but deletes no record and
+// raises no ClientEnded, which are the lease timer's.
 func TestExpireIsNodeLocal(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
@@ -547,5 +558,8 @@ func TestExpireIsNodeLocal(t *testing.T) {
 	f.cmu.Unlock()
 	if leased {
 		t.Error("Expire kept the lease")
+	}
+	if f.current(id) {
+		t.Error("Expire left the client current here, so it could still be granted an open")
 	}
 }
