@@ -96,6 +96,41 @@ func TestRealMount(t *testing.T) {
 	}
 }
 
+// Where root and the SMB client are there, a real dfs's default share is
+// mounted over SMB at {mount}, as {user}, and root makes a file at its root,
+// as a suite's commands do; Stop unmounts it and removes {mount}.
+func TestRealSMBMount(t *testing.T) {
+	for _, n := range []string{"root", "smb-client"} {
+		if err := needs.Check("", n); err != nil {
+			t.Skipf("%s: %v", n, err)
+		}
+	}
+	bin := realBin(t)
+	out := t.TempDir()
+	var w bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	s, err := Start(ctx, registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Mount: true}}, nil, bin, out, &w)
+	if err != nil {
+		log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
+		t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
+	}
+	mount := s.Placeholders()["mount"]
+	argv := asRoot("touch", filepath.Join(mount, "made"))
+	if got, err := exec.Command(argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Errorf("root makes a file at {mount}: %v\n%s", err, got)
+	}
+	if err := s.Stop(); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	if _, mounted, _ := mountedAt(mount); mounted {
+		t.Errorf("%s is still mounted", mount)
+	}
+	if _, err := os.Stat(mount); !os.IsNotExist(err) {
+		t.Errorf("{mount} stays: %v\n%s", err, w.String())
+	}
+}
+
 // Where root, the NFS client, the host's rpcbind and the client tools are
 // there, a real dfs serves two namespaced clients. The first mounts the share
 // at NFSv3 without nolock, so its locks go to the server's lock manager, which
