@@ -265,3 +265,44 @@ func TestAHoldOnStarHoldsEveryKey(t *testing.T) {
 		h.Release()
 	}
 }
+
+func TestAHoldOnStarHoldsEveryOp(t *testing.T) {
+	for _, op := range []string{OpSync, OpWrite, OpSyncDir, "point"} {
+		s := newSeam(t)
+		h := s.Hold(t, "*", "*")
+
+		held := make(chan struct{})
+		go func() { s.hold(op, "seg"); close(held) }()
+
+		select {
+		case <-h.Reached():
+		case <-held:
+			t.Fatalf("a %s call passed a hold on op \"*\"", op)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("a %s call neither reached nor passed a hold on op \"*\"", op)
+		}
+		h.Release()
+	}
+}
+
+func TestAHoldOnSyncDoesNotHoldSyncDir(t *testing.T) {
+	s := newSeam(t)
+	h := s.Hold(t, OpSync, "*")
+	defer h.Release()
+
+	aside(t, "a SyncDir under a hold on sync returning", s.SyncDir)
+	if h.Waiting() != 0 {
+		t.Fatalf("Waiting = %d after a SyncDir under a hold on sync, want 0", h.Waiting())
+	}
+}
+
+func TestHoldRefusesAnEmptyOp(t *testing.T) {
+	s := newSeam(t)
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Hold accepted the empty op")
+		}
+	}()
+	s.Hold(t, "", "*")
+}

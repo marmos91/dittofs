@@ -24,12 +24,13 @@ type Hold struct {
 	mu sync.Mutex
 }
 
-// Hold makes every call of op on a file whose name matches key block, before
-// it acts, until the hold is released. op is any name, not only one of the
-// seam's Op constants, so code that reports its own points to the seam can be
-// held the same way. key is a pattern over the file name, matched as a
-// fault's key is (see sim.Match): "*" holds every key, the empty key of list
-// and sync_dir included, and an empty key panics.
+// Hold makes every call whose op matches op, on a file whose name matches key,
+// block before it acts until the hold is released. Both are patterns, matched
+// as a fault rule's are (see sim.Match): "*" holds every op, or every key, the
+// empty key of list and sync_dir included, and an exact name only itself. op
+// may name any call, not only one of the seam's Op constants, so code that
+// reports its own points to the seam can be held the same way. An empty op or
+// key panics.
 //
 // A call is held after it is counted and after a call on a closed file has
 // failed, and before the fault is consulted, so a held call has done nothing
@@ -45,8 +46,8 @@ type Hold struct {
 // code under test armed, so a held call waits on no clock: only Release frees
 // it.
 func (s *Seam) Hold(t testing.TB, op, key string) *Hold {
-	if key == "" {
-		panic(fmt.Sprintf(`journalv2test: Hold(%q, ""): an empty key; "*" holds every key`, op))
+	if op == "" || key == "" {
+		panic(fmt.Sprintf(`journalv2test: Hold(%q, %q): an empty op or key; "*" holds every one`, op, key))
 	}
 
 	h := &Hold{
@@ -96,7 +97,7 @@ func (s *Seam) hold(op, key string) {
 	s.mu.Lock()
 	var matched []*Hold
 	for _, h := range s.holds {
-		if sim.Match(h.key, key) && h.op == op {
+		if sim.Match(h.op, op) && sim.Match(h.key, key) {
 			matched = append(matched, h)
 		}
 	}
