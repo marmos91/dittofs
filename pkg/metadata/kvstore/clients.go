@@ -68,6 +68,11 @@ func (c Clients) Reboot(ctx context.Context, old entity.ClientID, cl entity.Clie
 		if prev.Protocol != cl.Protocol || !bytes.Equal(prev.Name, cl.Name) || prev.Boot == cl.Boot || cl.ID == old {
 			return merrs.NewInvalidArgumentError("a reboot keeps the client's protocol and name and changes its boot and ID")
 		}
+		// decision: a reboot deletes the old record and its shard marks at once,
+		// because on one node the table has already released the old ID's state
+		// everywhere. Once a shard's primary can be another node, keep the old
+		// record marked Ended until every primary its Shards names has
+		// acknowledged, or the fan-out loses its list.
 		if err := dropClient(tx, prev, false); err != nil {
 			return err
 		}
