@@ -654,7 +654,8 @@ func TestConfirmOpen(t *testing.T) {
 }
 
 // Every lock call names its caller's client and acts only on that client's
-// owners and lock states: an owner of another client is ErrNotYours, a lock
+// owners and lock states, a test of a lock included: an owner of another
+// client is ErrNotYours, a lock
 // under an open by a principal not its opener is ErrNotYours, and a lock state
 // named with another owner is ErrBadState.
 func TestLockCallsNameTheirClient(t *testing.T) {
@@ -670,6 +671,7 @@ func TestLockCallsNameTheirClient(t *testing.T) {
 		"CancelLock":       func() error { _, err := f.Locks().CancelLock(ctx, b, file.ID, lo, br(0, 10)); return err }(),
 		"WaitAnswered":     f.Locks().WaitAnswered(ctx, b, LockWaiter{File: file.ID, Owner: lo, Open: o.Ref.Token, Range: x(0, 10)}, true),
 		"ReleaseLockOwner": f.Locks().ReleaseLockOwner(ctx, b, lo),
+		"TestLock":         func() error { _, err := f.Locks().TestLock(ctx, b, file.ID, lo, br(0, 10), true); return err }(),
 	} {
 		if !errors.Is(err, ErrNotYours) {
 			t.Errorf("%s by another client: %v, want ErrNotYours", name, err)
