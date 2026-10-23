@@ -132,6 +132,31 @@ func TestDenyModesAtOpen(t *testing.T) {
 	}
 }
 
+// An open asking no data access is outside the deny check both ways: it is
+// granted against any deny mode, and its own deny refuses no open and no
+// anonymous I/O.
+func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
+	all, stat := rd|wr|del, entity.ReadAttributes
+	file := entity.NewFileID()
+	f.mustOpen(t, a, file, OpenRequest{Access: all, Deny: all})
+	if _, err := f.open(b, file, OpenRequest{Access: stat, Deny: all}); err != nil {
+		t.Errorf("an attributes-only open against a deny-all: %v", err)
+	}
+
+	file = entity.NewFileID()
+	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
+	if _, err := f.open(a, file, OpenRequest{Access: all, Deny: all}); err != nil {
+		t.Errorf("an all-access open beside an attributes-only deny-all: %v", err)
+	}
+	file = entity.NewFileID()
+	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
+	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file}, ByteRange{}, true); err != nil {
+		t.Errorf("an anonymous write beside an attributes-only deny-all: %v", err)
+	}
+}
+
 // A downgrade narrows an open to masks within its own, applies at once, and
 // raises its reference's sequence, so the reference as it was is old; I/O
 // through the open is held to what it holds now.
