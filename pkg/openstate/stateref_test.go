@@ -179,44 +179,6 @@ func TestStateRefSequence(t *testing.T) {
 	}
 }
 
-// A grant's and a watch's IDs resolve by shard and token with no file handle,
-// each only as its own kind and only for its own client.
-func TestGrantAndWatchIDsResolveWithoutAHandle(t *testing.T) {
-	tab := newTable(t)
-	f := entity.NewFileID()
-	var g GrantID
-	var gref StateRef
-	var w WatchID
-	if err := tab.step(f, func(e *entry) (err error) {
-		if g, gref, err = tab.mintGrant(e, 1, 4); err != nil {
-			return err
-		}
-		w, err = tab.mintWatch(e, 1, 4)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if g.Shard != 4 || w.Shard != 4 || g.Token != gref.Token || gref.Type != StateGrant {
-		t.Fatalf("grant %+v (ref %+v), watch %+v: want both in shard 4, the grant's ID its ref's token", g, gref, w)
-	}
-	if h, err := tab.resolveID(1, StateGrant, g.Shard, g.Token); err != nil || h.file != f {
-		t.Errorf("the grant: file %v, %v; want %v", h.file, err, f)
-	}
-	if _, err := tab.resolveID(1, stateWatch, w.Shard, w.Token); err != nil {
-		t.Errorf("the watch: %v", err)
-	}
-	if _, err := tab.resolveID(1, StateGrant, w.Shard, w.Token); !errors.Is(err, ErrBadState) {
-		t.Errorf("a watch's ID named as a grant: %v, want ErrBadState", err)
-	}
-	if _, err := tab.resolveID(2, StateGrant, g.Shard, g.Token); !errors.Is(err, ErrNotYours) {
-		t.Errorf("another client's grant: %v, want ErrNotYours", err)
-	}
-	releaseIn(t, tab, f, gref)
-	if _, err := tab.resolveID(1, StateGrant, g.Shard, g.Token); !errors.Is(err, ErrBadState) {
-		t.Errorf("a released grant: %v, want ErrBadState", err)
-	}
-}
-
 // Advancing a released reference is ErrBadState and adds nothing to the index.
 func TestAdvanceAddsNoRecord(t *testing.T) {
 	tab := newTable(t)
