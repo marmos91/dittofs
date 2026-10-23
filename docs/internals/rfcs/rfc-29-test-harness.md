@@ -521,7 +521,7 @@ suites:
     env:
       DITTOFS_E2E_REQUIRE_NLM: "1"      # a missing prerequisite fails instead of skipping
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
-      nightly: { DITTOFS_E2E_NIGHTLY: "1" }
+      # nightly: { DITTOFS_E2E_NIGHTLY: "1" }, once the dedup tests have known-failure entries (§9)
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
     blocking: false                     # until a week with no failure on develop (§8)
     options:
@@ -2068,7 +2068,8 @@ Carried over from earlier reviews:
 - **When the gate becomes required:** after two green weeks of the `pr` tier.
 - **The bar for deleting a suite's scripts:** 5 consecutive runs with matching results.
 - **The e2e nightly tier and the stress tests:** they start in `nightly` with known-failure entries.
-  Fixing them is outside this RFC; the dedup tests broken at setup are #2992.
+  Fixing them is outside this RFC; the dedup tests broken at setup are #2992. Until e2e has those
+  entries, `DITTOFS_E2E_NIGHTLY`, which turns the dedup tests on, stays off, as `e2e-tests.yml` left it.
 - **History:** stays in GitHub artifacts for now, and moves to a data branch only if benchmarks
   need more than their 90 days.
 
