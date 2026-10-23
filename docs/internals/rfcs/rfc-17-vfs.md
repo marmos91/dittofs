@@ -1105,7 +1105,7 @@ func DecodeFileID(persistent uint64) (OpenRef, error)
 > while the client still holds the name. Overturned if a protocol is found whose
 > client-held name has no room for what decoding needs.
 
-The stateid's and the `FileId`'s widths — a 24-bit shard number, 5 grace-instance bits, a 40-bit `OpenID` — are one choice, [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)'s.
+The stateid's and the `FileId`'s widths — a 24-bit shard number, 5 grace-instance bits, a 40-bit `OpenID` — are one choice, [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)'s. Only an SMB, durable or clone source open takes an `OpenID`; an NFS open is named by its stateid's token ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)).
 
 ### 3.5 What each method calls
 
