@@ -7,14 +7,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
 )
 
-// ByteRange is the bytes an I/O covers. No check reads it yet: byte-range
-// locks are what judge it.
+// ByteRange is the bytes an I/O covers.
 type ByteRange struct {
 	Offset, Length uint64
 }
 
-// ChangeMask names what a change does to a file or directory. Each kind is
-// added with the check that reads it.
+// ChangeMask names what a change does to a file or directory.
 type ChangeMask uint16
 
 const (
