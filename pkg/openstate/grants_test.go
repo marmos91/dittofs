@@ -331,6 +331,54 @@ func TestGrantBudget(t *testing.T) {
 	}
 }
 
+// A lock request recalls every other client's caching grant on the file to
+// none before it is decided: a callback request waits and is granted once
+// the holder returns the grant; any other is ErrDelay, and granted on its
+// retry after.
+func TestLockRecallsGrants(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	h := f.host(t, "nlm-b", 1)
+	file := anyFile()
+	file.Shard = 1
+	_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
+	res, err := f.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	if err != nil || !res.Waiting {
+		t.Fatalf("a blocking lock against a delegation: %+v, %v; want Waiting", res, err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantNone {
+		t.Fatalf("recalls %+v", r)
+	}
+	if _, err := f.lock(h, file, LockReq{Owner: owner(h, "q"), Ranges: []LockRange{x(20, 10)}}); delayedFor(err) != DelayRecall {
+		t.Fatalf("a non-blocking lock while the recall runs: %v, want ErrDelay", err)
+	}
+	// The holder flushes its locks: one elsewhere, released at once, and one
+	// over the waiter's range.
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(50, 10)}})
+	f.unlock(t, a, file, owner(a, "a"), br(50, 10))
+	if w := f.sink.takeWaits(); len(w) != 0 {
+		t.Fatalf("the waiter was served while the delegation was held: %+v", w)
+	}
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	h2 := f.host(t, "nlm-c", 1)
+	f.mustLock(t, h2, file, LockReq{Owner: owner(h2, "r"), Ranges: []LockRange{x(30, 5)}, Wait: WaitCallback})
+	if err := f.ack(a, d, GrantNone, 0); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.sink.takeWaits(); len(w) != 1 || w[0].w.Owner.Client != h2.Client {
+		t.Fatalf("waiters granted on the return: %+v; want the one no lock blocks, not the one under the holder's flushed lock", w)
+	}
+	f.pass(t, 2*leasePeriod, a.Client)
+	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead}); g != nil {
+		t.Fatalf("a grant on a file with a lock waiter: %+v", g)
+	}
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	if g := granted(t, f.sink.takeWaits()); len(g) != 1 {
+		t.Fatalf("waiters granted at the holder's unlock: %v", g)
+	}
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "q"), Ranges: []LockRange{x(20, 10)}})
+}
+
 // No write caching is offered on a setuid or setgid file, and a mode change
 // setting either bit recalls the write caching of every grant on the file.
 func TestSetIDRecallsWriteCaching(t *testing.T) {
