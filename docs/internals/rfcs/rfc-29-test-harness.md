@@ -1483,7 +1483,8 @@ file, and `dt known import` converts the old lists once.
   Markdown list's tables of tests has no entry in its `known.yaml` that applies where the list does,
   or a known failure in `known.yaml` that applies there has no row in the list, so a change to one
   is made to both; an expected skip needs no row. An entry applies there unless its `where` gives
-  the list's axis other values. The hand-written Markdown lists go with the scripts.
+  the list's axis other values. The hand-written Markdown lists go with the scripts, and the
+  test with smbtorture's, the last it read.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
   trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
   matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
@@ -1914,8 +1915,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
      which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
      the schedule and on a dispatch naming a suite, and `merge` on another dispatch. cthon04 and
-     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, and so does
-     smbtorture's Kerberos option, which joins in step 3. A last job
+     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, as
+     smbtorture's Kerberos option had from step 3 until it moved. A last job
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
@@ -1924,8 +1925,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
      `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which runs
-     its three filters one at a time without `run.sh`, saves the same for its one cell, with the
+     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which ran
+     its three filters one at a time without `run.sh`, saved the same for its one cell, with the
      tests run only when each filter's grader counted them.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
@@ -1943,8 +1944,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts. A script that an old job still running uses stays
-     until that job moves too: smbtorture's, which its Kerberos job runs, until the Kerberos runs
-     move.
+     until that job moves too, as smbtorture's, the Compose stack they ran on and their Markdown
+     lists stayed until its Kerberos job moved.
    - `dt docs` replaces `check-docs.sh` as the conformance suites move, and not before, so the
      documentation's suite tables always describe what CI runs (§4.1).
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
