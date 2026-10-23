@@ -84,13 +84,14 @@ const (
 
 // grant is a caching grant as the table holds it.
 type grant struct {
-	id     GrantID
-	client entity.ClientID
-	key    LeaseKey
-	open   *open // an oplock: the one open it covers; nil for a lease and a delegation
-	fsm    grantfsm.Grant
-	gen    uint32        // raised by each recall started, naming it to the arming of its deadline
-	sent   time.Duration // the deadline of the recall in flight, once handed to the Sink; zero: none, or not yet handed
+	id      GrantID
+	client  entity.ClientID
+	key     LeaseKey
+	open    *open // an oplock: the one open it covers; nil for a lease and a delegation
+	fsm     grantfsm.Grant
+	gen     uint32        // raised by each recall started, naming it to the arming of its deadline
+	sent    time.Duration // the deadline of the recall in flight, once handed to the Sink; zero: none, or not yet handed
+	counted bool          // it is in its client's budget: it caches something
 }
 
 type clientKey struct {
@@ -265,7 +266,13 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 	switch {
 	case mine != nil && mine.key != (LeaseKey{}):
 		o.Grant = mine.id
-		mine.fsm.Upgrade(want, k)
+		t.idx.Lock()
+		budget := t.granted[who.Client] >= maxGrants
+		t.idx.Unlock()
+		if mine.counted || !budget {
+			mine.fsm.Upgrade(want, k)
+			t.recount(mine)
+		}
 		p := mine.public(e.file)
 		return &p
 	case mine != nil, k == GrantNone:
@@ -288,7 +295,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, r.Lease != (LeaseKey{}))}
+	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, r.Lease != (LeaseKey{})), counted: true}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
@@ -324,7 +331,13 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 // to keep, which an NFS client's recall-any needs. Add one when NFS clients
 // are measured at the budget.
 func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
-	if want == GrantNone || len(e.waiters) > 0 || len(e.grants) >= maxShared {
+	caching := 0
+	for _, g := range e.grants {
+		if g.fsm.Kind != GrantNone {
+			caching++
+		}
+	}
+	if want == GrantNone || len(e.waiters) > 0 || caching >= maxShared {
 		return GrantNone
 	}
 	now := t.d.Clock.Elapsed()
@@ -360,32 +373,53 @@ func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want Gran
 }
 
 // uncover drops the grant covering o, closing on e, once o was the last open
-// it covered.
-func (t *Table) uncover(e *entry, o *open) {
+// it covered, and reports whether it did.
+func (t *Table) uncover(e *entry, o *open) bool {
 	g := e.grants[o.Grant.Token]
 	if o.Grant == (GrantID{}) || g == nil {
-		return
+		return false
 	}
 	for _, h := range e.opens {
 		if h != o && h.Grant == g.id {
-			return
+			return false
 		}
 	}
 	t.dropGrant(e, g)
+	return true
 }
 
 // dropGrant drops g from e, under its step, with its reference, its count and
-// its key.
+// its key. A recall in flight ends with it, so the request it delayed is not
+// overtaken by a grant to a holder that closed and opened again.
 func (t *Table) dropGrant(e *entry, g *grant) {
+	if g.fsm.Recall != nil {
+		t.recallEnded(e, g)
+	}
+	g.fsm.Kind = GrantNone
+	t.recount(g)
 	delete(e.grants, g.id.Token)
 	t.release(e, g.id.ref())
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	if t.granted[g.client]--; t.granted[g.client] <= 0 {
-		delete(t.granted, g.client)
-	}
 	if g.key != (LeaseKey{}) {
 		delete(t.keys, clientKey{g.client, g.key})
+	}
+}
+
+// recount keeps g in its client's budget while it caches anything: a grant cut
+// to none, kept for the opens it covers, holds none of it.
+func (t *Table) recount(g *grant) {
+	held := g.fsm.Kind != GrantNone
+	if held == g.counted {
+		return
+	}
+	g.counted = held
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	if held {
+		t.granted[g.client]++
+	} else if t.granted[g.client]--; t.granted[g.client] <= 0 {
+		delete(t.granted, g.client)
 	}
 }
 
@@ -417,6 +451,7 @@ func (t *Table) lapse(e *entry, out *outbox) {
 		t.recallEnded(e, g)
 		if g.covers() {
 			g.fsm.Timeout()
+			t.recount(g)
 			continue
 		}
 		t.idx.Lock()
@@ -435,11 +470,19 @@ func (t *Table) lapse(e *entry, out *outbox) {
 	t.idx.Unlock()
 }
 
-// cachedByOther reports whether a client other than c holds a grant with read
-// or write caching on e, which a lock request of c's waits on.
-func (e *entry) cachedByOther(c entity.ClientID) bool {
+// cachedByOther reports whether a grant with read or write caching that
+// waiter w's request does not hold is on e, which w waits on.
+func (e *entry) cachedByOther(w *LockWaiter) bool {
+	var op *open
+	if ls := e.lockState(w.Owner, w.Open); ls != nil {
+		op = ls.open
+	}
+	var key LeaseKey
+	if op != nil {
+		key = op.lease
+	}
 	for _, g := range e.grants {
-		if g.client != c && g.fsm.Kind != GrantNone {
+		if !g.heldBy(w.Owner.Client, key, op) && g.fsm.Kind != GrantNone {
 			return true
 		}
 	}
@@ -456,7 +499,10 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	if err != nil {
 		return err
 	}
-	var out outbox
+	// The service holds no admission lock for a file named by a GrantID
+	// alone, so the waiters an acknowledgement frees are served after it,
+	// under the file's admission lock, as the timer serves them.
+	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
 		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {
 			return err
@@ -471,6 +517,10 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		case err != nil:
 			return ErrInvalid
 		case next:
+			// decision: a recall's next stage is not held to maxUnsent: it
+			// continues a recall already counted once, and refusing it would
+			// leave the grant mid-recall with nothing in flight to end it.
+			// Count it against the bound if stages are seen filling it.
 			t.idx.Lock()
 			t.unsent++
 			t.idx.Unlock()
@@ -480,10 +530,13 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		}
 		if !g.covers() && g.fsm.Kind == GrantNone {
 			t.dropGrant(e, g)
+		} else {
+			t.recount(g)
 		}
 		t.serve(e, &out)
 		return nil
 	})
 	out.raise(t, sink)
+	t.serveFiles(sink, out.serve)
 	return err
 }

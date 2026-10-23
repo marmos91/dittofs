@@ -352,7 +352,7 @@ func (t *Table) dropWaiter(e *entry, i int) *LockWaiter {
 
 // serve considers e's waiters, under its step: a poll waiter past its
 // deadline is dropped, then each waiter in Arrived order whose request
-// nothing refuses now, no lock and no other client's caching grant, is
+// nothing refuses now, no lock and no caching grant another holder holds, is
 // served, a callback waiter granted its lock and reported to out, a poll
 // waiter its range reserved for a lease period.
 func (t *Table) serve(e *entry, out *outbox) {
@@ -373,7 +373,7 @@ func (t *Table) serve(e *entry, out *outbox) {
 	for i := 0; i < len(e.waiters); {
 		w := e.waiters[i]
 		switch {
-		case w.Reserved || e.blocker(w.Owner, w.Range, i) != nil || e.cachedByOther(w.Owner.Client):
+		case w.Reserved || e.blocker(w.Owner, w.Range, i) != nil || e.cachedByOther(w):
 		case w.Wait == WaitPoll:
 			w.Reserved, w.Deadline = true, now+leasePeriod
 		default:
@@ -496,14 +496,19 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // a callback one reported not granted, unless r repeats its request and still
 // waits, which keeps its place.
 //
-// Before any of that, every caching grant another client holds on the file
-// is recalled to none; while one still caches, r is never refused for a
+// Before any of that, every caching grant on the file another holder holds,
+// another client or the owner's client under another lease key, is recalled
+// to none; while one still caches, r is never refused for a
 // conflict: a callback request waits, and any other is ErrDelay.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
 	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
-	recall := t.recallOthers(e, func(g *grant) bool { return g.client == r.Owner.Client }, func(*grant) GrantKind { return GrantNone }, out)
+	var key LeaseKey
+	if op != nil {
+		key = op.lease
+	}
+	recall := t.recallOthers(e, func(g *grant) bool { return g.heldBy(r.Owner.Client, key, op) }, func(*grant) GrantKind { return GrantNone }, out)
 	var de *DelayError
 	if errors.As(recall, &de) && (de.Cause != DelayRecall || r.Wait != WaitCallback) {
 		return LockResult{}, recall

@@ -539,7 +539,9 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 	if err != nil {
 		return err
 	}
-	var out outbox
+	// A revoke names a client, not a file, so the waiters its releases
+	// free are served after it, under each file's admission lock.
+	out := outbox{timer: true}
 	t.cstep.Lock()
 	err = t.revoke(ctx, c, &out)
 	t.cstep.Unlock()
@@ -547,6 +549,7 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 		sink.Revoked(Revocation{Client: c, Reason: RevokedByAdmin})
 	}
 	out.raise(t, sink)
+	t.serveFiles(sink, out.serve)
 	return err
 }
 
@@ -590,6 +593,35 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 	return nil
 }
 
+// setReach applies set to c's record's Reach, and to what the table reads of
+// it, under the client step. A racing AddSession's bytes are kept: the write
+// is retried over the record it committed.
+func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) error {
+	rec, err := t.d.Records.Clients().Get(ctx, c)
+	if err != nil {
+		return staleIfGone(err)
+	}
+	for {
+		next := rec
+		set(&next.Reach)
+		got, err := t.d.Records.Clients().Put(ctx, rec, next)
+		if errors.Is(err, ErrRecordChanged) {
+			rec = got
+			continue
+		}
+		if err != nil {
+			return staleIfGone(err)
+		}
+		t.cmu.Lock()
+		defer t.cmu.Unlock()
+		if k, ok := t.known[c]; ok {
+			k.down = next.Reach.Down
+			t.known[c] = k
+		}
+		return nil
+	}
+}
+
 func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -604,26 +636,7 @@ func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) err
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
 	}
-	for {
-		next := rec
-		next.Reach.Callback, next.Reach.Down = node, false
-		got, err := t.d.Records.Clients().Put(ctx, rec, next)
-		if errors.Is(err, ErrRecordChanged) {
-			rec = got // a racing AddSession: its bytes are kept
-			continue
-		}
-		if err != nil {
-			return staleIfGone(err)
-		}
-		break
-	}
-	t.cmu.Lock()
-	defer t.cmu.Unlock()
-	if k, ok := t.known[who.Client]; ok {
-		k.down = false
-		t.known[who.Client] = k
-	}
-	return nil
+	return t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {

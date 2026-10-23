@@ -54,7 +54,7 @@ type Revocation struct {
 type outbox struct {
 	closed map[entity.FileID]CloseResult // one per file: only a file's last close leaves anything
 	over   []waitOver
-	timer  bool            // raised on the timer: waiters are served later, under the file's admission lock
+	timer  bool            // raised without the file's admission lock, on the timer or by a call naming no file: waiters are served later, under it
 	serve  []entity.FileID // the files whose waiters are still to be served
 
 	revoked []Revocation

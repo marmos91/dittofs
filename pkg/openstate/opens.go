@@ -698,7 +698,7 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 
 // closeOpen drops o from e, its file's entry, under its step, with the lock
 // states under it, their locks and their waiters, and the grant covering it
-// if it was the last open covered; the waiters that frees go to out. A close with delete on close makes the file delete pending, and the
+// if it was the last open covered; the waiters either frees go to out. A close with delete on close makes the file delete pending, and the
 // last close of a delete-pending file returns the pending unlink.
 func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
@@ -711,7 +711,7 @@ func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 			freed = true
 		}
 	}
-	t.uncover(e, o)
+	freed = t.uncover(e, o) || freed
 	t.dropOpen(e, o)
 	if freed {
 		t.serve(e, out)
