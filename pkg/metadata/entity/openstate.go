@@ -197,9 +197,9 @@ type SessionRef struct {
 	ID        uint64
 }
 
-// Lock is a durable byte-range lock: only one under a persistent open is
+// LockRecord is a durable byte-range lock: only one under a persistent open is
 // stored, beneath it, so closing the open drops it.
-type Lock struct {
+type LockRecord struct {
 	ID        LockID
 	Open      OpenID
 	Owner     LockOwner
@@ -215,9 +215,9 @@ type LockOwner struct {
 	Owner  []byte
 }
 
-// DeletePending is a file a persistent open marked for deletion at its last
+// DeleteRecord is a file a persistent open marked for deletion at its last
 // close: the entry the unlink removes, and as whom and with what it runs.
-type DeletePending struct {
+type DeleteRecord struct {
 	Parent     FileID
 	Name       []byte
 	By         Principal
