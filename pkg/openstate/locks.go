@@ -30,7 +30,16 @@ type Lock struct {
 type LockOwner struct {
 	Client entity.ClientID
 	Name   []byte // the owner the client names, at most 1,024 bytes, compared and never interpreted
-	Stack  bool   // its locks stack, an exclusive one conflicts with its own, and they are mandatory; else they merge, never conflict with each other, and are advisory
+
+	// Stack: its locks stack, an exclusive one conflicts with its own, and
+	// they are mandatory; else they merge, never conflict with each other,
+	// and are advisory.
+	//
+	// ponytail: one flag carries two rules that go together in every protocol
+	// served, as SMB's locks are the only ones that stack and the only ones
+	// that are mandatory. Split it into two flags when a protocol is served
+	// whose locks stack but are advisory, or merge but are mandatory.
+	Stack bool
 }
 
 // LockRange is one range of a lock request; one request may mix shared and
@@ -260,12 +269,7 @@ func (e *entry) blocker(o LockOwner, r LockRange, upto int) *Lock {
 // lockedOut is ErrLocked for I/O r through the open of token id (zero:
 // anonymous) across a range a mandatory lock on e forbids it: any I/O but its
 // own open's under an exclusive lock, and every write, its own open's too,
-// under a shared one.
-//
-// decision: a stacking owner's locks are the mandatory ones, since SMB's are
-// the only locks that stack and the only ones that are mandatory; every other
-// protocol's are advisory and gate lock requests only. Give LockOwner a field
-// of its own if a protocol is served whose locks are one and not the other.
+// under a shared one. A stacking owner's locks are the mandatory ones.
 func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
 	for _, ls := range e.lstates {
 		if !ls.owner.Stack {
