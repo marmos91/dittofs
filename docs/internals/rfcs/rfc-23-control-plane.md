@@ -464,7 +464,7 @@ type Config struct {
 	Bootstrap config.Bootstrap // RFC 13 §2.2
 	KV        kv.KV            // what the metadata store opens on; an in-memory one in a multi-node test
 	Transport vfs.Transport    // (cluster): nil on one node; a loopback one in a multi-node test
-	Clock     clock.Clock
+	Clock     Clock            // RFC 8 §2.1: the node's one clock, which every component's subset accepts
 	Fault     Fault            // RFC 8 §2.1
 	Metrics   *metrics.Registry
 	Logger    *slog.Logger

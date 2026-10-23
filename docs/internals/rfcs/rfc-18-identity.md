@@ -481,7 +481,7 @@ type Deps struct {
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream
 	Issuers    IssuerKeys          // fetches each OpenID Connect issuer's keys over verified TLS (§8.2)
-	Clock      clock.Clock
+	Clock      Clock // the package's own subset of RFC 8 §2.1's Clock
 	Metrics    *metrics.Registry
 	Logger     *slog.Logger
 }
