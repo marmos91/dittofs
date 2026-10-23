@@ -15,8 +15,7 @@ const (
 
 // Of is the classes an access mask touches: reading data or executing is
 // read, writing or appending data is write, and delete is delete. No other
-// right, attributes, ACLs and synchronize among them, is in any class, so an
-// open asking only for those is refused by no deny mode.
+// right, attributes, ACLs and synchronize among them, is in any class.
 func Of(a entity.AccessMask) Class {
 	var c Class
 	if a&(entity.ReadData|entity.Execute) != 0 {
@@ -33,8 +32,15 @@ func Of(a entity.AccessMask) Class {
 
 // Shares reports whether an open asking access and denying deny can be held
 // beside one holding heldAccess and denying heldDeny. The check is two-way:
-// neither's access may be in the other's deny. An anonymous read or write is
-// judged as an open asking for it and denying nothing.
+// neither's access may be in the other's deny. An open whose access is in
+// no class is outside it both ways, as MS-FSA's sharing check runs only
+// between opens asking data access: it is refused by no deny mode, and its
+// own deny refuses nothing. An anonymous read or write is judged as an open
+// asking for it and denying nothing.
 func Shares(access, deny, heldAccess, heldDeny entity.AccessMask) bool {
-	return Of(access)&Of(heldDeny) == 0 && Of(heldAccess)&Of(deny) == 0
+	a, h := Of(access), Of(heldAccess)
+	if a == 0 || h == 0 {
+		return true
+	}
+	return a&Of(heldDeny) == 0 && h&Of(deny) == 0
 }
