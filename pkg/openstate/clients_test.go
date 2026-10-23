@@ -524,18 +524,18 @@ func TestStartAndStop(t *testing.T) {
 			return err
 		},
 		"Lock": func() error {
-			_, err := g.Locks().Lock(ctx, Caller{Client: id}, file.ID, LockReq{Owner: LockOwner{Client: id}, Ranges: []LockRange{{}}})
+			_, err := g.Locks().Lock(ctx, Caller{Client: id}, file, LockReq{Owner: LockOwner{Client: id}, Ranges: []LockRange{{}}})
 			return err
 		},
 		"CancelLock": func() error {
-			_, err := g.Locks().CancelLock(ctx, Caller{Client: id}, file.ID, LockOwner{Client: id}, ByteRange{})
+			_, err := g.Locks().CancelLock(ctx, Caller{Client: id}, file, LockOwner{Client: id}, ByteRange{})
 			return err
 		},
 		"WaitAnswered": func() error {
 			return g.Locks().WaitAnswered(ctx, Caller{Client: id}, LockWaiter{File: file.ID, Owner: LockOwner{Client: id}}, true)
 		},
 		"Unlock": func() error {
-			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file.ID, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
+			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
 			return err
 		},
 		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },
