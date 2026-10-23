@@ -1,0 +1,496 @@
+package openstate
+
+import (
+	"encoding/binary"
+	"errors"
+	"sync"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+)
+
+// host connects an NLM host in one step, as its first call does, and answers
+// a caller of it.
+func (f *fixture) host(t *testing.T, name string, boot byte) Caller {
+	t.Helper()
+	id, err := f.Connect(ctx, Client{ClientRecord: entity.ClientRecord{
+		Protocol: entity.ProtocolNLM, Name: []byte(name), Boot: [8]byte{boot}, Recovery: entity.RecoverNotice,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	return Caller{Client: id, Principal: entity.NewUser()}
+}
+
+func br(off, n uint64) ByteRange { return ByteRange{Offset: off, Length: n} }
+func x(off, n uint64) LockRange  { return LockRange{br(off, n), true} }
+func sh(off, n uint64) LockRange { return LockRange{br(off, n), false} }
+
+func owner(who Caller, name string) LockOwner {
+	return LockOwner{Client: who.Client, Name: []byte(name)}
+}
+
+// smbOwner is the stacking owner an SMB open is.
+func smbOwner(who Caller, o Open) LockOwner {
+	return LockOwner{Client: who.Client, Name: binary.BigEndian.AppendUint64(nil, uint64(o.ID)), Stack: true}
+}
+
+// lock asks for r on file, under no open where r names none.
+func (f *fixture) lock(who Caller, file FileKey, r LockReq) (LockResult, error) {
+	if r.Shard == 0 {
+		r.Shard = 1
+	}
+	if r.Open.Kind == 0 {
+		r.Open = none
+	}
+	return f.Locks().Lock(ctx, who, file.ID, r)
+}
+
+// none is a reference to no open, as a lock request under none carries.
+var none = OpenRef{Kind: RefAnonymous}
+
+func (f *fixture) mustLock(t *testing.T, who Caller, file FileKey, r LockReq) LockResult {
+	t.Helper()
+	res, err := f.lock(who, file, r)
+	if err != nil {
+		t.Fatalf("Lock %s %v: %v", r.Owner.Name, r.Ranges, err)
+	}
+	return res
+}
+
+func (f *fixture) unlock(t *testing.T, who Caller, file FileKey, o LockOwner, rs ...ByteRange) {
+	t.Helper()
+	if err := f.Locks().Unlock(ctx, who, file.ID, none, o, rs); err != nil {
+		t.Fatalf("Unlock %s %v: %v", o.Name, rs, err)
+	}
+}
+
+// holder is the lock that refuses an exclusive lock of r by an owner holding
+// nothing, or nil.
+func (f *fixture) holder(t *testing.T, file FileKey, r ByteRange) *Lock {
+	t.Helper()
+	h, err := f.Locks().TestLock(ctx, Caller{}, file.ID, LockOwner{Name: []byte("tester")}, r, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// granted is the owner names of the waiters a LockWaitOver granted, in order,
+// and fails the test on one not granted.
+func granted(t *testing.T, ws []waitOverCall) []string {
+	t.Helper()
+	var names []string
+	for _, w := range ws {
+		if !w.granted {
+			t.Errorf("LockWaitOver(granted=false) for %s", w.w.Owner.Name)
+		}
+		names = append(names, string(w.w.Owner.Name))
+	}
+	return names
+}
+
+func lockedBy(err error) string {
+	var le *LockedError
+	if !errors.As(err, &le) {
+		return "not a conflict: " + errorString(err)
+	}
+	return string(le.Holder.Owner.Name)
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
+// An owner's own locks never conflict and its overlapping ranges merge, while
+// two owners of one client conflict, the refusal naming the holder. An NLM
+// lock is held with no open and refuses an NFSv4 lock; a merging owner's
+// unlock of a range it does not hold succeeds; a host's restart releases its
+// locks at once.
+func TestLockOwners(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	lo1, lo2 := owner(a, "lo1"), owner(a, "lo2")
+	under := refOf(o)
+
+	f.mustLock(t, a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{x(5, 15)}})
+	_, err := f.lock(a, file, LockReq{Owner: lo2, Open: under, Ranges: []LockRange{x(15, 1)}})
+	var le *LockedError
+	if !errors.As(err, &le) || string(le.Holder.Owner.Name) != "lo1" || le.Holder.Range != x(0, 20) || le.Holder.Open != o.Ref.Token {
+		t.Fatalf("a second owner of the client: %v %+v, want refused by lo1's merged [0, 20) under the open", err, le)
+	}
+
+	h := f.host(t, "nlm-host", 1)
+	name := []byte("svid")
+	f.mustLock(t, h, file, LockReq{Owner: LockOwner{Client: h.Client, Name: name}, Ranges: []LockRange{x(100, 10)}})
+	copy(name, "XXXX") // the caller's buffer is its own again once Lock returns
+	if _, err := f.lock(a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{sh(105, 1)}}); lockedBy(err) != "svid" {
+		t.Errorf("an NFSv4 lock over an NLM lock: %s, want refused by the host's owner", lockedBy(err))
+	}
+	if err := f.Locks().Unlock(ctx, a, file.ID, under, lo2, []ByteRange{br(500, 10)}); err != nil {
+		t.Errorf("a merging owner's unlock of a range it does not hold: %v, want success", err)
+	}
+
+	f.host(t, "nlm-host", 2)
+	f.mustLock(t, a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{x(100, 10)}})
+}
+
+// An SMB lock list is granted all or none, at most 64 ranges, and a list of
+// several never waits; a stacking owner's exclusive lock conflicts with its
+// own, and a shared one stacks on it; an unlock list stops at the first range
+// not held, keeping what it released before it.
+func TestSMBLockLists(t *testing.T) {
+	f := newFixture(t)
+	s, r := f.caller(t, smb("pc-s")), f.caller(t, smb("pc-r"))
+	file := anyFile()
+	os, or := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr}), f.mustOpen(t, r, file, OpenRequest{Access: rd | wr})
+	so, ro := smbOwner(s, os), smbOwner(r, or)
+	byS, byR := refOf(os), refOf(or)
+	if err := f.Locks().Unlock(ctx, s, file.ID, byS, so, []ByteRange{br(0, 1)}); !errors.Is(err, ErrRangeNotLocked) {
+		t.Errorf("an unlock by an owner holding nothing: %v, want ErrRangeNotLocked", err)
+	}
+	f.mustLock(t, r, file, LockReq{Owner: ro, Open: byR, Ranges: []LockRange{x(20, 10)}})
+
+	if _, err := f.lock(s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(0, 5), x(10, 5), x(25, 1)}}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("a list whose third range conflicts: %v, want ErrLocked", err)
+	}
+	if h := f.holder(t, file, br(0, 15)); h != nil {
+		t.Errorf("a refused list left %v held", h.Range)
+	}
+	if _, err := f.lock(s, file, LockReq{Owner: so, Open: byS, Ranges: make([]LockRange, 65)}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a 65-range list: %v, want ErrInvalid", err)
+	}
+	if err := f.Locks().Unlock(ctx, s, file.ID, byS, so, make([]ByteRange, 65)); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a 65-range unlock list: %v, want ErrInvalid", err)
+	}
+	long := LockOwner{Client: s.Client, Name: make([]byte, 1025)}
+	if _, err := f.lock(s, file, LockReq{Owner: long, Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an owner past 1,024 bytes: %v, want ErrInvalid", err)
+	}
+	res, err := f.lock(s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(0, 1), x(25, 1)}, Wait: WaitCallback})
+	if !errors.Is(err, ErrLocked) || res.Waiting {
+		t.Errorf("a two-range list asking to wait: %+v, %v; want refused, not waiting", res, err)
+	}
+	if err := f.Locks().Unlock(ctx, r, file.ID, byR, ro, []ByteRange{br(20, 10)}); err != nil {
+		t.Fatal(err)
+	}
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Errorf("a two-range list left a waiter, reported %v", ws)
+	}
+
+	f.mustLock(t, s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(0, 10)}}); !errors.Is(err, ErrLocked) {
+		t.Errorf("a stacking owner's exclusive lock over its own: %v, want ErrLocked", err)
+	}
+	f.mustLock(t, s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{sh(0, 10)}})
+
+	f.mustLock(t, s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(40, 1), x(60, 1)}})
+	err = f.Locks().Unlock(ctx, s, file.ID, byS, so, []ByteRange{br(40, 1), br(50, 1), br(60, 1)})
+	if !errors.Is(err, ErrRangeNotLocked) {
+		t.Fatalf("an unlock list whose second range is not held: %v, want ErrRangeNotLocked", err)
+	}
+	if f.holder(t, file, br(40, 1)) != nil || f.holder(t, file, br(60, 1)) == nil {
+		t.Error("after the refused unlock list: want the first range released and the third held")
+	}
+}
+
+// Waiters are served first in, first out, and a waiter bars a request that
+// conflicts with it from the locks that block it, so shared locks cannot
+// starve an exclusive waiter. No LockWaitOver runs under a table lock: a Sink
+// that calls back into the file's table deadlocks nothing.
+func TestWaitersFirstInFirstOut(t *testing.T) {
+	f := newFixture(t)
+	file := anyFile()
+	f.sink.onWait = func(LockWaiter) { _, _ = f.Locks().TestLock(ctx, Caller{}, file.ID, LockOwner{}, br(0, 1), true) }
+	all := br(0, 100)
+	hs := map[string]Caller{}
+	for _, n := range []string{"h", "a", "b", "c", "d"} {
+		hs[n] = f.host(t, n, 1)
+	}
+	req := func(n string, exclusive bool, wait WaitKind) LockReq {
+		return LockReq{Owner: owner(hs[n], n), Ranges: []LockRange{{all, exclusive}}, Wait: wait}
+	}
+	f.mustLock(t, hs["h"], file, req("h", false, WaitNone))
+	for _, n := range []string{"a", "b", "c"} {
+		if res := f.mustLock(t, hs[n], file, req(n, n != "b", WaitCallback)); !res.Waiting {
+			t.Fatalf("%s: answered %+v, want Waiting", n, res)
+		}
+	}
+	shared := func(when string) {
+		t.Helper()
+		if _, err := f.lock(hs["d"], file, req("d", false, WaitNone)); !errors.Is(err, ErrLocked) {
+			t.Errorf("a shared lock while an exclusive request waits, %s: %v, want ErrLocked", when, err)
+		}
+	}
+	shared("behind a shared holder")
+	for i, n := range []string{"h", "a", "b"} {
+		f.unlock(t, hs[n], file, owner(hs[n], n), all)
+		want := []string{"a", "b", "c"}[i]
+		if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != want {
+			t.Fatalf("after %s unlocked: granted %v, want %s alone", n, got, want)
+		}
+		if n == "a" {
+			shared("behind a shared waiter's grant")
+		}
+	}
+}
+
+// A waiter is barred only where the locks blocking it are: an owner holding
+// byte 0 blocks a whole-file exclusive waiter of another owner of its client,
+// another client still locks a range neither touches, and the blocking owner
+// still changes its own lock.
+func TestWaiterBarsOnlyItsBlockers(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "host-b", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a1"), Open: refOf(o), Ranges: []LockRange{sh(0, 1)}})
+	if _, err := f.lock(a, file, LockReq{Owner: owner(a, "a2"), Open: refOf(o), Ranges: []LockRange{x(0, ^uint64(0))}, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("the whole-file waiter: %v, want ErrLocked", err)
+	}
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(4096, 4096)}})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a1"), Open: refOf(o), Ranges: []LockRange{x(0, 1)}})
+}
+
+// A poll that repeats the request it waits with keeps its place and its
+// wait, and a lock that turns an owner's exclusive lock shared grants the
+// shared waiters it frees.
+func TestWaiterPlace(t *testing.T) {
+	f := newFixture(t)
+	h, p1, p2 := f.host(t, "h", 1), f.host(t, "p1", 1), f.host(t, "p2", 1)
+	file := anyFile()
+	rg := []LockRange{x(0, 10)}
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: rg})
+	for i, p := range []Caller{p1, p2, p2, p1} {
+		if i == 2 {
+			f.clock.advance(leasePeriod / 2)
+		}
+		if _, err := f.lock(p, file, LockReq{Owner: owner(p, "p"), Ranges: rg, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+			t.Fatalf("a poll: %v, want ErrLocked", err)
+		}
+	}
+	f.clock.advance(leasePeriod/2 + 1)
+	f.servePolls(f.sink)
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	if _, err := f.lock(p2, file, LockReq{Owner: owner(p2, "p"), Ranges: rg, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Errorf("the later poller after the range freed: %v, want refused", err)
+	}
+	f.mustLock(t, p1, file, LockReq{Owner: owner(p1, "p"), Ranges: rg, Wait: WaitPoll})
+
+	other, g := anyFile(), f.host(t, "g", 1)
+	f.mustLock(t, g, other, LockReq{Owner: owner(g, "g"), Ranges: rg})
+	f.mustLock(t, p2, other, LockReq{Owner: owner(p2, "p"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, g, other, LockReq{Owner: owner(g, "g"), Ranges: []LockRange{sh(0, 10)}})
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "p" {
+		t.Errorf("after the holder's lock turned shared: granted %v, want the shared waiter", got)
+	}
+}
+
+// One owner holds one waiter per file: its next request replaces it, and a
+// replaced callback waiter is reported not granted. A granted waiter the
+// client refuses is released as an unlock would, and the next waiter is
+// granted.
+func TestWaiterReplacedAndRefused(t *testing.T) {
+	f := newFixture(t)
+	h, w, v := f.host(t, "h", 1), f.host(t, "w", 1), f.host(t, "v", 1)
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 100)}})
+	f.mustLock(t, w, file, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, w, file, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(20, 10)}, Wait: WaitCallback})
+	if ws := f.sink.takeWaits(); len(ws) != 1 || ws[0].granted || ws[0].w.Range != x(0, 10) {
+		t.Fatalf("the replaced waiter: reported %+v, want [0, 10) not granted", ws)
+	}
+	f.mustLock(t, v, file, LockReq{Owner: owner(v, "v"), Ranges: []LockRange{x(20, 10)}, Wait: WaitCallback})
+
+	f.unlock(t, h, file, owner(h, "h"), br(0, 100))
+	ws := f.sink.takeWaits()
+	if got := granted(t, ws); len(got) != 1 || got[0] != "w" || ws[0].w.Range != x(20, 10) {
+		t.Fatalf("after the holder unlocked: %+v, want w's [20, 30) alone granted", ws)
+	}
+	if err := f.Locks().WaitAnswered(ctx, w, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "v" {
+		t.Errorf("after w refused its grant: granted %v, want v", got)
+	}
+}
+
+// A poll waiter's freed range is reserved for it, refusing everyone else,
+// until it polls or a lease period passes; then the timer drops it and, taking
+// the file's admission lock first, grants the callback waiter behind it.
+func TestPollReservationLapses(t *testing.T) {
+	f := newFixture(t)
+	h, p, q, r := f.host(t, "h", 1), f.host(t, "p", 1), f.host(t, "q", 1), f.host(t, "r", 1)
+	file := anyFile()
+	rg := []LockRange{x(0, 10)}
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: rg})
+	if _, err := f.lock(p, file, LockReq{Owner: owner(p, "p"), Ranges: rg, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("the poll waiter: %v, want ErrLocked", err)
+	}
+	f.mustLock(t, q, file, LockReq{Owner: owner(q, "q"), Ranges: rg, Wait: WaitCallback})
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Fatalf("the range freed under a poll waiter granted %+v, want it reserved", ws)
+	}
+	if _, err := f.lock(r, file, LockReq{Owner: owner(r, "r"), Ranges: rg}); lockedBy(err) != "p" {
+		t.Errorf("a lock of the reserved range: %s, want refused by the reservation", lockedBy(err))
+	}
+
+	f.clock.advance(leasePeriod)
+	f.sweep(ctx)
+	f.Stop() // waits for the steps the sweep started
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "q" {
+		t.Errorf("a lease period after the reservation: granted %v, want q", got)
+	}
+	if len(f.polls) != 0 {
+		t.Errorf("the timer still watches %d files with no poll waiter", len(f.polls))
+	}
+	f.order.mu.Lock()
+	defer f.order.mu.Unlock()
+	if len(f.order.files) != 1 || f.order.files[0] != file.ID {
+		t.Errorf("the timer took the admission lock of %v, want the file's once", f.order.files)
+	}
+}
+
+// Closing an open, or its host's restart, ends the waiters under it, and the
+// waiters behind the locks it held are granted.
+func TestCloseAndRestartEndWaiters(t *testing.T) {
+	f := newFixture(t)
+	s, h, w, v, u := f.caller(t, smb("pc")), f.host(t, "h", 1), f.host(t, "w", 1), f.host(t, "v", 1), f.host(t, "u", 1)
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}})
+	o := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+	so := smbOwner(s, o)
+	f.mustLock(t, s, file, LockReq{Owner: so, Open: refOf(o), Ranges: []LockRange{x(20, 10)}})
+	f.mustLock(t, s, file, LockReq{Owner: so, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, w, file, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(40, 10)}})
+	f.mustLock(t, w, file, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, v, file, LockReq{Owner: owner(v, "v"), Ranges: []LockRange{x(20, 10)}, Wait: WaitCallback})
+	f.mustLock(t, u, file, LockReq{Owner: owner(u, "u"), Ranges: []LockRange{x(40, 10)}, Wait: WaitCallback})
+
+	f.close(t, s, o)
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "v" {
+		t.Errorf("after the close: granted %v, want v", got)
+	}
+	f.host(t, "w", 2)
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "u" {
+		t.Errorf("after the restart: granted %v, want u", got)
+	}
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Errorf("an ended waiter was served: %+v", ws)
+	}
+}
+
+// A cancel names the request it cancels, and cancelling a waiter lifts its
+// bar: a waiter barred only by it is granted.
+func TestCancelServesWaitersBehind(t *testing.T) {
+	f := newFixture(t)
+	h, a, b := f.host(t, "h", 1), f.host(t, "a", 1), f.host(t, "b", 1)
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{sh(0, 10)}})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
+	if _, err := f.Locks().CancelLock(ctx, a, file.ID, owner(a, "a"), br(0, 5)); err != nil {
+		t.Fatal(err)
+	}
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Fatalf("a cancel naming a range other than the waiter's ended its wait: %+v", ws)
+	}
+	if _, err := f.Locks().CancelLock(ctx, a, file.ID, owner(a, "a"), br(0, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "b" {
+		t.Errorf("after the barring waiter cancelled: granted %v, want b", got)
+	}
+}
+
+// A cancel racing the unlock that frees its range either drops the waiter, so
+// nothing is held for it, or reports the lock granted first, and it is held.
+func TestCancelRacesGrant(t *testing.T) {
+	f := newFixture(t)
+	h, w := f.caller(t, smb("pc-h")), f.caller(t, smb("pc-w"))
+	for range 1000 {
+		file := anyFile()
+		oh, ow := f.mustOpen(t, h, file, OpenRequest{Access: rd | wr}), f.mustOpen(t, w, file, OpenRequest{Access: rd | wr})
+		hOwner, wOwner := smbOwner(h, oh), smbOwner(w, ow)
+		f.mustLock(t, h, file, LockReq{Owner: hOwner, Open: refOf(oh), Ranges: []LockRange{x(0, 10)}})
+		f.mustLock(t, w, file, LockReq{Owner: wOwner, Open: refOf(ow), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+		var got bool
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_ = f.Locks().Unlock(ctx, h, file.ID, refOf(oh), hOwner, []ByteRange{br(0, 10)})
+		})
+		wg.Go(func() { got, _ = f.Locks().CancelLock(ctx, w, file.ID, wOwner, br(0, 10)) })
+		wg.Wait()
+		if held := f.holder(t, file, br(0, 10)); got != (held != nil) {
+			t.Fatalf("cancel answered granted=%v while the range is held by %v", got, held)
+		}
+		f.close(t, h, oh)
+		f.close(t, w, ow)
+		f.sink.takeWaits()
+	}
+}
+
+// Releasing an owner of locks drops its locks here, and grants the waiters
+// behind them.
+func TestReleaseLockOwner(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	if err := f.Locks().ReleaseLockOwner(ctx, a, owner(a, "lo")); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "b" {
+		t.Errorf("after the release: granted %v, want b", got)
+	}
+}
+
+func errOf(_ LockResult, err error) error { return err }
+
+// Every lock call names its caller's client and acts only on that client's
+// owners and lock states: an owner of another client is ErrNotYours, a lock
+// under an open by a principal not its opener is ErrNotYours, and a lock state
+// named with another owner is ErrBadState.
+func TestLockCallsNameTheirClient(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	lo := owner(a, "lo")
+	res := f.mustLock(t, a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	for name, err := range map[string]error{
+		"Lock":             errOf(f.lock(b, file, LockReq{Owner: lo, Ranges: []LockRange{x(0, 10)}})),
+		"Unlock":           f.Locks().Unlock(ctx, b, file.ID, none, lo, []ByteRange{br(0, 10)}),
+		"CancelLock":       func() error { _, err := f.Locks().CancelLock(ctx, b, file.ID, lo, br(0, 10)); return err }(),
+		"WaitAnswered":     f.Locks().WaitAnswered(ctx, b, LockWaiter{File: file.ID, Owner: lo, Open: o.Ref.Token, Range: x(0, 10)}, true),
+		"ReleaseLockOwner": f.Locks().ReleaseLockOwner(ctx, b, lo),
+	} {
+		if !errors.Is(err, ErrNotYours) {
+			t.Errorf("%s by another client: %v, want ErrNotYours", name, err)
+		}
+	}
+	thief := Caller{Client: a.Client, Principal: entity.NewUser()}
+	if _, err := f.lock(thief, file, LockReq{Owner: owner(a, "lo2"), Open: refOf(o), Ranges: []LockRange{x(20, 10)}}); !errors.Is(err, ErrNotYours) {
+		t.Errorf("a lock under the open by another principal: %v, want ErrNotYours", err)
+	}
+	other := owner(a, "lo2")
+	if _, err := f.lock(a, file, LockReq{Owner: other, Open: OpenRef{Kind: RefLocked, State: res.Ref}, Ranges: []LockRange{x(20, 10)}}); !errors.Is(err, ErrBadState) {
+		t.Errorf("a lock naming lo's lock state as another owner: %v, want ErrBadState", err)
+	}
+	if err := f.Locks().Unlock(ctx, a, file.ID, OpenRef{Kind: RefLocked, State: res.Ref}, other, []ByteRange{br(0, 10)}); !errors.Is(err, ErrBadState) {
+		t.Errorf("an unlock naming lo's lock state as another owner: %v, want ErrBadState", err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Error("lo's lock was released by a call that was refused")
+	}
+}

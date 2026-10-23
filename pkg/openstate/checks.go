@@ -5,12 +5,12 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
+	"github.com/marmos91/dittofs/pkg/openstate/ranges"
 )
 
-// ByteRange is the bytes an I/O covers.
-type ByteRange struct {
-	Offset, Length uint64
-}
+// ByteRange is Length bytes from Offset: zero is empty, and a length of all
+// ones reaches the last byte.
+type ByteRange = ranges.Range
 
 // ChangeMask names what a change does to a file or directory.
 type ChangeMask uint16
