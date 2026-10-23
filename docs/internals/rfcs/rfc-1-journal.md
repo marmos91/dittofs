@@ -1692,8 +1692,7 @@ state, allocated storage, held bytes, and whether it holds records that do not v
 ([§3.7](#3.7%20State%20introspection)) is the `O(1)` total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
-that the segments do not support, the records the segments hold that the index
-does not reference, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
+that the segments do not support, the records precedence says the index must hold, retain or mark but which it lacks, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
 separate, explicit action.
 
 ### 4.5 Rebuilding one file from its records, by example
