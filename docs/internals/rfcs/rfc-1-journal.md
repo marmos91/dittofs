@@ -406,7 +406,8 @@ that append a record, read a segment, sync, or wait on another operation: `Init`
 `Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
 `WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
 receives a context derived from it), `MarkOffloaded`, `Unmark`, `Release`, the removals of
-[§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`. A call that only reads or changes
+[§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`, and the verification of [§4.4](#4.4%20Inspection), which
+reads every segment. A call that only reads or changes
 memory and never waits takes none: `Share`, `Strand`, `SetSyncPolicy`,
 `Reserve`, `Draw`, `SetVersionLimit`, `Settle`, `Held`, `Extents`, `Files`,
 `DirtyFiles` and `Stats`. No `Close` takes one either, the journal's, a
