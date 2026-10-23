@@ -92,7 +92,7 @@ func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
 	ok(t, g.Settle(shareA, fid(1), ver(2)))
 	ok(t, g.Crash())
 	ok(t, g.Reopen(ver(10)))
-	ok(t, g.Compare(shareA, modelView{New(), shareA}))
+	ok(t, g.Compare(t.Context(), shareA, modelView{New(), shareA}))
 	ok(t, g.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(11), nil))
 	misused(t, g.Fill(shareA, fid(1), 0, fill('F', 4), ver(11), ver(1), nil))
 }

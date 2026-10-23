@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"iter"
 	"time"
 
@@ -12,9 +13,9 @@ import (
 // HandleView serves it from a real journal; a test can serve it from anything
 // else, such as a wrapper that plants a divergence.
 type View interface {
-	ReadAt(id journalv2.FileID, off int64, p []byte) (n int, missing []journalv2.Extent, held []journalv2.Held, asOf journalv2.Version, err error)
+	ReadAt(ctx context.Context, id journalv2.FileID, off int64, p []byte) (n int, missing []journalv2.Extent, held []journalv2.Held, asOf journalv2.Version, err error)
 	Extents(id journalv2.FileID) ([]journalv2.Extent, error)
-	Since(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error]
+	Since(ctx context.Context, id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error]
 	Files() iter.Seq[journalv2.FileID]
 	DirtyFiles() iter.Seq2[journalv2.FileID, time.Time]
 

@@ -276,7 +276,7 @@ func TestAnOfferSyncsWhatItCaptures(t *testing.T) {
 	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
-	diverged(t, m.Compare(shareA, modelView{New(), shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
 // Offloaded content is not dirty and is never offered as such.
@@ -372,7 +372,7 @@ func TestAnOfferSyncsItsNeighbours(t *testing.T) {
 
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 10, fill('W', 10), 0, ver(2), nil))
-	diverged(t, m.Compare(shareA, modelView{j, shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // A report naming an empty extent names nothing: it may be accepted or refused
@@ -399,7 +399,7 @@ func TestAnOfferSyncsOnlyWhatItCaptures(t *testing.T) {
 
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('w', 4), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // A superseded version an offer carries has no stamp either.

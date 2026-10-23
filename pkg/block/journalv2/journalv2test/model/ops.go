@@ -2,6 +2,7 @@ package model
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"slices"
 
@@ -71,6 +72,20 @@ func (m *Model) issue(op string, id fileID, v version) error {
 	return nil
 }
 
+// cancelled reports whether err is a context's error: the journal checks a
+// call's context before any refusal and any change, so a call that returns
+// one changed nothing.
+//
+// decision: a call answered with a context's error is taken as having changed
+// nothing, whatever the context was. The model never sees the caller's
+// context, so a journal returning that error for a context that had not ended
+// passes here; the caller, which holds the context, is the one to check it.
+// Take the context into the model's operations if a caller ever needs the
+// model to check it instead.
+func cancelled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func unexpected(m *Model, op string, id fileID, err error) error {
 	return m.mismatch(op, id, "returned %v, which the model has no rule for", err)
 }
@@ -82,6 +97,9 @@ func unexpected(m *Model, op string, id fileID, err error) error {
 // it holds nothing and is not counted as a change of the file.
 func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int64, v version, err error) error {
 	const op = "write"
+	if cancelled(err) {
+		return m.known(op, id)
+	}
 	f, proceed, mis := m.enter(op, tag, id, err)
 	switch {
 	case mis != nil:
@@ -114,6 +132,11 @@ func (m *Model) Sync(tag shareTag, ids []fileID, err error) error {
 		if mis := m.known(op, id); mis != nil {
 			return mis
 		}
+	}
+	if cancelled(err) {
+		// It stopped waiting, not the sync: the files may or may not be
+		// durable, as they were before it.
+		return nil
 	}
 	if err != nil {
 		return m.mismatch(op, fileID{}, "returned %v, but the model takes no failed sync window", err)
@@ -153,6 +176,9 @@ func (m *Model) known(op string, id fileID) error {
 // sub-extents absent at the call, offloaded, at version v.
 func (m *Model) Fill(tag shareTag, id fileID, off int64, p []byte, asOf, v version, err error) error {
 	const op = "fill"
+	if cancelled(err) {
+		return m.known(op, id)
+	}
 	f, proceed, mis := m.enter(op, tag, id, err)
 	switch {
 	case mis != nil:
@@ -224,6 +250,9 @@ func (m *Model) Delete(tag shareTag, id fileID, v version, err error) error {
 // remove applies a removal. A removal is durable on return and never gated on
 // the offloaded bit.
 func (m *Model) remove(op string, kind recordKind, tag shareTag, id fileID, e extent, v version, err error) error {
+	if cancelled(err) {
+		return m.known(op, id)
+	}
 	f, proceed, mis := m.enter(op, tag, id, err)
 	zero := kind == kindDeallocate && e.Len == 0
 	switch {

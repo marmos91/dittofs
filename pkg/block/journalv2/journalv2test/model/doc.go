@@ -38,6 +38,10 @@
 // may be called after any step, and the model-based test calls it after
 // every one.
 //
+// The model takes no context: it does no I/O and never waits. A journal call
+// refused with its context's error changed nothing, and is applied as such;
+// Compare takes the context its reads of the journal run under.
+//
 // An error wraps ErrDiverged when the journal did what the RFC does not allow,
 // and ErrMisuse when the model was called in a way it cannot take, which is
 // the caller's bug, never the journal's.

@@ -2,6 +2,7 @@ package model
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -123,12 +124,18 @@ func sinceFroms(f *file) []version {
 // journal splits held content depends on its records, which the caller cannot
 // see.
 //
+// Compare reads the journal under ctx. If ctx ends, it returns the context's
+// error, which says nothing about the journal or the caller.
+//
 // After a crash, Compare looks for a state the crash allows that the journal
 // shows, file by file, and continues from it: the model then holds what the
 // journal holds. When none matches, it reports how the state in which every
 // record the crash left in doubt was kept differs, or why that state cannot be.
-func (m *Model) Compare(tag shareTag, v View) error {
+func (m *Model) Compare(ctx context.Context, tag shareTag, v View) error {
 	const op = "compare"
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("model: %s: %w", op, err)
+	}
 	if m.crashed {
 		return m.misuse(op, fileID{}, "called between Crash and Reopen")
 	}
@@ -138,7 +145,7 @@ func (m *Model) Compare(tag shareTag, v View) error {
 	})
 	for _, id := range ids {
 		if f := m.files[id]; f.tag == tag {
-			if err := m.compareFile(f, v); err != nil {
+			if err := m.compareFile(ctx, f, v); err != nil {
 				return err
 			}
 		}
@@ -191,9 +198,14 @@ func setDiff(want, got map[fileID]bool) string {
 	return ""
 }
 
-func (m *Model) compareFile(f *file, v View) error {
+func (m *Model) compareFile(ctx context.Context, f *file, v View) error {
 	const op = "compare"
-	obs, err := observe(f, v, sinceFroms(f))
+	obs, err := observe(ctx, f, v, sinceFroms(f))
+	if err != nil && ctx.Err() != nil {
+		// The journal stopped because the caller's context ended: neither
+		// the journal nor the caller is wrong.
+		return fmt.Errorf("model: %s: %w", op, ctx.Err())
+	}
 	if err != nil {
 		return m.mismatch(op, f.id, "%v", err)
 	}
@@ -264,7 +276,7 @@ func (m *Model) issuedAbove(f *file, c candidate) string {
 // record of f ever wrote and every extent the journal says it holds, one byte
 // wider on each side, so a held byte, a missing byte and a widened missing
 // extent are all seen. It fails on answers that no state could explain.
-func observe(f *file, v View, froms []version) (*observation, error) {
+func observe(ctx context.Context, f *file, v View, froms []version) (*observation, error) {
 	o := &observation{
 		held: map[int64]heldByte{}, missing: map[int64]bool{}, extents: map[int64]bool{},
 		bits: map[int64]indexByte{},
@@ -301,7 +313,7 @@ func observe(f *file, v View, froms []version) (*observation, error) {
 	read := false
 	for _, w := range windows {
 		p := make([]byte, w.Len)
-		_, missing, held, asOf, err := v.ReadAt(f.id, w.Off, p)
+		_, missing, held, asOf, err := v.ReadAt(ctx, f.id, w.Off, p)
 		if err != nil {
 			return nil, fmt.Errorf("ReadAt %s: %w", fmtExtent(w), err)
 		}
@@ -340,7 +352,7 @@ func observe(f *file, v View, froms []version) (*observation, error) {
 	}
 
 	for _, from := range froms {
-		sv, err := readSince(f.id, v, from)
+		sv, err := readSince(ctx, f.id, v, from)
 		if err != nil {
 			return nil, err
 		}
@@ -372,10 +384,10 @@ func observe(f *file, v View, froms []version) (*observation, error) {
 }
 
 // readSince reads Since(id, from) through v.
-func readSince(id fileID, v View, from version) (sinceView, error) {
+func readSince(ctx context.Context, id fileID, v View, from version) (sinceView, error) {
 	sv := sinceView{from: from, writes: map[int64]sinceByte{}}
 	var last version
-	for c, err := range v.Since(id, from) {
+	for c, err := range v.Since(ctx, id, from) {
 		if err != nil {
 			return sv, fmt.Errorf("Since from %s: %w", fmtVersion(from), err)
 		}

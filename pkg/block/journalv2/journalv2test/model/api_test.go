@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"iter"
 	"strings"
@@ -42,7 +43,7 @@ func TestAFailureNamesTheBytesTheVersionAndTheRule(t *testing.T) {
 	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
-	err := m.Compare(shareA, modelView{New(), shareA})
+	err := m.Compare(t.Context(), shareA, modelView{New(), shareA})
 	diverged(t, err)
 	for _, want := range []string{"[0,4)", "v1", "synced", "lost"} {
 		if !strings.Contains(err.Error(), want) {
@@ -64,9 +65,9 @@ func TestSinceIsComparedFromEveryVersion(t *testing.T) {
 		if from.Counter > 0 {
 			from.Counter--
 		}
-		return h.Since(id, from)
+		return h.Since(t.Context(), id, from)
 	}}
-	diverged(t, m.Compare(shareA, inclusive))
+	diverged(t, m.Compare(t.Context(), shareA, inclusive))
 }
 
 // Offload calls its callback while dirty content at or below through is held:
@@ -100,7 +101,7 @@ func TestUnresolvedNamesTheFilesACrashLeftUnknown(t *testing.T) {
 	if got := m.Unresolved(); len(got) != 1 || got[0] != fid(1) {
 		t.Fatalf("Unresolved = %s, want only file 1", fmtFiles(got))
 	}
-	ok(t, m.Compare(shareA, modelView{New(), shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
 	if got := m.Unresolved(); len(got) != 0 {
 		t.Fatalf("Unresolved = %s after Compare", fmtFiles(got))
 	}
@@ -120,9 +121,9 @@ func TestSinceIsComparedFromEachOfManyVersions(t *testing.T) {
 		if from == ver(5) {
 			from = ver(4)
 		}
-		return h.Since(id, from)
+		return h.Since(t.Context(), id, from)
 	}}
-	diverged(t, m.Compare(shareA, wrongAtFive))
+	diverged(t, m.Compare(t.Context(), shareA, wrongAtFive))
 }
 
 // A journal whose answer leaves more in doubt than the crash did is wrong, not
@@ -141,7 +142,7 @@ func TestAnAnswerThatFragmentsTheSearchIsTheJournals(t *testing.T) {
 
 	h := modelView{j, shareA}
 	alternating := planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-		n, mi, he, as, err := h.ReadAt(id, off, p)
+		n, mi, he, as, err := h.ReadAt(t.Context(), id, off, p)
 		for i := range p {
 			if (off+int64(i))%2 == 1 {
 				p[i] = 'B'
@@ -149,5 +150,42 @@ func TestAnAnswerThatFragmentsTheSearchIsTheJournals(t *testing.T) {
 		}
 		return n, mi, he, as, err
 	}}
-	diverged(t, m.Compare(shareA, alternating))
+	diverged(t, m.Compare(t.Context(), shareA, alternating))
+}
+
+// A call refused with its context's error changed nothing: the journal checks
+// the context before any refusal and any change.
+func TestACallCancelledByItsContextChangesNothing(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 4, fill('B', 4), 0, journalv2.Version{}, context.Canceled))
+	ok(t, m.Fill(shareA, fid(1), 8, fill('F', 4), ver(1), ver(1), context.DeadlineExceeded))
+	ok(t, m.Truncate(shareA, fid(1), 0, journalv2.Version{}, context.Canceled))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 4)}, context.Canceled))
+	ok(t, m.EndOffer(shareA, fid(1), ver(1), nil, context.Canceled))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 1, false}})
+}
+
+// A Sync whose context ended stops waiting, not the sync: the writes it named
+// are not known durable, and a crash may still lose them.
+func TestACancelledSyncMakesNothingDurable(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, context.Canceled))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
+}
+
+// A Compare whose context ends returns the context's error: neither the
+// journal nor the caller is wrong.
+func TestACompareCancelledByItsContextSaysSo(t *testing.T) {
+	m, j := New(), New()
+	script(t, m, j)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := m.Compare(ctx, shareA, modelView{j, shareA})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrDiverged) || errors.Is(err, ErrMisuse) {
+		t.Fatalf("a cancelled Compare returned %v", err)
+	}
 }

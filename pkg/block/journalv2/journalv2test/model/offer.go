@@ -362,7 +362,8 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 //
 // Where Offer was called for this Offload, the callback ran, and Offload
 // returns what it returned. Where it was not, the journal offered nothing,
-// which it may only do while no dirty content at or below through is held.
+// which it may only do while no dirty content at or below through is held, or
+// when it stopped at its context before offering anything.
 func (m *Model) EndOffer(tag shareTag, id fileID, through version, fnErr, err error) error {
 	const op = "offload"
 	if o := m.offers[id]; o != nil && o.tag == tag && !o.ended {
@@ -376,6 +377,9 @@ func (m *Model) EndOffer(tag shareTag, id fileID, through version, fnErr, err er
 		return nil
 	}
 
+	if cancelled(err) {
+		return m.known(op, id)
+	}
 	_, proceed, mis := m.enter(op, tag, id, err)
 	switch {
 	case mis != nil:
@@ -435,6 +439,9 @@ func (m *Model) mustOffer(id fileID, through version) (int64, version, bool) {
 // and absent bytes are left as they are.
 func (m *Model) Release(tag shareTag, id fileID, extents []extent, err error) error {
 	const op = "release"
+	if cancelled(err) {
+		return m.known(op, id)
+	}
 	f, proceed, mis := m.enter(op, tag, id, err)
 	switch {
 	case mis != nil:

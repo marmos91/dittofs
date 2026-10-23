@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -28,15 +29,15 @@ func TestCrashKeepsSyncedWritesAndAllowsUnsyncedOnesEitherWay(t *testing.T) {
 	neither := New()
 
 	m := setup(t)
-	ok(t, m.Compare(shareA, modelView{kept, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{kept, shareA}))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 5, 1, false}, {5, 10, 2, false}})
 
 	m = setup(t)
-	ok(t, m.Compare(shareA, modelView{lost, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{lost, shareA}))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, false}})
 
 	m = setup(t)
-	diverged(t, m.Compare(shareA, modelView{neither, shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{neither, shareA}))
 }
 
 // A write split at a segment cap is one record per segment, each surviving a
@@ -54,12 +55,12 @@ func TestCrashMayKeepPartOfASplitWrite(t *testing.T) {
 	torn := New()
 	ok(t, torn.WriteAt(shareA, fid(1), 0, fill('A', 6), 0, ver(1), nil))
 	m := setup(t)
-	ok(t, m.Compare(shareA, modelView{torn, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{torn, shareA}))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 6, 1, false}})
 
 	other := New()
 	ok(t, other.WriteAt(shareA, fid(1), 0, fill('B', 6), 0, ver(1), nil))
-	diverged(t, setup(t).Compare(shareA, modelView{other, shareA}))
+	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{other, shareA}))
 }
 
 // A removal is durable on return, so a crash never undoes it, synced or not.
@@ -73,7 +74,7 @@ func TestCrashNeverUndoesARemoval(t *testing.T) {
 
 	undone := New()
 	ok(t, undone.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	diverged(t, m.Compare(shareA, modelView{undone, shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{undone, shareA}))
 }
 
 // Settling is not persisted, so a marker the caller settled before a crash
@@ -103,16 +104,16 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 	}
 
 	m := setup(t, true)
-	ok(t, m.Compare(shareA, modelView{journal(false), shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{journal(false), shareA}))
 	if got := since(t, m, shareA, fid(1), ver(1)); len(got) != 1 {
 		t.Fatalf("a marker that came back is not live in the model: %s", fmtChanges(got))
 	}
 
 	m = setup(t, true)
-	ok(t, m.Compare(shareA, modelView{journal(true), shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{journal(true), shareA}))
 
 	m = setup(t, false)
-	diverged(t, m.Compare(shareA, modelView{journal(true), shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{journal(true), shareA}))
 }
 
 // An offloaded record lost to a crash leaves the bit unset: wrong only in the
@@ -129,7 +130,7 @@ func TestCrashMayLoseAnUnsyncedMark(t *testing.T) {
 
 	dirtyAgain := New()
 	ok(t, dirtyAgain.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{dirtyAgain, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{dirtyAgain, shareA}))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, false}})
 }
 
@@ -145,7 +146,7 @@ func TestVersionsAfterReopenExceedTheFloor(t *testing.T) {
 
 	lost := New()
 	ok(t, lost.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{lost, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{lost, shareA}))
 	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(2), nil))
 	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(5), nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(6), nil))
@@ -193,11 +194,11 @@ func TestARecordThatSurvivedACrashIsDurable(t *testing.T) {
 	ok(t, m.Reopen(ver(10)))
 	kept := New()
 	ok(t, kept.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{kept, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{kept, shareA}))
 
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(20)))
-	diverged(t, m.Compare(shareA, modelView{New(), shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
 // The floor of a reopen carries the version limit, so the counter restarts
@@ -219,7 +220,7 @@ func TestCrashSearchIsDecidedByWhatTheJournalShows(t *testing.T) {
 	}
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(100)))
-	ok(t, m.Compare(shareA, modelView{New(), shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
 	equalSpans(t, heldSpans(t, m, fid(1)), nil)
 }
 
@@ -236,7 +237,7 @@ func TestChangeVersionNeedNotCountAMarkerThatDidNotComeBack(t *testing.T) {
 
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 	ok(t, m.Fill(shareA, fid(1), 30, fill('F', 2), ver(1), ver(1), nil))
 }
 
@@ -260,7 +261,7 @@ func TestCrashTellsAFillFromTheWriteItRefills(t *testing.T) {
 	ok(t, j.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(j, fid(1), 1, 1, dirty(0, 10, 1))))
 	ok(t, j.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
 	ok(t, j.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // A fill's version is the ref's, not one the journal issued, so it bounds no
@@ -280,14 +281,14 @@ func TestAFillVersionBoundsTheCounterOnlyWhileHeld(t *testing.T) {
 	ok(t, write.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
 
 	m := setup(t)
-	ok(t, m.Compare(shareA, modelView{write, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{write, shareA}))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
 
 	both := New()
 	ok(t, both.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
 	ok(t, both.Fill(shareA, fid(1), 100, fill('F', 4), ver(5), ver(50), nil))
 	m = setup(t)
-	ok(t, m.Compare(shareA, modelView{both, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{both, shareA}))
 	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
 }
 
@@ -303,14 +304,14 @@ func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
 	ok(t, m.Reopen(ver(10)))
 	gone := New()
 	ok(t, gone.WriteAt(shareA, fid(1), 2, fill('A', 8), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{gone, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{gone, shareA}))
 
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(20)))
 	back := New()
 	ok(t, back.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, back.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
-	diverged(t, m.Compare(shareA, modelView{back, shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{back, shareA}))
 }
 
 // A write hidden under a removal whose marker did not come back backs nothing,
@@ -340,7 +341,7 @@ func TestAHiddenWriteCannotBeToldApartAfterACrash(t *testing.T) {
 
 	for _, kept := range []bool{true, false} {
 		m, j := setup(t), journal(kept)
-		ok(t, m.Compare(shareA, modelView{j, shareA}))
+		ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 		if got, want := m.current(fid(1)).change, j.current(fid(1)).change; got != want {
 			t.Fatalf("write kept %t: model change version %s, journal %s", kept, fmtVersion(got), fmtVersion(want))
 		}
@@ -353,8 +354,8 @@ type asOfView struct {
 	asOf journalv2.Version
 }
 
-func (v asOfView) ReadAt(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-	n, missing, held, _, err := v.modelView.ReadAt(id, off, p)
+func (v asOfView) ReadAt(ctx context.Context, id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+	n, missing, held, _, err := v.modelView.ReadAt(ctx, id, off, p)
 	return n, missing, held, v.asOf, err
 }
 
@@ -369,7 +370,7 @@ func TestOverlappingUnsyncedWritesNeedNoSearch(t *testing.T) {
 	j := clone(m)
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(30)))
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // Every version the journal issues exceeds every version on disk, so once it
@@ -388,8 +389,8 @@ func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
 	}
 	kept := New()
 	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
-	diverged(t, setup(t).Compare(shareA, modelView{kept, shareA}))
-	ok(t, setup(t).Compare(shareA, modelView{New(), shareA}))
+	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{kept, shareA}))
+	ok(t, setup(t).Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
 // A marker that came back after a crash still counts in the file's change
@@ -406,7 +407,7 @@ func TestAMarkerThatCameBackCountsInTheChangeVersion(t *testing.T) {
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, j.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
-	diverged(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(1)}))
 }
 
 // Repack may drop a record that backs nothing, and recovery rebuilds a file's
@@ -424,7 +425,7 @@ func TestAfterACrashTheChangeVersionCountsOnlyLiveRecords(t *testing.T) {
 	j := clone(m)
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
-	ok(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(1)}))
 }
 
 // A Compare that finds no state the crash allows leaves the model as it was.
@@ -437,7 +438,7 @@ func TestAFailedCompareChangesNothing(t *testing.T) {
 	other := New()
 	ok(t, other.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
 	ok(t, other.WriteAt(shareA, fid(1), 4, fill('B', 2), 0, ver(2), nil))
-	diverged(t, m.Compare(shareA, modelView{other, shareA}))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{other, shareA}))
 	if after := len(m.files[fid(1)].recs); after != before {
 		t.Fatalf("a failed Compare left %d records, not %d", after, before)
 	}
@@ -464,7 +465,7 @@ func TestAWriteLiveAgainAfterACrashCountsInTheChangeVersion(t *testing.T) {
 	ok(t, m.Reopen(ver(10)))
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 	diverged(t, m.Fill(shareA, fid(1), 10, fill('F', 2), journalv2.Version{}, ver(1), nil))
 }
 
@@ -494,7 +495,7 @@ func TestCrashMayKeepPartOfASameVersionRefill(t *testing.T) {
 		}
 	}
 	f.recs = recs
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // An unsettled marker comes back after a crash, and its removal still holds
@@ -510,7 +511,7 @@ func TestAnUnsettledMarkerCountsInTheChangeVersionAfterACrash(t *testing.T) {
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, j.Truncate(shareA, fid(1), 4, ver(2), nil))
-	diverged(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(1)}))
 }
 
 // The bound a version issued after a crash sets on what survived it holds
@@ -537,10 +538,10 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 	}
 	kept := New()
 	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(50), nil))
-	diverged(t, setup(t, 50, false).Compare(shareA, modelView{kept, shareA}))
-	diverged(t, setup(t, 20, true).Compare(shareA, modelView{kept, shareA}))
-	diverged(t, setup(t, 20, false, 60).Compare(shareA, modelView{kept, shareA}))
-	ok(t, setup(t, 20, true).Compare(shareA, modelView{New(), shareA}))
+	diverged(t, setup(t, 50, false).Compare(t.Context(), shareA, modelView{kept, shareA}))
+	diverged(t, setup(t, 20, true).Compare(t.Context(), shareA, modelView{kept, shareA}))
+	diverged(t, setup(t, 20, false, 60).Compare(t.Context(), shareA, modelView{kept, shareA}))
+	ok(t, setup(t, 20, true).Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
 // Sync, Settle and Since are refused on a file whose state a crash left
@@ -593,7 +594,7 @@ func TestWritesAreDecidedFromTheBytesWithoutTheSearch(t *testing.T) {
 			ok(t, m.Reopen(ver(100)))
 			j := New()
 			c.journal(j)
-			ok(t, m.Compare(shareA, modelView{j, shareA}))
+			ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 		})
 	}
 }

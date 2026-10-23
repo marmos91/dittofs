@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"iter"
 	"math"
 	"testing"
@@ -31,8 +32,8 @@ func script(t *testing.T, ms ...*Model) {
 func TestCompareAcceptsTheSameState(t *testing.T) {
 	m, j := New(), New()
 	script(t, m, j)
-	ok(t, m.Compare(shareA, modelView{j, shareA}))
-	ok(t, m.Compare(shareB, modelView{j, shareB}))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
+	ok(t, m.Compare(t.Context(), shareB, modelView{j, shareB}))
 }
 
 // planted wraps an honest view and changes one answer.
@@ -53,11 +54,11 @@ func (p planted) DirtyFiles() iter.Seq2[journalv2.FileID, time.Time] {
 	return p.modelView.DirtyFiles()
 }
 
-func (p planted) ReadAt(id journalv2.FileID, off int64, b []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+func (p planted) ReadAt(ctx context.Context, id journalv2.FileID, off int64, b []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
 	if p.readAt != nil {
 		return p.readAt(id, off, b)
 	}
-	return p.modelView.ReadAt(id, off, b)
+	return p.modelView.ReadAt(ctx, id, off, b)
 }
 
 func (p planted) Extents(id journalv2.FileID) ([]journalv2.Extent, error) {
@@ -67,11 +68,11 @@ func (p planted) Extents(id journalv2.FileID) ([]journalv2.Extent, error) {
 	return p.modelView.Extents(id)
 }
 
-func (p planted) Since(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+func (p planted) Since(ctx context.Context, id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 	if p.since != nil {
 		return p.since(id, from)
 	}
-	return p.modelView.Since(id, from)
+	return p.modelView.Since(ctx, id, from)
 }
 
 func (p planted) Index(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
@@ -107,7 +108,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 	}{
 		{"one wrong byte", func(h modelView) View {
 			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-				n, mi, he, as, err := h.ReadAt(id, off, p)
+				n, mi, he, as, err := h.ReadAt(t.Context(), id, off, p)
 				if off <= 5 && 5 < off+int64(len(p)) {
 					p[5-off] ^= 0xff
 				}
@@ -116,13 +117,13 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		}},
 		{"missing widened over a held byte", func(h modelView) View {
 			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-				n, _, _, as, err := h.ReadAt(id, off, p)
+				n, _, _, as, err := h.ReadAt(t.Context(), id, off, p)
 				return n, []journalv2.Extent{ext(off, int64(len(p)))}, nil, as, err
 			}}
 		}},
 		{"a held byte at the wrong version", func(h modelView) View {
 			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-				n, mi, he, as, err := h.ReadAt(id, off, p)
+				n, mi, he, as, err := h.ReadAt(t.Context(), id, off, p)
 				for i := range he {
 					he[i].Version = ver(99)
 				}
@@ -131,7 +132,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		}},
 		{"asOf older than the file", func(h modelView) View {
 			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-				n, mi, he, _, err := h.ReadAt(id, off, p)
+				n, mi, he, _, err := h.ReadAt(t.Context(), id, off, p)
 				return n, mi, he, ver(1), err
 			}}
 		}},
@@ -153,7 +154,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"a marker missing from Since", func(h modelView) View {
 			return planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 				var cs []journalv2.Change
-				for c := range h.Since(id, from) {
+				for c := range h.Since(t.Context(), id, from) {
 					if c.Kind == journalv2.ChangeWrite {
 						cs = append(cs, c)
 					}
@@ -164,7 +165,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"a write's mtime in Since", func(h modelView) View {
 			return planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 				var cs []journalv2.Change
-				for c := range h.Since(id, from) {
+				for c := range h.Since(t.Context(), id, from) {
 					c.Mtime++
 					cs = append(cs, c)
 				}
@@ -174,7 +175,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"Since out of version order", func(h modelView) View {
 			return planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 				var cs []journalv2.Change
-				for c := range h.Since(id, from) {
+				for c := range h.Since(t.Context(), id, from) {
 					cs = append([]journalv2.Change{c}, cs...)
 				}
 				return changes(cs)
@@ -193,7 +194,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		{"Since names a byte not held", func(h modelView) View {
 			return planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 				cs := []journalv2.Change{{Kind: journalv2.ChangeWrite, Extent: ext(1000, 1), Version: ver(1)}}
-				for c := range h.Since(id, from) {
+				for c := range h.Since(t.Context(), id, from) {
 					cs = append(cs, c)
 				}
 				return changes(cs)
@@ -235,7 +236,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		}},
 		{"asOf above every version issued", func(h modelView) View {
 			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-				n, mi, he, _, err := h.ReadAt(id, off, p)
+				n, mi, he, _, err := h.ReadAt(t.Context(), id, off, p)
 				return n, mi, he, ver(1000), err
 			}}
 		}},
@@ -256,7 +257,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, j := New(), New()
 			script(t, m, j)
-			diverged(t, m.Compare(shareA, c.plant(modelView{j, shareA})))
+			diverged(t, m.Compare(t.Context(), shareA, c.plant(modelView{j, shareA})))
 		})
 	}
 }
@@ -271,7 +272,7 @@ func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
 	zeroLen := planted{modelView: view,
 		since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 			var cs []journalv2.Change
-			for c := range view.Since(id, from) {
+			for c := range view.Since(t.Context(), id, from) {
 				if c.Kind == journalv2.ChangeTruncate {
 					c.Extent.Len = math.MaxInt64
 				}
@@ -289,7 +290,7 @@ func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
 			return es, err
 		},
 	}
-	ok(t, m.Compare(shareA, zeroLen))
+	ok(t, m.Compare(t.Context(), shareA, zeroLen))
 	if got := since(t, m, shareA, fid(1), ver(2)); got[0].Extent.Len != math.MaxInt64-35 {
 		t.Fatalf("model marker %s, want it to run to the end", fmtExtent(got[0].Extent))
 	}

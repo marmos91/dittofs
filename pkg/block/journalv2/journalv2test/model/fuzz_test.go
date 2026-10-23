@@ -339,7 +339,7 @@ func uncertainAt(f *file) int {
 // holds no byte it was not given.
 func (d *driver) compare() {
 	for _, tag := range []journalv2.ShareTag{shareA, shareB} {
-		if err := d.m.Compare(tag, modelView{d.journal, tag}); err != nil {
+		if err := d.m.Compare(d.t.Context(), tag, modelView{d.journal, tag}); err != nil {
 			d.t.Fatalf("the model does not show what the journal holds: %v", err)
 		}
 	}
