@@ -4,7 +4,9 @@ This directory holds the **cross-system benchmark harness assets** — currently
 the `fio` job files under [`workloads/`](workloads/). The harness that drives
 them, `dfsbench` (`cmd/bench`), is being built incrementally; see
 **issue #1602** and `.planning/2026-07-08-bench-harness-consolidation.md` for the
-plan and the per-PR sequence.
+plan and the per-PR sequence. [`verify/`](verify/) holds a job that reads its data
+back and checks it: `dt run fio-verify` runs it with the workloads, `dfsbench`
+doesn't.
 
 The goal is ONE fio-based comparison harness that measures DittoFS against real
 competitors (juicefs, s3ql, rclone-mount, s3fs) over NFSv3 / NFSv4.1 / SMB3 on a

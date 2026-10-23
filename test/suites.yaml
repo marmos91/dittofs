@@ -324,14 +324,19 @@ suites:
     # there, a change to setup.sh, which its owner makes.
     blocking: false
   fio-verify:
-    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
-    tests: bench/workloads/*.fio
+    # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
+    # perl fills them from the environment into a copy below {out}, which fio runs.
+    cmd:
+      - cp {test} {out}/{test}
+      - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
+      - fio --output-format=json --output={out}/{test}.json {out}/{test}
+    tests: bench/*/*.fio   # dfsbench's workloads, and the verify jobs, which read their data back
     exclude: [bench/workloads/layout.fio]
-    fixture: { profile: badger-s3, nfs: "4.1" }
+    fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }
     metrics: fio-json
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }
