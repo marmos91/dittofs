@@ -173,11 +173,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nfs-common
 
-      # mount.cifs, which the smb-client need checks, and smbclient, which
-      # AD-DC's NTLM test runs and skips without. The other places' own
-      # clients are there already.
+      # mount.cifs for the smb-client need and smbclient for its own; the other
+      # places' own clients are there already.
       - name: Install the SMB clients
-        if: contains(matrix.needs, 'smb-client') && runner.os == 'Linux'
+        if: runner.os == 'Linux' && (contains(matrix.needs, 'smb-client') || contains(matrix.needs, 'smbclient'))
         run: |
           sudo apt-get update
           sudo apt-get install -y cifs-utils smbclient

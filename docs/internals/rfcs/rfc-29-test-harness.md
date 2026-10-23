@@ -511,7 +511,7 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge, blocking: false }   # until it has been green for two weeks (§4.3)
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge, blocking: false }   # until it has been green for two weeks (§4.3)
   operator:                             # its own Go module; the kustomize render check becomes a make target
     cmd: make -C k8s/dittofs-operator test lint manifests-verify
     tier: pr
@@ -1174,7 +1174,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **privileges:** `root` (passwordless sudo);
 - **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
   run it in its own image, below);
-- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
+- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`, `smbclient`,
   `nfs4-acl-tools`, `kerberos`, `dm-flakey`, `fio`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds

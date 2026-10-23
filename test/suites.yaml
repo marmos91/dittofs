@@ -95,7 +95,7 @@ suites:
       # decision: non-blocking, so a flaky run doesn't turn develop red: its tests against the Samba
       # domain failed about one develop run in seven until the fixture started the domain once. Make
       # it blocking once dt history gives it two weeks of runs with no failed or flaky test.
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge, blocking: false }
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge, blocking: false }
   operator:
     dir: k8s/dittofs-operator
     cmd:
