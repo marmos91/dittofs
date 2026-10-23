@@ -150,6 +150,12 @@ func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
 
 // Stop stops the lease timer. Open state is left as it is, for the next
 // start's grace.
+//
+// decision: Stop waits for the timer, not for calls already past running():
+// such a call still finishes and may raise ClientEnded after Stop returns.
+// It holds because the node stops the service, the table's only caller,
+// first. Count in-flight calls and wait for them if a caller is found that
+// outlives the service.
 func (t *Table) Stop() {
 	t.cmu.Lock()
 	stop := t.stop
