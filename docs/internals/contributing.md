@@ -46,8 +46,7 @@ The Nix flake provides:
 - pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
 - `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
 
-`nix flake check` builds both binaries and runs the conformance graders, which is
-what decides whether a suite run counts as green.
+`nix flake check` builds both binaries.
 
 The binaries also run straight from the flake, without a clone:
 
@@ -162,8 +161,8 @@ access to download the scanner and query the Go vulnerability database, and
 can use several GiB of memory. Results depend on the active Go toolchain,
 platform, build settings, and current database; tests are not included in the
 scan. Check `go version` when a report identifies standard-library issues.
-The initial Go 1.26.0 baseline reports standard-library vulnerabilities, so a
-nonzero result is expected until the compiler is updated and findings reviewed.
+Both modules' `toolchain` line selects Go 1.26.10, so a report of
+standard-library issues usually means an older toolchain is active.
 
 ## Testing
 
@@ -528,9 +527,9 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `conformance.yml` | PR, push, nightly | cthon04, nfstest, Kerberos smbtorture | ~45 min |
+| `conformance.yml` | PR, nightly | cthon04, nfstest | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS and smbtorture so far | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS and smbtorture, with its Kerberos option, so far | ~20 min |
 | `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
@@ -577,7 +576,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- Kerberos smbtorture
+- **tests.yml** -- the `merge` tier, with smbtorture's Kerberos option
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 
 ### What Runs Weekly (Full Matrix)
@@ -585,7 +584,6 @@ These run after merging to develop and should complete in under 30 minutes:
 The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
-- **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
 - Auto-creates GitHub issues for regressions
 
 ### How to Manually Trigger Workflows

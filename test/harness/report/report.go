@@ -71,6 +71,9 @@ type Test struct {
 	Issue     string // the issue that entry names
 	Retries   int    // how many times a retry ran it again
 	Flaky     bool   // it failed, then passed on a retry
+	// Metrics are the numbers a suite's metrics reader took from the
+	// test's report, by name; they never grade it.
+	Metrics map[string]float64
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -91,6 +94,7 @@ type Run struct {
 	Branch      string // "" when the checkout isn't on a branch
 	Dirty       bool   // the checkout has changes its commit doesn't
 	OS          string
+	Kernel      string // the release of the kernel it ran on, as uname -r gives it; "" where there is none
 	In          string // host, or container when dt runs in its dev container
 	Tier        string // the tier the run was asked for
 	Exit        int    // the run's exit status, from the cells it finished
@@ -180,7 +184,7 @@ func Parse(path string, data []byte) (Run, error) {
 	res := doc.Results
 	r := Run{Name: res.Extra.Run, Start: time.UnixMilli(res.Summary.Start), Stop: time.UnixMilli(res.Summary.Stop),
 		Commit: res.Environment.Commit, Branch: res.Environment.BranchName, Dirty: res.Extra.Dirty,
-		OS: res.Environment.OSPlatform, In: res.Extra.In, Tier: res.Extra.Tier, Exit: res.Extra.Exit}
+		OS: res.Environment.OSPlatform, Kernel: res.Environment.OSRelease, In: res.Extra.In, Tier: res.Extra.Tier, Exit: res.Extra.Exit}
 	var at [][]string
 	for _, c := range res.Extra.Cells {
 		name := c.Suite
@@ -205,7 +209,7 @@ func Parse(path string, data []byte) (Run, error) {
 			out.Suite = own
 		}
 		if t.Extra != nil {
-			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
+			out.Grade, out.Reason, out.Issue, out.Metrics = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue, t.Extra.Metrics
 		}
 		out.Retries, out.Flaky = t.Retries, t.Flaky
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
@@ -243,7 +247,7 @@ func (r Run) json() ([]byte, error) {
 	res := &doc.Results
 	res.Tool.Name = "dt"
 	res.Tests = []test{}
-	res.Environment = environment{Commit: r.Commit, BranchName: r.Branch, OSPlatform: r.OS}
+	res.Environment = environment{Commit: r.Commit, BranchName: r.Branch, OSPlatform: r.OS, OSRelease: r.Kernel}
 	res.Extra = extra{Run: r.Name, Dirty: r.Dirty, Tier: r.Tier, In: r.In, Exit: r.Exit, Cells: []cell{}}
 	sum := &res.Summary
 	sum.Start, sum.Stop = r.Start.UnixMilli(), r.Stop.UnixMilli()
@@ -253,7 +257,7 @@ func (r Run) json() ([]byte, error) {
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
 			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Retries: t.Retries, Flaky: t.Flaky}
-			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
+			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue, Metrics: t.Metrics}); x.Grade+x.Reason+x.Issue != "" || len(x.Metrics) > 0 {
 				out.Extra = &x
 			}
 			res.Tests = append(res.Tests, out)
@@ -322,15 +326,17 @@ type test struct {
 }
 
 type testExtra struct {
-	Grade  string `json:"grade,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	Issue  string `json:"issue,omitempty"`
+	Grade   string             `json:"grade,omitempty"`
+	Reason  string             `json:"reason,omitempty"`
+	Issue   string             `json:"issue,omitempty"`
+	Metrics map[string]float64 `json:"metrics,omitempty"`
 }
 
 type environment struct {
 	Commit     string `json:"commit"`
 	BranchName string `json:"branchName,omitempty"`
 	OSPlatform string `json:"osPlatform"`
+	OSRelease  string `json:"osRelease,omitempty"`
 }
 
 // extra is the run's own fields: its name, its checkout, where and at which

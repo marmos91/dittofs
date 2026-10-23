@@ -90,7 +90,9 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		return Report{}, err
 	}
 	rep := Report{Dir: dir}
-	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS, In: "host", Tier: o.Tier, Exit: rep.Status()}
+	kernel, _ := exec.Command("uname", "-r").Output() // none where there is no uname
+	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS,
+		Kernel: strings.TrimSpace(string(kernel)), In: "host", Tier: o.Tier, Exit: rep.Status()}
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		sum.In = "container"
 	}
@@ -433,6 +435,22 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			if r.timedOut {
 				tc.Grade = report.New // a hang, which no entry excuses
 			}
+			// decision: dt reads fio-json alone. dfsbench-json's numbers are
+			// for the tracked benchmark runs, and aren't recorded until then.
+			if c.Unit.Metrics == "fio-json" {
+				// A job that continues on errors exits 0, so its report
+				// decides too.
+				numbers, failed, err := readFio(filepath.Join(out, cmp.Or(paths[test], test)+".json"))
+				switch {
+				case len(failed) > 0:
+					tc.Status, tc.Message = report.Failed, strings.TrimSuffix(strings.Join(append(failed, r.note), "; "), "; ")
+				case err != nil && tc.Status == report.Passed:
+					// decision: a test that passed without a report has no
+					// numbers, which is lost coverage: its cell isn't run.
+					why = append(why, prefix+"fio's report: "+err.Error())
+				}
+				tc.Metrics = numbers
+			}
 			return []report.Test{tc}, why
 		case r.interrupted:
 			return nil, why // its not-run note says so, and nothing it reported counts
@@ -615,15 +633,22 @@ func (c Cell) limit(test string, lines map[string]plan.Line, first bool) time.Du
 	return limit
 }
 
-// grade grades the cell's results against its suite's known file, at the
-// cell's matrix values, its tier, its option and this machine's OS.
+// grade grades the cell's results against its suite's known file, where the
+// cell runs on this machine.
 func (c Cell) grade(cases []report.Test) {
-	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": runtime.GOOS}
-	if at["os"] == "darwin" {
-		at["os"] = "macos" // as the platform need names it
+	known.Grade(cases, c.Unit.Known != "", c.Known, c.At(runtime.GOOS))
+}
+
+// At is where the cell runs on goos, as a known entry's where names it: its
+// matrix values, its tier, its option and the OS, named as the platform need
+// names it.
+func (c Cell) At(goos string) map[string]string {
+	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": goos}
+	if goos == "darwin" {
+		at["os"] = "macos"
 	}
 	maps.Copy(at, c.Matrix)
-	known.Grade(cases, c.Unit.Known != "", c.Known, at)
+	return at
 }
 
 // gradeNotes names the results that fail their cell, or leave it not run, by
@@ -731,6 +756,17 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		if cmd != (registry.Command{}) {
 			if argv, err = fill(cmd, t.vals, t.lists); err != nil {
 				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+			}
+		}
+		// decision: dt makes the directories of a file below {out} that an
+		// argument names, so a test named by its path, as a glob's are, can
+		// write {out}/{test}.json. A script makes its own: its values are
+		// quoted, so dt doesn't look for paths in it.
+		if cmd.Line != "" {
+			for _, p := range belowOut(argv, t.vals["out"]) {
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+				}
 			}
 		}
 		shown := cmp.Or(strings.Join(argv, " "), image)
@@ -860,6 +896,18 @@ func sudoIn(dir string, own, argv []string) (run, shown []string) {
 	}
 	sudo := []string{"sudo", "-n", "env", "-C", dir}
 	return slices.Concat(sudo, vars, argv), slices.Concat(sudo, hidden, argv)
+}
+
+// belowOut are the paths below the cell's directory, out, that arguments
+// name, as --output={out}/x.json names one.
+func belowOut(argv []string, out string) []string {
+	var paths []string
+	for _, a := range argv {
+		if _, rest, ok := strings.Cut(a, out); ok && (strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, string(filepath.Separator))) {
+			paths = append(paths, out+rest)
+		}
+	}
+	return paths
 }
 
 // cmdName names a command as a test case: its first line, as the registry

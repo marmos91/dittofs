@@ -93,7 +93,7 @@ EOF
 # "category failures truncations no_result". The exit status is the aggregate.
 cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
 #!/usr/bin/env bash
-# cd first, the way the SMB runners do before writing their sidecar: a relative
+# cd first, as a runner may before writing its sidecar: a relative
 # DITTOFS_RESULTS_DIR resolves against THIS directory, not the caller's.
 cd / || exit 9
 echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict" || exit 9
@@ -426,6 +426,7 @@ OUT="$(run_fake --suite graded --profile memory --variant 4.0)"
 rc=$?
 assert_eq "a grader's failure count survives to the caller" "3" "$rc"
 assert_eq "the exit status is saved beside the results" "3" "$(cat "${WORK}/results/graded/memory-4.0/status")"
+assert_eq "and the kernel the run was on" "$(uname -r)" "$(cat "${WORK}/results/graded/memory-4.0/kernel")"
 assert_contains "teardown runs after a failed step" "TEARDOWN RAN" "$OUT"
 assert_not_contains "steps after a failure are skipped" "ran pass.sh" "$OUT"
 

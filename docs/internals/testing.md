@@ -393,12 +393,11 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 
 DittoFS is validated against industry-standard conformance suites for SMB and
 NFS. The table comes from the test registry, `test/suites.yaml`. pjdfstest
-([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS, smbtorture and
-the system scenarios run through `dt` (below); cthon04 and nfstest run through
-`test/conformance/run.sh`, as `test/conformance/suites.json` describes, and
-smbtorture's Kerberos option through `smbtorture/run.sh --kerberos`, until each
-moves to `dt`. Until then cthon04 runs on pull requests and nightly, not after
-merge as its tier says:
+([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS, smbtorture, with
+its Kerberos option, and the system scenarios run through `dt` (below); cthon04 and
+nfstest run through `test/conformance/run.sh`, as `test/conformance/suites.json`
+describes, until each moves to `dt`. Until then cthon04 runs on pull requests and
+nightly, not after merge as its tier says:
 
 <!-- conformance-suites:begin -->
 <!-- Generated from test/suites.yaml by test/harness/bin/dt docs. Do not edit by hand. -->
@@ -443,11 +442,11 @@ Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR.
   ```bash
   test/harness/bin/dt run smbtorture/badger-s3            # both shards; badger-s3 needs Localstack
   test/harness/bin/dt run smbtorture/badger-s3/shard-1    # one of them
+  test/harness/bin/dt run smbtorture --kerberos           # with Kerberos, against a KDC dt starts
   ```
 
 Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR, each shard on a
-runner of its own. Its Kerberos option still runs in `.github/workflows/conformance.yml`,
-through `smbtorture/run.sh --kerberos`, after a merge and nightly.
+runner of its own. Its Kerberos option runs there too, after a merge and nightly.
 
 ### pynfs (NFSv4 protocol)
 
@@ -510,8 +509,9 @@ throwaway podman container, with SMB and NFS clients and faults such as an S3 ou
   ```
 
 The 0x to 8x scenarios run after every merge to develop, in `.github/workflows/tests.yml`, split
-over four runners. They don't fail the gate yet: each scenario's setup runs `apt-get update`, which
-stalls for minutes there at times.
+over four runners. They don't fail the gate until a week of develop runs has no apt stall: each
+scenario's setup ran `apt-get update`, which stalled for minutes there at times, and now updates
+apt's lists once per runner.
 
 ---
 

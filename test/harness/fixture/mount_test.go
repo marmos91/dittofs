@@ -35,7 +35,7 @@ func TestMountedVersion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, mounted := lastMount(tc.table, "/tmp/dt42")
-			if got := nfsVers(opts); got != tc.vers || mounted != tc.mounted {
+			if got := versOf(opts); got != tc.vers || mounted != tc.mounted {
 				t.Errorf("vers %q, mounted %t; want %q, %t", got, mounted, tc.vers, tc.mounted)
 			}
 		})
