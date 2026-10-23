@@ -22,6 +22,7 @@ type Open struct {
 	Stream    entity.FileID    // the named stream it opens; zero: File itself
 	Via       entity.FileID    // the directory it was opened through; zero: opened by handle
 	Name      []byte           // its entry in Via, the one a delete pending removes; nil: opened by handle
+	Owner     LockOwner        // the owner of opens, which holds this one open of the file; zero: the protocol has none
 	Mode      OpenMode
 	Ref       StateRef // the reference naming it; Seq is the sequence as of the answer
 	Delete    DeleteMark
@@ -60,8 +61,8 @@ type OpenRequest struct {
 	Privileged    bool
 	Access, Deny  entity.AccessMask
 	DeleteOnClose bool
-	Loss          uint64 // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
-	Owner         []byte // the owner of opens the request names, which numbers its requests in Seqs; nil: none
+	Loss          uint64    // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
+	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
 }
 
@@ -134,7 +135,8 @@ type CloseResult struct {
 type Opens interface {
 	// Open grants an open of f, or refuses it ErrShareViolation against a
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
-	// never grants less than was asked.
+	// never grants less than was asked. An owner of opens holds one open of
+	// a file: its second open of it upgrades the first.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
@@ -166,8 +168,7 @@ func (t *Table) Opens() Opens { return opens{t} }
 type open struct {
 	Open
 	share   entity.ShareID
-	owner   []byte // the owner of opens that made it
-	durable bool   // its record is in the store
+	durable bool // its record is in the store
 }
 
 // opened is the file o opens: its named stream, or else its file.
@@ -198,7 +199,13 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		return OpenResult{}, err
 	}
 	var res OpenResult
-	owner := opensOwner(who.Client, r.Owner)
+	if len(r.Owner.Name) > maxName {
+		return OpenResult{}, ErrInvalid
+	}
+	if len(r.Owner.Name) > 0 && r.Owner.Client != who.Client {
+		return OpenResult{}, ErrNotYours
+	}
+	owner := opensOwner(r.Owner)
 	err := t.sequenced(owner, r.Seqs.Owner, false, func() (err error) {
 		res, err = t.grantOpen(ctx, who, f, r)
 		return err
@@ -224,16 +231,22 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			return OpenResult{}, err
 		}
 	}
-	o := &open{share: f.Share, owner: slices.Clone(r.Owner), Open: Open{
-		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
+	r.Owner.Name = slices.Clone(r.Owner.Name)
+	o := &open{share: f.Share, Open: Open{
+		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
+	granted := o
 	err := t.step(f.ID, func(e *entry) error {
 		if e.pending != nil {
 			return ErrDeletePending
+		}
+		if up := e.openOf(r.Owner, r.Stream); up != nil {
+			granted = up
+			return t.upgrade(e, up, who, r)
 		}
 		for _, h := range e.opens {
 			if !conflict.Shares(r.Access, r.Deny, h.Mode.Access, h.Mode.Deny) {
@@ -269,7 +282,45 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if err != nil {
 		return OpenResult{}, err
 	}
-	return OpenResult{Open: o.Open}, nil
+	return OpenResult{Open: granted.Open}, nil
+}
+
+// openOf is owner's open of e's file, or of its stream s, on e; nil for none
+// or for a protocol with no owner of opens.
+func (e *entry) openOf(owner LockOwner, s entity.FileID) *open {
+	if len(owner.Name) == 0 {
+		return nil
+	}
+	for _, o := range e.opens {
+		if o.Stream == s && sameOwner(o.Owner, owner) {
+			return o
+		}
+	}
+	return nil
+}
+
+// upgrade widens up, its owner's open of e's file, to what r asks besides,
+// under e's step: judged against every other open, and raising its
+// reference's sequence.
+func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest) error {
+	if !t.mayUse(up, who) {
+		return ErrNotYours
+	}
+	access, deny := up.Mode.Access|r.Access, up.Mode.Deny|r.Deny
+	for _, h := range e.opens {
+		if h != up && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
+			return ErrShareViolation
+		}
+	}
+	seq, err := t.advance(e, up.Ref)
+	if err != nil {
+		return err
+	}
+	up.Mode.Access, up.Mode.Deny, up.Ref.Seq = access, deny, seq
+	if r.DeleteOnClose {
+		up.Delete = DeleteMark{OnClose: true, By: who.Principal}
+	}
+	return nil
 }
 
 // mintOpen mints o's reference and adds o to e, file o.File's entry, under
@@ -401,7 +452,7 @@ func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, confirming bool, fn
 		if o == nil {
 			return ErrBadState
 		}
-		return t.sequenced(opensOwner(o.Client, o.owner), q, confirming, func() error {
+		return t.sequenced(opensOwner(o.Owner), q, confirming, func() error {
 			if err := seqErr(o.Ref.Seq, presented); err != nil {
 				return err
 			}
@@ -413,8 +464,8 @@ func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, confirming bool, fn
 	})
 }
 
-func opensOwner(c entity.ClientID, name []byte) sequence.Owner {
-	return sequence.Owner{Client: c, Kind: sequence.Opens, Name: string(name)}
+func opensOwner(o LockOwner) sequence.Owner {
+	return sequence.Owner{Client: o.Client, Kind: sequence.Opens, Name: string(o.Name)}
 }
 
 // sequenced runs fn as owner o's request numbered n, or as an unnumbered one
@@ -464,7 +515,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, confirming bool, fn func(
 func (t *Table) confirmed(o *open) bool {
 	t.smu.Lock()
 	defer t.smu.Unlock()
-	s, ok := t.seqs[opensOwner(o.Client, o.owner)]
+	s, ok := t.seqs[opensOwner(o.Owner)]
 	return !ok || s.Confirmed
 }
 
@@ -528,7 +579,7 @@ func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, q Seqs)
 	}
 	var seq uint32
 	err := t.withOpen(who, ref, q.Owner, true, func(e *entry, o *open) error {
-		k := opensOwner(o.Client, o.owner)
+		k := opensOwner(o.Owner)
 		t.smu.Lock()
 		s, ok := t.seqs[k]
 		t.smu.Unlock()
