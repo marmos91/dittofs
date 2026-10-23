@@ -379,6 +379,63 @@ func TestLockRecallsGrants(t *testing.T) {
 	f.mustLock(t, h, file, LockReq{Owner: owner(h, "q"), Ranges: []LockRange{x(20, 10)}})
 }
 
+// An administrator's revoke releases the client's state for others at once,
+// keeps its record with its Shards emptied, and answers each reference
+// ErrRevoked, flagged AdminRevoked, until freed. An ownerless client's revoke
+// deletes its record.
+func TestRevoke(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
+	file := anyFile()
+	file.Shard = 1
+	o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd, Deny: wr, Want: GrantRead})
+	f.mustOpen(t, b, file, OpenRequest{Access: rd})
+	if err := f.Revoke(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	f.mustOpen(t, b, file, OpenRequest{Access: wr})
+	for _, ref := range []StateRef{o.Ref, d.ID.ref()} {
+		var rev *RevokedError
+		if errs := f.Recovery().TestState(ctx, a, []StateRef{ref}); !errors.As(errs[0], &rev) || rev.Cause != RevokedByAdmin {
+			t.Errorf("%v after the revoke: %v, want ErrRevoked(RevokedByAdmin)", ref.Type, errs[0])
+		}
+	}
+	if s, _ := f.Renew(ctx, a.Client); !s.AdminRevoked || s.RecallableRevoked {
+		t.Errorf("renewal %+v, want AdminRevoked alone", s)
+	}
+	if err := f.Destroy(ctx, a); !errors.Is(err, ErrClientBusy) {
+		t.Errorf("Destroy holding revoked references: %v, want ErrClientBusy", err)
+	}
+	if rec, err := f.Record(ctx, a.Client); err != nil || len(rec.Shards) != 0 {
+		t.Errorf("record after the revoke: %+v, %v; want kept, its Shards empty", rec.Shards, err)
+	}
+	if r := f.sink.takeRevoked(); len(r) != 1 || r[0].Reason != RevokedByAdmin {
+		t.Errorf("Revoked %+v", r)
+	}
+	if err := f.Recovery().FreeState(ctx, a, o.Ref); err != nil {
+		t.Fatal(err)
+	}
+	f.mustOpen(t, a, file, OpenRequest{Access: rd})
+	if rec, _ := f.Record(ctx, a.Client); len(rec.Shards) != 1 {
+		t.Errorf("Shards after an open following the revoke: %+v, want its shard listed again", rec.Shards)
+	}
+	if err := f.Expire(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	if errs := f.Recovery().TestState(ctx, a, []StateRef{d.ID.ref()}); !errors.Is(errs[0], ErrBadState) {
+		t.Errorf("a revoked reference of an expired client: %v, want ErrBadState", errs[0])
+	}
+
+	s := f.caller(t, smb("pc-s"))
+	if err := f.Revoke(ctx, s.Client); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, s.Client); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("an ownerless client's record after its revoke: %v, want deleted", err)
+	}
+}
+
 // No write caching is offered on a setuid or setgid file, and a mode change
 // setting either bit recalls the write caching of every grant on the file.
 func TestSetIDRecallsWriteCaching(t *testing.T) {
@@ -465,6 +522,31 @@ func TestHandleBreaksBeforeSharingViolation(t *testing.T) {
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("the conflict that remains: %v, want ErrShareViolation", err)
+	}
+}
+
+// A client whose back channel is down is offered no grant until it rebinds,
+// which only its owner may do.
+func TestRebind(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	c := nfs("host-a", 1, alice)
+	c.Reach.Down = true
+	a := f.caller(t, c)
+	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Want: GrantRead}); g != nil {
+		t.Fatalf("a grant with the back channel down: %+v", g)
+	}
+	if err := f.Rebind(ctx, Caller{Client: a.Client, Principal: entity.NewUser()}, entity.NodeID{1}); !errors.Is(err, ErrNotYours) {
+		t.Errorf("a rebind by another principal: %v, want ErrNotYours", err)
+	}
+	if err := f.Rebind(ctx, a, entity.NodeID{1}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := f.Record(ctx, a.Client); rec.Reach.Down || rec.Reach.Callback != (entity.NodeID{1}) {
+		t.Errorf("record after the rebind: %+v", rec.Reach)
+	}
+	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Want: GrantRead}); g == nil {
+		t.Fatal("no grant after the rebind")
 	}
 }
 
