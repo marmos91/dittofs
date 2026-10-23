@@ -723,6 +723,7 @@ suites:
       - go run ./cmd/bench run --smoke --results {out}
       - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }   # they only parse: dfsbench doesn't run them
     metrics: dfsbench-json
+    needs: [fio]
     tier: pr
     blocking: { pr: false }             # reported on PRs, blocking after merge (§4.10)
 ```

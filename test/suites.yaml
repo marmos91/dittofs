@@ -353,6 +353,7 @@ suites:
       # without this nothing would notice one that no longer parses.
       - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }
     metrics: dfsbench-json
+    needs: [fio]
     tier: pr
     # decision: non-blocking on pull requests, which it now runs on whatever they touch, so one that
     # breaks it still merges; after a merge and nightly it blocks, so develop goes red and it posts.

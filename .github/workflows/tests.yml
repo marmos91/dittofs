@@ -176,9 +176,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cifs-utils smbclient
 
-      # dfsbench's smoke run and the mailbox job files call fio.
+      # fio, for the fio need.
       - name: Install fio
-        if: matrix.suite == 'bench-smoke'
+        if: runner.os == 'Linux' && contains(matrix.needs, 'fio')
         run: |
           sudo apt-get update
           sudo apt-get install -y fio
