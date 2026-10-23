@@ -30,7 +30,7 @@ type Lock struct {
 type LockOwner struct {
 	Client entity.ClientID
 	Name   []byte // the owner the client names, at most 1,024 bytes, compared and never interpreted
-	Stack  bool   // its locks stack, and an exclusive one conflicts with its own; else they merge and never conflict with each other
+	Stack  bool   // its locks stack, an exclusive one conflicts with its own, and they are mandatory; else they merge, never conflict with each other, and are advisory
 }
 
 // LockRange is one range of a lock request; one request may mix shared and
@@ -237,6 +237,30 @@ func (e *entry) blocker(o LockOwner, r LockRange, upto int) *Lock {
 				if !sameOwner(o, ls.owner) && ranges.Overlap(r.ByteRange, l.ByteRange) && conflicts(w.Owner, w.Range, ls.owner, l) {
 					return ls.lock(l)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// lockedOut is ErrLocked for I/O r through the open of token id (zero:
+// anonymous) across a range a mandatory lock on e forbids it: any I/O but its
+// own open's under an exclusive lock, and every write, its own open's too,
+// under a shared one.
+//
+// decision: a stacking owner's locks are the mandatory ones, since SMB's are
+// the only locks that stack and the only ones that are mandatory; every other
+// protocol's are advisory and gate lock requests only. Give LockOwner a field
+// of its own if a protocol is served whose locks are one and not the other.
+func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
+	for _, ls := range e.lstates {
+		if !ls.owner.Stack {
+			continue
+		}
+		own := id != 0 && ls.openToken() == id
+		for _, l := range ls.locks {
+			if ranges.Overlap(l.ByteRange, r) && (write && !(own && l.Exclusive) || !write && l.Exclusive && !own) {
+				return ErrLocked
 			}
 		}
 	}

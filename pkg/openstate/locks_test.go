@@ -200,6 +200,44 @@ func TestSMBLockLists(t *testing.T) {
 	}
 }
 
+// An SMB lock is mandatory: an exclusive one refuses every other open's and
+// anonymous I/O across it and admits its own open's; a shared one refuses
+// every write, its own open's too. An NFS lock is advisory and refuses no I/O.
+func TestMandatoryLocksRefuseIO(t *testing.T) {
+	f := newFixture(t)
+	s, n := f.caller(t, smb("pc")), f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	file := anyFile()
+	os := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+	on := f.mustOpen(t, n, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(0, 10), sh(20, 10)}})
+	f.mustLock(t, n, file, LockReq{Owner: owner(n, "lo"), Open: refOf(on), Ranges: []LockRange{x(100, 10)}})
+
+	io := func(who Caller, o OpenRef, off uint64, write bool) error {
+		o.Handle = handle(file.ID)
+		return f.Checks().CheckIO(ctx, who, o, br(off, 1), write)
+	}
+	for _, c := range []struct {
+		what  string
+		who   Caller
+		o     OpenRef
+		off   uint64
+		write bool
+		want  error
+	}{
+		{"an anonymous read under the exclusive lock", Caller{}, none, 5, false, ErrLocked},
+		{"an NFSv4 open's write under the exclusive lock", n, refOf(on), 5, true, ErrLocked},
+		{"the holding open's write under its exclusive lock", s, refOf(os), 5, true, nil},
+		{"the holding open's read under its exclusive lock", s, refOf(os), 5, false, nil},
+		{"the holding open's write under its shared lock", s, refOf(os), 25, true, ErrLocked},
+		{"an anonymous read under the shared lock", Caller{}, none, 25, false, nil},
+		{"an SMB write under an NFS lock", s, refOf(os), 105, true, nil},
+	} {
+		if err := io(c.who, c.o, c.off, c.write); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+			t.Errorf("%s: %v, want %v", c.what, err, c.want)
+		}
+	}
+}
+
 // Waiters are served first in, first out, and a waiter bars a request that
 // conflicts with it from the locks that block it, so shared locks cannot
 // starve an exclusive waiter. No LockWaitOver runs under a table lock: a Sink
