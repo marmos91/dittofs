@@ -71,6 +71,9 @@ type Test struct {
 	Issue     string // the issue that entry names
 	Retries   int    // how many times a retry ran it again
 	Flaky     bool   // it failed, then passed on a retry
+	// Metrics are the numbers a suite's metrics reader took from the
+	// test's report, by name; they never grade it.
+	Metrics map[string]float64
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -205,7 +208,7 @@ func Parse(path string, data []byte) (Run, error) {
 			out.Suite = own
 		}
 		if t.Extra != nil {
-			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
+			out.Grade, out.Reason, out.Issue, out.Metrics = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue, t.Extra.Metrics
 		}
 		out.Retries, out.Flaky = t.Retries, t.Flaky
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
@@ -253,7 +256,7 @@ func (r Run) json() ([]byte, error) {
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
 			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Retries: t.Retries, Flaky: t.Flaky}
-			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
+			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue, Metrics: t.Metrics}); x.Grade+x.Reason+x.Issue != "" || len(x.Metrics) > 0 {
 				out.Extra = &x
 			}
 			res.Tests = append(res.Tests, out)
@@ -322,9 +325,10 @@ type test struct {
 }
 
 type testExtra struct {
-	Grade  string `json:"grade,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	Issue  string `json:"issue,omitempty"`
+	Grade   string             `json:"grade,omitempty"`
+	Reason  string             `json:"reason,omitempty"`
+	Issue   string             `json:"issue,omitempty"`
+	Metrics map[string]float64 `json:"metrics,omitempty"`
 }
 
 type environment struct {
