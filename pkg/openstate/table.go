@@ -21,9 +21,9 @@ type Table struct {
 	d Deps
 
 	// files is split 256 ways by a FileID's first byte, which is random, so
-	// steps on different files rarely share a shard's mutex. A shard's mutex
+	// steps on different files rarely share a stripe's mutex. A stripe's mutex
 	// is held only to find, add or free an entry, never while a step runs.
-	files [256]fileShard
+	files [256]fileStripe
 
 	// idx guards the state references. It is taken after a file's step,
 	// never before one, and only to add, remove or look up a reference.
@@ -31,7 +31,7 @@ type Table struct {
 	refs map[refKey]holder
 }
 
-type fileShard struct {
+type fileStripe struct {
 	mu      sync.Mutex
 	entries map[entity.FileID]*entry
 }
@@ -41,7 +41,7 @@ type fileShard struct {
 type entry struct {
 	file   entity.FileID
 	mu     sync.Mutex
-	users  int // steps running or waiting on this entry, guarded by its file shard's mutex
+	users  int // steps running or waiting on this entry, guarded by its file stripe's mutex
 	states int // pieces of state held, guarded by mu
 }
 
