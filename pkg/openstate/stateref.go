@@ -144,10 +144,10 @@ func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holde
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	h, ok := t.refs[refKey{ref.Shard, ref.Token}]
-	if !ok || h.typ != ref.Type || ref.Instance != t.shards[ref.Shard].instance {
+	if !ok {
 		return holder{}, t.miss(ref)
 	}
-	if !f.IsZero() && h.file != f {
+	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {
 		return holder{}, ErrBadState
 	}
 	if h.client != c {
