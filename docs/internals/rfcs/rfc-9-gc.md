@@ -1941,7 +1941,7 @@ type Deps struct {
 	Sched    *sched.Scheduler           // RFC 8 §6.1.1: GC's own instance, one per process
 	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
-	Clock    clock.Clock                // RFC 8 §2.1
+	Clock    Clock                      // the package's own subset of RFC 8 §2.1's Clock
 	Metrics  *metrics.Registry
 	Logger   *slog.Logger
 }

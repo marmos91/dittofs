@@ -357,7 +357,7 @@ type Deps struct {
 	Names    identity.Identities    // RFC 18 §4.1: behind vfs.Service's Spell and Find (the Principals area)
 	Peers    Peers             // (cluster) the transport; nil on a single node, where every primary is this one
 	Events   Events            // the node's event sink, or the null sink (§3.3)
-	Clock    clock.Clock
+	Clock    Clock // the package's own subset of RFC 8 §2.1's Clock
 	Metrics  *metrics.Registry
 	Logger   *slog.Logger
 }

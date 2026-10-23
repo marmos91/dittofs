@@ -2164,10 +2164,18 @@ package openstate // pkg/openstate
 type Deps struct {
 	Records metadata.OpenRecords // RFC 16: client records, durable opens and their locks, delete pending, the restart-notice number, NextID
 	Budget  *resources.Budget    // RFC 24 §4.6: the open-state pool
-	Clock   clock.Clock          // RFC 8's Clock: Elapsed for every deadline, Now only for a time a record stores
+	Clock   Clock                // Elapsed for every deadline, Now only for a time a record stores
 	Rand    io.Reader            // every random bit of a token or confirm; crypto/rand in production
 	Metrics *metrics.Registry
 	Logger  *slog.Logger
+}
+
+// Clock is the subset of the node's clock the table reads, declared here as
+// RFC 8 §2.1 has each component declare its own, in standard-library types.
+type Clock interface {
+	Now() time.Time
+	Elapsed() time.Duration
+	After(d time.Duration) <-chan struct{}
 }
 
 // New builds an empty table and starts nothing. *Table is the one component:

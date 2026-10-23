@@ -1250,9 +1250,11 @@ type Source interface {
 	Conditions(dst []Condition) []Condition
 }
 
+// Clock, here and in events, is the package's own subset of RFC 8 §2.1's Clock.
+
 type Evaluator struct{ /* … */ }
 
-func NewEvaluator(clk clock.Clock, log *slog.Logger, m *metrics.Registry, wd *Watchdog) *Evaluator
+func NewEvaluator(clk Clock, log *slog.Logger, m *metrics.Registry, wd *Watchdog) *Evaluator
 func (e *Evaluator) Add(s Source)
 func (e *Evaluator) Remove(s Source)
 func (e *Evaluator) Start(ctx context.Context) error
@@ -1261,7 +1263,7 @@ func (e *Evaluator) Close() error
 
 type Watchdog struct{ /* … */ }
 
-func NewWatchdog(clk clock.Clock) *Watchdog
+func NewWatchdog(clk Clock) *Watchdog
 func (w *Watchdog) Loop(name string) *Loop
 func (w *Watchdog) Live() bool // every open loop turned or idle within 60 s (§3.5)
 
@@ -1282,7 +1284,7 @@ type LogonEvent struct{ /* §4.2's logon fields */ }
 // Sink is nil-safe: a nil *Sink is the null sink.
 type Sink struct{ /* rings, writers, spool */ }
 
-func New(clk clock.Clock, log *slog.Logger, m *metrics.Registry, path string) *Sink
+func New(clk Clock, log *slog.Logger, m *metrics.Registry, path string) *Sink
 func (s *Sink) Start(ctx context.Context) error
 func (s *Sink) Access(ctx context.Context, e *AccessEvent) // §4.3: copies, never waits
 func (s *Sink) Quota(ctx context.Context, e *QuotaEvent)
