@@ -9,12 +9,3 @@ type (
 	Tracer = core.Tracer
 	SpanOp = core.SpanOp
 )
-
-// The operations the journal traces. See SpanOp.
-const (
-	SpanOpen          = core.SpanOpen
-	SpanRecoveryPhase = core.SpanRecoveryPhase
-	SpanRepackPass    = core.SpanRepackPass
-	SpanSeal          = core.SpanSeal
-	SpanRetire        = core.SpanRetire
-)

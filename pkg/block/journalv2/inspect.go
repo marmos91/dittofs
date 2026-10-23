@@ -1,6 +1,9 @@
 package journalv2
 
-import "iter"
+import (
+	"context"
+	"iter"
+)
 
 // Inspect returns a way to read out the journal's placement index, per file
 // and in bulk, read its per-segment accounting, and verify the index against
@@ -38,8 +41,9 @@ func (in Inspector) Segments() []SegmentInfo {
 // agree. It reports and never repairs: repair is a separate, explicit action.
 //
 // Verify checks each file against a stable view of that file, so a write in
-// flight during the pass is never reported as a disagreement.
-func (in Inspector) Verify() (VerifyReport, error) {
+// flight during the pass is never reported as a disagreement. It reads every
+// segment, so it takes a context, honoured as the package doc states.
+func (in Inspector) Verify(ctx context.Context) (VerifyReport, error) {
 	return VerifyReport{}, ErrNotImplemented
 }
 

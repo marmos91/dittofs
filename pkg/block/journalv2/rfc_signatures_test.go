@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"iter"
+	"log/slog"
 	"time"
 )
 
@@ -82,7 +83,10 @@ var (
 	_ = func(in Inspector) ([]IndexEntry, error) { return in.File(FileID{}) }
 	_ = func(in Inspector) iter.Seq2[FileID, []IndexEntry] { return in.All() }
 	_ = func(in Inspector) []SegmentInfo { return in.Segments() }
-	_ = func(in Inspector) (VerifyReport, error) { return in.Verify() }
+	_ = func(in Inspector) (VerifyReport, error) { return in.Verify(context.Context(nil)) }
+	_ = Tracer(func(ctx context.Context, op SpanOp, attrs ...slog.Attr) (context.Context, func(err error)) {
+		return ctx, nil
+	})
 
 	_ = Offer{ID: FileID{}, Dirty: []OfferedExtent(nil), Neighbours: []Held(nil), Superseded: []OfferedExtent(nil),
 		Oldest: Version{}, Newest: Version{}, Offered: io.ReaderAt(nil)}
