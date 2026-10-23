@@ -1,6 +1,7 @@
 # Writes, then reads back what it wrote and checks each block's crc32c: a block
-# that comes back changed fails its job with error 84. Not in bench/workloads,
-# whose job files dfsbench measures.
+# that comes back changed fails its job with error 84. The reads follow the
+# writes at once, so they check what the server returns, not a cold read from the
+# block store. Not in bench/workloads, whose job files dfsbench measures.
 [global]
 direct=1
 ioengine=${FIO_ENGINE:-libaio}
