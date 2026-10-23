@@ -1621,7 +1621,7 @@ func (s *Server) writeOnce(ctx context.Context, c Caller, ref OpenRef, f File, o
 		wr.WCC.Before = s.captureBefore(ctx, f) // nil where it cannot be taken (§5.7)
 		// The reservation travels with the staged bytes: the existence commit that
 		// records their charge releases it (step 7), never this function's return.
-		wr.Verifier, err = s.engine.Write(ctx, f, off, bytes.NewReader(src), int64(len(src)), opts(ref, st, res))
+		wr.Verifier, err = s.engine.Write(ctx, f, off, src, opts(ref, st, res))
 		wr.WCC.After = s.overlaid(ctx, f) // same hold, once staged
 	})
 	if retry || err != nil {
