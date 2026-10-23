@@ -40,13 +40,13 @@ func smbOwner(who Caller, o Open) LockOwner {
 
 // lock asks for r on file, under no open where r names none.
 func (f *fixture) lock(who Caller, file FileKey, r LockReq) (LockResult, error) {
-	if r.Shard == 0 {
-		r.Shard = 1
+	if file.Shard == 0 {
+		file.Shard = 1
 	}
 	if r.Open.Kind == 0 {
 		r.Open = none
 	}
-	return f.Locks().Lock(ctx, who, file.ID, r)
+	return f.Locks().Lock(ctx, who, file, r)
 }
 
 // none is a reference to no open, as a lock request under none carries.
@@ -63,7 +63,7 @@ func (f *fixture) mustLock(t *testing.T, who Caller, file FileKey, r LockReq) Lo
 
 func (f *fixture) unlock(t *testing.T, who Caller, file FileKey, o LockOwner, rs ...ByteRange) {
 	t.Helper()
-	if _, err := f.Locks().Unlock(ctx, who, file.ID, none, o, rs, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, who, file, none, o, rs, Seqs{}); err != nil {
 		t.Fatalf("Unlock %s %v: %v", o.Name, rs, err)
 	}
 }
@@ -72,7 +72,7 @@ func (f *fixture) unlock(t *testing.T, who Caller, file FileKey, o LockOwner, rs
 // nothing, or nil.
 func (f *fixture) holder(t *testing.T, file FileKey, r ByteRange) *Lock {
 	t.Helper()
-	h, err := f.Locks().TestLock(ctx, Caller{}, file.ID, LockOwner{Name: []byte("tester")}, r, true)
+	h, err := f.Locks().TestLock(ctx, Caller{}, file, LockOwner{Name: []byte("tester")}, r, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestLockOwners(t *testing.T) {
 	if _, err := f.lock(a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{sh(105, 1)}}); lockedBy(err) != "svid" {
 		t.Errorf("an NFSv4 lock over an NLM lock: %s, want refused by the host's owner", lockedBy(err))
 	}
-	if _, err := f.Locks().Unlock(ctx, a, file.ID, under, lo2, []ByteRange{br(500, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, under, lo2, []ByteRange{br(500, 10)}, Seqs{}); err != nil {
 		t.Errorf("a merging owner's unlock of a range it does not hold: %v, want success", err)
 	}
 
@@ -155,7 +155,7 @@ func TestSMBLockLists(t *testing.T) {
 	os, or := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr}), f.mustOpen(t, r, file, OpenRequest{Access: rd | wr})
 	so, ro := smbOwner(s, os), smbOwner(r, or)
 	byS, byR := refOf(os), refOf(or)
-	if _, err := f.Locks().Unlock(ctx, s, file.ID, byS, so, []ByteRange{br(0, 1)}, Seqs{}); !errors.Is(err, ErrRangeNotLocked) {
+	if _, err := f.Locks().Unlock(ctx, s, file, byS, so, []ByteRange{br(0, 1)}, Seqs{}); !errors.Is(err, ErrRangeNotLocked) {
 		t.Errorf("an unlock by an owner holding nothing: %v, want ErrRangeNotLocked", err)
 	}
 	f.mustLock(t, r, file, LockReq{Owner: ro, Open: byR, Ranges: []LockRange{x(20, 10)}})
@@ -169,7 +169,7 @@ func TestSMBLockLists(t *testing.T) {
 	if _, err := f.lock(s, file, LockReq{Owner: so, Open: byS, Ranges: make([]LockRange, 65)}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a 65-range list: %v, want ErrInvalid", err)
 	}
-	if _, err := f.Locks().Unlock(ctx, s, file.ID, byS, so, make([]ByteRange, 65), Seqs{}); !errors.Is(err, ErrInvalid) {
+	if _, err := f.Locks().Unlock(ctx, s, file, byS, so, make([]ByteRange, 65), Seqs{}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a 65-range unlock list: %v, want ErrInvalid", err)
 	}
 	long := LockOwner{Client: s.Client, Name: make([]byte, 1025)}
@@ -180,7 +180,7 @@ func TestSMBLockLists(t *testing.T) {
 	if !errors.Is(err, ErrLocked) || res.Waiting {
 		t.Errorf("a two-range list asking to wait: %+v, %v; want refused, not waiting", res, err)
 	}
-	if _, err := f.Locks().Unlock(ctx, r, file.ID, byR, ro, []ByteRange{br(20, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, r, file, byR, ro, []ByteRange{br(20, 10)}, Seqs{}); err != nil {
 		t.Fatal(err)
 	}
 	if ws := f.sink.takeWaits(); len(ws) != 0 {
@@ -194,7 +194,7 @@ func TestSMBLockLists(t *testing.T) {
 	f.mustLock(t, s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{sh(0, 10)}})
 
 	f.mustLock(t, s, file, LockReq{Owner: so, Open: byS, Ranges: []LockRange{x(40, 1), x(60, 1)}})
-	_, err = f.Locks().Unlock(ctx, s, file.ID, byS, so, []ByteRange{br(40, 1), br(50, 1), br(60, 1)}, Seqs{})
+	_, err = f.Locks().Unlock(ctx, s, file, byS, so, []ByteRange{br(40, 1), br(50, 1), br(60, 1)}, Seqs{})
 	if !errors.Is(err, ErrRangeNotLocked) {
 		t.Fatalf("an unlock list whose second range is not held: %v, want ErrRangeNotLocked", err)
 	}
@@ -248,7 +248,7 @@ func TestMandatoryLocksRefuseIO(t *testing.T) {
 func TestWaitersFirstInFirstOut(t *testing.T) {
 	f := newFixture(t)
 	file := anyFile()
-	f.sink.onWait = func(LockWaiter) { _, _ = f.Locks().TestLock(ctx, Caller{}, file.ID, LockOwner{}, br(0, 1), true) }
+	f.sink.onWait = func(LockWaiter) { _, _ = f.Locks().TestLock(ctx, Caller{}, file, LockOwner{}, br(0, 1), true) }
 	all := br(0, 100)
 	hs := map[string]Caller{}
 	for _, n := range []string{"h", "a", "b", "c", "d"} {
@@ -465,13 +465,13 @@ func TestCancelServesWaitersBehind(t *testing.T) {
 	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{sh(0, 10)}})
 	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
 	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
-	if _, err := f.Locks().CancelLock(ctx, a, file.ID, owner(a, "a"), br(0, 5)); err != nil {
+	if _, err := f.Locks().CancelLock(ctx, a, file, owner(a, "a"), br(0, 5)); err != nil {
 		t.Fatal(err)
 	}
 	if ws := f.sink.takeWaits(); len(ws) != 0 {
 		t.Fatalf("a cancel naming a range other than the waiter's ended its wait: %+v", ws)
 	}
-	if _, err := f.Locks().CancelLock(ctx, a, file.ID, owner(a, "a"), br(0, 10)); err != nil {
+	if _, err := f.Locks().CancelLock(ctx, a, file, owner(a, "a"), br(0, 10)); err != nil {
 		t.Fatal(err)
 	}
 	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "b" {
@@ -493,9 +493,9 @@ func TestCancelRacesGrant(t *testing.T) {
 		var got bool
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			_, _ = f.Locks().Unlock(ctx, h, file.ID, refOf(oh), hOwner, []ByteRange{br(0, 10)}, Seqs{})
+			_, _ = f.Locks().Unlock(ctx, h, file, refOf(oh), hOwner, []ByteRange{br(0, 10)}, Seqs{})
 		})
-		wg.Go(func() { got, _ = f.Locks().CancelLock(ctx, w, file.ID, wOwner, br(0, 10)) })
+		wg.Go(func() { got, _ = f.Locks().CancelLock(ctx, w, file, wOwner, br(0, 10)) })
 		wg.Wait()
 		if held := f.holder(t, file, br(0, 10)); got != (held != nil) {
 			t.Fatalf("cancel answered granted=%v while the range is held by %v", got, held)
@@ -519,7 +519,7 @@ func TestReleaseLockOwner(t *testing.T) {
 	f.mustLock(t, a, other, LockReq{Owner: lo, Open: refOf(p), Ranges: []LockRange{x(0, 10)}})
 	unlock := func(file FileKey, under Open) {
 		t.Helper()
-		if _, err := f.Locks().Unlock(ctx, a, file.ID, refOf(under), lo, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+		if _, err := f.Locks().Unlock(ctx, a, file, refOf(under), lo, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -566,7 +566,7 @@ func TestNLMRecordGoesWithLastLock(t *testing.T) {
 	h, w := f.host(t, "holder", 1), f.host(t, "waiter", 1)
 	f.mustLock(t, h, f1, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}})
 	f.mustLock(t, w, f1, LockReq{Owner: owner(w, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
-	if _, err := f.Locks().CancelLock(ctx, w, f1.ID, owner(w, "w"), br(0, 10)); err != nil {
+	if _, err := f.Locks().CancelLock(ctx, w, f1, owner(w, "w"), br(0, 10)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Record(ctx, w.Client); !errors.Is(err, ErrStaleClient) {
@@ -665,17 +665,17 @@ func TestOwnerSequence(t *testing.T) {
 	if byLock.Seqs = num(3); !errors.Is(errOf(f.lock(a, f1, byLock)), ErrOldState) {
 		t.Errorf("a lock naming the lock state as first answered, after a lock: want ErrOldState")
 	}
-	if _, err := f.Locks().Unlock(ctx, a, f1.ID, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(40, 10)}, num(4)); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, f1, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(40, 10)}, num(4)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Locks().Unlock(ctx, a, f1.ID, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(20, 10)}, num(5)); !errors.Is(err, ErrOldState) {
+	if _, err := f.Locks().Unlock(ctx, a, f1, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(20, 10)}, num(5)); !errors.Is(err, ErrOldState) {
 		t.Errorf("an unlock naming the lock state as of its last lock, after an unlock: %v, want ErrOldState", err)
 	}
 
 	// Releasing an owner of locks, once it holds none, and the client's end,
 	// drop their sequences.
 	locked.Seq = 0
-	if _, err := f.Locks().Unlock(ctx, a, f1.ID, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(20, 10)}, num(6)); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, f1, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(20, 10)}, num(6)); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Locks().ReleaseLockOwner(ctx, a, lo); err != nil {
@@ -763,12 +763,12 @@ func TestCallsAnswerTheNewSequence(t *testing.T) {
 	lo := owner(a, "lo")
 	res := f.mustLock(t, a, file, LockReq{Owner: lo, Open: opened(seq), Ranges: []LockRange{sh(0, 10), sh(20, 10)}})
 	locked := OpenRef{Kind: RefLocked, State: res.Ref}
-	seq, err = f.Locks().Unlock(ctx, a, file.ID, locked, lo, []ByteRange{br(0, 10)}, Seqs{})
+	seq, err = f.Locks().Unlock(ctx, a, file, locked, lo, []ByteRange{br(0, 10)}, Seqs{})
 	if err != nil || seq != res.Ref.Seq+1 {
 		t.Fatalf("an unlock: sequence %d, %v; want %d", seq, err, res.Ref.Seq+1)
 	}
 	locked.State.Seq = seq
-	if _, err := f.Locks().Unlock(ctx, a, file.ID, locked, lo, []ByteRange{br(20, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, locked, lo, []ByteRange{br(20, 10)}, Seqs{}); err != nil {
 		t.Errorf("an unlock naming the sequence the last unlock answered: %v", err)
 	}
 }
@@ -863,11 +863,11 @@ func TestLockCallsNameTheirClient(t *testing.T) {
 	res := f.mustLock(t, a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
 	for name, err := range map[string]error{
 		"Lock":             errOf(f.lock(b, file, LockReq{Owner: lo, Ranges: []LockRange{x(0, 10)}})),
-		"Unlock":           errOf2(f.Locks().Unlock(ctx, b, file.ID, none, lo, []ByteRange{br(0, 10)}, Seqs{})),
-		"CancelLock":       func() error { _, err := f.Locks().CancelLock(ctx, b, file.ID, lo, br(0, 10)); return err }(),
+		"Unlock":           errOf2(f.Locks().Unlock(ctx, b, file, none, lo, []ByteRange{br(0, 10)}, Seqs{})),
+		"CancelLock":       func() error { _, err := f.Locks().CancelLock(ctx, b, file, lo, br(0, 10)); return err }(),
 		"WaitAnswered":     f.Locks().WaitAnswered(ctx, b, LockWaiter{File: file.ID, Owner: lo, Open: o.Ref.Token, Range: x(0, 10)}, true),
 		"ReleaseLockOwner": f.Locks().ReleaseLockOwner(ctx, b, lo),
-		"TestLock":         func() error { _, err := f.Locks().TestLock(ctx, b, file.ID, lo, br(0, 10), true); return err }(),
+		"TestLock":         func() error { _, err := f.Locks().TestLock(ctx, b, file, lo, br(0, 10), true); return err }(),
 	} {
 		if !errors.Is(err, ErrNotYours) {
 			t.Errorf("%s by another client: %v, want ErrNotYours", name, err)
@@ -881,7 +881,7 @@ func TestLockCallsNameTheirClient(t *testing.T) {
 	if _, err := f.lock(a, file, LockReq{Owner: other, Open: OpenRef{Kind: RefLocked, State: res.Ref}, Ranges: []LockRange{x(20, 10)}}); !errors.Is(err, ErrBadState) {
 		t.Errorf("a lock naming lo's lock state as another owner: %v, want ErrBadState", err)
 	}
-	if _, err := f.Locks().Unlock(ctx, a, file.ID, OpenRef{Kind: RefLocked, State: res.Ref}, other, []ByteRange{br(0, 10)}, Seqs{}); !errors.Is(err, ErrBadState) {
+	if _, err := f.Locks().Unlock(ctx, a, file, OpenRef{Kind: RefLocked, State: res.Ref}, other, []ByteRange{br(0, 10)}, Seqs{}); !errors.Is(err, ErrBadState) {
 		t.Errorf("an unlock naming lo's lock state as another owner: %v, want ErrBadState", err)
 	}
 	if f.holder(t, file, br(0, 10)) == nil {
