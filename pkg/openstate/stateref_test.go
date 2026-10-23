@@ -67,24 +67,32 @@ func TestStateRefTokenIsUnguessable(t *testing.T) {
 }
 
 // A miss is stale while its shard is in grace or when it was minted under an
-// earlier grace instance, so the client reclaims; any other miss is bad.
+// earlier grace instance, so the client reclaims; any other miss is bad. A
+// reference of the wrong type names a live record, so it is a hit and bad,
+// in grace too.
 func TestMissIsStaleOrBad(t *testing.T) {
 	f := entity.NewFileID()
 	for _, tc := range []struct {
-		name string
-		now  shardGrace // the shard's state when the reference is presented
-		want error
+		name     string
+		now      shardGrace // the shard's state when the reference is presented
+		released bool
+		typ      StateType
+		want     error
 	}{
-		{"released, same instance", shardGrace{instance: 3}, ErrBadState},
-		{"in grace", shardGrace{instance: 3, inGrace: true}, ErrStaleState},
-		{"earlier instance", shardGrace{instance: 4}, ErrStaleState},
+		{"released, same instance", shardGrace{instance: 3}, true, StateOpen, ErrBadState},
+		{"in grace", shardGrace{instance: 3, inGrace: true}, true, StateOpen, ErrStaleState},
+		{"earlier instance", shardGrace{instance: 4}, true, StateOpen, ErrStaleState},
+		{"wrong type in grace", shardGrace{instance: 3, inGrace: true}, false, StateLock, ErrBadState},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tab := newTable(t)
 			tab.shards[9] = shardGrace{instance: 3}
 			ref := mintIn(t, tab, f, 1, 9)
-			releaseIn(t, tab, f, ref)
+			if tc.released {
+				releaseIn(t, tab, f, ref)
+			}
 			tab.shards[9] = tc.now
+			ref.Type = tc.typ
 			if _, err := tab.resolve(1, f, ref); !errors.Is(err, tc.want) {
 				t.Errorf("resolve: %v, want %v", err, tc.want)
 			}
