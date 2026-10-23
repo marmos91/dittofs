@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,7 +21,7 @@ import (
 // result for every test: exit tests and commands that passed, failed or
 // skipped, and Go tests and subtests that passed, failed or skipped. Each
 // cell's JUnit file, which summary.json names, has a testcase for each of the
-// cell's results.
+// cell's results. It names the kernel the run was on, as uname -r does.
 func TestRealRunMatchesTheSchema(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the exit suites run sh")
@@ -78,12 +79,16 @@ suites:
 	}
 	var doc struct {
 		Results struct {
-			Summary struct{ Tests, Passed, Failed, Skipped int }
-			Extra   struct{ Cells []struct{ JUnit string } }
+			Summary     struct{ Tests, Passed, Failed, Skipped int }
+			Environment struct{ OSRelease string }
+			Extra       struct{ Cells []struct{ JUnit string } }
 		}
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
+	}
+	if kernel, err := exec.Command("uname", "-r").Output(); err != nil || doc.Results.Environment.OSRelease != strings.TrimSpace(string(kernel)) {
+		t.Errorf("osRelease %q, want uname -r's %q (%v)", doc.Results.Environment.OSRelease, kernel, err)
 	}
 	if got, want := doc.Results.Summary, (struct{ Tests, Passed, Failed, Skipped int }{10, 5, 3, 2}); got != want {
 		t.Errorf("summary %+v, want %+v", got, want)

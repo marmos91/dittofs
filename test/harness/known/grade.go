@@ -77,6 +77,15 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 	}
 }
 
+// Intermittent reports whether the entry that grades a failure of the test
+// named name, where a cell runs, at, says it fails on some runs only: the
+// entry Grade picks among those that apply there.
+func Intermittent(entries []Entry, name string, at map[string]string) bool {
+	apply := slices.DeleteFunc(slices.Clone(entries), func(e Entry) bool { return !e.applies(at) })
+	e := entryFor(apply, name, "fail")
+	return e >= 0 && apply[e].Intermittent
+}
+
 // failedThroughSubtests reports whether the failed result at i failed only
 // because of its subtests: results in the same suite named under its name,
 // and "/", that failed too. It needs at least one, and each must be covered:
