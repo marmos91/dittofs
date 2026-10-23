@@ -61,11 +61,15 @@ type Proposal struct {
 // ClientStatus is what a renewal reports beside the lease.
 type ClientStatus struct{}
 
-// Caller is the client a call acts for, as the adapter proved it, and the
-// principal it runs as, mapped and never squashed.
+// Caller is the client a call acts for, as the adapter proved it, the
+// principal it runs as, mapped and never squashed, and the request's
+// protocol, which a rule that differs by protocol reads. The protocol is the
+// caller's to state on every call, never looked up from a client record:
+// NFSv3 has no client.
 type Caller struct {
 	Client    entity.ClientID
 	Principal entity.Principal
+	Protocol  entity.Protocol // zero: NFSv3, which holds no client
 }
 
 // Clients is the view of client records and leases; it runs at the client's
@@ -407,7 +411,7 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, err
 // know records what the table reads of rec while its client is current; the
 // caller holds cmu.
 func (t *Table) know(rec entity.ClientRecord) {
-	k := known{protocol: rec.Protocol}
+	var k known
 	if rec.Protect {
 		k.owner = rec.Owner
 	}

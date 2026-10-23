@@ -84,7 +84,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 // removes a name without an open of its own.
 func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error {
 	t := v.t
-	smb := t.protocol(who.Client) == entity.ProtocolSMB
+	smb := who.Protocol == entity.ProtocolSMB
 	return t.step(f.ID, func(e *entry) error {
 		// decision: a delete-pending directory also refuses an added name,
 		// beyond RFC 14's opens and renames, as Windows answers a create in
