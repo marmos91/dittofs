@@ -69,6 +69,13 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 	})
 }
 
+// decision: the step is released before the change commits, so the check
+// holds only while the service keeps the file's admission lock from the
+// check to the commit, as it does for every Checks call: an open granted in
+// between would not be judged against the change. Hold the step to the
+// commit, with a callback run under it, if a caller is found that changes a
+// file without that lock.
+//
 // decision: only a caller that is not SMB is refused a remove or rename
 // against a deny-delete, and only an SMB caller is refused one of a
 // directory an open was made through. An SMB client removes and renames
@@ -81,6 +88,10 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f entity.FileID, wh
 	t := v.t
 	smb := t.protocol(who.Client) == entity.ProtocolSMB
 	return t.step(f, func(e *entry) error {
+		// decision: a delete-pending directory also refuses an added name,
+		// beyond RFC 14's opens and renames, as Windows answers a create in
+		// one STATUS_DELETE_PENDING. Drop it if an NFS workload is shown to
+		// create in a directory an SMB client has marked.
 		if what&(ChangeRename|ChangeAddEntry) != 0 && e.pending != nil {
 			return ErrDeletePending
 		}
