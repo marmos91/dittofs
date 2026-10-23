@@ -1,7 +1,6 @@
 package model
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -309,54 +308,6 @@ func (m *Model) Settle(tag shareTag, id fileID, v version) error {
 		}
 	}
 	return nil
-}
-
-// Since returns what the journal's Since(id, from) must yield through share
-// tag: every held extent, as a write, and every unsettled marker whose version
-// is strictly above from, in version order. Held extents are split where the
-// record they are read from changes; Compare checks Since byte by byte, so a
-// journal may split them differently.
-//
-// The error is the model's, for a file whose state it does not know yet.
-func (m *Model) Since(tag shareTag, id fileID, from version) ([]journalv2.Change, error) {
-	if mis := m.known("since", id); mis != nil {
-		return nil, mis
-	}
-	f := m.files[id]
-	if f == nil || f.tag != tag {
-		return nil, nil
-	}
-	st := derive(f, all)
-	var out []journalv2.Change
-	for _, r := range st.runs() {
-		if r.ver.Compare(from) <= 0 {
-			continue
-		}
-		var mtime int64
-		if r.rec.kind == kindWrite {
-			mtime = r.rec.mtime
-		}
-		if n := len(out); n > 0 {
-			last := &out[n-1]
-			if last.Version == r.ver && last.Mtime == mtime && last.Extent.Off+last.Extent.Len == r.ext.Off {
-				last.Extent.Len += r.ext.Len
-				continue
-			}
-		}
-		out = append(out, journalv2.Change{Kind: journalv2.ChangeWrite, Extent: r.ext, Version: r.ver, Mtime: mtime})
-	}
-	for _, r := range st.markers {
-		if r.ver.Compare(from) > 0 {
-			out = append(out, journalv2.Change{Kind: changeKind(r.kind), Extent: r.ext, Version: r.ver})
-		}
-	}
-	slices.SortStableFunc(out, func(a, b journalv2.Change) int {
-		if c := a.Version.Compare(b.Version); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.Extent.Off, b.Extent.Off)
-	})
-	return out, nil
 }
 
 func changeKind(k recordKind) journalv2.ChangeKind {

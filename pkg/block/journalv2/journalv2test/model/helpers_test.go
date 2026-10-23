@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,13 +93,18 @@ func equalSpans(t *testing.T, got, want []span) {
 	}
 }
 
-func since(t *testing.T, m *Model, tag journalv2.ShareTag, id journalv2.FileID, from journalv2.Version) []journalv2.Change {
+// markers returns the live markers of file id above from as the changes
+// Since names them, in version order.
+func markers(t *testing.T, m *Model, id journalv2.FileID, from journalv2.Version) []journalv2.Change {
 	t.Helper()
-	cs, err := m.Since(tag, id, from)
-	if err != nil {
-		t.Fatal(err)
+	var out []journalv2.Change
+	for _, r := range m.current(id).markers {
+		if r.ver.Compare(from) > 0 {
+			out = append(out, journalv2.Change{Kind: changeKind(r.kind), Extent: r.ext, Version: r.ver})
+		}
 	}
-	return cs
+	slices.SortStableFunc(out, func(a, b journalv2.Change) int { return a.Version.Compare(b.Version) })
+	return out
 }
 
 // String prints a span as [off,end) v1, with "offloaded" when its bit is set.

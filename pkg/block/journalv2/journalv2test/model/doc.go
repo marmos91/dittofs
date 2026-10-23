@@ -47,8 +47,8 @@
 // the caller's bug, never the journal's.
 //
 // decision: the model covers writes, fills, offers and their reports,
-// releases, truncates, deallocates, deletes, settles, Since, crashes and
-// reopens. Repack changes no content, so it has no operation here. What it
+// releases, truncates, deallocates, deletes, settles, crashes and reopens,
+// and Compare checks what Since yields. Repack changes no content, so it has no operation here. What it
 // may drop shows only after a crash, where the model allows it: a settled
 // removal's marker, and the hold a record backing nothing has on the change
 // version. The model leaves out snapshot holds and stamps, clone

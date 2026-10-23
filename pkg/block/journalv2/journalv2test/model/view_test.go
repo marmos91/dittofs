@@ -1,6 +1,7 @@
 package model
 
 import (
+	"cmp"
 	"context"
 	"iter"
 	"maps"
@@ -66,7 +67,7 @@ func (v modelView) Extents(id journalv2.FileID) ([]journalv2.Extent, error) {
 
 func (v modelView) Since(_ context.Context, id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 	return func(yield func(journalv2.Change, error) bool) {
-		cs, err := v.m.Since(v.tag, id, from)
+		cs, err := v.since(id, from)
 		if err != nil {
 			yield(journalv2.Change{}, err)
 			return
@@ -110,5 +111,51 @@ func (v modelView) Index(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
 	for _, r := range st.markers {
 		out = append(out, journalv2.IndexEntry{Kind: journalv2.EntryMarker, Extent: r.ext, Version: r.ver})
 	}
+	return out, nil
+}
+
+// since answers Since(id, from) as the journal must: every held extent, as a
+// write, and every live marker whose version is strictly above from, in
+// version order. Held extents are split where the record they are read from
+// changes; Compare checks Since byte by byte, so a journal may split them
+// differently.
+func (v modelView) since(id journalv2.FileID, from journalv2.Version) ([]journalv2.Change, error) {
+	f := v.m.files[id]
+	switch {
+	case f == nil:
+		return nil, nil
+	case f.tag != v.tag:
+		return nil, journalv2.ErrOtherShare
+	}
+	st := derive(f, all)
+	var out []journalv2.Change
+	for _, r := range st.runs() {
+		if r.ver.Compare(from) <= 0 {
+			continue
+		}
+		var mtime int64
+		if r.rec.kind == kindWrite {
+			mtime = r.rec.mtime
+		}
+		if n := len(out); n > 0 {
+			last := &out[n-1]
+			if last.Version == r.ver && last.Mtime == mtime && last.Extent.Off+last.Extent.Len == r.ext.Off {
+				last.Extent.Len += r.ext.Len
+				continue
+			}
+		}
+		out = append(out, journalv2.Change{Kind: journalv2.ChangeWrite, Extent: r.ext, Version: r.ver, Mtime: mtime})
+	}
+	for _, r := range st.markers {
+		if r.ver.Compare(from) > 0 {
+			out = append(out, journalv2.Change{Kind: changeKind(r.kind), Extent: r.ext, Version: r.ver})
+		}
+	}
+	slices.SortStableFunc(out, func(a, b journalv2.Change) int {
+		if c := a.Version.Compare(b.Version); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Extent.Off, b.Extent.Off)
+	})
 	return out, nil
 }

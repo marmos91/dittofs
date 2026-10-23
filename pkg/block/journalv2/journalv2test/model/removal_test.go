@@ -16,7 +16,7 @@ func TestTruncateNarrowsTheStraddlingExtentAndLeavesAMarker(t *testing.T) {
 	ok(t, m.Truncate(shareA, fid(1), 5, ver(3), nil))
 
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 5, 1, false}})
-	equalChanges(t, since(t, m, shareA, fid(1), ver(2)), []journalv2.Change{
+	equalChanges(t, markers(t, m, fid(1), ver(2)), []journalv2.Change{
 		{Kind: journalv2.ChangeTruncate, Extent: ext(5, math.MaxInt64-5), Version: ver(3)},
 	})
 }
@@ -65,7 +65,7 @@ func TestDeleteDropsEveryExtent(t *testing.T) {
 	ok(t, m.Delete(shareA, fid(1), ver(3), nil))
 
 	equalSpans(t, heldSpans(t, m, fid(1)), nil)
-	equalChanges(t, since(t, m, shareA, fid(1), journalv2.Version{}), []journalv2.Change{
+	equalChanges(t, markers(t, m, fid(1), journalv2.Version{}), []journalv2.Change{
 		{Kind: journalv2.ChangeDelete, Extent: ext(0, math.MaxInt64), Version: ver(3)},
 	})
 }
@@ -89,31 +89,8 @@ func TestSettleDropsMarkersAtOrBelowItsVersion(t *testing.T) {
 	ok(t, m.Deallocate(shareA, fid(1), ext(2, 1), ver(4), nil))
 	ok(t, m.Settle(shareA, fid(1), ver(3)))
 
-	equalChanges(t, since(t, m, shareA, fid(1), ver(1)), []journalv2.Change{
+	equalChanges(t, markers(t, m, fid(1), ver(1)), []journalv2.Change{
 		{Kind: journalv2.ChangeDeallocate, Extent: ext(2, 1), Version: ver(4)},
-	})
-}
-
-// Since yields every held extent and unsettled marker strictly above from, in
-// version order. A held extent is a write whether written or filled; a write
-// carries its mtime and a filled extent none.
-func TestSinceYieldsHeldExtentsAndMarkersInVersionOrder(t *testing.T) {
-	m := New()
-	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 111, ver(3), nil))
-	ok(t, m.Deallocate(shareA, fid(1), ext(4, 2), ver(5), nil))
-	ok(t, m.Fill(shareA, fid(1), 20, fill('F', 5), ver(5), ver(4), nil))
-	ok(t, m.WriteAt(shareA, fid(1), 30, fill('C', 5), 222, ver(6), nil))
-
-	equalChanges(t, since(t, m, shareA, fid(1), ver(2)), []journalv2.Change{
-		{Kind: journalv2.ChangeWrite, Extent: ext(0, 4), Version: ver(3), Mtime: 111},
-		{Kind: journalv2.ChangeWrite, Extent: ext(6, 4), Version: ver(3), Mtime: 111},
-		{Kind: journalv2.ChangeWrite, Extent: ext(20, 5), Version: ver(4)},
-		{Kind: journalv2.ChangeDeallocate, Extent: ext(4, 2), Version: ver(5)},
-		{Kind: journalv2.ChangeWrite, Extent: ext(30, 5), Version: ver(6), Mtime: 222},
-	})
-	equalChanges(t, since(t, m, shareA, fid(1), ver(4)), []journalv2.Change{
-		{Kind: journalv2.ChangeDeallocate, Extent: ext(4, 2), Version: ver(5)},
-		{Kind: journalv2.ChangeWrite, Extent: ext(30, 5), Version: ver(6), Mtime: 222},
 	})
 }
 
@@ -127,23 +104,4 @@ func equalChanges(t *testing.T, got, want []journalv2.Change) {
 			t.Fatalf("change %d:\n got %s\nwant %s", i, fmtChange(got[i]), fmtChange(want[i]))
 		}
 	}
-}
-
-// Since keeps a write's held extent and a fill's apart even where they are
-// adjacent at one version: a write carries its mtime, a fill none.
-func TestSinceKeepsAWriteAndAnAdjacentFillOfItsVersionApart(t *testing.T) {
-	m := New()
-	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 7, ver(1), nil))
-	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
-	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 4)}, nil))
-	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
-	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(2, 2)}, nil))
-	ok(t, m.Fill(shareA, fid(1), 2, fill('A', 2), ver(1), ver(1), nil))
-
-	got, err := m.Since(shareA, fid(1), journalv2.Version{})
-	ok(t, err)
-	equalChanges(t, got, []journalv2.Change{
-		{Kind: journalv2.ChangeWrite, Extent: ext(0, 2), Version: ver(1), Mtime: 7},
-		{Kind: journalv2.ChangeWrite, Extent: ext(2, 2), Version: ver(1)},
-	})
 }

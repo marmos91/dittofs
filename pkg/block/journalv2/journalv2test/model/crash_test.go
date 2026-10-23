@@ -133,7 +133,7 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 
 	m := setup(t, true)
 	ok(t, m.Compare(t.Context(), shareA, modelView{journal(false), shareA}))
-	if got := since(t, m, shareA, fid(1), ver(1)); len(got) != 1 {
+	if got := markers(t, m, fid(1), ver(1)); len(got) != 1 {
 		t.Fatalf("a marker that came back is not live in the model: %s", fmtChanges(got))
 	}
 
@@ -572,8 +572,8 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 	ok(t, setup(t, 20, true).Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
-// Sync, Settle and Since are refused on a file whose state a crash left
-// unknown, as every other call is, and a Sync error the model has no rule for
+// Sync and Settle are refused on a file whose state a crash left unknown, as
+// every other call is, and a Sync error the model has no rule for
 // is reported.
 func TestQueriesAndSettlesAreRefusedUntilACrashIsResolved(t *testing.T) {
 	m := New()
@@ -584,8 +584,6 @@ func TestQueriesAndSettlesAreRefusedUntilACrashIsResolved(t *testing.T) {
 	ok(t, m.Reopen(ver(10)))
 	misused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	misused(t, m.Settle(shareA, fid(1), ver(1)))
-	_, err := m.Since(shareA, fid(1), journalv2.Version{})
-	misused(t, err)
 }
 
 // Writes are decided from the bytes the journal shows, however many there are:
