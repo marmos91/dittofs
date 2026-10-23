@@ -32,8 +32,8 @@ func openCodecCases() []codecCase {
 		Kind:    entity.OpenCloneSource, CloneDst: entity.FileID{15: 4}, CloneVersion: entity.VersionOf(5),
 		CreateGUID: [16]byte{15: 5}, AppInstance: [16]byte{15: 6}, AppVersion: [2]uint64{1, 2},
 		Timeout: time.Minute, LockSeq: [64]uint8{0: 0x13}, ChannelSeq: 8}
-	lk := entity.Lock{ID: 4, Open: 9, Owner: entity.LockOwner{Client: 7, Owner: []byte("o")}, Offset: 100, Length: entity.EndOfFile, Exclusive: true}
-	dp := entity.DeletePending{Parent: entity.FileID{15: 1}, Name: []byte("a"), By: alice, Access: 0x10000, Privileged: true}
+	lk := entity.LockRecord{ID: 4, Open: 9, Owner: entity.LockOwner{Client: 7, Owner: []byte("o")}, Offset: 100, Length: entity.EndOfFile, Exclusive: true}
+	dp := entity.DeleteRecord{Parent: entity.FileID{15: 1}, Name: []byte("a"), By: alice, Access: 0x10000, Privileged: true}
 	f16 := func(b byte) string { return strings.Repeat("00", 15) + hex.EncodeToString([]byte{b}) }
 	return []codecCase{
 		{"client", cl, encodeClient(cl),

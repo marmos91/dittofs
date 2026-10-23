@@ -179,16 +179,16 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 	must(t, opens.Put(ctx, f.share.ID, p))
 	plain := f.newOpen(file.ID)
 	must(t, opens.Put(ctx, f.share.ID, plain))
-	lock := func(open entity.OpenID, off int64, owner string) entity.Lock {
+	lock := func(open entity.OpenID, off int64, owner string) entity.LockRecord {
 		id, err := f.s.NextID(ctx, kvstore.IDLock)
 		must(t, err)
-		return entity.Lock{ID: entity.LockID(id), Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
+		return entity.LockRecord{ID: entity.LockID(id), Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
 	}
 	if err := opens.PutLock(ctx, f.share.ID, file.ID, lock(plain.ID, 0, "x")); err == nil {
 		t.Error("a lock stored under an open that is not persistent")
 	}
 	l1, l2, l3 := lock(p.ID, 100, "x"), lock(p.ID, 0, "x"), lock(p.ID, 100, "y")
-	for _, l := range []entity.Lock{l1, l2, l3} {
+	for _, l := range []entity.LockRecord{l1, l2, l3} {
 		must(t, opens.PutLock(ctx, f.share.ID, file.ID, l))
 	}
 	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
@@ -222,7 +222,7 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	must(t, opens.Put(ctx, f.share.ID, plain))
 	_, rootID, err := f.root.Parse()
 	must(t, err)
-	dp := entity.DeletePending{Parent: rootID, Name: []byte("a"), By: f.admin.Principal, Access: 0x10000}
+	dp := entity.DeleteRecord{Parent: rootID, Name: []byte("a"), By: f.admin.Principal, Access: 0x10000}
 	if err := opens.SetDeletePending(ctx, f.share.ID, file.ID, plain.ID, dp); err == nil {
 		t.Error("delete pending stored for an open that is not persistent")
 	}
@@ -248,7 +248,7 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	q := f.newOpen(other.ID)
 	q.Durability = entity.DurabilityPersistent
 	must(t, opens.Put(ctx, f.share.ID, q))
-	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeletePending{Parent: rootID, Name: []byte("c")}))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("c")}))
 	must(t, opens.ClearDeletePending(ctx, f.share.ID, other.ID))
 	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
 		t.Errorf("after a clear: %v, %v", ok, err)

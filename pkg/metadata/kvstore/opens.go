@@ -182,7 +182,7 @@ func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Op
 // PutLock writes a durable lock beneath its open, which must be a
 // persistent open of the file: no other open's locks are stored, and
 // closing the open drops them with it.
-func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.Lock) error {
+func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.LockRecord) error {
 	if l.ID == 0 || l.Offset < 0 || l.Length <= 0 {
 		return merrs.NewInvalidArgumentError("a lock needs an ID, an offset and a length")
 	}
@@ -197,14 +197,14 @@ func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.Fi
 }
 
 // DeleteLock removes one durable lock.
-func (o Opens) DeleteLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.Lock) error {
+func (o Opens) DeleteLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.LockRecord) error {
 	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
 		return tx.Delete(lockKey(share, file, l.Open, l.Offset, l.ID))
 	})
 }
 
 // Locks lists the durable locks beneath one open, in offset order.
-func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID) (out []entity.Lock, err error) {
+func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID) (out []entity.LockRecord, err error) {
 	err = o.s.kv.View(ctx, func(r kv.Reader) error {
 		out = nil
 		pre := locksPrefix(share, file, open)
@@ -235,7 +235,7 @@ func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.File
 // durably only while the file has a persistent open, which carries the
 // promise across a failover; otherwise it is held with the opens, in
 // memory, and this refuses it. The open named is the marking one.
-func (o Opens) SetDeletePending(ctx context.Context, share entity.ShareID, file entity.FileID, by entity.OpenID, d entity.DeletePending) error {
+func (o Opens) SetDeletePending(ctx context.Context, share entity.ShareID, file entity.FileID, by entity.OpenID, d entity.DeleteRecord) error {
 	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, err := persistentOpen(tx, share, file, by); err != nil {
 			return err
@@ -251,7 +251,7 @@ func (o Opens) ClearDeletePending(ctx context.Context, share entity.ShareID, fil
 
 // DeletePending reads a file's delete-pending record; ok is false when it
 // has none.
-func (o Opens) DeletePending(ctx context.Context, share entity.ShareID, file entity.FileID) (d entity.DeletePending, ok bool, err error) {
+func (o Opens) DeletePending(ctx context.Context, share entity.ShareID, file entity.FileID) (d entity.DeleteRecord, ok bool, err error) {
 	err = o.s.kv.View(ctx, func(r kv.Reader) error {
 		b, found, err := get(r, deletePendingKey(share, file))
 		if err != nil || !found {
