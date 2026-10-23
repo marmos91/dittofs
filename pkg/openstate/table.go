@@ -74,9 +74,8 @@ type entry struct {
 // known is what the table holds of a client's record while it is current
 // here.
 type known struct {
-	protocol entity.Protocol
-	owner    entity.Principal // the owner that may act on all its state; zero unless it protects it
-	shards   []ShardID        // shards seen listed in its record
+	owner  entity.Principal // the owner that may act on all its state; zero unless it protects it
+	shards []ShardID        // shards seen listed in its record
 }
 
 // New builds an empty table. It starts nothing: Start does.
@@ -198,14 +197,6 @@ func (t *Table) current(c entity.ClientID) bool {
 	_, ok := t.known[c]
 	end := t.leases[c]
 	return ok && (end == 0 || t.d.Clock.Elapsed() < end)
-}
-
-// protocol is client c's protocol, or zero for one not current here, such
-// as NFSv3's, which has none.
-func (t *Table) protocol(c entity.ClientID) entity.Protocol {
-	t.cmu.Lock()
-	defer t.cmu.Unlock()
-	return t.known[c].protocol
 }
 
 // running is the Sink, or ErrStopped before Start and after Stop.

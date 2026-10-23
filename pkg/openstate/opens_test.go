@@ -25,7 +25,7 @@ func (f *fixture) caller(t *testing.T, c Client) Caller {
 	if p.IsZero() {
 		p = entity.NewUser()
 	}
-	return Caller{Client: f.connect(t, c), Principal: p}
+	return Caller{Client: f.connect(t, c), Principal: p, Protocol: c.Protocol}
 }
 
 func (f *fixture) open(who Caller, file FileKey, r OpenRequest) (Open, error) {
@@ -424,6 +424,13 @@ func TestChangeChecks(t *testing.T) {
 	}
 	if err := f.Checks().CheckChange(ctx, n, FileKey{ID: d}, ChangeRename); err != nil {
 		t.Errorf("an NFS rename of a directory with an open child: %v", err)
+	}
+	// The caller's protocol decides, not a client the table knows.
+	if err := f.Checks().CheckChange(ctx, Caller{Principal: s.Principal, Protocol: entity.ProtocolSMB}, FileKey{ID: d}, ChangeRename); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an SMB rename of a directory with an open child, by a caller of no known client: %v, want ErrShareViolation", err)
+	}
+	if err := f.Checks().CheckChange(ctx, Caller{Client: s.Client, Principal: s.Principal}, FileKey{ID: d}, ChangeRename); err != nil {
+		t.Errorf("an NFSv3 rename of a directory with an open child, under an SMB client's ID: %v", err)
 	}
 	f.close(t, s, child)
 	if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, ChangeRename); err != nil {
