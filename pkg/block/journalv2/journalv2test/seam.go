@@ -457,7 +457,8 @@ func (s *Seam) SyncDir() error {
 // for a file's Sync. The changes stay in the directory, so List and Open
 // still see them, but only what is logged after the failure can become
 // durable, so code that retries a failed SyncDir and trusts the retry is
-// caught.
+// caught. The one exception is a lost rename that a later change depends on
+// (see replayDirLog).
 func (s *Seam) loseDirLog() {
 	if s.dirSnap == nil {
 		s.dirSnap = s.durableNames()
@@ -471,21 +472,54 @@ func (s *Seam) loseDirLog() {
 //
 // decision: a change is replayed by name, whatever the durable directory
 // holds under that name: a create or a rename sets the name, a remove deletes
-// it. Replaying only changes whose node the durable directory still holds
-// would dead-end the re-append path: once the removal of an old file is lost,
-// a new file under its name could never become durable, and removing the name
-// again would act on the new file, which the durable directory never held. A
-// node keeps one name, so a rename also takes it away from any name it held.
+// it, and the file it removed under any name the durable directory gives it.
+// Replaying only changes whose node the durable directory still holds would
+// dead-end the re-append path: once the removal of an old file is lost, a new
+// file under its name could never become durable, and removing the name again
+// would act on the new file, which the durable directory never held. A node
+// keeps one name, so a rename also takes it away from any name it held.
+//
+// decision: a node a replayed change takes a name from keeps a durable name
+// while the directory still holds it: the one the directory holds it under
+// now, given it by a rename the failure lost. A filesystem commits directory
+// changes in order, so it cannot commit the change that reuses the name
+// without the rename that freed it, and a renamed file survives a crash
+// under one of its names, never under none. By the same order, a filesystem
+// would commit every lost change before a later success; the seam keeps the
+// others lost on purpose, as the worst case, so code that trusts a retried
+// SyncDir is caught. That is a harness choice, not a filesystem state.
 func (s *Seam) replayDirLog() {
+	now := make(map[*node]string, len(s.names))
+	for name, n := range s.names {
+		now[n] = name
+	}
+
+	// keep gives the node under name, and any node it displaces in turn, the
+	// name the directory holds it under now.
+	keep := func(name string) {
+		for n := s.dirSnap[name]; n != nil; {
+			to, ok := now[n]
+			if !ok || to == name {
+				return
+			}
+			n, s.dirSnap[to] = s.dirSnap[to], n
+		}
+	}
+
 	for _, op := range s.dirLog {
 		switch op.kind {
 		case dirCreate:
+			keep(op.name)
 			s.dirSnap[op.name] = op.node
 		case dirRemove:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.name)
 			delete(s.dirSnap, op.name)
 		case dirRename:
 			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.oldName)
 			delete(s.dirSnap, op.oldName)
+			keep(op.name)
 			s.dirSnap[op.name] = op.node
 		}
 	}

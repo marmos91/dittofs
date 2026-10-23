@@ -879,6 +879,95 @@ func TestARemoveAfterAFailedSyncDirDeletesTheDurableName(t *testing.T) {
 	wantNames(t, s)
 }
 
+func TestARenameLostByAFailedSyncDirSurvivesWhenItsNameIsReused(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "orig")
+
+	if err := s.Rename("a", "c"); err != nil {
+		t.Fatal(err)
+	}
+	failSyncDir(t, s) // loses the rename
+
+	f, err := s.Create("a") // takes the name the lost rename freed
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "new", 0)
+	syncFile(t, f)
+	if err := s.Rename("a", "d"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	// An ordered filesystem cannot commit the create without the rename
+	// that freed its name: the original survives as c, never under no name.
+	wantDurable(t, s, "a", nil)
+	wantDurable(t, s, "c", new("orig"))
+	wantDurable(t, s, "d", new("new"))
+
+	crash(t, s)
+	wantNames(t, s, "c", "d")
+	if got := onDisk(t, s, "c") + "," + onDisk(t, s, "d"); got != "orig,new" {
+		t.Fatalf("after the crash c,d hold %q, want %q", got, "orig,new")
+	}
+}
+
+func TestLostRenamesAReusedNameDependsOnSurviveInAChain(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "A")
+	durableFile(t, s, "c", "C")
+
+	for _, r := range [][2]string{{"c", "e"}, {"a", "c"}} {
+		if err := s.Rename(r[0], r[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failSyncDir(t, s) // loses both renames
+
+	if _, err := s.Create("a"); err != nil { // needs a free, so a->c, so c->e
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	wantDurable(t, s, "a", new(""))
+	wantDurable(t, s, "c", new("A"))
+	wantDurable(t, s, "e", new("C"))
+
+	crash(t, s)
+	wantNames(t, s, "a", "c", "e")
+}
+
+func TestARemoveAfterAFailedSyncDirKeepsTheFileALostRenameMoved(t *testing.T) {
+	s := newSeam(t)
+	durableFile(t, s, "a", "X")
+	durableFile(t, s, "b", "Y")
+
+	for _, r := range [][2]string{{"a", "c"}, {"b", "a"}} {
+		if err := s.Rename(r[0], r[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failSyncDir(t, s) // loses both renames: a is still X, durably
+
+	if err := s.Remove("a"); err != nil { // removes Y, which a now names
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+
+	// The remove could only remove Y after b->a put it at a, and a was free
+	// for that only after a->c: committing the remove commits both renames.
+	// Y is gone from every name, and X keeps c rather than vanishing with a.
+	wantDurable(t, s, "a", nil)
+	wantDurable(t, s, "b", nil)
+	wantDurable(t, s, "c", new("X"))
+
+	crash(t, s)
+	wantNames(t, s, "c")
+	if got := onDisk(t, s, "c"); got != "X" {
+		t.Fatalf("after the crash c holds %q, want %q", got, "X")
+	}
+}
+
 func TestTornAfterAFailedSyncDirPicksOnlyDurableFiles(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "a", "aaaa")
