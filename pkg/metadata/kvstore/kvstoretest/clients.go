@@ -33,9 +33,10 @@ func testClients(t *testing.T, kvo Opener) {
 	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
 	nfs := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("host-a"), Boot: [8]byte{1},
 		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
-		Reach:  entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1}},
-		Shards: []entity.ShardMark{{Shard: 1, Done: 4}, {Shard: entity.ShardLimit - 1, Done: 2}}, Adapter: []byte{1, 2, 3}}
+		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1}}, Adapter: []byte{1, 2, 3}}
 	must(t, cs.Create(ctx, nfs))
+	nfs.Shards = []entity.ShardMark{{Shard: 1, Done: 4}}
+	must(t, cs.MarkShard(ctx, nfs.ID, nfs.Shards[0]))
 	smb := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolSMB, Name: []byte("host-a"), Recovery: entity.RecoverReconnect}
 	must(t, cs.Create(ctx, smb))
 
@@ -73,11 +74,6 @@ func testClients(t *testing.T, kvo Opener) {
 		"no name":              ok(""),
 		"adapter over 4 KiB":   func() entity.ClientRecord { c := ok("x"); c.Adapter = make([]byte, 4<<10+1); return c }(),
 		"protection, no owner": func() entity.ClientRecord { c := ok("x"); c.Protect = true; return c }(),
-		"shard past 24 bits": func() entity.ClientRecord {
-			c := ok("x")
-			c.Shards = []entity.ShardMark{{Shard: entity.ShardLimit}}
-			return c
-		}(),
 	} {
 		if err := cs.Create(ctx, cl); !invalid(err) {
 			t.Errorf("%s: %v", name, err)
@@ -94,9 +90,9 @@ func testClients(t *testing.T, kvo Opener) {
 func testClientPut(t *testing.T, kvo Opener) {
 	s, c := newStore(t, kvo)
 	cs := s.Clients()
-	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h"), Boot: [8]byte{1},
-		Shards: []entity.ShardMark{{Shard: 2, Done: 1}}}
+	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h"), Boot: [8]byte{1}}
 	must(t, cs.Create(ctx, cl))
+	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: 2, Done: 1}))
 	read, err := cs.Get(ctx, cl.ID)
 	must(t, err)
 
@@ -174,16 +170,19 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 
 // RFC 14 §4.4 and §5.3: a client's shard marks hold each shard's Done, are
 // listed in shard order with the record, and are updated in place; a revoke
-// drops every one. A shard past 24 bits, or a mark for no client, is refused.
+// drops every one. Only MarkShard writes one: a create's Shards are not
+// written. A shard past 24 bits, or a mark for no client, is refused.
 func testClientShards(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cs := s.Clients()
-	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h")}
+	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h"),
+		Shards: []entity.ShardMark{{Shard: 9, Done: 1}}}
 	must(t, cs.Create(ctx, cl))
 	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: 3, Done: 2}))
+	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: entity.ShardLimit - 1, Done: 2}))
 	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: 1, Done: 5}))
 	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: 3, Done: 7}))
-	want := []entity.ShardMark{{Shard: 1, Done: 5}, {Shard: 3, Done: 7}}
+	want := []entity.ShardMark{{Shard: 1, Done: 5}, {Shard: 3, Done: 7}, {Shard: entity.ShardLimit - 1, Done: 2}}
 	if got, err := cs.Get(ctx, cl.ID); err != nil || !slices.Equal(got.Shards, want) {
 		t.Errorf("shards %+v, %v; want %+v", got.Shards, err, want)
 	}
