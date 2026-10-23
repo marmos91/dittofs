@@ -1651,7 +1651,9 @@ One workflow, `tests.yml`, runs every registered suite:
     GitHub answers a request with a 5xx twice in a row, doesn't turn the run red, and a
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
-    fail the gate, so they never make develop red.
+    fail the gate, so they never make develop red. `e2e`'s are the exception while `e2e` waits to
+    turn blocking (§8 step 3): `post` also waits for `non-blocking` and posts them, so a red e2e on
+    develop alerts without holding a merge.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
   the options that move later, with any step its cells need that `run` doesn't give yet, such as
