@@ -1309,7 +1309,7 @@ that against every protocol; this section maps the SMB request.
   (MS-FSA 2.1.5.7; [§6.3](#6.3%20Breaks)), and waits pending while it does.
 - Unlocking a range not held is `STATUS_RANGE_NOT_LOCKED`.
 - A zero-length lock is held. Its last byte is offset − 1 (MS-FSA 2.1.4.10), so
-  one at X conflicts only with a lock or I/O range holding both X − 1 and X,
+  one at X conflicts only with a lock holding both X − 1 and X, held or asked,
   and one at 0 conflicts with nothing
   ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
 
