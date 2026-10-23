@@ -141,7 +141,8 @@
     "environment": {
       "commit": "abcdef12",
       "branchName": "develop",
-      "osPlatform": "linux"
+      "osPlatform": "linux",
+      "osRelease": "6.17.0-1022-azure"
     },
     "extra": {
       "run": "20261015T120000Z-abcdef12-a2",

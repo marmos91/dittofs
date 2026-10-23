@@ -94,6 +94,7 @@ type Run struct {
 	Branch      string // "" when the checkout isn't on a branch
 	Dirty       bool   // the checkout has changes its commit doesn't
 	OS          string
+	Kernel      string // the release of the kernel it ran on, as uname -r gives it; "" where there is none
 	In          string // host, or container when dt runs in its dev container
 	Tier        string // the tier the run was asked for
 	Exit        int    // the run's exit status, from the cells it finished
@@ -183,7 +184,7 @@ func Parse(path string, data []byte) (Run, error) {
 	res := doc.Results
 	r := Run{Name: res.Extra.Run, Start: time.UnixMilli(res.Summary.Start), Stop: time.UnixMilli(res.Summary.Stop),
 		Commit: res.Environment.Commit, Branch: res.Environment.BranchName, Dirty: res.Extra.Dirty,
-		OS: res.Environment.OSPlatform, In: res.Extra.In, Tier: res.Extra.Tier, Exit: res.Extra.Exit}
+		OS: res.Environment.OSPlatform, Kernel: res.Environment.OSRelease, In: res.Extra.In, Tier: res.Extra.Tier, Exit: res.Extra.Exit}
 	var at [][]string
 	for _, c := range res.Extra.Cells {
 		name := c.Suite
@@ -246,7 +247,7 @@ func (r Run) json() ([]byte, error) {
 	res := &doc.Results
 	res.Tool.Name = "dt"
 	res.Tests = []test{}
-	res.Environment = environment{Commit: r.Commit, BranchName: r.Branch, OSPlatform: r.OS}
+	res.Environment = environment{Commit: r.Commit, BranchName: r.Branch, OSPlatform: r.OS, OSRelease: r.Kernel}
 	res.Extra = extra{Run: r.Name, Dirty: r.Dirty, Tier: r.Tier, In: r.In, Exit: r.Exit, Cells: []cell{}}
 	sum := &res.Summary
 	sum.Start, sum.Stop = r.Start.UnixMilli(), r.Stop.UnixMilli()
@@ -335,6 +336,7 @@ type environment struct {
 	Commit     string `json:"commit"`
 	BranchName string `json:"branchName,omitempty"`
 	OSPlatform string `json:"osPlatform"`
+	OSRelease  string `json:"osRelease,omitempty"`
 }
 
 // extra is the run's own fields: its name, its checkout, where and at which
