@@ -1146,7 +1146,7 @@ walk can produce is omitted.
 | `DirtyBytes` | gauge | held bytes whose offloaded bit is unset |
 | `OldestDirty` | value | when the oldest held extent whose offloaded bit is unset was written; the age of the upload backlog |
 | `Files` | gauge | files with at least one held extent |
-| `ExtentCount` | gauge | held extents |
+| `ExtentCount` | gauge | placement index entries: held and retained extents and removal markers ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `spare_refusals` | counter | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `DropRanges` | gauge | ranges the removal-drop test keeps per file and segment ([§7.2](#7.2%20Repack)) |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
