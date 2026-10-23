@@ -458,7 +458,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download the results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
@@ -537,7 +537,7 @@ jobs:
       # Every job gate waits for uploads its results as dt-run-*; a pattern
       # that matches none downloads none, and doesn't fail.
       - name: Download the results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
