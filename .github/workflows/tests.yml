@@ -81,10 +81,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # decision: every job here pins the same Go release rather than 1.26.x,
+      # which resolves to whichever 1.26 the machine already has. Each release
+      # has a module cache of its own, so a floating version splits the jobs
+      # between caches. Bump the pins together.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - name: Build dt
@@ -149,7 +153,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
+
+      # Every module before anything builds: the cache is saved once per key
+      # and never updated, so whichever job saves it saves all of them. -x
+      # lists each module fetched, so a restored cache missing some shows here.
+      - &download
+        name: Download modules
+        run: go mod download -x
 
       # The kernel NFS client, for a cell whose fixture mounts the share.
       - name: Install NFS client utilities
@@ -244,7 +255,9 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
+
+      - *download
 
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -309,7 +322,7 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - *build
@@ -357,6 +370,7 @@ jobs:
     steps:
       - *checkout
       - *go
+      - *download
       - *build
       - *suite
       - *report
@@ -382,6 +396,7 @@ jobs:
     steps:
       - *checkout
       - *go
+      - *download
       - *build
 
       # The services its needs name, which dt run checks answer before the
@@ -502,7 +517,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - name: Build dt
