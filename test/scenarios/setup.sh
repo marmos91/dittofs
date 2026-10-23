@@ -44,10 +44,12 @@ rm -f /etc/apt/apt.conf.d/docker-clean
 # Tools: SMB and NFS clients, rclone for S3, libnfs's nfs-io example (for NFS deletes) built from its
 # sha256-checked source, and the scenario tools in lib/tools, the C ones built here. The packages
 # are downloaded (-d) before anything installs, so a failed try leaves nothing half installed.
-# apt-updated dates the last update, since apt dates each list as the mirror does.
+# apt-updated dates the last update, since apt dates each list as the mirror does. autoclean then
+# drops the packages the lists no longer offer, so superseded versions don't pile up in the cache.
 TOOLS=(ca-certificates curl jq rclone smbclient libnfs-utils libnfs-dev libsmb2-dev libc6-dev tcc)
 test -n "$(find /cache/downloads -maxdepth 1 -name apt-updated -mmin -1440)" && apt-get install -d -y -qq --no-install-recommends "${TOOLS[@]}" >/dev/null || { apt-get update -qq; touch /cache/downloads/apt-updated; }
 apt-get install -y -qq --no-install-recommends "${TOOLS[@]}" >/dev/null
+apt-get autoclean -qq
 test -f /cache/downloads/libnfs-5.0.2.tar.gz || { curl -sfL -o /cache/downloads/libnfs-5.0.2.tar.gz.part https://github.com/sahlberg/libnfs/archive/refs/tags/libnfs-5.0.2.tar.gz && mv /cache/downloads/libnfs-5.0.2.tar.gz.part /cache/downloads/libnfs-5.0.2.tar.gz; }
 echo '637e56643b19da9fba98f06847788c4dad308b723156a64748041035dcdf9bd3  /cache/downloads/libnfs-5.0.2.tar.gz' | sha256sum -c --quiet
 tar xzf /cache/downloads/libnfs-5.0.2.tar.gz -C /tmp
