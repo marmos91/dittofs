@@ -540,7 +540,7 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    starts.
 10. **Reconcile** (§2.3) until `Stop`.
 
-Readiness turns true once every adapter the records enable is serving.
+Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)); a refused one raises `adapter_refused` and the others serve.
 
 **Stop.** `Node.Stop` stops the components in reverse build order, each step
 completing before the next, except that the node's shards are handed over
