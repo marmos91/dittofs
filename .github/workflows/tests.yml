@@ -168,7 +168,7 @@ jobs:
         name: Download modules
         run: go mod download -x
 
-      # The programs the e2e tests run: mount.cifs and smbclient, the Kerberos
+      # The programs the e2e tests run that no need installs: the Kerberos
       # client, rpcbind for the NLM interop tests, the NFSv4 ACL tools, and
       # setfattr and getfattr for the NFSv4.2 xattr tests.
       - name: Install the e2e tests' system packages
@@ -177,7 +177,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y cifs-utils smbclient krb5-user rpcbind nfs4-acl-tools attr
+          sudo apt-get install -y krb5-user rpcbind nfs4-acl-tools attr
 
       # The kernel NFS client, for a cell whose fixture mounts the share.
       - name: Install NFS client utilities
