@@ -182,7 +182,7 @@ func TestStateRefSequence(t *testing.T) {
 	f := entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
 	var now uint32
-	if err := tab.step(f, func(e *entry) error { now = tab.advance(e, ref); return nil }); err != nil {
+	if err := tab.step(f, func(e *entry) (err error) { now, err = tab.advance(e, ref); return err }); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -200,7 +200,7 @@ func TestStateRefSequence(t *testing.T) {
 	h := tab.refs[k]
 	h.seq = ^uint32(0)
 	tab.refs[k] = h
-	if err := tab.step(f, func(e *entry) error { now = tab.advance(e, ref); return nil }); err != nil {
+	if err := tab.step(f, func(e *entry) (err error) { now, err = tab.advance(e, ref); return err }); err != nil {
 		t.Fatal(err)
 	}
 	if now != 1 {
@@ -248,5 +248,19 @@ func TestGrantAndWatchIDsResolveWithoutAHandle(t *testing.T) {
 	releaseIn(t, tab, f, gref)
 	if _, err := tab.resolveID(1, StateGrant, g.Shard, g.Token); !errors.Is(err, ErrBadState) {
 		t.Errorf("a released grant: %v, want ErrBadState", err)
+	}
+}
+
+// Advancing a released reference is ErrBadState and adds nothing to the index.
+func TestAdvanceAddsNoRecord(t *testing.T) {
+	tab := newTable(t)
+	f := entity.NewFileID()
+	ref := mintIn(t, tab, f, 1, 0)
+	releaseIn(t, tab, f, ref)
+	if err := tab.step(f, func(e *entry) error { _, err := tab.advance(e, ref); return err }); !errors.Is(err, ErrBadState) {
+		t.Errorf("advancing a released reference: %v, want ErrBadState", err)
+	}
+	if len(tab.refs) != 0 {
+		t.Fatalf("after advancing a released reference: %d references, want none", len(tab.refs))
 	}
 }
