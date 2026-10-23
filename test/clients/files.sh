@@ -13,9 +13,7 @@ mkdir dir
 [ -d dir ] || fail "dir isn't a directory"
 echo "PASS: directory create"
 
-listed=false
-for name in *; do [ "$name" != file.txt ] || listed=true; done
-$listed || fail "file.txt isn't listed"
+printf '%s\n' * | grep -qx file.txt || fail "file.txt isn't listed"
 echo "PASS: directory listing"
 
 rm file.txt
