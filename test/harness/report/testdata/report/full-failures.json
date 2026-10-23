@@ -69,6 +69,13 @@
           "junit": "junit/unit-windows.xml"
         },
         {
+          "suite": "fio-verify",
+          "result": "passed",
+          "seconds": 64,
+          "log": "logs/fio-verify.log",
+          "junit": "junit/fio-verify.xml"
+        },
+        {
           "suite": "pynfs",
           "cell": "badger-s3/1",
           "result": "not run",

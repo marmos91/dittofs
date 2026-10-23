@@ -277,20 +277,33 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own clients mount the fixture's share, and the workloads run over the mount.
-  # The suite itself is the Linux run, with every workload; macOS and Windows run a smoke test.
+  # Each platform's own client mounts the fixture's share over SMB, and the workloads run over the
+  # mount: on each, the checks of smb-client-compat.yml's job there, which this replaces once its
+  # results match. The suite itself runs on linux, and also sees its blocks reach the bucket.
   clients:
-    tests: test/clients/*
-    cmd: "{test} {mount}"
-    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
-    needs: [linux, root, smb-client, nfs-client]
+    tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
+    cmd: "{test} {mount} {bucket}"   # s3.sh reads the bucket's listing; the others take the mount alone
+    fixture: { profile: badger-s3, smb: { mount: true } }
+    needs: [linux, root, smb-client]
     tier: nightly
+    # decision: reported, never failing the gate, until the three cells' results match
+    # smb-client-compat.yml's; they become blocking in the change that removes that workflow.
+    blocking: false
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
-      macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }
-      windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }
+      macos:
+        tests: [test/clients/files.sh, test/clients/xattr.sh]
+        cmd: "{test} {mount}"
+        env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
+        needs: [macos]
+        fixture: { profile: memory, smb: { mount: true } }
+      windows:
+        tests: [test/clients/files.ps1]
+        cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
+        needs: [windows]
+        fixture: { profile: memory, smb: { mount: true } }
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
@@ -311,14 +324,19 @@ suites:
     # there, a change to setup.sh, which its owner makes.
     blocking: false
   fio-verify:
-    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
-    tests: bench/workloads/*.fio
+    # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
+    # perl fills them from the environment into a copy below {out}, which fio runs.
+    cmd:
+      - cp {test} {out}/{test}
+      - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
+      - fio --output-format=json --output={out}/{test}.json {out}/{test}
+    tests: bench/*/*.fio   # dfsbench's workloads, and the verify jobs, which read their data back
     exclude: [bench/workloads/layout.fio]
-    fixture: { profile: badger-s3, nfs: "4.1" }
+    fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }
     metrics: fio-json
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }

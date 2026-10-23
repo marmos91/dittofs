@@ -169,7 +169,9 @@ suites:
 
 // A fixture adds to each cell's needs what its fields imply there: a service
 // for an S3 profile, root and the client for a mount, but nothing for an
-// export without one, and root and the port for SMB on a set port.
+// export without one, and root and the port for SMB on a set port. An SMB
+// mount on the macos or windows place needs the client alone: the user's own
+// client mounts it there.
 func TestFixtureNeeds(t *testing.T) {
 	root := t.TempDir()
 	y := `version: 1
@@ -182,6 +184,8 @@ suites:
     fixture: { profile: "{profile}", nfs: "{nfs}" }
     needs: [linux, root]
   b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
+  bm: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [macos] }
+  bw: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [windows] }
   c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
   d: { cmd: "true", fixture: { profile: memory, nfs: { options: "" } } }
   e: { cmd: "true", fixture: { profile: memory, nfs: export, client: namespace, rpcbind: host } }
@@ -202,6 +206,8 @@ suites:
 		"a/badger-s3/export": {"linux", "root", "service:localstack"},
 		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
 		"b":                  {"root", "smb-client"},
+		"bm":                 {"macos", "smb-client"},
+		"bw":                 {"windows", "smb-client"},
 		"c":                  {"linux", "root", "port:445"},
 		"d":                  {"root", "nfs-client"},
 		"e":                  {"root", "nfs-client", "rpcbind"},

@@ -50,14 +50,22 @@ func percentile(times []time.Duration, p int) time.Duration {
 // Suites counts each suite over runs, by its name: its tests' results and its
 // cells' times. A cell skipped for needs its machine didn't meet didn't run,
 // so it doesn't count.
-func Suites(runs []report.Run) map[string]*Count {
+func Suites(runs []report.Run) map[string]*Count { return cells(runs, Suite) }
+
+// Cells counts each cell over runs, by its name, as Suites counts a suite.
+func Cells(runs []report.Run) map[string]*Count {
+	return cells(runs, func(c report.Cell) string { return c.Name })
+}
+
+// cells counts the cells of runs under the key each gives.
+func cells(runs []report.Run, key func(report.Cell) string) map[string]*Count {
 	out := map[string]*Count{}
 	for _, r := range runs {
 		for _, c := range r.Cells {
 			if c.Result == report.Skipped {
 				continue
 			}
-			n := at(out, Suite(c), r.Name)
+			n := at(out, key(c), r.Name)
 			n.Times = append(n.Times, c.Took)
 			for _, t := range c.Tests {
 				n.add(t)
