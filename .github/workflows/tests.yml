@@ -171,13 +171,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nfs-common
 
-      # mount.cifs, for a cell whose fixture mounts the share over SMB with
-      # the kernel's client. The other places' own clients are there already.
-      - name: Install SMB client utilities
+      # mount.cifs, which the smb-client need checks, and smbclient, which
+      # AD-DC's NTLM test runs and skips without. The other places' own
+      # clients are there already.
+      - name: Install the SMB clients
         if: contains(matrix.needs, 'smb-client') && runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cifs-utils
+          sudo apt-get install -y cifs-utils smbclient
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them
