@@ -53,7 +53,6 @@ const (
 type LockReq struct {
 	Owner  LockOwner
 	Open   OpenRef // the open, or the owner's lock state, it is taken under; RefAnonymous: none
-	Shard  ShardID // the file's shard, which names a lock state taken under no open
 	Ranges []LockRange
 	Wait   WaitKind // only a single-range request waits
 	Seqs   Seqs
@@ -84,21 +83,21 @@ type Locks interface {
 	// naming the first holder found; a single-range request that waits
 	// records a waiter, by poll answered the conflict, by callback answered
 	// Waiting. Past 64 ranges it is ErrInvalid.
-	Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq) (LockResult, error)
+	Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (LockResult, error)
 	// CancelLock drops o's waiter on f for r, or reports that its lock was
 	// granted first.
-	CancelLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange) (granted bool, err error)
+	CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange) (granted bool, err error)
 	// WaitAnswered takes the client's answer to a LockWaitOver grant: a
 	// refusal releases the lock as an unlock would.
 	WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refused bool) error
 	// TestLock is the lock that would refuse o's lock of r, or nil; it
 	// changes nothing. o is the caller's client's owner.
-	TestLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
+	TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
 	// it staying released; a merging owner releases whatever it holds of
 	// each. It returns the lock state's new reference sequence.
-	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error)
+	Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error)
 	// ReleaseLockOwner drops o's lock states at this primary, with their
 	// waiters and o's sequence; while o holds a lock, on any file, it is
 	// ErrLocksHeld and changes nothing.
@@ -432,7 +431,7 @@ func (t *Table) lockTarget(e *entry, who Caller, ref OpenRef) (op *open, ls *loc
 	return op, nil, op.Ref.Seq, nil
 }
 
-func (v locks) Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq) (LockResult, error) {
+func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (LockResult, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -449,7 +448,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq)
 	}
 	var res LockResult
 	var out outbox
-	err = t.step(f, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) error {
 		op, ls, cur, err := t.lockTarget(e, who, r.Open)
 		if err != nil {
 			return err
@@ -471,7 +470,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq)
 			if op != nil && !t.mayUse(op, who) {
 				return ErrNotYours
 			}
-			if res, err = t.lock(ctx, e, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
+			if res, err = t.lock(ctx, e, f.Shard, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
 				t.smu.Lock()
 				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
 				t.smu.Unlock()
@@ -488,7 +487,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq)
 // single range that waits. The owner's earlier waiter on the file is replaced,
 // a callback one reported not granted, unless r repeats its request and still
 // waits, which keeps its place.
-func (t *Table) lock(ctx context.Context, e *entry, r LockReq, op *open, out *outbox) (LockResult, error) {
+func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
 	var held *Lock
@@ -506,7 +505,7 @@ func (t *Table) lock(ctx context.Context, e *entry, r LockReq, op *open, out *ou
 	}
 	switch {
 	case held == nil:
-		ls, minted, err := t.lockStateFor(ctx, e, r.Owner, op, r.Shard)
+		ls, minted, err := t.lockStateFor(ctx, e, r.Owner, op, s)
 		if err != nil {
 			return LockResult{}, err
 		}
@@ -527,7 +526,7 @@ func (t *Table) lock(ctx context.Context, e *entry, r LockReq, op *open, out *ou
 			w.Deadline = now + leasePeriod
 		}
 	default:
-		ls, _, err := t.lockStateFor(ctx, e, r.Owner, op, r.Shard)
+		ls, _, err := t.lockStateFor(ctx, e, r.Owner, op, s)
 		if err != nil {
 			return LockResult{}, err
 		}
@@ -546,7 +545,7 @@ func (t *Table) lock(ctx context.Context, e *entry, r LockReq, op *open, out *ou
 	return LockResult{Waiting: true, Ref: e.lockState(r.Owner, id).ref}, nil
 }
 
-func (v locks) CancelLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange) (bool, error) {
+func (v locks) CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange) (bool, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -557,7 +556,7 @@ func (v locks) CancelLock(ctx context.Context, who Caller, f entity.FileID, o Lo
 	}
 	granted := false
 	var out outbox
-	_ = t.step(f, func(e *entry) error {
+	_ = t.step(f.ID, func(e *entry) error {
 		if i := e.waiterOf(o); i >= 0 && e.waiters[i].Range.ByteRange == r {
 			t.dropWaiter(e, i)
 			t.serve(e, &out)
@@ -601,20 +600,20 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 	return nil
 }
 
-func (v locks) TestLock(ctx context.Context, who Caller, f entity.FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) {
+func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) {
 	t := v.t
 	if o.Client != who.Client {
 		return nil, ErrNotYours
 	}
 	var held *Lock
-	err := t.step(f, func(e *entry) error {
+	err := t.step(f.ID, func(e *entry) error {
 		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
 		return nil
 	})
 	return held, err
 }
 
-func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (uint32, error) {
+func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (uint32, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -628,7 +627,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref Open
 	}
 	var seq uint32
 	var out outbox
-	err = t.step(f, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) error {
 		op, ls, cur, err := t.lockTarget(e, who, ref)
 		switch {
 		case err != nil:
