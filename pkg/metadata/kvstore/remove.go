@@ -70,7 +70,8 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 
 // dropEntry deletes the entry at key naming child and takes one from
 // child's Nlink, refusing a non-empty directory. A last entry writes the
-// pending release, and makes durable each of open that opens child. A
+// pending release, and makes durable each of open that opens child or one
+// of its named streams. A
 // delete-pending record naming this entry goes with it.
 func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.OpenRecord) (Orphaned, error) {
 	if child.IsDir() {
@@ -98,10 +99,19 @@ func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.
 		return Orphaned{}, nil
 	}
 	for _, op := range open {
+		of := child
 		if op.File != child.ID {
-			continue
+			// An open of one of child's named streams keeps child alive too.
+			s, err := fileIn(tx, child.Share, op.File)
+			if err != nil {
+				return Orphaned{}, err
+			}
+			if s.StreamOf != child.ID {
+				continue
+			}
+			of = s
 		}
-		if err := putOpen(tx, child.Share, child.Shard, op); err != nil {
+		if err := putOpen(tx, child.Share, of.Shard, op); err != nil {
 			return Orphaned{}, err
 		}
 	}
