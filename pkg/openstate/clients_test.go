@@ -500,6 +500,7 @@ func TestStartAndStop(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
 	g := unstarted(t, f.fs, f.clock)
+	file := entity.NewFileID()
 	calls := map[string]func() error{
 		"Propose":    func() error { _, err := g.Propose(ctx, nfs("host-b", 1, entity.NewUser()), addr); return err },
 		"Connect":    func() error { _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },
@@ -507,6 +508,11 @@ func TestStartAndStop(t *testing.T) {
 		"Renew":      func() error { _, err := g.Renew(ctx, id); return err },
 		"Expire":     func() error { return g.Expire(ctx, id) },
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
+		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
+		"Downgrade":  func() error { return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{ID: 1}, Seqs{}, 0, 0) },
+		"Update":     func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
+		"Close":      func() error { _, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{ID: 1}, Seqs{}); return err },
+		"Durable":    func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
 	}
 	check := func(when string) {
 		for name, call := range calls {

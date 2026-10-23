@@ -18,6 +18,10 @@ var (
 	ErrDelay       = errors.New("openstate: retry later")
 	ErrStopped     = errors.New("openstate: table not started, or stopped")
 
+	ErrShareViolation = errors.New("openstate: deny mode conflict")
+	ErrDeletePending  = errors.New("openstate: file is delete pending")
+	ErrAccess         = errors.New("openstate: the open was not granted the access the request needs")
+
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
 	ErrRecordChanged = kvstore.ErrRecordChanged
