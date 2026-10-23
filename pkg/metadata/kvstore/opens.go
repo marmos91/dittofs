@@ -66,12 +66,12 @@ func (o Opens) Of(ctx context.Context, share entity.ShareID, file entity.FileID)
 }
 
 // Delete removes a durable open with its index entry and its durable locks,
-// and reports whether it left the file orphaned: no entry and no durable
-// open of it or of its named streams, so the filesystem service runs its
-// release. An open of a named stream is judged on its base file, which holds
-// the entries. A share's root has no entry from its creation and is never
-// orphaned.
-func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.FileID, id entity.OpenID) (orphan bool, err error) {
+// and names the file it left orphaned: no entry and no durable open of it or
+// of its named streams, so the filesystem service runs its release. An open
+// of a named stream is judged on its base file, which holds the entries, and
+// the base is the file named. A share's root has no entry from its creation
+// and is never orphaned.
+func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.FileID, id entity.OpenID) (out Orphaned, err error) {
 	err = o.s.kv.Update(ctx, func(tx kv.Txn) error {
 		f, err := fileIn(tx, share, file)
 		if err != nil {
@@ -91,14 +91,15 @@ func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.Fil
 			}
 		}
 		if f.Nlink > 0 || f.IsRoot() {
-			orphan = false
 			return nil
 		}
 		held, err := heldOpen(tx, share, f.ID)
-		orphan = !held
+		if !held {
+			out = Orphaned{File: f.ID}
+		}
 		return err
 	})
-	return orphan, err
+	return out, err
 }
 
 // heldOpen reports whether file or one of its named streams has a durable
