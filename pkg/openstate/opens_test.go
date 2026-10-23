@@ -28,12 +28,12 @@ func (f *fixture) caller(t *testing.T, c Client) Caller {
 	return Caller{Client: f.connect(t, c), Principal: p}
 }
 
-func (f *fixture) open(who Caller, file entity.FileID, r OpenRequest) (Open, error) {
+func (f *fixture) open(who Caller, file FileKey, r OpenRequest) (Open, error) {
 	res, err := f.Opens().Open(ctx, who, file, r)
 	return res.Open, err
 }
 
-func (f *fixture) mustOpen(t *testing.T, who Caller, file entity.FileID, r OpenRequest) Open {
+func (f *fixture) mustOpen(t *testing.T, who Caller, file FileKey, r OpenRequest) Open {
 	t.Helper()
 	o, err := f.open(who, file, r)
 	if err != nil {
@@ -52,7 +52,7 @@ func (f *fixture) close(t *testing.T, who Caller, o Open) CloseResult {
 }
 
 // durable is the records Durable lists for file, committing nothing.
-func (f *fixture) durable(t *testing.T, file entity.FileID) []entity.OpenRecord {
+func (f *fixture) durable(t *testing.T, file FileKey) []entity.OpenRecord {
 	t.Helper()
 	recs, commit, err := f.Opens().Durable(ctx, file)
 	if err != nil {
@@ -62,37 +62,40 @@ func (f *fixture) durable(t *testing.T, file entity.FileID) []entity.OpenRecord 
 	return recs
 }
 
-// fileIn creates name in the share's root and returns its ID and the
+// anyFile is a file the store does not hold, for opens that write nothing.
+func anyFile() FileKey { return FileKey{ID: entity.NewFileID()} }
+
+// fileIn creates name in the share's root and returns its key and the
 // request that opens it through the root.
-func (f *fixture) fileIn(t *testing.T, name string) (entity.FileID, OpenRequest) {
+func (f *fixture) fileIn(t *testing.T, name string) (FileKey, OpenRequest) {
 	t.Helper()
 	_, file := f.fs.Create(t, f.fs.Admin, f.fs.Root, name, kvstore.NewFile{Type: entity.Regular, Mode: 0o644})
 	_, root, err := f.fs.Root.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return file.ID, OpenRequest{Share: f.fs.Share.ID, Shard: ShardID(file.Shard), Via: root, Name: []byte(name)}
+	return FileKey{Share: f.fs.Share.ID, Shard: ShardID(file.Shard), ID: file.ID}, OpenRequest{Via: root, Name: []byte(name)}
 }
 
 // unlink removes name from the share's root the way the service does: the
 // file's volatile opens are written in the unlink's transaction, and the
 // table is told whether they were.
-func (f *fixture) unlink(t *testing.T, file entity.FileID, name string) {
+func (f *fixture) unlink(t *testing.T, file FileKey, name string) {
 	t.Helper()
 	recs, commit, err := f.Opens().Durable(ctx, file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	o, err := f.fs.Store.Namespace().Unlink(ctx, f.fs.Admin, f.fs.Root, []byte(name), recs...)
-	commit(err == nil && o.File == file)
+	commit(err == nil && o.File == file.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func (f *fixture) stored(t *testing.T, file entity.FileID) []entity.OpenRecord {
+func (f *fixture) stored(t *testing.T, file FileKey) []entity.OpenRecord {
 	t.Helper()
-	got, err := f.fs.Store.Opens().Of(ctx, f.fs.Share.ID, file)
+	got, err := f.fs.Store.Opens().Of(ctx, f.fs.Share.ID, file.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +108,13 @@ func (f *fixture) stored(t *testing.T, file entity.FileID) []entity.OpenRecord {
 func TestDenyModesAtOpen(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
-	file := entity.NewFileID()
+	file := anyFile()
 	held := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file.ID}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an anonymous write under a deny-write: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file.ID}, ByteRange{}, false); err != nil {
 		t.Errorf("an anonymous read under a deny-write: %v", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, OpenRef{ID: held.ID}, ByteRange{}, true); err != nil {
@@ -139,20 +142,20 @@ func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
 	all, stat := rd|wr|del, entity.ReadAttributes
-	file := entity.NewFileID()
+	file := anyFile()
 	f.mustOpen(t, a, file, OpenRequest{Access: all, Deny: all})
 	if _, err := f.open(b, file, OpenRequest{Access: stat, Deny: all}); err != nil {
 		t.Errorf("an attributes-only open against a deny-all: %v", err)
 	}
 
-	file = entity.NewFileID()
+	file = anyFile()
 	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
 	if _, err := f.open(a, file, OpenRequest{Access: all, Deny: all}); err != nil {
 		t.Errorf("an all-access open beside an attributes-only deny-all: %v", err)
 	}
-	file = entity.NewFileID()
+	file = anyFile()
 	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{File: file.ID}, ByteRange{}, true); err != nil {
 		t.Errorf("an anonymous write beside an attributes-only deny-all: %v", err)
 	}
 }
@@ -163,9 +166,9 @@ func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
 func TestDowngrade(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
-	file := entity.NewFileID()
+	file := anyFile()
 	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
-	ref := OpenRef{Ref: o.Ref, File: file}
+	ref := OpenRef{Ref: o.Ref, File: file.ID}
 
 	if err := f.Opens().Downgrade(ctx, a, ref, rd|wr|del, wr); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a downgrade to more access: %v, want ErrInvalid", err)
@@ -176,7 +179,7 @@ func TestDowngrade(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
 		t.Errorf("the reference as it was before the downgrade: %v, want ErrOldState", err)
 	}
-	now := OpenRef{Ref: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, File: file}
+	now := OpenRef{Ref: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, File: file.ID}
 	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write through the open downgraded to read: %v, want ErrAccess", err)
 	}
@@ -195,7 +198,7 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	owner := entity.NewUser()
 	id := f.connect(t, nfs("host-a", 1, owner))
 	opener := Caller{Client: id, Principal: entity.NewUser()}
-	file := entity.NewFileID()
+	file := anyFile()
 	o := f.mustOpen(t, opener, file, OpenRequest{Access: rd | del})
 
 	other := Caller{Client: id, Principal: entity.NewUser()}
@@ -316,7 +319,7 @@ func TestDeletePending(t *testing.T) {
 	f := newFixture(t)
 	p, q := f.caller(t, smb("p-pc")), f.caller(t, smb("q-pc"))
 	nfsCaller := f.caller(t, nfs("host-n", 1, entity.NewUser()))
-	file := entity.NewFileID()
+	file := anyFile()
 	dir := entity.NewFileID()
 	marker := f.mustOpen(t, p, file, OpenRequest{Via: dir, Name: []byte("a"), Access: rd | del, DeleteOnClose: true})
 	other := f.mustOpen(t, q, file, OpenRequest{Via: dir, Name: []byte("a"), Access: rd})
@@ -370,7 +373,7 @@ func TestDeletePending(t *testing.T) {
 func TestSuspendedTimesArePerOpen(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("alice-pc"))
-	file := entity.NewFileID()
+	file := anyFile()
 	first, second := f.mustOpen(t, a, file, OpenRequest{Access: wr}), f.mustOpen(t, a, file, OpenRequest{Access: wr})
 	suspended := func() map[entity.OpenID]entity.TimeMask {
 		m := map[entity.OpenID]entity.TimeMask{}
@@ -402,7 +405,7 @@ func TestSuspendedTimesArePerOpen(t *testing.T) {
 func TestChangeChecks(t *testing.T) {
 	f := newFixture(t)
 	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
-	file := entity.NewFileID()
+	file := anyFile()
 	f.mustOpen(t, s, file, OpenRequest{Access: rd | del, Deny: del})
 	if err := f.Checks().CheckChange(ctx, n, file, ChangeRemove); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an NFS remove against a deny-delete: %v, want ErrShareViolation", err)
@@ -412,18 +415,18 @@ func TestChangeChecks(t *testing.T) {
 	}
 
 	d, e := entity.NewFileID(), entity.NewFileID()
-	child := f.mustOpen(t, s, entity.NewFileID(), OpenRequest{Via: d, Access: rd})
-	f.mustOpen(t, s, entity.NewFileID(), OpenRequest{Via: e, Access: rd}) // e is a directory in d
+	child := f.mustOpen(t, s, anyFile(), OpenRequest{Via: d, Access: rd})
+	f.mustOpen(t, s, anyFile(), OpenRequest{Via: e, Access: rd}) // e is a directory in d
 	for _, what := range []ChangeMask{ChangeRename, ChangeRemove} {
-		if err := f.Checks().CheckChange(ctx, s, d, what); !errors.Is(err, ErrShareViolation) {
+		if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, what); !errors.Is(err, ErrShareViolation) {
 			t.Errorf("an SMB change %d of a directory with an open child: %v, want ErrShareViolation", what, err)
 		}
 	}
-	if err := f.Checks().CheckChange(ctx, n, d, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, n, FileKey{ID: d}, ChangeRename); err != nil {
 		t.Errorf("an NFS rename of a directory with an open child: %v", err)
 	}
 	f.close(t, s, child)
-	if err := f.Checks().CheckChange(ctx, s, d, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, ChangeRename); err != nil {
 		t.Errorf("an SMB rename of a directory whose only open is two levels below: %v", err)
 	}
 }
@@ -433,7 +436,7 @@ func TestChangeChecks(t *testing.T) {
 func TestStreamOpenIsAnOpenOfItsBase(t *testing.T) {
 	f := newFixture(t)
 	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
-	base, stream := entity.NewFileID(), entity.NewFileID()
+	base, stream := anyFile(), entity.NewFileID()
 	f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd, Deny: wr})
 	if _, err := f.open(n, base, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("a write open of the base under the stream's deny-write: %v, want ErrShareViolation", err)
@@ -453,7 +456,7 @@ func TestExpiryClosesOpens(t *testing.T) {
 	f.mustOpen(t, a, unlinked, req)
 	f.mustOpen(t, a, unlinked, req)
 	f.unlink(t, unlinked, "a")
-	marked := entity.NewFileID()
+	marked := anyFile()
 	dir := entity.NewFileID()
 	f.mustOpen(t, a, marked, OpenRequest{Via: dir, Name: []byte("m"), Access: del, DeleteOnClose: true})
 
@@ -464,10 +467,10 @@ func TestExpiryClosesOpens(t *testing.T) {
 	for _, c := range f.sink.closed {
 		got[c.f] = c.r
 	}
-	if r := got[unlinked]; !r.Orphan || len(got) != 2 {
+	if r := got[unlinked.ID]; !r.Orphan || len(got) != 2 {
 		t.Errorf("Closed for the unlinked file: %+v, of %d files", r, len(got))
 	}
-	if r := got[marked]; r.Unlink == nil || r.Unlink.By != a.Principal || r.Unlink.Parent != dir {
+	if r := got[marked.ID]; r.Unlink == nil || r.Unlink.By != a.Principal || r.Unlink.Parent != dir {
 		t.Errorf("Closed for the marked file: %+v", r)
 	}
 	if s := f.stored(t, unlinked); len(s) != 0 {
@@ -478,7 +481,7 @@ func TestExpiryClosesOpens(t *testing.T) {
 	f.clock.mu.Lock()
 	f.clock.now += 2 * leasePeriod // past the lease, firing no sweep
 	f.clock.mu.Unlock()
-	if _, err := f.open(b, entity.NewFileID(), OpenRequest{Access: rd}); !errors.Is(err, ErrStaleClient) {
+	if _, err := f.open(b, anyFile(), OpenRequest{Access: rd}); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("an open by a client whose lease ended: %v, want ErrStaleClient", err)
 	}
 }

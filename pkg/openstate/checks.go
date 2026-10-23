@@ -29,7 +29,7 @@ type Checks interface {
 	// judged against every deny mode held, per operation.
 	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f: what the open state of f refuses.
-	CheckChange(ctx context.Context, who Caller, f entity.FileID, what ChangeMask) error
+	CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error
 }
 
 type checks struct{ t *Table }
@@ -82,10 +82,10 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 // through an exclusive handle; and POSIX allows an NFS rename of a directory
 // with open children. Judge every caller if a protocol is served that
 // removes a name without an open of its own.
-func (v checks) CheckChange(ctx context.Context, who Caller, f entity.FileID, what ChangeMask) error {
+func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error {
 	t := v.t
 	smb := t.protocol(who.Client) == entity.ProtocolSMB
-	return t.step(f, func(e *entry) error {
+	return t.step(f.ID, func(e *entry) error {
 		// decision: a delete-pending directory also refuses an added name,
 		// beyond RFC 14's opens and renames, as Windows answers a create in
 		// one STATUS_DELETE_PENDING. Drop it if an NFS workload is shown to
@@ -106,7 +106,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f entity.FileID, wh
 		}
 		t.idx.Lock()
 		defer t.idx.Unlock()
-		if t.via[f] > 0 {
+		if t.via[f.ID] > 0 {
 			return ErrShareViolation
 		}
 		return nil
