@@ -80,14 +80,12 @@ func (r OpenRef) anonymous() bool { return r.Ref.Type == 0 && r.ID == 0 }
 // CloseResult is what a close leaves the service to run: open state never
 // releases or unlinks a file itself.
 type CloseResult struct {
-	Orphan bool           // the file has no entry and no open: the service runs its release
-	Unlink *PendingUnlink // the file was delete pending: the service unlinks this entry, as By
+	Orphan bool // the file has no entry and no open: the service runs its release
+	// Unlink is the deferred delete of a delete-pending file: the entry the
+	// marking open was opened through, which the service unlinks, as By,
+	// authorised by the marking open's grant.
+	Unlink *entity.DeleteRecord
 }
-
-// PendingUnlink is a deferred delete: the entry the marking open was opened
-// through, the principal that marked the file, and the marking open's grant,
-// which authorise the unlink.
-type PendingUnlink = entity.DeleteRecord
 
 // Opens is the view of opens and deny modes; it runs at the file's primary.
 type Opens interface {
@@ -123,13 +121,17 @@ type open struct {
 	durable bool // its record is in the store
 }
 
-func (o *open) record() entity.OpenRecord {
-	f := o.File
+// opened is the file o opens: its named stream, or else its file.
+func (o *open) opened() entity.FileID {
 	if !o.Stream.IsZero() {
-		f = o.Stream
+		return o.Stream
 	}
+	return o.File
+}
+
+func (o *open) record() entity.OpenRecord {
 	return entity.OpenRecord{
-		ID: o.ID, Client: o.Client, Principal: o.Principal, File: f, Via: o.Via,
+		ID: o.ID, Client: o.Client, Principal: o.Principal, File: o.opened(), Via: o.Via,
 		Access: o.Mode.Access, Deny: o.Mode.Deny, Privileged: o.Mode.Privileged,
 		DeleteOnClose: o.Delete.OnClose, DeleteBy: o.Delete.By, Suspended: o.Suspended,
 		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq,
@@ -137,8 +139,8 @@ func (o *open) record() entity.OpenRecord {
 }
 
 // pendingFrom is the delete pending o makes, as principal by.
-func pendingFrom(o *open, by entity.Principal) *PendingUnlink {
-	return &PendingUnlink{Parent: o.Via, Name: o.name, By: by, Access: o.Mode.Access, Privileged: o.Mode.Privileged}
+func pendingFrom(o *open, by entity.Principal) *entity.DeleteRecord {
+	return &entity.DeleteRecord{Parent: o.Via, Name: o.name, By: by, Access: o.Mode.Access, Privileged: o.Mode.Privileged}
 }
 
 func (v opens) Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequest) (OpenResult, error) {
@@ -393,18 +395,14 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 	if !o.durable {
 		return false, nil
 	}
-	f := o.File
-	if !o.Stream.IsZero() {
-		f = o.Stream
-	}
-	orphaned, err := t.d.Records.Opens().Delete(ctx, o.share, f, o.ID)
+	orphaned, err := t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
 	return orphaned.File != entity.FileID{}, err
 }
 
 // closeOpen drops o from e, its file's entry, under its step. A close with
 // delete on close makes the file delete pending, and the last close of a
 // delete-pending file returns the pending unlink.
-func (t *Table) closeOpen(e *entry, o *open) *PendingUnlink {
+func (t *Table) closeOpen(e *entry, o *open) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
 		e.pending = pendingFrom(o, o.Delete.By)
 	}
