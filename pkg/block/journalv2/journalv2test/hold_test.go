@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
 
 // within waits, in real time, for ch to be closed or to deliver.
@@ -44,6 +46,19 @@ func waitingReaches(t *testing.T, h *Hold, n int) {
 	}
 }
 
+// aside makes a seam call on another goroutine and waits for it in real time,
+// so a hold that catches the call by mistake fails the test instead of
+// parking the test's own goroutine, which no cleanup can release.
+func aside(t *testing.T, what string, call func() error) {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	if err := within(t, done, what); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+}
+
 func goSync(f interface{ Sync() error }) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- f.Sync() }()
@@ -54,7 +69,7 @@ func TestAHeldCallBlocksUntilRelease(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
 
-	h := s.Hold(OpSync, "seg")
+	h := s.Hold(t, OpSync, "seg")
 	done := goSync(f)
 
 	within(t, h.Reached(), "reaching the hold")
@@ -71,7 +86,7 @@ func TestAHeldCallBlocksUntilRelease(t *testing.T) {
 func TestWaitingCountsTheBlockedCalls(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
-	h := s.Hold(OpWrite, "seg")
+	h := s.Hold(t, OpWrite, "seg")
 
 	const n = 16
 	var wg sync.WaitGroup
@@ -96,7 +111,7 @@ func TestOnlyMatchingCallsAreHeld(t *testing.T) {
 	f := create(t, s, "seg-1")
 	g := create(t, s, "other")
 
-	h := s.Hold(OpSync, "seg-*")
+	h := s.Hold(t, OpSync, "seg-*")
 	defer h.Release()
 
 	wrote := make(chan error, 1)
@@ -119,7 +134,7 @@ func TestAReleasedHoldLetsLaterCallsPass(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
 
-	h := s.Hold(OpSync, "*")
+	h := s.Hold(t, OpSync, "*")
 	h.Release()
 	h.Release() // harmless
 
@@ -133,7 +148,7 @@ func TestAHeldCallReachesTheHoldBeforeTheFault(t *testing.T) {
 	f := create(t, s, "seg")
 	failOn(t, s, OpSync)
 
-	h := s.Hold(OpSync, "seg")
+	h := s.Hold(t, OpSync, "seg")
 	done := goSync(f)
 
 	within(t, h.Reached(), "a failing Sync reaching the hold")
@@ -149,16 +164,20 @@ func TestCrashDuringAHoldLeavesTheNewHandleAlone(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "aaaa")
 
-	h := s.Hold(OpSync, "seg")
+	h := s.Hold(t, OpSync, "seg")
 	done := goSync(f)
 	within(t, h.Reached(), "the Sync reaching the hold")
 
 	crash(t, s)
-	g, err := s.Open("seg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(t, g, "bbbb", 0)
+	var g storage.File
+	aside(t, "an Open of seg, another op, returning", func() (err error) {
+		g, err = s.Open("seg")
+		return err
+	})
+	aside(t, "a write of seg, another op, returning", func() error {
+		_, err := g.WriteAt([]byte("bbbb"), 0)
+		return err
+	})
 
 	h.Release()
 	if err := within(t, done, "the released Sync returning"); !errors.Is(err, fs.ErrClosed) {
@@ -190,7 +209,7 @@ func TestConcurrentHoldsAndCalls(t *testing.T) {
 	}
 	wg.Go(func() {
 		for range 20 {
-			h := s.Hold(OpSync, "*")
+			h := s.Hold(t, OpSync, "*")
 			h.Waiting()
 			h.Release()
 		}
@@ -201,6 +220,22 @@ func TestConcurrentHoldsAndCalls(t *testing.T) {
 	within(t, all, "every call returning")
 }
 
+func TestAHoldIsReleasedWhenItsTestEnds(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	done := make(chan error, 1)
+
+	t.Run("holds and never releases", func(t *testing.T) {
+		h := s.Hold(t, OpSync, "seg")
+		go func() { done <- f.Sync() }()
+		within(t, h.Reached(), "the Sync reaching the hold")
+	})
+
+	if err := within(t, done, "the Sync held by a finished subtest returning"); err != nil {
+		t.Fatalf("the Sync released when its subtest ended returned %v", err)
+	}
+}
+
 func TestHoldRefusesAMalformedKey(t *testing.T) {
 	s := newSeam(t)
 
@@ -209,5 +244,5 @@ func TestHoldRefusesAMalformedKey(t *testing.T) {
 			t.Fatal("Hold accepted the malformed key \"seg-[\"")
 		}
 	}()
-	s.Hold(OpSync, "seg-[")
+	s.Hold(t, OpSync, "seg-[")
 }

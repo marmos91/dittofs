@@ -5,6 +5,7 @@ import (
 	"path"
 	"slices"
 	"sync"
+	"testing"
 )
 
 // Hold is one set of calls stopped at the seam.
@@ -33,14 +34,16 @@ type Hold struct {
 // failed, and before the fault is consulted, so a held call has done nothing
 // yet. A call that two holds match waits on each, in the order they were
 // made. Crash does not release a hold; a call released after a Crash closed
-// its file fails with fs.ErrClosed.
+// its file fails with fs.ErrClosed. The hold is released when t ends, if
+// nothing released it before, so a test that fails before Release leaves no
+// call parked for a later cleanup to wait on.
 //
 // decision: a hold is test choreography, not a fault. A check that stops the
 // code under test at one call and acts while it waits cannot use a Delay,
 // because advancing the clock to release the call also fires every timer the
 // code under test armed, so a held call waits on no clock: only Release frees
 // it.
-func (s *Seam) Hold(op, key string) *Hold {
+func (s *Seam) Hold(t testing.TB, op, key string) *Hold {
 	if _, err := path.Match(key, ""); err != nil {
 		panic(fmt.Sprintf("journalv2test: Hold(%q, %q): %v", op, key, err))
 	}
@@ -56,6 +59,8 @@ func (s *Seam) Hold(op, key string) *Hold {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.holds = append(s.holds, h)
+
+	t.Cleanup(h.Release)
 	return h
 }
 

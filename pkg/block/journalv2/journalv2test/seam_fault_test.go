@@ -1576,14 +1576,15 @@ func TestAFailedSyncDirHeldAcrossACrashLeavesTheNewLogIntact(t *testing.T) {
 	s := newSeam(t)
 	failNext(t, s, OpSyncDir)
 
-	h := s.Hold(OpSyncDir, "*")
+	h := s.Hold(t, OpSyncDir, "*")
 	done := goSyncDir(s)
 	within(t, h.Reached(), "the SyncDir reaching the hold")
 
 	crash(t, s)
-	if _, err := s.Create("a"); err != nil { // after the crash
-		t.Fatal(err)
-	}
+	aside(t, "a Create after the crash, another op, returning", func() error {
+		_, err := s.Create("a")
+		return err
+	})
 
 	h.Release()
 	if err := within(t, done, "the released SyncDir returning"); !errors.Is(err, fs.ErrClosed) {
@@ -1597,7 +1598,7 @@ func TestAFailedSyncDirHeldAcrossACrashLeavesTheNewLogIntact(t *testing.T) {
 func TestACreateHeldAcrossACrashDoesNotCreateTheFile(t *testing.T) {
 	s := newSeam(t)
 
-	h := s.Hold(OpCreate, "a")
+	h := s.Hold(t, OpCreate, "a")
 	done := make(chan error, 1)
 	go func() { _, err := s.Create("a"); done <- err }()
 	within(t, h.Reached(), "the Create reaching the hold")
@@ -1613,7 +1614,7 @@ func TestACreateHeldAcrossACrashDoesNotCreateTheFile(t *testing.T) {
 func TestACallHeldAcrossARefusedCrashGoesAhead(t *testing.T) {
 	s := newSeam(t)
 
-	h := s.Hold(OpCreate, "a")
+	h := s.Hold(t, OpCreate, "a")
 	done := make(chan error, 1)
 	go func() { _, err := s.Create("a"); done <- err }()
 	within(t, h.Reached(), "the Create reaching the hold")
