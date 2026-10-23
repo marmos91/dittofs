@@ -44,7 +44,7 @@ func (f *fixture) mustOpen(t *testing.T, who Caller, file FileKey, r OpenRequest
 
 func (f *fixture) close(t *testing.T, who Caller, o Open) CloseResult {
 	t.Helper()
-	r, err := f.Opens().Close(ctx, who, OpenRef{Kind: RefOpened, Open: o.ID})
+	r, err := f.Opens().Close(ctx, who, refOf(o))
 	if err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -60,6 +60,13 @@ func (f *fixture) durable(t *testing.T, file FileKey) []entity.OpenRecord {
 	}
 	commit(false)
 	return recs
+}
+
+// refOf names o by its reference, at its current sequence, as an NFS
+// client's stateid does.
+func refOf(o Open) OpenRef {
+	o.Ref.Seq = 0
+	return OpenRef{Kind: RefOpened, State: o.Ref}
 }
 
 // handle is a handle naming file, as a request carries it.
@@ -228,13 +235,13 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	o := f.mustOpen(t, opener, file, OpenRequest{Access: rd | del})
 
 	other := Caller{Client: id, Principal: entity.NewUser()}
-	if err := f.Checks().CheckIO(ctx, other, OpenRef{Kind: RefOpened, Open: o.ID}, ByteRange{}, false); !errors.Is(err, ErrNotYours) {
+	if err := f.Checks().CheckIO(ctx, other, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
 		t.Errorf("I/O through the open by another principal: %v, want ErrNotYours", err)
 	}
-	if _, err := f.Opens().Close(ctx, other, OpenRef{Kind: RefOpened, Open: o.ID}); !errors.Is(err, ErrNotYours) {
+	if _, err := f.Opens().Close(ctx, other, refOf(o)); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, OpenRef{Kind: RefOpened, Open: o.ID}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, refOf(o), ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open by the protecting owner: %v", err)
 	}
 }
@@ -254,12 +261,12 @@ func TestUnlinkMakesOpensDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	commit(false)
-	if recs := f.durable(t, file); len(recs) != 1 || recs[0].ID != first.ID {
+	if recs := f.durable(t, file); len(recs) != 1 || recs[0].Nonce != first.Ref.Token {
 		t.Fatalf("after an aborted unlink the volatile opens are %v, want the open", ids(recs))
 	}
 
 	f.unlink(t, file, "a")
-	if got := f.stored(t, file); len(got) != 1 || got[0].ID != first.ID || got[0].Principal != a.Principal {
+	if got := f.stored(t, file); len(got) != 1 || got[0].Nonce != first.Ref.Token || got[0].Principal != a.Principal {
 		t.Fatalf("stored opens after the unlink: %v", ids(got))
 	}
 	byHandle := f.mustOpen(t, a, file, req)
@@ -292,15 +299,56 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 
 	req.Unlinked = true
 	again := f.mustOpen(t, a, file, req)
-	if got := f.stored(t, file); len(got) != 1 || got[0].ID != again.ID {
+	if got := f.stored(t, file); len(got) != 1 || got[0].Nonce != again.Ref.Token {
 		t.Errorf("stored opens after an open of the file once its entry was freed: %v", ids(got))
 	}
 
 	g := reopen(t, f.fs, f.clock)
 	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
 	later := g.mustOpen(t, b, file, req)
-	if got := f.stored(t, file); len(got) != 2 || got[1].ID != later.ID {
+	if got := f.stored(t, file); len(got) != 2 || got[1].Nonce != later.Ref.Token {
 		t.Errorf("stored opens after an open of the file after a restart: %v", ids(got))
+	}
+}
+
+// Only an open something names by ID takes one: an SMB open, and an NFS
+// open once an unlink makes it durable, whose record is keyed by it. An NFS
+// open is named by its reference alone, and an aborted unlink leaves it so.
+func TestOnlySMBAndDurableOpensTakeAnID(t *testing.T) {
+	f := newFixture(t)
+	n, s := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.caller(t, smb("alice-pc"))
+	for range 100 {
+		if o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd}); o.ID != 0 {
+			t.Fatalf("an NFS open took ID %d", o.ID)
+		}
+	}
+	if o := f.mustOpen(t, s, anyFile(), OpenRequest{Access: rd}); o.ID == 0 {
+		t.Error("an SMB open took no ID")
+	}
+
+	file, req := f.fileIn(t, "a")
+	o := f.mustOpen(t, n, file, req)
+	recs, commit, err := f.Opens().Durable(ctx, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit(false)
+	if len(recs) != 1 || recs[0].ID == 0 {
+		t.Fatalf("the record an unlink would write: %v, want one with an ID", ids(recs))
+	}
+	if got := f.stored(t, file); len(got) != 0 {
+		t.Errorf("stored opens after an aborted unlink: %v", ids(got))
+	}
+	f.unlink(t, file, "a")
+	got := f.stored(t, file)
+	if len(got) != 1 || got[0].ID == 0 || got[0].Nonce != o.Ref.Token {
+		t.Fatalf("stored opens after the unlink: %v, want the open's, with an ID", ids(got))
+	}
+	if r := f.close(t, n, o); !r.Orphan {
+		t.Error("the close of the durable NFS open did not report the file orphaned")
+	}
+	if got := f.stored(t, file); len(got) != 0 {
+		t.Errorf("stored opens after the close: %v", ids(got))
 	}
 }
 
@@ -519,10 +567,11 @@ func TestExpiryClosesOpens(t *testing.T) {
 	}
 }
 
-func ids(recs []entity.OpenRecord) []entity.OpenID {
-	out := make([]entity.OpenID, len(recs))
+// ids is each record's ID and the token of the open it records.
+func ids(recs []entity.OpenRecord) [][2]uint64 {
+	out := make([][2]uint64, len(recs))
 	for i, r := range recs {
-		out[i] = r.ID
+		out[i] = [2]uint64{uint64(r.ID), r.Nonce}
 	}
 	return out
 }
