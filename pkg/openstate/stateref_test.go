@@ -12,11 +12,7 @@ import (
 
 func newTable(t *testing.T) *Table {
 	t.Helper()
-	tab, err := New(Deps{Rand: rand.Reader})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tab
+	return newFixture(t).Table
 }
 
 // entryOf is file f's entry, or nil if it has none.
@@ -151,10 +147,8 @@ func TestEntryFreedWithLastState(t *testing.T) {
 // Every random bit of a token is read from Deps.Rand, and a failed read
 // mints nothing: no reference is held and the file keeps no entry.
 func TestMintReadsDepsRand(t *testing.T) {
-	tab, err := New(Deps{Rand: io.LimitReader(rand.Reader, 8)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tab := newTable(t)
+	tab.d.Rand = io.LimitReader(rand.Reader, 8)
 	f := entity.NewFileID()
 	mintIn(t, tab, f, 1, 0)
 	g := entity.NewFileID()

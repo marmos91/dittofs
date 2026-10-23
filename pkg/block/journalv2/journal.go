@@ -32,9 +32,11 @@ func Init(dir string, install InstallationID, opts ...Option) (JournalID, error)
 // unknown kind or with a non-zero epoch, fails with ErrUnknownFormat; a
 // format file whose checksum does not verify fails with ErrCorrupt.
 //
-// floor is the highest content version the caller has recorded for any file
-// of the journal's shares. Every version the journal issues after Open exceeds
-// both floor and every version on disk.
+// floor is the larger of the highest content version the caller has recorded
+// for any file of the journal's shares and the smallest durable version limit
+// among them. Every version the journal issues after Open exceeds both floor
+// and every version on disk, so none issued before a crash whose record was
+// lost is issued again.
 //
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.

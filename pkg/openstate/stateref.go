@@ -8,9 +8,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// ShardID names the shard a file's state is held under. 24 of its bits are
-// usable, so an installation numbers at most 2^24 shards.
-type ShardID uint32
+// ShardID names the shard a file's state is held under: the store's, whose
+// low 24 bits are usable, so an installation numbers at most 2^24 shards.
+type ShardID = entity.ShardID
 
 // StateType is what a state reference names.
 type StateType uint8

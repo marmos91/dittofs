@@ -10,11 +10,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// FileID, ShareID and PrincipalID are minted at random and never reused.
+// FileID, ShareID, PrincipalID and NodeID are minted at random and never
+// reused.
 type (
 	FileID      [16]byte
 	ShareID     [16]byte
 	PrincipalID [16]byte
+	NodeID      [16]byte
 )
 
 // ErrSyntax is text that does not parse as the type asked for.
@@ -53,14 +55,17 @@ func ParsePrincipalID(s string) (PrincipalID, error) {
 func (id FileID) String() string      { return uuid.UUID(id).String() }
 func (id ShareID) String() string     { return uuid.UUID(id).String() }
 func (id PrincipalID) String() string { return uuid.UUID(id).String() }
+func (id NodeID) String() string      { return uuid.UUID(id).String() }
 
 func (id FileID) IsZero() bool      { return id == FileID{} }
 func (id ShareID) IsZero() bool     { return id == ShareID{} }
 func (id PrincipalID) IsZero() bool { return id == PrincipalID{} }
+func (id NodeID) IsZero() bool      { return id == NodeID{} }
 
 func (id FileID) MarshalText() ([]byte, error)      { return []byte(id.String()), nil }
 func (id ShareID) MarshalText() ([]byte, error)     { return []byte(id.String()), nil }
 func (id PrincipalID) MarshalText() ([]byte, error) { return []byte(id.String()), nil }
+func (id NodeID) MarshalText() ([]byte, error)      { return []byte(id.String()), nil }
 
 func (id *FileID) UnmarshalText(b []byte) (err error) {
 	*id, err = ParseFileID(string(b))
@@ -74,6 +79,11 @@ func (id *ShareID) UnmarshalText(b []byte) (err error) {
 
 func (id *PrincipalID) UnmarshalText(b []byte) (err error) {
 	*id, err = ParsePrincipalID(string(b))
+	return err
+}
+
+func (id *NodeID) UnmarshalText(b []byte) (err error) {
+	*id, err = parseID(string(b))
 	return err
 }
 
