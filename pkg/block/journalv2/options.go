@@ -47,7 +47,8 @@ func WithClock(c Clock) Option {
 // instead of the operating system's. Its parameter type is internal, so only
 // code inside the journal's tree, such as the crash-simulating seam its tests
 // use, can build a value to pass. Without it the journal uses the operating
-// system's files.
+// system's files. The journal does no file I/O yet, so it does not read fs
+// today.
 func WithStorage(fs storage.FS) Option {
 	return Option{func(cfg *core.Config) { cfg.Storage = fs }}
 }
