@@ -25,12 +25,10 @@ type Table struct {
 	// is held only to find, add or free an entry, never while a step runs.
 	files [256]fileShard
 
-	// idx guards the state references and the shards' grace state. It is
-	// taken after a file's step, never before one, and only to add, remove
-	// or look up a reference.
-	idx    sync.Mutex
-	refs   map[refKey]holder
-	shards map[ShardID]shardGrace
+	// idx guards the state references. It is taken after a file's step,
+	// never before one, and only to add, remove or look up a reference.
+	idx  sync.Mutex
+	refs map[refKey]holder
 }
 
 type fileShard struct {
@@ -52,7 +50,7 @@ func New(d Deps) (*Table, error) {
 	if d.Rand == nil {
 		return nil, errors.New("openstate: a table needs a source of random bits")
 	}
-	t := &Table{d: d, refs: map[refKey]holder{}, shards: map[ShardID]shardGrace{}}
+	t := &Table{d: d, refs: map[refKey]holder{}}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}
 	}
