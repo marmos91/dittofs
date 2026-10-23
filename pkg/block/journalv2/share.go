@@ -1,5 +1,7 @@
 package journalv2
 
+import "context"
+
 // Share attaches the share whose tag is tag and returns a handle through which
 // its engine works. Every record the handle appends carries tag, and a file
 // belongs, for as long as any segment holds one of its records, to the tag of
@@ -32,7 +34,7 @@ func (j *Journal) Share(tag ShareTag, limit int64, floor Version, policy SyncPol
 //
 // The journal never decides on its own which tags to forget: a tag the
 // caller still records may hold the only copy of dirty content.
-func (j *Journal) Forget(tag ShareTag) error {
+func (j *Journal) Forget(ctx context.Context, tag ShareTag) error {
 	return ErrNotImplemented
 }
 

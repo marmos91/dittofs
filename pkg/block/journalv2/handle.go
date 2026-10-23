@@ -1,6 +1,7 @@
 package journalv2
 
 import (
+	"context"
 	"iter"
 	"time"
 )
@@ -105,7 +106,7 @@ func (h *Handle) Reserve(n int64, writes int) (*Reservation, error) {
 //
 // It takes the file append domain, in which its version is assigned, then
 // capacity, the file index and the segment's append domain.
-func (h *Handle) WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error) {
+func (h *Handle) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (Version, error) {
 	return Version{}, ErrNotImplemented
 }
 
@@ -113,7 +114,7 @@ func (h *Handle) WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, 
 // the call is durable. A failed sync window returns a SyncError naming the
 // files whose writes it lost; a later successful sync never stands in for
 // them. Sync holds no lock across the sync itself.
-func (h *Handle) Sync(ids ...FileID) error {
+func (h *Handle) Sync(ctx context.Context, ids ...FileID) error {
 	return ErrNotImplemented
 }
 
@@ -127,7 +128,7 @@ func (h *Handle) Sync(ids ...FileID) error {
 //
 // ReadAt draws no version and appends nothing. It takes the file index domain
 // to resolve the extents and releases it before it reads from storage.
-func (h *Handle) ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error) {
+func (h *Handle) ReadAt(ctx context.Context, id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error) {
 	return 0, nil, nil, Version{}, ErrNotImplemented
 }
 
@@ -148,7 +149,7 @@ func (h *Handle) ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent
 // LimitIndex or LimitSpare, and, like WriteAt, by one naming LimitHeadroom
 // once less than half the headroom remains. Its absence check and its write are one step in
 // the file append domain, atomic with respect to WriteAt on the same file.
-func (h *Handle) Fill(id FileID, off int64, p []byte, asOf Version, v Version) error {
+func (h *Handle) Fill(ctx context.Context, id FileID, off int64, p []byte, asOf Version, v Version) error {
 	return ErrNotImplemented
 }
 
@@ -160,7 +161,7 @@ func (h *Handle) Fill(id FileID, off int64, p []byte, asOf Version, v Version) e
 // share's limit or the journal's maximum. It is refused by a NoSpaceError
 // naming LimitHeadroom, when the headroom is exhausted and the removal frees
 // nothing held, or LimitVersion. It takes the file append domain.
-func (h *Handle) Truncate(id FileID, size int64) (Version, error) {
+func (h *Handle) Truncate(ctx context.Context, id FileID, size int64) (Version, error) {
 	return Version{}, ErrNotImplemented
 }
 
@@ -172,7 +173,7 @@ func (h *Handle) Truncate(id FileID, size int64) (Version, error) {
 // It draws on the headroom as Truncate does, and is refused as Truncate is or
 // by a NoSpaceError naming LimitIndex when splitting a held extent would pass
 // the index's cap on what removals add. It takes the file append domain.
-func (h *Handle) Deallocate(id FileID, e Extent) (Version, error) {
+func (h *Handle) Deallocate(ctx context.Context, id FileID, e Extent) (Version, error) {
 	return Version{}, ErrNotImplemented
 }
 
@@ -180,7 +181,7 @@ func (h *Handle) Deallocate(id FileID, e Extent) (Version, error) {
 // a removal marker until the caller settles it, and is durable on return. It
 // draws on the headroom and is refused as Truncate is. It takes the file
 // append domain.
-func (h *Handle) Delete(id FileID) (Version, error) {
+func (h *Handle) Delete(ctx context.Context, id FileID) (Version, error) {
 	return Version{}, ErrNotImplemented
 }
 
@@ -193,7 +194,7 @@ func (h *Handle) Delete(id FileID) (Version, error) {
 // so besides Deallocate's refusals it is refused with a NoSpaceError naming
 // LimitHeadroom once less than half the headroom remains. It takes the file
 // append domain.
-func (h *Handle) CloneTarget(id FileID, spec CloneSpec) (Version, error) {
+func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Version, error) {
 	return Version{}, ErrNotImplemented
 }
 
@@ -206,7 +207,7 @@ func (h *Handle) CloneTarget(id FileID, spec CloneSpec) (Version, error) {
 // decision: the stub yields one ErrNotImplemented rather than nothing. An
 // empty Since reads as "nothing changed since from", a silent wrong answer to
 // the caller rebuilding what metadata has not recorded.
-func (h *Handle) Since(id FileID, from Version) iter.Seq2[Change, error] {
+func (h *Handle) Since(ctx context.Context, id FileID, from Version) iter.Seq2[Change, error] {
 	return func(yield func(Change, error) bool) {
 		yield(Change{}, ErrNotImplemented)
 	}
