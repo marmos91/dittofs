@@ -182,7 +182,7 @@ SMB each open is its own lock owner.
 // adapter's, in Adapter.
 type ClientRecord struct {
 	ID       ClientID     // 64 bits, unique across the installation, never reused, not random (§2.11)
-	Protocol protocol.Kind
+	Protocol protocol.Kind // NFSv4, NLM or SMB: the protocol that names it
 	Name     []byte       // the client's own stable name; indexed with Protocol, so a known client is found again
 	Boot     [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
 	Owner    Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
@@ -322,7 +322,13 @@ instance (§4.4). A reclaim in a shard the list does not name is refused
 `ErrNoReclaim`: a client that held state only elsewhere cannot take state in
 this shard first. `protocol.Kind` comes from one small package that the
 adapters and the metadata layer both import. It **MUST NOT** come from an
-adapter package, or the metadata layer would import an adapter.
+adapter package, or the metadata layer would import an adapter. It is one byte
+per protocol — NFSv3, NFSv4, NLM, SMB — and `pkg/vfs`'s `Protocol` aliases it.
+NFSv4 is one kind whatever its minor version: a name confirmed under one minor
+version and proposed again under the other is a new `Boot`, a reboot, never
+the same instance, and the adapter keeps the minor version in `Adapter`
+([RFC 21 §3.5](rfc-21-nfs.md#3.5%20Confirming%20a%20client)). NFSv3 holds no
+client record; its kind names a request's protocol (§11.3).
 
 ### 2.2 Open
 
