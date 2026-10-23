@@ -67,8 +67,10 @@ func (o Opens) Of(ctx context.Context, share entity.ShareID, file entity.FileID)
 
 // Delete removes a durable open with its index entry and its durable locks,
 // and reports whether it left the file orphaned: no entry and no durable
-// open, so the filesystem service runs its release. A share's root has no
-// entry from its creation and is never orphaned.
+// open of it or of its named streams, so the filesystem service runs its
+// release. An open of a named stream is judged on its base file, which holds
+// the entries. A share's root has no entry from its creation and is never
+// orphaned.
 func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.FileID, id entity.OpenID) (orphan bool, err error) {
 	err = o.s.kv.Update(ctx, func(tx kv.Txn) error {
 		f, err := fileIn(tx, share, file)
@@ -83,15 +85,35 @@ func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.Fil
 		if err := dropOpen(tx, share, f.Shard, file, id); err != nil {
 			return err
 		}
+		if f.IsStream() {
+			if f, err = fileIn(tx, share, f.StreamOf); err != nil {
+				return err
+			}
+		}
 		if f.Nlink > 0 || f.IsRoot() {
 			orphan = false
 			return nil
 		}
-		left, err := opensOf(tx, share, file)
-		orphan = len(left) == 0
+		held, err := heldOpen(tx, share, f.ID)
+		orphan = !held
 		return err
 	})
 	return orphan, err
+}
+
+// heldOpen reports whether file or one of its named streams has a durable
+// open.
+func heldOpen(r kv.Reader, share entity.ShareID, file entity.FileID) (bool, error) {
+	streams, err := streamsOf(r, share, file)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range append(streams, file) {
+		for _, err := range r.Scan(opensPrefix(share, id), nil) {
+			return err == nil, err
+		}
+	}
+	return false, nil
 }
 
 // DurableOpen is one entry of a share's durable-open index.
