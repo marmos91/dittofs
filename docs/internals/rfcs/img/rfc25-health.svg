@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.2}
+      .ok{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.4}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.6}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .dash{stroke:#5b6472;stroke-width:1.2;fill:none;stroke-dasharray:4 3;marker-end:url(#a)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="500" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Conditions roll up by scope, and a status is the worst severity in scope.</text>
+
+  <text x="24" y="54" class="s">raised by</text>
+  <text x="200" y="54" class="s">subject and its conditions</text>
+  <text x="500" y="54" class="s">derived status</text>
+
+  <rect x="24" y="64" width="150" height="40" rx="5" class="st"/><text x="36" y="88" class="h">syncer</text>
+  <rect x="24" y="116" width="150" height="40" rx="5" class="st"/><text x="36" y="140" class="h">GC, transforms</text>
+  <rect x="24" y="168" width="150" height="40" rx="5" class="st"/><text x="36" y="192" class="h">journal, engine</text>
+  <rect x="24" y="220" width="150" height="40" rx="5" class="st"/><text x="36" y="244" class="h">engine, backups</text>
+  <rect x="24" y="300" width="150" height="40" rx="5" class="st"/><text x="36" y="318" class="h">engine, config,</text><text x="36" y="333" class="h">resources, store</text>
+
+  <rect x="200" y="62" width="250" height="44" rx="5" class="bad"/>
+  <text x="212" y="80" class="h">store s3-eu</text><text x="212" y="97" class="m">store_put_unhealthy, ErrDenied</text>
+  <rect x="200" y="114" width="250" height="44" rx="5" class="ok"/>
+  <text x="212" y="132" class="h">namespace ns1</text><text x="212" y="149" class="s">no conditions</text>
+  <rect x="200" y="166" width="250" height="44" rx="5" class="ok"/>
+  <text x="212" y="184" class="h">journal j0</text><text x="212" y="201" class="s">no conditions</text>
+  <rect x="200" y="218" width="250" height="44" rx="5" class="ok"/>
+  <text x="212" y="236" class="h">share profiles</text><text x="212" y="253" class="s">no conditions of its own</text>
+  <rect x="200" y="298" width="250" height="44" rx="5" class="ok"/>
+  <text x="212" y="316" class="h">node S1</text><text x="212" y="333" class="s">no node-scope conditions</text>
+
+  <path d="M176,84 L196,84" class="ln"/><path d="M176,136 L196,136" class="ln"/>
+  <path d="M176,188 L196,188" class="ln"/><path d="M176,240 L196,240" class="ln"/>
+  <path d="M176,320 L196,320" class="ln"/>
+
+  <path d="M452,84 L470,84 L470,150 L496,150" class="ex"/>
+  <path d="M452,136 L470,136" class="ln" style="marker-end:none"/>
+  <path d="M452,188 L470,188 L470,150" class="ln" style="marker-end:none"/>
+  <path d="M452,240 L478,240 L478,166 L496,166" class="ln"/>
+
+  <rect x="500" y="128" width="210" height="58" rx="6" class="bad"/>
+  <text x="512" y="148" class="h">profiles: unhealthy</text>
+  <text x="512" y="164" class="s">worst of its own conditions and</text>
+  <text x="512" y="178" class="s">its store's, namespace's, journal's</text>
+
+  <rect x="500" y="200" width="210" height="40" rx="6" class="ok"/>
+  <text x="512" y="224" class="h">99 other shares: healthy</text>
+
+  <rect x="500" y="294" width="210" height="58" rx="6" class="ok"/>
+  <text x="512" y="314" class="h">node S1: healthy</text>
+  <text x="512" y="330" class="s">reports 1 share unhealthy, 99 healthy;</text>
+  <text x="512" y="344" class="s">share conditions never set it</text>
+  <path d="M452,320 L496,320" class="ln"/>
+  <path d="M606,242 L606,290" class="dash"/><text x="614" y="270" class="s">counts only</text>
+
+  <rect x="740" y="190" width="140" height="74" rx="6" class="bad"/>
+  <text x="752" y="210" class="h">installation:</text>
+  <text x="752" y="226" class="h">unhealthy</text>
+  <text x="752" y="242" class="s">worst of every node,</text>
+  <text x="752" y="256" class="s">every share, its own</text>
+  <path d="M712,157 L726,157 L726,212 L736,212" class="ex"/>
+  <path d="M712,323 L726,323 L726,244 L736,244" class="ln"/>
+
+  <rect x="24" y="380" width="852" height="104" rx="8" class="zone"/>
+  <text x="36" y="398" class="s">what reads the derivation, and what does not</text>
+  <rect x="40" y="410" width="260" height="62" rx="5" class="ok"/>
+  <text x="52" y="430" class="h">liveness: live</text>
+  <text x="52" y="446" class="s">reads only the watchdog: internal loops</text>
+  <text x="52" y="460" class="s">turned within 60 s; no condition, no store</text>
+  <rect x="320" y="410" width="260" height="62" rx="5" class="ok"/>
+  <text x="332" y="430" class="h">readiness: ready</text>
+  <text x="332" y="446" class="s">false only while starting, draining, the</text>
+  <text x="332" y="460" class="s">metadata store lost, or a listener down</text>
+  <rect x="600" y="410" width="260" height="62" rx="5" class="am"/>
+  <text x="612" y="430" class="h">registry: one page</text>
+  <text x="612" y="446" class="s">store_put_unhealthy, unhealthy by cause,</text>
+  <text x="612" y="460" class="s">pages after 5 min, naming the store</text>
+</svg>

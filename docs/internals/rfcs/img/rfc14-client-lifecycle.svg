@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 426" width="900" height="426" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="426" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A client's life: proposed, confirmed, renewed, and ended by reboot, expiry or revoke.</text>
+
+  <rect x="36" y="48" width="128" height="74" rx="6" class="pr"/>
+  <text x="48" y="67" class="h">first contact</text>
+  <text x="48" y="84" class="s">Name, Boot, Owner;</text>
+  <text x="48" y="99" class="s">changes no state</text>
+  <text x="48" y="114" class="s">until confirmed</text>
+  <path d="M166,92 L226,92" class="ln"/>
+  <text x="171" y="84" class="m">Propose</text>
+
+  <rect x="228" y="48" width="222" height="74" rx="6" class="pr"/>
+  <text x="240" y="67" class="h">pending confirmation</text>
+  <text x="240" y="84" class="s">volatile, at the node that answered;</text>
+  <text x="240" y="99" class="s">confirm token: 64 random bits;</text>
+  <text x="240" y="114" class="s">lapses after one lease period</text>
+  <path d="M452,92 L516,92" class="gl"/>
+  <text x="456" y="84" class="m">Connect</text>
+  <text x="240" y="138" class="s">e.g. SETCLIENTID, then its confirm</text>
+  <text x="240" y="162" class="s">one step: Connect at once (e.g. SMB, NLM)</text>
+  <path d="M100,124 L100,170 L516,170" class="cb"/>
+  <path d="M516,194 L440,194 L440,126" class="cb"/>
+  <text x="160" y="190" class="s">shard lost, refusal kind: ErrStaleClient;</text>
+  <text x="160" y="204" class="s">the same Boot proposed again keeps the ID</text>
+
+  <rect x="518" y="48" width="358" height="150" rx="6" class="sv"/>
+  <text x="530" y="67" class="h">current: holds state, renewed</text>
+  <text x="530" y="85" class="s">the record is durable; Expires is not;</text>
+  <text x="530" y="100" class="s">found again by (protocol, Name)</text>
+  <text x="530" y="122" class="m">Renew</text>
+  <text x="572" y="122" class="s">extends Expires; one node, the</text>
+  <text x="530" y="137" class="s">lease owner (Lease.Node), renews and expires it</text>
+  <text x="530" y="155" class="s">with an Owner: another principal naming</text>
+  <text x="530" y="171" class="s">its Name is refused ErrClientInUse</text>
+  <text x="530" y="188" class="s">a call naming it: under its Owner or session only</text>
+
+  <path d="M640,200 L640,212" class="ex" style="marker-end:none"/>
+  <path d="M136,212 L774,212" class="ex" style="marker-end:none"/>
+  <path d="M136,212 L136,232" class="ex"/><path d="M346,212 L346,232" class="ex"/>
+  <path d="M556,212 L556,232" class="ex"/><path d="M774,212 L774,232" class="ex"/>
+
+  <rect x="36" y="234" width="200" height="88" rx="6" class="dr"/>
+  <text x="48" y="253" class="h">reboot</text>
+  <text x="48" y="270" class="s">same Name, new Boot: a new ID,</text>
+  <text x="48" y="285" class="s">connected again (proposed first</text>
+  <text x="48" y="300" class="s">where it confirms); the old ID</text>
+  <text x="48" y="315" class="s">expires once the new is confirmed</text>
+  <rect x="246" y="234" width="200" height="88" rx="6" class="bad"/>
+  <text x="258" y="253" class="no">expiry</text>
+  <text x="258" y="270" class="s">silent for one lease period:</text>
+  <text x="258" y="285" class="s">everything it held released at</text>
+  <text x="258" y="300" class="s">every shard in one step; the</text>
+  <text x="258" y="315" class="s">then the record goes (§4.3)</text>
+  <rect x="456" y="234" width="200" height="88" rx="6" class="bad"/>
+  <text x="468" y="253" class="no">admin Revoke</text>
+  <text x="468" y="270" class="s">state released for others at once;</text>
+  <text x="468" y="285" class="s">record, sessions, revoked set kept,</text>
+  <text x="468" y="300" class="s">each answered ErrRevoked; Shards</text>
+  <text x="468" y="315" class="s">emptied, so no reclaim (§5.3)</text>
+  <rect x="672" y="234" width="204" height="88" rx="6" class="dr"/>
+  <text x="684" y="253" class="h">back channel lost</text>
+  <text x="684" y="270" class="s">Reach.Down set: signalled to</text>
+  <text x="684" y="285" class="s">the client, no grant offered,</text>
+  <text x="684" y="300" class="s">a recall that cannot be sent is</text>
+  <text x="684" y="315" class="s">revoked at its deadline (§4.1)</text>
+
+  <path d="M136,324 L136,342 L22,342 L22,92 L34,92" class="cb"/>
+  <text x="146" y="340" class="s">the new instance starts again</text>
+  <path d="M878,278 L890,278 L890,124 L880,124" class="gl"/>
+  <text x="672" y="342" class="m">Rebind</text>
+  <text x="718" y="342" class="s">sets Reach.Callback,</text>
+  <text x="672" y="357" class="s">clears Reach.Down; under</text>
+  <text x="672" y="372" class="s">Protect, Owner only</text>
+
+  <text x="16" y="396" class="s">Every ClientID is issued by the server, unique and never reused; a reboot is a new ClientID, which is how stale state is recognised.</text>
+  <text x="16" y="412" class="s">Destroy is refused ErrClientBusy while a session or state remains, and releases nothing.</text>
+</svg>

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="600" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Resolution: five steps turn one Identity into the Caller for one share; each fills its own fields.</text>
+
+  <text x="40" y="58" class="z">STEP</text><text x="370" y="58" class="z">FILLS IN THE CALLER</text><text x="636" y="58" class="z">REFUSED, NEVER ANONYMOUS INSTEAD</text>
+
+  <rect x="30" y="68" width="290" height="44" rx="5" class="pr"/>
+  <text x="40" y="86" class="m">Identity</text><text x="40" y="104" class="s">Proof, Claims, Evidence; plus the share's policy</text>
+
+  <path d="M175,112 L175,128" class="ln"/>
+  <rect x="30" y="130" width="290" height="58" rx="5" class="sv"/>
+  <text x="40" y="148" class="h">1 Map: who proved this?</text><text x="40" y="166" class="s">Secret, Ticket: the bound principal; Claimed: uid;</text><text x="40" y="179" class="s">None: anonymous</text>
+  <path d="M322,156 L366,156" class="ln"/>
+  <rect x="370" y="140" width="240" height="32" rx="5" class="st"/><text x="380" y="161" class="m">Mapped</text><text x="440" y="161" class="s">state protection reads it</text>
+  <rect x="630" y="140" width="250" height="32" rx="5" class="rd"/><text x="640" y="161" class="e">disabled or deleted principal</text>
+
+  <path d="M175,188 L175,198" class="ln"/>
+  <rect x="30" y="200" width="290" height="58" rx="5" class="sv"/>
+  <text x="40" y="218" class="h">2 Squash: act as someone else?</text><text x="40" y="236" class="s">root or all, by the share's policy; a principal</text><text x="40" y="249" class="s">with no file spelling always</text>
+  <path d="M322,226 L366,226" class="ln"/>
+  <rect x="370" y="210" width="240" height="32" rx="5" class="st"/><text x="380" y="231" class="m">Principal</text><text x="456" y="231" class="s">files and grants read it</text>
+  <rect x="630" y="210" width="250" height="32" rx="5" class="rd"/><text x="640" y="231" class="e">the policy's Anonymous deleted</text>
+
+  <rect x="370" y="250" width="510" height="44" rx="5" class="am"/>
+  <text x="380" y="267" class="s">squashed: Principal is the share's Anonymous; Groups are its closure only;</text><text x="380" y="284" class="s">DenyOnly empty; every flag false. Nothing of the replaced principal is kept.</text>
+  <path d="M322,240 C 345,250 350,262 366,268" class="cb"/>
+
+  <path d="M175,258 L175,308" class="ln"/>
+  <rect x="30" y="310" width="290" height="58" rx="5" class="sv"/>
+  <text x="40" y="328" class="h">3 Collect: which groups?</text><text x="40" y="346" class="s">the closure, whole, plus a verified PAC's SIDs;</text><text x="40" y="359" class="s">deny-only SIDs kept apart</text>
+  <path d="M322,336 L366,336" class="ln"/>
+  <rect x="370" y="320" width="240" height="32" rx="5" class="st"/><text x="380" y="341" class="m">Groups, DenyOnly</text>
+  <rect x="630" y="314" width="250" height="44" rx="5" class="rd"/><text x="640" y="332" class="e">over the group cap; a store or</text><text x="640" y="348" class="e">directory error; a partial closure</text>
+
+  <path d="M175,368 L175,378" class="ln"/>
+  <rect x="30" y="380" width="290" height="58" rx="5" class="sv"/>
+  <text x="40" y="398" class="h">4 Grant: what does the share allow?</text><text x="40" y="416" class="s">own grant, then groups', authenticated users',</text><text x="40" y="429" class="s">everyone's; narrowed by admission</text>
+  <path d="M322,406 L366,406" class="ln"/>
+  <rect x="370" y="390" width="240" height="32" rx="5" class="st"/><text x="380" y="411" class="m">Access, ReadOnly</text><text x="506" y="411" class="s">level, and why</text>
+  <rect x="630" y="390" width="250" height="32" rx="5" class="rd"/><text x="640" y="411" class="e">a store error reading the grants</text>
+
+  <path d="M175,438 L175,448" class="ln"/>
+  <rect x="30" y="450" width="290" height="58" rx="5" class="sv"/>
+  <text x="40" y="468" class="h">5 Flags: how far to trust it?</text><text x="40" y="486" class="s">authenticated: Secret or above; admin: the grant</text><text x="40" y="499" class="s">says admin and authenticated; privileged (§6.5)</text>
+  <path d="M322,476 L366,476" class="ln"/>
+  <rect x="370" y="460" width="270" height="32" rx="5" class="st"/><text x="380" y="481" class="m">Authenticated, Admin, Privileged</text>
+
+  <rect x="30" y="524" width="850" height="30" rx="5" class="sv"/>
+  <text x="40" y="544" class="ms">Caller { Principal, Mapped, Groups, DenyOnly, Access, ReadOnly, Authenticated, Admin, Privileged } → Files.Authorize</text>
+  <text x="16" y="574" class="s">Every refusal is ErrAccess or ErrUnavailable; none falls back to a guest, to anonymous or to the everyone grant.</text>
+  <text x="16" y="592" class="q" fill="#8a929c" font-size="12">Whether grants are read before or after squashing is open (§12); this figure shows the current text, squash first.</text>
+</svg>
