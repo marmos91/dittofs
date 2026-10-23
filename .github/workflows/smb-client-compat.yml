@@ -66,11 +66,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # decision: the same Go release as tests.yml rather than 1.26.x, which
+      # resolves to whichever 1.26 the machine already has, each with a module
+      # cache of its own. Bump the pins together.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: true
+
+      # Every module before anything builds, so the cache this job may save,
+      # once per key, holds all of them. -x lists each module fetched.
+      - name: Download modules
+        run: go mod download -x
 
       - name: Install SMB client tools
         run: sudo apt-get update && sudo apt-get install -y cifs-utils smbclient
@@ -219,8 +227,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: true
+
+      # Every module before anything builds, so the cache this job may save,
+      # once per key, holds all of them. -x lists each module fetched.
+      - name: Download modules
+        run: go mod download -x
 
       - name: Build DittoFS
         run: |
