@@ -110,7 +110,7 @@ func statsharesDialect(out []byte) (string, error) {
 // dialect its connection negotiated. Its values come from the environment, so
 // the password never shows on a command line.
 const mapScript = `$ErrorActionPreference = 'Stop'; ` +
-	`$drive = (68..90 | ForEach-Object { [string][char]$_ + ':' } | Where-Object { -not (Test-Path ($_ + '\')) })[-1]; ` +
+	`$drive = @(68..90 | ForEach-Object { [string][char]$_ + ':' } | Where-Object { -not (Test-Path ($_ + '\')) })[-1]; ` +
 	`New-SmbMapping -LocalPath $drive -RemotePath $env:DT_SMB_PATH -TcpPort $env:DT_SMB_PORT -UserName $env:DT_SMB_USER -Password $env:DT_SMB_PASSWORD | Out-Null; ` +
 	`$drive + ' ' + (Get-SmbConnection -ServerName $env:DT_SMB_SERVER | Where-Object ShareName -EQ $env:DT_SMB_SHARE).Dialect`
 
