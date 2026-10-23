@@ -57,8 +57,7 @@ type Proposal struct {
 	Confirm [8]byte         // Pending.Confirm
 }
 
-// ClientStatus is what a renewal reports beside the lease. Its revoked and
-// reclaim flags arrive with the pieces that set them.
+// ClientStatus is what a renewal reports beside the lease.
 type ClientStatus struct{}
 
 // Caller is the client a call acts for, as the adapter proved it, and the
