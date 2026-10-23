@@ -19,6 +19,30 @@
 // offers extents for offload, releases what was offloaded and repacks
 // segments. The journal provides the mechanisms and none of the policy.
 //
+// A call that does I/O or can wait takes a context first; a call that only
+// reads or changes memory and never waits takes none. No Close takes one
+// either: the journal's and a handle's wait only for calls already in flight,
+// each under its own context, and the journal's also joins its background
+// work. The context carries the caller's deadline, and is honoured only where
+// that leaves no outcome unknown:
+//
+//   - a call checks the context first, before any refusal check and before it
+//     changes any state, and if it is done returns the context's error having
+//     changed nothing;
+//   - once a call has appended its record, it completes and returns its result
+//     whatever the context says;
+//   - a cancelled Sync stops waiting, not the sync, and its outcome reaches the
+//     next Sync of the file; a Sync that returns the context's error clears no
+//     file's mark of an unreported failure;
+//   - Open checks between recovery phases, and a cancelled Open leaves the
+//     directory for a later Open to recover;
+//   - OffloadMany and Repack stop at a record boundary, and every record they
+//     appended stands; Since ends its iteration with the context's error;
+//   - an offer's report ignores the context, since what it records has
+//     already committed;
+//   - a call past the context check that is refused returns the refusal at
+//     once, as itself.
+//
 // The package depends only on the standard library and the operating system's
 // file interface. Time is read only through an injected clock, so a test can
 // advance it.
