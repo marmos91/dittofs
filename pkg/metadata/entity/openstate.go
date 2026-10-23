@@ -2,13 +2,8 @@ package entity
 
 import (
 	"encoding/binary"
-	"errors"
 	"time"
 )
-
-// ErrSeqMisordered is an NFSv4.1 CREATE_SESSION whose sequence ID is neither
-// the last one applied, a replay, nor the next.
-var ErrSeqMisordered = errors.New("entity: create-session sequence out of order")
 
 // The durable part of open state: the records a lost process leaves behind
 // for the next one. Opens, locks and caching grants are otherwise volatile,
@@ -39,54 +34,90 @@ type (
 	LockID   uint64
 )
 
-// Client is the durable record of one protocol client instance: what a
-// reclaim and its identity need after a restart. Its lease expiry is
-// volatile and never stored, so a renewal writes nothing.
-type Client struct {
+// ShardID names one shard. Only its low 24 bits are usable, so a state
+// reference carries it in three bytes: every shard is below ShardLimit.
+type ShardID uint32
+
+const ShardLimit ShardID = 1 << 24
+
+// ClientRecord is a client's durable record: one per client instance, found
+// by ID and by its protocol and name. Each field is one open state decides
+// on; protocol detail it never interprets is the adapter's, in Adapter. The
+// lease's expiry and a pending confirmation are volatile and never stored, so
+// a renewal writes nothing.
+type ClientRecord struct {
 	ID       ClientID
 	Protocol Protocol
-	// Owner is the client's own name for itself: NFSv4's co_ownerid or
-	// SETCLIENTID id, SMB's ClientGuid, NLM's host name. Owner and Protocol
-	// are unique, and indexed.
-	Owner []byte
-	// Verifier is what tells two boots of one owner apart: NFSv4's boot
-	// verifier, or an NLM host's NSM state number (NSMVerifier). A new one
-	// under the same owner is a reboot.
-	Verifier [8]byte
-	// Principal established the client ID over NFSv4. Zero for SMB, whose
-	// record names a machine and holds many users' sessions, and for NLM.
-	Principal Principal
-	MachCred  *MachCred // NFSv4.1 state protection; nil: none
-	CSSeq     uint32    // NFSv4.1: the last CREATE_SESSION applied
-	CSReply   []byte    // that CREATE_SESSION's reply, opaque here
-	Revoked   bool      // an administrator revoked its state
+	// Name is the client's own stable name for itself: NFSv4's co_ownerid or
+	// SETCLIENTID id, SMB's ClientGuid, NLM's host name with its source
+	// address. Name and Protocol are unique, and indexed.
+	Name []byte
+	// Boot is the instance under Name: a new Boot is a reboot, under a new ID.
+	// An NLM host's is its NSM state number (NSMBoot).
+	Boot [8]byte
+	// Owner is who may act for the client; zero when it names a machine or a
+	// host, or its principal maps to the anonymous one.
+	Owner Principal
+	// Protect is state protection: Owner may act on any of the client's state,
+	// and alone may destroy it or rebind its back channel. It needs an Owner.
+	Protect  bool
+	Recovery RecoveryKind
+	Lease    ClientLease
+	Reach    Reach
+	// Shards lists every shard the client holds state in, in shard order.
+	Shards []ShardMark
+	// Ended marks an expired client kept until every shard it names has
+	// released its state.
+	Ended bool
+	// Adapter is the adapter's own durable record, at most 4 KiB, its first
+	// byte a version the adapter defines; never read by the store.
+	Adapter []byte
 }
 
-// NSMVerifier is an NLM host's NSM state number as its client's Verifier:
-// big-endian in the last four bytes, so a host that restarts with a new
-// number is a reboot of the same owner.
-func NSMVerifier(state uint32) (v [8]byte) {
-	binary.BigEndian.PutUint32(v[4:], state)
-	return v
+// ClientLease names the one node that renews and expires the client; Lease
+// is an SMB lease, a different thing.
+type ClientLease struct {
+	Node NodeID
 }
 
-// MachCred is NFSv4.1's SP4_MACH_CRED: the machine principal and the
-// operations it protects, a bitmap opaque here.
-type MachCred struct {
-	Principal Principal
-	Ops       []byte
+// Reach is how a recall reaches the client.
+type Reach struct {
+	Callback NodeID   // the node holding its back channel; zero: none
+	Down     bool     // the back channel is lost, until the client rebinds
+	Sessions []NodeID // the nodes holding a session of it, each once
 }
 
-// ClientShard is a client's record in one shard it has held state in. A
-// reclaim in a shard the client has no record in is refused.
-type ClientShard struct {
-	Shard uint64
-	// Reclaimed is the shard's grace instance at the client's last
-	// RECLAIM_COMPLETE there.
-	Reclaimed   uint32
-	LossPending bool   // NFSv4.0: a loss of the shard's state is still to be signalled
-	Revoked     bool   // an administrator's revoke released its state here: its reclaims are refused
-	Notify      []byte // NLM: where its restart notification goes; opaque here
+// ShardMark is one shard the client holds state in, and Done: the grace
+// instance it last finished reclaiming in there, or the shard's instance when
+// it joined.
+type ShardMark struct {
+	Shard ShardID
+	Done  uint64
+}
+
+// RecoveryKind is how a loss of the client's state reaches it; the adapter
+// picks one at first contact.
+type RecoveryKind uint8
+
+const (
+	RecoverStatus RecoveryKind = iota + 1
+	RecoverRefusal
+	RecoverReconnect
+	RecoverNotice
+)
+
+var recoveryKinds = []string{RecoverStatus: "status", RecoverRefusal: "refusal", RecoverReconnect: "reconnect", RecoverNotice: "notice"}
+
+func (k RecoveryKind) String() string                { return enumString(recoveryKinds, k) }
+func (k RecoveryKind) MarshalText() ([]byte, error)  { return enumMarshal(recoveryKinds, k) }
+func (k *RecoveryKind) UnmarshalText(b []byte) error { return enumUnmarshal(recoveryKinds, k, b) }
+
+// NSMBoot is an NLM host's NSM state number as its client's Boot: big-endian
+// in the last four bytes, so a host that restarts with a new number is a
+// reboot of the same name, and the bytes order as the numbers do.
+func NSMBoot(state uint32) (b [8]byte) {
+	binary.BigEndian.PutUint32(b[4:], state)
+	return b
 }
 
 // OpenKind tells a client's open from the one a clone holds on its source.
