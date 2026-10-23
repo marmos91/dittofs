@@ -7,7 +7,16 @@ import (
 	"math"
 	"math/rand/v2"
 	"sync"
+	"time"
 )
+
+// Waiter is the part of a clock a Schedule's Delay waits on, so any clock with
+// this After can drive one, not only a TestClock.
+type Waiter interface {
+	After(d time.Duration) <-chan struct{}
+}
+
+var _ Waiter = (*TestClock)(nil)
 
 // Rule selects some of a seam's calls and the action to take on them.
 //
@@ -37,7 +46,7 @@ type Rule struct {
 // are safe for concurrent use; concurrent calls are numbered in the order At
 // is entered.
 type Schedule struct {
-	clock *TestClock
+	clock Waiter
 
 	rules []scheduled
 	mu    sync.Mutex
@@ -55,7 +64,7 @@ type scheduled struct {
 // empty Op or Key, a negative From or Count, a Prob outside [0, 1], a Fail
 // with a nil Err, a Delay of zero or less, a Tear with a negative N, and an
 // unknown Kind.
-func NewSchedule(seed uint64, clock *TestClock, rules ...Rule) (*Schedule, error) {
+func NewSchedule(seed uint64, clock Waiter, rules ...Rule) (*Schedule, error) {
 	s := &Schedule{clock: clock}
 
 	for i, r := range rules {
@@ -72,7 +81,7 @@ func NewSchedule(seed uint64, clock *TestClock, rules ...Rule) (*Schedule, error
 	return s, nil
 }
 
-func (r Rule) validate(clock *TestClock) error {
+func (r Rule) validate(clock Waiter) error {
 	a := r.Action
 	switch {
 	case r.Op == "" || r.Key == "":
