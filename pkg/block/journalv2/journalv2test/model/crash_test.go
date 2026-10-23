@@ -626,3 +626,31 @@ func TestWritesAreDecidedFromTheBytesWithoutTheSearch(t *testing.T) {
 		})
 	}
 }
+
+// Bytes a newer write outranks look the same kept or lost, so they never break
+// the order: an older write whose first bytes a newer one covers comes back
+// with only its later bytes showing.
+func TestBytesUnderANewerWriteDoNotBreakTheOrder(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 4), 0, ver(2), nil))
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
+}
+
+// Bytes a later record of the same version serves look the same kept or lost:
+// a fill whose first bytes a refill at its version replaced comes back with
+// only its later bytes showing.
+func TestBytesUnderALaterRecordOfTheVersionDoNotBreakTheOrder(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(5), nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('V', 4), ver(5), ver(5), nil))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 2)}, nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('E', 2), ver(5), ver(5), nil))
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
+}
