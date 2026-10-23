@@ -6,7 +6,6 @@ import (
 	"hash/fnv"
 	"math"
 	"math/rand/v2"
-	"path"
 	"sync"
 )
 
@@ -17,8 +16,8 @@ import (
 // The rule fires on the matching calls numbered From to From+Count-1, and on
 // each of those only with probability Prob when Prob is set.
 type Rule struct {
-	Op  string // a path.Match pattern over the op name; "*" matches every op
-	Key string // a path.Match pattern over the key; "*" matches every key
+	Op  string // a Match pattern over the op name; "*" matches every op
+	Key string // a Match pattern over the key; "*" matches every key, "" included
 
 	From  int     // the first matching call the rule fires on; 0 means 1
 	Count int     // how many calls, from From, it fires on; 0 means every one
@@ -52,8 +51,8 @@ type scheduled struct {
 }
 
 // NewSchedule returns a schedule of rules seeded with seed, whose Delay
-// actions wait on clock. clock may be nil when no rule delays. It refuses a
-// malformed pattern, a negative From or Count, a Prob outside [0, 1], a Fail
+// actions wait on clock. clock may be nil when no rule delays. It refuses an
+// empty Op or Key, a negative From or Count, a Prob outside [0, 1], a Fail
 // with a nil Err, a Delay of zero or less, a Tear with a negative N, and an
 // unknown Kind.
 func NewSchedule(seed uint64, clock *TestClock, rules ...Rule) (*Schedule, error) {
@@ -74,14 +73,10 @@ func NewSchedule(seed uint64, clock *TestClock, rules ...Rule) (*Schedule, error
 }
 
 func (r Rule) validate(clock *TestClock) error {
-	for _, p := range []string{r.Op, r.Key} {
-		if _, err := path.Match(p, ""); err != nil {
-			return fmt.Errorf("pattern %q: %w", p, err)
-		}
-	}
-
 	a := r.Action
 	switch {
+	case r.Op == "" || r.Key == "":
+		return errors.New(`empty Op or Key: "*" matches every one, the empty key included`)
 	case r.From < 0 || r.Count < 0:
 		return errors.New("negative From or Count")
 	case !(r.Prob >= 0 && r.Prob <= 1):
@@ -137,7 +132,7 @@ func (s *Schedule) decide(op, key string) FaultAction {
 	var chosen *FaultAction
 	for i := range s.rules {
 		r := &s.rules[i]
-		if !match(r.Op, op) || !match(r.Key, key) {
+		if !Match(r.Op, op) || !Match(r.Key, key) {
 			continue
 		}
 
@@ -162,9 +157,34 @@ func (s *Schedule) decide(op, key string) FaultAction {
 	return *chosen
 }
 
-// match reports whether name matches pattern. Patterns are checked when the
-// schedule is built, so the error is never set.
-func match(pattern, name string) bool {
-	ok, _ := path.Match(pattern, name)
-	return ok
+// Match reports whether name matches pattern, byte by byte: a '*' in pattern
+// matches any run of bytes, '/' and bytes that are not valid UTF-8 included,
+// and every other byte matches only itself. So "*" matches every name, the
+// empty one included, and "shard/*" every name that starts with "shard/".
+func Match(pattern, name string) bool {
+	// On a mismatch, the latest '*' takes one more byte and the rest of the
+	// pattern is tried again from there.
+	p, n := 0, 0
+	star, from := -1, 0
+	for n < len(name) {
+		switch {
+		case p < len(pattern) && pattern[p] == '*':
+			star, from = p, n
+			p++
+		case p < len(pattern) && pattern[p] == name[n]:
+			p++
+			n++
+		case star >= 0:
+			from++
+			p, n = star+1, from
+		default:
+			return false
+		}
+	}
+
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+
+	return p == len(pattern)
 }

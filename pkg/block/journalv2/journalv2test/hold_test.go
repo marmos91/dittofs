@@ -236,13 +236,32 @@ func TestAHoldIsReleasedWhenItsTestEnds(t *testing.T) {
 	}
 }
 
-func TestHoldRefusesAMalformedKey(t *testing.T) {
+func TestHoldRefusesAnEmptyKey(t *testing.T) {
 	s := newSeam(t)
 
 	defer func() {
 		if recover() == nil {
-			t.Fatal("Hold accepted the malformed key \"seg-[\"")
+			t.Fatal("Hold accepted the empty key")
 		}
 	}()
-	s.Hold(t, OpSync, "seg-[")
+	s.Hold(t, OpSync, "")
+}
+
+func TestAHoldOnStarHoldsEveryKey(t *testing.T) {
+	for _, key := range []string{"seg-1", "", "shard/1", "a\x2fb", "\xff/\xfe"} {
+		s := newSeam(t)
+		h := s.Hold(t, "point", "*")
+
+		held := make(chan struct{})
+		go func() { s.hold("point", key); close(held) }()
+
+		select {
+		case <-h.Reached():
+		case <-held:
+			t.Fatalf("a call on %q passed a hold on \"*\"", key)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("a call on %q neither reached nor passed a hold on \"*\"", key)
+		}
+		h.Release()
+	}
 }

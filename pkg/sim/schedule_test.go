@@ -178,11 +178,59 @@ func TestKeyPatterns(t *testing.T) {
 		}
 	}
 
-	if _, err := NewSchedule(1, nil, Rule{Op: "read", Key: "seg-[", Action: eio}); err == nil {
-		t.Error("NewSchedule accepted the malformed key pattern \"seg-[\"")
+}
+
+func TestStarMatchesEveryKey(t *testing.T) {
+	s := newSchedule(t, 1, Rule{Op: "read", Key: "*", Action: eio})
+
+	for _, key := range []string{
+		"seg-1",
+		"",          // the key of list and sync_dir
+		"shard/1",   // a '/' path.Match's star stops at
+		"a\x2fb",    // a binary key holding the byte '/'
+		"\xff/\xfe", // not valid UTF-8
+	} {
+		if got := s.At("read", []byte(key)); got != eio {
+			t.Errorf("read of %q under Key \"*\": %v, want %v", key, got, eio)
+		}
 	}
-	if _, err := NewSchedule(1, nil, Rule{Op: "re[", Key: "*", Action: eio}); err == nil {
-		t.Error("NewSchedule accepted the malformed op pattern \"re[\"")
+}
+
+func TestAStarCrossesSlashesAndBacktracks(t *testing.T) {
+	s := newSchedule(t, 1,
+		Rule{Op: "read", Key: "shard/*", Action: eio},
+		Rule{Op: "read", Key: "*.seg", Action: enospc},
+	)
+
+	cases := map[string]FaultAction{
+		"shard/1":   eio,
+		"shard/a/b": eio,
+		"shard/":    eio,
+		"shard":     {},
+		"shards/1":  {},
+		"a.b.seg":   enospc, // the star must give back the first '.'
+		"a.seg.tmp": {},
+	}
+	for key, want := range cases {
+		if got := s.At("read", []byte(key)); got != want {
+			t.Errorf("read of %q: %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestMoreThanOneStar(t *testing.T) {
+	s := newSchedule(t, 1, Rule{Op: "read", Key: "a*b*c", Action: eio})
+
+	cases := map[string]FaultAction{
+		"abc":    eio, // each star takes nothing
+		"aXbYc":  eio,
+		"aXbYcZ": {}, // a byte after the last literal
+		"acb":    {}, // the literals out of order
+	}
+	for key, want := range cases {
+		if got := s.At("read", []byte(key)); got != want {
+			t.Errorf("read of %q under Key \"a*b*c\": %v, want %v", key, got, want)
+		}
 	}
 }
 
@@ -245,6 +293,8 @@ func TestNewScheduleRefusesActionsASeamCannotApply(t *testing.T) {
 		"negative from":       {Op: "*", Key: "*", From: -1, Action: eio},
 		"negative count":      {Op: "*", Key: "*", Count: -1, Action: eio},
 		"unknown kind":        {Op: "*", Key: "*", Action: FaultAction{Kind: Reorder + 1}},
+		"empty op":            {Op: "", Key: "*", Action: eio},
+		"empty key":           {Op: "*", Key: "", Action: eio},
 	}
 	for name, r := range cases {
 		if _, err := NewSchedule(1, c, r); err == nil {
