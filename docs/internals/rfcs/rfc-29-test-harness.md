@@ -1906,15 +1906,17 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
      difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
      the scripts don't, such as skips and tests with no result (§4.6, §4.7), a known failure whose
-     entry is `intermittent` (§4.7), and where the server runs (§4.2). So `dt`'s skips and tests
-     with no result aren't compared, and a `dt` cell they alone leave not run is as green as the
-     scripts'. An `intermittent` entry's test fails on some runs only, on some kernels for
-     instance, and the two sides of a cell may run on different ones, so it isn't compared as a
-     known failure, while the cell's verdict and its tests run still are. A cell whose scripts'
-     grader stopped before grading each test, as it does when one has no result, compares only its
-     verdict, and differs when the scripts pass it. pynfs's scripts reached the server at the
-     host's address, as `dt` does (§4.2); a test whose difference comes from where its server runs
-     is named, with the cause, in the comparer before the runs it is excused in. None is named yet.
+     entry is `intermittent` between two kernels (§4.7), and where the server runs (§4.2). So
+     `dt`'s skips and tests with no result aren't compared, and a `dt` cell they alone leave not
+     run is as green as the scripts'. An `intermittent` entry's test fails on some kernels only,
+     and the two sides of a cell may run on different ones, so where both name a kernel and the two
+     differ, it isn't compared as a known failure, while the cell's verdict and its tests run still
+     are; on the same kernel, or where a side names none, it is. A cell whose entries the
+     checkout's registry can't find differs. A cell whose scripts' grader stopped before grading
+     each test, as it does when one has no result, compares only its verdict, and differs when the
+     scripts pass it. pynfs's scripts reached the server at the host's address, as `dt` does
+     (§4.2); a test whose difference comes from where its server runs is named, with the cause, in
+     the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,

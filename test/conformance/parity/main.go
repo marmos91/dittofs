@@ -22,9 +22,11 @@
 //     as the scripts', and a cell whose scripts' grader stopped before grading
 //     each test, as it does when one has no result, compares only its verdict,
 //     and differs when the scripts pass it;
-//   - a known failure whose entry, where dt ran the cell, is intermittent: it
-//     fails on some runs only, so either side may pass it, and it isn't
-//     compared as a known failure; the verdict and the tests run still are;
+//   - a known failure whose entry, where dt ran the cell, is intermittent,
+//     between two sides that name different kernels: it fails on some
+//     kernels only, so either side may pass it, and it isn't compared as a
+//     known failure; the verdict and the tests run still are. A cell whose
+//     entries the checkout's registry can't find differs;
 //   - where the server runs: a test whose difference comes from where its
 //     server runs is named here, with the cause, before the runs it is
 //     excused in. None is named yet.
@@ -53,6 +55,7 @@ import (
 // side is a cell's results through dt or through the scripts.
 type side struct {
 	result string // how the cell went, in the side's words, and the kernel it ran on when it says
+	kernel string // the kernel it ran on, as uname -r gives it; "" when the side didn't say
 	green  bool
 	// excused says a dt cell is not run only for its skips or its tests with
 	// no result, which the scripts don't grade.
@@ -160,9 +163,18 @@ func compare(dir string, planned, suites []string, root string, r *registry.Regi
 		case !inScripts:
 			diffs = []string{"no results through the scripts"}
 		default:
-			if s.graded && !slices.Equal(d.known, s.known) {
+			// decision: an intermittent known failure that differs only between sides
+			// on different kernels isn't a difference: the entries marked intermittent
+			// fail on some kernels and pass on others, and the two sides of a cell can
+			// run on different kernels. So while the kernels differ, parity can't see
+			// such a row turn from intermittent into a steady one-sided failure.
+			// Withdraw this once a known entry's where can name a kernel, so these rows
+			// become plain known failures on the kernels that fail them, or as soon as
+			// an intermittent row differs between two sides on the same kernel.
+			if s.graded && !slices.Equal(d.known, s.known) && d.kernel != "" && s.kernel != "" && d.kernel != s.kernel {
 				if err := dropIntermittent(root, r, name, &d, &s); err != nil {
-					return "", false, err
+					diffs = []string{"can't tell its intermittent entries: " + err.Error()}
+					break
 				}
 			}
 			diffs = differences(d, s)
@@ -209,7 +221,7 @@ func dropIntermittent(root string, r *registry.Registry, name string, d, s *side
 // tool gave it a pass or a failure, whatever its grade made of it, but for an
 // expected skip, which the scripts count as a skip.
 func fromDT(r report.Run, c report.Cell) side {
-	d := side{result: c.Result + on(r.Kernel), green: c.Result == report.Passed, graded: true, tier: r.Tier, os: r.OS}
+	d := side{result: c.Result + on(r.Kernel), kernel: r.Kernel, green: c.Result == report.Passed, graded: true, tier: r.Tier, os: r.OS}
 	onlyDT := false
 	for _, t := range c.Tests {
 		switch {
@@ -245,8 +257,8 @@ func fromScripts(dir string) (side, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return side{}, err
 	}
-	code := strings.TrimSpace(string(status))
-	s := side{result: "exit " + code + on(strings.TrimSpace(string(kernel))), green: code == "0"}
+	code, k := strings.TrimSpace(string(status)), strings.TrimSpace(string(kernel))
+	s := side{result: "exit " + code + on(k), kernel: k, green: code == "0"}
 	grades, err := os.ReadFile(filepath.Join(dir, "grades"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
