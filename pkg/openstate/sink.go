@@ -18,6 +18,13 @@ type Sink interface {
 	// service forwards it to c and reports the client's answer to a grant
 	// through WaitAnswered.
 	LockWaitOver(c entity.ClientID, w LockWaiter, granted bool)
+	// RecallGrant: recall g, held by c, to kind to; the service sends it in
+	// the holder's protocol, and the client answers through AckRecall. The
+	// recall's deadline starts when this call returns.
+	RecallGrant(c entity.ClientID, g CachingGrant, to GrantKind)
+	// Revoked: state ended without the client asking; the service tells the
+	// client and answers what it holds pending on it.
+	Revoked(r Revocation)
 }
 
 // Order takes a file's admission lock and returns its unlock. The table takes
@@ -30,7 +37,17 @@ type RevokeReason uint8
 
 const (
 	RevokedLeaseExpired RevokeReason = iota // its lease expired, or a reboot replaced it
+	RevokedByAdmin                          // an administrator revoked the client
+	RevokedGrant                            // one caching grant whose recall missed its deadline
 )
+
+// Revocation names state ended without the client asking: Grant for
+// RevokedGrant; every piece of the client's state for RevokedByAdmin.
+type Revocation struct {
+	Client entity.ClientID
+	Grant  GrantID
+	Reason RevokeReason
+}
 
 // outbox is what a call's steps raised, handed to the Sink once the call holds
 // no table lock.
@@ -39,6 +56,19 @@ type outbox struct {
 	over   []waitOver
 	timer  bool            // raised on the timer: waiters are served later, under the file's admission lock
 	serve  []entity.FileID // the files whose waiters are still to be served
+
+	revoked []Revocation
+	recalls []recallOut
+}
+
+// recallOut is one RecallGrant, and the recall it hands over: gen names it
+// among the grant's recalls, so its deadline is armed only if it is still the
+// one in flight.
+type recallOut struct {
+	g     CachingGrant
+	to    GrantKind
+	token uint64
+	gen   uint32
 }
 
 // waitOver is one LockWaitOver.
@@ -59,11 +89,23 @@ func (o *outbox) close(f entity.FileID, r CloseResult) {
 	o.closed[f] = r
 }
 
-func (o *outbox) raise(sink Sink) {
+// raise hands o to sink. Each recall's deadline is armed once its
+// RecallGrant returns, in a step of its own.
+func (o *outbox) raise(t *Table, sink Sink) {
 	for f, r := range o.closed {
 		sink.Closed(f, r)
 	}
 	for _, w := range o.over {
 		sink.LockWaitOver(w.w.Owner.Client, w.w, w.granted)
+	}
+	for _, r := range o.revoked {
+		sink.Revoked(r)
+	}
+	for _, r := range o.recalls {
+		sink.RecallGrant(r.g.Client, r.g, r.to)
+		t.idx.Lock()
+		t.unsent--
+		t.idx.Unlock()
+		t.arm(r)
 	}
 }

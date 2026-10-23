@@ -386,15 +386,17 @@ func (t *Table) serve(e *entry, out *outbox) {
 	}
 }
 
-// serveFiles serves the waiters of files, for the timer: a poll waiter past
-// its deadline is dropped and the waiters behind it are considered, and a
-// range the timer freed is granted. Each file's step takes the file's
-// admission lock first, since it may grant, and holds no other table lock.
+// serveFiles serves the waiters of files, for the timer: a recall past its
+// deadline is ended, a poll waiter past its deadline is dropped and the
+// waiters behind it are considered, and a range the timer freed is granted.
+// Each file's step takes the file's admission lock first, since it may grant
+// or revoke, and holds no other table lock.
 func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
 	for _, f := range files {
 		var out outbox
 		unlock := t.order(f)
 		_ = t.step(f, func(e *entry) error {
+			t.lapse(e, &out)
 			t.serve(e, &out)
 			if !slices.ContainsFunc(e.waiters, func(w *LockWaiter) bool { return w.Wait == WaitPoll }) {
 				t.idx.Lock()
@@ -404,7 +406,7 @@ func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
 			return nil
 		})
 		unlock()
-		out.raise(sink)
+		out.raise(t, sink)
 	}
 }
 
@@ -482,7 +484,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			return err
 		})
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	return res, err
 }
 
@@ -574,7 +576,7 @@ func (v locks) CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwne
 		}
 		return nil
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, o.Client)
 	return granted, nil
 }
@@ -600,7 +602,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		}
 		return nil
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, who.Client)
 	return nil
 }
@@ -665,7 +667,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			return err
 		})
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, who.Client)
 	return seq, err
 }
@@ -728,7 +730,7 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 		delete(t.seqs, locksOwner(o))
 		t.smu.Unlock()
 	}
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, o.Client)
 	return err
 }
