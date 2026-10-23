@@ -476,20 +476,42 @@ func TestCancelRacesGrant(t *testing.T) {
 	}
 }
 
-// Releasing an owner of locks drops its locks here, and grants the waiters
-// behind them.
+// Releasing an owner of locks that still holds a lock, on any file, is
+// refused and changes nothing; once it holds none, its lock states and its
+// waiter go, so the range it waited on is free to others.
 func TestReleaseLockOwner(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1)
-	file := anyFile()
-	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
-	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
-	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
-	if err := f.Locks().ReleaseLockOwner(ctx, a, owner(a, "lo")); err != nil {
+	file, other := anyFile(), anyFile()
+	o, p := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr}), f.mustOpen(t, a, other, OpenRequest{Access: rd | wr})
+	lo := owner(a, "lo")
+	f.mustLock(t, a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, a, other, LockReq{Owner: lo, Open: refOf(p), Ranges: []LockRange{x(0, 10)}})
+	unlock := func(file FileKey, under Open) {
+		t.Helper()
+		if err := f.Locks().Unlock(ctx, a, file.ID, refOf(under), lo, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock(other, p)
+	if err := f.Locks().ReleaseLockOwner(ctx, a, lo); !errors.Is(err, ErrLocksHeld) {
+		t.Fatalf("releasing an owner holding a lock: %v, want ErrLocksHeld", err)
+	}
+	if h := f.holder(t, file, br(0, 10)); h == nil || string(h.Owner.Name) != "lo" {
+		t.Fatalf("the refused release left the range held by %v, want lo", h)
+	}
+
+	unlock(file, o)
+	f.mustLock(t, b, other, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(50, 10)}})
+	if _, err := f.lock(a, other, LockReq{Owner: lo, Open: refOf(p), Ranges: []LockRange{x(50, 10)}, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lo's poll on b's range: %v, want ErrLocked", err)
+	}
+	if err := f.Locks().ReleaseLockOwner(ctx, a, lo); err != nil {
 		t.Fatal(err)
 	}
-	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "b" {
-		t.Errorf("after the release: granted %v, want b", got)
+	f.unlock(t, b, other, owner(b, "b"), br(50, 10))
+	if h := f.holder(t, other, br(50, 10)); h != nil {
+		t.Errorf("the range lo waited on, after its release and b's unlock: held by %v, want free", h)
 	}
 }
 
@@ -596,7 +618,12 @@ func TestOwnerSequence(t *testing.T) {
 		t.Errorf("an unlock naming the lock state as of its last lock, after an unlock: %v, want ErrOldState", err)
 	}
 
-	// Releasing an owner of locks, and the client's end, drop their sequences.
+	// Releasing an owner of locks, once it holds none, and the client's end,
+	// drop their sequences.
+	locked.Seq = 0
+	if err := f.Locks().Unlock(ctx, a, f1.ID, OpenRef{Kind: RefLocked, State: locked}, lo, []ByteRange{br(20, 10)}, num(6)); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.Locks().ReleaseLockOwner(ctx, a, lo); err != nil {
 		t.Fatal(err)
 	}
