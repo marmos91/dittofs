@@ -39,7 +39,7 @@ import (
 
 // setupAccessBasedReproShare wires a runtime + memory store + handler with a
 // single share that has ABE enabled, mirroring how `hideunread` is configured
-// in test/smb-conformance/bootstrap.sh. The returned auth context represents
+// in test/smb-conformance/shares.yaml. The returned auth context represents
 // the smbtorture caller (wpts-admin, UID 1000) and is reused for both the
 // CREATE and the SET_INFO Security step — wpts-admin owns the file and is
 // also the principal whose SID lands inside the DACL.

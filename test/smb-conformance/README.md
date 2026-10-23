@@ -280,8 +280,7 @@ Each platform runs the same core operations:
 test/smb-conformance/
 ├── known.yaml                # WPTS's known failures and expected skips, graded by dt
 ├── README.md                 # This file
-├── bootstrap.sh              # DittoFS provisioning (stores, shares, users, SMB adapter)
-├── shares.yaml               # The same shares as data, for dt's fixture
+├── shares.yaml               # The shares WPTS and smbtorture run on, for dt's fixture
 ├── kdc/                      # The KDC image dt starts for smbtorture's Kerberos option
 ├── ptfconfig/                # WPTS configuration templates, which dt fills in
 │   ├── CommonTestSuite.deployment.ptfconfig.template
