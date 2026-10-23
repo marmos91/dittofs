@@ -2777,7 +2777,7 @@ sync pattern. The targets are proposed, and the first run replaces them under
 | J4 | offload offer | `Offload` over files of many small extents and of few large ones, `fn` returning at once | ≤ 1 µs per offered extent; index insertion at 10^6 ≤ 2 µs |
 | J5 | reclamation under load | release and repack ([§7](#7.%20Reclamation%20mechanisms)) while J1 runs | J1's p99 ≤ 1.5× J1 alone |
 | J8 | repack write amplification | eviction-heavy load: J1 against a capacity well below the data written, the engine releasing offloaded content continuously; report `repacked_bytes` per `released_bytes` and J1's throughput against J1 alone | none yet; the gate of [§7.1](#7.1%20Releasing%20storage)'s marker |
-| — | `Stats` | polled under write load | O(1), ≤ 1 µs |
+| — | `Stats` | polled under write load | grows with the number of shares, never with extents or segments; ≤ 1 µs at one share |
 
 J6, J7 and J9 measure recovery, reseed and the journal's shape, and are
 [RFC 28 §4.3](rfc-28-journal-format.md#4.3%20Benchmarks)'s; the setup and method here apply to
