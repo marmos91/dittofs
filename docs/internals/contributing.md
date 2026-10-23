@@ -526,10 +526,9 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
-| `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
 | `conformance.yml` | PR, nightly | cthon04, nfstest | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS and smbtorture, with its Kerberos option, so far | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, and e2e (non-blocking on PRs) so far | ~20 min |
 | `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
@@ -569,7 +568,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 
 - **conformance.yml** -- cthon04, through its scripts (see the table above)
 - **tests.yml** -- Through `dt`: lint, unit tests with the race detector (on Windows too, non-blocking), integration, operator, and pjdfstest, pynfs, WPTS and smbtorture (over two runners) on badger-s3
-- **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
+- **e2e**, in tests.yml -- its Kerberos tests, on the PRs that can affect them; the whole suite after a merge, and with the stress tests nightly. Non-blocking until it has a quiet week on develop
 
 ### What Runs on Push to Develop (Comprehensive)
 
@@ -594,9 +593,9 @@ All workflows support `workflow_dispatch` for manual triggering:
 # Trigger via GitHub CLI
 gh workflow run conformance.yml
 gh workflow run conformance.yml -f suite=cthon04
+gh workflow run tests.yml -f tier=merge
 gh workflow run tests.yml -f tier=nightly
 gh workflow run smb-client-compat.yml
-gh workflow run e2e-tests.yml
 ```
 
 Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.
