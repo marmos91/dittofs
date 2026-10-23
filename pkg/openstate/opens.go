@@ -24,6 +24,7 @@ type Open struct {
 	Ref       StateRef // the reference naming it; Seq is the sequence as of the answer
 	Delete    DeleteMark
 	Suspended entity.TimeMask // times I/O through it leaves alone
+	LossSeen  uint64          // the file's loss sequence it last reported; volatile
 }
 
 // OpenMode is what an open may do, and what it refuses other opens.
@@ -57,6 +58,7 @@ type OpenRequest struct {
 	Privileged    bool
 	Access, Deny  entity.AccessMask
 	DeleteOnClose bool
+	Loss          uint64 // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
 }
 
 // OpenResult is what an open answers.
@@ -190,7 +192,7 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 	}
 	o := &open{share: f.Share, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
-		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged},
+		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
