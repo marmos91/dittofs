@@ -505,14 +505,46 @@ func TestSinkMayCallBack(t *testing.T) {
 		_, _ = f.Propose(ctx, nfs("host-b", 1, owner), addr)
 		_ = f.step(entity.NewFileID(), func(*entry) error { return nil })
 	}
-	done := make(chan error, 1)
-	go func() { done <- f.Expire(ctx, id) }()
+	done := make(chan struct{})
+	go func() {
+		f.clock.advance(leasePeriod)
+		f.sweep(ctx)
+		close(done)
+	}()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
+	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Expire did not return: a Sink calling back into the table deadlocked")
+		t.Fatal("the expiry did not return: a Sink calling back into the table deadlocked")
+	}
+	if n := len(f.sink.endedOf(id)); n != 1 {
+		t.Fatalf("ClientEnded raised %d times, want once", n)
+	}
+}
+
+// Expire is node-local: it releases the client's state here and drops its
+// lease here, but deletes no record and raises no ClientEnded, which are the
+// lease timer's.
+func TestExpireIsNodeLocal(t *testing.T) {
+	f := newFixture(t)
+	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
+	file := entity.NewFileID()
+	ref := mintIn(t, f.Table, file, id, 0)
+	if err := f.Expire(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.resolve(id, file, ref); !errors.Is(err, ErrBadState) {
+		t.Errorf("state after Expire: %v, want released", err)
+	}
+	if _, err := f.Record(ctx, id); err != nil {
+		t.Errorf("record after Expire: %v, want kept for the lease owner", err)
+	}
+	if n := len(f.sink.endedOf(id)); n != 0 {
+		t.Errorf("Expire raised ClientEnded %d times, want none", n)
+	}
+	f.cmu.Lock()
+	_, leased := f.leases[id]
+	f.cmu.Unlock()
+	if leased {
+		t.Error("Expire kept the lease")
 	}
 }
