@@ -525,7 +525,7 @@ suites:
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
     blocking: false                     # until a week with no failure on develop (§8)
     options:
-      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
+      stress: { cmd: "go test -tags=e2e,stress -timeout=30m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
