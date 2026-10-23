@@ -424,17 +424,20 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 
 func (v opens) Close(ctx context.Context, who Caller, ref OpenRef) (CloseResult, error) {
 	t := v.t
-	if _, err := t.running(); err != nil {
+	sink, err := t.running()
+	if err != nil {
 		return CloseResult{}, err
 	}
 	var res CloseResult
-	err := t.withOpen(who, ref, func(e *entry, o *open) (err error) {
+	var out outbox
+	err = t.withOpen(who, ref, func(e *entry, o *open) (err error) {
 		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
 			return err
 		}
-		res.Unlink = t.closeOpen(e, o)
+		res.Unlink = t.closeOpen(e, o, &out)
 		return nil
 	})
+	out.raise(sink)
 	return res, err
 }
 
@@ -448,14 +451,25 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 	return orphaned.File != entity.FileID{}, err
 }
 
-// closeOpen drops o from e, its file's entry, under its step. A close with
-// delete on close makes the file delete pending, and the last close of a
-// delete-pending file returns the pending unlink.
-func (t *Table) closeOpen(e *entry, o *open) *entity.DeleteRecord {
+// closeOpen drops o from e, its file's entry, under its step, with the lock
+// states under it, their locks and their waiters; the waiters that frees go to
+// out. A close with delete on close makes the file delete pending, and the
+// last close of a delete-pending file returns the pending unlink.
+func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
 		e.pending = pendingFrom(o, o.Delete.By)
 	}
+	freed := false
+	for _, ls := range e.lstates {
+		if ls.open == o {
+			t.dropLockState(e, ls)
+			freed = true
+		}
+	}
 	t.dropOpen(e, o)
+	if freed {
+		t.serve(e, out)
+	}
 	if len(e.opens) > 0 {
 		return nil
 	}

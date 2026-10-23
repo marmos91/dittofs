@@ -146,12 +146,22 @@ func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) 
 	if h.client != c {
 		return holder{}, ErrNotYours
 	}
-	if ref.Seq != 0 && ref.Seq != h.seq {
-		// Sequences wrap, so older is judged on the distance, not the value.
-		if int32(h.seq-ref.Seq) > 0 {
-			return holder{}, ErrOldState
-		}
-		return holder{}, ErrBadState
+	if err := seqErr(h.seq, ref.Seq); err != nil {
+		return holder{}, err
 	}
 	return h, nil
+}
+
+// seqErr judges a presented reference sequence against the state's current
+// one: zero is the current one, an older one ErrOldState, a newer one
+// ErrBadState.
+func seqErr(cur, presented uint32) error {
+	if presented == 0 || presented == cur {
+		return nil
+	}
+	// Sequences wrap, so older is judged on the distance, not the value.
+	if int32(cur-presented) > 0 {
+		return ErrOldState
+	}
+	return ErrBadState
 }
