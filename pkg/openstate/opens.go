@@ -25,6 +25,7 @@ type Open struct {
 	Owner     LockOwner        // the owner of opens, which holds this one open of the file; zero: the protocol has none
 	Mode      OpenMode
 	Ref       StateRef // the reference naming it; Seq is the sequence as of the answer
+	Grant     GrantID  // the grant covering it: its client's lease under its key, or its oplock; zero: none
 	Delete    DeleteMark
 	Suspended entity.TimeMask // times I/O through it leaves alone
 	LossSeen  uint64          // the file's loss sequence it last reported; volatile
@@ -64,6 +65,9 @@ type OpenRequest struct {
 	Loss          uint64    // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
 	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
+	Lease         LeaseKey  // the key of the lease to cover it; zero: none
+	Want          GrantKind // the grant kind asked for; none: no grant
+	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -76,7 +80,8 @@ type Seqs struct {
 // OpenResult is what an open answers.
 type OpenResult struct {
 	Open    Open
-	Confirm bool // the open's owner is new: it must ConfirmOpen before any other request
+	Grant   *CachingGrant // the grant covering the open, or offered with it; nil: none
+	Confirm bool          // the open's owner is new: it must ConfirmOpen before any other request
 }
 
 // OpenUpdate is a change made through an open; nil or zero fields change
@@ -168,7 +173,8 @@ func (t *Table) Opens() Opens { return opens{t} }
 type open struct {
 	Open
 	share   entity.ShareID
-	durable bool // its record is in the store
+	lease   LeaseKey // the lease key it was opened under; zero: none
+	durable bool     // its record is in the store
 }
 
 // opened is the file o opens: its named stream, or else its file.
@@ -212,10 +218,10 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		if replaces {
 			t.closeOpensOf(ctx, r.Owner, &out)
 		}
-		res, err = t.grantOpen(ctx, who, f, r)
+		res, err = t.grantOpen(ctx, who, f, r, &out)
 		return err
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	if err == nil && r.Seqs.Owner != nil {
 		t.smu.Lock()
 		res.Confirm = !t.seqs[owner].Confirmed
@@ -224,8 +230,11 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 	return res, err
 }
 
-// grantOpen grants an open of f, or refuses it.
-func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error) {
+// grantOpen grants an open of f, or refuses it, and offers it a grant. A
+// deny-mode conflict breaks the handle caching covering the opens it meets
+// before it is refused, and another holder's caching grant the open conflicts
+// with is recalled; either answers ErrDelay until it ends.
+func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequest, out *outbox) (OpenResult, error) {
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
 		return OpenResult{}, ErrInvalid
 	}
@@ -238,57 +247,93 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	r.Owner.Name = slices.Clone(r.Owner.Name)
-	o := &open{share: f.Share, Open: Open{
+	o := &open{share: f.Share, lease: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
-	granted := o
+	var res OpenResult
 	err := t.step(f.ID, func(e *entry) error {
 		if e.pending != nil {
 			return ErrDeletePending
 		}
+		if r.Lease != (LeaseKey{}) {
+			t.idx.Lock()
+			kf, held := t.keys[clientKey{who.Client, r.Lease}]
+			t.idx.Unlock()
+			if held && kf != f.ID {
+				return ErrInvalid // a key names one grant, on one file
+			}
+		}
+		granted, access, deny := o, r.Access, r.Deny
 		if up := e.openOf(r.Owner, r.Stream); up != nil {
-			granted = up
-			return t.upgrade(e, up, who, r)
+			if !t.mayUse(up, who) {
+				return ErrNotYours
+			}
+			granted, access, deny = up, up.Mode.Access|r.Access, up.Mode.Deny|r.Deny
 		}
+		own := func(g *grant) bool { return g.heldBy(who.Client, r.Lease, granted) }
+		var hs []*open
 		for _, h := range e.opens {
-			if !conflict.Shares(r.Access, r.Deny, h.Mode.Access, h.Mode.Deny) {
-				return ErrShareViolation
+			if h != granted && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
+				hs = append(hs, h)
 			}
 		}
-		if err := t.markShard(ctx, who.Client, f.Shard); err != nil {
+		if err := t.breakHandles(e, hs, own, out); err != nil {
 			return err
 		}
-		if err := t.mintOpen(e, o, f.Shard); err != nil {
+		if err := t.recallOthers(e, own, func(*grant) GrantKind { return conflict.GrantKeeps(access, deny) }, out); err != nil {
 			return err
 		}
-		if e.unlinked || r.Unlinked {
-			// The file has no entry and this open holds it: it is written
-			// durable before the answer, guarding the File against the
-			// release, which finds its holders only in the store. Its record
-			// is keyed by an ID, which an NFS open takes now.
-			err := error(nil)
-			if o.ID == 0 {
-				o.ID, err = t.nextOpenID(ctx)
-			}
-			if err == nil {
-				err = t.d.Records.Opens().Put(ctx, o.share, o.record())
-			}
-			if err != nil {
-				t.dropOpen(e, o)
+		if granted != o {
+			if err := t.upgrade(e, granted, who, r, access, deny); err != nil {
 				return err
 			}
-			o.durable = true
+		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
+			return err
 		}
+		res.Grant = t.offer(e, f, who, granted, r)
+		res.Open = granted.Open
 		return nil
 	})
 	if err != nil {
 		return OpenResult{}, err
 	}
-	return OpenResult{Open: granted.Open}, nil
+	return res, nil
+}
+
+// addOpen adds o, a new open of f, to e under its step: its shard listed in
+// its client's record, its reference minted, and its record written durable
+// where the file has no entry.
+func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r OpenRequest) error {
+	if err := t.markShard(ctx, o.Client, f.Shard); err != nil {
+		return err
+	}
+	if err := t.mintOpen(e, o, f.Shard); err != nil {
+		return err
+	}
+	if !e.unlinked && !r.Unlinked {
+		return nil
+	}
+	// The file has no entry and this open holds it: it is written durable
+	// before the answer, guarding the File against the release, which finds
+	// its holders only in the store. Its record is keyed by an ID, which an
+	// NFS open takes now.
+	err := error(nil)
+	if o.ID == 0 {
+		o.ID, err = t.nextOpenID(ctx)
+	}
+	if err == nil {
+		err = t.d.Records.Opens().Put(ctx, o.share, o.record())
+	}
+	if err != nil {
+		t.dropOpen(e, o)
+		return err
+	}
+	o.durable = true
+	return nil
 }
 
 // openOf is owner's open of e's file, or of its stream s, on e; nil for none
@@ -305,19 +350,10 @@ func (e *entry) openOf(owner LockOwner, s entity.FileID) *open {
 	return nil
 }
 
-// upgrade widens up, its owner's open of e's file, to what r asks besides,
-// under e's step: judged against every other open, and raising its
+// upgrade widens up, its owner's open of e's file, to access and deny, which
+// were judged against every other open, under e's step, raising its
 // reference's sequence.
-func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest) error {
-	if !t.mayUse(up, who) {
-		return ErrNotYours
-	}
-	access, deny := up.Mode.Access|r.Access, up.Mode.Deny|r.Deny
-	for _, h := range e.opens {
-		if h != up && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
-			return ErrShareViolation
-		}
-	}
+func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, deny entity.AccessMask) error {
 	seq, err := t.advance(e, up.Ref)
 	if err != nil {
 		return err
@@ -646,7 +682,7 @@ func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (Clos
 		res.Unlink = t.closeOpen(e, o, &out)
 		return nil
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	return res, err
 }
 
@@ -661,8 +697,8 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 }
 
 // closeOpen drops o from e, its file's entry, under its step, with the lock
-// states under it, their locks and their waiters; the waiters that frees go to
-// out. A close with delete on close makes the file delete pending, and the
+// states under it, their locks and their waiters, and the grant covering it
+// if it was the last open covered; the waiters either frees go to out. A close with delete on close makes the file delete pending, and the
 // last close of a delete-pending file returns the pending unlink.
 func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
@@ -675,6 +711,7 @@ func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 			freed = true
 		}
 	}
+	freed = t.uncover(e, o) || freed
 	t.dropOpen(e, o)
 	if freed {
 		t.serve(e, out)

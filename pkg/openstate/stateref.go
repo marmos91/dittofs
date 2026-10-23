@@ -42,6 +42,14 @@ type refKey struct {
 	token uint64
 }
 
+// revokedRef is a reference in its client's revoked set: what it named, and
+// why it was revoked.
+type revokedRef struct {
+	client entity.ClientID
+	typ    StateType
+	cause  RevokeReason
+}
+
 // holder is what a state reference resolves to.
 type holder struct {
 	typ    StateType
@@ -132,12 +140,23 @@ func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holde
 
 // resolveLocked is resolve, with idx held.
 func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
-	h, ok := t.refs[refKey{ref.Shard, ref.Token}]
+	k := refKey{ref.Shard, ref.Token}
+	h, ok := t.refs[k]
+	if r, gone := t.revoked[k]; !ok && gone {
+		switch {
+		case r.typ != ref.Type:
+			return holder{}, ErrBadState
+		case r.client != c:
+			return holder{}, ErrNotYours
+		}
+		return holder{}, &RevokedError{r.cause}
+	}
 	if !ok {
-		// decision: a miss is always ErrBadState, never stale: the
-		// table keeps no grace state, so no miss can be told to name state a
-		// shard lost rather than released or forged state. Judge a miss
-		// against the shard's grace instance once the table records one.
+		// decision: a miss outside the revoked set is always ErrBadState,
+		// never stale: the table keeps no grace state, so no miss can be
+		// told to name state a shard lost rather than released or forged
+		// state. Judge a miss against the shard's grace instance once the
+		// table records one.
 		return holder{}, ErrBadState
 	}
 	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {

@@ -60,7 +60,10 @@ type Proposal struct {
 }
 
 // ClientStatus is what a renewal reports beside the lease.
-type ClientStatus struct{}
+type ClientStatus struct {
+	AdminRevoked      bool // a reference an administrator revoked is in the client's revoked set
+	RecallableRevoked bool // a grant revoked at its recall deadline is
+}
 
 // Caller is the client a call acts for, as the adapter proved it, the
 // principal it runs as, mapped and never squashed, and the request's
@@ -100,9 +103,24 @@ type Clients interface {
 	// and the service then calls Expire at each node holding the client's
 	// state. Each file a close left orphaned or to unlink is raised Closed.
 	Expire(ctx context.Context, c entity.ClientID) error
-	// Destroy deletes a client that holds no session and no state, refusing
-	// ErrClientBusy otherwise; it releases nothing.
+	// Destroy deletes a client that holds no session and no state, revoked
+	// references included, refusing ErrClientBusy otherwise; it releases
+	// nothing.
 	Destroy(ctx context.Context, who Caller) error
+	// Revoke is an administrator's revoke of c at this node: every open,
+	// lock and grant it holds here is released, as Expire releases them, but
+	// each reference stays in its revoked set, answered ErrRevoked until
+	// freed, its record is kept and its Shards emptied. A client with no
+	// Owner has no revoked set to be told by: its revoke deletes its record.
+	// Either is raised Revoked.
+	Revoke(ctx context.Context, c entity.ClientID) error
+	// Rebind records a new back channel at node: it sets Reach.Callback and
+	// clears Reach.Down, so the client is offered grants again. Only its
+	// Owner may, where it protects its state.
+	Rebind(ctx context.Context, who Caller, node entity.NodeID) error
+	// ChannelDown records that c's back channel is lost: it sets
+	// Reach.Down, and c is offered no grant until it rebinds.
+	ChannelDown(ctx context.Context, c entity.ClientID) error
 }
 
 type clients struct{ t *Table }
@@ -221,7 +239,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	if ended != nil {
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
 	}
-	out.raise(sink)
+	out.raise(t, sink)
 	return rec.ID, nil
 }
 
@@ -376,29 +394,51 @@ func (v clients) Renew(ctx context.Context, c entity.ClientID) (ClientStatus, er
 	end, ok := t.leases[c]
 	if !ok {
 		t.cmu.Unlock()
-		return t.adopt(ctx, c)
+		if err := t.adopt(ctx, c); err != nil {
+			return ClientStatus{}, err
+		}
+		return t.status(c), nil
 	}
-	defer t.cmu.Unlock()
 	switch now := t.d.Clock.Elapsed(); {
 	case end == 0:
 	case now >= end:
+		t.cmu.Unlock()
 		return ClientStatus{}, ErrStaleClient
 	default:
 		t.leases[c] = now + leasePeriod
 	}
-	return ClientStatus{}, nil
+	t.cmu.Unlock()
+	return t.status(c), nil
+}
+
+// status is what c's revoked set reports.
+//
+// ponytail: a scan of every revoked reference, O(revoked), per renewal; the
+// set is empty unless something was revoked and not yet freed. Count each
+// client's entries by cause if a renewal shows the scan in a profile.
+func (t *Table) status(c entity.ClientID) ClientStatus {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	var s ClientStatus
+	for _, r := range t.revoked {
+		if r.client == c {
+			s.AdminRevoked = s.AdminRevoked || r.cause == RevokedByAdmin
+			s.RecallableRevoked = s.RecallableRevoked || r.cause == RevokedGrant
+		}
+	}
+	return s
 }
 
 // adopt serves a client this node holds no lease for, as after a restart: its
 // record is the proof it is current, and its lease starts a full period from
 // now. It reads the record and writes nothing, under the client step, so a
 // reboot or an expiry committed meanwhile is never undone.
-func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, error) {
+func (t *Table) adopt(ctx context.Context, c entity.ClientID) error {
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	if err != nil {
-		return ClientStatus{}, staleIfGone(err)
+		return staleIfGone(err)
 	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
@@ -406,13 +446,13 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, err
 		t.leases[c] = t.leaseEnd(rec.Protocol)
 		t.know(rec)
 	}
-	return ClientStatus{}, nil
+	return nil
 }
 
 // know records what the table reads of rec while its client is current; the
 // caller holds cmu.
 func (t *Table) know(rec entity.ClientRecord) {
-	k := known{recovery: rec.Recovery}
+	k := known{recovery: rec.Recovery, down: rec.Reach.Down}
 	if rec.Protect {
 		k.owner = rec.Owner
 	}
@@ -430,7 +470,7 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 	t.releaseClient(ctx, c, &out)
 	t.forget(ctx, c, &out)
 	t.cstep.Unlock()
-	out.raise(sink)
+	out.raise(t, sink)
 	return nil
 }
 
@@ -450,7 +490,7 @@ func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) 
 	if ended {
 		sink.ClientEnded(c, shardsOf(rec), RevokedLeaseExpired)
 	}
-	out.raise(sink)
+	out.raise(t, sink)
 	return out.serve, err
 }
 
@@ -476,15 +516,140 @@ func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox
 	return rec, found, nil
 }
 
-// forget drops c's lease and its place in the known set here, then releases
-// any state granted between the last release and c's leaving the set: none is
-// granted after it.
+// forget drops c's lease, its fence and its place in the known set here, then
+// releases any state granted between the last release and c's leaving the
+// set, none being granted after it, and its revoked set: its released
+// references are bad alike.
 func (t *Table) forget(ctx context.Context, c entity.ClientID, out *outbox) {
 	t.cmu.Lock()
 	delete(t.leases, c)
 	delete(t.known, c)
+	delete(t.fenced, c)
 	t.cmu.Unlock()
 	t.releaseClient(ctx, c, out)
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	for k, r := range t.revoked {
+		if r.client == c {
+			delete(t.revoked, k)
+		}
+	}
+}
+
+func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	// A revoke names a client, not a file, so the waiters its releases
+	// free are served after it, under each file's admission lock.
+	out := outbox{timer: true}
+	t.cstep.Lock()
+	err = t.revoke(ctx, c, &out)
+	t.cstep.Unlock()
+	if err == nil {
+		sink.Revoked(Revocation{Client: c, Reason: RevokedByAdmin})
+	}
+	out.raise(t, sink)
+	t.serveFiles(sink, out.serve)
+	return err
+}
+
+// revoke is Revoke, under the client step. Each reference enters the revoked
+// set before its state is released, so none is ever answered bad meanwhile.
+//
+// decision: a client with no Owner, an SMB machine or an NLM host, is revoked
+// as an expiry ends it: its record is deleted, since without an owner it has
+// no revoked set to be told by. Keep its record if such a protocol is found to
+// report revoked state.
+func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) error {
+	rec, err := t.d.Records.Clients().Get(ctx, c)
+	if err != nil {
+		return staleIfGone(err)
+	}
+	if rec.Owner.IsZero() {
+		t.releaseClient(ctx, c, out)
+		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+			return err
+		}
+		t.forget(ctx, c, out)
+		return nil
+	}
+	t.idx.Lock()
+	for k, h := range t.refs {
+		if h.client == c {
+			t.revoked[k] = revokedRef{c, h.typ, RevokedByAdmin}
+		}
+	}
+	t.idx.Unlock()
+	t.releaseClient(ctx, c, out)
+	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
+		return err
+	}
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if k, ok := t.known[c]; ok {
+		k.shards = nil
+		t.known[c] = k
+	}
+	return nil
+}
+
+func (v clients) ChannelDown(ctx context.Context, c entity.ClientID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	return t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
+}
+
+// setReach applies set to c's record's Reach, and to what the table reads of
+// it, under the client step. A racing AddSession's bytes are kept: the write
+// is retried over the record it committed.
+func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) error {
+	rec, err := t.d.Records.Clients().Get(ctx, c)
+	if err != nil {
+		return staleIfGone(err)
+	}
+	for {
+		next := rec
+		set(&next.Reach)
+		got, err := t.d.Records.Clients().Put(ctx, rec, next)
+		if errors.Is(err, ErrRecordChanged) {
+			rec = got
+			continue
+		}
+		if err != nil {
+			return staleIfGone(err)
+		}
+		t.cmu.Lock()
+		defer t.cmu.Unlock()
+		if k, ok := t.known[c]; ok {
+			k.down = next.Reach.Down
+			t.known[c] = k
+		}
+		return nil
+	}
+}
+
+func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	switch {
+	case err != nil:
+		return staleIfGone(err)
+	case rec.Protect && who.Principal != rec.Owner:
+		return ErrNotYours
+	}
+	return t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {
@@ -514,8 +679,9 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 }
 
 // sweep expires every client whose lease has ended, drops every proposal a
-// lease period old, and serves the files holding a poll waiter and those
-// whose waiters an expiry freed.
+// lease period old and every fence ended, and serves the files holding a poll
+// waiter, those holding a recall handed to the Sink and those whose waiters an
+// expiry freed.
 func (t *Table) sweep(ctx context.Context) {
 	sink, err := t.running()
 	if err != nil {
@@ -535,9 +701,16 @@ func (t *Table) sweep(ctx context.Context) {
 			t.uncharge(pd.source)
 		}
 	}
+	maps.DeleteFunc(t.fenced, func(_ entity.ClientID, until time.Duration) bool { return now >= until })
 	t.cmu.Unlock()
 	t.idx.Lock()
 	serve := slices.Collect(maps.Keys(t.polls))
+	for f := range t.recalling {
+		if !slices.Contains(serve, f) {
+			serve = append(serve, f)
+		}
+	}
+	maps.DeleteFunc(t.recalled, func(_ entity.FileID, until time.Duration) bool { return now >= until })
 	t.idx.Unlock()
 	for _, c := range lapsed {
 		// A failed expiry is tried again at the next sweep: the lease stays
@@ -587,10 +760,16 @@ func (t *Table) holdsAny(c entity.ClientID) bool {
 	return t.holdsAnyLocked(c)
 }
 
-// holdsAnyLocked is holdsAny, with idx held.
+// holdsAnyLocked is holdsAny, with idx held. A revoked reference not yet
+// freed is state the client holds.
 func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 	for _, h := range t.refs {
 		if h.client == c {
+			return true
+		}
+	}
+	for _, r := range t.revoked {
+		if r.client == c {
 			return true
 		}
 	}
@@ -614,6 +793,11 @@ func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbo
 		_ = t.step(h.file, func(e *entry) error {
 			if ls := e.lstates[h.ref.Token]; h.ref.Type == StateLock && ls != nil {
 				t.dropLockState(e, ls)
+				t.serve(e, out)
+				return nil
+			}
+			if g := e.grants[h.ref.Token]; h.ref.Type == StateGrant && g != nil {
+				t.dropGrant(e, g)
 				t.serve(e, out)
 				return nil
 			}

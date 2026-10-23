@@ -26,6 +26,7 @@ var (
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
 	ErrLocksHeld      = errors.New("openstate: the owner or lock state still holds locks")
+	ErrRevoked        = errors.New("openstate: state revoked, by a recall past its deadline or an administrator, and not yet freed") // as *RevokedError, naming the cause
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
@@ -40,7 +41,8 @@ type DelayError struct{ Cause DelayCause }
 type DelayCause uint8
 
 const (
-	DelayResources DelayCause = iota + 1 // a cap: pending proposals per node or per source
+	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled
+	DelayResources                       // a cap: pending proposals per node or per source, or recalls not yet sent
 )
 
 func (e *DelayError) Error() string        { return ErrDelay.Error() }
@@ -52,3 +54,10 @@ type LockedError struct{ Holder Lock }
 
 func (e *LockedError) Error() string        { return ErrLocked.Error() }
 func (e *LockedError) Is(target error) bool { return target == ErrLocked }
+
+// RevokedError names revoked state. errors.Is(err, ErrRevoked) holds for it,
+// and Cause is why it was revoked: RevokedByAdmin or RevokedGrant.
+type RevokedError struct{ Cause RevokeReason }
+
+func (e *RevokedError) Error() string        { return ErrRevoked.Error() }
+func (e *RevokedError) Is(target error) bool { return target == ErrRevoked }
