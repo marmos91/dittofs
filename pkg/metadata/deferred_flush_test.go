@@ -76,3 +76,104 @@ func TestDeferredFlushAppliesWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(4096), f.Size, "an out-of-order smaller write must not shrink the file")
 }
+
+// duringFlush makes fn run inside every pending-write flush, at the
+// durable-extent lookup, which a flush makes before it commits.
+func duringFlush(svc *metadata.Service, fn func()) {
+	svc.SetDurableExtentResolver(func(string, metadata.PayloadID) (int64, bool) {
+		fn()
+		return 0, false
+	})
+}
+
+func rootAuthContext() *metadata.AuthContext {
+	return &metadata.AuthContext{
+		Context:    context.Background(),
+		AuthMethod: "unix",
+		Identity: &metadata.Identity{
+			UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0), GIDs: []uint32{0},
+		},
+		ClientAddr: "127.0.0.1",
+	}
+}
+
+// TestReadDuringFlushSeesTheWrite covers a GETATTR that runs while a COMMIT or
+// CLOSE flushes an acknowledged write. Until the store holds the write, the read
+// must still see it through the pending state; otherwise it reports the file as
+// it was before the write, with the old size and the old mtime, ctime and change
+// attribute, which a client holding a write delegation takes as the file's times.
+func TestReadDuringFlushSeesTheWrite(t *testing.T) {
+	svc, store, rootHandle, _ := newApplierFixture(t)
+	ctx := rootAuthContext()
+
+	_, _, err := svc.CreateFile(ctx, rootHandle, "w.bin", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	handle, err := store.GetChild(ctx.Context, rootHandle, "w.bin")
+	require.NoError(t, err)
+
+	intent, err := svc.PrepareWrite(ctx, handle, 4096)
+	require.NoError(t, err)
+	_, err = svc.CommitWrite(ctx, intent)
+	require.NoError(t, err)
+
+	var stored, seen *metadata.File
+	duringFlush(svc, func() {
+		stored, err = store.GetFile(ctx.Context, handle)
+		require.NoError(t, err)
+		seen, err = svc.GetFile(ctx.Context, handle)
+		require.NoError(t, err)
+	})
+	flushed, err := svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	require.True(t, flushed, "expected a pending write to flush")
+
+	require.NotNil(t, seen, "the flush must look up the durable extent")
+	require.Zero(t, stored.Size, "the lookup must run before the flush commits, or this test checks nothing")
+	require.True(t, seen.Mtime.Equal(intent.NewMtime), "mtime: got %v, the write's is %v", seen.Mtime, intent.NewMtime)
+	require.True(t, seen.Ctime.Equal(intent.NewMtime), "ctime: got %v, the write's is %v", seen.Ctime, intent.NewMtime)
+	require.Equal(t, uint64(4096), seen.Size, "a read during the flush must report the acknowledged size")
+}
+
+// TestWriteDuringFlushStaysPending covers a write acknowledged while a flush of
+// an earlier one is committing. The flush commits what it read before that
+// write, so the write must stay pending for the next flush rather than be
+// dropped with the state the flush is done with.
+func TestWriteDuringFlushStaysPending(t *testing.T) {
+	svc, store, rootHandle, _ := newApplierFixture(t)
+	ctx := rootAuthContext()
+
+	_, _, err := svc.CreateFile(ctx, rootHandle, "w.bin", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	handle, err := store.GetChild(ctx.Context, rootHandle, "w.bin")
+	require.NoError(t, err)
+
+	write := func(size uint64) {
+		intent, err := svc.PrepareWrite(ctx, handle, size)
+		require.NoError(t, err)
+		_, err = svc.CommitWrite(ctx, intent)
+		require.NoError(t, err)
+	}
+
+	write(4096)
+	raced := false
+	duringFlush(svc, func() {
+		if !raced {
+			raced = true
+			write(8192)
+		}
+	})
+	_, err = svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	require.True(t, raced)
+
+	seen, err := svc.GetFile(ctx.Context, handle)
+	require.NoError(t, err)
+	require.Equal(t, uint64(8192), seen.Size, "the write made during the flush must still be pending")
+
+	flushed, err := svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	require.True(t, flushed, "the write made during the flush must be left for the next flush")
+	f, err := store.GetFile(ctx.Context, handle)
+	require.NoError(t, err)
+	require.Equal(t, uint64(8192), f.Size, "the next flush must commit the write made during the first")
+}
