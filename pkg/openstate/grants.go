@@ -309,12 +309,13 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 
 // offerable is the most of want a grant to who, through o under key, may hold
 // on e: none to a client fenced, at its budget or with its back channel down,
-// on a file with a recall in flight, recalled within a recall deadline, or
-// under 16 grants already; and no caching another holder's
+// on a file with a recall in flight, recalled within a recall deadline, with
+// a lock waiter, or under 16 grants already; and no caching another holder's
 // open or grant refuses. The budget is checked where the grant is minted.
 //
 // ponytail: a file is offered no grant while any recall on it is in flight or
-// within one recall deadline of ending, whatever the request delayed there; a grant that would not conflict with it
+// within one recall deadline of ending, and while any lock waiter is on it,
+// whatever the request delayed there; a grant that would not conflict with it
 // is refused too. Judge the grant against the delayed requests themselves if
 // grants are measured lost on files shared that way.
 //
@@ -323,7 +324,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 // to keep, which an NFS client's recall-any needs. Add one when NFS clients
 // are measured at the budget.
 func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
-	if want == GrantNone || len(e.grants) >= maxShared {
+	if want == GrantNone || len(e.waiters) > 0 || len(e.grants) >= maxShared {
 		return GrantNone
 	}
 	now := t.d.Clock.Elapsed()
@@ -432,6 +433,17 @@ func (t *Table) lapse(e *entry, out *outbox) {
 	t.idx.Lock()
 	delete(t.recalling, e.file)
 	t.idx.Unlock()
+}
+
+// cachedByOther reports whether a client other than c holds a grant with read
+// or write caching on e, which a lock request of c's waits on.
+func (e *entry) cachedByOther(c entity.ClientID) bool {
+	for _, g := range e.grants {
+		if g.client != c && g.fsm.Kind != GrantNone {
+			return true
+		}
+	}
+	return false
 }
 
 func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantKind, epoch uint16) error {
