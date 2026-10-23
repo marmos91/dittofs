@@ -203,9 +203,9 @@ the teardown check that keeps you from destroying a development VM.
 If a listed known-failure starts passing, or a new one fails, do not edit the
 list on a hunch — CI is the authority on what actually fails there. There are
 several, one per suite: the `known` file `test/suites.yaml` names for each,
-and, until its scripts go, smbtorture's
-`test/smb-conformance/smbtorture/KNOWN_FAILURES{,_KERBEROS}.md` beside its
-`known.yaml`. Flakes get fixed, never retried.
+and, until their scripts go, cthon04's and nfstest's
+`test/nfs-mount/*/KNOWN_FAILURES*.md` beside theirs. Flakes get fixed, never
+retried.
 
 ## 7. Simplify and review before the PR
 

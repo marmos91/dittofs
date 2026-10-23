@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -207,7 +209,7 @@ suites:
 // need the check finds unmet is named, with its reason.
 func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
-  fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
+  fixed: { cmd: "true", fixture: { profile: memory, nfs: "4.1", smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
   goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
   rootclient: { cmd: "true", needs: [root], fixture: { profile: memory, client: namespace } }
@@ -224,7 +226,7 @@ func TestBlocked(t *testing.T) {
 	for _, s := range r.Suites {
 		units[s.Name] = r.Units(s)[0]
 	}
-	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount SMB yet" || unmet != nil || checked != nil {
+	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount a share over both NFS and SMB yet" || unmet != nil || checked != nil {
 		t.Errorf("fixed: %q %q, checked %q", why, unmet, checked)
 	}
 	why, unmet := Blocked(units["plain"], units["plain"].Needs, check)
@@ -664,6 +666,54 @@ func TestPathsHoldFromAnyDir(t *testing.T) {
 		if !filepath.IsAbs(rep.Dir) {
 			t.Errorf("%s: run directory %q", suite, rep.Dir)
 		}
+	}
+}
+
+// A test named by its path writes {out}/{test}.json: dt makes the directories
+// below {out} that a command's argument names, as it gives --output=.
+func TestOutDirsMade(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test} --output={out}/{test}.json", tests: "w/*.sh" }
+`, map[string]string{"w/a.sh": `echo ran > "${1#--output=}"` + "\n"})
+	rep, out := runTarget(t, root, r, "s", false)
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
+		t.Fatalf("%+v\n%s", o, out)
+	}
+	if _, err := os.Stat(filepath.Join(rep.Dir, "s", "w", "a.sh.json")); err != nil {
+		t.Error(err)
+	}
+}
+
+// metrics: fio-json records each job's numbers from the report fio writes to
+// {out}/{test}.json, in summary.json too. A job whose error isn't 0 fails its
+// test, even when fio exits 0, as it does for a job that continues on errors,
+// which logs them before the report; a test that passes without a report
+// leaves its cell not run.
+func TestFioJSON(t *testing.T) {
+	fio := func(job, dir string, errno int) string {
+		return fmt.Sprintf(`{"fio version": "fio-3.33", "jobs": [{"jobname": %q, "error": %d,
+  %q: {"io_bytes": 4194304, "bw_bytes": 131411497, "iops": 125.32377, "lat_ns": {"min": 2, "mean": 31871842.5}},
+  "trim": {"io_bytes": 0, "bw_bytes": 0, "iops": 0.0, "lat_ns": {"mean": 0.0}}}]}`, job, errno, dir)
+	}
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test} {out}/{test}.json", tests: "w/*.sh", metrics: fio-json }
+`, map[string]string{
+		"w/a.sh": "cat > \"$1\" <<'EOF'\n" + fio("seq-write", "write", 0) + "\nEOF\n",
+		"w/b.sh": "cat > \"$1\" <<'EOF'\nverify: bad magic header 0, wanted acca at file target offset 0, length 4096\n" + fio("v", "read", 84) + "\nEOF\n",
+		"w/c.sh": "true\n",
+	})
+	rep, out := runTarget(t, root, r, "s", false)
+	o := rep.Outcomes[0]
+	if o.Result != report.Failed || !strings.Contains(o.Note, "w/b.sh: job v: error 84 (") || !strings.Contains(o.Note, "w/c.sh: fio's report: ") {
+		t.Errorf("%+v\n%s", o, out)
+	}
+	want := map[string]float64{"seq-write/write/bw_bytes": 131411497, "seq-write/write/iops": 125.32377, "seq-write/write/lat_ns_mean": 31871842.5}
+	sum, err := report.Read(rep.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sum.Cells[0].Tests[0]; got.Name != "w/a.sh" || got.Status != report.Passed || !reflect.DeepEqual(got.Metrics, want) {
+		t.Errorf("in summary.json: %+v", got)
 	}
 }
 
