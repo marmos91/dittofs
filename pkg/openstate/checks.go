@@ -5,12 +5,12 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
+	"github.com/marmos91/dittofs/pkg/openstate/ranges"
 )
 
-// ByteRange is the bytes an I/O covers.
-type ByteRange struct {
-	Offset, Length uint64
-}
+// ByteRange is Length bytes from Offset, ending at Offset+Length-1, a zero
+// Length's included; a length of all ones reaches the last byte.
+type ByteRange = ranges.Range
 
 // ChangeMask names what a change does to a file or directory.
 type ChangeMask uint16
@@ -23,10 +23,12 @@ const (
 
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
-	// CheckIO admits I/O through o: a granted open is used only by its
+	// CheckIO admits I/O through o, an open or a lock state, which is judged
+	// as the open it was taken under: a granted open is used only by its
 	// opener and only for the access it holds, ErrAccess otherwise, and its
 	// deny modes were judged once, at open; an anonymous read or write is
-	// judged against every deny mode held, per operation.
+	// judged against every deny mode held, per operation. Either is refused
+	// ErrLocked across a range a mandatory lock forbids it.
 	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f: what the open state of f refuses.
 	CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error
@@ -40,19 +42,27 @@ func (t *Table) Checks() Checks { return checks{t} }
 // ponytail: an anonymous check on a file with no state still creates and
 // frees its entry, an allocation per NFSv3 read or write. Look the entry up
 // without creating it when CheckIO shows in a profile.
-func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange, write bool) error {
+func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error {
 	t := v.t
 	want := entity.ReadData
 	if write {
 		want = entity.WriteData
 	}
-	if o.Kind != RefAnonymous {
-		return t.withOpen(who, o, func(_ *entry, op *open) error {
-			if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
-				return ErrAccess
-			}
-			return nil
-		})
+	through := func(e *entry, op *open) error {
+		if !t.confirmed(op) {
+			return ErrBadState
+		}
+		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
+			return ErrAccess
+		}
+		return e.lockedOut(op.Ref.Token, r, write)
+	}
+	switch o.Kind {
+	case RefAnonymous:
+	case RefLocked:
+		return t.throughLockState(who, o, through)
+	default:
+		return t.withOpen(who, o, nil, seqOther, through)
 	}
 	f, err := o.file()
 	if err != nil || f.IsZero() {
@@ -64,7 +74,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, _ ByteRange,
 				return ErrShareViolation
 			}
 		}
-		return nil
+		return e.lockedOut(0, r, write)
 	})
 }
 
@@ -111,5 +121,34 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, what Cha
 			return ErrShareViolation
 		}
 		return nil
+	})
+}
+
+// throughLockState runs fn, as I/O through the open the lock state ref
+// names was taken under, once that open is found and who may use it. A lock
+// state taken under no open names nothing I/O runs through.
+func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *open) error) error {
+	f, err := ref.file()
+	if err != nil {
+		return err
+	}
+	h, err := t.resolve(who.Client, f, StateRef{Type: ref.State.Type, Shard: ref.State.Shard, Token: ref.State.Token})
+	if err != nil {
+		return err
+	}
+	return t.step(h.file, func(e *entry) error {
+		op, _, cur, err := t.lockTarget(e, who, ref)
+		switch {
+		case err != nil:
+			return err
+		case op == nil:
+			return ErrBadState
+		case !t.mayUse(op, who):
+			return ErrNotYours
+		}
+		if err := seqErr(cur, ref.State.Seq); err != nil {
+			return err
+		}
+		return fn(e, op)
 	})
 }

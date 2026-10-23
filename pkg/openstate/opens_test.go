@@ -44,7 +44,7 @@ func (f *fixture) mustOpen(t *testing.T, who Caller, file FileKey, r OpenRequest
 
 func (f *fixture) close(t *testing.T, who Caller, o Open) CloseResult {
 	t.Helper()
-	r, err := f.Opens().Close(ctx, who, refOf(o))
+	r, err := f.Opens().Close(ctx, who, refOf(o), Seqs{})
 	if err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -180,10 +180,10 @@ func TestDowngrade(t *testing.T) {
 	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 	ref := OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}
 
-	if err := f.Opens().Downgrade(ctx, a, ref, rd|wr|del, wr); !errors.Is(err, ErrInvalid) {
+	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd|wr|del, wr); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a downgrade to more access: %v, want ErrInvalid", err)
 	}
-	if err := f.Opens().Downgrade(ctx, a, ref, rd, 0); err != nil {
+	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
@@ -238,7 +238,7 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, other, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
 		t.Errorf("I/O through the open by another principal: %v, want ErrNotYours", err)
 	}
-	if _, err := f.Opens().Close(ctx, other, refOf(o)); !errors.Is(err, ErrNotYours) {
+	if _, err := f.Opens().Close(ctx, other, refOf(o), Seqs{}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close by another principal: %v, want ErrNotYours", err)
 	}
 	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, refOf(o), ByteRange{}, false); err != nil {
