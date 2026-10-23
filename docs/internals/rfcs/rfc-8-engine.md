@@ -414,6 +414,12 @@ type Fault interface {
 }
 ```
 
+`Clock` uses only standard types, so a component may declare it as its own
+interface, and `pkg/sim`'s test clock satisfies it as is. `Fault` cannot be
+redeclared that way, because `FaultAction` is not a standard type. Its home is
+`pkg/sim`, which defines `Fault`, `FaultAction` and `Schedule`, the seeded
+implementation; every seam and every check imports them from there.
+
 ### 2.2 Capabilities are parameters, never assertions
 
 The engine **MUST NOT** negotiate a capability by type assertion, nor fall back to
