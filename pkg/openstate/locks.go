@@ -101,7 +101,8 @@ type Locks interface {
 	// each.
 	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
 	// ReleaseLockOwner drops o's lock states at this primary, with their
-	// locks, their waiters and o's sequence.
+	// waiters and o's sequence; while o holds a lock, on any file, it is
+	// ErrLocksHeld and changes nothing.
 	ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) error
 }
 
@@ -660,16 +661,36 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	if o.Client != who.Client {
 		return ErrNotYours
 	}
-	var out outbox
-	files := map[entity.FileID]bool{}
+	var files []entity.FileID
 	for _, h := range t.heldBy(o.Client) {
-		files[h.file] = files[h.file] || h.ref.Type == StateLock
-	}
-	for f, held := range files {
-		if !held {
-			continue
+		if h.ref.Type == StateLock && !slices.Contains(files, h.file) {
+			files = append(files, h.file)
 		}
-		_ = t.step(f, func(e *entry) error {
+	}
+	holds := func(e *entry) error {
+		for _, ls := range e.lstates {
+			if sameOwner(ls.owner, o) && len(ls.locks) > 0 {
+				return ErrLocksHeld
+			}
+		}
+		return nil
+	}
+	for _, f := range files {
+		if err := t.step(f, holds); err != nil {
+			return err
+		}
+	}
+	// decision: the owner is judged holding no lock file by file, then
+	// released file by file, so a lock it is granted between the two passes
+	// is refused here too, after the files before it were released. The
+	// owner's requests are serial, so only a client racing its own release
+	// meets it. Hold every file's step across both passes if one is seen.
+	var out outbox
+	for _, f := range files {
+		err = t.step(f, func(e *entry) error {
+			if err := holds(e); err != nil {
+				return err
+			}
 			for _, ls := range e.lstates {
 				if sameOwner(ls.owner, o) {
 					t.dropLockState(e, ls)
@@ -678,13 +699,18 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 			t.serve(e, &out)
 			return nil
 		})
+		if err != nil {
+			break
+		}
 	}
-	t.smu.Lock()
-	delete(t.seqs, locksOwner(o))
-	t.smu.Unlock()
+	if err == nil {
+		t.smu.Lock()
+		delete(t.seqs, locksOwner(o))
+		t.smu.Unlock()
+	}
 	out.raise(sink)
 	t.dropIdle(ctx, o.Client)
-	return nil
+	return err
 }
 
 // dropIdle deletes client c's record once c holds nothing here, if a restart

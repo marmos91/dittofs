@@ -24,6 +24,7 @@ var (
 	ErrLocked         = errors.New("openstate: range locked") // as *LockedError from a lock request, naming the holder
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
+	ErrLocksHeld      = errors.New("openstate: the owner or lock state still holds locks")
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
