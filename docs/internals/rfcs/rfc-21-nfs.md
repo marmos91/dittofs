@@ -601,7 +601,14 @@ the wire:
   client, and drops the `Pending` proposal. A confirm that finds no such
   record — sent to another node, after that node restarted, or late — is
   `NFS4ERR_STALE_CLIENTID`, and the client sends `SETCLIENTID` or
-  `EXCHANGE_ID` again. A confirm that finds the record but comes from another
+  `EXCHANGE_ID` again.
+- **One record kind for both minor versions.** NFSv4.0 and NFSv4.1 clients are
+  one protocol kind ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the
+  minor version that confirmed a record is kept in its `Adapter` bytes. A
+  `SETCLIENTID` for a name confirmed by `EXCHANGE_ID`, or the reverse, is a new
+  `Boot`: a reboot, confirmed as any is, which expires the old client ID and its
+  state, never the same instance (RFC 8881 §2.4.1). A client's state is never
+  shared across minor versions. A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
 - **`CREATE_SESSION` is sequenced by the adapter's record.** The NFS adapter
@@ -2249,6 +2256,8 @@ in RFC 14's durable client record
 the NFS adapter's own; open state stores them and never reads them. They start
 with a version byte, and hold:
 
+- the minor version that confirmed the record, 0 or 1, which a proposal under
+  the other one treats as a reboot (§3.5);
 - the one-slot `CREATE_SESSION` replay: the `csa_sequence` of the last one
   applied and its reply (§3.5);
 - `SP4_MACH_CRED`'s operation sets as sent, `spo_must_enforce` and

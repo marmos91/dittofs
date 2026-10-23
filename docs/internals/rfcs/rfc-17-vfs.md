@@ -626,7 +626,7 @@ holds.
 The rest carry no meaning beyond their shape:
 
 ```go
-type Protocol uint8   // NFS3, NFS4, NLM, SMB
+type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1), one enum
 type RefKind uint8    // Opened, Delegated, Anonymous: what an OpenRef names
 type AuthFlavor uint8 // a flavour a share admits: sys, krb5, krb5i, krb5p, ntlm, none
 type Stability uint8  // Unstable, DataSync, FileSync
