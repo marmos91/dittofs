@@ -109,6 +109,7 @@ type nameKey struct {
 type pending struct {
 	Pending
 	source netip.Prefix
+	known  bool // ID was an existing record's when proposed
 }
 
 func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, string(rec.Name)} }
@@ -158,6 +159,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 		return Proposal{}, err
 	}
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
+	known := false
 	cur, found, err := t.byName(ctx, rec)
 	switch {
 	case err != nil:
@@ -165,7 +167,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	case found && refuses(cur, rec.Owner):
 		return Proposal{}, ErrClientInUse
 	case found && cur.Boot == rec.Boot:
-		p.ID = cur.ID
+		p.ID, known = cur.ID, true
 	default:
 		if p.ID, err = t.nextClientID(ctx); err != nil {
 			return Proposal{}, err
@@ -188,7 +190,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	}
 	t.sources[src]++
 	p.Expires = t.d.Clock.Elapsed() + leasePeriod
-	t.pending[key] = pending{p, src}
+	t.pending[key] = pending{p, src, known}
 	return Proposal{p.ID, p.Confirm}, nil
 }
 
@@ -218,6 +220,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 // reboot replaced.
 func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal) (*entity.ClientRecord, error) {
 	var id entity.ClientID
+	known := false
 	if p != nil {
 		key := keyOf(*rec)
 		t.cmu.Lock()
@@ -231,7 +234,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		if !ok {
 			return nil, ErrStaleClient
 		}
-		id, rec.Boot, rec.Adapter = pd.ID, pd.Boot, pd.Adapter
+		id, known, rec.Boot, rec.Adapter = pd.ID, pd.known, pd.Boot, pd.Adapter
 	}
 
 	cur, found, err := t.byName(ctx, *rec)
@@ -241,6 +244,8 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		return nil, err
 	case found && refuses(cur, rec.Owner):
 		return nil, ErrClientInUse
+	case known && (!found || cur.ID != id):
+		return nil, ErrStaleClient // the proposed client ended since the proposal
 	case found && cur.Boot == rec.Boot:
 		if p != nil && cur.ID != id {
 			return nil, ErrStaleClient // the name was connected under another ID since the proposal
