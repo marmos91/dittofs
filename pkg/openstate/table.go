@@ -8,8 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// Deps is what the table is built over. Each further dependency of RFC 14's
-// arrives with the piece that first reads it.
+// Deps is what the table is built over.
 type Deps struct {
 	Rand io.Reader // every random bit of a token; crypto/rand in production
 }
