@@ -410,7 +410,7 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, err
 // know records what the table reads of rec while its client is current; the
 // caller holds cmu.
 func (t *Table) know(rec entity.ClientRecord) {
-	var k known
+	k := known{recovery: rec.Recovery}
 	if rec.Protect {
 		k.owner = rec.Owner
 	}
@@ -569,6 +569,11 @@ func (t *Table) heldBy(c entity.ClientID) []held {
 func (t *Table) holdsAny(c entity.ClientID) bool {
 	t.idx.Lock()
 	defer t.idx.Unlock()
+	return t.holdsAnyLocked(c)
+}
+
+// holdsAnyLocked is holdsAny, with idx held.
+func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 	for _, h := range t.refs {
 		if h.client == c {
 			return true
