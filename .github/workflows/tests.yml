@@ -223,6 +223,12 @@ jobs:
           CELL: ${{ matrix.name }}
         run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY"'
 
+      # What a failed e2e run left running, such as a hung mount helper or
+      # server, to tell a wedge from a test failure.
+      - name: Processes still running
+        if: failure() && matrix.suite == 'e2e'
+        run: ps -eo pid,ppid,pgid,stat,etimes,user,args
+
       - name: Report
         if: always() && steps.build.outcome == 'success'
         run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
