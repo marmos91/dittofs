@@ -17,8 +17,9 @@ import (
 // longer the stored one: the call writes nothing and returns the current one.
 var ErrRecordChanged = errors.New("kvstore: client record changed")
 
-// maxAdapter bounds a client record's Adapter bytes.
-const maxAdapter = 4 << 10
+// MaxAdapter bounds a client record's Adapter bytes: a write over it is
+// refused as invalid.
+const MaxAdapter = 4 << 10
 
 // Clients is open state's view of its durable client records: one per
 // client instance, found by ID or by its protocol and name, with one key per
@@ -157,8 +158,8 @@ func (c Clients) Put(ctx context.Context, prev, next entity.ClientRecord) (cur e
 // current record. So a replayed setup call, on any node or after a restart,
 // finds the first call's bytes rather than recording a second session.
 func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity.NodeID, prev, next []byte) (cur entity.ClientRecord, err error) {
-	if len(next) > maxAdapter {
-		return entity.ClientRecord{}, merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", maxAdapter))
+	if len(next) > MaxAdapter {
+		return entity.ClientRecord{}, merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", MaxAdapter))
 	}
 	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if cur, err = clientIn(tx, id); err != nil {
@@ -229,8 +230,8 @@ func validClient(cl entity.ClientRecord) error {
 	switch {
 	case cl.ID == 0 || cl.Protocol == 0 || len(cl.Name) == 0:
 		return merrs.NewInvalidArgumentError("a client needs an ID, a protocol and a name")
-	case len(cl.Adapter) > maxAdapter:
-		return merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", maxAdapter))
+	case len(cl.Adapter) > MaxAdapter:
+		return merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", MaxAdapter))
 	case cl.Protect && cl.Owner == (entity.Principal{}):
 		return merrs.NewInvalidArgumentError("state protection needs an owner")
 	}
