@@ -723,7 +723,17 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 // its last lock, so the hosts a failover notifies are the ones holding
 // something. c is then no longer current here, and its next call connects it
 // again. The check and the drop share the index lock, so no state is minted
-// for c between them.
+// for c between them: a lock asked for c once it is dropped is ErrStaleClient,
+// never granted under a record about to go, and the client step orders the
+// delete with the Connect that answers it.
+//
+// decision: an NLM host's record goes with its last lock, because the
+// records are the restart-notice list and a failover must notify no host
+// holding nothing. The cost: a host that locks and unlocks one range in a
+// loop pays a record write, its Connect, and a delete per cycle, and each
+// lock after a delete is first refused ErrStaleClient for its adapter to
+// connect it again. Keep the record through a lease period of idleness,
+// swept by the timer, if NLM lock churn shows those writes in a profile.
 //
 // decision: the record is deleted without asking whether a restart notice to
 // the host is outstanding, since the table records none. A failed delete
