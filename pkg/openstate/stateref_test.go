@@ -31,7 +31,7 @@ func mintIn(t *testing.T, tab *Table, f entity.FileID, c entity.ClientID, s Shar
 	t.Helper()
 	var ref StateRef
 	if err := tab.step(f, func(e *entry) (err error) {
-		ref, err = tab.mint(e, f, c, s, StateOpen)
+		ref, err = tab.mint(e, c, s, StateOpen)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestEntryFreedWithLastState(t *testing.T) {
 		wg.Go(func() {
 			for range 100 {
 				var ref StateRef
-				_ = tab.step(f, func(e *entry) (err error) { ref, err = tab.mint(e, f, 1, 0, StateOpen); return err })
+				_ = tab.step(f, func(e *entry) (err error) { ref, err = tab.mint(e, 1, 0, StateOpen); return err })
 				_ = tab.step(f, func(e *entry) error { tab.release(e, ref); return nil })
 			}
 		})
@@ -166,7 +166,7 @@ func TestMintReadsDepsRand(t *testing.T) {
 	f := entity.NewFileID()
 	mintIn(t, tab, f, 1, 0)
 	g := entity.NewFileID()
-	if err := tab.step(g, func(e *entry) error { _, err := tab.mint(e, g, 1, 0, StateOpen); return err }); err == nil {
+	if err := tab.step(g, func(e *entry) error { _, err := tab.mint(e, 1, 0, StateOpen); return err }); err == nil {
 		t.Fatal("a mint past the end of Deps.Rand succeeded")
 	}
 	if tab.entryOf(g) != nil || len(tab.refs) != 1 {
@@ -222,10 +222,10 @@ func TestGrantAndWatchIDsResolveWithoutAHandle(t *testing.T) {
 	var gref StateRef
 	var w WatchID
 	if err := tab.step(f, func(e *entry) (err error) {
-		if g, gref, err = tab.mintGrant(e, f, 1, 4); err != nil {
+		if g, gref, err = tab.mintGrant(e, 1, 4); err != nil {
 			return err
 		}
-		w, err = tab.mintWatch(e, f, 1, 4)
+		w, err = tab.mintWatch(e, 1, 4)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -262,5 +262,27 @@ func TestAdvanceAddsNoRecord(t *testing.T) {
 	}
 	if len(tab.refs) != 0 {
 		t.Fatalf("after advancing a released reference: %d references, want none", len(tab.refs))
+	}
+}
+
+// A step on one file cannot release or advance another file's state: the
+// other file's reference still resolves and both entries keep true counts.
+func TestStepTouchesOnlyItsOwnFile(t *testing.T) {
+	tab := newTable(t)
+	f, g := entity.NewFileID(), entity.NewFileID()
+	ref := mintIn(t, tab, f, 1, 0)
+	releaseIn(t, tab, g, ref)
+	if _, err := tab.resolve(1, f, ref); err != nil {
+		t.Fatalf("after another file's step released it: %v", err)
+	}
+	if err := tab.step(g, func(e *entry) error { _, err := tab.advance(e, ref); return err }); !errors.Is(err, ErrBadState) {
+		t.Errorf("advancing it under another file's step: %v, want ErrBadState", err)
+	}
+	if tab.entryOf(g) != nil {
+		t.Fatal("the other file kept an entry")
+	}
+	releaseIn(t, tab, f, ref)
+	if tab.entryOf(f) != nil {
+		t.Fatal("the file's entry outlived its last state")
 	}
 }

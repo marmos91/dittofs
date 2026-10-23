@@ -74,10 +74,10 @@ type shardGrace struct {
 	inGrace  bool
 }
 
-// mint issues a reference to a new piece of state of file f, held by client
-// c, under file f's step, which e is. Its token is 64 bits read from
+// mint issues a reference to a new piece of state of e's file, held by client
+// c, under that file's step. Its token is 64 bits read from
 // Deps.Rand; a failed read mints nothing.
-func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
+func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	ref := StateRef{Type: typ, Shard: s, Instance: t.shards[s].instance}
@@ -91,7 +91,7 @@ func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, ty
 			break
 		}
 	}
-	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: f, client: c, seq: 1}
+	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: e.file, client: c, seq: 1}
 	e.states++
 	ref.Seq = 1
 	return ref, nil
@@ -99,28 +99,28 @@ func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, ty
 
 // mintGrant issues a caching grant's ID, which is also its delegation stateid's
 // reference, under file f's step, which e is.
-func (t *Table) mintGrant(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (GrantID, StateRef, error) {
-	ref, err := t.mint(e, f, c, s, StateGrant)
+func (t *Table) mintGrant(e *entry, c entity.ClientID, s ShardID) (GrantID, StateRef, error) {
+	ref, err := t.mint(e, c, s, StateGrant)
 	return GrantID{ref.Shard, ref.Token}, ref, err
 }
 
 // mintWatch issues a watch's ID under directory f's step, which e is.
-func (t *Table) mintWatch(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (WatchID, error) {
-	ref, err := t.mint(e, f, c, s, stateWatch)
+func (t *Table) mintWatch(e *entry, c entity.ClientID, s ShardID) (WatchID, error) {
+	ref, err := t.mint(e, c, s, stateWatch)
 	return WatchID{ref.Shard, ref.Token}, err
 }
 
 // advance raises the sequence of the state ref names, under its file's step,
-// which e is, and returns the new one. It runs in the step that applies an
+// which e must be, and returns the new one. It runs in the step that applies an
 // upgrade, a downgrade, a close or a lock change. It wraps from the highest
 // value to 1, never to zero, which means the current one. A reference that
 // names no record is ErrBadState, and adds none.
-func (t *Table) advance(_ *entry, ref StateRef) (uint32, error) {
+func (t *Table) advance(e *entry, ref StateRef) (uint32, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	k := refKey{ref.Shard, ref.Token}
 	h, ok := t.refs[k]
-	if !ok {
+	if !ok || h.file != e.file {
 		return 0, ErrBadState
 	}
 	if h.seq++; h.seq == 0 {
@@ -131,11 +131,12 @@ func (t *Table) advance(_ *entry, ref StateRef) (uint32, error) {
 }
 
 // release drops the piece of state ref names, under its file's step, which e
-// is. The reference then resolves as a miss.
+// must be: a reference to another file's state releases nothing. The
+// reference then resolves as a miss.
 func (t *Table) release(e *entry, ref StateRef) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	if _, ok := t.refs[refKey{ref.Shard, ref.Token}]; ok {
+	if h, ok := t.refs[refKey{ref.Shard, ref.Token}]; ok && h.file == e.file {
 		delete(t.refs, refKey{ref.Shard, ref.Token})
 		e.states--
 	}
