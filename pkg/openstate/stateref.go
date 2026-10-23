@@ -28,6 +28,7 @@ const (
 // StateRef names one piece of state without a file handle: its type, its
 // shard, the low bits of the grace instance it was minted under, and a token
 // of 64 random bits unique within the shard. It resolves by shard, then token.
+// The table keeps no grace instance, so Instance is minted zero and not read.
 // A client that sees one cannot derive another's, so it is a bearer ID with
 // room: it carries no counter. Seq is the sequence presented with it, judged
 // against the state's own: zero is the current one, an older one ErrOldState,
@@ -67,20 +68,13 @@ type holder struct {
 	seq    uint32 // the state's current sequence; the first is 1
 }
 
-// shardGrace is a shard's grace state, as a miss is judged against it. Set
-// when the shard enters and leaves grace.
-type shardGrace struct {
-	instance uint8
-	inGrace  bool
-}
-
 // mint issues a reference to a new piece of state of e's file, held by client
 // c, under that file's step. Its token is 64 bits read from
 // Deps.Rand; a failed read mints nothing.
 func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	ref := StateRef{Type: typ, Shard: s, Instance: t.shards[s].instance}
+	ref := StateRef{Type: typ, Shard: s}
 	for {
 		var b [8]byte
 		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
@@ -150,7 +144,11 @@ func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holde
 	defer t.idx.Unlock()
 	h, ok := t.refs[refKey{ref.Shard, ref.Token}]
 	if !ok {
-		return holder{}, t.miss(ref)
+		// decision: a miss is always ErrBadState, never stale: the
+		// table keeps no grace state, so no miss can be told to name state a
+		// shard lost rather than released or forged state. Judge a miss
+		// against the shard's grace instance once the table records one.
+		return holder{}, ErrBadState
 	}
 	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {
 		return holder{}, ErrBadState
@@ -186,18 +184,4 @@ func (t *Table) resolveID(c entity.ClientID, typ StateType, s ShardID, token uin
 		return holder{}, ErrNotYours
 	}
 	return h, nil
-}
-
-// miss judges a reference that names no record. It is stale when it may name
-// state the shard lost, so the client reclaims: while the shard is in grace,
-// or when it was minted under an earlier grace instance. Any other miss is
-// bad: released state, a removed share's and a forged reference resolve to
-// nothing alike, since nothing maps a released reference back to its client.
-// The caller holds idx.
-func (t *Table) miss(ref StateRef) error {
-	g := t.shards[ref.Shard]
-	if g.inGrace || ref.Instance != g.instance {
-		return ErrStaleState
-	}
-	return ErrBadState
 }
