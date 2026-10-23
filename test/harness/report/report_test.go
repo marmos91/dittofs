@@ -37,7 +37,7 @@ func golden(t *testing.T, name string, got []byte) {
 
 // full is a run with every field dt writes: a test of each status, a skip
 // graded ungraded, a known failure with its tool's status, reason and issue,
-// a flaky pass with its retries,
+// a flaky pass with its retries, a pass with its metrics,
 // tests below their cell (a Go test's package), a cell of an option and
 // matrix values, and cells without tests, a log or a note.
 var full = Run{
@@ -59,6 +59,10 @@ var full = Run{
 			{Name: "TestCrash", Suite: []string{"example.com/m/c"}, Status: Other, Message: "panic: boom"},
 			{Name: "TestFlaky", Suite: []string{"example.com/m/c"}, Status: Passed, Duration: 20 * time.Millisecond, Message: "c_test.go:7: timed out", Retries: 1, Flaky: true},
 			{Name: "example.com/m/c", Status: Failed, Duration: 300 * time.Millisecond, Message: "failed outside any test"},
+		}},
+		{Name: "fio-verify", Result: "passed", Took: 64 * time.Second, Log: "logs/fio-verify.log", Tests: []Test{
+			{Name: "bench/workloads/seq-write.fio", Status: Passed, Duration: 61 * time.Second,
+				Metrics: map[string]float64{"seq-write/write/bw_bytes": 131411497, "seq-write/write/iops": 125.32377, "seq-write/write/lat_ns_mean": 31871842.5}},
 		}},
 		{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"},
 		{Name: "smbtorture/memory", Result: "skipped", Note: "docker: not found"},
