@@ -313,8 +313,12 @@ func (d *driver) crash() {
 		}
 		f.recs = recs
 		before := slices.Clone(recs) // adopt filters f.recs, and so recs, in place
+		durable := map[*record]bool{}
+		for _, r := range recs {
+			durable[r] = !r.uncertain // adopt makes the pieces it keeps durable
+		}
 		candidate{items: f.items(), mask: rng.Uint32()}.adopt(f)
-		keepPrefixes(f, before)
+		keepPrefixes(f, before, durable)
 	}
 
 	// Issue a version before the model compares the files the crash left
@@ -331,8 +335,9 @@ func (d *driver) crash() {
 // keepPrefixes makes the journal's state one a crash can leave: a write comes
 // back as a prefix of itself, since a later piece's segment is taken only once
 // the earlier piece's was sealed and synced. Of the pieces in before, the
-// state f was resolved from, every piece after one that was lost goes too.
-func keepPrefixes(f *file, before []*record) {
+// state f was resolved from, every piece after one that was lost goes too,
+// except one durable before the crash.
+func keepPrefixes(f *file, before []*record, durable map[*record]bool) {
 	have := map[*record]bool{}
 	for _, r := range f.recs {
 		have[r] = true
@@ -344,9 +349,12 @@ func keepPrefixes(f *file, before []*record) {
 		if r.data == nil {
 			continue
 		}
-		if cut[r.seq] {
+		switch {
+		case durable[r]:
+			// Durable before the crash, and so is every piece before it.
+		case cut[r.seq]:
 			delete(have, r)
-		} else if !have[r] {
+		case !have[r]:
 			cut[r.seq] = true
 		}
 	}
