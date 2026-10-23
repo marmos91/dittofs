@@ -599,7 +599,7 @@ Signatures are indicative; the obligations are normative.
 
 Every type an adapter passes or receives is in `pkg/vfs`. Types the metadata
 store and open state define — `ClientID`, `OpenID`, `GrantID`, `WatchID`,
-`SessionRef`, `StateRef`, `Seqs`, `ClientStatus`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
+`SessionRef`, `StateRef`, `Seqs`, `ClientStatus`, `GraceRef`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
 `Xattr`, `Principal`, `FilesystemInfo`, `Usage`, `Quota`, `CachingGrant`,
 `LockWaiter`, `ChangeMask`, `ShareID` — are re-declared there as aliases
 (`type File = metadata.File`), so an adapter imports one package and the
@@ -676,7 +676,7 @@ type Clients interface {
 	Renew(ctx context.Context, id Identity, c ClientID) (ClientStatus, error)
 	Disconnect(ctx context.Context, id Identity, c ClientID, s SessionRef) error // an SMB session's last channel ended
 	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while state remains
-	ReclaimComplete(ctx context.Context, id Identity, c ClientID) error
+	ReclaimComplete(ctx context.Context, id Identity, c ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, id Identity, c ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
 	TestState(ctx context.Context, id Identity, c ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
 	ReleaseLockOwner(ctx context.Context, id Identity, c ClientID, o LockOwner) error
@@ -728,7 +728,7 @@ type Locking interface {
 	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
 	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
 	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) error // in order; stops at the first range not held, ErrRangeNotLocked
-	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: a return
+	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind, epoch uint16) error // to GrantNone: a return; epoch: the one the acknowledgement names (RFC 14 §2.4)
 	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
 }
@@ -897,7 +897,9 @@ const (
 ```
 
 `ClientStatus` is what `Renew` reports: `ReclaimNeeded` (a shard of the client's
-state restarted its grace), `AdminRevoked` and `RecallableRevoked` (a stateid of
+state restarted its grace) with `Reclaim`, the (shard, grace instance) pairs it
+owes, which the adapter keeps per session and hands back to `ReclaimComplete`
+([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)), `AdminRevoked` and `RecallableRevoked` (a stateid of
 that cause is in its revoked set, not yet freed), the lease owner's aggregate of
 what each primary reports ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 
