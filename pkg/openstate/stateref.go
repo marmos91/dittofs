@@ -113,17 +113,21 @@ func (t *Table) mintWatch(e *entry, f entity.FileID, c entity.ClientID, s ShardI
 // advance raises the sequence of the state ref names, under its file's step,
 // which e is, and returns the new one. It runs in the step that applies an
 // upgrade, a downgrade, a close or a lock change. It wraps from the highest
-// value to 1, never to zero, which means the current one.
-func (t *Table) advance(_ *entry, ref StateRef) uint32 {
+// value to 1, never to zero, which means the current one. A reference that
+// names no record is ErrBadState, and adds none.
+func (t *Table) advance(_ *entry, ref StateRef) (uint32, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	k := refKey{ref.Shard, ref.Token}
-	h := t.refs[k]
+	h, ok := t.refs[k]
+	if !ok {
+		return 0, ErrBadState
+	}
 	if h.seq++; h.seq == 0 {
 		h.seq = 1
 	}
 	t.refs[k] = h
-	return h.seq
+	return h.seq, nil
 }
 
 // release drops the piece of state ref names, under its file's step, which e
