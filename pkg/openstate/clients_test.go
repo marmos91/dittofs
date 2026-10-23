@@ -500,7 +500,7 @@ func TestStartAndStop(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
 	g := unstarted(t, f.fs, f.clock)
-	file := entity.NewFileID()
+	file := anyFile()
 	calls := map[string]func() error{
 		"Propose":    func() error { _, err := g.Propose(ctx, nfs("host-b", 1, entity.NewUser()), addr); return err },
 		"Connect":    func() error { _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },

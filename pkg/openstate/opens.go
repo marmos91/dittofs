@@ -19,6 +19,7 @@ type Open struct {
 	File      entity.FileID    // the file whose table holds it: a named stream's base file
 	Stream    entity.FileID    // the named stream it opens; zero: File itself
 	Via       entity.FileID    // the directory it was opened through; zero: opened by handle
+	Name      []byte           // its entry in Via, the one a delete pending removes; nil: opened by handle
 	Mode      OpenMode
 	Ref       StateRef // the reference naming it; Seq is the sequence as of the answer
 	Delete    DeleteMark
@@ -38,13 +39,17 @@ type DeleteMark struct {
 	By      entity.Principal // who asked for it; the deferred unlink runs as it
 }
 
+// FileKey names the file a call acts on, with where it lives as the service
+// resolved it: the shard names a reference minted for it, and the share keys
+// its durable records.
+type FileKey struct {
+	Share entity.ShareID
+	Shard ShardID
+	ID    entity.FileID
+}
+
 // OpenRequest is what an open asks for.
 type OpenRequest struct {
-	// Share and Shard are where the file lives, as the service resolved it:
-	// the shard names the open's reference, and the share keys its durable
-	// record.
-	Share         entity.ShareID
-	Shard         ShardID
 	Unlinked      bool          // the file has no entry, as the service resolved it: the open is written durable
 	Stream        entity.FileID // the named stream opened, whose base file the call names; zero: none
 	Via           entity.FileID // the directory it was opened through; zero: by handle
@@ -92,7 +97,7 @@ type Opens interface {
 	// Open grants an open of f, or refuses it ErrShareViolation against a
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
 	// never grants less than was asked.
-	Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequest) (OpenResult, error)
+	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
 	// Downgrade narrows an open's access and deny to masks within them.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, access, deny entity.AccessMask) error
 	// Update sets or clears the file's delete pending, through an open
@@ -105,7 +110,7 @@ type Opens interface {
 	// calls commit once, true when that transaction committed and took the
 	// last entry, so it wrote the records; only then does the table hold
 	// the opens durable. It holds f's admission lock throughout.
-	Durable(ctx context.Context, f entity.FileID) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
 }
 
 type opens struct{ t *Table }
@@ -117,7 +122,6 @@ func (t *Table) Opens() Opens { return opens{t} }
 type open struct {
 	Open
 	share   entity.ShareID
-	name    []byte
 	durable bool // its record is in the store
 }
 
@@ -140,10 +144,10 @@ func (o *open) record() entity.OpenRecord {
 
 // pendingFrom is the delete pending o makes, as principal by.
 func pendingFrom(o *open, by entity.Principal) *entity.DeleteRecord {
-	return &entity.DeleteRecord{Parent: o.Via, Name: o.name, By: by, Access: o.Mode.Access, Privileged: o.Mode.Privileged}
+	return &entity.DeleteRecord{Parent: o.Via, Name: o.Name, By: by, Access: o.Mode.Access, Privileged: o.Mode.Privileged}
 }
 
-func (v opens) Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequest) (OpenResult, error) {
+func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
 		return OpenResult{}, err
@@ -155,14 +159,14 @@ func (v opens) Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequ
 	if err != nil {
 		return OpenResult{}, err
 	}
-	o := &open{share: r.Share, name: slices.Clone(r.Name), Open: Open{
-		ID: entity.OpenID(n), Client: who.Client, Principal: who.Principal, File: f, Stream: r.Stream, Via: r.Via,
+	o := &open{share: f.Share, Open: Open{
+		ID: entity.OpenID(n), Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged},
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
-	err = t.step(f, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) error {
 		if e.pending != nil {
 			return ErrDeletePending
 		}
@@ -171,10 +175,10 @@ func (v opens) Open(ctx context.Context, who Caller, f entity.FileID, r OpenRequ
 				return ErrShareViolation
 			}
 		}
-		if err := t.markShard(ctx, who.Client, r.Shard); err != nil {
+		if err := t.markShard(ctx, who.Client, f.Shard); err != nil {
 			return err
 		}
-		if err := t.mintOpen(e, o, r.Shard); err != nil {
+		if err := t.mintOpen(e, o, f.Shard); err != nil {
 			return err
 		}
 		if e.unlinked || r.Unlinked {
@@ -421,13 +425,13 @@ func (t *Table) closeOpen(e *entry, o *open) *entity.DeleteRecord {
 // keeps the file's admission lock from Durable to commit, as it does for
 // every mutating call, so none lands there. Run the unlink under the step,
 // as a callback, if a caller is found that unlinks without that lock.
-func (v opens) Durable(ctx context.Context, f entity.FileID) ([]entity.OpenRecord, func(bool), error) {
+func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, func(bool), error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
 		return nil, nil, err
 	}
 	var recs []entity.OpenRecord
-	err := t.step(f, func(e *entry) error {
+	err := t.step(f.ID, func(e *entry) error {
 		for _, o := range e.opens {
 			recs = append(recs, o.record())
 		}
@@ -440,7 +444,7 @@ func (v opens) Durable(ctx context.Context, f entity.FileID) ([]entity.OpenRecor
 		if !committed {
 			return
 		}
-		_ = t.step(f, func(e *entry) error {
+		_ = t.step(f.ID, func(e *entry) error {
 			for _, rec := range recs {
 				for _, o := range e.opens {
 					if o.ID == rec.ID {
