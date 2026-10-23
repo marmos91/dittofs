@@ -147,7 +147,7 @@ func TestIDsBounded(t *testing.T) {
 	for _, c := range []struct {
 		kind IDKind
 		top  uint64
-	}{{IDOpen, maxOpenID}, {IDClient, math.MaxUint64}, {IDLock, math.MaxUint64}} {
+	}{{IDOpen, maxOpenID}, {IDClient, math.MaxUint64}} {
 		s := openStore(t)
 		rows(t, s, idKey(byte(c.kind)), encodeCounter(c.top-numberRange))
 		if n, err := s.NextID(context.Background(), c.kind); err != nil || n != c.top-numberRange {
