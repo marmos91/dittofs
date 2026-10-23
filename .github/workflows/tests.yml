@@ -9,16 +9,11 @@
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
-# consecutive runs; unit, integration, operator, lint, AD-DC, the performance
-# gates and bench-smoke, whose old jobs ran the commands dt runs, move in at
-# once. plan keeps only the cells of those that have moved: pynfs, pjdfstest,
-# WPTS, smbtorture with its Kerberos option, operator, the Windows and
-# no-race unit runs, AD-DC, bench-smoke, the suites with a job of their own,
-# the system scenarios, which had no workflow, less the cells the dedicated
-# host runs itself, and clients, which runs beside smb-client-compat.yml until
-# their results match. A suite joins by being added to the select in
-# plan, with any step its cells need that run doesn't give yet, such as
-# another service; the select goes once every suite runs here.
+# consecutive runs; a suite whose old job ran the commands dt runs moves in at
+# once. plan keeps only the cells of the suites that have moved, the ones its
+# select names. A suite joins by being added to the select in plan, with any
+# step its cells need that run doesn't give yet, such as another service; the
+# select goes once every suite runs here.
 #
 # The suites with a job of their own, named as the checks the develop ruleset
 # requires, run in the jobs after non-blocking, which gate waits for too.

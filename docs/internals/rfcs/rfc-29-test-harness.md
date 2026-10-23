@@ -1883,8 +1883,7 @@ a percentage.
 ## 7. Risks
 
 - **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
-  job (§8), so the old job is there until then, unless it ran the commands `dt` runs, as the unit,
-  integration, operator, lint, AD-DC, performance-gate and smoke-benchmark jobs did. `dt`'s own
+  job (§8), so the old job is there until then, unless it ran the commands `dt` runs. `dt`'s own
   tests run in `lint-repo` on every PR.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
@@ -1980,10 +1979,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
      that keeps its check name can't report beside an old job of that name. So do AD-DC, the
      performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
-     with the mailbox job files' parse. Then the Kerberos runs: smbtorture's Kerberos job runs its
-     scripts, so its option moves after 5 matching runs. When pynfs's cells move, `nfs-pynfs.yml`
-     keeps only its knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8),
-     and leaves `ci-health.yml`'s lists, since it no longer tests a commit.
+     with the mailbox job files' parse. When pynfs's cells move, `nfs-pynfs.yml` keeps only its
+     knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8), and leaves
+     `ci-health.yml`'s lists, since it no longer tests a commit.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
@@ -2013,7 +2011,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
    (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
-6. **Benchmarks.** `bench-smoke` and `unit --nonrace` nightly; tracked runs on the dedicated host.
+6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
+   tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
    RFC gets its section (R11), and the component groups follow.
 
