@@ -25,7 +25,7 @@ type Orphaned struct{ File entity.FileID }
 // unlink takes the file's last entry, each is written durable in the same
 // transaction, since an open is the second holder of a file and the release
 // finds its holders only in the store.
-func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.Open) (_ Orphaned, err error) {
+func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.OpenRecord) (_ Orphaned, err error) {
 	defer opError(&err, "unlink", dir, name)
 	var out Orphaned
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
@@ -72,7 +72,7 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 // child's Nlink, refusing a non-empty directory. A last entry writes the
 // pending release, and makes durable each of open that opens child. A
 // delete-pending record naming this entry goes with it.
-func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.Open) (Orphaned, error) {
+func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.OpenRecord) (Orphaned, error) {
 	if child.IsDir() {
 		if err := provedEmpty(tx, child); err != nil {
 			return Orphaned{}, err
