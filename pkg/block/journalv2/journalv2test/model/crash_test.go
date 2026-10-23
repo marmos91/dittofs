@@ -61,6 +61,34 @@ func TestCrashMayKeepPartOfASplitWrite(t *testing.T) {
 	other := New()
 	ok(t, other.WriteAt(shareA, fid(1), 0, fill('B', 6), 0, ver(1), nil))
 	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{other, shareA}))
+	// The pieces of a split write survive in order: a later piece's segment
+	// exists only once the earlier one's was sealed and synced. So a write
+	// never comes back as a suffix of itself, or with a hole inside.
+	suffix := New()
+	ok(t, suffix.WriteAt(shareA, fid(1), 4, fill('A', 6), 0, ver(1), nil))
+	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{suffix, shareA}))
+
+	hole := New()
+	ok(t, hole.WriteAt(shareA, fid(1), 0, fill('A', 3), 0, ver(1), nil))
+	ok(t, hole.WriteAt(shareA, fid(1), 6, fill('A', 4), 0, ver(2), nil))
+	hole.files[fid(1)].recs[1].ver = ver(1) // the same write's bytes, after a hole
+	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{hole, shareA}))
+}
+
+// Bytes a removal outranks look the same kept or lost, so they never break
+// the order: a write whose first bytes a durable removal hides may come back
+// with only its later bytes showing.
+func TestBytesHiddenByARemovalDoNotBreakTheOrder(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 4), ver(2), nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, j.Deallocate(shareA, fid(1), ext(0, 4), ver(2), nil))
+	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
 }
 
 // A removal is durable on return, so a crash never undoes it, synced or not.
@@ -470,8 +498,8 @@ func TestAWriteLiveAgainAfterACrashCountsInTheChangeVersion(t *testing.T) {
 }
 
 // A refill at a released version is several records like any write, and may
-// come back in part: where it was lost, the content it replaced is served at
-// the same version, with other bytes.
+// come back as a prefix of itself: where it was lost, the content it replaced
+// is served at the same version, with other bytes.
 func TestCrashMayKeepPartOfASameVersionRefill(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(5), nil))
@@ -489,7 +517,7 @@ func TestCrashMayKeepPartOfASameVersionRefill(t *testing.T) {
 		switch {
 		case r.kind == kindRelease: // lost
 		case r.kind == kindFill && r.data[0] == 'E':
-			recs = append(recs, r.piece(2, 3)) // only its last byte kept
+			recs = append(recs, r.piece(0, 2)) // only its first piece kept
 		default:
 			recs = append(recs, r)
 		}

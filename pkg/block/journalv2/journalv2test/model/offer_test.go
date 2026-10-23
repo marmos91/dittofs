@@ -423,3 +423,19 @@ func TestAnOfferCarriesTheLiveVersionUnderANewerWrite(t *testing.T) {
 	diverged(t, m.EndOffer(shareA, fid(1), ver(10), nil, nil))
 	ok(t, m.Offer(shareA, fid(1), ver(10), 0, 0, offerOf(m, fid(1), 10, 10, dirty(0, 10, 10))))
 }
+
+// An offer that captures a byte of a write makes every byte of the write
+// before it durable too: they are in the same record, or in an earlier
+// segment sealed and synced before the captured one was taken.
+func TestAnOfferMakesTheWriteBeforeWhatItCapturesDurable(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('w', 8), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(4, 4, 1))))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 4, fill('w', 4), 0, ver(1), nil))
+	diverged(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
+}

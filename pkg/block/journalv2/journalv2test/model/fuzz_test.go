@@ -1,8 +1,10 @@
 package model
 
 import (
+	"cmp"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 
@@ -310,7 +312,9 @@ func (d *driver) crash() {
 			recs = append(recs, r)
 		}
 		f.recs = recs
+		before := slices.Clone(recs) // adopt filters f.recs, and so recs, in place
 		candidate{items: f.items(), mask: rng.Uint32()}.adopt(f)
+		keepPrefixes(f, before)
 	}
 
 	// Issue a version before the model compares the files the crash left
@@ -322,6 +326,32 @@ func (d *driver) crash() {
 	d.t.Logf("write %s share %d [0,1) at %s", fmtFile(fid(5)), shareA, fmtVersion(v))
 	d.both(func(m *Model) error { return m.WriteAt(shareA, fid(5), 0, p, 0, v, nil) })
 	d.both(func(m *Model) error { return m.Sync(shareA, []journalv2.FileID{fid(5)}, nil) })
+}
+
+// keepPrefixes makes the journal's state one a crash can leave: a write comes
+// back as a prefix of itself, since a later piece's segment is taken only once
+// the earlier piece's was sealed and synced. Of the pieces in before, the
+// state f was resolved from, every piece after one that was lost goes too.
+func keepPrefixes(f *file, before []*record) {
+	have := map[*record]bool{}
+	for _, r := range f.recs {
+		have[r] = true
+	}
+	pieces := slices.Clone(before)
+	slices.SortFunc(pieces, func(a, b *record) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
+	cut := map[uint64]bool{}
+	for _, r := range pieces {
+		if r.data == nil {
+			continue
+		}
+		if cut[r.seq] {
+			delete(have, r)
+		} else if !have[r] {
+			cut[r.seq] = true
+		}
+	}
+	f.recs = slices.DeleteFunc(f.recs, func(r *record) bool { return !have[r] })
+	f.countLive()
 }
 
 // uncertainAt counts what a crash now would leave uncertain in f.

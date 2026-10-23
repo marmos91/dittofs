@@ -356,12 +356,23 @@ func (m *Model) onDisk() version {
 	return v
 }
 
-// sync makes durable the bytes of each record that captured names, splitting
-// a record into pieces where only part of it is named.
+// sync makes durable the bytes of each record that captured names, and every
+// byte of the same write before them: those are in the same record, or in an
+// earlier segment, sealed and synced before the captured one was taken. It
+// splits a record into pieces where only part of it becomes durable.
 func (f *file) sync(captured map[*record][]extent) {
+	upto := map[uint64]int64{} // per write, the end of the last byte captured
+	for r, es := range captured {
+		for _, e := range es {
+			upto[r.seq] = max(upto[r.seq], end(e))
+		}
+	}
 	var recs []*record
 	for _, r := range f.recs {
-		es := merge(captured[r])
+		var es []extent
+		if u, ok := upto[r.seq]; ok && r.data != nil && r.ext.Off < u {
+			es = []extent{{Off: r.ext.Off, Len: min(u, end(r.ext)) - r.ext.Off}}
+		}
 		if len(es) == 0 {
 			recs = append(recs, r)
 			continue

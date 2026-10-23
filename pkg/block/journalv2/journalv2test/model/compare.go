@@ -223,7 +223,10 @@ func (m *Model) compareFile(ctx context.Context, f *file, v View) error {
 			f.recs = orig // a failed search changes nothing
 		}
 	}()
-	fixed := decide(f, obs)
+	fixed, shownLost := decide(f, obs)
+	if d := prefixBroken(f, fixed, shownLost); d != "" {
+		return m.mismatch(op, f.id, "%s", d)
+	}
 	var items []*record
 	for _, r := range f.items() {
 		if _, ok := fixed[r]; !ok {

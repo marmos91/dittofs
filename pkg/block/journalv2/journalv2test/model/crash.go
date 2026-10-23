@@ -1,6 +1,9 @@
 package model
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // maxUncertain bounds the records of one file a crash may leave uncertain.
 //
@@ -156,7 +159,8 @@ func (c candidate) adopt(f *file) {
 }
 
 // evidence is what the journal's bytes say of one byte of an uncertain write
-// or fill: that it survived, that it was lost, or nothing, where another
+// or fill: that it survived; that it was lost; that it is hidden, outranked by
+// something that makes kept and lost look the same; or nothing, where another
 // record of the same version may be what the journal serves.
 type evidence uint8
 
@@ -164,39 +168,41 @@ const (
 	undecided evidence = iota
 	kept
 	lost
+	hidden
 )
 
 // decide splits each uncertain write and fill of f into pieces where what the
-// journal shows of it changes, settles each piece the bytes decide, and
-// returns the settled pieces with whether each survived. The pieces left out
-// are left to the search.
+// journal shows of it changes, and settles each piece the bytes decide. It
+// returns the settled pieces with whether each survived, and the ones of them
+// the journal shows lost, as opposed to hidden. The pieces left out are left
+// to the search.
 //
-// A byte survived where the journal serves it at the record's version, with no
-// other record of that version there to serve it instead. Every other byte the
-// journal shows, held at another version or missing, is settled as lost.
-// Served at an older version, the record cannot have survived there, since it
-// would outrank what is served. Served at a newer version, or missing under a
-// release or removal that outranks it, it is hidden: whatever outranks it is
-// durable once the crash is resolved, the survivors made durable and the rest
-// gone, and no later call brings back a byte below one that outranks it
-// without removing it too. After a crash a record backing nothing no longer
-// counts in the change version either, so kept and lost look the same forever.
-// A byte served at its version with other bytes was lost too: whatever serves
-// it is an earlier record of that version, which the record would outrank, or
-// a later one, which hides it for good. Only a byte served at its own version,
-// with its own bytes, beside another record of that version, is left to the
-// search. None of these answers changes anything the journal can show later;
-// they only shrink the search.
+// A byte survived where the journal serves it at the record's version, with
+// its bytes, and no other record of that version there to serve it instead.
+// It was lost where the journal serves an older version there, other bytes at
+// the record's version from an earlier record of that version, or nothing
+// with no release or removal outranking the record: had it survived, it or
+// something outranking it would decide that byte. It is hidden where the
+// journal serves a newer version, the record's version from a later record of
+// it, or nothing under a release or removal that outranks it. A hidden byte is
+// settled as lost: whatever outranks it is durable once the crash is resolved,
+// no later call brings back a byte below one that outranks it without removing
+// it too, and after a crash a record backing nothing no longer counts in the
+// change version, so kept and lost look the same forever. Only a byte served
+// at its own version, with its own bytes, beside another record of that
+// version, is left to the search. None of these answers changes anything the
+// journal can show later; they only shrink the search.
 //
-// decision: an uncertain write or fill may survive in part, any of its bytes
-// kept and the others lost. The journal stores a write that crosses a segment
-// cap as one record per segment, each surviving whole or not at all, so the
-// write can come back partly held. The model cannot see where the pieces
-// split, so it accepts any split; checking that each piece is whole needs the
-// segment boundaries, which only a test placing the write knows. Hold the
+// decision: an uncertain write or fill may survive in part, as a prefix of
+// itself. The journal stores a write that crosses a segment cap as one record
+// per segment, each surviving whole or not at all, and seals and syncs a
+// segment before it takes the next, so a later piece survives only with every
+// earlier one. The model cannot see where the pieces split, so it accepts any
+// prefix, with hidden bytes anywhere; checking that each piece is whole needs
+// the segment boundaries, which only a test placing the write knows. Hold the
 // model to whole pieces if the journal ever reports where a write was split.
-func decide(f *file, o *observation) map[*record]bool {
-	out := map[*record]bool{}
+func decide(f *file, o *observation) (settled, shownLost map[*record]bool) {
+	settled, shownLost = map[*record]bool{}, map[*record]bool{}
 	var recs []*record
 	for _, r := range f.recs {
 		if !r.uncertain || r.data == nil {
@@ -214,14 +220,20 @@ func decide(f *file, o *observation) map[*record]bool {
 			}
 			p := r.piece(start, i)
 			recs = append(recs, p)
-			if ev != undecided {
-				out[p] = ev == kept
+			switch ev {
+			case kept:
+				settled[p] = true
+			case lost:
+				settled[p] = false
+				shownLost[p] = true
+			case hidden:
+				settled[p] = false
 			}
 			start, ev = i, next
 		}
 	}
 	f.recs = recs
-	return out
+	return settled, shownLost
 }
 
 // classify returns what the journal shows of byte i of r. It reads the file's
@@ -232,10 +244,75 @@ func classify(f *file, r *record, o *observation, i int) evidence {
 	switch {
 	case held && got.ver == r.ver && got.b == r.data[i] && !servedByAnother(f, r, off):
 		return kept
-	case held && (got.ver != r.ver || got.b != r.data[i]), !held && o.missing[off]:
+	case held && got.ver.Compare(r.ver) < 0:
+		return lost
+	case held && got.ver.Compare(r.ver) > 0:
+		return hidden
+	case held && got.b != r.data[i]:
+		if servedLater(f, r, off) {
+			return hidden
+		}
+		return lost
+	case !held && o.missing[off]:
+		if removedAbove(f, r, off) {
+			return hidden
+		}
 		return lost
 	}
 	return undecided
+}
+
+// prefixBroken returns how the settled pieces break the order a write
+// survives in, or "" when they do not: a piece the journal shows lost before
+// a piece of the same write it kept, or that is durable.
+//
+// ponytail: the order is checked on the pieces the journal's bytes settle,
+// not on the search's candidates. A piece left to the search is served at its
+// own version with its own bytes beside another record of that version, which
+// only a refill after a release makes, and a refill looks the same kept or
+// lost; so no candidate the search adopts differs from an ordered one in
+// anything the journal shows. Check candidates too if the search ever decides
+// a piece whose survival shows.
+func prefixBroken(f *file, settled, shownLost map[*record]bool) string {
+	firstLost := map[uint64]*record{}
+	for _, r := range f.recs {
+		if shownLost[r] && (firstLost[r.seq] == nil || r.ext.Off < firstLost[r.seq].ext.Off) {
+			firstLost[r.seq] = r
+		}
+	}
+	for _, r := range f.recs {
+		l := firstLost[r.seq]
+		if l == nil || r.data == nil || r.ext.Off < l.ext.Off {
+			continue
+		}
+		if survived, ok := settled[r]; ok && survived || !r.uncertain {
+			return fmt.Sprintf("the journal holds %s of the %s at %s but lost %s before it: a write survives a crash as a prefix of itself", fmtExtent(r.ext), r.kind, fmtVersion(r.ver), fmtExtent(l.ext))
+		}
+	}
+	return ""
+}
+
+// servedLater reports whether a record of r's version appended after it covers
+// off: had both survived, that record would serve the byte.
+func servedLater(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if q.seq > r.seq && q.data != nil && q.ver == r.ver && covers(q.ext, off) {
+			return true
+		}
+	}
+	return false
+}
+
+// removedAbove reports whether a release or removal outranking r covers off:
+// it makes the byte absent whether or not r survived.
+func removedAbove(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if (q.kind == kindRelease || q.kind.removal()) && covers(q.ext, off) &&
+			(q.ver.Compare(r.ver) > 0 || q.ver == r.ver && q.seq > r.seq) {
+			return true
+		}
+	}
+	return false
 }
 
 // piece returns the part of r from byte i to byte j as a record of its own,
