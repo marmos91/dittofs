@@ -1308,7 +1308,10 @@ that against every protocol; this section maps the SMB request.
   grant to none first
   (MS-FSA 2.1.5.7; [§6.3](#6.3%20Breaks)), and waits pending while it does.
 - Unlocking a range not held is `STATUS_RANGE_NOT_LOCKED`.
-- A zero-length lock conflicts with nothing and is held.
+- A zero-length lock is held. Its last byte is offset − 1 (MS-FSA 2.1.4.10), so
+  one at X conflicts only with a lock or I/O range holding both X − 1 and X,
+  and one at 0 conflicts with nothing
+  ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
 
 > decision: a mixed lock-and-unlock array is refused before any range is taken,
 > where MS-SMB2 lets a lock array take its earlier ranges and keep them when an

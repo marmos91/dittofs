@@ -697,10 +697,19 @@ server replays the last reply to a retransmission.
   Linux counts every other reply; a sequence left behind, or one run ahead,
   answers the owner's next request `NFS4ERR_BAD_SEQID`.
 - Whether a new open owner has been confirmed is held in the same record: the
-  first `OPEN` of an owner creates its `Sequence` with `Confirmed` false, and
-  only `OPEN_CONFIRM` sets it
-  ([RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)).
-  Until then only `OPEN_CONFIRM` is accepted from the owner.
+  first granted `OPEN` of an owner creates its `Sequence` with `Confirmed`
+  false, a refused one creates nothing, and only `OPEN_CONFIRM` sets it
+  ([RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)). Until then
+  an `OPEN` from the owner replaces the unconfirmed open, releasing it, whatever
+  seqid it carries; every other request naming its state, `READ` and `WRITE`
+  included, is `NFS4ERR_BAD_STATEID` and advances nothing; and an
+  `OPEN_CONFIRM` of an owner already confirmed is `NFS4ERR_BAD_STATEID`
+  (RFC 7530 §16.18.5). `OPEN4_RESULT_CONFIRM` is never set on a
+  `CLAIM_PREVIOUS` reclaim or on an `OPEN` granted a delegation
+  (RFC 7530 §9.1.11).
+- **A seqid wraps to 0.** An owner's next seqid after `0xFFFFFFFF` is 0, as
+  clients in use send; a stateid's `seqid` wraps to 1, since 0 means
+  current (RFC 14 §2.8's `decision:`).
 - The **last reply** per owner is held only in the gateway node that sent
   it, as the session reply cache is (§3.2).
 
@@ -1323,6 +1332,14 @@ client, are RFC 14's.
   direction, an `NLMPROC4_TEST` refused by an NFSv4 or SMB lock reports a holder
   with `svid` 0 and an empty `oh`, for the same reason: an internal owner
   never reaches the wire.
+- **A host whose record just went is connected afresh.** RFC 14 deletes an
+  NLM host's record with its last unlock, and refuses a lock racing that step
+  `ErrState` (`StaleClient`)
+  ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)).
+  The adapter then calls `Connect` for the host and sends the request once
+  more; a `StaleClient` never reaches the host as `NLM4_DENIED`, and one met
+  again on the retry is answered `NLM4_DENIED_GRACE_PERIOD`, which the host
+  resends.
 - `NLMPROC4_FREE_ALL` from the host's own address expires the client.
 - The asynchronous procedures (`*_MSG` / `*_RES`) are accepted over TCP and
   answered on the client's NLM callback service, from the floating address.
@@ -2364,7 +2381,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoReclaim`) | `NFS4ERR_RECLAIM_BAD` in grace, `NFS4ERR_NO_GRACE` outside it | NLM: `NLM4_DENIED_GRACE_PERIOD` in grace, else `NLM4_DENIED` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with state already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | `NFS4ERR_RECLAIM_CONFLICT` | NLM: `NLM4_DENIED` |
-| `ErrState` (`StaleClient`) — a client that expired, or is marked by a shard's loss ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_STALE_CLIENTID` for an operation naming a client ID, `RENEW` included, and for an NFSv4.0 client a loss awaits (§5.4). A stateid of an expired client is never answered `NFS4ERR_STALE_CLIENTID`, which is not a legal answer to `READ`, `WRITE` and the other stateid operations of RFC 8881: RFC 14 released its record with the client's other state, so it resolves to nothing and is `ErrState` (`BadState`), below. `NFS4ERR_EXPIRED` is never answered, since no expired client's record is kept (§5.1). A stateid of a live client whose state was lost is `ErrState` (`StaleState`), below | NLM: `NLM4_DENIED` |
+| `ErrState` (`StaleClient`) — a client that expired, or is marked by a shard's loss ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_STALE_CLIENTID` for an operation naming a client ID, `RENEW` included, and for an NFSv4.0 client a loss awaits (§5.4). A stateid of an expired client is never answered `NFS4ERR_STALE_CLIENTID`, which is not a legal answer to `READ`, `WRITE` and the other stateid operations of RFC 8881: RFC 14 released its record with the client's other state, so it resolves to nothing and is `ErrState` (`BadState`), below. `NFS4ERR_EXPIRED` is never answered, since no expired client's record is kept (§5.1). A stateid of a live client whose state was lost is `ErrState` (`StaleState`), below | NLM: never `NLM4_DENIED`: the adapter connects the host afresh and retries once, then answers `NLM4_DENIED_GRACE_PERIOD` (§6.1) |
 | `ErrState` (`Revoked`, `Admin` naming the cause) — a stateid in its client's revoked set, not yet freed, its client still live: a grant revoked at its recall deadline, or any state an administrator revoked (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); state lost with a shard stays `ErrState` (`StaleState`) | by the revocation's cause: `NFS4ERR_ADMIN_REVOKED` for any stateid an administrator revoked (§5.1); `NFS4ERR_DELEG_REVOKED` for a delegation's or layout's revoked at its recall deadline (§5.3) | — |
 | `ErrState` (`BadState`) — a stateid whose record is gone, minted under the shard's current grace instance outside grace: an expired client's, one freed, a removed share's, or one never issued (§5.2 rule 1) | `NFS4ERR_BAD_STATEID` | — |
 | `ErrState` (`ClientBusy`) — `Destroy` found the client still holding state (§5.1) | `NFS4ERR_CLIENTID_BUSY` | — |
