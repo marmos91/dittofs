@@ -102,7 +102,7 @@ Needs a Linux host with rootless podman 5.6 or later (it pulls with `pull --poli
 uses your normal podman storage, so `podman images` lists the three images it pulls
 (`ubuntu:26.04`, `golang:1.26`, `seaweedfs:4.48`) and `podman ps` shows a running container, named
 `dittofs-<scenario>`. Its Go
-caches, downloads (apt packages, the libnfs source), inputs and kept logs are in the cache,
+caches, downloads (apt packages and lists, the libnfs source), inputs and kept logs are in the cache,
 `/var/tmp/dittofs-scenarios`.
 
 On a laptop where Docker runs in a Linux VM (Docker Desktop, Colima), as on macOS, the host can be a
