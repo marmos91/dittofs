@@ -123,6 +123,14 @@ func testClientPut(t *testing.T, kvo Opener) {
 		t.Error("a put over a stale read wrote")
 	}
 
+	// A put whose prev and next name two live clients is the caller's bug,
+	// not a lost race: a retry on ErrRecordChanged would swap the other's.
+	other := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("o"), Boot: [8]byte{1}}
+	must(t, cs.Create(ctx, other))
+	if _, err := cs.Put(ctx, got, other); !invalid(err) {
+		t.Errorf("a put naming two clients: %v", err)
+	}
+
 	for name, f := range map[string]func(*entity.ClientRecord){
 		"name": func(r *entity.ClientRecord) { r.Name = []byte("g") },
 		"boot": func(r *entity.ClientRecord) { r.Boot = [8]byte{2} },
