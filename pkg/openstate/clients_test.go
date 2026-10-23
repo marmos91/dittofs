@@ -156,6 +156,48 @@ func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 	}
 }
 
+// A confirm never brings back an ID that ended after its proposal: a
+// proposal under the same Boot names the existing ID, and once that client
+// has expired, been destroyed or been replaced by a one-step reboot, the
+// confirm is ErrStaleClient and the ID stays ended.
+func TestConfirmAfterExpiryIsStale(t *testing.T) {
+	for name, end := range map[string]func(t *testing.T, f *fixture, c Client, id entity.ClientID){
+		"expired": func(_ *testing.T, f *fixture, _ Client, _ entity.ClientID) {
+			f.clock.advance(2 * time.Second) // past the lease, within the proposal's period
+			f.sweep(ctx)
+		},
+		"destroyed": func(t *testing.T, f *fixture, c Client, id entity.ClientID) {
+			if err := f.Destroy(ctx, Caller{id, c.Owner}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"rebooted in one step": func(t *testing.T, f *fixture, c Client, _ entity.ClientID) {
+			c.Boot = [8]byte{2}
+			if _, err := f.Connect(ctx, c, nil); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			c := nfs("host-a", 1, entity.NewUser())
+			id := f.connect(t, c)
+			f.clock.advance(leasePeriod - time.Second)
+			p, err := f.Propose(ctx, c, addr)
+			if err != nil || p.Client != id {
+				t.Fatalf("a proposal under the same Boot: %d, %v; want %d", p.Client, err, id)
+			}
+			end(t, f, c, id)
+			if got, err := f.Connect(ctx, c, &p); !errors.Is(err, ErrStaleClient) {
+				t.Errorf("confirm after the client ended: %d, %v; want ErrStaleClient", got, err)
+			}
+			if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
+				t.Errorf("the ended ID after the confirm: %v, want still ended", err)
+			}
+		})
+	}
+}
+
 // Every bit of a confirm is read from Deps.Rand: a failed read proposes
 // nothing.
 func TestConfirmReadsDepsRand(t *testing.T) {
