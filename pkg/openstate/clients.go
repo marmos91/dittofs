@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"time"
 
@@ -89,9 +90,10 @@ type Clients interface {
 	// Renew renews a client's lease for another period, writing nothing.
 	Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error)
 	// Expire ends the client's state at this node: its state here is
-	// released and its lease here dropped. It deletes no record and raises
-	// nothing: the lease timer's expiry does both, and the service then
-	// calls Expire at each node holding the client's state.
+	// released, closing its opens, and its lease here dropped. It deletes no
+	// record and raises no ClientEnded: the lease timer's expiry does both,
+	// and the service then calls Expire at each node holding the client's
+	// state. Each file a close left orphaned or to unlink is raised Closed.
 	Expire(ctx context.Context, c entity.ClientID) error
 	// Destroy deletes a client that holds no session and no state, refusing
 	// ErrClientBusy otherwise; it releases nothing.
@@ -205,7 +207,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 		return 0, err
 	}
 	t.cstep.Lock()
-	ended, err := t.connect(ctx, &rec, p)
+	ended, closed, err := t.connect(ctx, &rec, p)
 	t.cstep.Unlock()
 	if err != nil {
 		return 0, err
@@ -213,12 +215,13 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	if ended != nil {
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
 	}
+	raiseClosed(sink, closed)
 	return rec.ID, nil
 }
 
 // connect makes rec current, under the client step, and returns the record a
-// reboot replaced.
-func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal) (*entity.ClientRecord, error) {
+// reboot replaced and what releasing its state left the service to run.
+func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal) (*entity.ClientRecord, map[entity.FileID]CloseResult, error) {
 	var id entity.ClientID
 	known := false
 	if p != nil {
@@ -228,7 +231,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		ok = ok && pd.ID == p.Client && pd.Confirm == p.Confirm && t.d.Clock.Elapsed() < pd.Expires
 		if ok && pd.Owner != rec.Owner {
 			t.cmu.Unlock()
-			return nil, ErrClientInUse // the proposal stays for its own principal
+			return nil, nil, ErrClientInUse // the proposal stays for its own principal
 		}
 		if ok {
 			delete(t.pending, key)
@@ -236,7 +239,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		}
 		t.cmu.Unlock()
 		if !ok {
-			return nil, ErrStaleClient
+			return nil, nil, ErrStaleClient
 		}
 		id, known, rec.Boot, rec.Adapter = pd.ID, pd.known, pd.Boot, pd.Adapter
 	}
@@ -245,25 +248,25 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	var ended *entity.ClientRecord
 	switch {
 	case err != nil:
-		return nil, err
+		return nil, nil, err
 	case found && refuses(cur, rec.Owner):
-		return nil, ErrClientInUse
+		return nil, nil, ErrClientInUse
 	case known && (!found || cur.ID != id):
-		return nil, ErrStaleClient // the proposed client ended since the proposal
+		return nil, nil, ErrStaleClient // the proposed client ended since the proposal
 	case found && cur.Boot == rec.Boot:
 		if p != nil && cur.ID != id {
-			return nil, ErrStaleClient // the name was connected under another ID since the proposal
+			return nil, nil, ErrStaleClient // the name was connected under another ID since the proposal
 		}
 		if p != nil {
 			if cur, err = t.putAdapter(ctx, cur, rec.Adapter); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		*rec = cur
 	default:
 		if id == 0 {
 			if id, err = t.nextClientID(ctx); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		rec.ID = id
@@ -273,7 +276,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 			ended = &cur
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -282,13 +285,16 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	t.cmu.Lock()
 	if ended != nil {
 		delete(t.leases, ended.ID)
+		delete(t.known, ended.ID)
 	}
 	t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+	t.know(*rec)
 	t.cmu.Unlock()
+	var closed map[entity.FileID]CloseResult
 	if ended != nil {
-		t.releaseClient(ended.ID)
+		closed = t.releaseClient(ctx, ended.ID)
 	}
-	return ended, nil
+	return ended, closed, nil
 }
 
 // putAdapter writes a confirmed proposal's Adapter over the record's.
@@ -393,21 +399,31 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, err
 	defer t.cmu.Unlock()
 	if _, ok := t.leases[c]; !ok {
 		t.leases[c] = t.leaseEnd(rec.Protocol)
+		t.know(rec)
 	}
 	return ClientStatus{}, nil
 }
 
+// know records what the table reads of rec while its client is current; the
+// caller holds cmu.
+func (t *Table) know(rec entity.ClientRecord) {
+	k := known{protocol: rec.Protocol}
+	if rec.Protect {
+		k.owner = rec.Owner
+	}
+	t.known[rec.ID] = k
+}
+
 func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 	t := v.t
-	if _, err := t.running(); err != nil {
+	sink, err := t.running()
+	if err != nil {
 		return err
 	}
 	t.cstep.Lock()
-	defer t.cstep.Unlock()
-	t.releaseClient(c)
-	t.cmu.Lock()
-	delete(t.leases, c)
-	t.cmu.Unlock()
+	closed := t.forget(ctx, c, t.releaseClient(ctx, c))
+	t.cstep.Unlock()
+	raiseClosed(sink, closed)
 	return nil
 }
 
@@ -417,36 +433,50 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 // confirm that landed meanwhile keeps it.
 func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) error {
 	t.cstep.Lock()
-	rec, ended, err := t.expireLocked(ctx, c)
+	rec, ended, closed, err := t.expireLocked(ctx, c)
 	t.cstep.Unlock()
 	if ended {
 		sink.ClientEnded(c, shardsOf(rec), RevokedLeaseExpired)
 	}
+	raiseClosed(sink, closed)
 	return err
 }
 
-func (t *Table) expireLocked(ctx context.Context, c entity.ClientID) (entity.ClientRecord, bool, error) {
+func (t *Table) expireLocked(ctx context.Context, c entity.ClientID) (entity.ClientRecord, bool, map[entity.FileID]CloseResult, error) {
 	t.cmu.Lock()
 	end := t.leases[c]
 	t.cmu.Unlock()
 	if end == 0 || t.d.Clock.Elapsed() < end {
-		return entity.ClientRecord{}, false, nil
+		return entity.ClientRecord{}, false, nil, nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	found := err == nil
 	if err != nil && !merrs.IsNotFoundError(err) {
-		return entity.ClientRecord{}, false, err
+		return entity.ClientRecord{}, false, nil, err
 	}
-	t.releaseClient(c)
+	closed := t.releaseClient(ctx, c)
 	if found {
 		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
-			return entity.ClientRecord{}, false, err
+			return entity.ClientRecord{}, false, closed, err
 		}
 	}
+	return rec, found, t.forget(ctx, c, closed), nil
+}
+
+// forget drops c's lease and its place in the known set here, then releases
+// any open granted between closed's release and c's leaving the set, adding
+// its closes to closed: no open is granted after it.
+func (t *Table) forget(ctx context.Context, c entity.ClientID, closed map[entity.FileID]CloseResult) map[entity.FileID]CloseResult {
 	t.cmu.Lock()
 	delete(t.leases, c)
+	delete(t.known, c)
 	t.cmu.Unlock()
-	return rec, found, nil
+	late := t.releaseClient(ctx, c)
+	if closed == nil {
+		return late
+	}
+	maps.Copy(closed, late)
+	return closed
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {
@@ -470,6 +500,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	}
 	t.cmu.Lock()
 	delete(t.leases, who.Client)
+	delete(t.known, who.Client)
 	t.cmu.Unlock()
 	return nil
 }
@@ -542,10 +573,41 @@ func (t *Table) holdsAny(c entity.ClientID) bool {
 }
 
 // releaseClient releases everything client c holds, file by file, each under
-// that file's step.
-func (t *Table) releaseClient(c entity.ClientID) {
+// that file's step, and returns what its closes left the service to run. Only
+// a file's last close leaves anything, so there is one result per file.
+//
+// decision: an open is released here even when its durable record's delete
+// fails. The record stays a holder of its file, and the file stays unreleased
+// until the next start's grace end closes the records nobody reclaimed; an
+// expiry that kept the open instead would hold its deny modes for a client
+// that is gone. Keep the open if a store outage is shown to strand files.
+func (t *Table) releaseClient(ctx context.Context, c entity.ClientID) map[entity.FileID]CloseResult {
+	var closed map[entity.FileID]CloseResult
 	for _, h := range t.heldBy(c) {
-		_ = t.step(h.file, func(e *entry) error { t.release(e, h.ref); return nil })
+		_ = t.step(h.file, func(e *entry) error {
+			o := e.opens[h.ref.Token]
+			if h.ref.Type != StateOpen || o == nil {
+				t.release(e, h.ref)
+				return nil
+			}
+			var r CloseResult
+			r.Orphan, _ = t.unrecord(ctx, o)
+			if r.Unlink = t.closeOpen(e, o); r.Orphan || r.Unlink != nil {
+				if closed == nil {
+					closed = map[entity.FileID]CloseResult{}
+				}
+				closed[h.file] = r
+			}
+			return nil
+		})
+	}
+	return closed
+}
+
+// raiseClosed hands each close the table made itself to the Sink.
+func raiseClosed(sink Sink, closed map[entity.FileID]CloseResult) {
+	for f, r := range closed {
+		sink.Closed(f, r)
 	}
 }
 
