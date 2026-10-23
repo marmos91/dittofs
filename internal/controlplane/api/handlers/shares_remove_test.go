@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -111,14 +112,10 @@ func newShareServer(t *testing.T) *shareServer {
 	t.Cleanup(func() { _ = md.Close() })
 
 	rtStore := &gatedStore{Store: cp}
-	rt := runtime.New(rtStore)
+	rt := testruntime.New(t, rtStore)
+	// A journal root of its own, so the tests can look under it.
 	journal := t.TempDir()
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journal})
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	if _, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "md", Type: "badger"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

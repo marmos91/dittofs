@@ -33,9 +33,9 @@ For the end-user guide to connecting a Windows client, see
 - [Conformance test suites](#conformance-test-suites)
   - [WPTS (Windows Protocol Test Suites)](#wpts-windows-protocol-test-suites)
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
-  - [Running both SMB suites](#running-both-smb-suites)
   - [pynfs (NFSv4 protocol)](#pynfs-nfsv4-protocol)
   - [cthon04 and nfstest (NFS mount options)](#cthon04-and-nfstest-nfs-mount-options)
+  - [System scenarios](#system-scenarios)
 - [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
 
 ---
@@ -392,60 +392,62 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 ## Conformance test suites
 
 DittoFS is validated against industry-standard conformance suites for SMB and
-NFS. Every one of them runs through `test/conformance/run.sh` and is described
-in `test/conformance/suites.json`:
+NFS. The table comes from the test registry, `test/suites.yaml`. pjdfstest
+([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS, smbtorture and
+the system scenarios run through `dt` (below); cthon04 and nfstest run through
+`test/conformance/run.sh`, as `test/conformance/suites.json` describes, and
+smbtorture's Kerberos option through `smbtorture/run.sh --kerberos`, until each
+moves to `dt`. Until then cthon04 runs on pull requests and nightly, not after
+merge as its tier says:
 
 <!-- conformance-suites:begin -->
-<!-- Generated from test/conformance/suites.json by test/conformance/check-docs.sh. Do not edit by hand. -->
+<!-- Generated from test/suites.yaml by test/harness/bin/dt docs. Do not edit by hand. -->
 
-| Suite | Protocol | Profiles | Variants | Presubmit | Known failures |
+| Suite | Protocol | Profiles | Variants | Tier | Known failures and skips |
 |---|---|---|---|---|---|
-| `wpts` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
-| `smbtorture` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
-| `pjdfstest` | NFS | `badger-s3` | `3`, `4`, `4.1` | `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
-| `pynfs` | NFS | `badger-s3` | `4.0`, `4.1` | `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
-| `cthon04` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `badger-s3` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
-| `nfstest` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
+| `pjdfstest` | NFS | `badger-s3` | nfs: `3`, `4`, `4.1` | `pr` | [`test/posix/known.yaml`](../../test/posix/known.yaml) |
+| `pynfs` | NFS | `badger-s3` | minor: `0`, `1` | `pr` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
+| `pynfs/knfsd` | NFS | none | minor: `0`, `1` | `manual` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
+| `wpts` | SMB | `badger-s3` | none | `pr` | [`test/smb-conformance/known.yaml`](../../test/smb-conformance/known.yaml) |
+| `smbtorture` | SMB | `badger-s3` | none | `pr` | [`test/smb-conformance/smbtorture/known.yaml`](../../test/smb-conformance/smbtorture/known.yaml) |
+| `smbtorture/kerberos` | SMB | `badger-s3` | none | `merge` | [`test/smb-conformance/smbtorture/known-kerberos.yaml`](../../test/smb-conformance/smbtorture/known-kerberos.yaml) |
+| `cthon04` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `pr` | [`test/nfs-mount/cthon04/known.yaml`](../../test/nfs-mount/cthon04/known.yaml) |
+| `nfstest` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `nightly` | [`test/nfs-mount/nfstest/known.yaml`](../../test/nfs-mount/nfstest/known.yaml) |
+| `system` | none | none | none | `merge` | [`test/scenarios/known.yaml`](../../test/scenarios/known.yaml) |
 
-Tiering, profiles and blacklists come from
-[`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
-[`test/conformance/run.sh`](../../test/conformance/run.sh).
+From [`test/suites.yaml`](../../test/suites.yaml): its suites graded against a known file, and their options.
+Each runs in its tier and the wider ones, `pr` then `merge` then `nightly`; a `manual` one only when asked.
 <!-- conformance-suites:end -->
 
 ### WPTS (Windows Protocol Test Suites)
 
 - **Suite:** MS-SMB2 BVT (Build Verification Tests)
-- **Known failures:** see
-  [`../../test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md)
+- **Image:** `mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8`
+- **Known failures and expected skips:**
+  [`../../test/smb-conformance/known.yaml`](../../test/smb-conformance/known.yaml)
 - **Run locally:**
   ```bash
-  cd test/smb-conformance
-  make test        # Run WPTS BVT suite
-  make test-quick  # Quick run (memory profile only)
+  test/harness/bin/dt run wpts/badger-s3    # badger-s3 needs Localstack
   ```
+
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR.
 
 ### smbtorture (Samba Test Suite)
 
-- **Suite:** Full SMB2 test suite (`smb2.*`)
+- **Suite:** the SMB2 tests of
+  [`tests.txt`](../../test/smb-conformance/smbtorture/tests.txt), split over two shards
 - **Image:** `quay.io/samba.org/samba-toolbox:v0.8`
-- **Known failures:** see
-  [`../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md)
+- **Known failures and expected skips:**
+  [`../../test/smb-conformance/smbtorture/known.yaml`](../../test/smb-conformance/smbtorture/known.yaml)
 - **Run locally:**
   ```bash
-  cd test/smb-conformance
-  make smbtorture        # Run full smbtorture suite
-  make smbtorture-quick  # Quick run (memory profile only)
+  test/harness/bin/dt run smbtorture/badger-s3            # both shards; badger-s3 needs Localstack
+  test/harness/bin/dt run smbtorture/badger-s3/shard-1    # one of them
   ```
 
-### Running both SMB suites
-
-```bash
-cd test/smb-conformance
-make test smbtorture     # Run WPTS + smbtorture in sequence
-```
-
-Both SMB suites run in CI via `.github/workflows/conformance.yml` on every PR touching
-SMB-related code.
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR, each shard on a
+runner of its own. Its Kerberos option still runs in `.github/workflows/conformance.yml`,
+through `smbtorture/run.sh --kerberos`, after a merge and nightly.
 
 ### pynfs (NFSv4 protocol)
 
@@ -455,20 +457,18 @@ NFSv4 client, so it needs no kernel mount and no root — `test/posix/` and `tes
 through a kernel client, which only ever sends the subset of the protocol it needs.
 
 - **Suite:** pynfs NFSv4.0 (689 tests) and NFSv4.1 (269 tests)
-- **Known failures:** see
-  [`../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md)
-  and [`KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md)
-- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md) —
+- **Known failures and expected skips:**
+  [`../../test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml)
+- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md):
   the same suite against the Linux kernel server, which is what distinguishes an assertion
   no server satisfies from one DittoFS fails alone
 - **Run locally:**
   ```bash
-  cd test/nfs-conformance/pynfs
-  ./run-pynfs.sh --minor-version 4.0     # provisions and tears down a server
-  ./run-pynfs.sh --minor-version 4.1
+  test/harness/bin/dt run pynfs/badger-s3/0     # NFSv4.0; badger-s3 needs Localstack
+  test/harness/bin/dt run pynfs/badger-s3/1     # NFSv4.1
   ```
 
-Runs in CI via `.github/workflows/nfs-pynfs.yml` on every non-docs PR. See
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR. See
 [`test/nfs-conformance/pynfs/README.md`](../../test/nfs-conformance/pynfs/README.md).
 
 ### cthon04 and nfstest (NFS mount options)
@@ -495,6 +495,23 @@ Runs in the `nfs-mount` job of `.github/workflows/conformance.yml`. See
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.
+
+### System scenarios
+
+Each scenario in [`test/scenarios/`](../../test/scenarios/README.md) runs a DittoFS server in a
+throwaway podman container, with SMB and NFS clients and faults such as an S3 outage or a crash.
+
+- **Known failures:** [`test/scenarios/known.yaml`](../../test/scenarios/known.yaml), each with its
+  issue
+- **Run locally:**
+  ```bash
+  test/harness/bin/dt run system     # Linux, with podman 5.6 or later, or Docker
+  test/harness/bin/dtc run system    # macOS, through Docker
+  ```
+
+The 0x to 8x scenarios run after every merge to develop, in `.github/workflows/tests.yml`, split
+over four runners. They don't fail the gate yet: each scenario's setup runs `apt-get update`, which
+stalls for minutes there at times.
 
 ---
 

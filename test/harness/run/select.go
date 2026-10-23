@@ -13,7 +13,8 @@ import (
 )
 
 // Cell is a planned cell with the suite or option it runs, the tier it runs
-// at, and the entries of the suite's known file.
+// at, and the entries its results are graded by: the suite's known file's,
+// then its quarantine list's.
 type Cell struct {
 	plan.Cell
 	Unit  *registry.Suite
@@ -48,6 +49,10 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			return nil, err
 		}
 		goTests := unit.Format == "go-json" // go test finds its tests; TEST names them
+		// decision: a tool that takes test names, through {names}, is given
+		// them only by a retry. A run that names them here would grade only
+		// those, and tell a named test its dependency left skipped, which dt
+		// doesn't do yet.
 		if len(tests) > 0 && !unit.Tests.Set() && !goTests {
 			if len(suites) > 1 {
 				continue // a group's suites without tests have none to pick
@@ -67,7 +72,7 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			if path != "" && c.Name != want && !strings.HasPrefix(c.Name, want+"/") {
 				continue
 			}
-			cell := Cell{Cell: c, Unit: unit, Tier: at, Known: r.Known[unit.Known]}
+			cell := Cell{Cell: c, Unit: unit, Tier: at, Known: slices.Concat(r.Known[unit.Known], r.Quarantine[s])}
 			switch {
 			case len(tests) > 1 && goTests && slices.ContainsFunc(tests, func(n string) bool { return strings.Contains(n, "/") }):
 				// One -run pattern for several names would filter every

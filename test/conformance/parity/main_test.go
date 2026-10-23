@@ -80,9 +80,6 @@ func TestCompare(t *testing.T) {
 		{"scripts that pass without grading", []report.Cell{cell("pjdfstest/memory/3", report.Passed, pass, known)},
 			map[string]script{"pjdfstest/memory-3": {"0", ""}},
 			false, "differs: the scripts passed it without grading each test", nil},
-		{"pynfs's minor version", []report.Cell{cell("pynfs/badger-s3/1", report.Passed, pass)},
-			map[string]script{"pynfs/badger-s3-4.1": {"0", "ran 1\n"}},
-			true, "- `pynfs/badger-s3/1` (dt: passed, scripts: exit 0): the same", nil},
 		{"a cell only dt ran", []report.Cell{cell("wpts/badger", report.Passed, pass)}, nil,
 			false, "- `wpts/badger` (dt: passed): differs: no results through the scripts", nil},
 		{"a cell only the scripts ran", nil, map[string]script{"wpts/badger": {"0", "ran 1\n"}},
@@ -118,7 +115,7 @@ func TestCompare(t *testing.T) {
 					plan = append(plan, c.Name)
 				}
 			}
-			out, same, err := compare(dir, plan, []string{"pjdfstest", "pynfs", "wpts", "smbtorture"})
+			out, same, err := compare(dir, plan, []string{"pjdfstest", "wpts", "smbtorture"})
 			if err != nil {
 				t.Fatal(err)
 			}

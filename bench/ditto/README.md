@@ -57,6 +57,12 @@ area, so the 7-day medians skip it. The mailbox scenarios score as follows:
 | mail flow, full sync (fixed time) | 99th percentile latency of all their I/O |
 | search re-index (fixed time) | throughput of its mailbox reads |
 
+The summary gives each area's score next to a few of its points, DittoFS vs Samba, each the median
+of its repeats, in MiB/s: sequential read and write with 1 MiB blocks and 8 threads; random read
+and write with 4 KiB blocks and 1 and 8 threads; the small files' create and read at each size,
+their files per second times the file size; the mailbox's search re-index with 16 users. The
+mailbox's mail flow and full sync with 16 users stay in ms, as their 99th percentile latency.
+
 ## Calibration and flags
 
 `CALIBRATION=yes` in the cron file runs every point three times and posts nothing. That is the
@@ -73,8 +79,9 @@ and the files 0600.
 
 - A quiet night posts nothing. It is still recorded, in its directory and `trend.csv`.
 - The first night with a new flag or failure (one the 7 nights before did not have) posts its
-  summary: the figure, the sub-scores, the worst point, the new flags and failures and the develop
-  commits since the last night. `slack-ts` beside the nights keeps that message.
+  summary: the figure, the sub-scores with their points in MiB/s, the worst point, the new flags
+  and failures and the develop commits since the last night. `slack-ts` beside the nights keeps
+  that message.
 - While that alert is open, a night with another new flag or failure replies in its thread, and
   a night that repeats the same ones posts nothing.
 - The first night with no flag and no failure replies in the thread, shown in the channel too,

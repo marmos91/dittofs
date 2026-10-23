@@ -40,6 +40,9 @@ const (
 	New = "new"
 	// Known is a failure a known-failure entry matches: skipped.
 	Known = "known"
+	// Quarantined is a result an entry of the quarantine list matches:
+	// skipped when it failed, and passed when it passed.
+	Quarantined = "quarantined"
 	// UnexpectedPass is a pass an entry still lists: failed.
 	UnexpectedPass = "unexpected_pass"
 	// ExpectedSkip is a skip an expected-skip entry matches: skipped.
@@ -66,6 +69,8 @@ type Test struct {
 	Grade     string // how dt graded the result, when it did
 	Reason    string // why the result was expected: the reason of the known entry that graded it
 	Issue     string // the issue that entry names
+	Retries   int    // how many times a retry ran it again
+	Flaky     bool   // it failed, then passed on a retry
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -155,14 +160,19 @@ func (r Run) Write(dir string) error {
 }
 
 // Read reads the run in dir back from its summary.json, as Write wrote it.
-// A test goes back to the cell whose name begins its suite, the longest such
-// name when one cell's name begins another's.
 func Read(dir string) (Run, error) {
 	path := filepath.Join(dir, "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Run{}, err
 	}
+	return Parse(path, data)
+}
+
+// Parse reads a run from data, a summary.json as Write writes it, named path
+// in its errors. A test goes back to the cell whose name begins its suite, the
+// longest such name when one cell's name begins another's.
+func Parse(path string, data []byte) (Run, error) {
 	var doc document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Run{}, fmt.Errorf("%s: %w", path, err)
@@ -197,6 +207,7 @@ func Read(dir string) (Run, error) {
 		if t.Extra != nil {
 			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
 		}
+		out.Retries, out.Flaky = t.Retries, t.Flaky
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
 	}
 	return r, nil
@@ -241,7 +252,7 @@ func (r Run) json() ([]byte, error) {
 		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message}
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Retries: t.Retries, Flaky: t.Flaky}
 			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
 				out.Extra = &x
 			}
@@ -255,6 +266,9 @@ func (r Run) json() ([]byte, error) {
 				sum.Skipped++
 			default:
 				sum.Other++
+			}
+			if t.Flaky {
+				sum.Flaky++
 			}
 		}
 	}
@@ -290,6 +304,7 @@ type summary struct {
 	Skipped int   `json:"skipped"`
 	Pending int   `json:"pending"`
 	Other   int   `json:"other"`
+	Flaky   int   `json:"flaky"`
 	Start   int64 `json:"start"`
 	Stop    int64 `json:"stop"`
 }
@@ -301,6 +316,8 @@ type test struct {
 	RawStatus string     `json:"rawStatus,omitempty"`
 	Duration  int64      `json:"duration"`
 	Message   string     `json:"message,omitempty"`
+	Retries   int        `json:"retries,omitempty"`
+	Flaky     bool       `json:"flaky,omitempty"`
 	Extra     *testExtra `json:"extra,omitempty"`
 }
 

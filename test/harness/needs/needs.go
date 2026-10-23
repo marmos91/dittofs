@@ -48,7 +48,7 @@ var debian = map[string]string{
 }
 
 // inDtc are the tools the dtc image installs.
-var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true}
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true}
 
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{
@@ -57,7 +57,7 @@ var hints = map[string]string{
 	"macos":   "run it on macOS",
 	"root":    "allow passwordless sudo",
 	"docker":  "install or start Docker",
-	"podman":  "install podman (the scenarios need 5.6 or later)",
+	"podman":  "install podman 5.6 or later, or Docker, which runs it in podman's own image",
 	"rpcbind": "install and start rpcbind",
 	"disk":    "free disk space",
 	"port":    "stop what listens on the port",
@@ -114,8 +114,11 @@ func Check(root, n string) error {
 		if os.Geteuid() != 0 && succeeds("sudo", "-n", "true") != nil {
 			return errors.New("no passwordless sudo")
 		}
-	case "docker", "podman":
+	case "docker":
 		return succeeds(kind, "info")
+	case "podman":
+		_, err := Podman()
+		return err
 	case "rpcbind":
 		return succeeds("rpcinfo", "-p")
 	case "disk":
@@ -136,7 +139,8 @@ func Check(root, n string) error {
 				// decision: a port below those an ordinary user may bind is
 				// checked by connecting to it on loopback, so something that
 				// listens only on another address goes unseen, and the
-				// fixture that binds it then fails to start.
+				// fixture that binds it then fails to start. A knfsd fixture
+				// starts instead, on the host's NFS server, and stops it.
 				conn, err := net.DialTimeout("tcp", "127.0.0.1:"+arg, time.Second)
 				if err != nil {
 					return nil
@@ -344,16 +348,67 @@ func hostPort(v string) (string, error) {
 	return v, nil
 }
 
-// succeeds runs a probe, which a stuck daemon can't hold for long.
-func succeeds(name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := exec.CommandContext(ctx, name, args...).Run()
-	switch {
-	case errors.Is(err, exec.ErrNotFound):
-		return fmt.Errorf("%s not found", name)
-	case err != nil:
-		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+// errOldPodman is hostPodman's error for a podman older than the scenarios
+// need.
+var errOldPodman = errors.New("the scenarios need 5.6 or later")
+
+// Podman says whether the podman need is met in podman's own image, which dt
+// then runs the cell's commands in, and why the need is unmet, if it is.
+//
+// decision: Docker meets it only for a podman that is missing or older than
+// the scenarios need. A podman that fails otherwise leaves it unmet, so a
+// host with its own never falls back to that privileged container.
+func Podman() (inImage bool, err error) {
+	err = hostPodman()
+	if err == nil {
+		return false, nil
+	}
+	_, missing := exec.LookPath("podman")
+	if (missing != nil || errors.Is(err, errOldPodman)) && succeeds("docker", "info") == nil {
+		return true, nil
+	}
+	return false, err
+}
+
+// hostPodman says why this machine's own podman can't run the scenarios, or
+// returns nil when it can: they need podman 5.6 or later, whose pull takes
+// --policy.
+func hostPodman() error {
+	out, err := probe("podman", "info", "--format", "{{.Version.Version}}")
+	if err != nil {
+		return err
+	}
+	v := strings.TrimSpace(string(out))
+	major, rest, _ := strings.Cut(v, ".")
+	minor, _, _ := strings.Cut(rest, ".")
+	ma, err1 := strconv.Atoi(major)
+	mi, err2 := strconv.Atoi(minor)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("podman's version %q isn't a number", v)
+	}
+	if ma < 5 || (ma == 5 && mi < 6) {
+		return fmt.Errorf("podman %s: %w", v, errOldPodman)
 	}
 	return nil
+}
+
+// succeeds runs a probe.
+func succeeds(name string, args ...string) error {
+	_, err := probe(name, args...)
+	return err
+}
+
+// probe runs a command and returns its output, under a limit a stuck daemon
+// can't hold for long.
+func probe(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return nil, fmt.Errorf("%s not found", name)
+	case err != nil:
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return out, nil
 }

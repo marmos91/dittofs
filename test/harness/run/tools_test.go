@@ -216,6 +216,51 @@ func TestToolsLayout(t *testing.T) {
 	}
 }
 
+// {tools}/cthon04 is a copy its user can write, though nix's store holds the
+// tool read-only: general cps its sources to the mount, keeping their modes.
+// A copy already there is kept.
+func TestToolsCopyCthon04(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the tools are laid out where they run")
+	}
+	dtcTools = t.TempDir()
+	t.Cleanup(func() { dtcTools = "/opt" })
+	tree := filepath.Join(dtcTools, "cthon04", "share", "cthon04")
+	for _, d := range []string{filepath.Join(dtcTools, "cthon04", "bin"), filepath.Join(tree, "general")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tree, "general", "Makefile"), []byte("copy:\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DT_IN_CONTAINER", "1")
+	tools := t.TempDir()
+	for range 2 {
+		if err := layOutTools(context.Background(), t.TempDir(), tools, []string{"cthon04"}, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		dtcTools = t.TempDir() // no tools here: laying out again keeps the copy
+	}
+	info, err := os.Lstat(filepath.Join(tools, "cthon04"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("{tools}/cthon04 is %v; want a directory", info.Mode())
+	}
+	makefile := filepath.Join(tools, "cthon04", "general", "Makefile")
+	if info, err = os.Stat(makefile); err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o200 == 0 {
+		t.Errorf("%s is %v; want it writable by its owner", makefile, info.Mode())
+	}
+	if data, err := os.ReadFile(makefile); err != nil || string(data) != "copy:\n" {
+		t.Errorf("%s holds %q, %v", makefile, data, err)
+	}
+}
+
 // The registry's pjdfstest and pynfs cells each name the one tool they use,
 // and pynfs's command runs pynfs-4.{minor} from it.
 func TestRegistryNamesItsTools(t *testing.T) {
@@ -247,7 +292,7 @@ func TestRegistryNamesItsTools(t *testing.T) {
 				continue
 			}
 			vals := map[string]string{"tools": tools, "server": "10.0.0.1", "nfs-port": "12049", "out": "/out", "minor": c.Matrix["minor"]}
-			argv, err := fill(c.Unit.Cmd[0], vals, nil)
+			argv, err := fill(c.Unit.Cmd[0], vals, map[string][]string{"names": strings.Fields(c.Unit.Names)})
 			if err != nil {
 				t.Fatal(err)
 			}

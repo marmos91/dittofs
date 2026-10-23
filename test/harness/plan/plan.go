@@ -39,6 +39,7 @@ type Cell struct {
 	Option   string            `json:"option,omitempty"`
 	Matrix   map[string]string `json:"matrix,omitempty"`
 	Tests    []string          `json:"tests,omitempty"` // when the cell runs part of the suite's tests
+	Tools    []string          `json:"tools,omitempty"` // the test tools it names under {tools}, which dt builds with nix
 	Place    string            `json:"place"`
 	Needs    []string          `json:"needs,omitempty"`
 	Blocking bool              `json:"blocking"`
@@ -173,7 +174,7 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 				}
 				c := Cell{
 					Name: strings.Join(segments, "/"), Suite: suite, Option: option,
-					Matrix: p.asMap(), Place: place, Needs: needs,
+					Matrix: p.asMap(), Tools: u.Tools(), Place: place, Needs: needs,
 					Blocking: blocking(u.Blocking, tier), Job: u.Job, TestTimeout: u.Timeout.Test,
 				}
 				if partial {
@@ -206,6 +207,11 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 		})
 	}
 	var out []string
+	if f.Server == "knfsd" {
+		// The kernel's server, free on its port, so the one dt starts and
+		// stops is its own.
+		out = append(out, "root", "knfsd", "port:2049")
+	}
 	if fill(f.Profile) == "badger-s3" {
 		out = append(out, "service:localstack")
 	}

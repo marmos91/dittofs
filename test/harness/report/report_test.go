@@ -37,6 +37,7 @@ func golden(t *testing.T, name string, got []byte) {
 
 // full is a run with every field dt writes: a test of each status, a skip
 // graded ungraded, a known failure with its tool's status, reason and issue,
+// a flaky pass with its retries,
 // tests below their cell (a Go test's package), a cell of an option and
 // matrix values, and cells without tests, a log or a note.
 var full = Run{
@@ -56,6 +57,7 @@ var full = Run{
 			{Name: "TestKnown", Suite: []string{"example.com/m/a"}, Status: Skipped, RawStatus: Failed, Duration: 5 * time.Millisecond, Message: "a_test.go:12: got 1, want 2", Grade: Known,
 				Reason: "the clock has a one-second step", Issue: "#12"},
 			{Name: "TestCrash", Suite: []string{"example.com/m/c"}, Status: Other, Message: "panic: boom"},
+			{Name: "TestFlaky", Suite: []string{"example.com/m/c"}, Status: Passed, Duration: 20 * time.Millisecond, Message: "c_test.go:7: timed out", Retries: 1, Flaky: true},
 			{Name: "example.com/m/c", Status: Failed, Duration: 300 * time.Millisecond, Message: "failed outside any test"},
 		}},
 		{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"},

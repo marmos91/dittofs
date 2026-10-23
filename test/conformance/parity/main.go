@@ -20,8 +20,7 @@
 //     as the scripts', and a cell whose scripts' grader stopped before grading
 //     each test, as it does when one has no result, compares only its verdict,
 //     and differs when the scripts pass it;
-//   - where the server runs: pynfs's scripts reach the server at the host's
-//     address, as dt does, and a test whose difference comes from where its
+//   - where the server runs: a test whose difference comes from where its
 //     server runs is named here, with the cause, before the runs it is
 //     excused in. None is named yet.
 package main
@@ -165,13 +164,9 @@ func compare(dir string, planned, suites []string) (string, bool, error) {
 
 // scriptsName is the scripts' name for a dt cell: its suite, then its matrix
 // values joined with "-", as the scripts' runner names its results
-// directories. pynfs's minor version N is 4.N there.
+// directories.
 func scriptsName(cell string) string {
 	suite, values, _ := strings.Cut(cell, "/")
-	if suite == "pynfs" {
-		profile, minor, _ := strings.Cut(values, "/")
-		values = profile + "/4." + minor
-	}
 	return suite + "/" + strings.ReplaceAll(values, "/", "-")
 }
 

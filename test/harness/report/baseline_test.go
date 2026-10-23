@@ -19,9 +19,12 @@ import (
 // excuses, a failure of the connection setup, which has no result, and one
 // name with several results. Their sub-suites and names arrive unsorted,
 // with upper and lower case, and the per-sub-suite rates hold a half that
-// rounds to even, a two-thirds and suites with only skips. A cell that didn't
-// run to its end, not run or cut short by a limit, and a run with changes
-// write nothing.
+// rounds to even, a two-thirds and suites with only skips. A sharded cell's
+// shards give the same file together, with the version from the shard whose
+// log has it. A cell or shard that didn't run to its end, not run or cut short
+// by a limit, and a run with changes write nothing. A quarantined failure
+// counts as known and a quarantined pass as a pass: batch7, which the
+// scripts' list holds, and lock2 are quarantined here.
 func TestBaseline(t *testing.T) {
 	pass := func(name string) Test { return Test{Name: name, Status: Passed} }
 	known := func(name string) Test { return Test{Name: name, Status: Skipped, RawStatus: Failed, Grade: Known} }
@@ -29,7 +32,7 @@ func TestBaseline(t *testing.T) {
 	tests := []Test{
 		pass("smb2.connect"),
 		known("smb2.lock.lock1"),
-		pass("smb2.lock.lock2"),
+		{Name: "smb2.lock.lock2", Status: Passed, Grade: Quarantined},
 		fresh("smb2.lock.lock10"),
 		{Name: "smb2.lock.async", Status: Other, RawStatus: Skipped, Grade: UnexpectedSkip},
 		pass("smb2.charset.Testing"),
@@ -39,7 +42,8 @@ func TestBaseline(t *testing.T) {
 		pass("smb2.oplock.exclusive1"),
 		{Name: "smb2.oplock.batch1", Status: Other, Grade: Incomplete},
 		known("smb2.oplock.batch2"), known("smb2.oplock.batch3"), known("smb2.oplock.batch4"),
-		known("smb2.oplock.batch5"), known("smb2.oplock.batch6"), known("smb2.oplock.batch7"),
+		known("smb2.oplock.batch5"), known("smb2.oplock.batch6"),
+		{Name: "smb2.oplock.batch7", Status: Skipped, RawStatus: Failed, Grade: Quarantined},
 		fresh("smb2.oplock.stream1"),
 		{Name: "smb2.rename.simple", Status: Failed, RawStatus: Passed, Grade: UnexpectedPass},
 		{Name: "smb2.replay.channel-sequence", Status: Skipped, RawStatus: Failed, Grade: ExpectedSkip},
@@ -89,6 +93,36 @@ func TestBaseline(t *testing.T) {
 		if _, err := Baseline(dir, cell); err == nil || err.Error() != want {
 			t.Errorf("%s: got %v, want %q", cell, err, want)
 		}
+	}
+
+	shards := t.TempDir()
+	sharded := run
+	sharded.Cells = []Cell{
+		{Name: "smbtorture/memory/shard-1", Result: "failed", Tests: tests[:13], Note: "1 failed: smb2.lock.lock10"},
+		{Name: "smbtorture/memory/shard-2", Result: "failed", Log: "logs/shard-2.log", Tests: tests[13:],
+			Note: "2 failed: smb2.oplock.stream1, smb2.acls.GENERIC; 1 passed unexpectedly: smb2.rename.simple"},
+	}
+	if err := sharded.Write(shards); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(shards, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shards, "logs", "shard-2.log"), []byte("smbtorture 4.22.6\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Baseline(shards, "smbtorture/memory"); err != nil {
+		t.Errorf("a sharded cell: %v", err)
+	} else {
+		golden(t, "baseline.md", got)
+	}
+	sharded.Cells[1] = Cell{Name: "smbtorture/memory/shard-2", Result: "not run", Note: "the fixture: dfs didn't start"}
+	if err := sharded.Write(shards); err != nil {
+		t.Fatal(err)
+	}
+	want := "smbtorture/memory/shard-2 didn't run to its end in run 20261019T231500Z-d6223c90: not run: the fixture: dfs didn't start"
+	if _, err := Baseline(shards, "smbtorture/memory"); err == nil || err.Error() != want {
+		t.Errorf("a shard not run: got %v, want %q", err, want)
 	}
 
 	run.Dirty = true
