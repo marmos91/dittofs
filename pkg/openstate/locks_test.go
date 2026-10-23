@@ -671,7 +671,7 @@ func TestOwnerSequence(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1)
 	f1, f2 := anyFile(), anyFile()
-	oo := []byte("open-owner")
+	oo := owner(a, "open-owner")
 	o1 := f.mustOpen(t, a, f1, OpenRequest{Access: rd | wr, Deny: wr, Owner: oo, Seqs: num(1)})
 	if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(o1), num(2)); err != nil {
 		t.Fatal(err)
@@ -680,8 +680,10 @@ func TestOwnerSequence(t *testing.T) {
 	if _, err := f.open(a, f2, OpenRequest{Access: rd, Owner: oo, Seqs: num(3)}); !errors.Is(err, ErrBadSeqID) {
 		t.Fatalf("a stale number: %v, want ErrBadSeqID", err)
 	}
-	if _, err := f.open(a, f1, OpenRequest{Access: wr, Owner: oo, Seqs: num(4)}); !errors.Is(err, ErrShareViolation) {
-		t.Fatalf("an open against the owner's own deny-write: %v, want ErrShareViolation", err)
+	denied := anyFile()
+	f.mustOpen(t, f.caller(t, smb("pc")), denied, OpenRequest{Access: rd, Deny: wr})
+	if _, err := f.open(a, denied, OpenRequest{Access: wr, Owner: oo, Seqs: num(4)}); !errors.Is(err, ErrShareViolation) {
+		t.Fatalf("an open against another client's deny-write: %v, want ErrShareViolation", err)
 	}
 	if _, err := f.Opens().Close(ctx, a, refOf(o2), num(5)); err != nil {
 		t.Fatal(err)
@@ -738,7 +740,7 @@ func TestOwnerSequence(t *testing.T) {
 	if err := f.Expire(ctx, a.Client); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.seqs[opensOwner(a.Client, oo)]; ok {
+	if _, ok := f.seqs[opensOwner(oo)]; ok {
 		t.Error("the expired client's owner of opens kept its sequence")
 	}
 }
@@ -749,7 +751,7 @@ func TestOwnerSequence(t *testing.T) {
 func TestNotYoursAdvancesNoSequence(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("host-a", 1, entity.Principal{}))
-	oo := []byte("open-owner")
+	oo := owner(a, "open-owner")
 	o := f.mustOpen(t, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)})
 	if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(o), num(2)); err != nil {
 		t.Fatal(err)
@@ -770,7 +772,7 @@ func TestOwnerRequestsAreSerial(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
 	for i := range 300 {
-		oo := []byte(fmt.Sprint("open-owner-", i))
+		oo := owner(a, fmt.Sprint("open-owner-", i))
 		var errs [2]error
 		var wg sync.WaitGroup
 		for j := range errs {
@@ -794,7 +796,7 @@ func TestCallsAnswerTheNewSequence(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
 	file := anyFile()
-	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Owner: []byte("oo"), Seqs: num(1)})
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Owner: owner(a, "oo"), Seqs: num(1)})
 	opened := func(seq uint32) OpenRef {
 		st := o.Ref
 		st.Seq = seq
@@ -830,6 +832,37 @@ func errOf2(_ uint32, err error) error { return err }
 
 func ptr[T any](v T) *T { return &v }
 
+// An owner holds one open of a file: its second open of the file is that
+// open, upgraded, its modes widened and its sequence raised, judged against
+// the other opens alone; another owner's open is another open.
+func TestOwnerUpgradesItsOpen(t *testing.T) {
+	f := newFixture(t)
+	a, s := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.caller(t, smb("pc"))
+	file := anyFile()
+	oo := owner(a, "open-owner")
+	first := f.mustOpen(t, a, file, OpenRequest{Access: rd, Deny: wr, Owner: oo})
+	up := f.mustOpen(t, a, file, OpenRequest{Access: wr, Owner: oo})
+	if up.Ref.Token != first.Ref.Token || up.Ref.Seq != first.Ref.Seq+1 || up.Mode.Access != rd|wr || up.Mode.Deny != wr {
+		t.Fatalf("the owner's second open: %+v, want the first upgraded to read and write, denying write", up)
+	}
+	if err := f.Checks().CheckIO(ctx, a, refOf(first), br(0, 1), true); err != nil {
+		t.Errorf("a write through the upgraded open: %v", err)
+	}
+	if _, err := f.open(s, file, OpenRequest{Access: rd}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.open(a, file, OpenRequest{Access: rd, Deny: rd, Owner: oo}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an upgrade denying read beside another client's reader: %v, want ErrShareViolation", err)
+	}
+	other := f.mustOpen(t, a, file, OpenRequest{Access: rd, Owner: owner(a, "another")})
+	if other.Ref.Token == first.Ref.Token {
+		t.Error("another owner's open of the file is the first owner's")
+	}
+	if r := f.close(t, a, first); r.Orphan || r.Unlink != nil {
+		t.Errorf("the close of the upgraded open: %+v", r)
+	}
+}
+
 // A new owner of opens is confirmed before anything else: I/O through its
 // open is refused until ConfirmOpen, which raises the open's reference
 // sequence, and only the owner's first open asks for it.
@@ -837,7 +870,7 @@ func TestConfirmOpen(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
 	file := anyFile()
-	oo := []byte("open-owner")
+	oo := owner(a, "open-owner")
 	res, err := f.Opens().Open(ctx, a, file, OpenRequest{Access: rd, Owner: oo, Seqs: num(1)})
 	if err != nil || !res.Confirm {
 		t.Fatalf("a new owner's open: Confirm %v, %v; want a confirm asked", res.Confirm, err)

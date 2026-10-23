@@ -461,7 +461,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 		introduces := ls == nil && op != nil
 		seq := locksOwner(r.Owner)
 		if introduces {
-			seq = opensOwner(op.Client, op.owner)
+			seq = opensOwner(op.Owner)
 		}
 		return t.sequenced(seq, r.Seqs.Owner, false, func() (err error) {
 			if err := seqErr(cur, r.Open.State.Seq); err != nil {
