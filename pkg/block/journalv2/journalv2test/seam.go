@@ -729,13 +729,27 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 		}
 	}
 
+	// decision: a failed write records the part of p the file's size after
+	// the call allows, not p[:n]. os.File.WriteAt reports n == 0 when a write
+	// fails part-way, even if some of p reached the file, and a byte left
+	// unrecorded would survive a crash. Recording a byte that never landed is
+	// harmless: its undo restores what old holds, which was there anyway.
 	n, err := sf.f.WriteAt(p, off)
-	if n > 0 {
+	landed := int64(len(p))
+	if err != nil {
+		after, serr := sf.size()
+		if serr != nil {
+			after = size
+		}
+		landed = min(landed, max(max(size, after)-off, 0))
+	}
+
+	if landed > 0 {
 		sf.record(change{
 			kind:    changeWrite,
 			off:     off,
-			data:    append([]byte(nil), p[:n]...),
-			old:     old[:min(len(old), n)],
+			data:    append([]byte(nil), p[:landed]...),
+			old:     old[:min(int64(len(old)), landed)],
 			oldSize: size,
 		})
 	}
