@@ -886,9 +886,9 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    > ever seen to rise 32 times within one lease.
 2. **`other` cannot be guessed.** At least **64 bits** of it **MUST** come from
    a random source, so a client that sees its own stateids learns nothing that
-   names another's. `other` has the room: RFC 14 gives an open's stateid its
-   `Token`, which `other` carries in place of the `OpenID`, and a lock state,
-   delegation, layout or copy an ID that carries those bits
+   names another's. `other` has the room: RFC 14 names an NFS open by its
+   `Token`, which `other` carries, and takes no `OpenID` for it, and gives a
+   lock state, delegation, layout or copy an ID that carries those bits
    ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)); a counter or a
    timestamp in their place makes every neighbouring stateid reachable by
    arithmetic. The rule binds stateids, which are bearer tokens with room for

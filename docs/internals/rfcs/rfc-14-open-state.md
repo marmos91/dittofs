@@ -330,13 +330,13 @@ adapter package, or the metadata layer would import an adapter.
 // Open is one open of one file. An open of an unlinked file keeps it alive (§9).
 // Its durable form, OpenRecord, is every field but LossSeen and Channel.Outstanding.
 type Open struct {
-	ID         OpenID       // 40 bits, unique across the installation, never reused (§2.11); carried in no StateRef
+	ID         OpenID       // only where needed (below): 40 bits, unique across the installation, never reused (§2.11); zero for an NFS open
 	Client     ClientID
 	Principal  Principal    // the opener, mapped before squashing (§2.1); any other caller through the open is refused
 	File       FileID
 	Via        FileID       // the directory it was opened through (§9.5); zero: opened by handle or ID, counted under no directory, no delete through a parent; kept across a reconnect
 	Mode       OpenMode     // what it may do, and what it refuses other opens (§6)
-	Token      uint64       // the StateRef token naming it (§2.11)
+	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
 	Durability Durability   // none, durable, persistent (§8.1)
 	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none
@@ -400,6 +400,20 @@ unique across the installation, so an SMB adapter carries it in the persistent
 half of the SMB FileId and finds the open again after a reconnect to another
 node.
 
+**An open takes an `OpenID` only where one is needed.** Every open has a
+`Token`, which names it in the table and in its file's locks. An `OpenID` is
+issued (`NextID`) only to an open that something outside the table names
+across a reconnect or in a key: an SMB open, whose `FileId` carries it; a
+durable open, whose record is keyed by it (§8), so an NFS open made durable by
+an unlink takes one in that step (§9.1); and a clone's source open (§9.2). An
+NFS open is named by its stateid's token and takes none.
+
+> ponytail: `OpenID` is 40 bits and never reused, so an installation issues at
+> most 2⁴⁰; SMB opens, durable opens and clone sources draw on it, NFS opens do
+> not. At a sustained 1,000 such opens a second it lasts 35 years. Widen it — fewer
+> shard bits in the persistent `FileId`, routing by lookup — if `IDS‖open` is
+> seen past 2³⁹.
+
 **An open is used only by its opener.** `Principal` is kept for the open's whole
 life, and every call that uses the open — I/O through its stateid or FileId, a
 lock under it, a downgrade, a close — **MUST** be refused with `ErrNotYours`
@@ -455,7 +469,7 @@ only with a persistent one.
 // Lock is one byte-range lock, held against the file (never a handle or a name).
 type Lock struct {
 	Owner LockOwner
-	Open  OpenID    // the open it was taken under, whose close releases it; zero: none
+	Open  uint64    // the Token of the open it was taken under, whose close releases it; zero: none
 	Range LockRange // {ByteRange; Exclusive}
 }
 
@@ -464,7 +478,7 @@ type Lock struct {
 type LockState struct {
 	ID    LockStateID // the StateRef token naming it (§2.11)
 	Owner LockOwner
-	Open  OpenID
+	Open  uint64      // the Token of the open it was taken under
 	Seq   uint32      // its reference sequence (§2.2)
 }
 
@@ -754,7 +768,7 @@ name a confirmed record holds under another principal is refused
 type LockWaiter struct {
 	File     FileID
 	Owner    LockOwner
-	Open     OpenID        // zero: the lock names no open
+	Open     uint64        // the open's Token; zero: the lock names no open
 	Range    LockRange     // {ByteRange; Exclusive}
 	Wait     WaitKind      // poll: the client asks again; callback: granted in the freeing step and reported
 	Arrived  time.Duration // Deps.Clock.Elapsed when it arrived: orders the waiters
@@ -890,7 +904,8 @@ which 24 bits are usable, so an installation numbers at most 2²⁴ shards. An
 FileId ([RFC 17 §3.4](rfc-17-vfs.md#3.4%20IDs%20and%20their%20encodings)). A
 `ClientID` is 64 bits, which `clientid4` carries. `ClientID`, `OpenID` and the
 durable lock ID are issued by the `OpenRecords` view's `NextID`, unique across
-the installation and never reused (RFC 16's `IDS‖kind`).
+the installation and never reused (RFC 16's `IDS‖kind`); an `OpenID` only to
+the opens §2.2 names.
 
 **A bearer ID with room is unguessable.** An ID a client presents with nothing
 else to prove it is the presenter's — a stateid, which names an open
@@ -1976,9 +1991,10 @@ for its shard writes nothing.
 
 **The unlink takes the records from the table.** The service, holding the
 file's admission lock, asks `Opens.Durable` for the `OpenRecord` of each of the
-file's volatile opens, writes them in the unlink's transaction, and reports the
-outcome to the commit function `Durable` returned: on a commit the table marks
-those opens durable, and on an abort it changes nothing. Under the admission
+file's volatile opens — an open with no `OpenID` is issued one for its record
+(§2.2) — writes them in the unlink's transaction, and reports the outcome to
+the commit function `Durable` returned: on a commit the table marks those opens
+durable, and on an abort it changes nothing, an issued ID left unused. Under the admission
 lock no open or close of the file lands between the two.
 
 ### 9.2 A new primary releases nothing before grace ends
@@ -2658,6 +2674,7 @@ Deleted numbers are not reused.
 | L63 | A delegation reference is the client's only over its own connection. | NFSv4.0: present a delegation stateid over another client's connection: `ErrNotYours`, the delegation intact (RFC 17 V24's NFSv4.0 case). |
 | L64 | A reboot never leaves both IDs current, and a renewal of the old ID racing the confirm does not keep it. | Race the old ID's renewal against the new `Boot`'s confirm 10⁴ times: after each, exactly one ID is current and the old one's state is released. |
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
+| L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |
 
 ## 13. Conformance
 
