@@ -740,8 +740,13 @@ of the calls it has admitted to that share, and at admission
 - a call whose admission would take its share past **three quarters** of the
   receive pool or of the reply pool — the share's count **plus this call's own
   receive and reply reservations** — **MUST** be refused with `ErrDelay` naming
-  `DelayResources`, while that pool is more than half full;
-- below half full, the cap does not bind;
+  `DelayResources`, while that pool is more than half full and another share
+  holds bytes of it;
+- below half full, or with no other share holding bytes of that pool, the cap
+  does not bind, so one share on an otherwise idle node uses the whole pool. A
+  share already past the cap when another share's call is admitted is not
+  preempted; it is admitted nothing more until it falls below, which its calls'
+  deadlines bound, as for a key (§4.1);
 - the check and the addition of the call's bytes to the share's count **MUST**
   be one atomic step, so that concurrent admissions to one share cannot each
   pass against the same total;
@@ -750,6 +755,14 @@ of the calls it has admitted to that share, and at admission
 
 The cap is a refusal, not a wait, because the call already holds its receive
 reservation: waiting would keep it, and the memory is what the cap protects.
+
+> decision: the cap binds only beside another share, because refusing a share
+> that is alone frees memory nobody is waiting for, and an SMB `WRITE` refused
+> `STATUS_INSUFFICIENT_RESOURCES` reaches a profile disk's guest as failed I/O,
+> not a retry. Beside another active share a profile write past the cap is
+> still refused that way. Hold such a write within its connection's floor
+> (§4.3) instead if `memory_pool_refusals_total{reason="share_cap"}` is seen
+> rising on a share carrying profile disks.
 
 > decision: the share is known only at admission, after the reply wait, so a
 > call may wait for reply bytes to its deadline and then be refused by its
@@ -1223,7 +1236,7 @@ once cannot fill a pool.
 | R5 | No queue, wait list or table that grows with load is unbounded; each has a row in §5.1 or in the RFC it cites. | Under constant write load, stop the remote for ten minutes: assert every pool's reserved bytes and every counted queue's length stay within their bound at every sample. Insert an unbounded queue at offload's posting in a test build: assert it is caught by its own length gauge, not by a heap slope. Remove 10⁶ files with the remote stopped: assert the engine's scheduler holds at most its total, `engine_work_items_dropped_total` rises, and every removal completes once the remote returns. |
 | R6 | At the receive ceiling the socket is not read; no request is read that cannot be reserved, and a record in several fragments is reserved at its protocol's largest class before its first fragment is read. | An RPC record in three fragments whose first is 1 KiB: assert the receive pool is charged the transfer class before the first fragment is read, and a fragment past the cap closes the connection with the reservation released. A fuzz over record marks and fragment sequences asserts no reservation leaks and the cap holds. |
 | R7 | No client key is granted bytes of the receive or reply pool that take it past three quarters while another key waits; waiting keys are granted in turns. | A unit property test of `Budget`: for random waiters of random classes over N keys, with random releases, a visit grants a key no more bytes than its deficit holds; a waiting key below the cap whose head fits the free bytes is granted before any other key is visited twice; and no key past three quarters is granted while another waits. As a smoke test, one address with 16 connections at their caps of 1 MiB writes and 20 other addresses sending `GETATTR`: assert each other address is served, and the busy address is granted nothing further while above three quarters of the receive pool. |
-| R8 | While the receive or reply pool is more than half full, no call is admitted that would take its share past three quarters of it, counting the call's own reservations and checked atomically with their charge; it is refused with `DelayResources` at once. A call that only releases or reclaims state is exempt (§4.2). | `builds`'s remote black-holed, build01 reading cold at depth 64 on four connections, alice-pc writing to `profiles`: assert `builds` holds at most three quarters of the reply pool, build01 is answered `NFS3ERR_JUKEBOX` and `memory_pool_refusals_total{reason="share_cap"}` rises. With `builds` one call below its cap, 64 1 MiB reads on new connections arriving at once: assert `builds` still holds at most three quarters. Close an open and unlock a range on `builds`: assert both succeed. On the reference box, alice-pc's p99 write latency stays within twice its unloaded figure. |
+| R8 | While the receive or reply pool is more than half full and another share holds bytes of it, no call is admitted that would take its share past three quarters of it, counting the call's own reservations and checked atomically with their charge; it is refused with `DelayResources` at once. A call that only releases or reclaims state is exempt (§4.2). | `builds`'s remote black-holed, build01 reading cold at depth 64 on four connections, alice-pc writing to `profiles`: assert `builds` holds at most three quarters of the reply pool, build01 is answered `NFS3ERR_JUKEBOX` and `memory_pool_refusals_total{reason="share_cap"}` rises. With `builds` one call below its cap, 64 1 MiB reads on new connections arriving at once: assert `builds` still holds at most three quarters. Close an open and unlock a range on `builds`: assert both succeed. Stop alice-pc and let `builds` alone fill the pool: assert none of its calls is refused by the cap. On the reference box, alice-pc's p99 write latency stays within twice its unloaded figure. |
 | R9 | A held call past its connection's floor holds its bytes in the hold pool, not the receive pool, charged its whole receive reservation — buffer class and overhead — never less. | With the receive pool at 64 MiB, freeze `profiles` and hold 300 64 KiB writes on one connection: assert the receive pool holds the floor's 256 and the hold pool the rest. Repeat with 100 KiB writes: assert the hold pool is charged a transfer-class buffer and its overhead per write past the floor. |
 | R10 | No address holds more than a quarter of the connection limit. | One address opening connections in a loop: assert it is held at a quarter of the limit and another address still connects. |
 | R11 | A close, unlock, grant return, or reclaim of durable state is never refused for memory; a reclaim of volatile state is refused, retry-later, only once the open-state pool holds twice its ceiling. | Fill the open-state pool to nine tenths, restart with half the *L*, reclaim: assert every reclaim succeeds and a new open is `DelayResources` until the pool falls. Then have one eligible NFSv4.0 client reclaim opens it never held: assert its reclaims are refused `DelayResources` once the pool reaches twice its ceiling, resident memory stays under *L*, and a persistent open's reconnect still succeeds. |
