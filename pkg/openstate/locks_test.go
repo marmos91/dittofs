@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 
@@ -315,7 +317,7 @@ func TestWaiterPlace(t *testing.T) {
 		}
 	}
 	f.clock.advance(leasePeriod/2 + 1)
-	f.servePolls(f.sink)
+	f.serveFiles(f.sink, slices.Collect(maps.Keys(f.polls)))
 	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
 	if _, err := f.lock(p2, file, LockReq{Owner: owner(p2, "p"), Ranges: rg, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
 		t.Errorf("the later poller after the range freed: %v, want refused", err)
@@ -392,8 +394,35 @@ func TestPollReservationLapses(t *testing.T) {
 	}
 	f.order.mu.Lock()
 	defer f.order.mu.Unlock()
-	if len(f.order.files) != 1 || f.order.files[0] != file.ID {
-		t.Errorf("the timer took the admission lock of %v, want the file's once", f.order.files)
+	// The clock's advance fires the timer's own sweep beside the one called
+	// here, so the file's lock may be taken twice; never another file's.
+	if len(f.order.files) == 0 || slices.ContainsFunc(f.order.files, func(g entity.FileID) bool { return g != file.ID }) {
+		t.Errorf("the timer took the admission lock of %v, want the file's alone", f.order.files)
+	}
+}
+
+// A lease expiry on the timer that frees a range a callback waiter waits on
+// grants the waiter only under the file's admission lock.
+func TestExpiryGrantsWaitersUnderOrder(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "h", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	if res := f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+		t.Fatal("the host's lock was not left waiting")
+	}
+
+	f.clock.advance(2 * leasePeriod)
+	f.sweep(ctx)
+	f.Stop() // waits for the steps the timer started
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after the expiry: granted %v, want h", got)
+	}
+	f.order.mu.Lock()
+	defer f.order.mu.Unlock()
+	if !slices.Contains(f.order.files, file.ID) {
+		t.Errorf("the waiter was granted on the timer without the file's admission lock: taken for %v", f.order.files)
 	}
 }
 
