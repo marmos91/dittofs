@@ -267,6 +267,9 @@ func (e *entry) blocker(o LockOwner, r LockRange, upto int) *Lock {
 // protocol's are advisory and gate lock requests only. Give LockOwner a field
 // of its own if a protocol is served whose locks are one and not the other.
 func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
+	if r.Length == 0 {
+		return nil // an I/O of no byte crosses no lock
+	}
 	for _, ls := range e.lstates {
 		if !ls.owner.Stack {
 			continue

@@ -203,6 +203,57 @@ func TestSMBLockLists(t *testing.T) {
 	}
 }
 
+// A range's last byte is offset + length - 1, a zero-length one's included,
+// so a zero-length lock at X conflicts only with a range holding both X-1 and
+// X, and one at 0 with nothing; a range to the last byte never overflows.
+func TestZeroLengthLocks(t *testing.T) {
+	f := newFixture(t)
+	s := f.caller(t, smb("pc"))
+	try := func(file FileKey, r LockRange) error {
+		o := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+		_, err := f.lock(s, file, LockReq{Owner: smbOwner(s, o), Open: refOf(o), Ranges: []LockRange{r}})
+		return err
+	}
+	file := anyFile()
+	if err := try(file, x(10, 10)); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		at   uint64
+		want error
+	}{{15, ErrLocked}, {10, nil}, {20, nil}} {
+		if err := try(file, x(c.at, 0)); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+			t.Errorf("a zero-length lock at %d beside [10, 20): %v, want %v", c.at, err, c.want)
+		}
+	}
+	whole := anyFile()
+	if err := try(whole, x(0, ^uint64(0))); err != nil {
+		t.Fatal(err)
+	}
+	if err := try(whole, x(0, 0)); err != nil {
+		t.Errorf("a zero-length lock at 0 beside the whole file: %v", err)
+	}
+
+	zero := anyFile()
+	if err := try(zero, x(15, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := try(zero, x(14, 2)); !errors.Is(err, ErrLocked) {
+		t.Errorf("[14, 16) beside a zero-length lock at 15: %v, want ErrLocked", err)
+	}
+	if err := try(zero, x(15, 1)); err != nil {
+		t.Errorf("[15, 16) beside a zero-length lock at 15: %v", err)
+	}
+
+	h, n := f.host(t, "h", 1), f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	last := anyFile()
+	f.mustLock(t, h, last, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(^uint64(0)-1, ^uint64(0))}})
+	o := f.mustOpen(t, n, last, OpenRequest{Access: rd | wr})
+	if _, err := f.lock(n, last, LockReq{Owner: owner(n, "lo"), Open: refOf(o), Ranges: []LockRange{x(^uint64(0), 1)}}); !errors.Is(err, ErrLocked) {
+		t.Errorf("the last byte beside a lock reaching it: %v, want ErrLocked", err)
+	}
+}
+
 // An SMB lock is mandatory: an exclusive one refuses every other open's and
 // anonymous I/O across it and admits its own open's; a shared one refuses
 // every write, its own open's too. An NFS lock is advisory and refuses no I/O.
