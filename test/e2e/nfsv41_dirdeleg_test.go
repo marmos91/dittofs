@@ -106,6 +106,7 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 	m := dirDelegGranted.FindStringSubmatch(extractNewLogs(readdirSince, readLogFile(t, sp)))
 	mask, err := strconv.ParseUint(m[1], 16, 32)
 	require.NoError(t, err, "parse notification mask %q", m[1])
+	t.Logf("directory delegation granted with notification mask 0x%x", mask)
 
 	return &dirDelegFixture{
 		sp:         sp,
