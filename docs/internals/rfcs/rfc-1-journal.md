@@ -1335,7 +1335,11 @@ type Change struct {
 
 `Since(id, from)` yields every held extent of `id`, every unsettled removal
 marker and every synced loss record ([§3.8](#3.8%20Loss%20events)) whose version is strictly above
-`from`, each with its version, in version order. A loss is yielded so the engine
+`from`, each with its version, in version order. A removal marker that runs to
+the end of the file, a truncate's or a delete's, is yielded with
+`Extent.Len = MaxInt64 - Extent.Off`, never with its record's length 0
+([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and the index's read-out
+([§4.4](#4.4%20Inspection)) reports it the same way. A loss is yielded so the engine
 can commit a lost write's existence from it, and the range reads **Lost** rather
 than as the file was before the write ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); an unsynced loss is not
 yielded, since its write was never answered as stable. A synced loss record
