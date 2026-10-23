@@ -27,7 +27,7 @@ func (s *Store) Opens() Opens { return Opens{s} }
 // the release that would delete it, which in turn range-guards the file's
 // open records: whichever commits second loses. An open of a released file
 // is stale.
-func (o Opens) Put(ctx context.Context, share entity.ShareID, op entity.Open) error {
+func (o Opens) Put(ctx context.Context, share entity.ShareID, op entity.OpenRecord) error {
 	if op.ID == 0 {
 		return merrs.NewInvalidArgumentError("an open needs an ID")
 	}
@@ -41,7 +41,7 @@ func (o Opens) Put(ctx context.Context, share entity.ShareID, op entity.Open) er
 }
 
 // Get reads one durable open.
-func (o Opens) Get(ctx context.Context, share entity.ShareID, file entity.FileID, id entity.OpenID) (op entity.Open, err error) {
+func (o Opens) Get(ctx context.Context, share entity.ShareID, file entity.FileID, id entity.OpenID) (op entity.OpenRecord, err error) {
 	err = o.s.kv.View(ctx, func(r kv.Reader) error {
 		b, ok, err := get(r, openKey(share, file, id))
 		if err != nil {
@@ -57,7 +57,7 @@ func (o Opens) Get(ctx context.Context, share entity.ShareID, file entity.FileID
 }
 
 // Of lists a file's durable opens in ID order.
-func (o Opens) Of(ctx context.Context, share entity.ShareID, file entity.FileID) (out []entity.Open, err error) {
+func (o Opens) Of(ctx context.Context, share entity.ShareID, file entity.FileID) (out []entity.OpenRecord, err error) {
 	err = o.s.kv.View(ctx, func(r kv.Reader) (err error) {
 		out, err = opensOf(r, share, file)
 		return err
@@ -116,7 +116,7 @@ func (o Opens) Durable(ctx context.Context, share entity.ShareID, shard uint64) 
 	})
 }
 
-func putOpen(tx kv.Txn, share entity.ShareID, shard uint64, op entity.Open) error {
+func putOpen(tx kv.Txn, share entity.ShareID, shard uint64, op entity.OpenRecord) error {
 	if err := tx.Set(openKey(share, op.File, op.ID), encodeOpen(op)); err != nil {
 		return err
 	}
@@ -133,9 +133,9 @@ func dropOpen(tx kv.Txn, share entity.ShareID, shard uint64, file entity.FileID,
 
 // opensOf reads a file's durable open records, skipping the locks beneath
 // them.
-func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Open, error) {
+func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.OpenRecord, error) {
 	pre := opensPrefix(share, file)
-	var out []entity.Open
+	var out []entity.OpenRecord
 	for row, err := range r.Scan(pre, nil) {
 		if err != nil {
 			return nil, err
@@ -243,20 +243,20 @@ func (o Opens) DeletePending(ctx context.Context, share entity.ShareID, file ent
 
 // persistentOpen reads a durable open, tracked, refusing one that is not
 // persistent.
-func persistentOpen(tx kv.Txn, share entity.ShareID, file entity.FileID, id entity.OpenID) (entity.Open, error) {
+func persistentOpen(tx kv.Txn, share entity.ShareID, file entity.FileID, id entity.OpenID) (entity.OpenRecord, error) {
 	b, ok, err := get(tx, openKey(share, file, id))
 	if err != nil {
-		return entity.Open{}, err
+		return entity.OpenRecord{}, err
 	}
 	if !ok {
-		return entity.Open{}, merrs.NewNotFoundError(fmt.Sprintf("open %d", id), "open")
+		return entity.OpenRecord{}, merrs.NewNotFoundError(fmt.Sprintf("open %d", id), "open")
 	}
 	op, err := decodeOpen(file, id, b)
 	if err != nil {
-		return entity.Open{}, err
+		return entity.OpenRecord{}, err
 	}
 	if op.Durability != entity.DurabilityPersistent {
-		return entity.Open{}, merrs.NewInvalidArgumentError("only a persistent open's state is stored")
+		return entity.OpenRecord{}, merrs.NewInvalidArgumentError("only a persistent open's state is stored")
 	}
 	return op, nil
 }

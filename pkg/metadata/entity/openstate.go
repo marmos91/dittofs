@@ -149,10 +149,10 @@ const (
 	TimeAccess
 )
 
-// Open is a durable open record. Only three opens are stored: one that
+// OpenRecord is a durable open record. Only three opens are stored: one that
 // keeps a file with no entry alive, an SMB persistent open, and a clone's
 // hold on its source. Every other open lives only at the file's primary.
-type Open struct {
+type OpenRecord struct {
 	ID            OpenID
 	Client        ClientID // zero for a clone's source open, which no client holds
 	Principal     Principal

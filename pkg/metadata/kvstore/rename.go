@@ -21,7 +21,7 @@ import (
 //
 // open is the opens of the file a rename replaces, as for Unlink: made
 // durable when the rename takes that file's last entry.
-func (n Namespace) Rename(ctx context.Context, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open ...entity.Open) (_ Orphaned, err error) {
+func (n Namespace) Rename(ctx context.Context, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open ...entity.OpenRecord) (_ Orphaned, err error) {
 	defer opError(&err, "rename", from, fromName)
 	var out Orphaned
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
@@ -31,7 +31,7 @@ func (n Namespace) Rename(ctx context.Context, id entity.Identity, from entity.H
 	return out, err
 }
 
-func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open []entity.Open) (Orphaned, error) {
+func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open []entity.OpenRecord) (Orphaned, error) {
 	share, sd, err := dirIn(tx, from)
 	if err != nil {
 		return Orphaned{}, err

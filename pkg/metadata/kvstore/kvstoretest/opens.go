@@ -14,11 +14,11 @@ func (f *fs) release(file entity.FileID, v uint64) error {
 	return f.s.Existence().Remove(ctx, f.share.ID, file, 0, kvstore.RemoveOp{Version: entity.VersionOf(v), Kind: entity.RemoveRelease}, nil)
 }
 
-func (f *fs) newOpen(file entity.FileID) entity.Open {
+func (f *fs) newOpen(file entity.FileID) entity.OpenRecord {
 	f.t.Helper()
 	id, err := f.s.NextID(ctx, kvstore.IDOpen)
 	must(f.t, err)
-	return entity.Open{ID: entity.OpenID(id), File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
+	return entity.OpenRecord{ID: entity.OpenID(id), File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
 }
 
 func (f *fs) durable(shard uint64) []kvstore.DurableOpen {

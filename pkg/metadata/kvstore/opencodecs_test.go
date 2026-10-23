@@ -24,7 +24,7 @@ func openCodecCases() []codecCase {
 		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
 		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1, n2}}, Ended: true, Adapter: []byte{0x01, 0xAB}}
 	smb := entity.ClientRecord{ID: 8, Protocol: entity.ProtocolSMB, Name: []byte{0x11, 0x22}, Adapter: []byte{}}
-	op := entity.Open{ID: 9, Client: 7, Principal: alice, File: fid, Access: 0x1F, Privileged: true, Deny: 0x02,
+	op := entity.OpenRecord{ID: 9, Client: 7, Principal: alice, File: fid, Access: 0x1F, Privileged: true, Deny: 0x02,
 		Durability: entity.DurabilityPersistent, DeleteOnClose: true, DeleteBy: group,
 		Lease:     &entity.Lease{Key: [16]byte{15: 1}, ParentKey: [16]byte{15: 2}, State: 7, Epoch: 4},
 		Suspended: entity.TimeModify, Via: entity.FileID{15: 3}, StateSeq: 2, Nonce: 0xDEAD, LossSeen: 6,
