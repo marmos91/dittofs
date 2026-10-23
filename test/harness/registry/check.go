@@ -26,7 +26,7 @@ var (
 	metrics    = set("fio-json", "dfsbench-json")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
+	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "bucket", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
 
 	// runFlags are dt run's flags, the planned ones included, which no option
 	// may share a name with.

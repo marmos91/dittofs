@@ -207,7 +207,7 @@ suites:
 // need the check finds unmet is named, with its reason.
 func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
-  fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
+  fixed: { cmd: "true", fixture: { profile: memory, nfs: "4.1", smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
   goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
   rootclient: { cmd: "true", needs: [root], fixture: { profile: memory, client: namespace } }
@@ -224,7 +224,7 @@ func TestBlocked(t *testing.T) {
 	for _, s := range r.Suites {
 		units[s.Name] = r.Units(s)[0]
 	}
-	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount SMB yet" || unmet != nil || checked != nil {
+	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't mount a share over both NFS and SMB yet" || unmet != nil || checked != nil {
 		t.Errorf("fixed: %q %q, checked %q", why, unmet, checked)
 	}
 	why, unmet := Blocked(units["plain"], units["plain"].Needs, check)
