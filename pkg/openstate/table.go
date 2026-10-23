@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/openstate/sequence"
 )
 
 // Table is the open state of every file this node is the primary of. Each
@@ -29,6 +30,11 @@ type Table struct {
 	byID  map[entity.OpenID]refKey
 	via   map[entity.FileID]int      // the opens made through each directory
 	polls map[entity.FileID]struct{} // the files holding a poll waiter, which the timer lapses
+
+	// smu guards the owner sequences. It is taken under a file's step or
+	// under nothing, and nothing is taken under it.
+	smu  sync.Mutex
+	seqs sequence.Book
 
 	// cstep is the client step: every change to a client record, and every
 	// lease armed from one, runs under it, so a confirm, an expiry and a
@@ -91,7 +97,7 @@ func New(d Deps) (*Table, error) {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	t := &Table{
-		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
+		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{}, seqs: sequence.Book{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
 	}
 	for i := range t.files {
