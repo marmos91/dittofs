@@ -288,9 +288,17 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 	}
 
 	nfsOpts := models.DefaultNFSExportOptions()
+	// A share's NFS options carry its squash and auth-flavor policy, so a lookup
+	// or parse that fails is an error rather than the defaults, which would
+	// serve the share without them.
 	nfsCfg, err := s.GetShareAdapterConfig(ctx, share.ID, "nfs")
-	if err == nil && nfsCfg != nil {
-		_ = nfsCfg.ParseConfig(&nfsOpts)
+	if err != nil {
+		return nil, fmt.Errorf("look up the NFS options of share %q: %w", share.Name, err)
+	}
+	if nfsCfg != nil {
+		if err := nfsCfg.ParseConfig(&nfsOpts); err != nil {
+			return nil, fmt.Errorf("parse the NFS options of share %q: %w", share.Name, err)
+		}
 	}
 
 	var netgroupName string
