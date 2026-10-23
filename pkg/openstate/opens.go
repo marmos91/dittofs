@@ -419,14 +419,24 @@ func opensOwner(c entity.ClientID, name []byte) sequence.Owner {
 // sequenced runs fn as owner o's request numbered n, or as an unnumbered one
 // for a nil n: a number other than the one o's sequence expects is
 // ErrBadSeqID and runs nothing, and fn's answer then advances the sequence
-// unless it is exempt.
+// unless it is exempt. The owner is marked in flight from its check to its
+// answer, so a second numbered request of the owner arriving between them is
+// ErrDelay, and its retry is judged once the first has advanced the
+// sequence: a check and the change it admits never separate.
 func (t *Table) sequenced(o sequence.Owner, n *uint32, confirming bool, fn func() error) error {
 	if n == nil {
 		return fn()
 	}
 	t.smu.Lock()
-	ok := t.seqs.Check(o, *n, confirming)
+	_, busy := t.inflight[o]
+	ok := !busy && t.seqs.Check(o, *n, confirming)
+	if ok {
+		t.inflight[o] = struct{}{}
+	}
 	t.smu.Unlock()
+	if busy {
+		return ErrDelay
+	}
 	if !ok {
 		return ErrBadSeqID
 	}
@@ -443,6 +453,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, confirming bool, fn func(
 	}
 	t.smu.Lock()
 	t.seqs.Answer(o, *n, a)
+	delete(t.inflight, o)
 	t.smu.Unlock()
 	return err
 }

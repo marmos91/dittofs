@@ -3,6 +3,7 @@ package openstate
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -655,6 +656,31 @@ func TestNotYoursAdvancesNoSequence(t *testing.T) {
 	}
 	if _, err := f.Opens().Close(ctx, a, refOf(o), num(3)); err != nil {
 		t.Errorf("the owner's close with the number the refusal carried: %v", err)
+	}
+}
+
+// Two requests of one owner carrying one number never both run: the
+// second, arriving between the first's check and its answer, is told to
+// retry, and after the answer it is out of sequence.
+func TestOwnerRequestsAreSerial(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	for i := range 300 {
+		oo := []byte(fmt.Sprint("open-owner-", i))
+		var errs [2]error
+		var wg sync.WaitGroup
+		for j := range errs {
+			wg.Go(func() { _, errs[j] = f.open(a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)}) })
+		}
+		wg.Wait()
+		if errs[0] == nil && errs[1] == nil {
+			t.Fatalf("round %d: two opens of one owner numbered 1 were both granted", i)
+		}
+		for _, err := range errs {
+			if err != nil && !errors.Is(err, ErrDelay) && !errors.Is(err, ErrBadSeqID) {
+				t.Fatalf("round %d: the second open: %v, want ErrDelay or ErrBadSeqID", i, err)
+			}
+		}
 	}
 }
 
