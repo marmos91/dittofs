@@ -114,6 +114,17 @@ type Clients interface {
 	// references included, refusing ErrClientBusy otherwise; it releases
 	// nothing.
 	Destroy(ctx context.Context, who Caller) error
+	// Revoke is an administrator's revoke of c at this node: every open,
+	// lock and grant it holds here is released, as Expire releases them, but
+	// each reference stays in its revoked set, answered ErrRevoked until
+	// freed, its record is kept and its Shards emptied. A client with no
+	// Owner has no revoked set to be told by: its revoke deletes its record.
+	// Either is raised Revoked.
+	Revoke(ctx context.Context, c entity.ClientID) error
+	// Rebind records a new back channel at node: it sets Reach.Callback and
+	// clears Reach.Down, so the client is offered grants again. Only its
+	// Owner may, where it protects its state.
+	Rebind(ctx context.Context, who Caller, node entity.NodeID) error
 }
 
 type clients struct{ t *Table }
@@ -541,6 +552,99 @@ func (t *Table) forget(ctx context.Context, c entity.ClientID, out *outbox) {
 			delete(t.revoked, k)
 		}
 	}
+}
+
+func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	var out outbox
+	t.cstep.Lock()
+	err = t.revoke(ctx, c, &out)
+	t.cstep.Unlock()
+	if err == nil {
+		sink.Revoked(Revocation{Client: c, Reason: RevokedByAdmin})
+	}
+	out.raise(t, sink)
+	return err
+}
+
+// revoke is Revoke, under the client step. Each reference enters the revoked
+// set before its state is released, so none is ever answered bad meanwhile.
+//
+// decision: a client with no Owner, an SMB machine or an NLM host, is revoked
+// as an expiry ends it: its record is deleted, since without an owner it has
+// no revoked set to be told by. Keep its record if such a protocol is found to
+// report revoked state.
+func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) error {
+	rec, err := t.d.Records.Clients().Get(ctx, c)
+	if err != nil {
+		return staleIfGone(err)
+	}
+	if rec.Owner.IsZero() {
+		t.releaseClient(ctx, c, out)
+		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+			return err
+		}
+		t.forget(ctx, c, out)
+		return nil
+	}
+	t.idx.Lock()
+	for k, h := range t.refs {
+		if h.client == c {
+			t.revoked[k] = revokedRef{c, h.typ, RevokedByAdmin}
+		}
+	}
+	t.idx.Unlock()
+	t.releaseClient(ctx, c, out)
+	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
+		return err
+	}
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if k, ok := t.known[c]; ok {
+		k.shards = nil
+		t.known[c] = k
+	}
+	return nil
+}
+
+func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	switch {
+	case err != nil:
+		return staleIfGone(err)
+	case rec.Protect && who.Principal != rec.Owner:
+		return ErrNotYours
+	}
+	for {
+		next := rec
+		next.Reach.Callback, next.Reach.Down = node, false
+		got, err := t.d.Records.Clients().Put(ctx, rec, next)
+		if errors.Is(err, ErrRecordChanged) {
+			rec = got // a racing AddSession: its bytes are kept
+			continue
+		}
+		if err != nil {
+			return staleIfGone(err)
+		}
+		break
+	}
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if k, ok := t.known[who.Client]; ok {
+		k.down = false
+		t.known[who.Client] = k
+	}
+	return nil
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {
