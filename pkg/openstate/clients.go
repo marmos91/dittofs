@@ -293,9 +293,15 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	return ended, nil
 }
 
-// putAdapter writes a confirmed proposal's Adapter over the record's,
-// re-reading it while a racing AddSession wins: each winner changes the
-// bytes, so the retries are bounded by the writers.
+// putAdapter writes a confirmed proposal's Adapter over the record's.
+//
+// decision: the confirm wins: it overwrites bytes a racing AddSession
+// committed after the proposal was composed, as a confirm racing an
+// AddSession makes the latter retry. The AddSession that lost has already
+// been answered, so its bytes are gone. On ErrRecordChanged it re-reads and
+// writes again, so each retry follows a racing writer's commit. Write once
+// over the record read in this step, and answer ErrRecordChanged, if an
+// adapter is seen losing a session reply this way.
 func (t *Table) putAdapter(ctx context.Context, cur entity.ClientRecord, adapter []byte) (entity.ClientRecord, error) {
 	for {
 		next := cur
