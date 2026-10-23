@@ -685,6 +685,8 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 			files = append(files, h.file)
 		}
 	}
+	// Both passes visit the files in a fixed order.
+	slices.SortFunc(files, func(a, b entity.FileID) int { return bytes.Compare(a[:], b[:]) })
 	holds := func(e *entry) error {
 		for _, ls := range e.lstates {
 			if sameOwner(ls.owner, o) && len(ls.locks) > 0 {

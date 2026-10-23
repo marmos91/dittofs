@@ -1,6 +1,7 @@
 package openstate
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -589,10 +590,14 @@ func TestReleaseLockOwner(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1)
 	file, other := anyFile(), anyFile()
+	if bytes.Compare(other.ID[:], file.ID[:]) > 0 {
+		file, other = other, file // the release visits other, the file it may drop, first
+	}
 	o, p := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr}), f.mustOpen(t, a, other, OpenRequest{Access: rd | wr})
 	lo := owner(a, "lo")
 	f.mustLock(t, a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
-	f.mustLock(t, a, other, LockReq{Owner: lo, Open: refOf(p), Ranges: []LockRange{x(0, 10)}})
+	kept := f.mustLock(t, a, other, LockReq{Owner: lo, Open: refOf(p), Ranges: []LockRange{x(0, 10)}}).Ref
+	kept.Seq = 0 // the current sequence, whatever the unlocks below make it
 	unlock := func(file FileKey, under Open) {
 		t.Helper()
 		if _, err := f.Locks().Unlock(ctx, a, file, refOf(under), lo, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
@@ -605,6 +610,9 @@ func TestReleaseLockOwner(t *testing.T) {
 	}
 	if h := f.holder(t, file, br(0, 10)); h == nil || string(h.Owner.Name) != "lo" {
 		t.Fatalf("the refused release left the range held by %v, want lo", h)
+	}
+	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefLocked, State: kept, Handle: handle(other.ID)}, br(0, 1), false); err != nil {
+		t.Errorf("the refused release dropped lo's lock state on the other file: %v", err)
 	}
 
 	unlock(file, o)
