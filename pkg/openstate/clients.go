@@ -125,6 +125,9 @@ type Clients interface {
 	// clears Reach.Down, so the client is offered grants again. Only its
 	// Owner may, where it protects its state.
 	Rebind(ctx context.Context, who Caller, node entity.NodeID) error
+	// ChannelDown records that c's back channel is lost: it sets
+	// Reach.Down, and c is offered no grant until it rebinds.
+	ChannelDown(ctx context.Context, c entity.ClientID) error
 }
 
 type clients struct{ t *Table }
@@ -612,6 +615,16 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 		t.known[c] = k
 	}
 	return nil
+}
+
+func (v clients) ChannelDown(ctx context.Context, c entity.ClientID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	return t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
 }
 
 // setReach applies set to c's record's Reach, and to what the table reads of
