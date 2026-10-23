@@ -416,6 +416,22 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			if r.timedOut {
 				tc.Grade = report.New // a hang, which no entry excuses
 			}
+			// decision: dt reads fio-json alone. dfsbench-json's numbers are
+			// for the tracked benchmark runs, and aren't recorded until then.
+			if c.Unit.Metrics == "fio-json" {
+				// A job that continues on errors exits 0, so its report
+				// decides too.
+				numbers, failed, err := readFio(filepath.Join(out, cmp.Or(paths[test], test)+".json"))
+				switch {
+				case len(failed) > 0:
+					tc.Status, tc.Message = report.Failed, strings.TrimSuffix(strings.Join(append(failed, r.note), "; "), "; ")
+				case err != nil && tc.Status == report.Passed:
+					// decision: a test that passed without a report has no
+					// numbers, which is lost coverage: its cell isn't run.
+					why = append(why, prefix+"fio's report: "+err.Error())
+				}
+				tc.Metrics = numbers
+			}
 			return []report.Test{tc}, why
 		case r.interrupted:
 			return nil, why // its not-run note says so, and nothing it reported counts
@@ -703,6 +719,17 @@ func (t tester) run(test string, limit time.Duration) testRun {
 				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 		}
+		// decision: dt makes the directories of a file below {out} that an
+		// argument names, so a test named by its path, as a glob's are, can
+		// write {out}/{test}.json. A script makes its own: its values are
+		// quoted, so dt doesn't look for paths in it.
+		if cmd.Line != "" {
+			for _, p := range belowOut(argv, t.vals["out"]) {
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+				}
+			}
+		}
 		shown := cmp.Or(strings.Join(argv, " "), image)
 		if cmd.Sh != "" {
 			shown = argv[2]
@@ -826,6 +853,18 @@ func sudoIn(dir string, own, argv []string) (run, shown []string) {
 	}
 	sudo := []string{"sudo", "-n", "env", "-C", dir}
 	return slices.Concat(sudo, vars, argv), slices.Concat(sudo, hidden, argv)
+}
+
+// belowOut are the paths below the cell's directory, out, that arguments
+// name, as --output={out}/x.json names one.
+func belowOut(argv []string, out string) []string {
+	var paths []string
+	for _, a := range argv {
+		if _, rest, ok := strings.Cut(a, out); ok && (strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, string(filepath.Separator))) {
+			paths = append(paths, out+rest)
+		}
+	}
+	return paths
 }
 
 // cmdName names a command as a test case: its first line, as the registry

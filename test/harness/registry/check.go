@@ -24,7 +24,7 @@ var Tiers = []string{"pr", "merge", "nightly", "manual"}
 var (
 	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx", "nfstest")
 	metrics    = set("fio-json", "dfsbench-json")
-	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
+	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "fio", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
 
