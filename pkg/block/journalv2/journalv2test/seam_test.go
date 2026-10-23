@@ -857,3 +857,19 @@ func TestTornAcceptsTheWholeRange(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedWriteLeavesNoUndo(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+
+	if _, err := f.WriteAt([]byte("xy"), 1<<63-1); err == nil {
+		t.Fatal("a write at the largest offset succeeded")
+	}
+
+	got := make([]byte, 2)
+	if _, err := f.ReadAtDirect(got, 0); err != nil || string(got) != "ab" {
+		t.Fatalf("ReadAtDirect after a failed write: %q, %v; want %q", got, err, "ab")
+	}
+}
