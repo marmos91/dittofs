@@ -34,16 +34,20 @@ export DEBIAN_FRONTEND=noninteractive
 ln -s /cache/inputs /inputs
 ln -s "/cache/$LOGS" /logs
 
-# Downloads are kept in CACHE/downloads and reused: apt's packages, so a run fetches only the
-# indexes, and the libnfs source, fetched once and checked every run.
-mkdir -p /cache/downloads/apt/partial
-echo 'Dir::Cache::Archives "/cache/downloads/apt";' >/etc/apt/apt.conf.d/99cache
+# Downloads are kept in CACHE/downloads and reused: apt's packages and lists, so a run updates the
+# lists only when they are a day old or the packages fail to download, and the libnfs source,
+# fetched once and checked every run.
+mkdir -p /cache/downloads/apt/partial /cache/downloads/apt-lists/partial
+echo 'Dir::Cache::Archives "/cache/downloads/apt"; Dir::State::Lists "/cache/downloads/apt-lists";' >/etc/apt/apt.conf.d/99cache
 rm -f /etc/apt/apt.conf.d/docker-clean
 
 # Tools: SMB and NFS clients, rclone for S3, libnfs's nfs-io example (for NFS deletes) built from its
-# sha256-checked source, and the scenario tools in lib/tools, the C ones built here.
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends ca-certificates curl jq rclone smbclient libnfs-utils libnfs-dev libsmb2-dev libc6-dev tcc >/dev/null
+# sha256-checked source, and the scenario tools in lib/tools, the C ones built here. The packages
+# are downloaded (-d) before anything installs, so a failed try leaves nothing half installed.
+# apt-updated dates the last update, since apt dates each list as the mirror does.
+TOOLS=(ca-certificates curl jq rclone smbclient libnfs-utils libnfs-dev libsmb2-dev libc6-dev tcc)
+test -n "$(find /cache/downloads -maxdepth 1 -name apt-updated -mmin -1440)" && apt-get install -d -y -qq --no-install-recommends "${TOOLS[@]}" >/dev/null || { apt-get update -qq; touch /cache/downloads/apt-updated; }
+apt-get install -y -qq --no-install-recommends "${TOOLS[@]}" >/dev/null
 test -f /cache/downloads/libnfs-5.0.2.tar.gz || { curl -sfL -o /cache/downloads/libnfs-5.0.2.tar.gz.part https://github.com/sahlberg/libnfs/archive/refs/tags/libnfs-5.0.2.tar.gz && mv /cache/downloads/libnfs-5.0.2.tar.gz.part /cache/downloads/libnfs-5.0.2.tar.gz; }
 echo '637e56643b19da9fba98f06847788c4dad308b723156a64748041035dcdf9bd3  /cache/downloads/libnfs-5.0.2.tar.gz' | sha256sum -c --quiet
 tar xzf /cache/downloads/libnfs-5.0.2.tar.gz -C /tmp

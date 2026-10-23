@@ -1211,9 +1211,10 @@ keep podman's images and `setup.sh`'s cache from one scenario to the next. Befor
 it pulls the image and gives the cache volume and all in it to that user, as fixture steps (§4.2). A
 host whose own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose
 podman fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc`
-gives the cell its Linux and Docker its podman. Until `setup.sh` stops running `apt-get update` for
-every scenario, which stalls for minutes on hosted runners, `system` is `blocking: false`: reported
-and annotated, never failing the gate.
+gives the cell its Linux and Docker its podman. `setup.sh` ran `apt-get update` for every scenario,
+which stalled for minutes on hosted runners, and now updates apt's lists once per runner; until a
+week of develop runs has no apt stall, `system` is `blocking: false`: reported and annotated, never
+failing the gate.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on
