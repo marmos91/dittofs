@@ -123,6 +123,14 @@ type VerifyReport struct {
 	// Unindexed are the records that need an index entry, held, retained or a
 	// removal marker, but have none. A record nothing needs any more, such as
 	// one superseded and past its retention or one released, is not one.
+	//
+	// decision: this is narrower than RFC 1 §4.4, which asks for every record
+	// the index does not reference. Superseded and released records stay on
+	// disk unreferenced until repack recovers them, so on a healthy journal
+	// that set is never empty and reports nothing wrong; what it would add is
+	// already counted by Stats.UnreclaimedBytes. Overturned if a repair needs
+	// the full unreferenced set, and then this field is widened rather than a
+	// second one added.
 	Unindexed []UnindexedRecord
 
 	// BadFooters are the segments whose footer did not verify.
