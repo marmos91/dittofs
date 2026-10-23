@@ -27,8 +27,7 @@ var (
 // Cause says why.
 type DelayError struct{ Cause DelayCause }
 
-// DelayCause is why a call is to be retried. A recall outstanding arrives
-// with caching grants.
+// DelayCause is why a call is to be retried.
 type DelayCause uint8
 
 const (

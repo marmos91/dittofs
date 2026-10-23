@@ -7,11 +7,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
-// Deps is what the table is built over. Each further dependency of RFC 14's
-// arrives with the piece that first reads it.
+// Deps is what the table is built over.
 type Deps struct {
 	// Records is the store whose open-state views hold the durable records:
-	// the Clients view and NextID so far. It is the concrete store, since its
+	// the Clients view and NextID. It is the concrete store, since its
 	// open-state views have no interface of their own.
 	Records *kvstore.Store
 	Clock   Clock
