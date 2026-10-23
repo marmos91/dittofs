@@ -9,10 +9,9 @@
 #
 # Usage:
 #   ./run.sh --list
-#   ./run.sh --suite wpts --profile memory
-#   ./run.sh --suite pjdfstest --profile memory --variant 4.1
-#   ./run.sh --suite wpts --tier pull_request        # every profile in that tier
-#   ./run.sh --suite pjdfstest --profile memory --dry-run
+#   ./run.sh --suite cthon04 --profile badger-s3 --variant v4.1
+#   ./run.sh --suite cthon04 --tier pull_request     # every profile in that tier
+#   ./run.sh --suite nfstest --profile badger-s3 --variant v3 --dry-run
 #   ./run.sh --matrix pull_request                   # JSON matrix for CI
 #
 # Exit status is the suite's own status, not a boolean. The graders exit with the
@@ -80,8 +79,8 @@ tier_profiles() {
 
 # known_failures SUITE VARIANT — the blacklists, one path relative to test/ per
 # line, or nothing when the suite has none. Suites that grade each variant
-# against its own table carry an object here rather than a string; pynfs is the
-# reason that shape exists. A table may also be a list, graded together: a
+# against its own table carry an object here rather than a string, as cthon04
+# and nfstest do per option set. A table may also be a list, graded together: a
 # shared table plus a small overlay per variant, so a row the variants share is
 # written once and a row only one of them needs cannot excuse the others.
 known_failures() {
@@ -158,9 +157,7 @@ ADAPTER_PORT="${NFS_PORT:-12049}"
 # than guess. Escalating to sudo is deliberately not attempted — it would either
 # block on a password prompt or kill a process this has no business killing.
 #
-# Only the suites that provision a dfs on the host care. The SMB suites and the
-# Kerberos one run entirely inside Docker and publish no host port, so a
-# listener here is none of their business and must not fail them.
+# Only the suites that provision a dfs on the host care.
 clear_orphan_server() {
     [[ "$(mq --arg s "$SUITE" '.suites[$s].host_adapter // false')" == "true" ]] || return 0
     command -v lsof >/dev/null 2>&1 || return 0
@@ -296,18 +293,16 @@ run_one() {
     if [[ "$DRY_RUN" == false ]]; then
         mkdir -p "$results_dir"
         # Absolute from here on. A relative --results-dir is exported verbatim
-        # as DITTOFS_RESULTS_DIR, and the SMB runners cd into their own
-        # directory before writing the verdict sidecar — so the child would
-        # write it somewhere this function never looks, and the summary would
-        # fall back to calling the aggregate status a failure count. The whole
-        # mechanism is only worth what the consumer can find.
+        # as DITTOFS_RESULTS_DIR, so a runner that changes directory before
+        # writing the verdict sidecar would write it somewhere this function
+        # never looks, and the summary would fall back to calling the aggregate
+        # status a failure count. The whole mechanism is only worth what the
+        # consumer can find.
         results_dir="$(cd "$results_dir" && pwd)"
         # Cleared, not just created. The directory is keyed by suite and label
-        # rather than by invocation, and the runners append to their artifacts
-        # (tee -a on smbtorture-output.txt, >> on timeouts.txt) — so a second
-        # run would parse the first run's failures as its own, and a run that
-        # dies before the graded step would be described by the first run's
-        # verdict. Scoped to the one suite/label directory this script owns.
+        # rather than by invocation, so a run that dies before the graded step
+        # would be described by the previous run's log and verdict. Scoped to the
+        # one suite/label directory this script owns.
         # Checked, because this script runs without `set -e`: a clear that
         # silently failed would leave the previous run's artifacts and verdict
         # in place, and the summary would describe this run with them — the
@@ -351,9 +346,9 @@ run_one() {
         local runner="${TEST_DIR}/${cmd}"
         [[ -x "$runner" ]] || die "step ${name}: ${cmd} is not executable"
 
-        # Privilege is declared per step, never hoisted to the whole run: pynfs
-        # is its own NFSv4 client and must stay runnable with no mount and no
-        # root, and a root precondition at the top would take that away.
+        # Privilege is declared per step, never hoisted to the whole run: a
+        # step that needs no root must stay runnable without it, and a root
+        # precondition at the top would take that away.
         local -a prefix=()
         if [[ "$needs_root" == "true" && "$EUID" -ne 0 ]]; then
             prefix=(sudo -E)
@@ -384,7 +379,11 @@ run_one() {
         fi
     done
 
-    [[ "$DRY_RUN" == true ]] || write_summary "$label" "$status" "${results_dir}" "$failed_step"
+    if [[ "$DRY_RUN" == false ]]; then
+        # Beside the grades the grader wrote, for comparing them with dt's.
+        echo "$status" >"${results_dir}/status"
+        write_summary "$label" "$status" "${results_dir}" "$failed_step"
+    fi
     return "$status"
 }
 
@@ -395,26 +394,6 @@ run_one() {
 # the phrase that means a test which used to pass now fails — on a toolchain
 # that could not download a dependency, and sends the reader hunting a
 # regression against a suite that never ran.
-# suite_writes_verdict says whether this suite's graded step writes the verdict
-# sidecar on every path. Only such a suite can have a MISSING sidecar read as
-# "the parser never ran": for a suite whose parser never writes one, the file is
-# always absent, and that reading would turn every real regression into "no test
-# was graded" — the false-negative twin of the false "N new failure(s)" the
-# sidecar was added to remove.
-#
-# decision: this names the suites known to LACK the contract, rather than the
-# ones known to have it. Getting membership wrong in this direction costs a
-# coarse summary on a suite that is already coarse; getting it wrong in the
-# other direction hides a regression, and a suite added later is far more
-# likely to write the sidecar than not. Delete an entry when that suite's
-# parser starts writing one.
-suite_writes_verdict() {
-    case "$1" in
-    wpts | pynfs | pjdfstest) return 1 ;;
-    *) return 0 ;;
-    esac
-}
-
 write_summary() {
     local label="$1" status="$2" results_dir="$3" failed_step="${4:-}"
     local verdict icon
@@ -424,12 +403,6 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
-    elif [[ ! -r "${results_dir}/verdict" ]] && ! suite_writes_verdict "$SUITE"; then
-        # A suite that never writes a sidecar cannot have its absence read as a
-        # signal. Those still render the graded step's exit status as a failure
-        # count, which is what it has always meant for them.
-        verdict="${status} new failure(s)"
-        icon=":x:"
     elif [[ ! -r "${results_dir}/verdict" ]]; then
         # No sidecar means the graded step never reached its parser: it died in a
         # build, a bootstrap, a compose up, or was refused before it started.

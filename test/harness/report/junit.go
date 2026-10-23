@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// notRun is the result of a cell that didn't run.
-const notRun = "not run"
-
 // junitPath is a cell's JUnit file, relative to the run's directory.
 func junitPath(cell string) string {
 	return "junit/" + Slug(cell) + ".xml"
@@ -22,7 +19,8 @@ func junitPath(cell string) string {
 // CTRF status, which its grade decides, gives its JUnit one, so a reader of
 // either counts the same: failed is a failure, other an error, and skipped is
 // skipped, with the grade's reason, else the tool's. Each carries the tool's
-// message in its body.
+// message in its body, a pass on a retry a flaky property, and a quarantined
+// test's pass a quarantined property, its issue.
 //
 // decision: a testcase's classname is the test's suite in summary.json,
 // joined with /, so it names the cell and, for a Go test, its package. The
@@ -40,6 +38,12 @@ func (c Cell) junit() ([]byte, error) {
 	}
 	for _, t := range c.Tests {
 		tc := junitCase{Name: t.Name, Classname: strings.Join(append([]string{c.Name}, t.Suite...), "/"), Time: seconds(t.Duration)}
+		if t.Flaky {
+			tc.Properties = &junitProperties{[]junitProperty{{"flaky", "true"}}}
+		}
+		if t.Status == Passed && t.Grade == Quarantined {
+			tc.Properties = &junitProperties{[]junitProperty{{"quarantined", t.Issue}}}
+		}
 		// decision: a failure or an error the tool said nothing about gets its
 		// grade as its message, so an unexpected pass isn't a blank failure.
 		switch t.Status {
@@ -55,7 +59,7 @@ func (c Cell) junit() ([]byte, error) {
 		}
 		s.Cases = append(s.Cases, tc)
 	}
-	carried := map[string]string{Failed: Failed, notRun: Other}[c.Result]
+	carried := map[string]string{Failed: Failed, NotRun: Other}[c.Result]
 	if carried != "" && !slices.ContainsFunc(c.Tests, func(t Test) bool { return t.Status == carried }) {
 		tc := junitCase{Name: c.Name, Classname: c.Name, Time: seconds(0)}
 		if carried == Failed {
@@ -107,12 +111,13 @@ type junitProperty struct {
 }
 
 type junitCase struct {
-	Name      string       `xml:"name,attr"`
-	Classname string       `xml:"classname,attr"`
-	Time      string       `xml:"time,attr"`
-	Failure   *junitResult `xml:"failure"`
-	Error     *junitResult `xml:"error"`
-	Skipped   *junitResult `xml:"skipped"`
+	Name       string           `xml:"name,attr"`
+	Classname  string           `xml:"classname,attr"`
+	Time       string           `xml:"time,attr"`
+	Properties *junitProperties `xml:"properties"`
+	Failure    *junitResult     `xml:"failure"`
+	Error      *junitResult     `xml:"error"`
+	Skipped    *junitResult     `xml:"skipped"`
 }
 
 type junitResult struct {

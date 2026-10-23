@@ -22,8 +22,8 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// sudoGrace is how long go test has to stop after SIGINT, on a suite that
-// runs as root, before dt kills it.
+// sudoGrace is how long a command of a suite that runs as root, go test
+// among them, has to stop after SIGINT before dt kills it.
 const sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
@@ -37,45 +37,43 @@ const sudoGrace = 2 * time.Minute
 // says: the cell's limit or go test's own timeout stopped it, or its test
 // binary crashed. One that waited in t.Parallel and never continued didn't
 // run, and has none. A test left open when its package ended is timed to that
-// end.
-func (t tester) goJSON(names []string) (string, string, []report.Test) {
+// end. Up to retries times, the top-level tests with a new failure run
+// again, by -run.
+func (t tester) goJSON(names []string, retries int) (string, string, []report.Test) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
 	if root {
 		if err := buildBin(t.ctx, t.root, t.vals["bin"], t.env, t.out); err != nil {
-			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
+			return report.NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
 		}
 	}
 	limit, _ := t.ctx.Deadline()
 	res := results{limit: limit}
-	var problems []string
-	for i, cmd := range t.cell.Unit.Cmd {
-		argv, err := fill(cmd, t.vals, t.lists)
-		if err != nil {
-			return NotRun, err.Error(), nil
+	problems, stop := t.goTests(names, root, &res, "")
+	// decision: a package that failed outside any test isn't retried: -run
+	// can't name it, and what fails a build fails it again.
+	for n := 1; n <= retries && stop == "" && t.ctx.Err() == nil; n++ {
+		graded := slices.Clone(res.cases)
+		t.cell.grade(graded)
+		var again []string
+		for _, tc := range graded {
+			if top, _, _ := strings.Cut(tc.Name, "/"); tc.Grade == report.New && len(tc.Suite) > 0 && !slices.Contains(again, top) {
+				again = append(again, top)
+			}
 		}
-		if len(names) > 0 {
-			argv = append(argv, "-run", runPattern(names))
-		}
-		shown := strings.Join(argv, " ")
-		failed := res.failures()
-		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
-		if errors.Is(t.ctx.Err(), context.DeadlineExceeded) {
-			res.end("", time.Now(), atCellLimit)
-			problems = append(problems, atCellLimit)
+		if len(again) == 0 {
 			break
 		}
-		switch {
-		case t.ctx.Err() != nil:
-			// The cell didn't finish, and what its tests reported once
-			// interrupted can come from the interrupt itself.
-			return NotRun, res.note(append(problems, "interrupted")), nil
-		case err != nil:
-			problems = append(problems, fmt.Sprintf("`%s`: %v", shown, err))
-		case code != 0 && res.failures() == failed:
-			problems = append(problems, fmt.Sprintf("`%s` exited %d", shown, code))
+		_, _ = fmt.Fprintf(t.out, "[dt] retry %d: %s\n", n, strings.Join(again, ", "))
+		retry := results{limit: limit}
+		if _, stop = t.goTests(again, root, &retry, fmt.Sprintf("-retry-%d", n)); stop == "" {
+			retried(res.cases, graded, retry.cases, n)
 		}
-		res.end("", time.Now(), "")
+	}
+	if stop != "" {
+		// The cell didn't finish, and what its tests reported once
+		// interrupted can come from the interrupt itself.
+		return report.NotRun, res.note(append(problems, stop)), nil
 	}
 	// decision: a go-json suite with a known file is graded as a whole, so
 	// every skip in every package it runs must be listed, and an unlisted one
@@ -89,13 +87,48 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	}
 	switch {
 	case slices.ContainsFunc(res.cases, func(tc report.Test) bool { return tc.Grade == report.New }) || len(problems) > 0:
-		return Failed, res.note(append(problems, notRun...)), res.cases
+		return report.Failed, res.note(append(problems, notRun...)), res.cases
 	case len(notRun) > 0:
-		return NotRun, res.note(notRun), res.cases
+		return report.NotRun, res.note(notRun), res.cases
 	case len(res.tests) == 0:
-		return NotRun, "no tests ran", res.cases
+		return report.NotRun, "no tests ran", res.cases
 	}
-	return Passed, res.note(nil), res.cases
+	return report.Passed, res.note(nil), res.cases
+}
+
+// goTests runs each of the cell's commands into res, with -run naming the
+// tests when names are given, each command's events in a file named after
+// it and suffix. It returns what went wrong outside the tests' own results,
+// and why the cell can't go on, an interrupt or a command it can't fill, or
+// "". The cell's limit stops the commands, and fails the tests it stopped.
+func (t tester) goTests(names []string, root bool, res *results, suffix string) ([]string, string) {
+	var problems []string
+	for i, cmd := range t.cell.Unit.Cmd {
+		argv, err := fill(cmd, t.vals, t.lists)
+		if err != nil {
+			return problems, err.Error()
+		}
+		if len(names) > 0 {
+			argv = append(argv, "-run", runPattern(names))
+		}
+		shown := strings.Join(argv, " ")
+		failed := res.failures()
+		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d%s.json", i+1, suffix)), res)
+		if errors.Is(t.ctx.Err(), context.DeadlineExceeded) {
+			res.end("", time.Now(), atCellLimit)
+			return append(problems, atCellLimit), ""
+		}
+		switch {
+		case t.ctx.Err() != nil:
+			return problems, "interrupted"
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("`%s`: %v", shown, err))
+		case code != 0 && res.failures() == failed:
+			problems = append(problems, fmt.Sprintf("`%s` exited %d", shown, code))
+		}
+		res.end("", time.Now(), "")
+	}
+	return problems, ""
 }
 
 // goTest runs a go test command with -json -count=1 added after its go test,
@@ -124,24 +157,22 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 	return followed(cmd, events, res, t.out)
 }
 
-// asRoot reports whether a cell's go tests run as root through sudo: a
-// go-json suite that needs root, run by dt as a user.
-func asRoot(c Cell) bool {
-	return c.Unit.Format == "go-json" && slices.Contains(c.Needs, "root") && os.Geteuid() != 0
-}
-
 // buildBin builds dfs and dfsctl from the checkout at root, as the user, into
 // {bin}, the run's bin directory, once per run: for a cell with a fixture, and
 // for a suite whose tests run as root, which take the binaries from
-// DITTOFS_E2E_BIN, so root never runs go build.
+// DITTOFS_E2E_BIN, so root never runs go build. A cell without {bin}, as a
+// knfsd fixture's, builds nothing.
 func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) error {
+	if bin == "" {
+		return nil
+	}
 	names := []string{"dfs", "dfsctl"}
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
 		return nil // an earlier cell of this run built them
 	}
 	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
-	code, err := execute(ctx, build, root, env, w)
+	code, err := execute(ctx, build, root, env, w, false)
 	if err == nil && code != 0 {
 		err = fmt.Errorf("go build exited %d", code)
 	}
@@ -419,13 +450,14 @@ func (r *results) failures() int {
 }
 
 // note gives the counts of the tests that passed, failed and skipped, a
-// failed test whose every failure is known counted apart; then the new
+// failed test whose every failure is known counted apart, and one a retry
+// passed counted as flaky; then the new
 // failures, without a parent whose subtest failed; then the broken packages
 // and the problems.
 //
-// decision: a test whose failures are all known is counted as known, not as
-// failed, so "N failed" counts only what fails the cell. A test with several
-// results, one of them new, is still counted as failed.
+// decision: a test whose failures are all known or quarantined is counted as
+// known, not as failed, so "N failed" counts only what fails the cell. A test
+// with several results, one of them new, is still counted as failed.
 func (r *results) note(problems []string) string {
 	grades := map[string]map[string]bool{} // "package test" to its results' grades
 	for _, tc := range r.cases {
@@ -435,13 +467,18 @@ func (r *results) note(problems []string) string {
 				grades[k] = map[string]bool{}
 			}
 			grades[k][tc.Grade] = true
+			grades[k]["flaky"] = grades[k]["flaky"] || tc.Flaky
 		}
 	}
 	count := map[string]int{}
 	var failed []string
 	for k, a := range r.tests {
-		if a == "fail" && grades[k][report.Known] && !grades[k][report.New] {
+		switch {
+		case a != "fail" || grades[k][report.New]:
+		case grades[k][report.Known], grades[k][report.Quarantined]:
 			a = "known"
+		case grades[k]["flaky"]:
+			a = "flaky"
 		}
 		count[a]++
 		if a == "fail" {
@@ -457,8 +494,10 @@ func (r *results) note(problems []string) string {
 		}
 	}
 	note := fmt.Sprintf("%d passed, %d failed, %d skipped", count["pass"], count["fail"], count["skip"])
-	if count["known"] > 0 {
-		note += fmt.Sprintf(", %d known", count["known"])
+	for _, a := range []string{"known", "flaky"} {
+		if count[a] > 0 {
+			note += fmt.Sprintf(", %d %s", count[a], a)
+		}
 	}
 	if len(leaves) > 0 {
 		note += ": " + some(leaves)

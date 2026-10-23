@@ -10,8 +10,7 @@
 //  5. check_pattern on dest [4096,8192): must equal the source pattern.
 //
 // This drives the REAL executeCopyChunks write path and the REAL Read handler
-// against a memory block store (the backend every smb-conformance profile uses
-// — see test/smb-conformance/bootstrap.sh `store block local add --type memory`).
+// against a memory block store.
 package handlers
 
 import (
@@ -41,9 +40,6 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 		t.Fatalf("cpstore.New: %v", err)
 	}
 
-	// Opened before the runtime so cleanup closes it after the runtime has
-	// removed its shares: a background fetch still reading the store would
-	// otherwise hit a closed database.
 	metaStore := badgertest.NewInMemory(t)
 	rt := newTestRuntime(t, cps)
 
@@ -269,9 +265,6 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	// Opened before the runtime so cleanup closes it after the runtime has
-	// removed its shares: a background fetch still reading the store would
-	// otherwise hit a closed database.
 	metaStore := badgertest.NewInMemory(t)
 	rt := newTestRuntime(t, cps)
 

@@ -1,6 +1,10 @@
 package fixture
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/registry"
+)
 
 // The NFS version mounted at a directory is the vers= among the file
 // system's options on the last line of mountinfo whose mount point is that
@@ -31,9 +35,38 @@ func TestMountedVersion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, mounted := lastMount(tc.table, "/tmp/dt42")
-			if got := nfsVers(opts); got != tc.vers || mounted != tc.mounted {
+			if got := versOf(opts); got != tc.vers || mounted != tc.mounted {
 				t.Errorf("vers %q, mounted %t; want %q, %t", got, mounted, tc.vers, tc.mounted)
 			}
 		})
+	}
+}
+
+// A mount whose version its options give takes them first as they are, with
+// MOUNT on the NFS port for NFSv3; a namespaced client's NFSv3 mount has no
+// nolock, since its locks reach the server. The kernel must then report the
+// version the options give, a minor one or 3, and with none any.
+func TestMountOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		nfs        registry.NFS
+		namespaced bool
+		opts, vers string
+	}{
+		{"v3", registry.NFS{Version: "3", Options: "noac"}, false, "nfsvers=3,tcp,port=40001,mountport=40001,nolock,noac", "3"},
+		{"v3 from a namespaced client", registry.NFS{Version: "3"}, true, "nfsvers=3,tcp,port=40001,mountport=40001", "3"},
+		{"v4", registry.NFS{Version: "4"}, false, "vers=4.0,port=40001", "4.0"},
+		{"v3 from the options", registry.NFS{Options: "vers=3,tcp,mountproto=tcp", FromOptions: true}, true, "vers=3,tcp,mountproto=tcp,port=40001,mountport=40001", "3"},
+		{"v3 from the options, on the server's stack", registry.NFS{Options: "vers=3", FromOptions: true}, false, "vers=3,port=40001,mountport=40001,nolock", "3"},
+		{"v4.1 from the options", registry.NFS{Options: "vers=4.1,noac", FromOptions: true}, true, "vers=4.1,noac,port=40001", "4.1"},
+		{"v4, its minor negotiated", registry.NFS{Options: "vers=4", FromOptions: true}, true, "vers=4,port=40001", ""},
+		{"no options", registry.NFS{FromOptions: true}, true, "port=40001", ""},
+	} {
+		if got := mountOptions(tc.nfs, 40001, tc.namespaced); got != tc.opts {
+			t.Errorf("%s: options %q, want %q", tc.name, got, tc.opts)
+		}
+		if got := wantVers(tc.nfs); got != tc.vers {
+			t.Errorf("%s: vers %q, want %q", tc.name, got, tc.vers)
+		}
 	}
 }

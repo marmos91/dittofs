@@ -8,11 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -23,14 +26,75 @@ import (
 
 // shareServer is one server's control plane and runtime over real stores in
 // temp dirs (an on-disk Badger metadata store "md", a memory block store "mem"
-// and a journal root), with the share handler in front.
+// and a journal root), with the share handler in front. The runtime and the
+// handler each reach the control plane through a gatedStore of their own.
 type shareServer struct {
 	t       *testing.T
 	cp      store.Store
+	rtStore *gatedStore
+	hStore  *gatedStore
+	md      metadata.Store
 	rt      *runtime.Runtime
 	h       *ShareHandler
 	journal string
 	blockID string
+}
+
+// gatedStore is a control-plane store whose next GetShare, once a gate is
+// set, reads the row and then runs the gate before it returns.
+type gatedStore struct {
+	store.Store
+	mu   sync.Mutex
+	gate func()
+}
+
+func (g *gatedStore) onNextGetShare(gate func()) {
+	g.mu.Lock()
+	g.gate = gate
+	g.mu.Unlock()
+}
+
+func (g *gatedStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
+	share, err := g.Store.GetShare(ctx, name)
+	g.mu.Lock()
+	gate := g.gate
+	g.gate = nil
+	g.mu.Unlock()
+	if gate != nil {
+		gate()
+	}
+	return share, err
+}
+
+// pause is a gate that holds its caller until release is called; stopped is
+// closed once the caller is held. release is safe to call more than once.
+func pause() (gate func(), stopped <-chan struct{}, release func()) {
+	held, released := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	return func() { close(held); <-released }, held, func() { once.Do(func() { close(released) }) }
+}
+
+// waitStopped waits for a request to reach its gate.
+func waitStopped(t *testing.T, stopped <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never reached its gate")
+	}
+}
+
+// removeAsync starts a removal of name and returns its status code once it
+// ends. The removal is waited for when the test ends.
+func (s *shareServer) removeAsync(name string, release func()) <-chan int {
+	code := make(chan int, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		code <- s.remove(name)
+	}()
+	s.t.Cleanup(func() { release(); <-done })
+	return code
 }
 
 func newShareServer(t *testing.T) *shareServer {
@@ -47,14 +111,11 @@ func newShareServer(t *testing.T) *shareServer {
 	}
 	t.Cleanup(func() { _ = md.Close() })
 
-	rt := runtime.New(cp)
+	rtStore := &gatedStore{Store: cp}
+	rt := testruntime.New(t, rtStore)
+	// A journal root of its own, so the tests can look under it.
 	journal := t.TempDir()
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journal})
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	if _, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "md", Type: "badger"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
@@ -66,16 +127,22 @@ func newShareServer(t *testing.T) *shareServer {
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
-	return &shareServer{t: t, cp: cp, rt: rt, h: NewShareHandler(cp, rt), journal: journal, blockID: blockID}
+	hStore := &gatedStore{Store: cp}
+	return &shareServer{t: t, cp: cp, rtStore: rtStore, hStore: hStore, md: md, rt: rt, h: NewShareHandler(hStore, rt), journal: journal, blockID: blockID}
 }
 
-func (s *shareServer) create(name string) {
+func (s *shareServer) createCode(name string) int {
 	s.t.Helper()
 	body := `{"name":"` + name + `","metadata_store_id":"md","block_store":"mem","default_permission":"read-write"}`
 	w := httptest.NewRecorder()
 	s.h.Create(w, httptest.NewRequest(http.MethodPost, "/api/v1/shares", strings.NewReader(body)))
-	if w.Code != http.StatusCreated {
-		s.t.Fatalf("create %s = %d, body=%s", name, w.Code, w.Body.String())
+	return w.Code
+}
+
+func (s *shareServer) create(name string) {
+	s.t.Helper()
+	if code := s.createCode(name); code != http.StatusCreated {
+		s.t.Fatalf("create %s = %d", name, code)
 	}
 	// Create answers 201 even when the runtime refuses the share.
 	if _, err := s.rt.GetRootHandle(name); err != nil {
@@ -84,13 +151,30 @@ func (s *shareServer) create(name string) {
 }
 
 func (s *shareServer) remove(name string) int {
-	s.t.Helper()
+	return s.removeCtx(context.Background(), name)
+}
+
+func (s *shareServer) removeCtx(ctx context.Context, name string) int {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("name", strings.TrimPrefix(name, "/"))
 	r := httptest.NewRequest(http.MethodDelete, "/api/v1/shares"+name, nil)
 	w := httptest.NewRecorder()
-	s.h.Remove(w, r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx)))
+	s.h.Remove(w, r.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx)))
 	return w.Code
+}
+
+// isEmpty reports whether the share's root lists no entries.
+func (s *shareServer) isEmpty(share string) bool {
+	s.t.Helper()
+	root, err := s.rt.GetRootHandle(share)
+	if err != nil {
+		s.t.Fatalf("GetRootHandle %s: %v", share, err)
+	}
+	page, err := s.rt.GetMetadataService().ReadDirectory(metadata.NewSystemAuthContext(context.Background()), root, 0, 1<<16)
+	if err != nil {
+		s.t.Fatalf("ReadDirectory %s: %v", share, err)
+	}
+	return len(page.Entries) == 0
 }
 
 // write creates dir/name under the share root and writes data to it.
@@ -239,5 +323,131 @@ func TestShareRemove_FailedPurgeKeepsShare(t *testing.T) {
 	}
 	if _, err := s.cp.GetShare(ctx, "/stuck"); err != nil {
 		t.Fatalf("the share's row went with a failed purge: %v", err)
+	}
+}
+
+// While a removal purges a share, which is out of the runtime by then, a
+// second removal is refused rather than purge it too and delete its row, and
+// the name stays taken; once the first ends, a share created under the name
+// starts empty.
+func TestShareRemove_ConcurrentRemovalIsRefused(t *testing.T) {
+	s := newShareServer(t)
+	s.create("/team")
+	s.write("/team", "docs", "old.txt", []byte("old"))
+
+	gate, stopped, release := pause()
+	s.rtStore.onNextGetShare(gate)
+	first := s.removeAsync("/team", release)
+	waitStopped(t, stopped)
+	if _, err := s.rt.GetRootHandle("/team"); err == nil {
+		t.Fatal("the first removal stopped while the share was still served")
+	}
+
+	if code := s.remove("/team"); code != http.StatusConflict {
+		t.Fatalf("a second removal meanwhile = %d, want 409", code)
+	}
+	if code := s.createCode("/team"); code != http.StatusConflict {
+		t.Fatalf("creating the share meanwhile = %d, want 409", code)
+	}
+	release()
+	if code := <-first; code != http.StatusNoContent {
+		t.Fatalf("the first removal = %d, want 204", code)
+	}
+
+	s.create("/team")
+	if !s.isEmpty("/team") {
+		t.Fatal("the share created after the removal lists the removed share's files")
+	}
+}
+
+// A lookup that fails while a removal resolves the share's metadata store, as
+// one does once the request is cancelled, fails the removal and deletes
+// nothing: not the share's records, not its journal, not its row.
+func TestShareRemove_CancelledLookupKeepsData(t *testing.T) {
+	ctx := context.Background()
+	s := newShareServer(t)
+	s.create("/team")
+	s.write("/team", "docs", "old.txt", []byte("old"))
+
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The client goes away once the purge has read the share's row.
+	s.rtStore.onNextGetShare(cancel)
+	if code := s.removeCtx(rctx, "/team"); code != http.StatusInternalServerError {
+		t.Fatalf("remove = %d, want 500", code)
+	}
+
+	if _, err := s.cp.GetShare(ctx, "/team"); err != nil {
+		t.Fatalf("the share's row went with a failed removal: %v", err)
+	}
+	if _, err := s.md.GetRootHandle(ctx, "/team"); err != nil {
+		t.Fatalf("the share's records went with a failed removal: %v", err)
+	}
+	if _, err := os.Stat(shares.ShareJournalDir(s.journal, "/team")); err != nil {
+		t.Fatalf("the share's journal went with a failed removal: %v", err)
+	}
+}
+
+// A share removed by its ID is removed as by its name: it is no longer
+// served, its journal is gone, and a share created under the name starts
+// empty.
+func TestShareRemove_ByID(t *testing.T) {
+	ctx := context.Background()
+	s := newShareServer(t)
+	s.create("/team")
+	s.write("/team", "docs", "old.txt", []byte("old"))
+	row, err := s.cp.GetShare(ctx, "/team")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+
+	if code := s.remove("/" + row.ID); code != http.StatusNoContent {
+		t.Fatalf("remove by ID = %d, want 204", code)
+	}
+	if _, err := s.rt.GetRootHandle("/team"); err == nil {
+		t.Fatal("the share removed by its ID is still served")
+	}
+	if _, err := os.Stat(shares.ShareJournalDir(s.journal, "/team")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the journal of the share removed by its ID is still there: %v", err)
+	}
+
+	s.create("/team")
+	if !s.isEmpty("/team") {
+		t.Fatal("the share created after the removal lists the removed share's files")
+	}
+}
+
+// A removal by ID that resolved the share before another removal deleted it
+// finds the share gone, and leaves alone a share created under the name since.
+func TestShareRemove_StaleIDLeavesNewShare(t *testing.T) {
+	ctx := context.Background()
+	s := newShareServer(t)
+	s.create("/team")
+	row, err := s.cp.GetShare(ctx, "/team")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+
+	gate, stopped, release := pause()
+	s.hStore.onNextGetShare(gate)
+	byID := s.removeAsync("/"+row.ID, release)
+	waitStopped(t, stopped)
+
+	if code := s.remove("/team"); code != http.StatusNoContent {
+		t.Fatalf("remove by name = %d, want 204", code)
+	}
+	s.create("/team")
+	const text = "written to the new share"
+	h := s.write("/team", "docs", "new.txt", []byte(text))
+
+	release()
+	if code := <-byID; code != http.StatusNotFound {
+		t.Fatalf("the removal by the old ID = %d, want 404", code)
+	}
+	if got := s.read(h, len(text)); got != text {
+		t.Fatalf("the new share reads %q, want %q", got, text)
+	}
+	if _, err := s.cp.GetShare(ctx, "/team"); err != nil {
+		t.Fatalf("the new share's row: %v", err)
 	}
 }

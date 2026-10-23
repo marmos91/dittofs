@@ -1,6 +1,7 @@
 package known
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
@@ -8,13 +9,13 @@ import (
 )
 
 // Grade grades each result of one cell in place, setting its grade and the
-// status the grade gives it. entries are the suite's known file's; only those
-// that apply where the cell runs, at, count. listed says the suite has a
-// known file, so its skips are graded rather than reported ungraded. A pass
-// is unexpected when its entry, of either kind, isn't intermittent and every
-// result in the cell it matches passed: a pattern one of whose tests still
-// fails, or a name with one failing result among several, still says what
-// the server does.
+// status the grade gives it. entries are the suite's known file's, then its
+// quarantine list's (see Quarantine.Entry); only those that apply where the
+// cell runs, at, count. listed says the suite has a known file, so its skips
+// are graded rather than reported ungraded. A pass is unexpected when its
+// entry, of either kind, isn't intermittent and every result in the cell it
+// matches passed: a pattern one of whose tests still fails, or a name with
+// one failing result among several, still says what the server does.
 func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]string) {
 	var apply []Entry
 	for _, e := range entries {
@@ -24,7 +25,7 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 	}
 	allPassed := make([]bool, len(apply))
 	for i, e := range apply {
-		allPassed[i] = !slices.ContainsFunc(tests, func(t report.Test) bool { return t.Status != report.Passed && Match(e.Test, t.Name) })
+		allPassed[i] = !slices.ContainsFunc(tests, func(t report.Test) bool { return t.Status != report.Passed && e.matches(t.Name) })
 	}
 	throughSubtests := make([]bool, len(tests))
 	for i := range tests {
@@ -40,7 +41,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 		}
 		switch t.Status {
 		case report.Passed:
-			if e := entryFor(apply, t.Name, ""); e >= 0 && !apply[e].Intermittent && allPassed[e] {
+			if e := entryFor(apply, t.Name, ""); e >= 0 && apply[e].quarantined {
+				t.Grade, t.Reason, t.Issue = report.Quarantined, apply[e].Reason, apply[e].Issue
+			} else if e >= 0 && !apply[e].Intermittent && allPassed[e] {
 				t.Status, t.RawStatus, t.Grade = report.Failed, report.Passed, report.UnexpectedPass
 				t.Reason, t.Issue = apply[e].Reason, apply[e].Issue
 			}
@@ -48,6 +51,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 			t.Grade = report.New
 			if e := entryFor(apply, t.Name, "fail"); e >= 0 {
 				t.Status, t.RawStatus, t.Grade = report.Skipped, report.Failed, report.Known
+				if apply[e].quarantined {
+					t.Grade = report.Quarantined
+				}
 				t.Reason, t.Issue = apply[e].Reason, apply[e].Issue
 			} else if throughSubtests[i] {
 				t.Status, t.RawStatus, t.Grade = report.Skipped, report.Failed, report.Known
@@ -61,8 +67,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 				t.Grade, t.Reason, t.Issue = report.ExpectedSkip, apply[e].Reason, apply[e].Issue
 			default:
 				// decision: rawStatus is set here too, since grading changed
-				// the status; it is set whenever a grade changes the status.
-				t.Status, t.RawStatus, t.Grade = report.Other, report.Skipped, report.UnexpectedSkip
+				// the status; it is set whenever a grade changes the status,
+				// unless the reader kept the tool's own, as TRX's NotExecuted.
+				t.Status, t.RawStatus, t.Grade = report.Other, cmp.Or(t.RawStatus, report.Skipped), report.UnexpectedSkip
 			}
 		default:
 			t.Grade = report.Incomplete
@@ -126,7 +133,7 @@ func failedThroughSubtests(tests []report.Test, i int, apply []Entry) bool {
 func entryFor(entries []Entry, name, status string) int {
 	first := -1
 	for i, e := range entries {
-		if status != "" && e.Status != status || !Match(e.Test, name) {
+		if status != "" && e.Status != status || !e.matches(name) {
 			continue
 		}
 		if e.Test == name {

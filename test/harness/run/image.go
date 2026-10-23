@@ -14,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/fixture"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// notStarted are docker run's own exit statuses: its container didn't start.
+// notStarted are the exit statuses docker run gives when its container didn't
+// start, and env when the command it runs as root didn't.
 func notStarted(code int) bool { return code >= 125 && code <= 127 }
 
 // notInName matches what a container's name can't hold.
@@ -30,9 +32,7 @@ var notInName = regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
 // running.
 func (t tester) inImage(argv []string) (docker []string, name string, err error) {
 	u := t.cell.Unit
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	name = "dt-" + notInName.ReplaceAllString(report.Slug(t.cell.Name), "-") + "-" + hex.EncodeToString(b)
+	name = containerName(t.cell.Name)
 	// decision: the container runs as its image's own user, root in the
 	// images the registry names, since an image's entrypoint may write paths
 	// of its own that another user can't. An engine that keeps a file's owner
@@ -40,7 +40,7 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	// results in {out}/config, owned by root, and only dtc hands it back to
 	// the user (DT_FIX_OWNER). Pass --user once a suite's image is known to
 	// run as any user.
-	docker = []string{"docker", "run", "--rm", "--name", name, "--network", network()}
+	docker = []string{"docker", "run", "--rm", "--name", name, "--network", fixture.Network()}
 	// decision: dir is given to docker as it fills, so a relative one is
 	// docker's to refuse: it exits 125, and the cell is not run.
 	if t.inside != "" {
@@ -72,14 +72,11 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	return append(append(docker, u.Image), argv...), name, nil
 }
 
-// network is the network the fixture's server is on: the host's, unless dt
-// runs in a dtc container on a bridge network, whose network the image's
-// container then shares.
-func network() string {
-	if os.Getenv("DT_IN_CONTAINER") == "1" && os.Getenv("DT_HOSTNET") != "1" {
-		return "container:" + os.Getenv("DT_CONTAINER_NAME")
-	}
-	return "host"
+// containerName names a container of the cell's, unique to it.
+func containerName(cell string) string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return "dt-" + notInName.ReplaceAllString(report.Slug(cell), "-") + "-" + hex.EncodeToString(b)
 }
 
 // pull pulls image unless docker has it, before the cell's first test, so
@@ -90,12 +87,12 @@ func pull(ctx context.Context, image, dir string, env []string, w io.Writer) err
 	// decision: an image docker already has isn't pulled again, as docker
 	// run pulls only a missing one, so a machine without the registry still
 	// runs the image it has.
-	if code, err := execute(ctx, []string{"docker", "image", "inspect", image}, dir, env, io.Discard); err == nil && code == 0 {
+	if code, err := execute(ctx, []string{"docker", "image", "inspect", image}, dir, env, io.Discard, false); err == nil && code == 0 {
 		return nil
 	}
 	shown := "docker pull " + image
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", shown)
-	code, err := execute(ctx, []string{"docker", "pull", image}, dir, env, w)
+	code, err := execute(ctx, []string{"docker", "pull", image}, dir, env, w, false)
 	switch {
 	case err != nil:
 		return err
@@ -112,7 +109,7 @@ func removeContainer(name, dir string, env []string, w io.Writer) {
 	defer cancel()
 	argv := []string{"docker", "rm", "-f", name}
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(argv, " "))
-	_, _ = execute(ctx, argv, dir, env, w)
+	_, _ = execute(ctx, argv, dir, env, w, false)
 }
 
 // renderTemplates fills the placeholders in each file glob matches in the

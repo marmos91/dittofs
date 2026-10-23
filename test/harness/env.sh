@@ -36,6 +36,10 @@ PG_NAME=dittofs-harness-pg-it         # the integration tests' postgres/postgres
 PG_IMAGE=docker.io/library/postgres:16
 PG_PORT=15432
 KMIP_NAME=dittofs-pykmip
+# Pinned: an unpinned server would let a PyKMIP release change what the KMIP
+# tests assert about without any change on this side.
+KMIP_IMAGE=docker.io/library/python:3.11-slim
+KMIP_VERSION=0.10.0
 SERVICES=(localstack postgres kmip)
 
 # --- output ----------------------------------------------------------------------
@@ -123,10 +127,9 @@ svc_postgres_up() {
     info "postgres on 127.0.0.1:${PG_PORT} postgres/postgres db dittofs_test"
 }
 
-# The steps of test/kmip/start-pykmip.sh (certificates, pinned PyKMIP, readiness,
-# key provisioning, environment file), except that the port is published on
-# 127.0.0.1 only, never on every interface of a laptop's network. The image and
-# version are read from that script, so a bump there is picked up here.
+# PyKMIP for the KMIP interop tests: its certificates, the pinned server, its
+# readiness, the keys the tests read, and their environment file. The port is
+# published on 127.0.0.1 only, never on every interface of a laptop's network.
 svc_kmip_up() {
     # Reuse a running server only with its environment complete and its
     # certificates, which live two days, good for another hour.
@@ -136,19 +139,13 @@ svc_kmip_up() {
     fi
     rm -f "$STATE/kmip.env"
     if dockerhost_port_busy 5696 && ! container_running "$KMIP_NAME"; then die "port 5696 is taken by something else"; fi
-    local kdir="$REPO/test/kmip" image version certs
-    image="$(kmip_pin IMAGE "$kdir/start-pykmip.sh")"
-    # The script names a Docker Hub image by its short name; see LOCALSTACK_IMAGE.
-    case "$image" in */*/*|*.*/*|*:*/*) ;; */*) image="docker.io/$image" ;; *) image="docker.io/library/$image" ;; esac
-    version="$(kmip_pin PYKMIP_VERSION "$kdir/start-pykmip.sh")"
-    [[ -n "$image" && -n "$version" ]] || die "could not read IMAGE and PYKMIP_VERSION from $kdir/start-pykmip.sh"
-    certs="$("$kdir/gen-certs.sh" "$STATE/kmip-certs")"
-    certs="$(cd "$certs" && pwd)"
+    local kdir="$REPO/test/kmip" certs="$STATE/kmip-certs"
+    kmip_certs "$certs"
     docker rm -f "$KMIP_NAME" >/dev/null 2>&1 || true
-    docker_pull "$image"
+    docker_pull "$KMIP_IMAGE"
     docker run -d --name "$KMIP_NAME" -p 127.0.0.1:5696:5696 \
-        -v "$certs:/certs:ro" -v "$kdir:/work:ro" "$image" \
-        sh -c "pip install --no-cache-dir pykmip==$version && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf" \
+        -v "$certs:/certs:ro" -v "$kdir:/work:ro" "$KMIP_IMAGE" \
+        sh -c "pip install --no-cache-dir pykmip==$KMIP_VERSION && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf" \
         >/dev/null
     wait_for "pykmip" 60 docker exec "$KMIP_NAME" python -c \
         'import socket,sys; s=socket.socket(); sys.exit(s.connect_ex(("127.0.0.1",5696)))'
@@ -163,11 +160,41 @@ svc_kmip_up() {
         docker exec "$KMIP_NAME" python /work/provision.py
     } >"$STATE/kmip.env.tmp"
     mv "$STATE/kmip.env.tmp" "$STATE/kmip.env"
-    info "pykmip $version on 127.0.0.1:5696 only (environment: $STATE/kmip.env)"
+    info "pykmip $KMIP_VERSION on 127.0.0.1:5696 only (environment: $STATE/kmip.env)"
 }
 
-# kmip_pin NAME FILE: the value FILE assigns to NAME, without quotes.
-kmip_pin() { sed -n "s/^$1=//p" "$2" | head -n 1 | tr -d "\"'" | sed 's/[[:space:]].*//'; }
+# kmip_certs DIR: the CA, server and client certificates PyKMIP and the Go
+# client authenticate each other with, throwaway material that lives two days.
+# The keys are ECDSA P-256 rather than RSA on purpose. PyKMIP's "TLS1.2"
+# authentication suite advertises exactly two AEAD cipher suites,
+# ECDHE-ECDSA-AES128-GCM-SHA256 and ECDHE-ECDSA-AES256-GCM-SHA384; every
+# RSA-authenticated entry in that suite is CBC-SHA256, which Go removed from its
+# default TLS 1.2 cipher list. With an RSA server certificate the two sides
+# share no cipher suite and the handshake fails outright.
+kmip_certs() {
+    local out="$1"
+    mkdir -p "$out"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+        -keyout "$out/ca-key.pem" -out "$out/ca-cert.pem" -subj "/CN=dittofs-kmip-test-ca" >/dev/null 2>&1
+    kmip_cert "$out" server dittofs-kmip-server serverAuth "DNS:localhost,IP:127.0.0.1"
+    # PyKMIP derives the client identity from the certificate's common name and
+    # makes that identity the owner of every object it creates, so the
+    # provisioning script and the Go tests present this same certificate, or
+    # the default access policy denies their Get.
+    kmip_cert "$out" client dittofs-kmip-client clientAuth "DNS:dittofs-kmip-client"
+    chmod 0600 "$out"/*-key.pem
+}
+
+# kmip_cert DIR NAME CN EKU SAN: a key and a certificate the CA in DIR signs.
+kmip_cert() {
+    local out="$1" name="$2"
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+        -keyout "$out/$name-key.pem" -out "$out/$name.csr" -subj "/CN=$3" >/dev/null 2>&1
+    openssl x509 -req -in "$out/$name.csr" -days 2 \
+        -CA "$out/ca-cert.pem" -CAkey "$out/ca-key.pem" -CAcreateserial -out "$out/$name-cert.pem" \
+        -extfile <(printf 'extendedKeyUsage=%s\nsubjectAltName=%s\n' "$4" "$5") >/dev/null 2>&1
+    rm -f "$out/$name.csr"
+}
 
 svc_name() { # the container of service $1
     case "$1" in localstack) echo "$LOCALSTACK_NAME" ;; postgres) echo "$PG_NAME" ;; kmip) echo "$KMIP_NAME" ;; esac
@@ -380,25 +407,10 @@ is_dfs_start() {
     [[ "$cmd" =~ ^([^[:space:]]*/)?dfs([[:space:]].*)?[[:space:]]start([[:space:]]|$) ]]
 }
 
-# An SMB conformance stack a killed run left behind (its own cleanup tears down
-# every profile, but a SIGKILL skips it), which makes every later run refuse with
-# "another instance of this stack is live".
-smb_stack_down() {
-    local dir="$REPO/test/smb-conformance" proj
-    proj="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
-        awk -F'|' -v d="$dir" '$1 ~ /^smb-conformance/ && $2 == d {print $1; exit}')"
-    [[ -n "$proj" ]] || return 0
-    if (cd "$dir" && docker compose -p "$proj" --profile '*' down -v >/dev/null 2>&1); then
-        info "removed leftover SMB conformance stack $proj"
-    else
-        warn "could not remove leftover SMB conformance stack $proj: in $dir, docker compose -p $proj --profile '*' down -v shows why"
-    fi
-}
-
 # Stop everything the harness can leave running: a host dfs, the compose stack
-# and its mounts, a leftover SMB conformance stack and the services. --volumes
-# also drops the stack's data volumes. dtc sessions are listed, not stopped. A
-# stop that fails is reported, and the rest still run.
+# and its mounts and the services. --volumes also drops the stack's data
+# volumes. dtc sessions are listed, not stopped. A stop that fails is reported,
+# and the rest still run.
 cmd_cleanup() {
     local volumes=false
     case "$#:${1:-}" in
@@ -418,10 +430,9 @@ cmd_cleanup() {
             warn "could not stop the compose stack: 'dt stack ${down[*]}' shows why"
         fi
     fi
-    smb_stack_down
     cmd_services down
     local left
-    left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-|smb-conformance-)' |
+    left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-)' |
         grep -vxF "${DT_CONTAINER_NAME:-none}" || true)"
     if [[ -n "$left" ]]; then warn "still running: $(tr '\n' ' ' <<<"$left")"; else info "no harness containers running"; fi
 }

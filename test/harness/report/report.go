@@ -2,7 +2,8 @@
 // writes them as the run's summary.json, in the Common Test Report Format
 // (CTRF) at one pinned version, with each cell's as a JUnit file and the run's
 // report.md, both generated from the same results. It reads summary.json back,
-// and shows a run as dt report does.
+// shows a run as dt report does, and writes a cell's results as smbtorture's
+// baseline file.
 package report
 
 import (
@@ -19,12 +20,14 @@ import (
 // specVersion is the one CTRF version dt writes, whatever CTRF publishes later.
 const specVersion = "0.1.0"
 
-// A test's status, in CTRF's words.
+// A test's status, in CTRF's words. A cell's result is passed, failed,
+// skipped, for needs this machine doesn't meet, or NotRun.
 const (
 	Passed  = "passed"
 	Failed  = "failed"
 	Skipped = "skipped"
-	Other   = "other" // the test has no result: its output stopped before one
+	Other   = "other"   // the test has no result: its output stopped before one
+	NotRun  = "not run" // the cell couldn't run, or its limit left tests unstarted
 )
 
 // Grades dt gives a result. A passing result no entry stands against has
@@ -37,6 +40,9 @@ const (
 	New = "new"
 	// Known is a failure a known-failure entry matches: skipped.
 	Known = "known"
+	// Quarantined is a result an entry of the quarantine list matches:
+	// skipped when it failed, and passed when it passed.
+	Quarantined = "quarantined"
 	// UnexpectedPass is a pass an entry still lists: failed.
 	UnexpectedPass = "unexpected_pass"
 	// ExpectedSkip is a skip an expected-skip entry matches: skipped.
@@ -63,6 +69,11 @@ type Test struct {
 	Grade     string // how dt graded the result, when it did
 	Reason    string // why the result was expected: the reason of the known entry that graded it
 	Issue     string // the issue that entry names
+	Retries   int    // how many times a retry ran it again
+	Flaky     bool   // it failed, then passed on a retry
+	// Metrics are the numbers a suite's metrics reader took from the
+	// test's report, by name; they never grade it.
+	Metrics map[string]float64
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -99,10 +110,12 @@ func Slug(cell string) string {
 // suite lists no tests, so the commands ran once for the whole cell.
 type Ran struct {
 	Test     string
-	Output   []byte // what the commands printed
-	Exit     int    // the first non-zero exit status among them, else 0
-	TimedOut bool   // they were stopped at the test's limit or the cell's
-	Out      string // the cell's directory, {out}, where tools write their result files
+	Prefix   string        // the test's prefix= in a .txt list: what the names the tool reports leave off
+	Output   []byte        // what the commands printed
+	Exit     int           // the first non-zero exit status among them, else 0
+	TimedOut bool          // they were stopped at the test's limit or the cell's
+	Took     time.Duration // how long they ran
+	Out      string        // the cell's directory, {out}, where tools write their result files
 }
 
 // A Reader reads one format's results from what a test's commands left. The
@@ -150,14 +163,19 @@ func (r Run) Write(dir string) error {
 }
 
 // Read reads the run in dir back from its summary.json, as Write wrote it.
-// A test goes back to the cell whose name begins its suite, the longest such
-// name when one cell's name begins another's.
 func Read(dir string) (Run, error) {
 	path := filepath.Join(dir, "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Run{}, err
 	}
+	return Parse(path, data)
+}
+
+// Parse reads a run from data, a summary.json as Write writes it, named path
+// in its errors. A test goes back to the cell whose name begins its suite, the
+// longest such name when one cell's name begins another's.
+func Parse(path string, data []byte) (Run, error) {
 	var doc document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Run{}, fmt.Errorf("%s: %w", path, err)
@@ -190,8 +208,9 @@ func Read(dir string) (Run, error) {
 			out.Suite = own
 		}
 		if t.Extra != nil {
-			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
+			out.Grade, out.Reason, out.Issue, out.Metrics = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue, t.Extra.Metrics
 		}
+		out.Retries, out.Flaky = t.Retries, t.Flaky
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
 	}
 	return r, nil
@@ -236,8 +255,8 @@ func (r Run) json() ([]byte, error) {
 		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message}
-			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Retries: t.Retries, Flaky: t.Flaky}
+			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue, Metrics: t.Metrics}); x.Grade+x.Reason+x.Issue != "" || len(x.Metrics) > 0 {
 				out.Extra = &x
 			}
 			res.Tests = append(res.Tests, out)
@@ -250,6 +269,9 @@ func (r Run) json() ([]byte, error) {
 				sum.Skipped++
 			default:
 				sum.Other++
+			}
+			if t.Flaky {
+				sum.Flaky++
 			}
 		}
 	}
@@ -285,6 +307,7 @@ type summary struct {
 	Skipped int   `json:"skipped"`
 	Pending int   `json:"pending"`
 	Other   int   `json:"other"`
+	Flaky   int   `json:"flaky"`
 	Start   int64 `json:"start"`
 	Stop    int64 `json:"stop"`
 }
@@ -296,13 +319,16 @@ type test struct {
 	RawStatus string     `json:"rawStatus,omitempty"`
 	Duration  int64      `json:"duration"`
 	Message   string     `json:"message,omitempty"`
+	Retries   int        `json:"retries,omitempty"`
+	Flaky     bool       `json:"flaky,omitempty"`
 	Extra     *testExtra `json:"extra,omitempty"`
 }
 
 type testExtra struct {
-	Grade  string `json:"grade,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	Issue  string `json:"issue,omitempty"`
+	Grade   string             `json:"grade,omitempty"`
+	Reason  string             `json:"reason,omitempty"`
+	Issue   string             `json:"issue,omitempty"`
+	Metrics map[string]float64 `json:"metrics,omitempty"`
 }
 
 type environment struct {

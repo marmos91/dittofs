@@ -219,11 +219,18 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
 		// than serve it or silently drop the policy.
 		//
-		// Only where the policy can actually be reached. It gates NFS alone, so
-		// a server with no NFS adapter enabled never consults it and must still
-		// boot; and the share has to be one this load actually served, which is
-		// why this sits after AddShare rather than before it — an enabled row
-		// that AddShare warns about and skips exports nothing either.
+		// Only where the policy can actually be reached, and the share has to be
+		// one this load actually served, which is why this sits after AddShare
+		// rather than before it — an enabled row that AddShare warns about and
+		// skips exports nothing either.
+		//
+		// decision: the refusal is keyed on the NFS adapter alone, although SMB
+		// applies require_kerberos at TREE_CONNECT too. An SMB-only server boots
+		// with such a share: require_kerberos refuses every session to it, which
+		// fails closed, and allow_auth_sys=false still admits NTLM over SMB.
+		// Refusing the boot there too would stop servers that booted before SMB
+		// honoured the policy. Extend the condition to SMB if an unreachable SMB
+		// share turns out to be a misconfiguration operators miss.
 		if shareConfig.Enabled && nfsEnabled &&
 			ExportAcceptsNoAuthFlavor(shareConfig.RequireKerberos, shareConfig.AllowAuthSys, rt.KerberosEnabled()) {
 			cause, remedy := ExportNoAuthFlavorCause(share.Name, shareConfig.RequireKerberos, shareConfig.AllowAuthSys)
@@ -260,17 +267,24 @@ func nfsAdapterEnabled(ctx context.Context, s store.Store) (bool, error) {
 // (nil, nil) when the share references an unknown metadata store so the caller
 // can skip it (already logged). Extracted so both startup load and live
 // block-store rebind (#1532) build an identical config from the same row.
+//
+// Any other failure to look up the metadata store, a cancelled context among
+// them, is an error: read as an unknown store, it would let a purge skip the
+// share's records and delete the rest.
 func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (*ShareConfig, error) {
 	// Try by ID first, fall back to name lookup.
 	metaStoreCfg, err := s.GetMetadataStoreByID(ctx, share.MetadataStoreID)
-	if err != nil {
+	if errors.Is(err, models.ErrStoreNotFound) {
 		metaStoreCfg, err = s.GetMetadataStore(ctx, share.MetadataStoreID)
-		if err != nil {
-			logger.Warn("Share references unknown metadata store",
-				"share", share.Name,
-				"metadata_store_id", share.MetadataStoreID)
-			return nil, nil
-		}
+	}
+	if errors.Is(err, models.ErrStoreNotFound) {
+		logger.Warn("Share references unknown metadata store",
+			"share", share.Name,
+			"metadata_store_id", share.MetadataStoreID)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up the metadata store of share %q: %w", share.Name, err)
 	}
 
 	nfsOpts := models.DefaultNFSExportOptions()

@@ -117,6 +117,7 @@ segments, so one pending record keeps its segment local. Repeat the drain until
 | Variable | Default | Meaning |
 |---|---|---|
 | `TARGET_DIR` | required | Directory under test |
+| `RESULTS_DIR` | `results/` next to `run.sh` | Where the JSON results go |
 | `USERS` | `1` | Number of simulated users (one file each) |
 | `VHDX_SIZE` | `30g` | Size of each user's file |
 | `IOENGINE` | `libaio` | fio I/O engine |
@@ -151,7 +152,7 @@ run, lower both intervals, or a user does one burst and waits out the rest.
 
 ### Output
 
-Each run writes one JSON file to `results/` and prints one line per job
+Each run writes one JSON file to `results/` (or `RESULTS_DIR`) and prints one line per job
 (needs `jq`): per-user run time (p50, p90, max), total IOPS and MiB/s, and the
 worst p99 latency.
 

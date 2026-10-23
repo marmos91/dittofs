@@ -1,15 +1,17 @@
 # CI Health — develop-red flake self-heal + PR warning
 #
 # Alerting (P0 develop-red issue + email) was removed: it produced a flood of
-# mails/issues on flaky conformance runs. The only alarm surface now is a
-# warn-only comment on PRs.
+# mails/issues on flaky conformance runs. For the workflows here, the only
+# alarm surface now is a warn-only comment on PRs. Tests (tests.yml) posts to
+# its own develop-status issue, after its retry.
 #
 # Two responsibilities:
 #
 #   retry (workflow_run): when a conformance workflow's first attempt fails a
 #     POSTSUBMIT or PERIODIC run on develop (push or schedule — NOT a PR run),
 #     re-run its failed jobs once so a transient flake self-heals to green with
-#     no human touch. No paging.
+#     no human touch. No paging. Not for Tests (tests.yml), whose dt run
+#     retries its failed tests itself.
 #
 #   warn-on-pr (pull_request): if develop is currently RED (any monitored
 #     conformance workflow's latest develop run that reached a verdict failed),
@@ -21,13 +23,16 @@ name: CI Health
 on:
   workflow_run:
     # A GitHub trigger cannot be computed, so these names are repeated from the
-    # "workflows" map in test/conformance/suites.json. The monitored-file list
-    # below is read from that map rather than repeated a second time.
+    # "workflows" map in test/conformance/suites.json, less Tests, which
+    # retries itself. The monitored-file list below is read from that map
+    # rather than repeated a second time.
     workflows:
       - "Conformance Suites"
-      - "NFS Protocol Conformance"
       - "E2E Tests"
     types: [completed]
+    # The retry acts on develop only, so a run on any other branch would
+    # start a run that skips every job.
+    branches: [develop]
   pull_request:
     branches: [develop, main]
 

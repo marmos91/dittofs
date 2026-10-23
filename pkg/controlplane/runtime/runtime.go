@@ -119,6 +119,10 @@ type Runtime struct {
 	// is successfully added or removed. Guarded by mu.
 	skippedShares map[string]string
 
+	// removing holds the names of the shares being removed, from before each
+	// leaves the registry until its row is deleted. See BeginShareRemoval.
+	removing sync.Map // share name -> struct{}
+
 	// shareIntegrity maps a share name to the outcome of the most recent
 	// structural manifest scan for it. Empty until the scheduled scan has
 	// run, and process-local: a restart clears it, which reads honestly as
@@ -695,6 +699,18 @@ func (r *Runtime) RemoveShare(name string) error {
 	defer cancel()
 	r.PurgeDefaultUserGrace(ctx, name)
 	return rmErr
+}
+
+// BeginShareRemoval holds name for a removal until end is called, and fails
+// while another removal holds it. The share leaves the registry before its
+// block store closes and its data is purged, so from then on only this hold
+// keeps a second removal from purging it too and deleting its row, which
+// would free the name while the first removal can still purge it.
+func (r *Runtime) BeginShareRemoval(name string) (end func(), err error) {
+	if _, held := r.removing.LoadOrStore(name, struct{}{}); held {
+		return nil, fmt.Errorf("share %q is being removed", name)
+	}
+	return func() { r.removing.Delete(name) }, nil
 }
 
 // PurgeShare deletes what a removed share leaves on this server: its records

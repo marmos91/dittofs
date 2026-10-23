@@ -19,11 +19,16 @@ import (
 // every concurrent same-dir create reads+writes one shared key, which BadgerDB's
 // SSI aborts as a conflict; the retry loop then serializes them on backoff.
 //
-// Rather than time that serialization (a wall-clock ratio that swings with
-// runner load), the guard reads the store's SSI conflict counter directly: a
-// healthy build commits every same-dir create first-try, so the counter stays
-// at zero regardless of disk speed, while a reintroduced shared-key write drives
-// it into the hundreds. Throughput is logged for diagnostics only.
+// The guard reads the store's SSI conflict counter rather than timing that
+// serialization, and bounds it as a share of the creates, because a healthy
+// build does not hold it at zero. Every create folds its usage into one of the
+// quota-counter stripes, a read-modify-write that two creates collide on when
+// one is descheduled long enough for its stripe to come around again. That
+// noise grows with CPU contention and lands on the distinct-dir control too.
+// Over 640 creates, idle and with every core saturated by other processes, a
+// healthy build gives 0-14 conflicts same-dir and 0-19 in the control. With
+// the parent write reintroduced, same-dir gives 77-211, or 221-1091 under
+// -race. One conflict per 16 creates sits about a factor of two from either.
 // Run: go test ./pkg/metadata -run TestParentMtimeContention -v
 func TestParentMtimeContention(t *testing.T) {
 	if testing.Short() {
@@ -54,6 +59,20 @@ func TestParentMtimeContention(t *testing.T) {
 
 		svc := metadata.New()
 		require.NoError(t, svc.RegisterStoreForShare(share, svc0store(store)))
+		// decision: the coalesced directory-timestamp flush is held off, so a
+		// change that makes it fire more often goes unseen here. A flush on every
+		// create still fails
+		// TestCommitCount_DeferredWritePathFiresOneRelaxedCommitPerLeg, which
+		// counts the create's durable commits; a shorter interval that stops short
+		// of every create fails neither test. The flush writes the parent once per
+		// interval by design and aborts every same-dir create in flight, so a run
+		// that outlasts an interval gains conflicts in proportion to its wall time
+		// whatever the create path does: 45-63 at 81-120 creates/s, against 1-6
+		// with the flush held. No share of the creates can absorb a cost that
+		// follows wall time. Withdraw the hold if creates stop reading the parent
+		// inode inside their transaction, since the flush could then abort none of
+		// them.
+		metadata.HoldDirectoryTimeFlushForTest(svc)
 		auth := &metadata.AuthContext{
 			Context: ctx, AuthMethod: "unix",
 			Identity:   &metadata.Identity{UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0)},
@@ -129,16 +148,13 @@ func TestParentMtimeContention(t *testing.T) {
 	t.Logf("concurrent  (1 dir, %2d threads): %8.0f creates/s, %d SSI conflicts", concurrency, sameOps, sameConflicts)
 	t.Logf("concurrent  (%2d dirs,%2d threads): %8.0f creates/s, %d SSI conflicts", concurrency, concurrency, distinctOps, distinctConflicts)
 
-	// Regression guard for #1573: with the parent-inode bump coalesced out of the
-	// create transaction, concurrent same-dir creates write only disjoint child
-	// keys and commit first-try, so the SSI conflict counter stays at zero. A
-	// reintroduced shared-key parent write makes every concurrent create contend
-	// on one key, driving the counter into the hundreds. The bound sits far above
-	// zero (absorbing any incidental abort) yet far below that regressed level.
-	require.Less(t, sameConflicts, int64(concurrency),
+	// One conflict per 16 creates, from the measurements above. The control
+	// shares only the stripes, so the same bound catches a shared key there too.
+	maxConflicts := int64(concurrency * perWorker / 16)
+	require.Less(t, sameConflicts, maxConflicts,
 		"concurrent same-dir creates are conflicting on a shared key; a parent-inode write was reintroduced into the create txn")
-	require.Less(t, distinctConflicts, int64(concurrency),
-		"distinct-dir creates should never conflict; the create path touched an unexpected shared key")
+	require.Less(t, distinctConflicts, maxConflicts,
+		"distinct-dir creates are conflicting on a shared key; the create path touched an unexpected shared key")
 }
 
 // svc0store adapts *badger.BadgerMetadataStore to the metadata.Store interface

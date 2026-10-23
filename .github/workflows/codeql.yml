@@ -6,14 +6,17 @@ on:
   pull_request:
     branches: [develop, main, feat/storage-v2]
   schedule:
-    # Weekly, matching the cadence the repository previously ran on.
-    - cron: "27 3 * * 1"
+    # Weekly, matching the cadence the repository previously ran on: Sunday
+    # 21:43 UTC, before the nightly suites.
+    - cron: "43 21 * * 0"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'weekly' || github.event.pull_request.number || github.ref }}
   # Cancel only a superseded pull-request run. A push is a distinct commit
   # someone wants tested, and cancelling it leaves the branch with no result to
   # compare a red run against. This protects a push run that is already
@@ -59,7 +62,7 @@ jobs:
       # with GOTOOLCHAIN=local, so a toolchain below a module's floor does not
       # downgrade the analysis, it drops the module: the operator failed to
       # extract on every run between its go directive reaching 1.26.0 and this
-      # change. Matches operator-tests.yml and release.yml.
+      # change. Matches release.yml.
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v7

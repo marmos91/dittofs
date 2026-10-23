@@ -1,10 +1,14 @@
 package registry
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/marmos91/dittofs/test/harness/needs"
 )
@@ -35,7 +39,17 @@ func TestLoadRules(t *testing.T) {
 		{"unknown fields are refused", ok + "suites:\n  a: { cmd: true, tiers: pr }\n", `unknown field "tiers"`},
 		{"unknown fields are refused at any depth", ok + "suites:\n  a: { cmd: true, fixture: { profil: memory } }\n", `unknown field "profil"`},
 		{"a newer version is refused", "version: 2\n", "this dt reads version 1"},
-		{"fixture users are UIDs from 1 to 65534", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, users: [1, 65534, 0, -1, 65535] } }\n", "users: 0 is not a UID from 1 to 65534\na: fixture users: -1 is not a UID from 1 to 65534\na: fixture users: 65535 is not"},
+		{"fixture users are self or UIDs from 1 to 65534", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, users: [1, 65534, self, 0, -1, 65535, me] } }\n", "users: 0 is not self or a UID from 1 to 65534\na: fixture users: -1 is not self or a UID from 1 to 65534\na: fixture users: 65535 is not self or a UID from 1 to 65534\na: fixture users: me is not"},
+		{"a fixture's client is a namespace", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, client: netns } }\n", `fixture client: "netns" is not namespace`},
+		{"a second client needs the first namespaced", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, clients: 2 } }\n", "fixture clients: 2 adds a second client beside the namespaced one"},
+		{"clients is 2", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, client: namespace, clients: 3 } }\n", "fixture clients: 2 adds"},
+		{"rpcbind is the host's", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, rpcbind: own } }\n", `fixture rpcbind: "own" is not host`},
+		{"a named value fills what the others do", ok + "suites:\n  a: { cmd: 'run {v} {w}', matrix: { s: [x: { v: 1, w: 2 }, y: { v: 3 }] } }\n", "matrix axis \"s\": value y fills other placeholders than x does"},
+		{"plain and named values don't mix", ok + "suites:\n  a: { cmd: 'run {s}', matrix: { s: [x: one, y] } }\n", "value y fills other placeholders than x does"},
+		{"what a named value fills is used", ok + "suites:\n  a: { cmd: 'run {v}', matrix: { s: [x: { v: 1, w: 2 }] } }\n", "matrix axis \"s\" is used by no command, fixture or env: {w} is in none"},
+		{"a named axis is not a placeholder", ok + "suites:\n  a: { cmd: 'run {s} {v}', matrix: { s: [x: { v: 1 }] } }\n", "unknown placeholder {s}"},
+		{"{test-args} comes from a .txt list", ok + "suites:\n  a: { cmd: 'run {test-args}', tests: [t] }\n", "{test-args} is used, but the suite's tests aren't a .txt list"},
+		{"{test-args} is only in cmd", ok + "suites:\n  a: { cmd: 'run {test-args}', tests: t.txt, env: { A: '{test-args}' } }\n", "env holds {test-args}, which has a value only in cmd"},
 		{"known paths exist", ok + "suites:\n  a: { cmd: true, known: missing.yaml }\n", "missing.yaml does not exist"},
 		{"{test} needs tests", ok + "suites:\n  a: { cmd: 'run {test}' }\n", "has no tests"},
 		{"groups name existing suites", ok + "groups: { g: [nope] }\nsuites:\n  a: { cmd: true }\n", `no suite "nope"`},
@@ -51,7 +65,7 @@ func TestLoadRules(t *testing.T) {
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
-		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools}/: no such tool; write {tools}/NAME, NAME one of pjdfstest, pynfs"},
+		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools}/: no such tool; write {tools}/NAME, NAME one of cthon04, nfstest, pjdfstest, pynfs"},
 		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"{test} is only in cmd and volumes", ok + "suites:\n  a: { cmd: 'run {test}', tests: [t], dir: '{test}', env: { T: '{test}' }, fixture: { profile: memory, lease: '{test}' } }\n",
@@ -60,6 +74,16 @@ func TestLoadRules(t *testing.T) {
 				"a: fixture holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test"},
 		{"a dfs fixture names its profile", ok + "suites:\n  a: { cmd: true, fixture: { server: dfs, nfs: export } }\n  b: { cmd: true, fixture: { nfs: export } }\n",
 			"a: fixture: a dfs fixture names its profile\nb: fixture: a dfs fixture names its profile"},
+		{"a knfsd fixture exports, with squash none and a lease at most", ok + "suites:\n" +
+			"  a: { cmd: true, fixture: { server: knfsd, nfs: export, squash: none, lease: 30s } }\n" +
+			"  b: { cmd: true, fixture: { server: knfsd, nfs: export, users: [1] } }\n" +
+			"  c: { cmd: true, fixture: { server: knfsd, nfs: export, squash: root_to_admin } }\n" +
+			"  d: { cmd: true, fixture: { server: knfsd, nfs: '4.1' } }\n" +
+			"  e: { cmd: true, fixture: { server: knfsd, profile: memory, nfs: export } }\n",
+			"b: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"c: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"d: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease\n" +
+				"e: fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -232,5 +256,55 @@ suites:
 	}
 	if base.Format != "exit" || base.Tier != "merge" || base.Timeout.Test != "30m" {
 		t.Errorf("defaults not applied: %+v", base)
+	}
+}
+
+// A named matrix value names its cells, and fills the axis's placeholder with
+// its value, or with a mapping each of its keys'; a plain value fills the
+// axis's own.
+func TestNamedMatrixValues(t *testing.T) {
+	r, err := Parse(t.TempDir(), []byte(`version: 1
+defaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }
+suites:
+  a:
+    cmd: run {p} {set} {nfs} {opts}
+    matrix:
+      p: [memory]
+      set: [plain: "", v3: vers=3]
+      both: [default: { nfs: "4.2", opts: hard }, v3: { nfs: "3", opts: "hard,tcp" }]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := r.Suite("a").Matrix
+	if !slices.Equal(m[1].Values, []string{"plain", "v3"}) || !slices.Equal(m[2].Values, []string{"default", "v3"}) {
+		t.Fatalf("values %q and %q", m[1].Values, m[2].Values)
+	}
+	got := m.Fill(map[string]string{"p": "memory", "set": "v3", "both": "default"})
+	if want := map[string]string{"p": "memory", "set": "vers=3", "nfs": "4.2", "opts": "hard"}; !maps.Equal(got, want) {
+		t.Errorf("filled %v, want %v", got, want)
+	}
+}
+
+// nfs is a version, or a mapping of a version and options; in the mapping
+// the version may be left out, for the options' vers= to give it.
+func TestNFSForms(t *testing.T) {
+	for y, want := range map[string]NFS{
+		`"4.1"`:                        {Version: "4.1"},
+		`export`:                       {Version: "export"},
+		`{ version: "3", options: x }`: {Version: "3", Options: "x"},
+		`{ options: "vers=4.1,noac" }`: {Options: "vers=4.1,noac", FromOptions: true},
+		`{ options: "" }`:              {FromOptions: true},
+	} {
+		var f Fixture
+		if err := yaml.Unmarshal([]byte("nfs: "+y), &f); err != nil {
+			t.Fatal(err)
+		}
+		if f.NFS != want || f.NFS.Serves() != true || f.NFS.Mounts() == (want.Version == "export") {
+			t.Errorf("%s: %+v, serves %t, mounts %t", y, f.NFS, f.NFS.Serves(), f.NFS.Mounts())
+		}
+	}
+	if (NFS{}).Serves() {
+		t.Error("no nfs serves NFS")
 	}
 }

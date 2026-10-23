@@ -38,16 +38,15 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 		Version:    call.Version,
 	}
 
-	// Parse Unix credentials if AUTH_UNIX. These now authorize LOCK and TEST,
-	// so a parse failure is not silent: it leaves the caller with no identity,
-	// which the lock gate treats as anonymous and will refuse on any file that
-	// is not world-readable.
+	// Parse Unix credentials if AUTH_UNIX. These authorize LOCK and TEST. Both
+	// listeners refuse a body that fails to decode before it gets here
+	// (rpc.CheckCredential), so the error branch is defensive only.
 	if handlerCtx.AuthFlavor == rpc.AuthUnix {
 		authBody := call.GetAuthBody()
 		if len(authBody) > 0 {
 			unixAuth, err := rpc.ParseUnixAuth(authBody)
 			if err != nil {
-				logger.WarnCtx(ctx, "NLM: unparseable AUTH_UNIX credential; request is treated as anonymous",
+				logger.WarnCtx(ctx, "NLM: unparseable AUTH_UNIX credential",
 					"client", clientAddr, "error", err)
 			} else {
 				handlerCtx.UID = &unixAuth.UID

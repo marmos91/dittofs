@@ -7,10 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -206,9 +211,11 @@ while [ "$1" != -- ]; do shift; done; shift; exec "$@"`,
 }
 
 // A real dfs, built from this checkout, starts on each profile, exports the
-// share over NFS at {server} on its own port, and stops; a "dfs start" dt
-// didn't start survives the stop. badger-s3 runs where the S3 service it
-// needs answers, as dt services starts it.
+// share over NFS at {server} on its own port, gives the placeholders the
+// fixture names, and stops; a "dfs start" dt didn't start survives the stop.
+// badger-s3 runs where the S3 service it needs answers, as dt services
+// starts it, and its {bucket} lists the keys under the fixture's prefix, the
+// fixture's own probe among them, and none of another fixture's.
 func TestRealServer(t *testing.T) {
 	bin := realBin(t)
 	other := outsider(t)
@@ -226,13 +233,19 @@ func TestRealServer(t *testing.T) {
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []int{65532}, Delegations: &no, Lease: "30s"}
+			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []string{"65532"}, Delegations: &no, Lease: "30s"}
 			s, err := Start(ctx, f, services, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
 				t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
 			}
 			vals := s.Placeholders()
+			if got, want := slices.Sorted(maps.Keys(vals)), slices.Sorted(slices.Values(Placeholders(f))); !slices.Equal(got, want) {
+				t.Errorf("placeholders %v, the fixture names %v", got, want)
+			}
+			if profile == "badger-s3" {
+				checkBucket(t, vals["bucket"])
+			}
 			conn, err := net.DialTimeout("tcp", net.JoinHostPort(vals["server"], vals["nfs-port"]), 5*time.Second)
 			if err != nil {
 				t.Errorf("NFS at {server}:{nfs-port}: %v", err)
@@ -256,6 +269,24 @@ func TestRealServer(t *testing.T) {
 				t.Error("the dfs dt didn't start was stopped too")
 			}
 		})
+	}
+}
+
+// checkBucket checks that listing, a fixture's {bucket}, lists its probe and
+// only keys under its prefix.
+func checkBucket(t *testing.T, listing string) {
+	t.Helper()
+	_, prefix, _ := strings.Cut(listing, "prefix=")
+	resp, err := http.Get(listing)
+	if err != nil {
+		t.Fatalf("{bucket}: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	keys := regexp.MustCompile(`<Key>([^<]*)</Key>`).FindAllStringSubmatch(string(body), -1)
+	if resp.StatusCode != http.StatusOK || !slices.ContainsFunc(keys, func(k []string) bool { return k[1] == prefix+"dt-probe" }) ||
+		slices.ContainsFunc(keys, func(k []string) bool { return !strings.HasPrefix(k[1], prefix) }) {
+		t.Errorf("{bucket} %s answered %d:\n%s", listing, resp.StatusCode, body)
 	}
 }
 
@@ -305,6 +336,9 @@ func TestRealSMB(t *testing.T) {
 			if info, err := os.Stat(filepath.Join(s.data, "controlplane.db")); err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
 				t.Errorf("dfs doesn't run as dt's user: %v", err)
 			}
+			if vals["share"] != "smbbasic" {
+				t.Errorf("{share} is %q, not the first share without its /", vals["share"])
+			}
 			smbclient, err := exec.LookPath("smbclient")
 			if err != nil {
 				t.Skip("no smbclient here")
@@ -324,11 +358,11 @@ func TestRealSMB(t *testing.T) {
 					t.Errorf("smbclient -L lacks %s:\n%s", name, list)
 				}
 			}
-			share := "//" + vals["server"] + "/smbbasic"
+			share := "//" + vals["server"] + "/" + vals["share"]
 			if got := run(share, "-c", "mkdir before; ls"); !strings.Contains(got, "before") {
 				t.Fatalf("{user} made no directory at the root:\n%s", got)
 			}
-			if err := s.Reset(); err != nil {
+			if err := s.Reset(vals["share"]); err != nil {
 				t.Fatal(err)
 			}
 			if got := run(share, "-c", "mkdir after; ls"); !strings.Contains(got, "after") {

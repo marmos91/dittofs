@@ -6,8 +6,8 @@ Every pynfs failure is either something DittoFS gets wrong or does not
 implement, or an assertion no server satisfies. This table separates the
 second case from the first by measuring rather than assuming: a test the
 Linux kernel server also fails is evidence about the suite, not about
-DittoFS, and is the only thing that justifies a `suite` row in
-KNOWN_FAILURES.
+DittoFS, and is the only thing that justifies a `proto` entry in
+known.yaml.
 
 - Kernel: `6.17.0-1022-azure`
 - Lease time: `30s`

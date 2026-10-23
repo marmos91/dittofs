@@ -20,11 +20,26 @@ const version = 1
 // Path is the registry's location, relative to the repository root.
 const Path = "test/suites.yaml"
 
+// QuarantinePath is the quarantine list's location, relative to the
+// repository root.
+const QuarantinePath = "test/harness/quarantine.yaml"
+
 // ToolDirs maps each test tool {tools} holds to the directory of its output
 // that {tools}/NAME links to: pjdfstest's share/pjdfstest holds its binary
-// beside its tests, where misc.sh looks for it, and pynfs's whole output
-// holds bin/pynfs-4.x. A suite names a tool as {tools}/NAME.
-var ToolDirs = map[string]string{"pjdfstest": "share/pjdfstest", "pynfs": "."}
+// beside its tests, where misc.sh looks for it, pynfs's and nfstest's whole
+// outputs hold bin/pynfs-4.x and bin/nfstest_MODULE, and cthon04's
+// share/cthon04 is its built tree. A suite names a tool as {tools}/NAME.
+var ToolDirs = map[string]string{"cthon04": "share/cthon04", "nfstest": ".", "pjdfstest": "share/pjdfstest", "pynfs": "."}
+
+// ToolCopies are the tools {tools} holds a copy of, writable by the user dt
+// runs as, rather than a link to. cthon04's general tests cp their sources to
+// the mount, which keeps their modes, so from nix's read-only store each copy
+// is a read-only file its owner then writes: what special/op_chmod tests, not
+// what general does.
+//
+// decision: with the copy, general no longer writes to read-only files, so
+// special/op_chmod is where the server's handling of that write stays visible.
+var ToolCopies = []string{"cthon04"}
 
 // Registry is the whole file.
 type Registry struct {
@@ -35,6 +50,12 @@ type Registry struct {
 	// Known holds the entries of each known file a suite names, by its path,
 	// read and checked as the registry loads.
 	Known map[string][]known.Entry `yaml:"-"`
+	// Quarantine holds the quarantine list's entries for each suite, by its
+	// name, as the entries its cells' results are graded by.
+	Quarantine map[string][]known.Entry `yaml:"-"`
+	// Expired says why each expired entry of the quarantine list excuses
+	// nothing, as path:line: why, for dt doctor to report.
+	Expired []string `yaml:"-"`
 }
 
 // Suites keeps the file's order.
@@ -66,6 +87,7 @@ type Suite struct {
 	Packages    *Packages            `yaml:"packages"`
 	Env         Env                  `yaml:"env"`
 	Args        map[string]string    `yaml:"args"`
+	Names       string               `yaml:"names"` // what {names} holds when a run names no tests
 	Known       string               `yaml:"known"`
 	Shards      int                  `yaml:"shards"`
 	Job         string               `yaml:"job"`
@@ -73,17 +95,20 @@ type Suite struct {
 
 // Fixture is the DittoFS server a suite's tests run against.
 type Fixture struct {
-	Server      string `yaml:"server"`
-	Profile     string `yaml:"profile"`
-	NFS         NFS    `yaml:"nfs"`
-	SMB         SMB    `yaml:"smb"`
-	Shares      string `yaml:"shares"`
-	Users       []int  `yaml:"users"`
-	Squash      string `yaml:"squash"`
-	Delegations *bool  `yaml:"delegations"`
-	Lease       string `yaml:"lease"`
-	Kerberos    bool   `yaml:"kerberos"`
-	Reset       string `yaml:"reset"`
+	Server      string   `yaml:"server"`
+	Profile     string   `yaml:"profile"`
+	NFS         NFS      `yaml:"nfs"`
+	SMB         SMB      `yaml:"smb"`
+	Shares      string   `yaml:"shares"`
+	Users       []string `yaml:"users"` // UIDs, or self: the user dt runs as
+	Squash      string   `yaml:"squash"`
+	Delegations *bool    `yaml:"delegations"`
+	Lease       string   `yaml:"lease"`
+	Kerberos    bool     `yaml:"kerberos"`
+	Reset       string   `yaml:"reset"`
+	Client      string   `yaml:"client"`
+	Clients     int      `yaml:"clients"`
+	RPCBind     string   `yaml:"rpcbind"`
 }
 
 // Packages selects the Go packages whose tests a build tag changes.

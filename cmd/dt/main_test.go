@@ -112,7 +112,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: { mount: true } } }\n" +
+		"  fixed: { cmd: \"true\", fixture: { profile: memory, nfs: \"4.1\", smb: { mount: true } } }\n" +
 		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
@@ -217,7 +217,7 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := "dt doesn't mount SMB yet"
+	fixtures := "dt doesn't mount a share over both NFS and SMB yet"
 	want := map[string]suite{
 		"s":        {RunsHere: true},
 		"s/o":      {RunsHere: true},
@@ -308,6 +308,22 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	out, err := dt(t, "run", "breaks", "--ci", "--results", t.TempDir())
 	var status exitStatus
 	if err == nil || errors.As(err, &status) || !strings.Contains(out, "breaks  passed") {
+		t.Errorf("dt run: %v\n%s", err, out)
+	}
+}
+
+// --retry runs a test that failed new again, so one that fails only once
+// passes.
+func TestRunRetry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs sh")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  once: { cmd: \"sh {test}\", tests: \"t/*.sh\" }\n")
+	writeFile(t, filepath.Join(root, "t", "a.sh"), "[ -e \"$0.ran\" ] || { touch \"$0.ran\"; exit 1; }\n")
+	t.Chdir(root)
+	if out, err := dt(t, "run", "once", "--retry", "1", "--results", t.TempDir()); err != nil {
 		t.Errorf("dt run: %v\n%s", err, out)
 	}
 }

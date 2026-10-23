@@ -25,17 +25,30 @@ func TestPlatforms(t *testing.T) {
 	}
 }
 
+// refusedPort is a port nothing on loopback listens on, and unlike a port a
+// test frees, nothing else gets it meanwhile: it's never handed out as a free
+// port, and an ordinary user may not bind it.
+const refusedPort = "1"
+
 // A port is met while it's free, and unmet once something listens on it, on
-// every address or on loopback alone.
+// every address or on loopback alone. The port is the first one met from
+// 1024, below those a system hands out as free ports, so nothing else takes
+// it between the test freeing it and the check binding it.
 func TestPort(t *testing.T) {
-	for _, addr := range []string{":0", "127.0.0.1:0"} {
-		l, err := net.Listen("tcp", addr)
+	p := 1024
+	for ; Check("", "port:"+strconv.Itoa(p)) != nil; p++ {
+		if p == 32767 {
+			t.Fatal("no port from 1024 to 32767 is met")
+		}
+	}
+	port := strconv.Itoa(p)
+	for _, addr := range []string{":", "127.0.0.1:"} {
+		l, err := net.Listen("tcp", addr+port)
 		if err != nil {
 			t.Fatal(err)
 		}
-		port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 		if err := Check("", "port:"+port); err == nil {
-			t.Errorf("a port in use on %s is met", addr)
+			t.Errorf("a port in use on %s is met", addr+port)
 		}
 		_ = l.Close()
 		if err := Check("", "port:"+port); err != nil {
@@ -54,12 +67,12 @@ func TestPortNotBindable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = l.Close() }()
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 	if err := Check("", "port:"+port); err == nil {
 		t.Error("a port something accepts on is met")
 	}
-	_ = l.Close()
-	if err := Check("", "port:"+port); err != nil {
+	if err := Check("", "port:"+refusedPort); err != nil {
 		t.Errorf("a port nothing accepts on: %v", err)
 	}
 }
@@ -72,6 +85,68 @@ func TestToolNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := Check("", "kerberos"); err == nil || !strings.Contains(err.Error(), "kinit") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// The machine's own podman runs the scenarios from 5.6 on, compared as
+// numbers. An older one, or none, leaves the need met only where docker
+// runs, in podman's own image, and unmet with the reason otherwise. A podman
+// that fails leaves it unmet even with docker, never met in the image.
+func TestPodman(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake podman and docker are sh scripts")
+	}
+	const failed = "podman info --format {{.Version.Version}}: exit status 1"
+	for _, c := range []struct {
+		podman string // the version the fake podman reports, or "fail"; none when empty
+		docker bool
+		image  bool   // met in podman's image
+		need   string // the need's error, "" for none
+	}{
+		{podman: "5.6.0"},
+		{podman: "5.10.1"},
+		{podman: "6.0.0"},
+		{podman: "5.6.0", docker: true},
+		{podman: "5.5.2", need: "podman 5.5.2: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", need: "podman 4.9.3: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", docker: true, image: true},
+		{podman: "fail", need: failed},
+		{podman: "fail", docker: true, need: failed},
+		{need: "podman not found"},
+		{docker: true, image: true},
+	} {
+		bin := t.TempDir()
+		t.Setenv("PATH", bin)
+		switch c.podman {
+		case "":
+		case "fail":
+			writeScript(t, filepath.Join(bin, "podman"), "exit 1")
+		default:
+			writeScript(t, filepath.Join(bin, "podman"), `[ "$*" = "info --format {{.Version.Version}}" ] && echo `+c.podman)
+		}
+		if c.docker {
+			writeScript(t, filepath.Join(bin, "docker"), `[ "$*" = info ]`)
+		}
+		errText := func(err error) string {
+			if err == nil {
+				return ""
+			}
+			return err.Error()
+		}
+		if image, err := Podman(); image != c.image || errText(err) != c.need {
+			t.Errorf("podman %q, docker %t: Podman %t, %q, want %t, %q", c.podman, c.docker, image, errText(err), c.image, c.need)
+		}
+		if got := errText(Check("", "podman")); got != c.need {
+			t.Errorf("podman %q, docker %t: Check %q, want %q", c.podman, c.docker, got, c.need)
+		}
+	}
+}
+
+// writeScript writes an sh script that runs body.
+func writeScript(t *testing.T, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(name, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -104,7 +179,7 @@ func TestServices(t *testing.T) {
 			t.Errorf("%s: %v, want %q", need, err, want)
 		}
 	}
-	_ = l.Close()
+	t.Setenv("DITTOFS_TEST_POSTGRES_DSN", "host=127.0.0.1 port="+refusedPort+" dbname=x")
 	if err := Check("", "service:postgres"); err == nil || !strings.Contains(err.Error(), "nothing answers") {
 		t.Errorf("nothing listening: %v", err)
 	}
@@ -130,12 +205,7 @@ func TestLocalstackHealth(t *testing.T) {
 		t.Cleanup(s.Close)
 		return s.URL
 	}
-	// A port nothing listens on.
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
+	refused := "http://127.0.0.1:" + refusedPort
 	other := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(other.Close)
 	for _, c := range []struct{ name, endpoint, want string }{
@@ -143,7 +213,7 @@ func TestLocalstackHealth(t *testing.T) {
 		{"S3 available", health(`{"services": {"s3": "available"}}`) + "/", ""},
 		{"S3 off", health(`{"services": {"s3": "disabled"}}`), `says S3 is "disabled", not available or running`},
 		{"another HTTP server", other.URL, "answered 404, not with Localstack's health"},
-		{"nothing listening", "http://" + closed.Addr().String(), "nothing answers at http://" + closed.Addr().String() + "/_localstack/health"},
+		{"nothing listening", refused, "nothing answers at " + refused + "/_localstack/health"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("LOCALSTACK_ENDPOINT", c.endpoint)

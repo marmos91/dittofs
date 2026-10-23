@@ -780,10 +780,11 @@ This pass rate is measured on the BadgerDB metadata store.
 | `lockf/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
 | `xattr/*`, `*xattr/*` | Not in NFSv3 |
 | `fallocate/*` | No ALLOCATE in NFSv3 (supported over NFSv4.2 — see above) |
+| `chflags/*` | BSD-specific file flags, not supported; on Linux pjdfstest ends these tests early and reports them as passed |
 
 **Note**: Only `utimensat/09.t:test5` actually fails in current pjdfstest runs. Other patterns either don't have tests in the suite or the tests are skipped.
 
-See `test/posix/KNOWN_FAILURES.md` for the complete list with detailed explanations.
+See `test/posix/known.yaml` for the complete list with detailed explanations.
 
 ## Still Have Questions?
 

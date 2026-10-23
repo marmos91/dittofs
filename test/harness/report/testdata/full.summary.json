@@ -7,12 +7,13 @@
       "name": "dt"
     },
     "summary": {
-      "tests": 8,
-      "passed": 2,
+      "tests": 10,
+      "passed": 4,
       "failed": 2,
       "skipped": 3,
       "pending": 0,
       "other": 1,
+      "flaky": 1,
       "start": 1791460800000,
       "stop": 1791460912000
     },
@@ -99,6 +100,19 @@
         "message": "panic: boom"
       },
       {
+        "name": "TestFlaky",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/c"
+        ],
+        "status": "passed",
+        "duration": 20,
+        "message": "c_test.go:7: timed out",
+        "retries": 1,
+        "flaky": true
+      },
+      {
         "name": "example.com/m/c",
         "suite": [
           "unit",
@@ -107,6 +121,21 @@
         "status": "failed",
         "duration": 300,
         "message": "failed outside any test"
+      },
+      {
+        "name": "bench/workloads/seq-write.fio",
+        "suite": [
+          "fio-verify"
+        ],
+        "status": "passed",
+        "duration": 61000,
+        "extra": {
+          "metrics": {
+            "seq-write/write/bw_bytes": 131411497,
+            "seq-write/write/iops": 125.32377,
+            "seq-write/write/lat_ns_mean": 31871842.5
+          }
+        }
       }
     ],
     "environment": {
@@ -137,6 +166,13 @@
           "seconds": 61,
           "log": "logs/unit-windows.log",
           "junit": "junit/unit-windows.xml"
+        },
+        {
+          "suite": "fio-verify",
+          "result": "passed",
+          "seconds": 64,
+          "log": "logs/fio-verify.log",
+          "junit": "junit/fio-verify.xml"
         },
         {
           "suite": "pynfs",

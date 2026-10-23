@@ -15,16 +15,24 @@ import (
 var fixtureSetup = plan.FixtureSetup
 
 // fixtureServer is a running fixture: what it gives the commands, the reset
-// of its first share, and its stop, which reports the server ending before
-// its cell did.
+// of a test's share, how a command runs on its client, and its stop, which
+// reports the server ending before its cell did.
 type fixtureServer interface {
 	Placeholders() map[string]string
-	Reset() error
+	Reset(share string) error
+	Command(argv []string, dir string, env []string) ([]string, error)
 	Stop() error
 }
 
 // startFixture starts a cell's server; the tests replace it.
 var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+	if f.Server == "knfsd" {
+		k, err := fixture.StartKnfsd(ctx, f, out, w)
+		if err != nil {
+			return nil, err
+		}
+		return k, nil
+	}
 	s, err := fixture.Start(ctx, f, services, bin, out, w)
 	if err != nil {
 		return nil, err

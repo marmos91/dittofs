@@ -1,0 +1,3 @@
+# The export cthon04 and nfstest mount (test/suites.yaml). Its users have a read-write
+# grant; everyone else reads, which root, squashed to the anonymous user, needs to mount it.
+- { name: /export, default-permission: read }

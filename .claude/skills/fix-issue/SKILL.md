@@ -237,13 +237,14 @@ Docker is available locally for protocol conformance. Pick the suite that
 matches the change — they cover different things:
 
 ```bash
-cd test/smb-conformance && ./run.sh     # SMB2/3: WPTS BVT, Samba-derived
+test/harness/bin/dt run wpts            # SMB2/3: WPTS BVT
+test/harness/bin/dt run smbtorture      # SMB2/3: Samba's smbtorture
 sudo -E go test -tags=e2e -v -run Kerberos ./test/e2e/   # NFS and SMB Kerberos mounts
-sudo ./test/posix/run-posix.sh          # pjdfstest: the real NFS-side FS-semantics suite
+test/harness/bin/dt run pjdfstest       # pjdfstest: the real NFS-side FS-semantics suite
 ```
 
-`test/posix/` is where an NFSv3/v4 semantics change gets proven — `setup-posix.sh`
-first, `teardown-posix.sh` after. `test/e2e/` needs sudo and a kernel NFS client:
+`dt` runs a suite against a server it sets up itself, on Linux or in its container,
+`test/harness/bin/dtc`; `dt doctor` says what the machine lacks. `test/e2e/` needs sudo and a kernel NFS client:
 `cd test/e2e && sudo ./run-e2e.sh`. **Never run two suites concurrently** — they
 collide on ports and mounts.
 
@@ -254,10 +255,10 @@ the teardown check that keeps you from destroying a development VM.
 
 If a listed known-failure starts passing, or a new one fails, do not edit the
 list on a hunch — CI is the authority on what actually fails there. There are
-several, one per suite: `test/posix/KNOWN_FAILURES.md` and
-`KNOWN_FAILURES_V4.md`, `test/smb-conformance/KNOWN_FAILURES.md`, and
-`test/smb-conformance/smbtorture/KNOWN_FAILURES{,_KERBEROS}.md`. Flakes get
-fixed, never retried.
+several, one per suite: the `known` file `test/suites.yaml` names for each,
+and, until their scripts go, cthon04's and nfstest's
+`test/nfs-mount/*/KNOWN_FAILURES*.md` beside theirs. Flakes get fixed, never
+retried.
 
 ## 7. Simplify and review before the PR
 

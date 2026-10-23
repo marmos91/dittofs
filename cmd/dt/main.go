@@ -47,7 +47,7 @@ func newRoot(out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
-	root.AddCommand(newList(), newPlan(), newRun(), newReport(), newDoctor(), newKnown(), alias("unit"), alias("integration"), alias("e2e"))
+	root.AddCommand(newList(), newPlan(), newRun(), newReport(), newHistory(), newDoctor(), newKnown(), newDocs(), alias("unit"), alias("integration"), alias("e2e"))
 	root.AddCommand(newEnv()...)
 	return root
 }
@@ -142,12 +142,16 @@ func newList() *cobra.Command {
 
 func newPlan() *cobra.Command {
 	var tier, base, shardFlag string
-	var asJSON bool
+	var asJSON, estimating, ci bool
+	var last int
 	cmd := &cobra.Command{
 		Use:   "plan",
-		Short: "The cells a tier runs, each with its place",
+		Short: "The cells a tier runs, each with its place; with --estimate, the tier's runner-minutes from dt history",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !estimating && (ci || cmd.Flags().Changed("last")) {
+				return errors.New("--ci and --last say which runs --estimate reads: give --estimate too")
+			}
 			root, r, err := load()
 			if err != nil {
 				return err
@@ -167,13 +171,33 @@ func newPlan() *cobra.Command {
 					return err
 				}
 			}
-			if asJSON {
+			if asJSON && !estimating {
 				return writeJSON(cmd.OutOrStdout(), map[string]any{"tier": tier, "cells": cells})
 			}
 			rows := [][]string{{"CELL", "PLACE", "BLOCKING", "TIMEOUT", "NOTE"}}
 			for _, c := range cells {
 				rows = append(rows, []string{c.Name, c.Place, strconv.FormatBool(c.Blocking), strconv.Itoa(c.TimeoutMinutes) + "m", strings.Join(c.Notes, "; ")})
 			}
+			if !estimating {
+				return table(cmd.OutOrStdout(), rows)
+			}
+			runs, err := pastRuns(cmd.Context(), "", ci, last, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			est, total, missing := estimate(cells, runs)
+			if asJSON {
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"tier": tier, "cells": est, "runner_minutes": total, "cells_without_history": missing})
+			}
+			rows[0] = slices.Insert(rows[0], 4, "P50")
+			for i, e := range est {
+				p50 := "no history"
+				if e.P50Minutes != nil {
+					p50 = fmt.Sprintf("%.1fm", *e.P50Minutes)
+				}
+				rows[i+1] = slices.Insert(rows[i+1], 4, p50)
+			}
+			rows = append(rows, nil, []string{fmt.Sprintf("runner-minutes: %.1f, the sum of %d cells' p50; cells with no history: %d", total, len(cells)-missing, missing)})
 			return table(cmd.OutOrStdout(), rows)
 		},
 	}
@@ -181,6 +205,8 @@ func newPlan() *cobra.Command {
 	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched")
 	cmd.Flags().StringVar(&shardFlag, "shard", "", "only shard I of N of the cells, as I/N")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	cmd.Flags().BoolVar(&estimating, "estimate", false, "give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum")
+	historyFlags(cmd, &ci, &last)
 	_ = cmd.MarkFlagRequired("tier")
 	return cmd
 }

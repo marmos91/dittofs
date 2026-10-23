@@ -8,35 +8,27 @@ The test suite validates DittoFS's NFSv3 implementation against POSIX filesystem
 
 ## Quick Start
 
-### Automated Setup (Recommended)
+### Through dt (Recommended)
 
-The setup script handles starting the server, configuring stores/shares via API, and mounting:
+pjdfstest is a suite of the test registry, `test/suites.yaml`, and runs through `dt`, as CI
+runs it in `.github/workflows/tests.yml`. `dt` starts the server on the `badger-s3` profile,
+mounts it with `noac,sync,lookupcache=none` (and `nolock` on NFSv3), runs each test file with
+`prove`, and grades the results against `known.yaml`:
 
 ```bash
-# Build binaries
-go build -o dfs ./cmd/dfs
-go build -o dfsctl ./cmd/dfsctl
-
-# Setup with an in-memory BadgerDB metadata store (default)
-sudo ./test/posix/setup-posix.sh
-
-# Or use a different store type
-sudo ./test/posix/setup-posix.sh badger
-
-# Run POSIX tests
-cd /tmp/dittofs-test
-sudo env PATH="$PATH" ./test/posix/run-posix.sh
-
-# Run specific test category
-sudo env PATH="$PATH" ./test/posix/run-posix.sh chmod
-
-# Teardown when done
-sudo ./test/posix/teardown-posix.sh
+test/harness/bin/dt services up localstack          # badger-s3 keeps its blocks in S3
+test/harness/bin/dt run pjdfstest/badger-s3/3       # NFSv3
+test/harness/bin/dt run pjdfstest/badger-s3/4.1     # NFSv4.1
+test/harness/bin/dt run pjdfstest/badger-s3/4 chmod/00.t   # one test file
 ```
+
+It needs Linux, the kernel NFS client and passwordless sudo; on macOS, run it in the Linux
+container, `test/harness/bin/dtc run pjdfstest/badger-s3/3`.
 
 ### Store Types
 
-The setup script supports different storage backend combinations:
+`setup-posix.sh` starts and mounts a server by hand, for the manual runs below. It supports
+different storage backend combinations:
 
 | Store Type | Metadata Store | Block Store | Requirements |
 |------------|----------------|---------------|--------------|
@@ -75,10 +67,6 @@ ADMIN_PASSWORD="<from-server-output>"
 sudo mkdir -p /tmp/dittofs-test
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock \
   localhost:/export /tmp/dittofs-test
-
-# Run tests
-cd /tmp/dittofs-test
-sudo env PATH="$PATH" ../test/posix/run-posix.sh
 ```
 
 ### macOS with Docker
@@ -124,24 +112,9 @@ sudo ./test/posix/teardown-posix.sh
 
 ## NFSv4 Testing
 
-The POSIX test suite supports NFSv4.0 via the `--nfs-version` parameter. This allows running the same pjdfstest suite against both NFSv3 and NFSv4 mounts.
-
-### Setup
-
-```bash
-# Setup with NFSv4 mount
-sudo ./test/posix/setup-posix.sh memory --nfs-version 4
-
-# Run POSIX tests against NFSv4 mount
-cd /tmp/dittofs-test
-sudo env PATH="$PATH" ./test/posix/run-posix.sh --nfs-version 4
-
-# Run specific test category
-sudo env PATH="$PATH" ./test/posix/run-posix.sh --nfs-version 4 chmod
-
-# Teardown
-sudo ./test/posix/teardown-posix.sh
-```
+`dt` runs the same pjdfstest suite against NFSv3, NFSv4.0 and NFSv4.1 mounts, one cell each:
+`pjdfstest/badger-s3/3`, `pjdfstest/badger-s3/4` and `pjdfstest/badger-s3/4.1`. By hand,
+`setup-posix.sh` mounts NFSv4 with `--nfs-version 4`.
 
 ### NFSv4 Mount Differences
 
@@ -156,7 +129,7 @@ NFSv4 uses different mount options than NFSv3:
 
 ### Known Failures
 
-NFSv4-specific known failures are documented in `KNOWN_FAILURES_V4.md`. Key differences from NFSv3:
+The known failures are in `known.yaml`; each entry's `where` gives the NFS versions it applies to. Key differences from NFSv3:
 
 - **Locking**: NFSv4 has integrated locking (no NLM), so locking tests may behave differently
 - **Extended attributes**: NFSv4 named attributes (OPENATTR) not implemented
@@ -212,20 +185,17 @@ Some tests will fail or be skipped due to NFSv3/DittoFS limitations:
 
 See [docs/KNOWN_LIMITATIONS.md](../../docs/KNOWN_LIMITATIONS.md) for detailed explanations of each limitation.
 
-See `KNOWN_FAILURES.md` for expected NFSv3 test failures with reasons.
-See `KNOWN_FAILURES_V4.md` for expected NFSv4-specific test failures with reasons.
+See `known.yaml` for the expected failures, each with its reason and the NFS versions it applies to.
 
 ## Files
 
 ```
 test/posix/
 ├── README.md                # This file
-├── setup-posix.sh           # Automated setup script (supports --nfs-version)
+├── known.yaml               # Expected failures with reasons, graded by dt
+├── setup-posix.sh           # Manual setup script (supports --nfs-version); cthon04 and nfstest's scripts use it too
 ├── teardown-posix.sh        # Cleanup script
-├── run-posix.sh             # Test runner (supports --nfs-version for logging)
 ├── Dockerfile.pjdfstest     # pjdfstest container (for macOS/Docker)
-├── KNOWN_FAILURES.md       # Expected NFSv3 failures with reasons
-├── KNOWN_FAILURES_V4.md    # Expected NFSv4-specific failures with reasons
 ├── configs/                 # Configuration files
 │   └── config.yaml          # Single config (paths set via env vars)
 └── results/                 # Test results (not committed)
@@ -233,7 +203,8 @@ test/posix/
 
 ## CI Integration
 
-Tests run automatically via GitHub Actions on Linux using the Nix environment.
+`.github/workflows/tests.yml` runs every pjdfstest cell through `dt` on each pull request, after
+each merge and nightly, with pjdfstest built by Nix at the `flake.lock` revision.
 
 ## References
 

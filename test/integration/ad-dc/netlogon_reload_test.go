@@ -5,6 +5,7 @@ package ad_dc_test
 import (
 	"context"
 	"os/exec"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,14 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
 )
+
+// serverAuthenticateDenied matches a DC's refusal of the machine credential:
+// NetrServerAuthenticate3 returned STATUS_ACCESS_DENIED (0xC0000022). go-msrpc
+// folds the status into the error text instead of wrapping it, so the text is
+// all there is to match. It prints the signed 32-bit value, or the status name
+// once anything linked in imports its ntstatus error table; both count.
+var serverAuthenticateDenied = regexp.MustCompile(
+	`NetrServerAuthenticate3: (error: -1073741790|ntstatus: STATUS_ACCESS_DENIED \(0xc0000022\))`)
 
 // ntlmResponseFor computes a deterministic NTLMv2 NT/LM response for the given
 // AD user against a fixed 8-byte server challenge, mirroring the helper inlined
@@ -101,26 +110,10 @@ func TestNetlogonHotReload(t *testing.T) {
 		})
 	}
 
-	// 1. Establish + first successful logon (builds the channel). Samba's SMB/RPC
-	// stack can accept TCP on 135/445/53 a beat before it fully serves sessions
-	// (transient "connection reset by peer" / handshake errors during DC
-	// start-up), so retry the FIRST logon for a bounded window. This rides out DC
-	// readiness only — it is not part of the hot-reload assertion.
-	var res *netlogon.LogonResult
-	var err error
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		res, err = logonAlice()
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pre-reload NETLOGON logon never succeeded within startup window: %v", err)
-		}
-		t.Logf("pre-reload logon not ready yet, retrying: %v", err)
-		// Drop any half-open channel so the retry rebuilds cleanly.
-		a.Reload(ctx)
-		time.Sleep(3 * time.Second)
+	// 1. Establish + first successful logon (builds the channel).
+	res, err := logonAlice()
+	if err != nil {
+		t.Fatalf("pre-reload NETLOGON logon failed: %v", err)
 	}
 	if res.UserSID == "" || len(res.GroupSIDs) == 0 {
 		t.Fatalf("pre-reload logon returned incomplete identity: %+v", res)
@@ -271,22 +264,10 @@ func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
 		})
 	}
 
-	// 1. Establish + first successful logon with the ORIGINAL machine password,
-	// retried through DC start-up readiness (not part of the rotation assertion).
-	var res *netlogon.LogonResult
-	var err error
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		res, err = logonAlice()
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pre-rotation NETLOGON logon never succeeded within startup window: %v", err)
-		}
-		t.Logf("pre-rotation logon not ready yet, retrying: %v", err)
-		a.Reload(ctx)
-		time.Sleep(3 * time.Second)
+	// 1. Establish + first successful logon with the ORIGINAL machine password.
+	res, err := logonAlice()
+	if err != nil {
+		t.Fatalf("pre-rotation NETLOGON logon failed: %v", err)
 	}
 	if res.UserSID == "" || len(res.GroupSIDs) == 0 {
 		t.Fatalf("pre-rotation logon returned incomplete identity: %+v", res)
@@ -297,17 +278,23 @@ func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
 	rotateMachinePassword(t, newMachinePass)
 
 	// Prove the OLD secret no longer authenticates: reload with the now-stale
-	// original password and confirm the next logon FAILS. This proves the rebuilt
-	// channel presents whatever credential the reload installed (if it were frozen
-	// at the first credential, both old and new would behave identically and this
-	// signal would be meaningless).
+	// original password and confirm the DC REFUSES the rebuilt channel. This proves
+	// the rebuilt channel presents whatever credential the reload installed (if it
+	// were frozen at the first credential, both old and new would behave
+	// identically and this signal would be meaningless). Only the DC's refusal
+	// counts: a logon that fails before the DC checks the credential (DNS, SMB, a
+	// dropped pipe) proves nothing about which secret the channel presented.
 	a.ReloadCredential(ctx, credWith(machineAccountPass))
-	if _, errStale := logonAlice(); errStale == nil {
+	_, errStale := logonAlice()
+	if errStale == nil {
 		t.Fatal("logon SUCCEEDED with the stale machine password after rotation — " +
 			"the secure channel is not presenting the reloaded credential to the DC")
-	} else {
-		t.Logf("stale-password logon correctly rejected after rotation: %v", errStale)
 	}
+	if !serverAuthenticateDenied.MatchString(errStale.Error()) {
+		t.Fatalf("stale-password logon failed, but not with the DC's credential refusal (%s): %v",
+			serverAuthenticateDenied, errStale)
+	}
+	t.Logf("stale-password logon refused by the DC after rotation: %v", errStale)
 
 	// 3. Reload with the NEW password — the rebuilt channel must authenticate with
 	// it and the logon must succeed. This is the core #1369 finding-#2 assertion:

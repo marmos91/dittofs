@@ -177,14 +177,12 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 
 	// Skip XDR padding to align to 4-byte boundary
 	// XDR strings are padded to ensure the next field starts at a 4-byte
-	// boundary. Matching the previous behaviour, padding bytes past the end of
-	// the body are tolerated rather than treated as an error.
+	// boundary.
 	padding := int((4 - (nameLen % 4)) % 4)
 	if off+padding > len(body) {
-		off = len(body)
-	} else {
-		off += padding
+		return nil, fmt.Errorf("read machine name padding: %w", io.ErrUnexpectedEOF)
 	}
+	off += padding
 
 	// Read UID (4 bytes, big-endian)
 	// This is the effective user ID on the client
@@ -227,7 +225,47 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 		off += 4
 	}
 
+	// The body is exactly one authsys_parms: bytes left over mean the
+	// credential's length and its contents disagree.
+	if off != len(body) {
+		return nil, fmt.Errorf("%d trailing bytes after gids", len(body)-off)
+	}
+
 	return auth, nil
+}
+
+// CheckCredential returns AuthOK when a call's credential may be dispatched,
+// or the auth_stat to refuse it with (RFC 5531 §9). It is the one gate every
+// listener applies before routing a call to MOUNT, NFS, NLM or NSM, so no
+// handler ever sees a credential that failed to decode.
+//
+// AUTH_NONE passes: what an anonymous caller may reach is the share's policy,
+// decided later. AUTH_SYS passes only if its body decodes to exactly one
+// authsys_parms within RFC 5531's limits. RPCSEC_GSS passes here because the
+// caller verifies it, or refuses it when it cannot. AUTH_TLS passes only on the
+// NULL procedure, the RFC 9289 probe. Every other flavor — AUTH_SHORT, AUTH_DH,
+// and anything unknown — is AUTH_BADCRED, as Linux knfsd answers a flavor it
+// has no handler for: this server never issues a short-hand credential, so a
+// client holding one has nothing to fall back from.
+//
+// ponytail: an AUTH_SYS body is decoded here and again by the handler that
+// uses it. Hand the decoded credential along on the call if that second
+// decode ever shows in a profile.
+func CheckCredential(call *RPCCallMessage) uint32 {
+	switch call.GetAuthFlavor() {
+	case AuthNull, AuthRPCSECGSS:
+		return AuthOK
+	case AuthUnix:
+		if _, err := ParseUnixAuth(call.GetAuthBody()); err != nil {
+			return AuthBadCred
+		}
+		return AuthOK
+	case AuthTLS:
+		if call.Procedure == 0 {
+			return AuthOK
+		}
+	}
+	return AuthBadCred
 }
 
 // String returns a human-readable representation of the Unix auth credentials.
