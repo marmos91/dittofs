@@ -388,7 +388,8 @@ func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
 // principal that marked it, never as the last closer. A delete-pending
 // directory gains no name. Only an open holding
 // delete access may mark the file, and a disposition set through one is
-// cleared through one.
+// cleared through one; asking delete on close without delete access is an
+// invalid request, and opens nothing.
 func TestDeletePending(t *testing.T) {
 	f := newFixture(t)
 	p, q := f.caller(t, smb("p-pc")), f.caller(t, smb("q-pc"))
@@ -402,8 +403,8 @@ func TestDeletePending(t *testing.T) {
 	if err := f.Opens().Update(ctx, q, other.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrAccess) {
 		t.Errorf("a disposition set through an open without delete access: %v, want ErrAccess", err)
 	}
-	if _, err := f.open(q, file, OpenRequest{Access: rd, DeleteOnClose: true}); !errors.Is(err, ErrAccess) {
-		t.Errorf("delete on close without delete access: %v, want ErrAccess", err)
+	if _, err := f.open(q, file, OpenRequest{Access: rd, DeleteOnClose: true}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("delete on close without delete access: %v, want ErrInvalid", err)
 	}
 	if r := f.close(t, p, marker); r.Unlink != nil {
 		t.Fatalf("a close with another open left: unlink %+v", r.Unlink)

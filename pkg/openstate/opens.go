@@ -178,7 +178,7 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		return OpenResult{}, err
 	}
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
-		return OpenResult{}, ErrAccess
+		return OpenResult{}, ErrInvalid
 	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
