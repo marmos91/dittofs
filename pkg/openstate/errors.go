@@ -21,6 +21,8 @@ var (
 	ErrShareViolation = errors.New("openstate: deny mode conflict")
 	ErrDeletePending  = errors.New("openstate: file is delete pending")
 	ErrAccess         = errors.New("openstate: the open was not granted the access the request needs")
+	ErrLocked         = errors.New("openstate: range locked") // as *LockedError from a lock request, naming the holder
+	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
@@ -40,3 +42,10 @@ const (
 
 func (e *DelayError) Error() string        { return ErrDelay.Error() }
 func (e *DelayError) Is(target error) bool { return target == ErrDelay }
+
+// LockedError is a lock conflict. errors.Is(err, ErrLocked) holds for it, and
+// Holder is the conflicting lock, which a protocol's denial reports.
+type LockedError struct{ Holder Lock }
+
+func (e *LockedError) Error() string        { return ErrLocked.Error() }
+func (e *LockedError) Is(target error) bool { return target == ErrLocked }

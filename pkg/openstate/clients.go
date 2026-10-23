@@ -507,8 +507,8 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	return nil
 }
 
-// sweep expires every client whose lease has ended and drops every proposal
-// a lease period old.
+// sweep expires every client whose lease has ended, drops every proposal a
+// lease period old, and serves the files holding a poll waiter.
 func (t *Table) sweep(ctx context.Context) {
 	sink, err := t.running()
 	if err != nil {
@@ -534,6 +534,9 @@ func (t *Table) sweep(ctx context.Context) {
 		// lapsed, so the client is already refused.
 		_ = t.expireLapsed(ctx, sink, c)
 	}
+	// On a goroutine of its own, so the sweep never waits on an admission
+	// lock.
+	t.timer.Go(func() { t.servePolls(sink) })
 }
 
 // held is one piece of state a client holds.
@@ -575,7 +578,8 @@ func (t *Table) holdsAny(c entity.ClientID) bool {
 }
 
 // releaseClient releases everything client c holds, file by file, each under
-// that file's step, and adds to out what its closes left the service to run.
+// that file's step, and adds to out what its closes left the service to run
+// and the waiters its releases granted.
 //
 // decision: an open is released here even when its durable record's delete
 // fails. The record stays a holder of its file, and the file stays unreleased
@@ -585,6 +589,11 @@ func (t *Table) holdsAny(c entity.ClientID) bool {
 func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbox) {
 	for _, h := range t.heldBy(c) {
 		_ = t.step(h.file, func(e *entry) error {
+			if ls := e.lstates[h.ref.Token]; h.ref.Type == StateLock && ls != nil {
+				t.dropLockState(e, ls)
+				t.serve(e, out)
+				return nil
+			}
 			o := e.opens[h.ref.Token]
 			if h.ref.Type != StateOpen || o == nil {
 				t.release(e, h.ref)
@@ -592,7 +601,7 @@ func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbo
 			}
 			var r CloseResult
 			r.Orphan, _ = t.unrecord(ctx, o)
-			r.Unlink = t.closeOpen(e, o)
+			r.Unlink = t.closeOpen(e, o, out)
 			out.close(h.file, r)
 			return nil
 		})
