@@ -2591,8 +2591,8 @@ type OpenResult struct {
 // OpenRef is what a call through an open presents; pkg/vfs aliases it.
 type OpenRef struct {
 	Kind   RefKind  // Opened, Locked, Delegated, Anonymous
-	State  StateRef // NFS: the open, lock state or grant, with the Seq presented; zero for SMB and anonymous
-	Open   OpenID   // SMB: the open; its shard is State.Shard
+	State  StateRef // NFS: the open, lock state or grant, with the Seq presented; SMB: only Shard, from the FileId's persistent half; zero for anonymous
+	Open   OpenID   // SMB: the open, in State.Shard; zero for NFS
 	Handle Handle   // the file handle the request carried
 }
 
