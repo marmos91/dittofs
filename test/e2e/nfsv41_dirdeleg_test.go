@@ -206,8 +206,9 @@ func TestNFSv41DirDelegationEntryRenamed(t *testing.T) {
 // =============================================================================
 
 // A mode change is a significant attribute change; atime/ctime changes alone
-// do not notify. A holder that did not ask for that notification learns of the
-// new mode through its attribute cache, as without a delegation.
+// do not notify. A holder that did not ask for that notification keeps its
+// delegation and learns of the new mode through its attribute cache, as
+// without a delegation.
 func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping directory delegation attr-changed test in short mode")
@@ -221,6 +222,9 @@ func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	require.NoError(t, os.Chmod(target, 0755), "other client: should chmod file")
 	if f.notifMask&(1<<notifyChangeChildAttrs) != 0 {
 		f.requireNotified(t, "changing an entry's mode", notifyChangeChildAttrs)
+	} else {
+		assert.False(t, waitForLog(t, f.sp, f.mutateFrom, cbRecallAny, 1, 2*time.Second),
+			"changing an entry's mode should not recall the directory delegation")
 	}
 
 	holderFile := filepath.Join(f.holderDir, "attr_test.txt")
