@@ -464,7 +464,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 		return staleIfGone(err)
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
-	case len(rec.Reach.Sessions) > 0 || len(t.heldBy(who.Client)) > 0:
+	case len(rec.Reach.Sessions) > 0 || t.holdsAny(who.Client):
 		return ErrClientBusy
 	}
 	if err := t.d.Records.Clients().Delete(ctx, who.Client); err != nil {
@@ -514,8 +514,10 @@ type held struct {
 // heldBy snapshots the state client c holds.
 //
 // ponytail: a scan of every reference, O(state), per expiry, reboot and
-// destroy. Replace it with the per-client index, whose snapshot an expiry
-// walks, when opens and locks bring one.
+// destroy, with no ended mark: state minted for c after the snapshot
+// survives its release, and a request during the walk sees part of it.
+// Replace it with the per-client index and its ended mark before anything
+// mints for a client concurrently with its expiry.
 func (t *Table) heldBy(c entity.ClientID) []held {
 	t.idx.Lock()
 	defer t.idx.Unlock()
@@ -526,6 +528,19 @@ func (t *Table) heldBy(c entity.ClientID) []held {
 		}
 	}
 	return hs
+}
+
+// holdsAny reports whether client c holds any state, by the same scan as
+// heldBy.
+func (t *Table) holdsAny(c entity.ClientID) bool {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	for _, h := range t.refs {
+		if h.client == c {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseClient releases everything client c holds, file by file, each under
