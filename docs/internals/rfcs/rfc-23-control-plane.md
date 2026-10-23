@@ -378,7 +378,7 @@ store configuration, and the last storage binding to close one releases it.
 | 3 | syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores | the remote stores | 5 / 8 |
 | 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views | the journals, the syncer, the block-metadata views | 5 / 8 |
 | 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | 5 / drains at 5, closes at 7 |
-| 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Store`, the metadata store; at `Start`, its `Sink`, which the server implements | the metadata store, the `Sink` | 5 / 7 |
+| 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the server implements | the metadata store, the `Sink` | 5 / 7 |
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
 | 8 | `*vfs.Server`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
 | 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the server, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the server; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
@@ -392,13 +392,14 @@ stores, the syncer and the API), it names one.
 ```go
 func New(cfg Config) (*Node, error) {
 	n := &Node{}
+	n.wd     = health.NewWatchdog(cfg.Clock)                             // RFC 25 §8.1: the root builds it from the clock; every watched loop takes its Loop from it
 	n.meta   = metadata.Open(context.Background(), cfg.KV, metadata.Options{...}) // RFC 16 §3.2; the one thing New opens; everyone takes a view of it; closed last
 	n.remote = remote.NewPool(remote.Deps{...})                         // one client per store configuration, ref-counted
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
 	n.engine = engine.New(engine.Deps{
 		Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(), ...})
-	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, cfg.Watchdog.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
+	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // its Sink, the server, is handed to its Start (§2.2 step 5)
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
 	n.server = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
