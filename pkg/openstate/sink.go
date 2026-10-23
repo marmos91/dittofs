@@ -26,3 +26,27 @@ type RevokeReason uint8
 const (
 	RevokedLeaseExpired RevokeReason = iota // its lease expired, or a reboot replaced it
 )
+
+// outbox is what a call's steps raised, handed to the Sink once the call holds
+// no table lock.
+type outbox struct {
+	closed map[entity.FileID]CloseResult // one per file: only a file's last close leaves anything
+}
+
+// close records r, what a close the table made itself left f, if it left
+// anything.
+func (o *outbox) close(f entity.FileID, r CloseResult) {
+	if !r.Orphan && r.Unlink == nil {
+		return
+	}
+	if o.closed == nil {
+		o.closed = map[entity.FileID]CloseResult{}
+	}
+	o.closed[f] = r
+}
+
+func (o *outbox) raise(sink Sink) {
+	for f, r := range o.closed {
+		sink.Closed(f, r)
+	}
+}
