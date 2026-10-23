@@ -424,6 +424,12 @@ func (t *Table) closeOpen(e *entry, o *open) *PendingUnlink {
 	return p
 }
 
+// decision: the step is released between the records' snapshot and the
+// commit, so a close or an open landing between them would leave a record
+// of a closed open, or a volatile open of a file with no entry. The service
+// keeps the file's admission lock from Durable to commit, as it does for
+// every mutating call, so none lands there. Run the unlink under the step,
+// as a callback, if a caller is found that unlinks without that lock.
 func (v opens) Durable(ctx context.Context, f entity.FileID) ([]entity.OpenRecord, func(bool), error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
