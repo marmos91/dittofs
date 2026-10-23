@@ -129,10 +129,12 @@ func (s *Server) mapDrive(ctx context.Context, server, password string) (string,
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	f := strings.Fields(lines[len(lines)-1])
+	if len(f) > 0 {
+		s.mount = f[0] // mapped already: Stop removes it even when the dialect is missing
+	}
 	if len(f) < 2 {
 		return "", fmt.Errorf("mapping %s printed no drive and dialect: %s", path, out)
 	}
-	s.mount = f[0]
 	return f[1], nil
 }
 

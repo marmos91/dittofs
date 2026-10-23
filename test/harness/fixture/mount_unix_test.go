@@ -133,7 +133,8 @@ func TestMountShare(t *testing.T) {
 // user dt runs as reads; mount_smbfs as that user, with it in the share's
 // URL, which dt's lines hide; New-SmbMapping with it in the environment, on
 // a drive, then {mount}. A failed mount, no mount, or a mount at another
-// dialect fails the setup.
+// dialect fails the setup; a drive that was mapped is {mount} even then, so
+// Stop removes it.
 func TestMountSMB(t *testing.T) {
 	for _, tc := range []struct {
 		name, goos, vers, fail string
@@ -169,6 +170,9 @@ func TestMountSMB(t *testing.T) {
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Errorf("got %v, want %q", err, tc.wantErr)
+				}
+				if tc.goos == "windows" && tc.fail == "" && s.mount != "Z:" {
+					t.Errorf("{mount} %q after a mapping that failed its check, want Z:", s.mount)
 				}
 				return
 			}
