@@ -31,9 +31,11 @@ type Clients struct{ s *Store }
 
 func (s *Store) Clients() Clients { return Clients{s} }
 
-// Create records a new client with its name index row and its shard marks.
-// A name already recorded under its protocol, or an ID already recorded, is
-// refused as existing: a reboot replaces its record through Reboot.
+// Create records a new client with its name index row. A name already
+// recorded under its protocol, or an ID already recorded, is refused as
+// existing: a reboot replaces its record through Reboot. Shards is not
+// written: a client's shard marks change only through MarkShard and
+// DropShards.
 func (c Clients) Create(ctx context.Context, cl entity.ClientRecord) error {
 	if err := validClient(cl); err != nil {
 		return err
@@ -55,7 +57,8 @@ func (c Clients) Create(ctx context.Context, cl entity.ClientRecord) error {
 // Reboot replaces old, the record of a client that came back with a new
 // Boot, by cl under its own new ID: the name index moves to it, and old goes
 // with its shard marks, in one transaction. A reboot keeps the protocol and
-// name and changes the Boot.
+// name and changes the Boot. Shards is not written: the new ID holds no
+// state anywhere.
 func (c Clients) Reboot(ctx context.Context, old entity.ClientID, cl entity.ClientRecord) error {
 	if err := validClient(cl); err != nil {
 		return err
@@ -227,15 +230,10 @@ func validClient(cl entity.ClientRecord) error {
 	case cl.Protect && cl.Owner == (entity.Principal{}):
 		return merrs.NewInvalidArgumentError("state protection needs an owner")
 	}
-	for _, m := range cl.Shards {
-		if m.Shard >= entity.ShardLimit {
-			return merrs.NewInvalidArgumentError(fmt.Sprintf("shard %d past the 24-bit shard space", m.Shard))
-		}
-	}
 	return nil
 }
 
-// putClient writes a new record and its shard marks, refusing an ID already
+// putClient writes a new record, without its shard marks, refusing an ID already
 // recorded: an ID is issued once, so another record under it is a caller's
 // mistake that would overwrite a live client.
 func putClient(tx kv.Txn, cl entity.ClientRecord) error {
@@ -244,15 +242,7 @@ func putClient(tx kv.Txn, cl entity.ClientRecord) error {
 	} else if ok {
 		return merrs.NewAlreadyExistsError(fmt.Sprintf("client %d", cl.ID))
 	}
-	if err := tx.Set(clientKey(cl.ID), encodeClient(cl)); err != nil {
-		return err
-	}
-	for _, m := range cl.Shards {
-		if err := tx.Set(clientShardKey(cl.ID, m.Shard), encodeCounter(m.Done)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tx.Set(clientKey(cl.ID), encodeClient(cl))
 }
 
 // setClient rewrites a record only when one of its fields changes.
