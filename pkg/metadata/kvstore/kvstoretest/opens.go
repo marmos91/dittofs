@@ -64,14 +64,14 @@ func testDurableOpens(t *testing.T, kvo Opener) {
 	if err := f.release(file.ID, 1); !errors.Is(err, kvstore.ErrHeld) {
 		t.Fatalf("release with two durable opens: %v", err)
 	}
-	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); err != nil || orphan {
-		t.Fatalf("first close: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); err != nil || orphan != (kvstore.Orphaned{}) {
+		t.Fatalf("first close: orphaned %v, %v", orphan, err)
 	}
 	if err := f.release(file.ID, 1); !errors.Is(err, kvstore.ErrHeld) {
 		t.Fatalf("release with one durable open: %v", err)
 	}
-	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); err != nil || !orphan {
-		t.Fatalf("last close: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); err != nil || orphan != (kvstore.Orphaned{File: file.ID}) {
+		t.Fatalf("last close: orphaned %v, %v", orphan, err)
 	}
 	if d := f.durable(file.Shard); len(d) != 0 {
 		t.Errorf("index after both closes %+v", d)
@@ -101,8 +101,8 @@ func testDurableOpens(t *testing.T, kvo Opener) {
 	r := f.newOpen(rootID)
 	r.Durability = entity.DurabilityPersistent
 	must(t, opens.Put(ctx, f.share.ID, r))
-	if orphan, err := opens.Delete(ctx, f.share.ID, rootID, r.ID); err != nil || orphan {
-		t.Errorf("close of the root's open: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, rootID, r.ID); err != nil || orphan != (kvstore.Orphaned{}) {
+		t.Errorf("close of the root's open: orphaned %v, %v", orphan, err)
 	}
 }
 

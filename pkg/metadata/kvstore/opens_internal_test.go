@@ -54,17 +54,17 @@ func TestStreamOpenKeepsBaseAlive(t *testing.T) {
 		t.Errorf("the stream's shard's index: %+v", indexed)
 	}
 
-	closeOpen := func(file entity.FileID, op entity.OpenRecord, want bool) {
+	closeOpen := func(file entity.FileID, op entity.OpenRecord, want Orphaned) {
 		t.Helper()
-		if orphan, err := f.s.Opens().Delete(ctx, f.share, file, op.ID); err != nil || orphan != want {
-			t.Fatalf("closing open %d: orphan %v, %v; want %v", op.ID, orphan, err, want)
+		if got, err := f.s.Opens().Delete(ctx, f.share, file, op.ID); err != nil || got != want {
+			t.Fatalf("closing open %d: orphaned %v, %v; want %v", op.ID, got, err, want)
 		}
 	}
-	closeOpen(stream.ID, onStream, false) // the base's open still holds it
+	closeOpen(stream.ID, onStream, Orphaned{}) // the base's open still holds it
 	again := entity.OpenRecord{ID: 3, File: stream.ID, Client: 1, Principal: admin.Principal}
 	if err := f.s.Opens().Put(ctx, f.share, again); err != nil {
 		t.Fatal(err)
 	}
-	closeOpen(base.ID, onBase, false) // the stream's open still holds it
-	closeOpen(stream.ID, again, true)
+	closeOpen(base.ID, onBase, Orphaned{}) // the stream's open still holds it
+	closeOpen(stream.ID, again, Orphaned{File: base.ID})
 }
