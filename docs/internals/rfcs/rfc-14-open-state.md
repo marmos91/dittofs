@@ -1706,6 +1706,13 @@ For example, alice-pc holds read and write, denying write. A second open for
 read that denies nothing is granted; one for read that denies write is refused,
 since it would deny write to alice-pc, which holds it.
 
+**An open that asks for no data access is outside the check, both ways.** An
+open whose `Access` holds none of read, execute, write, append or delete — one
+asking only to read attributes or the security descriptor, or to synchronize —
+is granted whatever deny modes are held, and its own `Deny` refuses nothing: no
+later open, and no anonymous read or write (MS-FSA 2.1.5.1.2.2). It is still
+an open: it keeps the file alive and is counted under its `Via` (§9.5).
+
 A deny mode is evaluated once, when an open is granted, against the opens
 already held. It **MUST NOT** be re-evaluated per read or per write of a granted
 open: the open that was granted was granted, and a later open cannot
@@ -2048,7 +2055,10 @@ SMB deletes a file by marking it, not by removing its name. A file becomes
 `FILE_DELETE_ON_CLOSE` at create), or at once when an open holding delete
 access sets the disposition (`FileDispositionInformation`); a set-disposition
 of false, through any such open, clears it. Both reach the table through
-`Opens.Update`.
+`Opens.Update`. An open asking delete on close without delete in its `Access`
+is refused `ErrInvalid` and nothing is opened (MS-FSA 2.1.5.1); setting or
+clearing the disposition through an open that holds no delete access is
+refused `ErrAccess` and changes nothing.
 
 **The deferred unlink runs as the principal that marked the file.** Delete
 pending is held in the file's table with the entry — parent and name — the
@@ -2597,13 +2607,14 @@ var (
 	ErrClientBusy      = errors.New("openstate: client still holds a session or state")
 	ErrRecordChanged   = errors.New("openstate: client record's Adapter changed since it was read")
 	ErrAdapterVersion  = errors.New("openstate: adapter record of a version this node cannot read")
-	ErrInvalid         = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes")
+	ErrInvalid         = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes, delete on close without delete access")
+	ErrAccess          = errors.New("openstate: the open does not hold the access the change needs") // §9.4
 	ErrUnavailable     = errors.New("openstate: the client's lease owner is unreachable") // §4.1
 	ErrStopped         = errors.New("openstate: table not started, or stopped")
 )
 ```
 
-`ErrUnavailable` and `ErrInvalid` map onto RFC 17's errors of the same names.
+`ErrUnavailable`, `ErrInvalid` and `ErrAccess` map onto RFC 17's errors of the same names.
 The service answers a layout or asynchronous-copy operation not supported
 itself (§2.6, §2.7): the table declares no error for it.
 
@@ -2650,7 +2661,7 @@ Deleted numbers are not reused.
 | L30 | Only a persistent open survives its primary's restart or failover, and every write through one, or through any open on a continuously available share, is stable before it is acknowledged. | Open SMB durable v2, write unstable, restart, reconnect: no open (`ErrNoReclaim`; RFC 22 §18 asserts the wire status). Repeat persistent on a continuously available share: the reconnect succeeds and every acknowledged write reads back. |
 | L30b | A new primary installs every persistent and clone source open of a shard before it answers anything there. | Fail over under a persistent deny-write open with a 300 s `Timeout`; let grace end at 90 s with no reconnect: a write open from another client at 120 s is `ErrShareViolation`, and an NFSv3 write across the open's lock is refused. |
 | L33 | An SMB break that times out cuts the grant to none and keeps the opens; a revoked NFS delegation's writes are refused. | A write delegation's holder never answers a recall; open conflictingly: the open proceeds after the deadline and the holder's later writes are `ErrRevoked`. Repeat with an SMB read-write-handle lease: the open proceeds at 35 s, the lease is none, and the holder's open still exists and its next write is accepted. |
-| L34 | A deferred delete runs as the principal that marked the file, never as the last closer. | P with delete access opens delete-on-close; Q without opens too; P closes, then Q: the name is removed. Q cannot set delete pending. |
+| L34 | A deferred delete runs as the principal that marked the file, never as the last closer. | P with delete access opens delete-on-close; Q without opens too; P closes, then Q: the name is removed. Q cannot set delete pending: `ErrAccess`. An open asking delete on close without delete access: `ErrInvalid`, no open made. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. | Register a recursive watch above a child shard on another primary; create a file in the child: the watch completes with enumerate-directory. |
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: refused; unlink the base's name: the stream open keeps the file alive. Suspend the change time on an SMB open and write: the change attribute advanced. |
 | L38 | A proposal changes no state until its confirm; it is volatile in the answering node's open state and confirmed only by its principal within one lease period; its caps count per source address, an IPv6 /64 as one. | A confirmed client holds a lock; `Propose` its owner with a new verifier: the lock held and no record written; confirm from another principal: refused. Seventeen proposals from one /64: the seventeenth `ErrDelay`. Principal Q replaces P's pending proposal for a new name: counted. Two hosts alternate proposals under one name: each reboot counted, `client_reboot_loop` raised. RFC 21 §13 holds the wire walk. |
@@ -2681,6 +2692,7 @@ Deleted numbers are not reused.
 | L64 | A reboot never leaves both IDs current, and a renewal of the old ID racing the confirm does not keep it. | Race the old ID's renewal against the new `Boot`'s confirm 10⁴ times: after each, exactly one ID is current and the old one's state is released. |
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
 | L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |
+| L67 | An open asking none of read, execute, write, append or delete is granted against any deny mode and its deny refuses nothing. | Hold an open with all access and share none; open the file asking only read-attributes with share none: granted, with no break of any grant. Reverse the order: the all-access open is granted, and an anonymous write through NFS succeeds. |
 
 ## 13. Conformance
 
