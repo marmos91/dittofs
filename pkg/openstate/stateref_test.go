@@ -27,7 +27,7 @@ func mintIn(t *testing.T, tab *Table, f entity.FileID, c entity.ClientID, s Shar
 	t.Helper()
 	var ref StateRef
 	if err := tab.step(f, func(e *entry) (err error) {
-		ref, err = tab.mint(e, f, c, s, StateOpen)
+		ref, err = tab.mint(e, c, s, StateOpen)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -59,32 +59,6 @@ func TestStateRefTokenIsUnguessable(t *testing.T) {
 				t.Fatalf("token %#x with bit %d flipped: %v, want ErrBadState", ref.Token, bit, err)
 			}
 		}
-	}
-}
-
-// A miss is stale while its shard is in grace or when it was minted under an
-// earlier grace instance, so the client reclaims; any other miss is bad.
-func TestMissIsStaleOrBad(t *testing.T) {
-	f := entity.NewFileID()
-	for _, tc := range []struct {
-		name string
-		now  shardGrace // the shard's state when the reference is presented
-		want error
-	}{
-		{"released, same instance", shardGrace{instance: 3}, ErrBadState},
-		{"in grace", shardGrace{instance: 3, inGrace: true}, ErrStaleState},
-		{"earlier instance", shardGrace{instance: 4}, ErrStaleState},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tab := newTable(t)
-			tab.shards[9] = shardGrace{instance: 3}
-			ref := mintIn(t, tab, f, 1, 9)
-			releaseIn(t, tab, f, ref)
-			tab.shards[9] = tc.now
-			if _, err := tab.resolve(1, f, ref); !errors.Is(err, tc.want) {
-				t.Errorf("resolve: %v, want %v", err, tc.want)
-			}
-		})
 	}
 }
 
@@ -133,7 +107,7 @@ func TestEntryFreedWithLastState(t *testing.T) {
 		wg.Go(func() {
 			for range 100 {
 				var ref StateRef
-				_ = tab.step(f, func(e *entry) (err error) { ref, err = tab.mint(e, f, 1, 0, StateOpen); return err })
+				_ = tab.step(f, func(e *entry) (err error) { ref, err = tab.mint(e, 1, 0, StateOpen); return err })
 				_ = tab.step(f, func(e *entry) error { tab.release(e, ref); return nil })
 			}
 		})
@@ -152,7 +126,7 @@ func TestMintReadsDepsRand(t *testing.T) {
 	f := entity.NewFileID()
 	mintIn(t, tab, f, 1, 0)
 	g := entity.NewFileID()
-	if err := tab.step(g, func(e *entry) error { _, err := tab.mint(e, g, 1, 0, StateOpen); return err }); err == nil {
+	if err := tab.step(g, func(e *entry) error { _, err := tab.mint(e, 1, 0, StateOpen); return err }); err == nil {
 		t.Fatal("a mint past the end of Deps.Rand succeeded")
 	}
 	if tab.entryOf(g) != nil || len(tab.refs) != 1 {
@@ -168,7 +142,7 @@ func TestStateRefSequence(t *testing.T) {
 	f := entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
 	var now uint32
-	if err := tab.step(f, func(e *entry) error { now = tab.advance(e, ref); return nil }); err != nil {
+	if err := tab.step(f, func(e *entry) (err error) { now, err = tab.advance(e, ref); return err }); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -186,7 +160,7 @@ func TestStateRefSequence(t *testing.T) {
 	h := tab.refs[k]
 	h.seq = ^uint32(0)
 	tab.refs[k] = h
-	if err := tab.step(f, func(e *entry) error { now = tab.advance(e, ref); return nil }); err != nil {
+	if err := tab.step(f, func(e *entry) (err error) { now, err = tab.advance(e, ref); return err }); err != nil {
 		t.Fatal(err)
 	}
 	if now != 1 {
@@ -199,40 +173,38 @@ func TestStateRefSequence(t *testing.T) {
 	}
 }
 
-// A grant's and a watch's IDs resolve by shard and token with no file handle,
-// each only as its own kind and only for its own client.
-func TestGrantAndWatchIDsResolveWithoutAHandle(t *testing.T) {
+// Advancing a released reference is ErrBadState and adds nothing to the index.
+func TestAdvanceAddsNoRecord(t *testing.T) {
 	tab := newTable(t)
 	f := entity.NewFileID()
-	var g GrantID
-	var gref StateRef
-	var w WatchID
-	if err := tab.step(f, func(e *entry) (err error) {
-		if g, gref, err = tab.mintGrant(e, f, 1, 4); err != nil {
-			return err
-		}
-		w, err = tab.mintWatch(e, f, 1, 4)
-		return err
-	}); err != nil {
-		t.Fatal(err)
+	ref := mintIn(t, tab, f, 1, 0)
+	releaseIn(t, tab, f, ref)
+	if err := tab.step(f, func(e *entry) error { _, err := tab.advance(e, ref); return err }); !errors.Is(err, ErrBadState) {
+		t.Errorf("advancing a released reference: %v, want ErrBadState", err)
 	}
-	if g.Shard != 4 || w.Shard != 4 || g.Token != gref.Token || gref.Type != StateGrant {
-		t.Fatalf("grant %+v (ref %+v), watch %+v: want both in shard 4, the grant's ID its ref's token", g, gref, w)
+	if len(tab.refs) != 0 {
+		t.Fatalf("after advancing a released reference: %d references, want none", len(tab.refs))
 	}
-	if h, err := tab.resolveID(1, StateGrant, g.Shard, g.Token); err != nil || h.file != f {
-		t.Errorf("the grant: file %v, %v; want %v", h.file, err, f)
+}
+
+// A step on one file cannot release or advance another file's state: the
+// other file's reference still resolves and both entries keep true counts.
+func TestStepTouchesOnlyItsOwnFile(t *testing.T) {
+	tab := newTable(t)
+	f, g := entity.NewFileID(), entity.NewFileID()
+	ref := mintIn(t, tab, f, 1, 0)
+	releaseIn(t, tab, g, ref)
+	if _, err := tab.resolve(1, f, ref); err != nil {
+		t.Fatalf("after another file's step released it: %v", err)
 	}
-	if _, err := tab.resolveID(1, stateWatch, w.Shard, w.Token); err != nil {
-		t.Errorf("the watch: %v", err)
+	if err := tab.step(g, func(e *entry) error { _, err := tab.advance(e, ref); return err }); !errors.Is(err, ErrBadState) {
+		t.Errorf("advancing it under another file's step: %v, want ErrBadState", err)
 	}
-	if _, err := tab.resolveID(1, StateGrant, w.Shard, w.Token); !errors.Is(err, ErrBadState) {
-		t.Errorf("a watch's ID named as a grant: %v, want ErrBadState", err)
+	if tab.entryOf(g) != nil {
+		t.Fatal("the other file kept an entry")
 	}
-	if _, err := tab.resolveID(2, StateGrant, g.Shard, g.Token); !errors.Is(err, ErrNotYours) {
-		t.Errorf("another client's grant: %v, want ErrNotYours", err)
-	}
-	releaseIn(t, tab, f, gref)
-	if _, err := tab.resolveID(1, StateGrant, g.Shard, g.Token); !errors.Is(err, ErrBadState) {
-		t.Errorf("a released grant: %v, want ErrBadState", err)
+	releaseIn(t, tab, f, ref)
+	if tab.entryOf(f) != nil {
+		t.Fatal("the file's entry outlived its last state")
 	}
 }

@@ -17,16 +17,14 @@ type Table struct {
 	d Deps
 
 	// files is split 256 ways by a FileID's first byte, which is random, so
-	// steps on different files rarely share a shard's mutex. A shard's mutex
+	// steps on different files rarely share a stripe's mutex. A stripe's mutex
 	// is held only to find, add or free an entry, never while a step runs.
-	files [256]fileShard
+	files [256]fileStripe
 
-	// idx guards the state references and the shards' grace state. It is
-	// taken after a file's step, never before one, and only to add, remove
-	// or look up a reference.
-	idx    sync.Mutex
-	refs   map[refKey]holder
-	shards map[ShardID]shardGrace
+	// idx guards the state references. It is taken after a file's step,
+	// never before one, and only to add, remove or look up a reference.
+	idx  sync.Mutex
+	refs map[refKey]holder
 
 	// cstep is the client step: every change to a client record, and every
 	// lease armed from one, runs under it, so a confirm, an expiry and a
@@ -50,7 +48,7 @@ type Table struct {
 	stop    func()
 }
 
-type fileShard struct {
+type fileStripe struct {
 	mu      sync.Mutex
 	entries map[entity.FileID]*entry
 }
@@ -58,8 +56,9 @@ type fileShard struct {
 // entry is one file's state. Its mutex is the file's open-state step: every
 // call that reads or changes the file's state runs under it.
 type entry struct {
+	file   entity.FileID
 	mu     sync.Mutex
-	users  int // steps running or waiting on this entry, guarded by its file shard's mutex
+	users  int // steps running or waiting on this entry, guarded by its file stripe's mutex
 	states int // pieces of state held, guarded by mu
 }
 
@@ -69,7 +68,7 @@ func New(d Deps) (*Table, error) {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	t := &Table{
-		d: d, refs: map[refKey]holder{}, shards: map[ShardID]shardGrace{},
+		d: d, refs: map[refKey]holder{},
 		leases: map[entity.ClientID]time.Duration{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
 	}
 	for i := range t.files {
@@ -85,7 +84,7 @@ func (t *Table) step(f entity.FileID, fn func(e *entry) error) error {
 	fs.mu.Lock()
 	e := fs.entries[f]
 	if e == nil {
-		e = &entry{}
+		e = &entry{file: f}
 		fs.entries[f] = e
 	}
 	e.users++
