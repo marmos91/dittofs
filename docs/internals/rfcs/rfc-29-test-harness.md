@@ -1243,12 +1243,22 @@ test/harness/results/20261007T201500Z-d0efaa75/
   report.md           what `dt report --format md` prints
   logs/*.log          one per cell, with the command, commit, exit status and duration
   CELL/               each cell's {out}: what its tool writes, and dfs.log, its server's output
+    failed/SCENARIO/  a failed scenario's logs, from setup.sh's cache
 ```
 
 A fixture's `dfs` writes its output to `dfs.log` in its cell's `{out}`, beside the cell's results,
 and `dt` keeps it after the server stops, whatever the cell's result. So the server's own log is
 one file per cell, apart from `dt`'s log of the cell in `logs/`, and a check of what the server
 logged, such as a search of its lines for a planted secret, reads it there.
+
+A scenario run in podman's image (§4.5) keeps its logs in the cache volume, which a hosted runner
+loses with its VM. So when one fails, `dt` copies the logs `setup.sh` kept for it, its trace and the
+server's and the S3's logs, into `{out}/failed/SCENARIO/`: the last 4 MiB of each file, so a
+scenario that fails on gigabytes uploads megabytes. One that `dt` stopped at its limit gets those of
+its run so far, which `setup.sh` never got to keep. `dt` also prints, in the cell's log, how much
+disk is free where the volumes are once the scenario's container is gone, which is what the scenario
+had to start with: a full disk is the first suspect of one that writes gigabytes. A host whose own
+podman runs `setup.sh` keeps the logs in its own cache.
 
 ```json
 {
