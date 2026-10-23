@@ -611,6 +611,26 @@ func TestOwnerSequence(t *testing.T) {
 	}
 }
 
+// A request another principal makes through the owner's state is not the
+// owner's: refused ErrNotYours, it advances nothing, and the owner's next
+// request keeps its number.
+func TestNotYoursAdvancesNoSequence(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.Principal{}))
+	oo := []byte("open-owner")
+	o := f.mustOpen(t, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)})
+	if err := f.Opens().ConfirmOpen(ctx, a, refOf(o), 2); err != nil {
+		t.Fatal(err)
+	}
+	other := Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}
+	if _, err := f.Opens().Close(ctx, other, refOf(o), num(3)); !errors.Is(err, ErrNotYours) {
+		t.Fatalf("a close by another principal: %v, want ErrNotYours", err)
+	}
+	if _, err := f.Opens().Close(ctx, a, refOf(o), num(3)); err != nil {
+		t.Errorf("the owner's close with the number the refusal carried: %v", err)
+	}
+}
+
 func errOf(_ LockResult, err error) error { return err }
 
 func ptr[T any](v T) *T { return &v }
