@@ -385,7 +385,8 @@ the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the
 the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
 `service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
 suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
-they run as the user. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A
+they run as the user. The e2e job did the same by hand, with `sudo -E env "PATH=$PATH" ...`, until
+it moved into `tests.yml`. A
 fixture sets no variables: it gives its values as placeholders (§4.2), and a suite that needs one in
 a variable puts it in its `env`, as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes
 on a command line, where any user can read it while the process runs: the server started under
@@ -522,6 +523,7 @@ suites:
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
       nightly: { DITTOFS_E2E_NIGHTLY: "1" }
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    blocking: false                     # until a week with no failure on develop (§8)
     options:
       stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
@@ -1095,7 +1097,9 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
 
 A cell lists `tests` only when it runs part of its suite's; `matrix`, `option`, `job` and `tools`,
 the test tools it takes from `{tools}`, appear when the cell has them. CI turns `place` into the
-job's runner and `timeout_minutes` into its `timeout-minutes`.
+job's runner, and `timeout_minutes` plus 15 minutes, for the job's other steps and for a suite run as
+root to stop, into its `timeout-minutes`: a job its own limit stops is cancelled, not failed, so a hung
+cell must reach the cell's limit first, which fails it.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -1972,7 +1976,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
-     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
+     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names,
+     and `e2e-tests.yml`, non-blocking until it has a week with no failure on develop.
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
      that keeps its check name can't report beside an old job of that name. Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
      cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until

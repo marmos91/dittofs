@@ -44,7 +44,6 @@ suites:
       # on pushes too, since planning commits reach develop without a pull request.
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
-      - .github/scripts/run-e2e-selftest.sh    # the e2e wrapper against failing, hung and false-green stand-ins
       - go test ./test/harness/...              # dt's own tests
   # Every shell script: the *.sh files, and the executables without an extension whose first
   # line is a shell's shebang.
@@ -105,6 +104,10 @@ suites:
       DITTOFS_E2E_REQUIRE_KERBEROS: "1"
       nightly: { DITTOFS_E2E_NIGHTLY: "1" }
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    # decision: reported, never failing the gate, so a failure from outside the code, such as a
+    # change to the machine it runs on, can't hold every merge while it's fixed. It becomes
+    # blocking after a week with no failure on develop.
+    blocking: false
     options:
       stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them

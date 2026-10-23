@@ -9,15 +9,16 @@
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
-# consecutive runs; unit, integration, operator and lint, whose old jobs ran
-# the commands dt runs, move in at once. plan keeps only the cells of those
+# consecutive runs; unit, integration, operator, lint and e2e, whose old jobs
+# ran the commands dt runs, move in at once. plan keeps only the cells of those
 # that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
-# option, operator, the Windows unit run, the suites with a job of their own,
-# the system scenarios, which had no workflow, less the cells the dedicated
-# host runs itself, and clients, which runs beside smb-client-compat.yml until
-# their results match. A suite joins by being added to the select in
-# plan, with any step its cells need that run doesn't give yet, such as
-# another service; the select goes once every suite runs here.
+# option, operator, the Windows unit run, e2e, the suites with a job of their
+# own, the system scenarios, which had no workflow, less the cells the
+# dedicated host runs itself, and clients, which runs beside
+# smb-client-compat.yml until their results match. A suite joins by being
+# added to the select in plan, with any step its cells need that run doesn't
+# give yet, such as another service; the select goes once every suite runs
+# here.
 #
 # The suites with a job of their own, named as the checks the develop ruleset
 # requires, run in the jobs after non-blocking, which gate waits for too.
@@ -96,9 +97,11 @@ jobs:
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
       # Each cell gets its name as one path element, for its artifact's name,
-      # and the tools dt builds for it as nix installables, for the cache. A
-      # cell with a job of its own runs there, so fixed lists their suites
-      # rather than either matrix.
+      # the tools dt builds for it as nix installables, for the cache, and its
+      # job's limit: the cell's, plus 15 minutes for the job's other steps and
+      # for a suite run as root to stop, so a hung cell fails at its own limit
+      # rather than being cancelled at the job's. A cell with a job of its own
+      # runs there, so fixed lists their suites rather than either matrix.
       - name: Plan the cells
         id: plan
         env:
@@ -106,10 +109,11 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
+            jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients")
-              | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
+              | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
+              | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
             echo "blocking=$(jq -c 'map(select(.blocking and .job == null))' "$RUNNER_TEMP/cells.json")"
@@ -122,7 +126,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.blocking != '[]'
     runs-on: ${{ matrix.place }}-latest
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -163,6 +167,17 @@ jobs:
       - &download
         name: Download modules
         run: go mod download -x
+
+      # The programs the e2e tests run: mount.cifs and smbclient, the Kerberos
+      # client, rpcbind for the NLM interop tests, the NFSv4 ACL tools, and
+      # setfattr and getfattr for the NFSv4.2 xattr tests.
+      - name: Install the e2e tests' system packages
+        if: matrix.suite == 'e2e'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cifs-utils smbclient krb5-user rpcbind nfs4-acl-tools attr
 
       # The kernel NFS client, for a cell whose fixture mounts the share.
       - name: Install NFS client utilities
@@ -235,7 +250,7 @@ jobs:
     if: needs.plan.outputs.non-blocking != '[]'
     continue-on-error: true
     runs-on: ${{ matrix.place }}-latest
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
