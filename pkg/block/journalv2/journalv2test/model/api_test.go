@@ -189,3 +189,20 @@ func TestACompareCancelledByItsContextSaysSo(t *testing.T) {
 		t.Fatalf("a cancelled Compare returned %v", err)
 	}
 }
+
+// A context that ends while Compare reads the journal, so that Since ends its
+// iteration with the context's error, is reported as the context's error too.
+func TestACompareWhoseContextEndsMidwaySaysSo(t *testing.T) {
+	m, j := New(), New()
+	script(t, m, j)
+	ctx, cancel := context.WithCancel(t.Context())
+	h := modelView{j, shareA}
+	stopping := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		cancel()
+		return func(yield func(journalv2.Change, error) bool) { yield(journalv2.Change{}, ctx.Err()) }
+	}}
+	err := m.Compare(ctx, shareA, stopping)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrDiverged) || errors.Is(err, ErrMisuse) {
+		t.Fatalf("a Compare cancelled midway returned %v", err)
+	}
+}
