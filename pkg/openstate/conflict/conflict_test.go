@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
 )
 
 // The access and deny table, cell by cell: a new open asking one access or
@@ -51,5 +52,27 @@ func TestMatrix(t *testing.T) {
 	}
 	if !Shares(all, all, stat, all) {
 		t.Error("an open holding and denying all was refused beside an attributes-only open denying all")
+	}
+}
+
+// A grant keeps no write caching beside another's open, read caching only
+// while that open neither writes, deletes nor denies read, and handle caching
+// always.
+func TestGrantKeeps(t *testing.T) {
+	rh := grantfsm.Read | grantfsm.Handle
+	for _, c := range []struct {
+		access, deny entity.AccessMask
+		want         grantfsm.Kind
+	}{
+		{entity.ReadData, 0, rh},
+		{entity.ReadAttributes, 0, rh},
+		{entity.WriteData, 0, grantfsm.Handle},
+		{entity.Delete, 0, grantfsm.Handle},
+		{entity.ReadData, entity.ReadData, grantfsm.Handle},
+		{entity.ReadData, entity.WriteData, rh},
+	} {
+		if got := GrantKeeps(c.access, c.deny); got != c.want {
+			t.Errorf("GrantKeeps(%v, %v) = %b, want %b", c.access, c.deny, got, c.want)
+		}
 	}
 }
