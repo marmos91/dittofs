@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// RFC 14 §9.1 and L36: an open of a named stream keeps its base file alive.
+// An open of a named stream keeps its base file alive.
 // The unlink of the base's last name writes the stream's open durable under
 // the stream, indexed in the stream's shard, and its close reports the base
 // orphaned only once no open of the base or of any of its streams is left.
