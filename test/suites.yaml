@@ -77,6 +77,9 @@ suites:
       nonrace:
         # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
+        # decision: blocking at nightly, the one tier it runs in, so a gate that trips again on the
+        # retry turns the run red and posts to the develop-status issue. The throughput gate
+        # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)
@@ -88,7 +91,10 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      # decision: blocking after a merge and nightly, the tiers it runs in, so a failure that
+      # survives the retry turns develop red and posts to the develop-status issue. The flake that
+      # failed about one develop run in seven went when the fixture started the domain once.
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
   operator:
     dir: k8s/dittofs-operator
     cmd:
@@ -339,4 +345,17 @@ suites:
     needs: [linux, root, nfs-client, fio]
     options:
       smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
-  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }
+  # That the benchmarks still work, not how fast: the smoke run benchmarks a temp dir, not DittoFS.
+  bench-smoke:
+    cmd:
+      - go run ./cmd/bench run --smoke --results {out}
+      # decision: the mailbox job files are only parsed, not run: dfsbench doesn't run them, so
+      # without this nothing would notice one that no longer parses.
+      - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }
+    metrics: dfsbench-json
+    needs: [fio]
+    tier: pr
+    # decision: non-blocking on pull requests, which it now runs on whatever they touch, so one that
+    # breaks it still merges; after a merge and nightly it blocks, so develop goes red and it posts.
+    # Drop the exception after a week with no bench-smoke failure on develop.
+    blocking: { pr: false }
