@@ -97,8 +97,8 @@ type Locks interface {
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
 	// it staying released; a merging owner releases whatever it holds of
-	// each.
-	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
+	// each. It returns the lock state's new reference sequence.
+	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error)
 	// ReleaseLockOwner drops o's lock states at this primary, with their
 	// waiters and o's sequence; while o holds a lock, on any file, it is
 	// ErrLocksHeld and changes nothing.
@@ -605,18 +605,19 @@ func (v locks) TestLock(ctx context.Context, who Caller, f entity.FileID, o Lock
 	return held, err
 }
 
-func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error {
+func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (uint32, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(rs) > maxRanges || len(o.Name) > maxName {
-		return ErrInvalid
+		return 0, ErrInvalid
 	}
 	if o.Client != who.Client {
-		return ErrNotYours
+		return 0, ErrNotYours
 	}
+	var seq uint32
 	var out outbox
 	err = t.step(f, func(e *entry) error {
 		op, ls, cur, err := t.lockTarget(e, who, ref)
@@ -644,6 +645,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref Open
 			err := ls.unlock(rs)
 			if err == nil {
 				ls.ref.Seq, err = t.advance(e, ls.ref)
+				seq = ls.ref.Seq
 			}
 			t.tidy(e, ls)
 			t.serve(e, &out)
@@ -652,7 +654,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref Open
 	})
 	out.raise(sink)
 	t.dropIdle(ctx, who.Client)
-	return err
+	return seq, err
 }
 
 func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) error {
