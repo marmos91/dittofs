@@ -263,6 +263,11 @@ func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
 		t.Fatal("Remove left the file in the directory")
 	}
 
+	// A crash now would bring the file back, so the seam must say so.
+	if got, err := s.Durable("seg"); err != nil || string(got) != "keep" {
+		t.Fatalf("Durable after an unsynced remove: %q, %v; want %q", got, err, "keep")
+	}
+
 	crash(t, s)
 
 	if got := onDisk(t, s, "seg"); got != "keep" {
@@ -271,6 +276,17 @@ func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
 
 	if names, err := s.List(); err != nil || !slices.Equal(names, []string{"seg"}) {
 		t.Fatalf("List after the crash: %v, %v; want [seg]", names, err)
+	}
+
+	g, err := s.Open("seg")
+	if err != nil {
+		t.Fatalf("Open after the crash: %v, want the file back", err)
+	}
+	defer g.Close()
+
+	p := make([]byte, 4)
+	if _, err := g.ReadAt(p, 0); err != nil || string(p) != "keep" {
+		t.Fatalf("ReadAt after the crash: %q, %v; want %q", p, err, "keep")
 	}
 }
 
