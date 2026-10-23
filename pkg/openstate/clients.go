@@ -90,8 +90,10 @@ type Clients interface {
 	AddSession(ctx context.Context, c entity.ClientID, node entity.NodeID, prev, next []byte) (Client, error)
 	// Renew renews a client's lease for another period, writing nothing.
 	Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error)
-	// Expire ends the client here: its state is released and its record
-	// deleted, and ClientEnded raised.
+	// Expire ends the client's state at this node: its state here is
+	// released and its lease here dropped. It deletes no record and raises
+	// nothing: the lease timer's expiry does both, and the service then
+	// calls Expire at each node holding the client's state.
 	Expire(ctx context.Context, c entity.ClientID) error
 	// Destroy deletes a client that holds no session and no state, refusing
 	// ErrClientBusy otherwise; it releases nothing.
@@ -392,20 +394,26 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) (ClientStatus, err
 }
 
 func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
-	sink, err := v.t.running()
-	if err != nil {
+	t := v.t
+	if _, err := t.running(); err != nil {
 		return err
 	}
-	return v.t.end(ctx, sink, c, false)
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	t.releaseClient(c)
+	t.cmu.Lock()
+	delete(t.leases, c)
+	t.cmu.Unlock()
+	return nil
 }
 
-// end ends client c here: its state is released, then its record deleted,
-// then its lease dropped, and ClientEnded raised once the client step is
-// released. With lapsed it ends c only if its lease has ended, as the lease
-// timer does: a renewal or a confirm that landed meanwhile keeps it.
-func (t *Table) end(ctx context.Context, sink Sink, c entity.ClientID, lapsed bool) error {
+// expireLapsed ends c if its lease has ended: the lease owner's expiry. Its
+// state is released, then its record deleted, then its lease dropped, and
+// ClientEnded raised once the client step is released. A renewal or a
+// confirm that landed meanwhile keeps it.
+func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) error {
 	t.cstep.Lock()
-	rec, ended, err := t.endLocked(ctx, c, lapsed)
+	rec, ended, err := t.expireLocked(ctx, c)
 	t.cstep.Unlock()
 	if ended {
 		sink.ClientEnded(c, shardsOf(rec), RevokedLeaseExpired)
@@ -413,14 +421,12 @@ func (t *Table) end(ctx context.Context, sink Sink, c entity.ClientID, lapsed bo
 	return err
 }
 
-func (t *Table) endLocked(ctx context.Context, c entity.ClientID, lapsed bool) (entity.ClientRecord, bool, error) {
-	if lapsed {
-		t.cmu.Lock()
-		end := t.leases[c]
-		t.cmu.Unlock()
-		if end == 0 || t.d.Clock.Elapsed() < end {
-			return entity.ClientRecord{}, false, nil
-		}
+func (t *Table) expireLocked(ctx context.Context, c entity.ClientID) (entity.ClientRecord, bool, error) {
+	t.cmu.Lock()
+	end := t.leases[c]
+	t.cmu.Unlock()
+	if end == 0 || t.d.Clock.Elapsed() < end {
+		return entity.ClientRecord{}, false, nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	found := err == nil
@@ -489,7 +495,7 @@ func (t *Table) sweep(ctx context.Context) {
 	for _, c := range lapsed {
 		// A failed expiry is tried again at the next sweep: the lease stays
 		// lapsed, so the client is already refused.
-		_ = t.end(ctx, sink, c, true)
+		_ = t.expireLapsed(ctx, sink, c)
 	}
 }
 
