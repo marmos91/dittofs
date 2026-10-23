@@ -324,10 +324,15 @@ suites:
     # there, a change to setup.sh, which its owner makes.
     blocking: false
   fio-verify:
-    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
+    # The job files are dfsbench's templates: fio doesn't expand their ${VAR:-default}s, so perl
+    # fills them from the environment into a copy below {out}, which fio runs.
+    cmd:
+      - cp {test} {out}/{test}
+      - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
+      - fio --output-format=json --output={out}/{test}.json {out}/{test}
     tests: bench/workloads/*.fio
     exclude: [bench/workloads/layout.fio]
-    fixture: { profile: badger-s3, nfs: "4.1" }
+    fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }
     metrics: fio-json
     tier: nightly
