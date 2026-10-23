@@ -1,0 +1,477 @@
+package openstate
+
+import (
+	"context"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/openstate/conflict"
+	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
+)
+
+// GrantKind is what a caching grant lets its holder cache: read, write and
+// handle, in any combination holding read, or none.
+type GrantKind = grantfsm.Kind
+
+const (
+	GrantNone   = grantfsm.None
+	GrantRead   = grantfsm.Read
+	GrantWrite  = grantfsm.Write
+	GrantHandle = grantfsm.Handle
+)
+
+// LeaseKey is an SMB lease's key, the client's own: one grant per client,
+// key and file covers every open of the file under it.
+type LeaseKey [16]byte
+
+// GrantID names a caching grant by its shard and token, as a StateRef does,
+// so a call naming it with no file handle resolves from the ID alone. An NFS
+// delegation's stateid is its reference, of type StateGrant.
+type GrantID struct {
+	Shard ShardID
+	Token uint64
+}
+
+func (g GrantID) ref() StateRef { return StateRef{Type: StateGrant, Shard: g.Shard, Token: g.Token} }
+
+// CachingGrant is a promise that no other holder is using the file in a way
+// that conflicts with its Kind, so its holder may cache. It covers every open
+// of its client under its Key, an oplock's one open, or, a delegation, none.
+type CachingGrant struct {
+	ID     GrantID
+	Client entity.ClientID
+	File   entity.FileID
+	Kind   GrantKind
+	Key    LeaseKey // zero: it covers one open, or none
+	Epoch  uint16   // raised by every change of Kind it announces; zero: not counted
+	Recall *Recall  // a recall in flight; nil: none
+}
+
+// Recall is a recall in flight.
+type Recall struct {
+	To       GrantKind     // the kind it goes to; none: a return
+	Deadline time.Duration // the Deps.Clock.Elapsed reading it ends at unanswered; zero while not yet handed to the Sink
+}
+
+// Grants is the view of caching grants; it runs at the primary of the shard a
+// GrantID names.
+type Grants interface {
+	// AckRecall is the holder's answer to a recall of g, to kind to, naming
+	// the epoch it answers. With no recall in flight it is the holder
+	// returning or narrowing the grant unasked; to GrantNone returns a
+	// grant that covers no open. One claiming caching the grant does not
+	// hold, or its recall did not offer, is ErrInvalid.
+	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind, epoch uint16) error
+}
+
+type grants struct{ t *Table }
+
+const (
+	// decision: 4,096 grants per client per primary, 16 grants per file and
+	// 4,096 recalls not yet handed to the Sink per primary, none measured.
+	// Grants pay on files one user works on, and every grant held is memory
+	// here and a recall a conflicting client may wait on. Raise them if a
+	// measured workload loses grants it would have used.
+	maxGrants = 4096
+	maxShared = 16
+	maxUnsent = 4096
+
+	// coversDeadline is the recall deadline of a grant that covers opens,
+	// the one Windows servers use for an SMB lease break; a grant that
+	// covers none, a delegation, has one lease period.
+	coversDeadline = 35 * time.Second
+)
+
+// grant is a caching grant as the table holds it.
+type grant struct {
+	id     GrantID
+	client entity.ClientID
+	key    LeaseKey
+	open   *open // an oplock: the one open it covers; nil for a lease and a delegation
+	fsm    grantfsm.Grant
+	gen    uint32        // raised by each recall started, naming it to the arming of its deadline
+	sent   time.Duration // the deadline of the recall in flight, once handed to the Sink; zero: none, or not yet handed
+}
+
+type clientKey struct {
+	client entity.ClientID
+	key    LeaseKey
+}
+
+// covers reports whether g covers opens: a lease, or an oplock.
+func (g *grant) covers() bool { return g.key != (LeaseKey{}) || g.open != nil }
+
+func (g *grant) deadline() time.Duration {
+	if g.covers() {
+		return coversDeadline
+	}
+	return leasePeriod
+}
+
+// heldBy reports whether g is the holder's of client c, under lease key key,
+// through open o: a lease is its key's, an oplock its one open's, and a
+// delegation its client's.
+func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
+	switch {
+	case g.client != c:
+		return false
+	case g.key != (LeaseKey{}):
+		return g.key == key
+	case g.open != nil:
+		return g.open == o
+	}
+	return true
+}
+
+// public is g as a caller sees it, on e's file.
+func (g *grant) public(f entity.FileID) CachingGrant {
+	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch}
+	if r := g.fsm.Recall; r != nil {
+		p.Recall = &Recall{To: r.To, Deadline: g.sent}
+	}
+	return p
+}
+
+// ownedBy reports whether open h is, beside the grant a holder of client c
+// under key key through open o would hold, that holder's own: an open under
+// its lease key, its oplock's open, or any open of a delegation's client.
+func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool {
+	switch {
+	case h.Client != c:
+		return false
+	case key != (LeaseKey{}):
+		return h.lease == key
+	case smb:
+		return h == o
+	}
+	return true
+}
+
+// recallOthers recalls each grant on e that own does not claim, under e's
+// step, to what keeps leaves it, a grant that covers no open to none, and is
+// ErrDelay with DelayRecall while any of them holds more than that: its recall
+// started here or already in flight. A request that would start recalls past
+// maxUnsent is ErrDelay with DelayResources, and starts and narrows none.
+func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
+	type recall struct {
+		g       *grant
+		allowed GrantKind
+	}
+	var hit []recall
+	starts := 0
+	for _, g := range e.grants {
+		if own(g) {
+			continue
+		}
+		a := keeps(g)
+		if grantfsm.Within(g.fsm.Kind, a) == g.fsm.Kind {
+			continue
+		}
+		if !g.covers() {
+			a = GrantNone
+		}
+		hit = append(hit, recall{g, a})
+		if g.fsm.Recall == nil {
+			starts++
+		}
+	}
+	if len(hit) == 0 {
+		return nil
+	}
+	if starts > 0 {
+		t.idx.Lock()
+		full := t.unsent+starts > maxUnsent
+		if !full {
+			t.unsent += starts
+		}
+		t.idx.Unlock()
+		if full {
+			return &DelayError{DelayResources}
+		}
+	}
+	for _, r := range hit {
+		if r.g.fsm.Break(r.allowed) {
+			t.queueRecall(e, r.g, out)
+		}
+	}
+	return &DelayError{DelayRecall}
+}
+
+// queueRecall adds g's recall in flight, already counted in unsent, to out.
+func (t *Table) queueRecall(e *entry, g *grant, out *outbox) {
+	g.gen++
+	g.sent = 0
+	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), to: g.fsm.Recall.To, token: g.id.Token, gen: g.gen})
+}
+
+// arm starts the deadline of the recall r handed to the Sink, if it is still
+// the one in flight, and marks its file for the timer.
+func (t *Table) arm(r recallOut) {
+	_ = t.step(r.g.File, func(e *entry) error {
+		g := e.grants[r.token]
+		if g == nil || g.gen != r.gen || g.fsm.Recall == nil {
+			return nil
+		}
+		g.sent = t.d.Clock.Elapsed() + g.deadline()
+		t.idx.Lock()
+		t.recalling[e.file] = struct{}{}
+		t.idx.Unlock()
+		return nil
+	})
+}
+
+// breakHandles answers a deny-mode conflict with the opens hs: while a grant
+// with handle caching covers one of them and is not own's, that caching is
+// recalled and the answer is ErrDelay; only once none does is the conflict
+// ErrShareViolation.
+func (t *Table) breakHandles(e *entry, hs []*open, own func(*grant) bool, out *outbox) error {
+	if len(hs) == 0 {
+		return nil
+	}
+	covering := func(g *grant) bool {
+		for _, h := range hs {
+			if h.Grant == g.id {
+				return true
+			}
+		}
+		return false
+	}
+	err := t.recallOthers(e, func(g *grant) bool { return own(g) || !covering(g) }, func(*grant) GrantKind { return ^GrantHandle }, out)
+	if err != nil {
+		return err
+	}
+	return ErrShareViolation
+}
+
+// offer is the grant covering o, of e's file, after its open by who asking r:
+// the lease under r's key, widened if r asks more and nothing refuses it; or a
+// new grant of the most of r.Want that nothing refuses; or nil.
+func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *CachingGrant {
+	smb := who.Protocol == entity.ProtocolSMB
+	want := r.Want
+	if !smb {
+		want &^= GrantHandle // a delegation is never a handle grant
+	}
+	if r.SetID {
+		want &^= GrantWrite
+	}
+	var mine *grant
+	for _, g := range e.grants {
+		if g.heldBy(who.Client, r.Lease, o) {
+			mine = g
+		}
+	}
+	k := t.offerable(e, who, o, r.Lease, want)
+	switch {
+	case mine != nil && mine.key != (LeaseKey{}):
+		o.Grant = mine.id
+		mine.fsm.Upgrade(want, k)
+		p := mine.public(e.file)
+		return &p
+	case mine != nil, k == GrantNone:
+		return nil
+	}
+	ck := clientKey{who.Client, r.Lease}
+	ref, err := t.mintUnder(e, who.Client, f.Shard, StateGrant, func(StateRef) error {
+		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
+			return ErrDelay
+		}
+		if _, taken := t.keys[ck]; taken && r.Lease != (LeaseKey{}) {
+			return ErrDelay
+		}
+		t.granted[who.Client]++
+		if r.Lease != (LeaseKey{}) {
+			t.keys[ck] = e.file
+		}
+		return nil
+	})
+	if err != nil {
+		return nil // a grant is offered, never owed: the open stands without one
+	}
+	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, r.Lease != (LeaseKey{}))}
+	if smb && r.Lease == (LeaseKey{}) {
+		g.open = o
+	}
+	if g.covers() {
+		for _, h := range e.opens {
+			if h == o || r.Lease != (LeaseKey{}) && h.Client == who.Client && h.lease == r.Lease {
+				h.Grant = g.id
+			}
+		}
+	}
+	if e.grants == nil {
+		e.grants = map[uint64]*grant{}
+	}
+	e.grants[ref.Token] = g
+	p := g.public(e.file)
+	return &p
+}
+
+// offerable is the most of want a grant to who, through o under key, may hold
+// on e: none to a client fenced, at its budget or with its back channel down,
+// on a file with a recall in flight, recalled within a recall deadline, or
+// under 16 grants already; and no caching another holder's
+// open or grant refuses. The budget is checked where the grant is minted.
+//
+// ponytail: a file is offered no grant while any recall on it is in flight or
+// within one recall deadline of ending, whatever the request delayed there; a grant that would not conflict with it
+// is refused too. Judge the grant against the delayed requests themselves if
+// grants are measured lost on files shared that way.
+//
+// decision: a client at its budget is offered no new grant and keeps those it
+// holds, and is not asked to return any: the Sink has no event naming a count
+// to keep, which an NFS client's recall-any needs. Add one when NFS clients
+// are measured at the budget.
+func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
+	if want == GrantNone || len(e.grants) >= maxShared {
+		return GrantNone
+	}
+	now := t.d.Clock.Elapsed()
+	t.cmu.Lock()
+	k, ok := t.known[who.Client]
+	fenced := now < t.fenced[who.Client]
+	t.cmu.Unlock()
+	t.idx.Lock()
+	recalled := now < t.recalled[e.file]
+	t.idx.Unlock()
+	if !ok || k.down || fenced || recalled {
+		return GrantNone
+	}
+	smb := who.Protocol == entity.ProtocolSMB
+	for _, h := range e.opens {
+		if !h.ownedBy(who.Client, key, o, smb) {
+			want = grantfsm.Within(want, conflict.GrantKeeps(h.Mode.Access, h.Mode.Deny))
+		}
+	}
+	for _, g := range e.grants {
+		switch {
+		case g.heldBy(who.Client, key, o):
+		case g.fsm.Recall != nil:
+			return GrantNone
+		case !grantfsm.Compatible(want, g.fsm.Kind):
+			want = grantfsm.Within(want, ^GrantWrite)
+			if !grantfsm.Compatible(want, g.fsm.Kind) {
+				return GrantNone
+			}
+		}
+	}
+	return grantfsm.Within(want, want)
+}
+
+// uncover drops the grant covering o, closing on e, once o was the last open
+// it covered.
+func (t *Table) uncover(e *entry, o *open) {
+	g := e.grants[o.Grant.Token]
+	if o.Grant == (GrantID{}) || g == nil {
+		return
+	}
+	for _, h := range e.opens {
+		if h != o && h.Grant == g.id {
+			return
+		}
+	}
+	t.dropGrant(e, g)
+}
+
+// dropGrant drops g from e, under its step, with its reference, its count and
+// its key.
+func (t *Table) dropGrant(e *entry, g *grant) {
+	delete(e.grants, g.id.Token)
+	t.release(e, g.id.ref())
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	if t.granted[g.client]--; t.granted[g.client] <= 0 {
+		delete(t.granted, g.client)
+	}
+	if g.key != (LeaseKey{}) {
+		delete(t.keys, clientKey{g.client, g.key})
+	}
+}
+
+// recallEnded records that a recall of g on e's file ended: the file is
+// offered no grant for one of g's recall deadlines, so the request it delayed
+// is not overtaken by a new grant.
+func (t *Table) recallEnded(e *entry, g *grant) {
+	g.sent = 0
+	until := t.d.Clock.Elapsed() + g.deadline()
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	t.recalled[e.file] = max(t.recalled[e.file], until)
+}
+
+// lapse ends each recall on e past its deadline, under e's step and the
+// file's admission lock, since it adds to the revoked set: a grant that covers
+// opens is cut to none and its opens stay; one that covers none is revoked
+// into its client's revoked set and reported. Either fences its client from
+// grants here for a lease period.
+func (t *Table) lapse(e *entry, out *outbox) {
+	now := t.d.Clock.Elapsed()
+	for _, g := range e.grants {
+		if g.fsm.Recall == nil || g.sent == 0 || now < g.sent {
+			continue
+		}
+		t.cmu.Lock()
+		t.fenced[g.client] = now + leasePeriod
+		t.cmu.Unlock()
+		t.recallEnded(e, g)
+		if g.covers() {
+			g.fsm.Timeout()
+			continue
+		}
+		t.idx.Lock()
+		t.revoked[refKey{g.id.Shard, g.id.Token}] = revokedRef{g.client, StateGrant, RevokedGrant}
+		t.idx.Unlock()
+		t.dropGrant(e, g)
+		out.revoked = append(out.revoked, Revocation{Client: g.client, Grant: g.id, Reason: RevokedGrant})
+	}
+	for _, g := range e.grants {
+		if g.sent != 0 {
+			return
+		}
+	}
+	t.idx.Lock()
+	delete(t.recalling, e.file)
+	t.idx.Unlock()
+}
+
+func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantKind, epoch uint16) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	h, err := t.resolve(who.Client, entity.FileID{}, id.ref())
+	if err != nil {
+		return err
+	}
+	var out outbox
+	err = t.step(h.file, func(e *entry) error {
+		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {
+			return err
+		}
+		g := e.grants[id.Token]
+		if g == nil {
+			return ErrBadState
+		}
+		inFlight := g.fsm.Recall != nil
+		next, err := g.fsm.Ack(to, epoch)
+		switch {
+		case err != nil:
+			return ErrInvalid
+		case next:
+			t.idx.Lock()
+			t.unsent++
+			t.idx.Unlock()
+			t.queueRecall(e, g, &out)
+		case inFlight && g.fsm.Recall == nil:
+			t.recallEnded(e, g)
+		}
+		if !g.covers() && g.fsm.Kind == GrantNone {
+			t.dropGrant(e, g)
+		}
+		t.serve(e, &out)
+		return nil
+	})
+	out.raise(t, sink)
+	return err
+}

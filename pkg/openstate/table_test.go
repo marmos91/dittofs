@@ -76,15 +76,58 @@ type waitOverCall struct {
 	granted bool
 }
 
-// recordingSink records what the table raises; onEnded and onWait, if set,
-// run inside ClientEnded and LockWaitOver.
+// recallCall is one RecallGrant call.
+type recallCall struct {
+	g  CachingGrant
+	to GrantKind
+}
+
+// recordingSink records what the table raises; onEnded, onWait and onRecall,
+// if set, run inside ClientEnded, LockWaitOver and RecallGrant.
 type recordingSink struct {
-	mu      sync.Mutex
-	ended   []ended
-	closed  []closed
-	waits   []waitOverCall
-	onEnded func(c entity.ClientID)
-	onWait  func(w LockWaiter)
+	mu       sync.Mutex
+	ended    []ended
+	closed   []closed
+	waits    []waitOverCall
+	recalls  []recallCall
+	revoked  []Revocation
+	onEnded  func(c entity.ClientID)
+	onWait   func(w LockWaiter)
+	onRecall func(g CachingGrant, to GrantKind)
+}
+
+func (s *recordingSink) RecallGrant(_ entity.ClientID, g CachingGrant, to GrantKind) {
+	s.mu.Lock()
+	s.recalls = append(s.recalls, recallCall{g, to})
+	fn := s.onRecall
+	s.mu.Unlock()
+	if fn != nil {
+		fn(g, to)
+	}
+}
+
+func (s *recordingSink) Revoked(r Revocation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revoked = append(s.revoked, r)
+}
+
+// takeRecalls returns the RecallGrant calls since the last take.
+func (s *recordingSink) takeRecalls() []recallCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.recalls
+	s.recalls = nil
+	return r
+}
+
+// takeRevoked returns the Revoked calls since the last take.
+func (s *recordingSink) takeRevoked() []Revocation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.revoked
+	s.revoked = nil
+	return r
 }
 
 func (s *recordingSink) LockWaitOver(w LockWaiter, granted bool) {
