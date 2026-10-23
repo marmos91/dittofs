@@ -1689,7 +1689,7 @@ without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
 state, allocated storage, held bytes, and whether it holds records that do not verify. `Stats`
-([§3.7](#3.7%20State%20introspection)) is the `O(1)` total; this is the breakdown behind it.
+([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
 that the segments do not support, the records precedence says the index must hold, retain or mark but which it lacks, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
