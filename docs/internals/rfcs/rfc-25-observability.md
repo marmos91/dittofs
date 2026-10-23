@@ -628,12 +628,13 @@ listener clients are sent to is down.
 | started from a copied image | yes | yes — reads of offloaded content continue | unhealthy, `copied_image` |
 | metadata store lost: no share served until a recovery import | yes | no | unhealthy, `metadata_store_lost` |
 | a listener lost (`adapter_listener_lost`) | yes | no — clients sent to it cannot connect | unhealthy |
+| an adapter refused at configured (`adapter_refused`) | yes | yes — every node refuses the same setting, and the API that fixes it must stay reachable | unhealthy |
 | a start step failed | yes | no | unhealthy, `start_failed` |
 | draining: stop requested | yes | no | draining |
 | watchdog stalled | no | no | — |
 
-Every node runs both roles, so readiness has one rule: a node is ready once its
-adapters accept clients, the share list is loaded and, **(cluster)**, it has
+Every node runs both roles, so readiness has one rule: a node is ready once each
+enabled adapter accepts clients or was refused at configured, the share list is loaded and, **(cluster)**, it has
 joined the store. A shard it holds and cannot serve does not make it unready,
 since sending clients elsewhere would not serve that shard either; it is the
 shard's own condition, `shard_relinquished` or `replication_under_floor`
@@ -720,6 +721,7 @@ row.
 | `backup_failing`, `backup_location_mismatch` | [RFC 26 §7](rfc-26-catalog-backups.md#7.%20Observability) | share; location | degraded | ticket |
 | `directory_unreachable` | [RFC 18 §9.2](rfc-18-identity.md#9.2%20Metrics) | installation | degraded within the stale grace; unhealthy past it, since sign-ins are refused | ticket; page at 5 min when unhealthy |
 | `adapter_listener_lost` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the adapter and address | unhealthy: a listener's socket failed while serving | page at 5 min |
+| `adapter_refused` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the adapter and its error | unhealthy while an enabled adapter's settings fail at configured; cleared when it serves or is disabled | page at once |
 | `start_failed` | [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) | node, naming the step and its error | unhealthy; held until the process exits, since a failed start does not retry, and a restart starts it again | page at once |
 | `sidecar_failed` | [RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars) | node, naming the sidecar | degraded: the adapters keep serving | ticket |
 | `memory_limit_below_floors`, `fd_limit_low`, `memory_near_limit` | [RFC 24 §10](rfc-24-resources.md#10.%20Observability) | node | degraded | ticket |
@@ -1393,7 +1395,7 @@ names, on the composed single-node harness of the [index](rfc-index.md#Test%20ha
 | §3.3 share does not set node | Deny puts on one store under one share of a hundred: assert the share unhealthy naming the store, the node's status unchanged by it, `health_shares{state="unhealthy"}` = 1, readiness and liveness true. | a readiness probe that restarts for a bucket policy |
 | §3.4 never latched | Make a store get-unhealthy, then fix it without touching DittoFS. Assert the condition clears within its owner's bound and the share returns healthy, with no operator action. | a latched condition |
 | §3.5 liveness | Stop the metadata store and the remote, fill the journal's device: assert liveness stays true throughout. Block the request scheduler: assert liveness fails within 60 s. | liveness on a dependency |
-| §3.6 readiness | Assert not ready during recovery, ready in grace, ready while self-fenced, not ready with the metadata store lost and while draining. Drop one listener: assert not ready and `adapter_listener_lost`. Fail a start step: assert `not_ready` and `start_failed` naming the step. **(cluster)** Relinquish a shard on a node: assert the node stays ready and `shard_relinquished` is raised. | a node unreachable for reclaim; a probe stricter than §3.6 |
+| §3.6 readiness | Assert not ready during recovery, ready in grace, ready while self-fenced, not ready with the metadata store lost and while draining. Drop one listener: assert not ready and `adapter_listener_lost`. Enable an adapter with a setting it cannot apply: assert ready, `adapter_refused` naming it, and the other adapter and the management API serving. Fail a start step: assert `not_ready` and `start_failed` naming the step. **(cluster)** Relinquish a shard on a node: assert the node stays ready and `shard_relinquished` is raised. | a node unreachable for reclaim; a probe stricter than §3.6 |
 | §3.9 registry | §3.9's Go table and the RFC table agree, and every `Name` is returned by some `Source` in a test that injects its cause, with the severity the registry's rule gives that cause. | a condition no alert knows |
 | §4.3 never blocks | With the access policy at every decision, stop the writer; run 10⁵ operations. Assert all 10⁵ operations complete, `events_dropped_total{reason="ring_full"}` equal to the events beyond the ring, and, once the writer resumes, one gap record covering exactly those sequence numbers, after every record below them and before every record above. Stop again, drop, and emit nothing more: assert the gap record is written within a second of the writer resuming. | a blocking sink; a silent drop; a gap out of order |
 | §4.4 coalescing | Hammer a full quota with 10⁴ writes in a minute. Assert exactly two hard-refusal records: the first, at once, and one summary carrying the count of the rest. | a quota stream that floods |
