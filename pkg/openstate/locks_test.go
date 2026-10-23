@@ -477,6 +477,31 @@ func TestExpiryGrantsWaitersUnderOrder(t *testing.T) {
 	}
 }
 
+// A range a lease expiry frees goes to the waiter on it, even when a request
+// for it arrives after the expiry and before the timer serves the file.
+func TestExpiryGrantIsNotJumped(t *testing.T) {
+	f := newFixture(t)
+	a, h, c := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "h", 1), f.host(t, "c", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	f.Table.order = func(entity.FileID) func() { entered <- struct{}{}; <-gate; return func() {} }
+	f.clock.advance(2 * leasePeriod)
+	f.sweep(ctx)
+	<-entered // the timer's serve is parked on the admission lock
+	_, err := f.lock(c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{x(0, 10)}})
+	close(gate)
+	f.Stop()
+	if !errors.Is(err, ErrLocked) {
+		t.Errorf("a lock arriving after h waited, in the expiry's window: %v, want ErrLocked", err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Errorf("after the expiry: granted %v, want h", got)
+	}
+}
+
 // Closing an open, or its host's restart, ends the waiters under it, and the
 // waiters behind the locks it held are granted.
 func TestCloseAndRestartEndWaiters(t *testing.T) {

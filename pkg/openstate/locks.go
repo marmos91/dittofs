@@ -492,6 +492,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // a callback one reported not granted, unless r repeats its request and still
 // waits, which keeps its place.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
+	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
 	var held *Lock
