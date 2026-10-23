@@ -523,7 +523,7 @@ suites:
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
       # nightly: { DITTOFS_E2E_NIGHTLY: "1" }, once the dedup tests have known-failure entries (§9)
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
-    blocking: false                     # until a week with no failure on develop (§8)
+    blocking: { pr: false }             # on PRs, until a week with no failure on develop (§8)
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }   # quoted: a comma ends a flow value
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
@@ -1651,9 +1651,7 @@ One workflow, `tests.yml`, runs every registered suite:
     GitHub answers a request with a 5xx twice in a row, doesn't turn the run red, and a
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
-    fail the gate, so they never make develop red. `e2e`'s are the exception while `e2e` waits to
-    turn blocking (§8 step 3): `post` also waits for `non-blocking` and posts them, so a red e2e on
-    develop alerts without holding a merge.
+    fail the gate, so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
   the options that move later, with any step its cells need that `run` doesn't give yet, such as
@@ -1979,7 +1977,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names,
-     and `e2e-tests.yml`, non-blocking until it has a week with no failure on develop.
+     and `e2e-tests.yml`, non-blocking on PRs until it has a week with no failure on develop.
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
      that keeps its check name can't report beside an old job of that name. Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
      cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until

@@ -105,10 +105,11 @@ suites:
       # decision: no DITTOFS_E2E_NIGHTLY yet. The two dedup tests it turns on fail in their
       # setup, so it comes back, under nightly, with their fix or their known-failure entries.
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
-    # decision: reported, never failing the gate, so a failure from outside the code, such as a
-    # change to the machine it runs on, can't hold every merge while it's fixed. It becomes
-    # blocking after a week with no failure on develop.
-    blocking: false
+    # decision: non-blocking on pull requests only, so a failure from outside the code, such as a
+    # change to the machine it runs on, can't hold every merge while it's fixed; after a merge and
+    # nightly it blocks, so a red e2e makes develop red and posts. Drop this after a week with no
+    # e2e failure on develop.
+    blocking: { pr: false }
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
