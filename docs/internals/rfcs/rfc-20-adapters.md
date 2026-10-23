@@ -2088,10 +2088,10 @@ These are measured by §6.10's benchmarks on the reference box
 | --- | --- | --- |
 | Nagle's algorithm | **off** (`TCP_NODELAY`) on every connection, **MUST** | a request-reply protocol: Nagle holding a small reply until the client's delayed acknowledgement arrives adds up to that timer, tens to hundreds of milliseconds, to a `GETATTR`; batching is the writer's instead (§6.6) |
 | send and receive buffers | left to the kernel's autotuning; **MUST NOT** be fixed | fixing them caps the window and switches autotuning off on common kernels; a 1 MiB transfer over a long round trip needs more window than any fixed default |
-| listener and keepalive | Go's defaults: backlog from the kernel's `somaxconn`, address reuse on, keepalive on | keepalive finds a peer that vanished without closing, so its connection and any back channel it held are closed; the protocol's own lease still decides what happens to state |
+| listener and keepalive | Go's defaults for the backlog (the kernel's `somaxconn`) and address reuse; keepalive on, with 15 s idle and 3 probes 5 s apart; `TCP_USER_TIMEOUT` equal to the write deadline where the platform has it | keepalive finds a peer that vanished without closing within the lease — Go's default, 15 s idle and 9 probes 15 s apart, takes about 150 s, past NFSv4's 90 s — so its connection and any back channel it held are closed; the user timeout does the same when unacknowledged data, a lease break left on the socket, stops keepalive from probing, which otherwise falls to the kernel's retransmission limit, about 15 minutes on Linux; the protocol's own lease still decides what happens to state |
 
-None is a setting. A unit test asserts `TCP_NODELAY` on an accepted
-connection. NFS is served over TCP only
+None is a setting. A unit test asserts `TCP_NODELAY`, the keepalive values and,
+on Linux, `TCP_USER_TIMEOUT` on an accepted connection. NFS is served over TCP only
 ([RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only)); RDMA, QUIC and SMB Direct are not offered
 ([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)).
 
@@ -2702,7 +2702,7 @@ which.
 | §6.8 | reference-counted buffers behind a reservation | a three-class `sync.Pool` of raw byte slices behind package-level `Get` and `Put`; no reservation and no reference count |
 | §6.10 | codec and pipeline allocation gates against a null service | no allocation assertion in adapter tests; no null service |
 | §6.1, §6.3 | flow control is the protocol's | one goroutine per connection and one per request, bounded by a per-connection cap of 100 for both protocols; slots (64) and credits exist; no node-wide in-flight bound |
-| §6.7 | TCP options | Nagle off and keepalive at 15 s already; socket buffers untouched |
+| §6.7 | TCP options | Nagle off and keepalive at Go's 15 s default already; no probe count or `TCP_USER_TIMEOUT` set; socket buffers untouched |
 | §7.2 | handlers against a recording service | handler tests run on real in-memory stores and engines; four fakes in total |
 | §8 | differential wire tests | a capture corpus with a normaliser exists for Kerberos, LDAP, NFSv4 ACLs and SMB security descriptors only; standard suites run nightly; the interop playbook is manual |
 | RFC 21 §2.2 | every NFS-family program over TCP only | NFS itself is TCP only, but MOUNT, NLM and NSM are also served over UDP |
