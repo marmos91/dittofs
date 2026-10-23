@@ -598,8 +598,11 @@ func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 }
 
 // releaseClient releases everything client c holds, file by file, each under
-// that file's step, and adds to out what its closes left the service to run
-// and the waiters its releases granted.
+// that file's step, with its owners' sequences, and adds to out what its
+// closes left the service to run and the waiters its releases granted.
+//
+// ponytail: the owners' sequences are found by a scan of every slot,
+// O(owners), per release. Key the book by client when a profile shows it.
 //
 // decision: an open is released here even when its durable record's delete
 // fails. The record stays a holder of its file, and the file stays unreleased
@@ -625,6 +628,13 @@ func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbo
 			out.close(h.file, r)
 			return nil
 		})
+	}
+	t.smu.Lock()
+	defer t.smu.Unlock()
+	for o := range t.seqs {
+		if o.Client == c {
+			delete(t.seqs, o)
+		}
 	}
 }
 

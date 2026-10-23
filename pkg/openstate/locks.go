@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate/ranges"
+	"github.com/marmos91/dittofs/pkg/openstate/sequence"
 )
 
 // maxRanges is the most ranges one lock or unlock request names.
@@ -56,6 +57,7 @@ type LockReq struct {
 	Shard  ShardID // the file's shard, which names a lock state taken under no open
 	Ranges []LockRange
 	Wait   WaitKind // only a single-range request waits
+	Seqs   Seqs
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -97,9 +99,9 @@ type Locks interface {
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
 	// it staying released; a merging owner releases whatever it holds of
 	// each.
-	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange) error
+	Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
 	// ReleaseLockOwner drops o's lock states at this primary, with their
-	// locks and their waiters.
+	// locks, their waiters and o's sequence.
 	ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) error
 }
 
@@ -179,6 +181,10 @@ func (ls *lockState) unlock(rs []ByteRange) error {
 }
 
 func sameOwner(a, b LockOwner) bool { return a.Client == b.Client && bytes.Equal(a.Name, b.Name) }
+
+func locksOwner(o LockOwner) sequence.Owner {
+	return sequence.Owner{Client: o.Client, Kind: sequence.Locks, Name: string(o.Name)}
+}
 
 // conflicts reports whether owner o's lock r conflicts with h, held or asked
 // for by holder: they share a byte and one is exclusive, and they are two
@@ -438,14 +444,27 @@ func (v locks) Lock(ctx context.Context, who Caller, f entity.FileID, r LockReq)
 		if ls != nil && !sameOwner(ls.owner, r.Owner) {
 			return ErrBadState
 		}
-		if err := seqErr(cur, r.Open.State.Seq); err != nil {
+		// A lock under an open, not yet under a lock state, introduces its
+		// owner of locks, and is numbered by the open's owner.
+		introduces := ls == nil && op != nil
+		seq := locksOwner(r.Owner)
+		if introduces {
+			seq = opensOwner(op.Client, op.owner)
+		}
+		return t.sequenced(seq, r.Seqs.Owner, false, func() (err error) {
+			if err := seqErr(cur, r.Open.State.Seq); err != nil {
+				return err
+			}
+			if op != nil && !t.mayUse(op, who) {
+				return ErrNotYours
+			}
+			if res, err = t.lock(ctx, e, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
+				t.smu.Lock()
+				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
+				t.smu.Unlock()
+			}
 			return err
-		}
-		if op != nil && !t.mayUse(op, who) {
-			return ErrNotYours
-		}
-		res, err = t.lock(ctx, e, r, op, &out)
-		return err
+		})
 	})
 	out.raise(sink)
 	return res, err
@@ -579,7 +598,7 @@ func (v locks) TestLock(ctx context.Context, who Caller, f entity.FileID, o Lock
 	return held, err
 }
 
-func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange) error {
+func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -602,25 +621,27 @@ func (v locks) Unlock(ctx context.Context, who Caller, f entity.FileID, ref Open
 		case !sameOwner(ls.owner, o):
 			return ErrBadState
 		}
-		if err := seqErr(cur, ref.State.Seq); err != nil {
-			return err
-		}
-		if op != nil && !t.mayUse(op, who) {
-			return ErrNotYours
-		}
-		if ls == nil {
-			if o.Stack && len(rs) > 0 {
-				return ErrRangeNotLocked
+		return t.sequenced(locksOwner(o), q.Owner, false, func() error {
+			if err := seqErr(cur, ref.State.Seq); err != nil {
+				return err
 			}
-			return nil
-		}
-		err = ls.unlock(rs)
-		if err == nil {
-			ls.ref.Seq, err = t.advance(e, ls.ref)
-		}
-		t.tidy(e, ls)
-		t.serve(e, &out)
-		return err
+			if op != nil && !t.mayUse(op, who) {
+				return ErrNotYours
+			}
+			if ls == nil {
+				if o.Stack && len(rs) > 0 {
+					return ErrRangeNotLocked
+				}
+				return nil
+			}
+			err := ls.unlock(rs)
+			if err == nil {
+				ls.ref.Seq, err = t.advance(e, ls.ref)
+			}
+			t.tidy(e, ls)
+			t.serve(e, &out)
+			return err
+		})
 	})
 	out.raise(sink)
 	t.dropIdle(ctx, who.Client)
@@ -655,6 +676,9 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 			return nil
 		})
 	}
+	t.smu.Lock()
+	delete(t.seqs, locksOwner(o))
+	t.smu.Unlock()
 	out.raise(sink)
 	t.dropIdle(ctx, o.Client)
 	return nil

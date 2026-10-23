@@ -42,6 +42,11 @@ type Book map[Owner]Slot
 
 // Check reports whether o may send a request numbered n: the number its slot
 // expects, and for an owner of opens not yet confirmed, only a confirm.
+//
+// decision: an unconfirmed owner's request other than its confirm is refused
+// as out of sequence, which advances nothing, so its client starts over with
+// a new owner. Treat it instead as a new owner replacing the unconfirmed one
+// if a client is seen retrying under the same owner.
 func (b Book) Check(o Owner, n uint32, confirming bool) bool {
 	s, ok := b[o]
 	return !ok || s.Next == n && (s.Confirmed || confirming)
@@ -50,6 +55,12 @@ func (b Book) Check(o Owner, n uint32, confirming bool) bool {
 // Answer records how o's request numbered n, which Check admitted, was
 // answered. Only a granted request gives a new owner its slot, one past n, and
 // a new owner of opens starts unconfirmed. Numbers wrap modulo 2^32.
+//
+// decision: a refused first request leaves its owner new, so the owner's next
+// request is accepted whatever its number, which suits a client that counted
+// the refusal and one that did not alike. Give the owner its slot on any
+// answer that is not exempt if a client is seen relying on a stale number
+// being refused after a refused first request.
 func (b Book) Answer(o Owner, n uint32, a Outcome) {
 	s, ok := b[o]
 	switch {
