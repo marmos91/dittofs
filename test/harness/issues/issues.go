@@ -401,8 +401,7 @@ func changes(old, set []entry) string {
 // where the logs are and its failing line, and nothing else, since issues are
 // public. The line is an indented code block, which Markdown shows as it is.
 func (c Client) testText(e entry, t report.Test, last report.Run) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(t.Message), "\n")
-	line = cut(strings.TrimSpace(line), maxLine)
+	line := cut(report.FirstLine(t.Message), maxLine)
 	return fmt.Sprintf("%s in %s has failed %d runs in a row on develop.\n\n- Commit: %s\n- Log: %s\n\nThe failing line:\n\n    %s\n",
 		report.Code(e.Test), report.Code(e.Cell), e.Runs, last.Commit, cmp.Or(c.Log, "run "+last.Name), line)
 }

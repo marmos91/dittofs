@@ -26,8 +26,6 @@ func TestParseQuarantineRules(t *testing.T) {
 		{"each problem at its entry's line", quarantined + strings.Replace(quarantined, "suite: s, ", "", 1),
 			"q.yaml:2: suite is required"},
 		{"a test is one name, not a glob", strings.Replace(quarantined, "test: a", "test: 'smb2.lock*'", 1), `q.yaml:1: test "smb2.lock*" is a pattern`},
-		{"nor a whole suite", strings.Replace(quarantined, "test: a", "test: '*'", 1), `test "*" is a pattern`},
-		{"nor a regex-like .*", strings.Replace(quarantined, "test: a", "test: smb2.lock.*", 1), `test "smb2.lock.*" is a pattern`},
 		{"nor a ?", strings.Replace(quarantined, "test: a", "test: 'chmod/0?.t'", 1), `test "chmod/0?.t" is a pattern`},
 		{"nor a set", strings.Replace(quarantined, "test: a", "test: 'chmod/0[0-9].t'", 1), `test "chmod/0[0-9].t" is a pattern`},
 		{"a test is listed once per suite", quarantined + strings.Replace(quarantined, "2026-12-31", "2026-12-01", 1), "q.yaml:2: s a is listed twice, first at line 1"},

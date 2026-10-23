@@ -10,8 +10,7 @@
 //  5. check_pattern on dest [4096,8192): must equal the source pattern.
 //
 // This drives the REAL executeCopyChunks write path and the REAL Read handler
-// against a memory block store (the backend every smb-conformance profile uses
-// — see test/smb-conformance/bootstrap.sh `store block local add --type memory`).
+// against a memory block store.
 package handlers
 
 import (

@@ -157,9 +157,7 @@ ADAPTER_PORT="${NFS_PORT:-12049}"
 # than guess. Escalating to sudo is deliberately not attempted — it would either
 # block on a password prompt or kill a process this has no business killing.
 #
-# Only the suites that provision a dfs on the host care. The SMB suites and the
-# Kerberos one run entirely inside Docker and publish no host port, so a
-# listener here is none of their business and must not fail them.
+# Only the suites that provision a dfs on the host care.
 clear_orphan_server() {
     [[ "$(mq --arg s "$SUITE" '.suites[$s].host_adapter // false')" == "true" ]] || return 0
     command -v lsof >/dev/null 2>&1 || return 0
@@ -295,18 +293,16 @@ run_one() {
     if [[ "$DRY_RUN" == false ]]; then
         mkdir -p "$results_dir"
         # Absolute from here on. A relative --results-dir is exported verbatim
-        # as DITTOFS_RESULTS_DIR, and the SMB runners cd into their own
-        # directory before writing the verdict sidecar — so the child would
-        # write it somewhere this function never looks, and the summary would
-        # fall back to calling the aggregate status a failure count. The whole
-        # mechanism is only worth what the consumer can find.
+        # as DITTOFS_RESULTS_DIR, so a runner that changes directory before
+        # writing the verdict sidecar would write it somewhere this function
+        # never looks, and the summary would fall back to calling the aggregate
+        # status a failure count. The whole mechanism is only worth what the
+        # consumer can find.
         results_dir="$(cd "$results_dir" && pwd)"
         # Cleared, not just created. The directory is keyed by suite and label
-        # rather than by invocation, and the runners append to their artifacts
-        # (tee -a on smbtorture-output.txt, >> on timeouts.txt) — so a second
-        # run would parse the first run's failures as its own, and a run that
-        # dies before the graded step would be described by the first run's
-        # verdict. Scoped to the one suite/label directory this script owns.
+        # rather than by invocation, so a run that dies before the graded step
+        # would be described by the previous run's log and verdict. Scoped to the
+        # one suite/label directory this script owns.
         # Checked, because this script runs without `set -e`: a clear that
         # silently failed would leave the previous run's artifacts and verdict
         # in place, and the summary would describe this run with them — the

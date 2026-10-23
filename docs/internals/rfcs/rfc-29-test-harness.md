@@ -667,18 +667,28 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own clients mount the fixture's share, and the workloads run over the mount. Replaces
-  # smb-client-compat.yml once its results match. The suite itself is the Linux run, with every
-  # workload; macOS and Windows run a smoke test (§9).
+  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount:
+  # on each OS, the checks of smb-client-compat.yml's job there, which this replaces once its
+  # results match. The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
   clients:
-    tests: test/clients/*               # the workloads: today's smb-client-compat checks
-    cmd: "{test} {mount}"
-    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
-    needs: [linux, root, smb-client, nfs-client]
+    tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
+    cmd: "{test} {mount} {bucket}"     # s3.sh sees a block reach the bucket; the others take the mount alone
+    fixture: { profile: badger-s3, smb: { mount: true } }
+    needs: [linux, root, smb-client]
     tier: nightly
+    blocking: false                     # until the three cells match smb-client-compat.yml; blocking when it goes
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
-      macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }     # macOS mounts NFS 3 and 4.0
-      windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } } # net use /TCPPORT, no port 445; NFS 3 only
+      macos:
+        tests: [test/clients/files.sh, test/clients/xattr.sh]
+        cmd: "{test} {mount}"
+        env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
+        needs: [macos]
+        fixture: { profile: memory, smb: { mount: true } }
+      windows:                          # a script isn't a program there: PowerShell runs it
+        tests: [test/clients/files.ps1]
+        cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
+        needs: [windows]
+        fixture: { profile: memory, smb: { mount: true } }   # New-SmbMapping -TcpPort, no port 445
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
@@ -754,7 +764,7 @@ fixture are filled before the first test, when neither has a value.
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link, but for cthon04: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is a copy of cthon04's built tree that the user `dt` runs as can write, as the scripts' copy is, since its general tests `cp` their sources to the mount, keeping their modes, and Nix's store holds them read-only, and `{tools}/nfstest` holds a `bin` with a program per module, on Python 3.12, since nfstest's remote execution, which its lock and delegation modules set up first, breaks from 3.13 on |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
+| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{bucket}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
@@ -851,7 +861,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison: the kernel's NFS server, serving NFSv4.0, 4.1 and 4.2 over TCP on 2049, its `{nfs-port}`, and not NFSv3. `rpc.nfsd` still reads the host's `/etc/nfs.conf` for the rest, so a listener it adds there, such as RDMA's, is the host's. It exports a tmpfs of its own to `{server}` alone, as the NFSv4 root, with `/export` in it, since the kernel won't export the overlay file system a container's `/tmp` is. Where the kernel's tmpfs has no POSIX ACLs, as Docker Desktop's, the server has none either, and pynfs's ACL tests skip, which the cell reports. A `knfsd` fixture sets `nfs: export`, and at most `squash: none` and `lease`; it gives `{server}` and `{nfs-port}`, and no `{bin}`. It implies `root`, `knfsd` and `port:2049` (below), so the kernel's server that `dt` starts and stops is its own. It fails when the kernel's list of versions lacks one of the three, since `rpc.nfsd` only logs a version the kernel refuses. It sets the server's grace period to 10 seconds, the least, and waits it out before the first test. The lease and grace times are the kernel's for every server on that network stack, so `dt` restores them when it stops the server |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. In the mapping the version may be left out, for options that name it: their `vers=` gives it, and with none the kernel negotiates it, as cthon04's `default` set does. `export` exports the share without a mount, for pynfs and nfstest, which mounts by itself |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1`, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -885,9 +895,9 @@ In a `shares` file, `{user}` owns each share's root and holds the `admin` grant 
 `wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
 ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
 and the restricted principal of `smb2.acls.ACCESSBASED`. On the default share, `/export`, `{user}`
-has a uid of its own and no grant, as `{user2}` does. No suite uses `{user}` there yet; the first
-that does, `clients` with its SMB mount (§8 step 4), adds what it needs with its own change to this
-RFC.
+has a uid of its own and no grant, as `{user2}` does, unless the fixture mounts it over SMB: the
+mount is `{user}`'s, so `{user}` holds `read-write` on it, without which the server refuses the
+mount, and doesn't own its root, which the mount doesn't need.
 
 **Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
 fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
@@ -900,7 +910,8 @@ root keeps its privileges, as both suites need.
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
 cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount or a namespaced `client`, `rpcbind` for
-`rpcbind: host`, `root` and `smb-client` for an SMB mount, `root` and `port:445` for
+`rpcbind: host`, `smb-client` for an SMB mount, and `root` with it on Linux, whose client mounts as
+root, while macOS's and Windows's mount as the user `dt` runs as, `root` and `port:445` for
 `smb: { port: 445 }`, and `docker` for `kerberos`, whose KDC is a container. They are for the
 fixture's own steps: only a suite's own `needs` make its commands run as root (§3).
 
@@ -925,6 +936,9 @@ The fixture gives the command these placeholders:
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
+- `{bucket}`: with an S3 profile, the request that lists the keys under the fixture's prefix in its
+  bucket, an S3 ListObjectsV2 URL, so a test can see what the server put there, as `clients`'s
+  `s3.sh` sees a block of a file it wrote reach S3.
 - `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
   test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
 - `{realm}` and `{krb5-conf}`: with `kerberos`, its KDC's realm, and a `krb5.conf` that names the
@@ -1009,7 +1023,7 @@ every merge.
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
 dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
    [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
-   [--estimate]                                and the tier's runner-minutes, from dt history
+   [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
@@ -1174,8 +1188,11 @@ There are three places to run:
 `smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
 until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
 the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
-`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
-This still needs one run to prove it end to end.
+`New-SmbMapping -TcpPort`. So the fixture maps the share on DittoFS's own port with
+`New-SmbMapping`, which takes the password from the environment where `net use` would show it on
+its command line, and port 445 isn't needed. A dispatched run proved it end to end on 2026-10-22
+(run 39835268616): the hosted runner's client mapped the share at SMB 3.1.1, and the old job's
+checks passed over it.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
@@ -1483,7 +1500,8 @@ file, and `dt known import` converts the old lists once.
   Markdown list's tables of tests has no entry in its `known.yaml` that applies where the list does,
   or a known failure in `known.yaml` that applies there has no row in the list, so a change to one
   is made to both; an expected skip needs no row. An entry applies there unless its `where` gives
-  the list's axis other values. The hand-written Markdown lists go with the scripts.
+  the list's axis other values. The hand-written Markdown lists go with the scripts, and the
+  test with smbtorture's, the last it read.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
   trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
   matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
@@ -1914,8 +1932,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
      which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
      the schedule and on a dispatch naming a suite, and `merge` on another dispatch. cthon04 and
-     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, and so does
-     smbtorture's Kerberos option, which joins in step 3. A last job
+     nfstest, whose scripts run after no merge, have parity cells at `nightly` only, as
+     smbtorture's Kerberos option had from step 3 until it moved. A last job
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
@@ -1924,8 +1942,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
      `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which runs
-     its three filters one at a time without `run.sh`, saves the same for its one cell, with the
+     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which ran
+     its three filters one at a time without `run.sh`, saved the same for its one cell, with the
      tests run only when each filter's grader counted them.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
@@ -1943,8 +1961,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts. A script that an old job still running uses stays
-     until that job moves too: smbtorture's, which its Kerberos job runs, until the Kerberos runs
-     move.
+     until that job moves too, as smbtorture's, the Compose stack they ran on and their Markdown
+     lists stayed until its Kerberos job moved.
    - `dt docs` replaces `check-docs.sh` as the conformance suites move, and not before, so the
      documentation's suite tables always describe what CI runs (§4.1).
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
@@ -2013,8 +2031,11 @@ Carried over from earlier reviews:
 - **The operator and Windows jobs on PRs:** the operator job (about 3 minutes) blocks on PRs. The
   Windows unit run (about 17 minutes of runner time) is non-blocking on PRs and blocking after
   merge.
-- **The `clients` suite:** Linux is the default and runs every workload. macOS and Windows run a
-  smoke test each; on Windows it is the fio mailbox workload, through a PowerShell runner (#3050).
+- **The `clients` suite:** Linux is the default and runs every workload but another system's own:
+  the file operations, a rename, and a block reaching S3. macOS and Windows run a smoke test each,
+  the file operations, and on macOS the extended attributes it keeps in SMB named streams. On
+  Windows the fio mailbox workload joins them through a PowerShell runner, once there is one
+  (#3050).
   cthon04 and nfstest come in as suites of their own, on Linux (#3008).
 - **When the gate becomes required:** after two green weeks of the `pr` tier.
 - **The bar for deleting a suite's scripts:** 5 consecutive runs with matching results.

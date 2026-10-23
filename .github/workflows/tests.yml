@@ -11,10 +11,11 @@
 # suite runs here beside its old job until their results match on 5
 # consecutive runs; unit, integration, operator and lint, whose old jobs ran
 # the commands dt runs, move in at once. plan keeps only the cells of those
-# that have moved: pynfs, pjdfstest, WPTS, smbtorture without its Kerberos
+# that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
 # option, operator, the Windows unit run, the suites with a job of their own,
-# and the system scenarios, which had no workflow, less the cells the
-# dedicated host runs itself. A suite joins by being added to the select in
+# the system scenarios, which had no workflow, less the cells the dedicated
+# host runs itself, and clients, which runs beside smb-client-compat.yml until
+# their results match. A suite joins by being added to the select in
 # plan, with any step its cells need that run doesn't give yet, such as
 # another service; the select goes once every suite runs here.
 #
@@ -81,10 +82,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # decision: every job here pins the same Go release rather than 1.26.x,
+      # which resolves to whichever 1.26 the machine already has. Each release
+      # has a module cache of its own, so a floating version splits the jobs
+      # between caches. Bump the pins together.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - name: Build dt
@@ -102,7 +107,8 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or (.suite == "smbtorture" and .option == null) or .name == "unit/windows" or (.suite == "system" and .place != "dedicated"))
+                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
+                or .suite == "clients")
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
@@ -149,7 +155,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
+
+      # Every module before anything builds: the cache is saved once per key
+      # and never updated, so whichever job saves it saves all of them. -x
+      # lists each module fetched, so a restored cache missing some shows here.
+      - &download
+        name: Download modules
+        run: go mod download -x
 
       # The kernel NFS client, for a cell whose fixture mounts the share.
       - name: Install NFS client utilities
@@ -157,6 +170,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
+
+      # mount.cifs, which the smb-client need checks, and smbclient, which
+      # AD-DC's NTLM test runs and skips without. The other places' own
+      # clients are there already.
+      - name: Install the SMB clients
+        if: contains(matrix.needs, 'smb-client') && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cifs-utils smbclient
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them
@@ -244,7 +266,9 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
+
+      - *download
 
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -309,7 +333,7 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - *build
@@ -357,6 +381,7 @@ jobs:
     steps:
       - *checkout
       - *go
+      - *download
       - *build
       - *suite
       - *report
@@ -382,6 +407,7 @@ jobs:
     steps:
       - *checkout
       - *go
+      - *download
       - *build
 
       # The services its needs name, which dt run checks answer before the
@@ -502,7 +528,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.10"
           cache: false
 
       - name: Build dt

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Shared known-failures (blacklist) loader for conformance test harnesses.
 #
-# smbtorture's harness and the NFS mount suites' (cthon04, nfstest) grade their
-# results against a blacklist of tests that are EXPECTED to fail: protocol-
-# inherent limitations, upstream bugs, or environment quirks. A run is green
-# when every failure is on the blacklist; only NEW failures (not on the list)
-# fail CI.
+# The NFS mount suites (cthon04, nfstest) grade their results against a
+# blacklist of tests that are EXPECTED to fail: protocol-inherent limitations,
+# upstream bugs, or environment quirks. A run is green when every failure is on
+# the blacklist; only NEW failures (not on the list) fail CI.
 #
 # Blacklist file format (a Markdown table, identical across protocols so the
 # files render nicely in GitHub and share this parser):
