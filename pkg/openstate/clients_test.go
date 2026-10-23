@@ -510,7 +510,8 @@ func TestStartAndStop(t *testing.T) {
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
 		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
 		"Downgrade": func() error {
-			return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{}, 0, 0)
+			_, err := g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{}, 0, 0)
+			return err
 		},
 		"Update": func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
 		"Close": func() error {
@@ -519,7 +520,8 @@ func TestStartAndStop(t *testing.T) {
 		},
 		"Durable": func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
 		"ConfirmOpen": func() error {
-			return g.Opens().ConfirmOpen(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, 1)
+			_, err := g.Opens().ConfirmOpen(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
+			return err
 		},
 		"Lock": func() error {
 			_, err := g.Locks().Lock(ctx, Caller{Client: id}, file.ID, LockReq{Owner: LockOwner{Client: id}, Ranges: []LockRange{{}}})
@@ -533,7 +535,8 @@ func TestStartAndStop(t *testing.T) {
 			return g.Locks().WaitAnswered(ctx, Caller{Client: id}, LockWaiter{File: file.ID, Owner: LockOwner{Client: id}}, true)
 		},
 		"Unlock": func() error {
-			return g.Locks().Unlock(ctx, Caller{Client: id}, file.ID, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
+			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file.ID, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
+			return err
 		},
 		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },
 	}
