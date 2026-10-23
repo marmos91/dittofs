@@ -87,16 +87,11 @@ test/harness/results/
 test/harness/.bin/
 test/harness/state/
 
-# SMB Conformance test results and local-mode build artifacts
-test/smb-conformance/results/
-test/smb-conformance/dfs
-test/smb-conformance/dfsctl
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .pi/tasks/
 .pi/fusion/
 .agent-orphans/
-test/smb-conformance/docker-compose.override.yml
 
 # Phase 13 DEDUP-03 (VER-03 gate) qcow2 fixture cache. Pinned base
 # image is downloaded on first nightly run; never committed.

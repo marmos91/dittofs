@@ -687,32 +687,6 @@
             ${self.packages.${system}.dfsctl}/bin/dfsctl --help > /dev/null 2>&1
             touch $out
           '';
-
-          # The conformance graders decide whether a suite run counts as green.
-          # They run against synthetic output in about a second each, with no
-          # server and no network, so they belong in the pre-push check.
-          conformance-graders = pkgs.runCommand "check-conformance-graders" { } ''
-            mkdir -p test/smb-conformance
-            cp -r ${./test/common} test/common
-            cp -r ${./test/smb-conformance/smbtorture} test/smb-conformance/smbtorture
-            chmod -R u+w test
-
-            status=0
-            for suite in test/smb-conformance/smbtorture; do
-              echo "== $suite/parse-results_test.sh"
-              report="$(bash "$suite/parse-results_test.sh" 2>&1)" || status=1
-              printf '%s\n' "$report"
-              # A suite that matched no cases exits 0 having asserted nothing,
-              # which reads exactly like a pass.
-              if ! printf '%s\n' "$report" | grep -q '^ok:'; then
-                echo "$suite asserted nothing" >&2
-                status=1
-              fi
-            done
-
-            [ "$status" -eq 0 ]
-            touch $out
-          '';
         };
       }
     );

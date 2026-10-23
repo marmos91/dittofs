@@ -101,7 +101,7 @@ func (r Run) text(w io.Writer, failuresOnly bool) error {
 		}
 		_, _ = fmt.Fprintln(tw, "CELL\tNEW FAILURE\tMESSAGE")
 		for _, f := range failed {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.cell, f.test.Title(), firstLine(f.test.Message))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.cell, f.test.Title(), FirstLine(f.test.Message))
 		}
 	case failuresOnly:
 		_, _ = fmt.Fprintln(tw, "no new failures")
@@ -144,7 +144,7 @@ func (r Run) markdown(failuresOnly bool) string {
 		}
 		b.WriteString("#### New failures\n\n| Cell | Test | Message |\n|---|---|---|\n")
 		for _, f := range failed[:min(len(failed), maxRows)] {
-			_, _ = fmt.Fprintf(&b, "| %s | %s | %s |\n", Code(f.cell), Code(f.test.Title()), Code(cut(firstLine(f.test.Message), maxMessage)))
+			_, _ = fmt.Fprintf(&b, "| %s | %s | %s |\n", Code(f.cell), Code(f.test.Title()), Code(cut(FirstLine(f.test.Message), maxMessage)))
 		}
 		if more := len(failed) - maxRows; more > 0 {
 			_, _ = fmt.Fprintf(&b, "\nand %d more new failures, all in summary.json\n", more)
@@ -194,8 +194,8 @@ func cut(s string, n int) string {
 	return s
 }
 
-// firstLine is a message's first line that isn't blank.
-func firstLine(s string) string {
+// FirstLine is a message's first line that isn't blank.
+func FirstLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			return line
