@@ -599,7 +599,7 @@ Signatures are indicative; the obligations are normative.
 
 Every type an adapter passes or receives is in `pkg/vfs`. Types the metadata
 store and open state define — `ClientID`, `OpenID`, `GrantID`, `WatchID`,
-`SessionRef`, `StateRef`, `Seqs`, `ClientStatus`, `GraceRef`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
+`SessionRef`, `StateRef`, `OpenRef`, `RefKind`, `Seqs`, `ClientStatus`, `GraceRef`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
 `Xattr`, `Principal`, `FilesystemInfo`, `Usage`, `Quota`, `CachingGrant`,
 `LockWaiter`, `ChangeMask`, `ShareID` — are re-declared there as aliases
 (`type File = metadata.File`), so an adapter imports one package and the
@@ -610,11 +610,11 @@ holds.
 | --- | --- |
 | `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
-| `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`) — a lock stateid's for a `LOCK` or `LOCKU` that names one. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
+| `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Caller.Client`) — and carries no identity: the call's `id` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
-| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), create GUID and app instance, reclaim, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Created`, and the parent's `WCC` when it created |
+| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
 | `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
@@ -627,7 +627,6 @@ The rest carry no meaning beyond their shape:
 
 ```go
 type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1), one enum
-type RefKind uint8    // Opened, Delegated, Anonymous: what an OpenRef names
 type AuthFlavor uint8 // a flavour a share admits: sys, krb5, krb5i, krb5p, ntlm, none
 type Stability uint8  // Unstable, DataSync, FileSync
 type XattrMode uint8  // Create, Replace, Either
@@ -679,7 +678,7 @@ type Clients interface {
 	ReclaimComplete(ctx context.Context, id Identity, c ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, id Identity, c ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
 	TestState(ctx context.Context, id Identity, c ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
-	ReleaseLockOwner(ctx context.Context, id Identity, c ClientID, o LockOwner) error
+	ReleaseLockOwner(ctx context.Context, id Identity, c ClientID, o LockOwner) error // StateError LocksHeld while it holds a lock
 	HostRestarted(ctx context.Context, id Identity, host []byte, state uint32) error // NSM SM_NOTIFY, NLMPROC4_FREE_ALL: expires the host's old client
 }
 
@@ -710,8 +709,8 @@ type Attributes interface {
 // Data.
 type Data interface {
 	Open(ctx context.Context, id Identity, req OpenRequest) (OpenResult, error)
-	Downgrade(ctx context.Context, id Identity, ref OpenRef, q Seqs, access, deny Access) error // NFSv4 OPEN_DOWNGRADE
-	ConfirmOpen(ctx context.Context, id Identity, ref OpenRef, seq uint32) error        // NFSv4.0 OPEN_CONFIRM
+	Downgrade(ctx context.Context, id Identity, ref OpenRef, q Seqs, access, deny Access) (uint32, error) // NFSv4 OPEN_DOWNGRADE: the open's new stateid seqid
+	ConfirmOpen(ctx context.Context, id Identity, ref OpenRef, q Seqs) (uint32, error)                    // NFSv4.0 OPEN_CONFIRM: the open's new stateid seqid
 	Close(ctx context.Context, id Identity, ref OpenRef, q Seqs) (*WCC, error)            // the parent's WCC when a delete on close ran
 	Read(ctx context.Context, id Identity, ref OpenRef, off int64, dst []byte) (n int, eof bool, err error)
 	Write(ctx context.Context, id Identity, ref OpenRef, off int64, src []byte, s Stability) (WriteResult, error)
@@ -724,10 +723,10 @@ type Data interface {
 
 // Locks, grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, id Identity, ref OpenRef, r LockReq) error
+	Lock(ctx context.Context, id Identity, ref OpenRef, r LockReq) (StateRef, error) // the lock state's reference, new Seq included; zero where the protocol names none
 	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
 	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
-	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) error // in order; stops at the first range not held, ErrRangeNotLocked
+	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error) // in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid
 	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind, epoch uint16) error // to GrantNone: a return; epoch: the one the acknowledgement names (RFC 14 §2.4)
 	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
@@ -1234,7 +1233,8 @@ other stateid or `FileId` whose record is missing — expired, freed, a removed 
 moved share's, never issued), `NoReclaim` (a reclaim in a shard the client's
 record does not list, an administrator's revoke having emptied it included),
 `ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
-same grace), `BadSeqID` (an
+same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
+it still holds locks; a live open or grant freed), `BadSeqID` (an
 NFSv4.0 owner sequence out of order), `NotYours` (state another client or
 principal holds, §3.1) and `Revoked` (the call names state in its client's
 revoked set, not yet freed; `Admin` tells an administrator's revoke from a
@@ -1543,8 +1543,9 @@ admits; each only removes or relaxes state, which no admitted write depends on.
 The one timer step that adds state, granting a callback waiter, takes the file's
 admission lock through the `order` function the node hands the table at
 `Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)). Every table
-call in the sketches below passes `c.Who()`: the call's client and mapped
-principal, as RFC 14's `Caller`.
+call in the sketches below passes `c.Who()`: the call's client, mapped
+principal and protocol, as RFC 14's `Caller`, and names a file by `keyOf`: its
+share, shard and ID, as RFC 14's `FileKey`.
 
 **A held call holds nothing.** A call the service holds behind a clone or a copy's
 chunk (§5.9) releases its accept lock, every open-state step it took and its
@@ -1719,12 +1720,14 @@ func (s *Server) openLocked(ctx context.Context, c Caller, r OpenRequest, seen F
 	if err := s.authz.Check(ctx, c, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
 	}
-	o, err := s.opens.Open(ctx, c.Who(), f.ID, toOpenState(r))    // RFC 14 §6: deny modes; a handle-caching grant over a
+	req := toOpenState(r, f)                                       // Name, Stream, Owner, Via, Seqs and the rest of RFC 14's OpenRequest
+	req.Loss = s.engine.LossSeq(f.ID)                              // RFC 14 §8.1: what a flush through this open compares with
+	o, err := s.opens.Open(ctx, c.Who(), keyOf(f), req)            // keyOf: share, shard and file. RFC 14 §6: deny modes; a handle-caching grant over a
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
 	}
 	max, _ := s.authz.Granted(ctx, c, f.Handle, r.Parent) // MaximalAccess, without a backup intent's privilege
-	return OpenResult{Ref: refOf(o.Open, f.Handle), File: f, MaximalAccess: max, Grant: o.Grant, Created: dir != nil, Dir: dir}, false, nil
+	return OpenResult{Ref: refOf(o.Open, f.Handle), File: f, MaximalAccess: max, Grant: o.Grant, Confirm: o.Confirm, Created: dir != nil, Dir: dir}, false, nil
 }
 ```
 
@@ -1815,7 +1818,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 	// Opens of others: a deny-delete refuses after handle caching is broken (§5.3);
 	// a grant on the file is recalled (ErrDelay); an SMB delete of a directory with
 	// an open child is ErrShareViolation (RFC 14 §9.5).
-	if err := s.checks.CheckChange(ctx, c.Who(), f.ID, ChangeRemove); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(f), ChangeRemove); err != nil {
 		return UnlinkResult{}, false, err
 	}
 	var r UnlinkResult
@@ -1857,17 +1860,17 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 	if err := s.authz.Rename(ctx, c, from, src, to, dst); err != nil { // delete-child at from, add-entry at to; through an open its grant
 		return RenameResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, c.Who(), fileOf(to), ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(to), ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
 		return RenameResult{}, err
 	}
 	// A rename of a delete-pending file, a deny-delete on src or a replaced dst, and an
 	// SMB rename of a directory with an open child are refused; grants are recalled
 	// (RFC 14 §7, §9.4, §9.5). An SMB rename over a target open by anyone is refused (RFC 22 §13).
-	if err := s.checks.CheckChange(ctx, c.Who(), src.ID, ChangeRename); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(src), ChangeRename); err != nil {
 		return RenameResult{}, err
 	}
 	if exists {
-		if err := s.checks.CheckChange(ctx, c.Who(), dst.ID, ChangeRemove); err != nil {
+		if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dst), ChangeRemove); err != nil {
 			return RenameResult{}, err
 		}
 	}
@@ -2145,7 +2148,7 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, c.Who(), fileOf(dir), ChangeAddEntry); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dir), ChangeAddEntry); err != nil {
 		return CreateResult{}, err // ErrDeletePending (§5.4)
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
@@ -2175,9 +2178,9 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 ### 5.11 Locks
 
 ```go
-func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) error {
+func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) (StateRef, error) {
 	if err := s.authz.LockState(ctx, c, ref); err != nil {
-		return err
+		return StateRef{}, err
 	}
 	// RFC 14 §11.3: every range in one step, all or none, and only a single range
 	// may wait. Grace (ErrGrace unless r.Reclaim), conflicts with every protocol's
@@ -2186,11 +2189,11 @@ func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) e
 	// owner's sequence (StateError BadSeqID), checked and advanced at the owner's
 	// home primary as RFC 14 §2.8 says: this node on a single node; (cluster)
 	// asked through Peers.Sequence first (§2.3).
-	res, err := s.locks.Lock(ctx, c.Who(), fileOf(ref.Handle), toOpenState(ref, r)) // a conflict is *LockedError, naming the holder
+	res, err := s.locks.Lock(ctx, c.Who(), keyOf(ref.Handle), toOpenState(ref, r)) // a conflict is *LockedError, naming the holder
 	if err == nil && res.Waiting {
-		return ErrBlocked // a waiter is registered; LockWaitOver answers it
+		return StateRef{}, ErrBlocked // a waiter is registered; LockWaitOver answers it
 	}
-	return err
+	return res.Ref, err // the lock state's reference with its new Seq: NFSv4 LOCK's stateid
 }
 ```
 

@@ -1184,8 +1184,9 @@ after a loss, each client resends its recent unstable writes once.
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
   corrupt or stale record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). `Commit` returns it,
-  read after its sync, and the filesystem service hands it to open state, which
-  fails one SMB flush per open that was open across the loss
+  read after its sync, and `LossSeq` returns it without one, which the service
+  reads before it records an open; the filesystem service hands each to open
+  state, which fails one SMB flush per open that was open across the loss
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)). The engine raises it from the journal's loss events;
   so that a `Commit` never reads it before the event that should raise it, a
   `Commit` that finds the journal's loss generation above the last one the
@@ -2933,6 +2934,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Write(file, off, p)` | [§4](#4.%20Write) |
 | `Draw(file)` | the version of a change stored outside the journal, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) |
 | `Commit(file, off, n)` | the stability point, [§5](#5.%20Commit%3A%20the%20stability%20point) |
+| `LossSeq(file)` | the file's loss sequence, read without a sync, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 | `Read(file, off, dst)` | [§7](#7.%20Read) |
 | `Truncate(file, size)`, `Deallocate(file, off, n)`, `Delete(file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
 | `Clone(src, dst, x)`, `Copy(src, dst, xs)` | [§9](#9.%20Clone) |
@@ -2990,6 +2992,7 @@ func (e *Engine) Drop(ctx context.Context, id ShareID) error                   /
 func (e *Engine) Write(ctx context.Context, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
+func (e *Engine) LossSeq(f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1)
 func (e *Engine) Read(ctx context.Context, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, f FileID, size int64) error
 func (e *Engine) Deallocate(ctx context.Context, f FileID, off, n int64) error

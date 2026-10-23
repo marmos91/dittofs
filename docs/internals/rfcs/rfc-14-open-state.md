@@ -339,8 +339,11 @@ type Open struct {
 	ID         OpenID       // only where needed (below): 40 bits, unique across the installation, never reused (§2.11); zero for an NFS open
 	Client     ClientID
 	Principal  Principal    // the opener, mapped before squashing (§2.1); any other caller through the open is refused
+	Owner      LockOwner    // the owner of opens (below); zero: the protocol has none
 	File       FileID
+	Stream     FileID       // the named stream it opens; zero: the base file
 	Via        FileID       // the directory it was opened through (§9.5); zero: opened by handle or ID, counted under no directory, no delete through a parent; kept across a reconnect
+	Name       []byte       // its entry in Via, the one a delete pending removes (§9.4); a rename of that entry moves it; nil: opened by handle
 	Mode       OpenMode     // what it may do, and what it refuses other opens (§6)
 	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
@@ -420,6 +423,14 @@ NFS open is named by its stateid's token and takes none.
 > shard bits in the persistent `FileId`, routing by lookup — if `IDS‖open` is
 > seen past 2³⁹.
 
+**An owner holds one open of a file.** Where the protocol names an owner of
+opens, as NFSv4 does, an open by an owner that already holds an open of the
+file is that open, upgraded: its modes widen, its `Seq` rises, and no second
+open is made. `OpenResult.Confirm` is set only when the owner's `Sequence` is
+new and unconfirmed (§2.8), and **MUST NOT** be set on a reclaim or on an open
+offered a grant (RFC 7530 §9.1.11); an owner of a protocol whose session orders
+its requests, NFSv4.1's, is confirmed from its first open.
+
 **An open is used only by its opener.** `Principal` is kept for the open's whole
 life, and every call that uses the open — I/O through its stateid or FileId, a
 lock under it, a downgrade, a close — **MUST** be refused with `ErrNotYours`
@@ -448,7 +459,9 @@ open — an upgrade, a downgrade, a close — and to one lock state; a request
 naming an older number than the current one is refused `ErrOldState`, a newer
 one `ErrBadState`, and zero means the current one. `Open.Seq` and
 `LockState.Seq` hold them and change in the step that applies the request; the
-presented number reaches that step once, as `StateRef.Seq` or `OpenRef.Seq`.
+presented number reaches that step once, as `StateRef.Seq`, alone or inside an
+`OpenRef`; a call that raises it returns the new value, which the protocol
+answers in its new reference.
 
 The RFC has five unrelated counters; only the owner sequence spans files:
 
@@ -497,7 +510,8 @@ type LockOwner struct {
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
 type LockResult struct {
-	Waiting bool // a waiter was recorded: granted later through Sink.LockWaitOver (§2.10)
+	Waiting bool     // a waiter was recorded: granted later through Sink.LockWaitOver (§2.10)
+	Ref     StateRef // the lock state's reference with its new Seq; zero for a protocol that names none
 }
 
 // LockedError is a lock conflict. errors.Is(err, ErrLocked) holds for it, and
@@ -524,7 +538,9 @@ that asks to wait is answered as one that does not. `Unlock` releases its list
 in order and stops at the first range its owner does not hold, answering
 `ErrRangeNotLocked`; the ranges before it stay unlocked. Only a stacking owner
 meets it: a merging owner's unlock of a range it holds none of releases nothing
-and succeeds, as a POSIX unlock does.
+and succeeds, as a POSIX unlock does. `ReleaseLockOwner` of an owner that still
+holds a lock, and `FreeState` of a lock state that does, is refused
+`ErrLocksHeld` and changes nothing (RFC 7530 §16.37.4).
 
 > ponytail: 64 ranges a request, proposed, bounds the step a `Lock` holds at
 > O(64·n) in the file's ranges. Raise it if a client is seen sending longer
@@ -1897,7 +1913,8 @@ can lose acknowledged unstable writes while its process keeps running
 ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and nothing on the SMB
 wire says so. So every SMB open keeps `LossSeen`, the file's **loss sequence**
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal))
-as sampled when the open was made and at its last flush. A flush through an
+as sampled when the open was made — `OpenRequest.Loss`, which the service reads
+from the engine without a sync before it calls `Open` — and at its last flush. A flush through an
 open whose `LossSeen` is below the file's current loss sequence **MUST** fail
 with `ErrLost` and set `LossSeen` to the current value, so each open that was
 open across the loss learns of it once, at its next flush. `LossSeen` is
@@ -2062,8 +2079,10 @@ refused `ErrAccess` and changes nothing.
 
 **The deferred unlink runs as the principal that marked the file.** Delete
 pending is held in the file's table with the entry — parent and name — the
-marking open was opened through, the principal that marked it (`Delete.By`),
-and the marking open's reference. That principal's delete access was decided
+marking open was opened through (`Via`, `Name`), the principal that marked it
+(`Delete.By`), and the marking open's reference. A rename of that entry,
+through this open or another, moves the open's `Name` in the rename's step, so
+the deferred unlink removes the entry's current name. That principal's delete access was decided
 when it marked the file, against the file and the directory it was opened
 through
 ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)),
@@ -2268,8 +2287,8 @@ the next start ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)), a
 persistent open's delete pending is durable, and a volatile one is lost as a
 failover loses it (§9.4).
 
-`Revocation`, `RevokeReason`, `ClientStatus`, `StateRef`, `LockRange` and
-`LockWaiter` are declared here and aliased by `pkg/vfs`
+`Revocation`, `RevokeReason`, `ClientStatus`, `StateRef`, `OpenRef`, `RefKind`,
+`LockRange` and `LockWaiter` are declared here and aliased by `pkg/vfs`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), since open state cannot
 import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
 request's ranges into it whole. The import rule — only the filesystem service
@@ -2402,16 +2421,34 @@ func (t *Table) Recovery() Recovery
 func (t *Table) Checks() Checks
 ```
 
-**Every call names its caller.** `Caller` is the client a call acts for and the
-principal it runs as, mapped before squashing (§2.1); the primary refuses, with
-`ErrNotYours`, a call naming state its client does not hold, or through an open
-by a principal that is neither the opener nor, with `Protect`, the client's
-`Owner`.
+**Every call names its caller.** `Caller` is the client a call acts for, the
+principal it runs as, mapped before squashing (§2.1), and the protocol of the
+request; the primary refuses, with `ErrNotYours`, a call naming state its client
+does not hold, or through an open by a principal that is neither the opener nor,
+with `Protect`, the client's `Owner`. `Protocol` is set on every call, NFSv3's
+included, and is what a rule that differs by protocol reads: `CheckChange`
+applies §7's deny-delete refusal to an NFS caller and §9.5's open-children
+refusal to an SMB one. It is never looked up from the client record: NFSv3 has
+no client, and in a cluster the file's primary holds no client records.
+
+**Every call on a file names it by `FileKey`.** The share and shard come with
+the file, so a call that may mint a reference — an open, a lock, a watch, a
+clone source — mints it in the shard that serves the file, and the table
+**MUST** refuse one naming a shard it has not begun serving, as §2.11 refuses a
+reference.
 
 ```go
 type Caller struct {
-	Client    ClientID  // as the adapter proved it for the call (§2.2)
-	Principal Principal // mapped, never squashed
+	Client    ClientID      // as the adapter proved it for the call (§2.2); zero for NFSv3
+	Principal Principal     // mapped, never squashed
+	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
+}
+
+// FileKey names the file a call acts on.
+type FileKey struct {
+	Share ShareID
+	Shard ShardID
+	ID    FileID
 }
 
 type Clients interface {
@@ -2428,25 +2465,25 @@ type Clients interface {
 }
 
 type Opens interface {
-	Open(ctx, who Caller, f FileID, r OpenRequest) (OpenResult, error)
+	Open(ctx, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
 	Reconnect(ctx, who Caller, o OpenID, m ReconnectMatch, s SessionRef) (Open, error)
-	Downgrade(ctx, who Caller, o OpenRef, q Seqs, access, deny Access) error
-	ConfirmOpen(ctx, who Caller, o OpenID, seq uint32) error
+	Downgrade(ctx, who Caller, o OpenRef, q Seqs, access, deny Access) (seq uint32, err error) // the open's new Seq
+	ConfirmOpen(ctx, who Caller, o OpenRef, q Seqs) (seq uint32, err error)                   // §2.8; the open's new Seq
 	Update(ctx, who Caller, o OpenID, u OpenUpdate) error                   // delete on close and suspended times, through the open (§2.2, §9.4)
 	Close(ctx, who Caller, o OpenRef, q Seqs) (CloseResult, error)          // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
-	Durable(ctx, f FileID) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
-	CloneOpen(ctx, src FileID, c CloneSource) (OpenID, error)               // §9.2: a source open held by no client, written in its own transaction
+	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
+	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: a source open held by no client, written in its own transaction
 	CloneClose(ctx, o OpenID) (CloseResult, error)                          // §9.2: the clone's last batch
 }
 
 type Locks interface {
-	Lock(ctx, who Caller, f FileID, r LockReq) (LockResult, error)          // a conflict is *LockedError; at most 64 ranges (§2.3)
-	CancelLock(ctx, who Caller, f FileID, o LockOwner, r ByteRange) (granted bool, err error)
+	Lock(ctx, who Caller, f FileKey, r LockReq) (LockResult, error)         // a conflict is *LockedError; at most 64 ranges (§2.3)
+	CancelLock(ctx, who Caller, f FileKey, o LockOwner, r ByteRange) (granted bool, err error)
 	WaitAnswered(ctx, who Caller, w LockWaiter, refused bool) error         // the client's answer to LockWaitOver; w.File names the file
-	TestLock(ctx, who Caller, f FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
-	Unlock(ctx, who Caller, f FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
-	ReleaseLockOwner(ctx, who Caller, o LockOwner) error                    // every file of the owner at this primary
+	TestLock(ctx, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
+	Unlock(ctx, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error) // the lock state's new Seq
+	ReleaseLockOwner(ctx, who Caller, o LockOwner) error                    // every file of the owner at this primary; ErrLocksHeld, changing nothing, while it holds a lock
 }
 
 type Grants interface {
@@ -2454,9 +2491,9 @@ type Grants interface {
 }
 
 type Watches interface {
-	Watch(ctx, who Caller, dir FileID, recursive bool, m ChangeMask) (WatchID, error)
+	Watch(ctx, who Caller, dir FileKey, recursive bool, m ChangeMask) (WatchID, error)
 	Unwatch(ctx, who Caller, w WatchID) error
-	Changed(ctx, dir FileID, ch Change)                                     // a change the service committed in dir; matched against the watches held; never fails the change
+	Changed(ctx, dir FileKey, ch Change)                                     // a change the service committed in dir; matched against the watches held; never fails the change
 }
 
 type Recovery interface {
@@ -2464,13 +2501,13 @@ type Recovery interface {
 	ReleaseShard(ctx, s ShardID) error                                      // stops serving s and drops its entries
 	ReclaimComplete(ctx, who Caller, shown []GraceRef) error                // ends the client's reclaim only in the instances it was shown (§4.4)
 	TestState(ctx, who Caller, s []StateRef) []error                        // nothing changed
-	FreeState(ctx, who Caller, s StateRef) error                            // a revoked reference, or a lock state holding no locks
+	FreeState(ctx, who Caller, s StateRef) error                            // a revoked reference, or a lock state holding no locks; ErrLocksHeld for one holding some, or a live open or grant
 	DropShare(ctx, share ShareID, moved netip.Addr) error                   // §4.3; zero moved: the share was removed
 }
 
 type Checks interface {
 	CheckIO(ctx, who Caller, o OpenRef, r ByteRange, write bool) error
-	CheckChange(ctx, who Caller, f FileID, what ChangeMask) error           // recalls grants and never waits
+	CheckChange(ctx, who Caller, f FileKey, what ChangeMask) error          // recalls grants and never waits; who.Protocol picks §7's or §9.5's rule
 }
 ```
 
@@ -2479,6 +2516,10 @@ The `ctx` arguments are `context.Context`. The types the methods name:
 ```go
 // OpenRequest is what an open asks for.
 type OpenRequest struct {
+	Name          []byte        // the entry opened, in Via; kept for a delete pending (§9.4); nil: opened by handle
+	Stream        FileID        // the named stream opened; zero: the base file
+	Owner         LockOwner     // the owner of opens (Open.Owner); zero: the protocol has none
+	Loss          uint64        // the file's loss sequence as the service read it before the call (§8.1)
 	Session       SessionRef    // the opening session (Open.Session); zero: none
 	Privileged    bool          // backup or restore intent the caller is privileged for (Open.Mode.Privileged)
 	Access, Deny  Access
@@ -2497,7 +2538,18 @@ type OpenResult struct {
 	Open     Open
 	Grant    *CachingGrant // nil: none offered
 	Replayed bool          // a replayed create answered with the open it made
+	Confirm  bool          // the owner must confirm before using it (§2.8)
 }
+
+// OpenRef is what a call through an open presents; pkg/vfs aliases it.
+type OpenRef struct {
+	Kind   RefKind  // Opened, Locked, Delegated, Anonymous
+	State  StateRef // NFS: the open, lock state or grant, with the Seq presented; zero for SMB and anonymous
+	Open   OpenID   // SMB: the open; its shard is State.Shard
+	Handle Handle   // the file handle the request carried
+}
+
+type RefKind uint8 // Opened, Locked (a lock state), Delegated, Anonymous
 
 // OpenUpdate is a change made through an open; nil or zero fields change nothing.
 type OpenUpdate struct {
@@ -2536,7 +2588,8 @@ type LockRange struct {
 }
 
 // Seqs is the owner sequence numbers a request presents (§2.8); zero where
-// the protocol has none. A reference's own Seq travels in OpenRef or StateRef.
+// the protocol has none. A reference's own Seq travels in its StateRef, alone
+// or inside an OpenRef.
 type Seqs struct {
 	Owner    *uint32 // the owner's number — the owner of locks', or the owner of opens' for a lock introducing a new owner of locks, a downgrade or a close
 	NewOwner uint32  // a lock introducing a new owner of locks: that owner's first number
@@ -2557,10 +2610,15 @@ type ClientStatus struct {
 }
 ```
 
-`OpenRef` names an open (`OpenID`), a delegation (`GrantID`) or the anonymous
-open, with the handle and the sequence presented (`Seq`, zero: current) — for a
-`LOCK` or `LOCKU` naming a lock reference, that reference's; `StateRef`
-(§2.11) is its reference form. `LockReq` is passed by value; `Owner.Name` is
+`OpenRef` names an open, a lock state, a delegation or the anonymous open
+(`Kind`): an NFS one by its stateid, `State`, whose `Seq` is the sequence
+presented (zero: current); an SMB one by its `OpenID`; each with the handle the
+request carried. **A lock state is resolved to the open it was taken under**
+for the principal check (§2.2) and the mode check, and its own owner's locks
+never refuse I/O through it: a client holding locks sends the lock stateid for
+its I/O (RFC 7530 §9.1.4.5). `OpenRef` is declared once, here, and is the one
+`pkg/vfs` passes ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)).
+`LockReq` is passed by value; `Owner.Name` is
 copied only when a lock or waiter is stored, so a refused or tested request
 allocates nothing. `CheckChange` on a remove or rename also refuses with
 `ErrShareViolation` against a deny-delete, a rename of a delete-pending file
@@ -2592,6 +2650,7 @@ var (
 	ErrShareViolation  = errors.New("openstate: deny mode conflict")
 	ErrLocked          = errors.New("openstate: range locked") // as *LockedError, naming the holder
 	ErrRangeNotLocked  = errors.New("openstate: unlock of a range the owner does not hold")
+	ErrLocksHeld       = errors.New("openstate: the owner or lock state still holds locks")
 	ErrNoReclaim       = errors.New("openstate: nothing to reclaim in this shard")
 	ErrReclaimConflict = errors.New("openstate: reclaim conflicts with state already reclaimed")
 	ErrStaleClient     = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
