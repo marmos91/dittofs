@@ -286,6 +286,9 @@ suites:
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
     tier: nightly
+    # decision: reported, never failing the gate, until the three cells' results match
+    # smb-client-compat.yml's; they become blocking in the change that removes that workflow.
+    blocking: false
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
