@@ -131,17 +131,22 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 // and each of its users' read-write grant. A shares file's share has its root
 // owned by {user}, who holds the admin grant on it: ownership lets {user}
 // write at the root, and admin lets it take ownership of a file. On the
-// default share {user} has no grant.
+// default share {user} has no grant, unless the fixture mounts it over SMB,
+// as {user}: then {user} holds the read-write grant the mount needs.
 func addShare(c *apiclient.Client, f registry.Fixture, share apiclient.CreateShareRequest) error {
 	share.MetadataStoreID, share.BlockStore = "default", "default"
-	if f.Shares != "" {
-		share.Owner = User
+	grant := ""
+	switch {
+	case f.Shares != "":
+		grant, share.Owner = "admin", User
+	case f.SMB.Mount:
+		grant = "read-write"
 	}
 	if _, err := c.CreateShare(&share); err != nil {
 		return fmt.Errorf("the share %s: %w", share.Name, err)
 	}
-	if f.Shares != "" {
-		if err := c.SetUserSharePermission(share.Name, User, "admin"); err != nil {
+	if grant != "" {
+		if err := c.SetUserSharePermission(share.Name, User, grant); err != nil {
 			return fmt.Errorf("%s's grant on %s: %w", User, share.Name, err)
 		}
 	}
