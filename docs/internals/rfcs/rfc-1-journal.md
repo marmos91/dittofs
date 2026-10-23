@@ -1147,7 +1147,6 @@ walk can produce is omitted.
 | `OldestDirty` | value | when the oldest held extent whose offloaded bit is unset was written; the age of the upload backlog |
 | `Files` | gauge | files with at least one held extent |
 | `ExtentCount` | gauge | held extents |
-| `spare_refusals` | counter | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `DropRanges` | gauge | ranges the removal-drop test keeps per file and segment ([§7.2](#7.2%20Repack)) |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
 | `UnreclaimedBytes` | gauge | storage in segments not yet unlinked that backs no held or retained extent and no live record: released or superseded but still on disk; what repack can recover ([§7.2](#7.2%20Repack)) |
@@ -1314,6 +1313,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `torn_tails` | torn tails truncated at open; one per crashed stream is normal |
 | `scan_resyncs` | scans that found a record by resynchronising past a bad one ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
 | `index_refusals` | writes refused at the index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
+| `spare_refusals` | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `segment_reopens` | reads that had to reopen a closed segment ([§7.4](#7.4%20Open%20descriptors)) |
 
 `RemovalMarkers` growing is a caller that never settles ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
