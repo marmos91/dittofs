@@ -676,6 +676,7 @@ suites:
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
     tier: nightly
+    blocking: false                     # until the three cells match smb-client-compat.yml; blocking when it goes
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
