@@ -136,12 +136,13 @@ type Opens interface {
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
 	// never grants less than was asked.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
-	// Downgrade narrows an open's access and deny to masks within them.
-	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) error
+	// Downgrade narrows an open's access and deny to masks within them, and
+	// returns the open's new reference sequence.
+	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
 	// ConfirmOpen confirms the new owner of the open o names, its request
-	// numbered seq, and raises the open's reference sequence; until it, the
-	// owner's requests and I/O through its opens are refused.
-	ConfirmOpen(ctx context.Context, who Caller, o OpenRef, seq uint32) error
+	// numbered in q, and returns the open's new reference sequence; until it,
+	// the owner's requests and I/O through its opens are refused.
+	ConfirmOpen(ctx context.Context, who Caller, o OpenRef, q Seqs) (seq uint32, err error)
 	// Update sets or clears the file's delete pending, through an open
 	// holding delete access, and suspends or resumes the open's times.
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
@@ -478,23 +479,24 @@ func (t *Table) mayUse(o *open, who Caller) bool {
 	return !owner.IsZero() && who.Principal == owner
 }
 
-func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, q Seqs, access, deny entity.AccessMask) error {
+func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, q Seqs, access, deny entity.AccessMask) (uint32, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
-		return err
+		return 0, err
 	}
-	return t.withOpen(who, ref, q.Owner, false, func(e *entry, o *open) error {
+	var seq uint32
+	err := t.withOpen(who, ref, q.Owner, false, func(e *entry, o *open) (err error) {
 		if access&^o.Mode.Access != 0 || deny&^o.Mode.Deny != 0 {
 			return ErrInvalid
 		}
-		seq, err := t.advance(e, o.Ref)
-		if err != nil {
+		if seq, err = t.advance(e, o.Ref); err != nil {
 			return err
 		}
 		o.Mode.Access, o.Mode.Deny = access, deny
 		o.Ref.Seq = seq
 		return nil
 	})
+	return seq, err
 }
 
 func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenUpdate) error {
@@ -519,12 +521,13 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	})
 }
 
-func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, seq uint32) error {
+func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, q Seqs) (uint32, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
-		return err
+		return 0, err
 	}
-	return t.withOpen(who, ref, &seq, true, func(e *entry, o *open) error {
+	var seq uint32
+	err := t.withOpen(who, ref, q.Owner, true, func(e *entry, o *open) error {
 		k := opensOwner(o.Client, o.owner)
 		t.smu.Lock()
 		s, ok := t.seqs[k]
@@ -536,7 +539,7 @@ func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, seq uin
 		if err != nil {
 			return err
 		}
-		o.Ref.Seq = n
+		o.Ref.Seq, seq = n, n
 		t.smu.Lock()
 		s = t.seqs[k]
 		s.Confirmed = true
@@ -544,6 +547,7 @@ func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, seq uin
 		t.smu.Unlock()
 		return nil
 	})
+	return seq, err
 }
 
 func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (CloseResult, error) {

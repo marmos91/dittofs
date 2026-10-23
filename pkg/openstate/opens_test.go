@@ -180,10 +180,10 @@ func TestDowngrade(t *testing.T) {
 	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 	ref := OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}
 
-	if err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd|wr|del, wr); !errors.Is(err, ErrInvalid) {
+	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd|wr|del, wr); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a downgrade to more access: %v, want ErrInvalid", err)
 	}
-	if err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
+	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
