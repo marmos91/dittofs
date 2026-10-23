@@ -262,36 +262,36 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 	}
 }
 
-// A marker of a truncate or a delete runs to the end of the file, however the
-// journal writes that length: Len 0, the length to the largest offset and any
-// longer one all read as the end.
-func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
+// A marker of a truncate or a delete runs to the end of the file, and Since
+// and the index say so with a length reaching the largest offset; a length of
+// zero is not that form.
+func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
+	withLen := func(view modelView, n int64) View {
+		return planted{modelView: view,
+			since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+				var cs []journalv2.Change
+				for c := range view.Since(t.Context(), id, from) {
+					if c.Kind == journalv2.ChangeTruncate {
+						c.Extent.Len = n
+					}
+					cs = append(cs, c)
+				}
+				return changes(cs)
+			},
+			index: func(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
+				es, err := view.Index(id)
+				for i := range es {
+					if es[i].Kind == journalv2.EntryMarker {
+						es[i].Extent.Len = n
+					}
+				}
+				return es, err
+			},
+		}
+	}
 	m, j := New(), New()
 	script(t, m, j)
-	view := modelView{j, shareA}
-	zeroLen := planted{modelView: view,
-		since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
-			var cs []journalv2.Change
-			for c := range view.Since(t.Context(), id, from) {
-				if c.Kind == journalv2.ChangeTruncate {
-					c.Extent.Len = math.MaxInt64
-				}
-				cs = append(cs, c)
-			}
-			return changes(cs)
-		},
-		index: func(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
-			es, err := view.Index(id)
-			for i := range es {
-				if es[i].Kind == journalv2.EntryMarker {
-					es[i].Extent.Len = 0
-				}
-			}
-			return es, err
-		},
-	}
-	ok(t, m.Compare(t.Context(), shareA, zeroLen))
-	if got := since(t, m, shareA, fid(1), ver(2)); got[0].Extent.Len != math.MaxInt64-35 {
-		t.Fatalf("model marker %s, want it to run to the end", fmtExtent(got[0].Extent))
-	}
+	ok(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, math.MaxInt64-35)))
+	ok(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, math.MaxInt64)))
+	diverged(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, 0)))
 }

@@ -85,6 +85,9 @@ func (m *Model) Reopen(floor version) error {
 	}
 	m.crashed = false
 	m.floor = floor
+	for _, f := range m.files {
+		f.reopened = true
+	}
 	return nil
 }
 

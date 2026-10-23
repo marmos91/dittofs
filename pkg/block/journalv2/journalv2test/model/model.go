@@ -111,6 +111,10 @@ type file struct {
 	// unresolved marks a file a crash left uncertain, until Compare finds
 	// the state the journal shows.
 	unresolved bool
+
+	// reopened marks a file the journal reopened since it last changed: the
+	// reopen may have raised its change version to the floor.
+	reopened bool
 }
 
 // Model is the reference model of one journal and the shares it serves. It is
@@ -147,6 +151,9 @@ func (m *Model) append(f *file, r *record) {
 	m.seq++
 	r.seq = m.seq
 	f.recs = append(f.recs, r)
+	if r.kind.changes() {
+		f.reopened = false
+	}
 }
 
 // cell is one held byte: its value and the record it is read from.
@@ -161,6 +168,11 @@ type fileState struct {
 	bit     map[int64]bool // offloaded bit of each held byte
 	markers []*record      // removals whose marker is live
 	change  version        // the highest version of a record that changed the file
+
+	// inexact reports that the journal may answer with a change version
+	// above change: a crash may have dropped a record of the file the model
+	// cannot see, or a reopen raised the file to the floor.
+	inexact bool
 }
 
 // derive decides every byte of f among the records keep admits.
@@ -180,6 +192,7 @@ func derive(f *file, keep func(*record) bool) *fileState {
 
 	st := &fileState{held: map[int64]cell{}, bit: map[int64]bool{}}
 	var marks []*record
+	var dropped version // the newest change a crash may have dropped
 	for _, r := range recs {
 		switch {
 		case r.kind == kindWrite || r.kind == kindFill:
@@ -201,10 +214,15 @@ func derive(f *file, keep func(*record) bool) *fileState {
 		if r.kind.changes() && !r.markerOptional && !r.markerGone && !r.uncounted {
 			st.change = maxVersion(st.change, r.ver)
 		}
+		if r.kind.changes() && (r.markerOptional || r.markerGone || r.uncounted) {
+			dropped = maxVersion(dropped, r.ver)
+		}
 		if r.hasMarker() {
 			st.markers = append(st.markers, r)
 		}
 	}
+
+	st.inexact = f.reopened || dropped.Compare(st.change) > 0
 
 	// A mark sets the bit of the content of its version only, so it never
 	// marks a newer write over the bytes it names. Filled content came from

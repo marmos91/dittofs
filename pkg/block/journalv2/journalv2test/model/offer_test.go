@@ -320,8 +320,8 @@ func TestNeighboursAreNeitherDirtyNorPastWidenOnEitherSide(t *testing.T) {
 }
 
 // A report naming a neighbour is accepted and changes nothing, since the
-// neighbour is already marked; one only partly offered may be refused with
-// ErrNotOffered or intersected with the offer.
+// neighbour is already marked; one only partly offered is intersected with
+// the offer, never refused; one nothing of which was offered is refused.
 func TestReportOfNeighboursAndOfPartlyOfferedExtents(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		m := New()
@@ -343,8 +343,7 @@ func TestReportOfNeighboursAndOfPartlyOfferedExtents(t *testing.T) {
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(5, 5)}, nil))
 
 	m = setup(t)
-	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, journalv2.ErrNotOffered))
-	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, true}, {10, 10, 2, false}})
+	diverged(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, journalv2.ErrNotOffered))
 
 	m = setup(t)
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, nil))

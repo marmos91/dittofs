@@ -206,3 +206,45 @@ func TestACompareWhoseContextEndsMidwaySaysSo(t *testing.T) {
 		t.Fatalf("a Compare cancelled midway returned %v", err)
 	}
 }
+
+// Sync names files, so a Sync of another share's file is refused with
+// ErrOtherShare like any call naming one, and only then.
+func TestSyncOfAnotherSharesFileIsRefused(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Sync(shareB, []journalv2.FileID{fid(1)}, journalv2.ErrOtherShare))
+	diverged(t, m.Sync(shareB, []journalv2.FileID{fid(1)}, nil))
+	diverged(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, journalv2.ErrOtherShare))
+}
+
+// A read of a file with an index entry reports its change version exactly. A
+// reopen raises it up to the floor, so no read that began before can still
+// fill, until the file next changes.
+func TestAsOfIsTheChangeVersionOfAFileWithAnEntry(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareB, fid(2), 0, fill('B', 4), 0, ver(2), nil)) // raises the versions issued
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
+	j := clone(m)
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(2)}))
+
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, j.Crash())
+	ok(t, j.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(10)}))
+
+	for _, x := range []*Model{m, j} {
+		ok(t, x.WriteAt(shareA, fid(1), 0, fill('C', 4), 0, ver(11), nil))
+	}
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(11)}))
+	diverged(t, m.Compare(t.Context(), shareA, planted{modelView: modelView{j, shareA}, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+		n, mi, he, as, err := modelView{j, shareA}.ReadAt(t.Context(), id, off, p)
+		if id == fid(1) {
+			as = ver(10)
+		}
+		return n, mi, he, as, err
+	}}))
+}

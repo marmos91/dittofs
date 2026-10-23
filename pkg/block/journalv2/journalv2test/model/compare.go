@@ -53,17 +53,16 @@ func (k markerKey) String() string {
 
 // normalMarker returns a marker's key with its extent in one form.
 //
-// decision: a marker that runs to the end of the file is compared with
-// Len = MaxInt64 - Off, and a source writing it with Len 0, or with any length
-// reaching past the largest offset, is read the same way, since the handle's
-// contract does not fix how such a length is written.
+// A marker that runs to the end of the file is yielded with
+// Len = MaxInt64 - Off; a length reaching past the largest offset is read the
+// same way, and a length of zero is not that form.
 // A delete always covers the whole file, so its extent is not compared at all.
 // Tighten this once the journal's Since documents one form.
 func normalMarker(kind journalv2.ChangeKind, e extent, v version) markerKey {
 	switch {
 	case kind == journalv2.ChangeDelete:
 		e = extent{Off: 0, Len: toEnd(0)}
-	case e.Len == 0 || e.Len >= toEnd(e.Off):
+	case e.Len >= toEnd(e.Off):
 		e.Len = toEnd(e.Off)
 	}
 	return markerKey{kind, e, v}
@@ -476,13 +475,18 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 
-	// decision: asOf is required between the model's change version and the
-	// highest version issued or the floor, not equal to the change version. A
-	// file with no index entry answers with its floor bucket, which may be
-	// higher, and buckets start at the floor after a reopen. Require equality
-	// once the journal documents that a file with an entry answers with that
-	// entry's version exactly.
+	// decision: asOf equals the file's change version where the model knows
+	// it, and lies between it and the highest version issued or the floor
+	// where it does not: a file with no index entry answers with its floor
+	// bucket; a reopen starts buckets at the floor so that no read begun
+	// before it can still fill, which a file holding an entry must honour
+	// too until it next changes; and a crash may have dropped a record the
+	// model cannot see. Require equality after a reopen too if the RFC ever
+	// says an entry is rebuilt from its records alone.
+	entry := len(st.held) > 0 || len(st.markers) > 0
 	switch {
+	case entry && st.change != (version{}) && !st.inexact && o.asOf != st.change:
+		return fmt.Sprintf("a read reports the file changed at %s, but its newest change is %s: a file with an index entry reports its change version", fmtVersion(o.asOf), fmtVersion(st.change))
 	case o.asOf.Compare(st.change) < 0:
 		return fmt.Sprintf("a read reports the file changed at %s, older than %s, its newest change: a stale fill would be accepted", fmtVersion(o.asOf), fmtVersion(st.change))
 	case o.asOf.Compare(ceiling) > 0:

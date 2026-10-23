@@ -286,16 +286,11 @@ func readsAs(r io.ReaderAt, e extent, st *fileState) string {
 // tag, naming reported, to which report returned err.
 //
 // A report naming an extent nothing of which was offered must fail with
-// ErrNotOffered and mark nothing. Once EndOffer was called, report must fail
+// ErrNotOffered and mark nothing; one naming an extent partly offered is
+// intersected with what was offered. Once EndOffer was called, report must fail
 // with ErrOfferEnded. Otherwise it marks each offered extent where reported, at
 // the extent's version, so content newer than the offer stays dirty and
 // content removed meanwhile is not marked.
-//
-// decision: a reported extent only partly offered may be refused with
-// ErrNotOffered, marking nothing, or accepted and intersected with the offer.
-// The journal may intersect a report with what it offered, and must reject an
-// extent that was not offered; an extent that was partly offered is both.
-// Require one outcome once the journal's report documents which.
 func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) error {
 	const op = "report"
 	o := m.offers[id]
@@ -316,7 +311,7 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	for _, n := range o.neighbours {
 		offeredExtents = append(offeredExtents, n.Extent)
 	}
-	partly, empty := false, false
+	empty := false
 	for _, r := range reported {
 		if r.Len <= 0 {
 			empty = true
@@ -331,11 +326,8 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 			}
 			return nil
 		}
-		partly = true
 	}
 	switch {
-	case partly && errors.Is(err, journalv2.ErrNotOffered):
-		return nil
 	case empty && errors.Is(err, journalv2.ErrZeroLength):
 		return nil
 	case err != nil:

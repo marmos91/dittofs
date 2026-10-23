@@ -138,6 +138,21 @@ func (m *Model) Sync(tag shareTag, ids []fileID, err error) error {
 		// durable, as they were before it.
 		return nil
 	}
+	// Sync names files, so it is refused with ErrOtherShare, as every call
+	// naming one is, when another share holds one of them.
+	refused := errors.Is(err, journalv2.ErrOtherShare)
+	for _, id := range ids {
+		f := m.files[id]
+		switch other := f != nil && f.tag != tag; {
+		case other && refused:
+			return nil
+		case other && f.holdsAnything():
+			return m.mismatch(op, id, "synced through share %d a file share %d holds", tag, f.tag)
+		}
+	}
+	if refused {
+		return m.mismatch(op, fileID{}, "refused with ErrOtherShare, but no other share holds a file named")
+	}
 	if err != nil {
 		return m.mismatch(op, fileID{}, "returned %v, but the model takes no failed sync window", err)
 	}

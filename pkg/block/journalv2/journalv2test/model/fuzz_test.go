@@ -130,7 +130,8 @@ func (d *driver) step() {
 
 	case 1: // sync
 		d.t.Logf("sync %s", fmtFile(id))
-		d.both(func(m *Model) error { return m.Sync(tag, []journalv2.FileID{id}, nil) })
+		err := d.other(id, tag)
+		d.both(func(m *Model) error { return m.Sync(tag, []journalv2.FileID{id}, err) })
 
 	case 2: // fill, never below a release or removal the caller made over its bytes
 		n := int64(d.next()%16) + 1
