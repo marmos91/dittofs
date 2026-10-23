@@ -117,9 +117,19 @@ func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 		user("carol", entity.ProtocolID{Scheme: entity.SchemeGID, Value: "5"}),
 		user("carol", uid("5"), uid("5")),
 		user(""),
+		user("carol", uid("0")),
+		user("carol", uid("65534")),
 	} {
 		if err := cp.PutUser(ctx, bad); err == nil {
 			t.Errorf("accepted %+v", bad)
+		}
+	}
+	// gid 0 and 65534 are root's and anonymous's by rule, never a record's.
+	for _, n := range []string{"0", "65534"} {
+		g := group("carol-" + n)
+		g.IDs = entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: n}}
+		if err := cp.PutGroup(ctx, g); err == nil {
+			t.Errorf("accepted group with gid %s", n)
 		}
 	}
 }
