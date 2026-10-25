@@ -260,18 +260,17 @@ Each platform runs the same core operations:
 |----------|---------|---------|----------|
 | `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly | ~15 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
-| `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol) | ~15 min |
 
 ### Speed Tiers
 
 - **PR checks**: WPTS BVT and smbtorture, on `badger-s3`
-- **Push to develop and nightly**: the same, plus Kerberos smbtorture and the E2E tests
+- **Push to develop and nightly**: the same, plus Kerberos smbtorture and the e2e suite (in `tests.yml`)
 - **Push to develop (SMB paths) and weekly**: multi-OS client compat
 
 ### Results
 
 - WPTS and smbtorture results: `dt`'s report in the job summary, each cell's results uploaded as artifacts
-- E2E results: logged to `e2e.log` artifact
+- E2E results: the same, from the e2e cells in `tests.yml`
 - Weekly regression failures auto-create GitHub issues
 
 ## Architecture

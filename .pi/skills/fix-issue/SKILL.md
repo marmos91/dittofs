@@ -269,16 +269,16 @@ gh pr view <PR> --comments
 gh pr diff <PR>
 ```
 
-**CI.** Ten workflows run per PR — `unit-tests`, `lint`, `integration-tests`,
-`posix-tests`, `smb-conformance`, `operator-tests`, `windows-build`,
-`secret-scan`, `ci-health`, and `e2e-tests` (only its Kerberos tests, path-scoped
-to the Kerberos code). The protocol suites are slow.
+**CI.** On a PR, `tests.yml` runs the suites of `test/suites.yaml` through
+`dt`, and its `gate` check decides, beside `conformance.yml`, the security scans
+and `ci-health`. The e2e suite runs there non-blocking, and on a PR only its
+Kerberos tests, when the PR touches what they cover. The protocol suites are slow.
 
 ```bash
 gh pr checks <PR> --watch
 ```
 
-Do not wait on `e2e-tests`, `smb-client-compat`, or `ad-dc` — they are
+Do not wait on `smb-client-compat` or `ad-dc`: they are
 postsubmit/nightly only and never appear on a PR. Waiting for them hangs step 9
 forever.
 
