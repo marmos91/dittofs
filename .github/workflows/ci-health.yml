@@ -28,7 +28,6 @@ on:
     # rather than repeated a second time.
     workflows:
       - "Conformance Suites"
-      - "E2E Tests"
     types: [completed]
     # The retry acts on develop only, so a run on any other branch would
     # start a run that skips every job.

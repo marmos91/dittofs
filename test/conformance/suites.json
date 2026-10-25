@@ -124,7 +124,6 @@
   ],
   "workflows": {
     "conformance.yml": "Conformance Suites",
-    "e2e-tests.yml": "E2E Tests",
     "tests.yml": "Tests"
   }
 }

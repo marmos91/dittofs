@@ -9,8 +9,8 @@
 # Tiered by EVENT, not by path. A change to shared code — a metadata store, the
 # runtime — can break any protocol from underneath, so conformance runs on all
 # non-docs PRs. Path filters skip docs-only changes only. Kerberos mounts are
-# tested by the e2e suite (e2e-tests.yml), which runs its Kerberos tests on PRs
-# that touch Kerberos code.
+# tested by the e2e suite, in tests.yml, which runs its Kerberos tests on the
+# PRs that can affect them.
 #
 # The jobs differ in what they need around the suite, a kernel NFS mount and
 # root or a localstack service, because the suites genuinely differ there. What
