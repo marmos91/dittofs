@@ -350,7 +350,10 @@ What stays, because it isn't an entry point:
 nfstest's `baseline-knfsd.sh` stays too, though it is an entry point, with `nfs-knfsd-baseline.yml`:
 a dispatch-only evidence job outside the registry, which nfstest's known list cites. Its export goes
 to namespaced clients and its report compares each known-failure row, so it stays until a `knfsd`
-fixture has `clients` and `dt` has a per-row comparison.
+fixture has `clients` and `dt` has a per-row comparison. What it runs stays with it: nfstest's
+`run.sh` and grader, `grade.sh`, `common/known-failures.sh`, the helpers they source, `fetch.sh`
+for nfstest alone, and nfstest's Markdown tables, which it grades knfsd against. Which tables grade
+which option set moves from `suites.json` into it.
 
 ### Getting `dt`
 
@@ -848,8 +851,10 @@ tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance su
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
 workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
-the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
-and any workflow still outside it (§4.8). Until then `suites.json`'s list names `tests.yml` too.
+the list moves into `ci-health.yml` itself and names `tests.yml`, the one workflow it watched beside
+`conformance.yml`; the workflows still outside `tests.yml` then were never on it. Its trigger, which
+repeated the list for the retry of a failed run, goes with `conformance.yml`, the last workflow it
+retried (§8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -1984,9 +1989,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
      `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
      longer tests a commit.
-   - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
-     once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
-     retry replaces that.
+   - `ci-health.yml` watches `tests.yml` from its own list once `suites.json` goes (§4.1), and
+     re-runs no workflow's failed jobs once `conformance.yml` goes, since `dt`'s retry replaces
+     that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts. A script that an old job still running uses stays

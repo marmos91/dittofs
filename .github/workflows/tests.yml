@@ -12,9 +12,9 @@
 # consecutive runs; unit, integration, operator, lint and e2e, whose old jobs
 # ran the commands dt runs, move in at once. plan keeps only the cells of those
 # that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
-# option, operator, the Windows unit run, e2e, the suites with a job of their
-# own, the system scenarios, which had no workflow, less the cells the
-# dedicated host runs itself, and clients, which runs beside
+# option, cthon04, nfstest, operator, the Windows unit run, e2e, the suites
+# with a job of their own, the system scenarios, which had no workflow, less
+# the cells the dedicated host runs itself, and clients, which runs beside
 # smb-client-compat.yml until their results match. A suite joins by being
 # added to the select in plan, with any step its cells need that run doesn't
 # give yet, such as another service; the select goes once every suite runs
@@ -111,7 +111,7 @@ jobs:
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients")
+                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest")
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
@@ -185,6 +185,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
+
+      # A namespaced client runs rpcbind and rpc.statd, and a second one sshd.
+      # cthon04's general group compiles against libtirpc on the mount and
+      # shells out to time(1); nfstest captures packets with tcpdump.
+      - name: Install the namespaced clients' tools
+        if: contains(matrix.needs, 'rpcbind')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind openssh-server libtirpc-dev pkg-config time tcpdump
 
       # mount.cifs, which the smb-client need checks, and smbclient, which
       # AD-DC's NTLM test runs and skips without. The other places' own
