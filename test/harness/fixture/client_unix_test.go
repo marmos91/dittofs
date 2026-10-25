@@ -186,6 +186,9 @@ func TestClients(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(c.dir, "sshd_config")); !strings.Contains(string(data), "AllowUsers "+u.Username+"\n") {
 		t.Errorf("sshd_config admits another user:\n%s", data)
 	}
+	if data, _ := os.ReadFile(filepath.Join(c.dir, "ssh_config")); !strings.Contains(string(data), "  ControlMaster auto\n  ControlPath "+filepath.Join(c.dir, "ssh-%C")+"\n  ControlPersist yes\n") {
+		t.Errorf("ssh_config doesn't keep one connection to the second client, in the fixture's directory:\n%s", data)
+	}
 
 	c.down()
 	down := calls()[len(up):]

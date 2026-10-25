@@ -256,8 +256,12 @@ func (c *clients) writeFiles() error {
 			c.userSSHConfig = config
 		}
 		// The second client is new on every run, with a new host key.
-		files["ssh_config"] = fmt.Sprintf("Host %s\n  IdentityFile %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n  LogLevel ERROR\n",
-			c.addr(2), filepath.Join(c.dir, "id"))
+		// nfstest gives the server it starts there over ssh five seconds to
+		// listen, which a busy machine's handshake and login can use up, so
+		// every ssh reuses the connection startSSHD's check opens; down ends
+		// it with the client's processes.
+		files["ssh_config"] = fmt.Sprintf("Host %s\n  IdentityFile %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n  LogLevel ERROR\n  ControlMaster auto\n  ControlPath %s\n  ControlPersist yes\n",
+			c.addr(2), filepath.Join(c.dir, "id"), filepath.Join(c.dir, "ssh-%C"))
 		// decision: StrictModes is off, since the key lives in the fixture's
 		// directory, not under the user's home, and sshd would otherwise
 		// refuse a directory above it that others can write, as /tmp. PAM
