@@ -23,8 +23,9 @@ import (
 )
 
 // sudoGrace is how long a command of a suite that runs as root, go test
-// among them, has to stop after SIGINT before dt kills it.
-const sudoGrace = 2 * time.Minute
+// among them, has to stop after SIGINT before dt kills it. A variable so the
+// tests can shorten it.
+var sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
 // events and the suite's known file: a new failure, an unexpected pass or a
