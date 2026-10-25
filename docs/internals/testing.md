@@ -375,8 +375,8 @@ Equivalent YAML / env: `adapters.nfs.portmapper.register_with_system: true` /
 
 These tests need **root**, `rpcbind`, `rpc.statd`, and `iproute2` (network namespaces), so they
 run only on Linux. On unsupported environments (macOS, no root, no rpcbind) they `t.Skip` rather
-than fail. In CI the e2e workflow installs `rpcbind` and the job runs privileged enough to create
-namespaces; locally:
+than fail. In CI the e2e cells of `tests.yml` install `rpcbind`, and `dt` runs the tests as root,
+privileged enough to create namespaces; locally:
 
 ```bash
 cd test/e2e
