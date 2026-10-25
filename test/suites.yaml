@@ -324,9 +324,9 @@ suites:
       "9?-*.sh": ["host:dedicated", "disk:110"]
     timeout: { test: size, cell: 90m }
     shards: 4
-    # decision: reported, never failing the gate, since each scenario's setup runs apt-get update,
-    # which stalls for minutes on hosted runners. It becomes blocking once setup.sh stops stalling
-    # there, a change to setup.sh, which its owner makes.
+    # decision: reported, never failing the gate, until a week of develop runs has no apt stall:
+    # setup.sh ran apt-get update for every scenario, which stalled for minutes on hosted runners,
+    # and now updates apt's lists once per runner there.
     blocking: false
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so

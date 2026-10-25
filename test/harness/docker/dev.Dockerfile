@@ -34,7 +34,7 @@ RUN git clone git://git.linux-nfs.org/projects/steved/cthon04.git /opt/cthon04/s
 
 FROM docker:29-cli AS dockercli
 
-FROM golang:1.26.8-bookworm
+FROM golang:1.26.10-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # protocol clients and services the suites use

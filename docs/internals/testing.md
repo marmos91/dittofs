@@ -509,8 +509,9 @@ throwaway podman container, with SMB and NFS clients and faults such as an S3 ou
   ```
 
 The 0x to 8x scenarios run after every merge to develop, in `.github/workflows/tests.yml`, split
-over four runners. They don't fail the gate yet: each scenario's setup runs `apt-get update`, which
-stalls for minutes there at times.
+over four runners. They don't fail the gate until a week of develop runs has no apt stall: each
+scenario's setup ran `apt-get update`, which stalled for minutes there at times, and now updates
+apt's lists once per runner.
 
 ---
 
