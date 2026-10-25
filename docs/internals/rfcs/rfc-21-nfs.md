@@ -1029,7 +1029,8 @@ and later, none to NFSv4.0, and no directory ones.
   The fence is bounded in time, not tied to the lease: an active client renews
   its lease on every request, so a lease-long fence would never lift.
 - `CB_RECALL_ANY` is sent when a client reaches its grant budget at one
-  primary, 4096 grants, naming 2048 to keep; a client at the budget is offered
+  primary, 4096 grants, naming 2048 to keep, when the table raises
+  `Sink.RecallAny`; a client at the budget is offered
   no delegation until its count falls below the budget
   ([RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded)).
 - **A lock request recalls a delegation.** A byte-range lock request from any

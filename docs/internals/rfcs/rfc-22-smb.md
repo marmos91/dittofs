@@ -874,8 +874,13 @@ file open locally, until the server takes the promise back.
   (`Key` and `Epoch`, the parent lease key in the grant's `Adapter`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
   every open of a file by one client under one key; a key already naming a
-  grant on another file is refused. A v2 lease's `Epoch` rises with every
-  change of its caching, and the new value is sent with the change.
+  grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
+  `CREATE` context's version travels as `OpenRequest.LeaseVersion`, and a v2
+  lease's `Epoch` rises with every change of its caching sent to the client,
+  the new value sent with the change.
+- A lease or oplock acknowledgement with no break in flight — a duplicate, or
+  one after the break timed out — is `ErrInvalid` from the table, answered
+  `STATUS_UNSUCCESSFUL` for a lease (MS-SMB2 3.3.5.22.2).
 - Directory leases are not offered: `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` is
   clear, and a lease request on a directory is granted none.
 
@@ -2323,7 +2328,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNoSpace` — a permanent capacity refusal, as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes it | `STATUS_DISK_FULL` at once |
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
-| `ErrInvalid` — a name RFC 7 refuses; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_INVALID_PARAMETER` at once otherwise |
+| `ErrInvalid` — a name RFC 7 refuses; an acknowledgement with no recall in flight; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_UNSUCCESSFUL` for a lease acknowledgement with no break in flight (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
 | `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_MEDIA_WRITE_PROTECTED` at once |
 | `ErrNameTooLong` — a name past the share's length limit | `STATUS_OBJECT_NAME_INVALID` at once |
 | `ErrCross` (`OtherShard`) — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: never reaches the adapter; the service copies the bytes server-side and the adapter reports them written ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |

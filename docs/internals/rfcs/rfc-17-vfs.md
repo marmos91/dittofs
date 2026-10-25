@@ -1132,7 +1132,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange`; `Opens.Update` for delete on close and suspended times | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
@@ -1818,7 +1818,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 	// Opens of others: a deny-delete refuses after handle caching is broken (§5.3);
 	// a grant on the file is recalled (ErrDelay); an SMB delete of a directory with
 	// an open child is ErrShareViolation (RFC 14 §9.5).
-	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(f), ChangeRemove); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(f), dir.Open, ChangeRemove); err != nil {
 		return UnlinkResult{}, false, err
 	}
 	var r UnlinkResult
@@ -1860,17 +1860,17 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 	if err := s.authz.Rename(ctx, c, from, src, to, dst); err != nil { // delete-child at from, add-entry at to; through an open its grant
 		return RenameResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(to), ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(to), nil, ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
 		return RenameResult{}, err
 	}
 	// A rename of a delete-pending file, a deny-delete on src or a replaced dst, and an
 	// SMB rename of a directory with an open child are refused; grants are recalled
 	// (RFC 14 §7, §9.4, §9.5). An SMB rename over a target open by anyone is refused (RFC 22 §13).
-	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(src), ChangeRename); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(src), from.Open, ChangeRename); err != nil {
 		return RenameResult{}, err
 	}
 	if exists {
-		if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dst), ChangeRemove); err != nil {
+		if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dst), nil, ChangeRemove); err != nil {
 			return RenameResult{}, err
 		}
 	}
@@ -2148,7 +2148,7 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dir), ChangeAddEntry); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dir), nil, ChangeAddEntry); err != nil {
 		return CreateResult{}, err // ErrDeletePending (§5.4)
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
