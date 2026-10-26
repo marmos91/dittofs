@@ -27,6 +27,16 @@ func goroutines() map[uint64]string {
 	return out
 }
 
+// goroutineIDs returns the id of every live goroutine.
+func goroutineIDs() map[uint64]struct{} {
+	ids := make(map[uint64]struct{})
+	for id := range goroutines() {
+		ids[id] = struct{}{}
+	}
+
+	return ids
+}
+
 // dump returns every goroutine's stack. The buffer grows until the dump fits:
 // runtime.Stack truncates rather than reporting how much it needed, and a
 // truncated dump silently drops goroutines.
@@ -45,10 +55,9 @@ func dump() []byte {
 // decision: no goroutine is exempt, not even the ones the standard library
 // starts on first use and keeps for the life of the process. A test that is
 // the first user of os/signal is blamed for its goroutines, and on macOS for
-// its descriptors too, which no goroutine filter could excuse. Warm such a
-// package up before the watch, as Watch does the poller, once a watched test
-// needs one.
-func leakedGoroutines(before map[uint64]string) []string {
+// its descriptors too, which no goroutine filter could excuse. Start such a
+// package before the watch, in Watch itself, once a watched test needs one.
+func leakedGoroutines(before map[uint64]struct{}) []string {
 	var leaked []string
 	for id, stack := range goroutines() {
 		if _, ok := before[id]; !ok {

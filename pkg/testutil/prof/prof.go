@@ -101,7 +101,7 @@ func Watch(tb testing.TB, opts Options) {
 
 	w := &watch{}
 	w.begin()
-	before := goroutines()
+	before := goroutineIDs()
 	fdsBefore, fdsChecked := descriptors()
 	if !fdsChecked {
 		logOnce(tb, &fdsSkipped, "prof: the process's descriptors cannot be listed here; the descriptor check does not run")
