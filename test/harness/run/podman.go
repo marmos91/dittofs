@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -82,12 +83,15 @@ var logTail int64 = 4 << 20
 
 // keepLogs copies the logs of a scenario that failed in podman's image out of
 // the cache volume into the cell's results, failed/SCENARIO/, the last logTail
-// bytes of each file. setup.sh keeps them in failed/SCENARIO/ once the
-// scenario ends; one stopped at its limit never got there, and has those of
-// its run so far in run/. It first prints how much disk is free where the
-// volumes are, which, with the scenario's container gone, is what it had to
-// start with: a full disk is the first suspect of one that writes gigabytes.
-// It has a minute of its own, as removing a container has.
+// bytes of each file; a retry that fails again keeps its own beside them, in
+// failed/SCENARIO.2/, so the two runs don't mix. setup.sh keeps them in
+// failed/SCENARIO/ once the scenario ends; one stopped at its limit never got
+// there, and has those of its run so far in run/. It first prints how much
+// disk is free where the volumes are, which, with the scenario's container
+// gone, is what it had to start with: a full disk is the first suspect of one
+// that writes gigabytes. It has a minute of its own, which an interrupt
+// doesn't cut short, as removing a container has: the logs of the failure just
+// seen are kept.
 //
 // decision: a host whose own podman runs setup.sh keeps the logs in its own
 // cache, whose path setup.sh prints, and dt copies nothing there.
@@ -105,6 +109,12 @@ func (t tester) keepLogs(test string, timedOut bool) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env, cmd.Stderr = t.root, t.env, t.out
 	dst := filepath.Join(t.vals["out"], "failed", scenario)
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(dst); err != nil {
+			break
+		}
+		dst = filepath.Join(t.vals["out"], "failed", scenario+"."+strconv.Itoa(n))
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err == nil {
 		err = cmd.Start()

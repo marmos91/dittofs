@@ -3,6 +3,7 @@ package run
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -90,6 +91,33 @@ func TestPodmanFailedLogs(t *testing.T) {
 	for name, want := range map[string]string{"a.sh/run.log": "6789", "a.sh/logs/dfs.log": "dfs", "b.sh/run.log": "new"} {
 		if got := readFile(t, filepath.Join(cell, name)); got != want {
 			t.Errorf("%s: %q, want %q\n%s", name, got, want, out)
+		}
+	}
+}
+
+// A scenario that fails its retry too keeps that run's logs beside the first
+// run's, so the two don't mix.
+func TestPodmanFailedLogsRetry(t *testing.T) {
+	root, r := repo(t, `suites:
+  sys: { cmd: "sh {test}", tests: "t/*.sh", needs: [podman], timeout: { test: 1s } }
+`, map[string]string{"t/a.sh": "exit 1\n", "failed/a.sh/run.log": "first"})
+	log := fakeDocker(t)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(log), "podman"), []byte("#!/bin/sh\necho 4.9.3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Select(root, r, "sys", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Retry: 1, Out: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := filepath.Join(rep.Dir, "sys", "failed")
+	for _, name := range []string{"a.sh/run.log", "a.sh.2/run.log"} {
+		if got := readFile(t, filepath.Join(cell, name)); got != "first" {
+			t.Errorf("%s: %q, want the scenario's log\n%s", name, got, out.String())
 		}
 	}
 }
