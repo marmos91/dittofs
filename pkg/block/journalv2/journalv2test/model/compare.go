@@ -460,11 +460,10 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	// decision: asOf equals the file's change version where the model knows
 	// it, and lies between it and the highest version issued or the floor
 	// where it does not: a file with no index entry answers with its floor
-	// bucket; a reopen starts buckets at the floor so that no read begun
-	// before it can still fill, which a file holding an entry must honour
-	// too until it next changes; and a crash may have dropped a record the
-	// model cannot see. Require equality after a reopen too if the RFC ever
-	// says an entry is rebuilt from its records alone.
+	// bucket, and a file that had an entry at a reopen answers with anything
+	// up to its bucket until it next changes, so that no read begun before
+	// the reopen can still fill. Require equality after a reopen if the RFC
+	// ever rebuilds an entry from its records alone.
 	entry := len(st.held) > 0 || len(st.markers) > 0
 	switch {
 	case entry && st.change != (version{}) && !st.inexact && o.asOf != st.change:
