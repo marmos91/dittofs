@@ -4,6 +4,7 @@ import (
 	"context"
 	"iter"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,8 +264,8 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 }
 
 // A marker of a truncate or a delete runs to the end of the file, and Since
-// and the index say so with a length reaching the largest offset; a length of
-// zero is not that form.
+// and the index say so with Len = MaxInt64 - Off exactly: a length of zero, or
+// one past the largest offset, is not that form.
 func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 	withLen := func(view modelView, n int64) View {
 		return planted{modelView: view,
@@ -292,6 +293,28 @@ func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 	m, j := New(), New()
 	script(t, m, j)
 	ok(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, math.MaxInt64-35)))
-	ok(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, math.MaxInt64)))
 	diverged(t, m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, 0)))
+
+	// A length past the largest offset is not the form either, and the
+	// failure must not print it as the model's.
+	err := m.Compare(t.Context(), shareA, withLen(modelView{j, shareA}, math.MaxInt64))
+	diverged(t, err)
+	if strings.Count(err.Error(), "[35,EOF)") != 1 {
+		t.Fatalf("message %q prints the journal's length as the model's", err)
+	}
+
+	// A delete covers the whole file: Since yields it as [0, MaxInt64), and a
+	// delete yielded with any other extent is refused.
+	h := modelView{j, shareB}
+	misplaced := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		var cs []journalv2.Change
+		for c := range h.Since(t.Context(), id, from) {
+			if c.Kind == journalv2.ChangeDelete {
+				c.Extent = ext(7, 0)
+			}
+			cs = append(cs, c)
+		}
+		return changes(cs)
+	}}
+	diverged(t, m.Compare(t.Context(), shareB, misplaced))
 }

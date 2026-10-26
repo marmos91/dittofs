@@ -51,23 +51,6 @@ func (k markerKey) String() string {
 	return fmt.Sprintf("%s %s @%s", name, fmtExtent(k.ext), fmtVersion(k.ver))
 }
 
-// normalMarker returns a marker's key with its extent in one form.
-//
-// A marker that runs to the end of the file is yielded with
-// Len = MaxInt64 - Off; a length reaching past the largest offset is read the
-// same way, and a length of zero is not that form.
-// A delete always covers the whole file, so its extent is not compared at all.
-// Tighten this once the journal's Since documents one form.
-func normalMarker(kind journalv2.ChangeKind, e extent, v version) markerKey {
-	switch {
-	case kind == journalv2.ChangeDelete:
-		e = extent{Off: 0, Len: toEnd(0)}
-	case e.Len >= toEnd(e.Off):
-		e.Len = toEnd(e.Off)
-	}
-	return markerKey{kind, e, v}
-}
-
 // observation is what the journal shows of one file, read once and compared
 // with every state the model allows.
 type observation struct {
@@ -378,8 +361,7 @@ func observe(ctx context.Context, f *file, v View, froms []version) (*observatio
 				o.bits[off] = indexByte{e.Version, e.Offloaded}
 			}
 		case journalv2.EntryMarker:
-			k := normalMarker(0, e.Extent, e.Version)
-			o.idxMark = append(o.idxMark, k)
+			o.idxMark = append(o.idxMark, markerKey{0, e.Extent, e.Version})
 		}
 	}
 	return o, nil
@@ -409,7 +391,7 @@ func readSince(ctx context.Context, id fileID, v View, from version) (sinceView,
 				sv.writes[off] = sinceByte{c.Version, c.Mtime}
 			}
 		case journalv2.ChangeTruncate, journalv2.ChangeDeallocate, journalv2.ChangeDelete:
-			sv.markers = append(sv.markers, normalMarker(c.Kind, c.Extent, c.Version))
+			sv.markers = append(sv.markers, markerKey{c.Kind, c.Extent, c.Version})
 		default:
 			return sv, fmt.Errorf("Since from %s yields a change of kind %d, which the model never makes", fmtVersion(from), c.Kind)
 		}
@@ -501,13 +483,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 
 	var wantIdx []markerKey
 	for _, r := range st.markers {
-		k := normalMarker(0, r.ext, r.ver)
-		if r.kind == kindDelete {
-			// The index has no kind to tell a delete by, so its marker is
-			// compared as one over the whole file.
-			k.ext = extent{Off: 0, Len: toEnd(0)}
-		}
-		wantIdx = append(wantIdx, k)
+		wantIdx = append(wantIdx, markerKey{0, r.ext, r.ver})
 	}
 	if d := markersDiffer("the index", o.idxMark, wantIdx); d != "" {
 		return d
@@ -581,7 +557,7 @@ func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
 	var markers []markerKey
 	for _, r := range st.markers {
 		if r.ver.Compare(sv.from) > 0 {
-			markers = append(markers, normalMarker(changeKind(r.kind), r.ext, r.ver))
+			markers = append(markers, markerKey{changeKind(r.kind), r.ext, r.ver})
 		}
 	}
 	return markersDiffer("Since from "+from, sv.markers, markers)

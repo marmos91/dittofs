@@ -336,7 +336,7 @@ func fmtVersion(v version) string {
 }
 
 func fmtExtent(e extent) string {
-	if end(e) >= toEnd(0) {
+	if e.Len == toEnd(e.Off) {
 		return fmt.Sprintf("[%d,EOF)", e.Off)
 	}
 	return fmt.Sprintf("[%d,%d)", e.Off, end(e))
