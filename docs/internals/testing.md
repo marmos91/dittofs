@@ -502,6 +502,8 @@ throwaway podman container, with SMB and NFS clients and faults such as an S3 ou
 
 - **Known failures:** [`test/scenarios/known.yaml`](../../test/scenarios/known.yaml), each with its
   issue
+- **A failed scenario's logs:** in the run's results, `CELL/failed/<scenario>/` (the last 4 MiB of
+  each file), where `dt` runs `setup.sh` in podman's image, as on CI runners and through `dtc`
 - **Run locally:**
   ```bash
   test/harness/bin/dt run system     # Linux, with podman 5.6 or later, or Docker
