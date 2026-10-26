@@ -30,7 +30,8 @@ type Recovery interface {
 	// told by Revoked is told then.
 	ServeShard(ctx context.Context, s ShardID, instance uint64) error
 	// ReclaimComplete ends the caller's reclaim in the grace instances it
-	// was shown, and in no later one of the same shard.
+	// was shown, and in no later one of the same shard. A client that does
+	// not recover by status never finishes this way: its call ends nothing.
 	ReclaimComplete(ctx context.Context, who Caller, shown []GraceRef) error
 	// TestState answers each reference as a call naming it would be
 	// answered: nil, or why it is refused. It changes nothing.
@@ -333,6 +334,8 @@ func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []Grace
 		return staleIfGone(err)
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
+	case rec.Recovery != entity.RecoverStatus:
+		return nil
 	}
 	for _, g := range shown {
 		i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == g.Shard })

@@ -265,6 +265,30 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 	}
 }
 
+// Only a client that recovers by status finishes by completing: an NLM
+// host's or an NFSv4.0 client's completion ends no grace.
+func TestReclaimCompleteOnlyByStatus(t *testing.T) {
+	f := newFixture(t)
+	h, c40, z := f.host(t, "h", 1), f.caller(t, nfsAs("c40", entity.RecoverRefusal)), f.caller(t, nfsAs("z", entity.RecoverStatus))
+	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	f.mustOpen(t, c40, in(7), OpenRequest{Access: rd})
+
+	g := f.restart(t)
+	g.renew(t, z)
+	for _, c := range []struct {
+		who Caller
+		s   ShardID
+	}{{h, 5}, {c40, 7}} {
+		s := c.s
+		if err := g.Recovery().ReclaimComplete(ctx, c.who, []GraceRef{{s, g.shards[s].instance}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.lock(z, in(s), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
+			t.Errorf("a new lock in shard %d after its only client completed: %v, want ErrGrace", s, err)
+		}
+	}
+}
+
 // A client that recovers by refusal is refused on every call naming it
 // until it connects again under its name and Boot, which keeps its ID; a
 // reference it held is stale, and its reclaim is then granted. It never
