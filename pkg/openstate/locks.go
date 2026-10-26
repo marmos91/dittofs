@@ -124,6 +124,7 @@ type lockState struct {
 	open  *open       // nil: none
 	ref   StateRef    // Seq is its current sequence
 	locks []LockRange // a merging owner's are disjoint, and none touches another of its type
+	offer *LockRange  // a callback grant whose answer is outstanding; nil: none
 }
 
 func (ls *lockState) openToken() uint64 { return openToken(ls.open) }
@@ -378,6 +379,10 @@ func (t *Table) serve(e *entry, out *outbox) {
 			e.waiters = slices.Delete(e.waiters, i, i+1)
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				ls.add(w.Range)
+				if w.Wait == WaitCallback {
+					r := w.Range
+					ls.offer = &r
+				}
 			}
 			out.over = append(out.over, waitOver{*w, true})
 			continue
@@ -492,16 +497,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // a callback one reported not granted, unless r repeats its request and still
 // waits, which keeps its place.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
-	var mine *LockWaiter
-	if p := e.waiterOf(r.Owner); p >= 0 {
-		mine = e.waiters[p]
-	}
 	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
-	if mine != nil && mine.Wait == WaitCallback && r.Wait == WaitCallback && mine.Range == r.Ranges[0] &&
-		mine.Open == openToken(op) && !slices.Contains(e.waiters, mine) {
-		// r repeats the wait just granted: its LockWaitOver carries the grant, so it is answered once
-		return LockResult{Waiting: true, Ref: e.lockState(r.Owner, mine.Open).ref}, nil
-	}
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
 	var held *Lock
@@ -525,6 +521,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		}
 		for _, rg := range r.Ranges {
 			ls.add(rg)
+		}
+		if ls.offer != nil && *ls.offer == r.Ranges[0] {
+			ls.offer = nil // this answer supersedes the callback's: its refusal releases nothing
 		}
 		if !minted {
 			if ls.ref.Seq, err = t.advance(e, ls.ref); err != nil {
@@ -597,12 +596,16 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 	if w.Owner.Client != who.Client {
 		return ErrNotYours
 	}
-	if !refused {
-		return nil
-	}
 	var out outbox
 	_ = t.step(w.File, func(e *entry) error {
-		if ls := e.lockState(w.Owner, w.Open); ls != nil {
+		// Only a grant still offered is the callback's to give back: one a
+		// later answer to the host's request superseded releases nothing.
+		ls := e.lockState(w.Owner, w.Open)
+		if ls == nil || ls.offer == nil || *ls.offer != w.Range {
+			return nil
+		}
+		ls.offer = nil
+		if refused {
 			_ = ls.unlock([]ByteRange{w.Range.ByteRange})
 			t.tidy(e, ls)
 			t.serve(e, &out)

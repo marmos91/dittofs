@@ -518,12 +518,42 @@ func TestExpiryGrantIsNotRepeated(t *testing.T) {
 	f.clock.advance(2 * leasePeriod)
 	f.sweep(ctx)
 	<-entered
-	res := f.mustLock(t, h, file, wait) // the host resends its blocked request
+	f.mustLock(t, h, file, wait) // the host resends its blocked request
 	ws := f.sink.takeWaits()
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("after the expiry: granted %v, want h", g)
+	}
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil { // the host refuses the stale callback
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Errorf("h lost the lock it was answered for to its own refused callback")
+	}
 	close(gate)
 	f.Stop()
-	if g := granted(t, ws); len(g) == 1 && !res.Waiting {
-		t.Errorf("h was granted both by its callback and by its resent request")
+}
+
+// A host resending its blocked request after a grant step granted it, while
+// the callback is still on its way, keeps the lock when it then refuses that
+// callback.
+func TestResendAfterGrantKeepsTheLock(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.host(t, "a", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	wait := LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
+	f.mustLock(t, h, file, wait)
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws := f.sink.takeWaits() // h granted, its callback in flight
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("after the unlock: granted %v, want h", g)
+	}
+	f.mustLock(t, h, file, wait) // the resend, answered granted
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Errorf("h was answered granted, then lost the lock to its own refused callback")
 	}
 }
 
