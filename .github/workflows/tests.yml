@@ -433,6 +433,7 @@ jobs:
           files: test/harness/results/*/unit/coverage.txt
           flags: unittests
           name: codecov-unit-tests
+          token: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true
 
   integration:
