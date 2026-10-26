@@ -989,3 +989,23 @@ func TestChangeThroughAnOpen(t *testing.T) {
 		t.Errorf("recalls %+v, want the second key's lease to none", r)
 	}
 }
+
+// An open that asks a confirm is offered no grant: a new NFSv4.0 owner's
+// first open is answered Confirm and none, and once the owner confirmed, its
+// later open may be offered one.
+func TestNoGrantBeforeConfirm(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	oo := owner(a, "oo")
+	res, err := f.Opens().Open(ctx, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(1), Want: rw})
+	if err != nil || !res.Confirm || res.Grant != nil {
+		t.Fatalf("a new owner's first open: Confirm %v, grant %+v, %v; want a confirm asked and no grant", res.Confirm, res.Grant, err)
+	}
+	if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(res.Open), num(2)); err != nil {
+		t.Fatal(err)
+	}
+	res, err = f.Opens().Open(ctx, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(3), Want: rw})
+	if err != nil || res.Confirm || res.Grant == nil {
+		t.Errorf("a confirmed owner's open: Confirm %v, grant %+v, %v; want a grant offered", res.Confirm, res.Grant, err)
+	}
+}

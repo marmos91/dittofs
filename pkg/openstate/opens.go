@@ -295,7 +295,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		}
-		res.Grant = t.offer(e, f, who, granted, r, out)
+		if t.ownerConfirmed(r) {
+			res.Grant = t.offer(e, f, who, granted, r, out)
+		}
 		res.Open = granted.Open
 		return nil
 	})
@@ -583,6 +585,21 @@ func (t *Table) confirmed(o *open) bool {
 	t.smu.Lock()
 	defer t.smu.Unlock()
 	return !t.seqs.Unconfirmed(opensOwner(o.Owner))
+}
+
+// ownerConfirmed reports whether r's owner of opens numbers no requests or has
+// confirmed itself: an open that will ask a confirm is offered no grant. Under
+// the open's step a new owner has no slot yet, and one being replaced has had
+// its slot dropped, so both read as unconfirmed.
+func (t *Table) ownerConfirmed(r OpenRequest) bool {
+	if r.Seqs.Owner == nil {
+		return true
+	}
+	t.smu.Lock()
+	defer t.smu.Unlock()
+	o := opensOwner(r.Owner)
+	_, ok := t.seqs[o]
+	return ok && !t.seqs.Unconfirmed(o)
 }
 
 // mayUse reports whether who may act through o.
