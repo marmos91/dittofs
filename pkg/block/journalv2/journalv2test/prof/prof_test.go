@@ -164,6 +164,100 @@ func TestWatchClean(t *testing.T) {
 	if len(f.errors) != 0 {
 		t.Errorf("Watch reported a leak on a clean test: %q", f.errors)
 	}
+
+	assertNoProfiles(t, f.artifacts)
+}
+
+// closeOnRelease holds f open until release is closed, then closes it on its
+// way out.
+func closeOnRelease(release <-chan struct{}, f *os.File) {
+	<-release
+	f.Close()
+}
+
+// TestWatchChecksGoroutinesFirst checks that descriptors are checked only
+// once the goroutine check has settled, so a descriptor that a goroutine
+// closes on its way out is not reported.
+func TestWatchChecksGoroutinesFirst(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+	})
+
+	afterFailedPoll = func() {
+		once.Do(func() { close(release) })
+	}
+	t.Cleanup(func() { afterFailedPoll = nil })
+
+	f := newFakeTB(t)
+	Watch(f, Options{})
+
+	file, err := os.Create(filepath.Join(t.TempDir(), "held"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go closeOnRelease(release, file)
+
+	f.end()
+
+	if len(f.errors) != 0 {
+		t.Errorf("Watch reported a descriptor its goroutine closed on exit: %q", f.errors)
+	}
+}
+
+// TestWatchReportsEveryLeak checks that one failing check does not hide the
+// others, nor one leaked goroutine the next.
+func TestWatchReportsEveryLeak(t *testing.T) {
+	release := make(chan struct{})
+	var leaked *os.File
+	var retained []byte
+
+	t.Cleanup(func() {
+		close(release)
+		if leaked != nil {
+			leaked.Close()
+		}
+		runtime.KeepAlive(retained)
+	})
+
+	f := newFakeTB(t)
+	Watch(f, Options{
+		MaxHeapGrowth: 16 << 20, // 16 MB
+	})
+
+	go leakyWait(release)
+	go leakyWait(release)
+
+	leaked, err := os.Create(filepath.Join(t.TempDir(), "leaked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retained = make([]byte, 64<<20) // 64 MB to exceed the MaxHeapGrowth threshold
+
+	f.end()
+
+	if got := len(f.errorsContaining("leakyWait")); got != 2 {
+		t.Errorf("goroutine errors = %d, want 2: %q", got, f.errors)
+	}
+
+	wantFDs := 0
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		wantFDs = 1
+	}
+	if got := len(f.errorsContaining("prof: descriptor")); got != wantFDs {
+		t.Errorf("descriptor errors = %d, want %d: %q", got, wantFDs, f.errors)
+	}
+
+	wantHeap := 1
+	if raceEnabled {
+		wantHeap = 0
+	}
+	if got := len(f.errorsContaining("prof: heap grew")); got != wantHeap {
+		t.Errorf("heap errors = %d, want %d: %q", got, wantHeap, f.errors)
+	}
 }
 
 // TestWatchRetries checks that the goroutine check polls again rather than

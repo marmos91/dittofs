@@ -49,20 +49,10 @@ var afterFailedPoll func()
 func Watch(t testing.TB, opts Options) {
 	t.Helper()
 
-	// The runtime opens its poller's descriptors on first use and keeps them,
-	// so a test that first used it would leak them. Use it now, before the
-	// snapshot.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("prof: %v", err)
-		return
-	}
-	r.Close()
-	w.Close()
-
 	dir := fdDir()
 	var fds map[string]string
 	if dir != "" {
+		var err error
 		if fds, err = descriptors(dir); err != nil {
 			t.Fatalf("prof: %v", err)
 			return
@@ -204,6 +194,10 @@ func checkDescriptors(t testing.TB, dir string, before map[string]string) bool {
 	// changed target, because its readlink fails. Nothing closes descriptors
 	// then, since the goroutine check has settled first. Treat a failed
 	// readlink as closed, with a test, if that ever shows up.
+	//
+	// ponytail: descriptors the runtime's poller opens during a test would
+	// read as leaks. Under go test the poller is already up before Watch, so
+	// prime it before the snapshot, with a test, if that ever shows up.
 	failed := false
 	for _, fd := range slices.Sorted(maps.Keys(after)) {
 		if target, ok := before[fd]; !ok || target != after[fd] {
