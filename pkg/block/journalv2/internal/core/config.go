@@ -3,16 +3,19 @@ package core
 import (
 	"log/slog"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
 
 // Config is the journal's configuration as its internal packages read it,
 // filled from the options the journal is opened with.
 type Config struct {
 	Settings
-	Clock  Clock
-	Budget *DescriptorBudget
-	Tracer Tracer
-	Logger *slog.Logger
+	Clock   Clock
+	Budget  *DescriptorBudget
+	Tracer  Tracer
+	Logger  *slog.Logger
+	Storage storage.FS
 }
 
 // Settings are the journal's settings. A zero field takes its default; a
