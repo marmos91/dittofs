@@ -492,7 +492,16 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // a callback one reported not granted, unless r repeats its request and still
 // waits, which keeps its place.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
+	var mine *LockWaiter
+	if p := e.waiterOf(r.Owner); p >= 0 {
+		mine = e.waiters[p]
+	}
 	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
+	if mine != nil && mine.Wait == WaitCallback && r.Wait == WaitCallback && mine.Range == r.Ranges[0] &&
+		mine.Open == openToken(op) && !slices.Contains(e.waiters, mine) {
+		// r repeats the wait just granted: its LockWaitOver carries the grant, so it is answered once
+		return LockResult{Waiting: true, Ref: e.lockState(r.Owner, mine.Open).ref}, nil
+	}
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
 	var held *Lock

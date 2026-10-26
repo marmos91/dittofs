@@ -503,6 +503,30 @@ func TestExpiryGrantIsNotJumped(t *testing.T) {
 	}
 }
 
+// A host resending the blocked request whose wait a lease expiry just
+// granted is granted once, through the callback, not again by the resend.
+func TestExpiryGrantIsNotRepeated(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "h", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	wait := LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
+	f.mustLock(t, h, file, wait)
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	f.Table.order = func(entity.FileID) func() { entered <- struct{}{}; <-gate; return func() {} }
+	f.clock.advance(2 * leasePeriod)
+	f.sweep(ctx)
+	<-entered
+	res := f.mustLock(t, h, file, wait) // the host resends its blocked request
+	ws := f.sink.takeWaits()
+	close(gate)
+	f.Stop()
+	if g := granted(t, ws); len(g) == 1 && !res.Waiting {
+		t.Errorf("h was granted both by its callback and by its resent request")
+	}
+}
+
 // Closing an open, or its host's restart, ends the waiters under it, and the
 // waiters behind the locks it held are granted.
 func TestCloseAndRestartEndWaiters(t *testing.T) {
