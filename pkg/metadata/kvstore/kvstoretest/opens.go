@@ -201,7 +201,7 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 	must(t, opens.Put(ctx, f.share.ID, p))
 	plain := f.newOpen(file.ID)
 	must(t, opens.Put(ctx, f.share.ID, plain))
-	lock := func(open entity.OpenID, off int64, owner string) entity.LockRecord {
+	lock := func(open entity.OpenID, off uint64, owner string) entity.LockRecord {
 		id, err := f.s.NextID(ctx, kvstore.IDLock)
 		must(t, err)
 		return entity.LockRecord{ID: entity.LockID(id), Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
@@ -210,19 +210,22 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 		t.Error("a lock stored under an open that is not persistent")
 	}
 	l1, l2, l3 := lock(p.ID, 100, "x"), lock(p.ID, 0, "x"), lock(p.ID, 100, "y")
-	for _, l := range []entity.LockRecord{l1, l2, l3} {
+	// An SMB lock past 2^63, and a zero-length one, are stored as asked.
+	l4 := lock(p.ID, 1<<63, "z")
+	l4.Length = 0
+	for _, l := range []entity.LockRecord{l1, l2, l3, l4} {
 		must(t, opens.PutLock(ctx, f.share.ID, file.ID, l))
 	}
 	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
 	must(t, err)
-	if len(got) != 3 || got[0].ID != l2.ID || got[1].ID != l1.ID || got[2].ID != l3.ID || string(got[2].Owner.Owner) != "y" {
+	if len(got) != 4 || got[0].ID != l2.ID || got[1].ID != l1.ID || got[2].ID != l3.ID || string(got[2].Owner.Owner) != "y" || got[3].ID != l4.ID || got[3].Offset != 1<<63 || got[3].Length != 0 {
 		t.Fatalf("locks %+v", got)
 	}
 	if ops, err := opens.Of(ctx, f.share.ID, file.ID); err != nil || len(ops) != 2 {
 		t.Errorf("the locks read as opens: %+v, %v", ops, err)
 	}
 	must(t, opens.DeleteLock(ctx, f.share.ID, file.ID, l1))
-	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 2 {
+	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 3 {
 		t.Errorf("locks after one unlock %+v, %v", got, err)
 	}
 	_, err = opens.Delete(ctx, f.share.ID, file.ID, p.ID)
