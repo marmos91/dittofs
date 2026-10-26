@@ -229,6 +229,11 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 // the clients a shard beginning grace tells to reclaim. A record deleted, or
 // its mark dropped, between the scan and its read is skipped.
 //
+// decision: the listing is not a snapshot; a mark written into s during the
+// scan may be missed. That holds only while no mark is written into a shard
+// that is not served, which is when grace calls this. Read it in one view
+// if a caller ever lists a shard that is being served.
+//
 // ponytail: a scan of every client record and mark, since a mark's key puts
 // the shard last; a shard runs it once, when its grace begins. Add a
 // shard-first index, CLS‖shard‖clientID, written and deleted with each mark,
