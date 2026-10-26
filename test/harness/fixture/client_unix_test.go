@@ -53,7 +53,7 @@ esac`
 	t.Setenv("DT_FAKE_LOG", log)
 	realEuid, realWaits := geteuid, clientWaits
 	geteuid = func() int { return 1000 }
-	clientWaits = [2]time.Duration{time.Second, 10 * time.Millisecond}
+	clientWaits[1] = 10 * time.Millisecond // only how often: how long stays, since a busy machine slows every fake
 	t.Cleanup(func() { geteuid, clientWaits = realEuid, realWaits })
 	return func() []string {
 		data, _ := os.ReadFile(log)
