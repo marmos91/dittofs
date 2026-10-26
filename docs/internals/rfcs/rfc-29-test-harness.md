@@ -1193,7 +1193,8 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
-- **hosts:** `host:dedicated`, met only by the dedicated test host;
+- **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
+  `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
 

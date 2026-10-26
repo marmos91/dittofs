@@ -66,6 +66,7 @@ type Options struct {
 	Out     io.Writer // where the commands' output passes through
 	Tier    string    // the tier the run was asked for, recorded in its results
 	Retry   int       // --retry: how many times a new failure's test runs again
+	Place   string    // --place: the place the run is on, which meets that place's host need
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -193,6 +194,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	// commands then run in podman's image: the need's one check decides both.
 	podman := false
 	check := func(n string) (err error) {
+		if n == "host:"+o.Place {
+			return nil
+		}
 		if n != "podman" {
 			return needs.Check(o.Root, n)
 		}
