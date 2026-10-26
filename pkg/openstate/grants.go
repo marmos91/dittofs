@@ -77,8 +77,10 @@ const (
 	// here and a recall a conflicting client may wait on. Raise them if a
 	// measured workload loses grants it would have used.
 	maxGrants = 4096
-	maxShared = 16
-	maxUnsent = 4096
+	// keepGrants is what a client reaching the budget is asked to keep.
+	keepGrants = maxGrants / 2
+	maxShared  = 16
+	maxUnsent  = 4096
 
 	// coversDeadline is the recall deadline of a grant that covers opens,
 	// the one Windows servers use for an SMB lease break; a grant that
@@ -251,7 +253,7 @@ func (t *Table) breakHandles(e *entry, hs []*open, own func(*grant) bool, out *o
 // offer is the grant covering o, of e's file, after its open by who asking r:
 // the lease under r's key, widened if r asks more and nothing refuses it; or a
 // new grant of the most of r.Want that nothing refuses; or nil.
-func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *CachingGrant {
+func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, out *outbox) *CachingGrant {
 	smb := who.Protocol == entity.ProtocolSMB
 	want := r.Want
 	if !smb {
@@ -275,7 +277,9 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 		t.idx.Unlock()
 		if mine.counted || !budget {
 			mine.fsm.Upgrade(want, k)
-			t.recount(mine)
+			if t.recount(mine) {
+				out.full = append(out.full, who.Client)
+			}
 		}
 		p := mine.public(e.file)
 		return &p
@@ -294,7 +298,9 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 		if _, taken := t.keys[ck]; taken && r.Lease != (LeaseKey{}) {
 			return ErrDelay
 		}
-		t.granted[who.Client]++
+		if t.granted[who.Client]++; t.granted[who.Client] == maxGrants {
+			out.full = append(out.full, who.Client)
+		}
 		if r.Lease != (LeaseKey{}) {
 			t.keys[ck] = e.file
 		}
@@ -326,18 +332,15 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 // on e: none to a client fenced, at its budget or with its back channel down,
 // on a file with a recall in flight, recalled within a recall deadline, with
 // a lock waiter, or under 16 grants already; and no caching another holder's
-// open or grant refuses. The budget is checked where the grant is minted.
+// open or grant refuses. The budget is checked where the grant is minted: a
+// client at it keeps the grants it holds, and was asked through RecallAny,
+// when it reached it, to return some.
 //
 // ponytail: a file is offered no grant while any recall on it is in flight or
 // within one recall deadline of ending, and while any lock waiter is on it,
 // whatever the request delayed there; a grant that would not conflict with it
 // is refused too. Judge the grant against the delayed requests themselves if
 // grants are measured lost on files shared that way.
-//
-// decision: a client at its budget is offered no new grant and keeps those it
-// holds, and is not asked to return any: the Sink has no event naming a count
-// to keep, which an NFS client's recall-any needs. Add one when NFS clients
-// are measured at the budget.
 func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
 	caching := 0
 	for _, g := range e.grants {
@@ -415,20 +418,24 @@ func (t *Table) dropGrant(e *entry, g *grant) {
 }
 
 // recount keeps g in its client's budget while it caches anything: a grant cut
-// to none, kept for the opens it covers, holds none of it.
-func (t *Table) recount(g *grant) {
+// to none, kept for the opens it covers, holds none of it. It reports whether
+// that brought the client to the budget.
+func (t *Table) recount(g *grant) bool {
 	held := g.fsm.Kind != GrantNone
 	if held == g.counted {
-		return
+		return false
 	}
 	g.counted = held
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	if held {
 		t.granted[g.client]++
-	} else if t.granted[g.client]--; t.granted[g.client] <= 0 {
+		return t.granted[g.client] == maxGrants
+	}
+	if t.granted[g.client]--; t.granted[g.client] <= 0 {
 		delete(t.granted, g.client)
 	}
+	return false
 }
 
 // recallEnded records that a recall of g on e's file ended: the file is

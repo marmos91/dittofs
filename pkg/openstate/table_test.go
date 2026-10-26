@@ -91,6 +91,7 @@ type recordingSink struct {
 	waits    []waitOverCall
 	recalls  []recallCall
 	revoked  []Revocation
+	full     []recallAny
 	onEnded  func(c entity.ClientID)
 	onWait   func(w LockWaiter)
 	onRecall func(g CachingGrant, to GrantKind)
@@ -110,6 +111,26 @@ func (s *recordingSink) Revoked(r Revocation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revoked = append(s.revoked, r)
+}
+
+type recallAny struct {
+	c    entity.ClientID
+	keep int
+}
+
+func (s *recordingSink) RecallAny(c entity.ClientID, keep int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.full = append(s.full, recallAny{c, keep})
+}
+
+// takeRecallAny returns the RecallAny calls since the last take.
+func (s *recordingSink) takeRecallAny() []recallAny {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.full
+	s.full = nil
+	return r
 }
 
 // takeRecalls returns the RecallGrant calls since the last take.

@@ -295,7 +295,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		}
-		res.Grant = t.offer(e, f, who, granted, r)
+		res.Grant = t.offer(e, f, who, granted, r, out)
 		res.Open = granted.Open
 		return nil
 	})

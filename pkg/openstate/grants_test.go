@@ -340,9 +340,9 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 	}
 }
 
-// A primary holds at most 4,096 grants per client; past it the client is
-// offered none and keeps those it holds, and is offered one again once one
-// of them caches nothing.
+// A primary holds at most 4,096 grants per client; reaching it, the client is
+// asked once to keep 2,048, and past it is offered none and keeps those it
+// holds, and is offered one again once one of them caches nothing.
 func TestGrantBudget(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
@@ -361,8 +361,14 @@ func TestGrantBudget(t *testing.T) {
 			first = g
 		}
 	}
+	if r := f.sink.takeRecallAny(); len(r) != 1 || r[0] != (recallAny{a.Client, 2048}) {
+		t.Fatalf("RecallAny at the budget: %+v, want one keeping 2048", r)
+	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xff, 0xff}, Want: rh}); g != nil {
 		t.Fatal("a grant past the budget")
+	}
+	if r := f.sink.takeRecallAny(); len(r) != 0 {
+		t.Fatalf("RecallAny past the budget: %+v, want none", r)
 	}
 	if _, err := f.open(f.caller(t, smb("pc-w")), firstFile, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)

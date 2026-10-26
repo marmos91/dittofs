@@ -22,6 +22,9 @@ type Sink interface {
 	// the holder's protocol, and the client answers through AckRecall. The
 	// recall's deadline starts when this call returns.
 	RecallGrant(c entity.ClientID, g CachingGrant, to GrantKind)
+	// RecallAny: c reached its grant budget here; the service asks it, where
+	// its protocol can be asked, to return grants until it holds keep.
+	RecallAny(c entity.ClientID, keep int)
 	// Revoked: state ended without the client asking; the service tells the
 	// client and answers what it holds pending on it.
 	Revoked(r Revocation)
@@ -60,6 +63,7 @@ type outbox struct {
 
 	revoked []Revocation
 	recalls []recallOut
+	full    []entity.ClientID // clients that reached their grant budget
 }
 
 // recallOut is one RecallGrant, and the recall it hands over: gen names it
@@ -101,6 +105,9 @@ func (o *outbox) raise(t *Table, sink Sink) {
 	}
 	for _, r := range o.revoked {
 		sink.Revoked(r)
+	}
+	for _, c := range o.full {
+		sink.RecallAny(c, keepGrants)
 	}
 	for _, r := range o.recalls {
 		sink.RecallGrant(r.g.Client, r.g, r.to)
