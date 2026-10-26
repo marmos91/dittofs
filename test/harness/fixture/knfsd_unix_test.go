@@ -211,7 +211,7 @@ func TestKnfsdFails(t *testing.T) {
 		{"no answer", "", false, false, "", "knfsd doesn't answer", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 		{"the kernel refuses 4.0", "", false, true, "-3 +4 -4.0 +4.1 +4.2", "doesn't serve NFSv4.0, 4.1 and 4.2", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 		{"no list of versions", "", false, true, "-", "reading the kernel's NFS versions", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
-		{"the limit ends during rpc.nfsd", "", true, true, "", "deadline exceeded", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
+		{"the limit ends during rpc.nfsd", "", true, true, "", "context canceled", []string{"rpc.nfsd 0", "rpc.mountd stopped", "exportfs -u SERVER:DIR", "tee LEASE", "tee GRACE", "umount DIR"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			nfsd, calls := fakeKnfsd(t)
@@ -223,20 +223,35 @@ func TestKnfsdFails(t *testing.T) {
 				t.Setenv("DT_FAKE_VERSIONS", tc.versions)
 			}
 			listening(t, tc.up)
-			limit := 10 * time.Second
-			if tc.hang {
-				limit = time.Second // past the steps before rpc.nfsd, short of its 3 seconds
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), limit)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			// The setup's limit ends halfway through rpc.nfsd's 3 seconds, timed
+			// from its call, so steps a busy machine slows before it can't move
+			// the end out of them.
+			hung := make(chan time.Time, 1)
+			if tc.hang {
+				go func() {
+					defer close(hung)
+					for ctx.Err() == nil {
+						if slices.ContainsFunc(calls(), func(c string) bool { return strings.HasPrefix(c, "rpc.nfsd ") && c != "rpc.nfsd 0" }) {
+							hung <- time.Now()
+							time.Sleep(1500 * time.Millisecond)
+							cancel()
+							return
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}()
+			}
 			var w bytes.Buffer
-			start := time.Now()
 			_, err := StartKnfsd(ctx, f, t.TempDir(), &w)
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Fatalf("StartKnfsd: %v, want %q\n%s", err, tc.err, w.String())
 			}
 			if tc.hang { // past rpc.nfsd's 3 seconds, so a start it went on with is in the calls
-				time.Sleep(time.Until(start.Add(4 * time.Second)))
+				if at, ok := <-hung; ok {
+					time.Sleep(time.Until(at.Add(4 * time.Second)))
+				}
 			}
 			got := calls()
 			dir := strings.TrimPrefix(got[0], "mount -t tmpfs -o mode=0777 tmpfs ")
