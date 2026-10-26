@@ -432,7 +432,7 @@ func TestRebootRaceLeavesOneID(t *testing.T) {
 	for i := range 2000 {
 		name := fmt.Sprint("host-", i)
 		old := f.connect(t, nfs(name, 1, owner))
-		g := reopen(t, f.fs, f.clock)
+		g := reopenServing(t, f.fs, f.clock, nil)
 		file := entity.NewFileID()
 		ref := mintIn(t, g.Table, file, old, 0)
 		p, err := g.Propose(ctx, nfs(name, 2, owner), addr)

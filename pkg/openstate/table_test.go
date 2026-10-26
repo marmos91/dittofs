@@ -252,11 +252,18 @@ func newFixture(t *testing.T) *fixture {
 // the store keeps what is durable, and the table starts empty.
 func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()
+	return reopenServing(t, fs, clock, testShards)
+}
+
+// reopenServing is reopen beginning only shards: each begun shard scans every
+// client record, which a test restarting thousands of times can't afford.
+func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []ShardID) *fixture {
+	t.Helper()
 	f := unstarted(t, fs, clock)
 	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range testShards {
+	for _, s := range shards {
 		if err := f.Recovery().ServeShard(ctx, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
