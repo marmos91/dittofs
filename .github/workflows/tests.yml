@@ -111,7 +111,7 @@ jobs:
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest"
+                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
