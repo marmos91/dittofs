@@ -31,6 +31,7 @@ var platforms = map[string]string{"linux": "linux", "windows": "windows", "macos
 var tools = map[string]map[string]string{
 	"nfs-client":     {"linux": "mount.nfs", "darwin": "mount_nfs"},
 	"smb-client":     {"linux": "mount.cifs", "darwin": "mount_smbfs", "windows": "net"},
+	"smbclient":      {"linux": "smbclient"},
 	"nfs4-acl-tools": {"linux": "nfs4_getfacl"},
 	"kerberos":       {"linux": "kinit", "darwin": "kinit"},
 	"dm-flakey":      {"linux": "dmsetup"},
@@ -49,7 +50,7 @@ var debian = map[string]string{
 }
 
 // inDtc are the tools the dtc image installs.
-var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true, "fio": true}
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "smbclient": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true, "fio": true}
 
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{

@@ -9,11 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The machine's own platform is met and the others aren't.
@@ -305,6 +308,48 @@ func TestInDtc(t *testing.T) {
 	for need, bins := range tools {
 		if pkg := cmp.Or(debian[need], bins["linux"]); pkg != "" && slices.Contains(words, pkg) != inDtc[need] {
 			t.Errorf("%s: package %s in the image %t, in dtc %t", need, pkg, slices.Contains(words, pkg), inDtc[need])
+		}
+	}
+}
+
+// A program the AD-DC tests skip without is one a need of their cell looks for
+// on Linux, where the cell runs, so a runner without it fails the cell under
+// --ci instead of the test skipping.
+func TestADDCNeedsWhatItsTestsRun(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg struct {
+		Suites map[string]struct {
+			Options map[string]struct{ Needs []string }
+		}
+	}
+	if err := yaml.Unmarshal(data, &reg); err != nil {
+		t.Fatal(err)
+	}
+	cell := reg.Suites["integration"].Options["ad-dc"].Needs
+	srcs, err := filepath.Glob(filepath.Join("..", "..", "integration", "ad-dc", "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookPath := regexp.MustCompile(`exec\.LookPath\("([^"]+)"\)`)
+	var progs []string
+	for _, src := range srcs {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range lookPath.FindAllStringSubmatch(string(data), -1) {
+			progs = append(progs, m[1])
+		}
+	}
+	if len(progs) == 0 {
+		t.Fatal("no AD-DC test looks for a program")
+	}
+	for _, p := range progs {
+		if !slices.ContainsFunc(cell, func(n string) bool { return n == p || tools[n]["linux"] == p }) {
+			t.Errorf("an AD-DC test skips without %s, which no need of integration/ad-dc, %v, looks for", p, cell)
 		}
 	}
 }
