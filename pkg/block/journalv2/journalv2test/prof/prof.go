@@ -1,13 +1,15 @@
 // Package prof fails a test that leaves goroutines, open descriptors or live
 // heap behind it.
 //
-// It uses the standard library only, and must keep to it, so that the
-// journal's tree, which forbids every third-party package, may use it.
+// It sits in the journal's tree, so the journal's import rule holds it to the
+// standard library. Nothing in it is specific to the journal: move it out of
+// the tree once a package outside the journal needs it.
 package prof
 
 import (
 	"flag"
 	"fmt"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -98,6 +100,16 @@ const poll = 10 * time.Millisecond
 func Watch(tb testing.TB, opts Options) {
 	tb.Helper()
 
+	// decision: the runtime opens its poller's descriptors (kqueue on macOS,
+	// epoll and eventfd on Linux) on the process's first file, pipe, socket
+	// or timer and never closes them. Open it before the first baseline so the
+	// first watched test that does I/O is not blamed for them.
+	pollerOnce.Do(func() {
+		if r, w, err := os.Pipe(); err == nil {
+			_ = r.Close()
+			_ = w.Close()
+		}
+	})
 	w := &watch{}
 	w.begin()
 	before := goroutineIDs()
@@ -187,6 +199,10 @@ func Watch(tb testing.TB, opts Options) {
 
 // Each skipped check is logged once per process, not once per watched test.
 var fdsSkipped, heapSkipped sync.Once
+
+// pollerOnce opens the runtime's poller once per process, before the first
+// watch takes its baseline.
+var pollerOnce sync.Once
 
 func logOnce(tb testing.TB, once *sync.Once, msg string) {
 	tb.Helper()

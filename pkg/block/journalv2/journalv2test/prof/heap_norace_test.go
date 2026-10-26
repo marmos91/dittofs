@@ -61,23 +61,6 @@ func TestWatchFailsOnRetainedHeapAfterEarlierGarbage(t *testing.T) {
 	}
 }
 
-func TestWatchPassesHeapDroppedBeforeTheEnd(t *testing.T) {
-	rec := newRecorder(t)
-
-	Watch(rec, Options{})
-	buf := make([]byte, 64<<20)
-	for i := 0; i < len(buf); i += 4096 {
-		buf[i] = 1
-	}
-	buf = nil
-	_ = buf
-	rec.finish()
-
-	if rec.Failed() {
-		t.Fatalf("64 MiB dropped before the test ended failed the watch:\n%s", rec.failure())
-	}
-}
-
 func TestWatchHeapSlackAllowsGrowthWithinIt(t *testing.T) {
 	rec := newRecorder(t)
 

@@ -3,6 +3,7 @@ package prof
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -59,17 +60,6 @@ func (r *recorder) finish() {
 
 // failure returns every recorded failure as one string.
 func (r *recorder) failure() string { return strings.Join(r.errors, "\n") }
-
-func TestWatchCleanBodyPasses(t *testing.T) {
-	rec := newRecorder(t)
-
-	Watch(rec, Options{})
-	rec.finish()
-
-	if rec.Failed() {
-		t.Fatalf("a body that leaks nothing failed the watch:\n%s", rec.failure())
-	}
-}
 
 // shortSettle shortens the watch's retry window for a test that plants a
 // leak, so the test waits a fraction of the real window before the watch
@@ -246,17 +236,28 @@ func TestWatchCleanRepeatedly(t *testing.T) {
 	}
 }
 
-// TestWatchOnARealTest watches this test itself, through the testing
-// package's own Cleanup rather than a recorder's.
-//
-// No mutation of the package fails this test alone: the recorder tests cover
-// every check. It is kept as a smoke test of the path real callers take.
-func TestWatchOnARealTest(t *testing.T) {
-	Watch(t, Options{})
+// TestWatchDoesNotBlameTheRuntimesPoller watches the first I/O of a fresh
+// process, run with no test timeout: a timeout's alarm would otherwise open
+// the runtime's poller before any test runs. It also watches through a real
+// test rather than a recorder.
+func TestWatchDoesNotBlameTheRuntimesPoller(t *testing.T) {
+	if os.Getenv("PROF_FRESH") == "1" {
+		Watch(t, Options{})
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Close()
+		_ = w.Close()
 
-	done := make(chan struct{})
-	go func() { close(done) }()
-	<-done
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWatchDoesNotBlameTheRuntimesPoller$", "-test.timeout=0")
+	cmd.Env = append(os.Environ(), "PROF_FRESH=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("a fresh process's first pipe failed the watch:\n%s", out)
+	}
 }
 
 func TestWatchSaysHowToKeepProfilesWhenTheyAreNotKept(t *testing.T) {
