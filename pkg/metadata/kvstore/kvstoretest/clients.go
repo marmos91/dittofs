@@ -220,6 +220,27 @@ func testClientShards(t *testing.T, kvo Opener) {
 			t.Errorf("ByShard(%d) = %v, want %v", shard, got, want)
 		}
 	}
+
+	// A client whose mark is dropped, or whose record is deleted, once the
+	// scan has listed it is not yielded.
+	dropped := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNLM, Name: []byte("d")}
+	deleted := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNLM, Name: []byte("x")}
+	for _, r := range []entity.ClientRecord{dropped, deleted} {
+		must(t, cs.Create(ctx, r))
+		must(t, cs.MarkShard(ctx, r.ID, entity.ShardMark{Shard: 4, Done: 1}))
+	}
+	var got []entity.ClientID
+	for rec, err := range cs.ByShard(ctx, 4) {
+		must(t, err)
+		if len(got) == 0 {
+			must(t, cs.DropShards(ctx, dropped.ID))
+			must(t, cs.Delete(ctx, deleted.ID))
+		}
+		got = append(got, rec.ID)
+	}
+	if !slices.Equal(got, []entity.ClientID{other.ID}) {
+		t.Errorf("ByShard after a drop and a delete mid-scan = %v, want %v", got, []entity.ClientID{other.ID})
+	}
 }
 
 // RFC 14 §2.1: a reboot moves the name to the new ID under a new Boot and

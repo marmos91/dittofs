@@ -226,8 +226,8 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 }
 
 // ByShard lists every client with a mark in shard s, its marks included:
-// the clients a shard beginning grace tells to reclaim. A record deleted
-// between the scan and its read is skipped.
+// the clients a shard beginning grace tells to reclaim. A record deleted, or
+// its mark dropped, between the scan and its read is skipped.
 //
 // ponytail: a scan of every client record and mark, since a mark's key puts
 // the shard last; a shard runs it once, when its grace begins. Add a
@@ -255,7 +255,7 @@ func (c Clients) ByShard(ctx context.Context, s entity.ShardID) iter.Seq2[entity
 				continue
 			}
 			cl, err := c.Get(ctx, id)
-			if merrs.IsNotFoundError(err) {
+			if merrs.IsNotFoundError(err) || err == nil && !slices.ContainsFunc(cl.Shards, func(m entity.ShardMark) bool { return m.Shard == s }) {
 				continue
 			}
 			if !yield(cl, err) || err != nil {
