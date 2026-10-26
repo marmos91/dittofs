@@ -73,7 +73,7 @@ suites:
         needs: [windows]
         blocking: { pr: false }
       nonrace:
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
+        cmd: go test -timeout=25m ./pkg/block/... ./pkg/testutil/... ./internal/bench/...
         env: { DITTOFS_BENCH_LANE: "1" }
         tier: nightly
   integration:
