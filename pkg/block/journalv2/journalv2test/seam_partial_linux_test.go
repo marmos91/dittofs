@@ -29,12 +29,22 @@ func TestPartialWriteIsUndoneByACrash(t *testing.T) {
 	write(t, f, "ab", 0)
 	syncFile(t, f)
 
+	// Only the soft limit is lowered, and it is restored right after the write:
+	// a non-root process cannot raise the hard limit back, and anything the
+	// child writes later, such as its coverage profile at exit, needs the room.
 	signal.Ignore(syscall.SIGXFSZ)
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 4, Max: 4}); err != nil {
+	var prev syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &prev); err != nil {
+		t.Fatalf("read RLIMIT_FSIZE: %v", err)
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 4, Max: prev.Max}); err != nil {
 		t.Skipf("cannot lower RLIMIT_FSIZE: %v", err)
 	}
 
 	n, err := f.WriteAt([]byte("cdef"), 2)
+	if rerr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &prev); rerr != nil {
+		t.Fatalf("restore RLIMIT_FSIZE: %v", rerr)
+	}
 	if err == nil {
 		t.Fatal("a write past the file-size limit succeeded")
 	}
