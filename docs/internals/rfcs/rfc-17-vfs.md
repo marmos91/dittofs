@@ -674,7 +674,7 @@ type Clients interface {
 	Record(ctx context.Context, id Identity, c ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, id Identity, c ClientID) (ClientStatus, error)
 	Disconnect(ctx context.Context, id Identity, c ClientID, s SessionRef) error // an SMB session's last channel ended
-	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while state remains
+	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
 	ReclaimComplete(ctx context.Context, id Identity, c ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, id Identity, c ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
 	TestState(ctx context.Context, id Identity, c ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
@@ -727,7 +727,7 @@ type Locking interface {
 	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
 	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
 	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error) // in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid
-	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind, epoch uint16) error // to GrantNone: a return; epoch: the one the acknowledgement names (RFC 14 §2.4)
+	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: a return; StateError NoRecall: a lease or oplock with no recall in flight (RFC 14 §2.4)
 	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
 }
@@ -860,6 +860,7 @@ type Callbacks interface {
 	Notify(ctx context.Context, w WatchID, changes []Change) error      // SMB CHANGE_NOTIFY, NFS directory notifications
 	Revoked(ctx context.Context, what Revocation)                       // state ended without the client asking: the adapter answers what it holds pending on it
 	LockWaitOver(ctx context.Context, w LockWaiter, granted bool) (refused bool, err error) // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional; refused: the NLM host refused the grant, and the primary releases the lock
+	RecallAny(ctx context.Context, keep int) error // NFSv4.1 CB_RECALL_ANY for read and write delegations; nil and no call for SMB and NFSv4.0 (RFC 14 §5.5)
 }
 
 // Revocation and RevokeReason are RFC 14's (§11.1), aliased in pkg/vfs; shown
@@ -1235,7 +1236,8 @@ record does not list, an administrator's revoke having emptied it included),
 `ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
 it still holds locks; a live open or grant freed), `BadSeqID` (an
-NFSv4.0 owner sequence out of order), `NotYours` (state another client or
+NFSv4.0 owner sequence out of order), `NoRecall` (an acknowledgement of a lease
+or oplock with no recall in flight), `NotYours` (state another client or
 principal holds, §3.1) and `Revoked` (the call names state in its client's
 revoked set, not yet freed; `Admin` tells an administrator's revoke from a
 recall missed).

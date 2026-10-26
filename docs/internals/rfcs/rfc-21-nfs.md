@@ -762,7 +762,8 @@ A **lease** is how long a client's state is kept while it is silent.
   `ErrState` (`ClientBusy`). It ends a client that holds
   nothing: it is refused with `NFS4ERR_CLIENTID_BUSY` while the client still
   holds a session on any node or any open, lock, delegation or layout in any
-  shard, as RFC 8881 §18.50.3 requires — the answering node reads that from the
+  shard, as RFC 8881 §18.50.3 requires, a revoked stateid not yet freed being
+  none of these — the answering node reads that from the
   client record (§3.3), not from its own sessions, and never releases state to
   make the call succeed — and with `NFS4ERR_WRONG_CRED`,
   as Linux answers, when sent by a principal the client's `SP4_MACH_CRED` state protection
@@ -1029,8 +1030,8 @@ and later, none to NFSv4.0, and no directory ones.
   The fence is bounded in time, not tied to the lease: an active client renews
   its lease on every request, so a lease-long fence would never lift.
 - `CB_RECALL_ANY` is sent when a client reaches its grant budget at one
-  primary, 4096 grants, naming 2048 to keep, when the table raises
-  `Sink.RecallAny`; a client at the budget is offered
+  primary, 4096 grants, naming 2048 to keep, through `Callbacks.RecallAny`
+  when the table raises `Sink.RecallAny`; a client at the budget is offered
   no delegation until its count falls below the budget
   ([RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded)).
 - **A lock request recalls a delegation.** A byte-range lock request from any

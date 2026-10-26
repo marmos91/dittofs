@@ -875,12 +875,17 @@ file open locally, until the server takes the promise back.
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
   every open of a file by one client under one key; a key already naming a
   grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
-  `CREATE` context's version travels as `OpenRequest.LeaseVersion`, and a v2
+  v2 create context's epoch travels as `OpenRequest.Epoch`, which a new lease
+  starts from; the grant's `V2` fixes the version at creation, and a v2
   lease's `Epoch` rises with every change of its caching sent to the client,
   the new value sent with the change.
 - A lease or oplock acknowledgement with no break in flight — a duplicate, or
-  one after the break timed out — is `ErrInvalid` from the table, answered
-  `STATUS_UNSUCCESSFUL` for a lease (MS-SMB2 3.3.5.22.2).
+  one after the break timed out — is `ErrState` (`NoRecall`) from the service,
+  answered `STATUS_UNSUCCESSFUL` for a lease (MS-SMB2 3.3.5.22.2) and
+  `STATUS_INVALID_DEVICE_STATE` for an oplock (3.3.5.22.1); one acknowledging
+  a level the break did not ask is `ErrInvalid`,
+  `STATUS_REQUEST_NOT_ACCEPTED` for a lease and
+  `STATUS_INVALID_OPLOCK_PROTOCOL` for an oplock.
 - Directory leases are not offered: `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` is
   clear, and a lease request on a directory is granted none.
 
@@ -2239,8 +2244,8 @@ mapping it needs is here.
 | `Open.Suspended` | the -1 and -2 timestamp sentinels of a set-info (§9.3) | — | `ChangeTime` is never suspended (S15) |
 | `Open.LossSeen` | nothing on the wire | — | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
 | `CachingGrant.Key` | the lease key | — | an oplock has none and covers its one open |
-| `CachingGrant.Epoch` | the v2 lease epoch | — | zero for a v1 lease and an oplock |
-| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | the parent lease key and the lease version the reply must echo, written with a persistent open's lease | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
+| `CachingGrant.Epoch`, `V2` | the v2 lease epoch, starting from the create context's | — | unsent for a v1 lease and an oplock |
+| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | the parent lease key, written with a persistent open's lease | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
 | `LockOwner.Name`; `LockOwner.Stack` true | the `OpenID` | — | SMB locks stack and two opens of one client conflict (§7) |
 | `Lock` (`LockReq.Ranges`) | every `LOCK` element, in order, in one call | — | all or none; an unlock list stops at the first range not held (MS-SMB2 3.3.5.14.1) |
 | `LockReq.Wait` | callback when `SMB2_LOCKFLAG_FAIL_IMMEDIATELY` is clear; none when set | — | only a single-element `LOCK` waits (§7) |
@@ -2328,7 +2333,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNoSpace` — a permanent capacity refusal, as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes it | `STATUS_DISK_FULL` at once |
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
-| `ErrInvalid` — a name RFC 7 refuses; an acknowledgement with no recall in flight; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_UNSUCCESSFUL` for a lease acknowledgement with no break in flight (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
+| `ErrInvalid` — a name RFC 7 refuses; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_REQUEST_NOT_ACCEPTED` or `STATUS_INVALID_OPLOCK_PROTOCOL` for a break acknowledgement (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
 | `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_MEDIA_WRITE_PROTECTED` at once |
 | `ErrNameTooLong` — a name past the share's length limit | `STATUS_OBJECT_NAME_INVALID` at once |
 | `ErrCross` (`OtherShard`) — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: never reaches the adapter; the service copies the bytes server-side and the adapter reports them written ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |
@@ -2743,7 +2748,7 @@ What each method then calls below is
 | `SET_INFO` `Link` | `Link` | |
 | `SET_INFO` `FullEa` | `SetXattr`, `RemoveXattr` | |
 | `SET_INFO` security | `SetACL` | |
-| `OPLOCK_BREAK` (lease or oplock acknowledgement) | `AckRecall` | |
+| `OPLOCK_BREAK` (lease or oplock acknowledgement) | `AckRecall` | `NoRecall` and `ErrInvalid` as §6.2 maps them |
 | `CANCEL` | `CancelLock` for a waiting lock, `Unwatch` for a notification; otherwise none | |
 | `ECHO` | none (adapter only) | |
 | srvsvc `NetShareEnumAll` | `ListShares` | |

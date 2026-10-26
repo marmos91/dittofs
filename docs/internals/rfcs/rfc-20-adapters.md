@@ -707,6 +707,7 @@ through it.
 | `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on alice-pc's session | `CB_RECALL` on the NFSv4.1 back channel |
 | `Notify` | Explorer watches `projects/`; build01 creates a file in it | `CHANGE_NOTIFY` response to the request alice-pc left pending | `CB_NOTIFY` (NFSv4.1, optional) |
 | `LockWaitOver` | build01 waits for a lock alice-pc holds; alice-pc unlocks | the pending `LOCK` request finally answered | `NLMPROC4_GRANTED` RPC to build01's lock manager |
+| `RecallAny` | build01 reaches 4096 delegations at one primary | nothing: SMB has no such request | `CB_RECALL_ANY` keeping 2048, on NFSv4.1 only |
 | `Revoked` | build01's lease expired, an administrator revoked its client, the share was removed or moved | pending requests answered with the protocol's error; a moved share's trees ended | same, by the protocol's own errors |
 
 Each protocol implements the interface once, on a small per-client value that
