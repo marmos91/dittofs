@@ -108,20 +108,19 @@ func (e entry) name() string {
 // a cell that didn't run in only one run in a row.
 func (e entry) alerts() bool { return e.Kind != report.NotRun || e.Runs >= 2 }
 
-// entries are a cell's members of the failing set, as dt run annotates them:
-// each new failure and unexpected pass, else the cell itself when it failed
-// or didn't run. A known, quarantined, flaky or skipped test is none.
+// entries are a cell's members of the failing set: what turns the run red in
+// it, as dt run annotates it.
 func entries(c report.Cell) []entry {
+	tests, alone := c.Red()
 	var out []entry
-	for _, t := range c.Tests {
-		switch {
-		case t.NewFailure():
-			out = append(out, entry{Cell: c.Name, Test: t.Title(), Kind: report.New})
-		case t.Grade == report.UnexpectedPass:
-			out = append(out, entry{Cell: c.Name, Test: t.Title(), Kind: report.UnexpectedPass})
+	for _, t := range tests {
+		kind := report.New
+		if t.Grade == report.UnexpectedPass {
+			kind = report.UnexpectedPass
 		}
+		out = append(out, entry{Cell: c.Name, Test: t.Title(), Kind: kind})
 	}
-	if len(out) == 0 && (c.Result == report.Failed || c.Result == report.NotRun) {
+	if alone {
 		out = append(out, entry{Cell: c.Name, Kind: c.Result})
 	}
 	return out
