@@ -337,10 +337,11 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 // when it reached it, to return some.
 //
 // ponytail: a file is offered no grant while any recall on it is in flight or
-// within one recall deadline of ending, and while any lock waiter is on it,
-// whatever the request delayed there; a grant that would not conflict with it
-// is refused too. Judge the grant against the delayed requests themselves if
-// grants are measured lost on files shared that way.
+// within one recall deadline of ending, so up to 90 s after a delegation's,
+// and while any lock waiter is on it, whatever the request delayed there; a
+// grant that would not conflict with it is refused too. Narrow it to grants
+// that conflict with the delayed requests when files are measured going
+// ungranted after recalls a new grant would not have raced.
 func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
 	caching := 0
 	for _, g := range e.grants {
@@ -540,10 +541,11 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		}
 		switch {
 		case next:
-			// decision: a recall's next stage is not held to maxUnsent: it
-			// continues a recall already counted once, and refusing it would
-			// leave the grant mid-recall with nothing in flight to end it.
-			// Count it against the bound if stages are seen filling it.
+			// decision: only a recall's first stage is held to maxUnsent; a
+			// later one is queued past it, since refusing it would leave the
+			// grant mid-recall with nothing in flight to end it, and the
+			// stages are bounded by the grants already recalling. Count them
+			// against the bound if stages are seen filling it.
 			t.idx.Lock()
 			t.unsent++
 			t.idx.Unlock()
