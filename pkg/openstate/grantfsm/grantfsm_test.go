@@ -49,7 +49,7 @@ func TestCompatible(t *testing.T) {
 // stage, keeping read caching while write or handle caching goes, and every
 // stage raises the epoch.
 func TestProgressiveBreak(t *testing.T) {
-	g := New(rwh, true)
+	g := New(rwh, ptr(0))
 	if !g.Break(rh) || g.Recall.To != rh || g.Epoch != 2 {
 		t.Fatalf("first break: %+v, recall %+v; want a recall to RH at epoch 2", g, g.Recall)
 	}
@@ -74,7 +74,7 @@ func TestProgressiveBreak(t *testing.T) {
 // late answer to an earlier stage is refused, or with none in flight what the
 // grant holds.
 func TestAck(t *testing.T) {
-	g := New(rwh, true)
+	g := New(rwh, ptr(0))
 	g.Break(rh)
 	g.Break(None)
 	if _, err := g.Ack(rwh); !errors.Is(err, ErrNotHeld) {
@@ -88,7 +88,7 @@ func TestAck(t *testing.T) {
 	}
 	g.Ack(Read)
 	g.Ack(None)
-	g = New(rh, false)
+	g = New(rh, nil)
 	if _, err := g.Ack(rw); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("unasked ack to caching not held: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestAck(t *testing.T) {
 // A recall that times out cuts the grant to none and raises no epoch: the cut
 // is sent to no one.
 func TestTimeout(t *testing.T) {
-	g := New(rwh, true)
+	g := New(rwh, ptr(0))
 	g.Break(rh)
 	e := g.Epoch
 	g.Timeout()
@@ -112,7 +112,7 @@ func TestTimeout(t *testing.T) {
 // A later open widens a grant only to a valid strict superset within what is
 // allowed, never during a recall, and raises the epoch.
 func TestUpgrade(t *testing.T) {
-	g := New(Read, true)
+	g := New(Read, ptr(0))
 	if g.Upgrade(rwh, rh) || g.Upgrade(Read, rwh) {
 		t.Fatalf("an upgrade past what is allowed, or to the same kind: %+v", g)
 	}
@@ -122,5 +122,23 @@ func TestUpgrade(t *testing.T) {
 	g.Break(Read)
 	if g.Upgrade(rwh, rwh) {
 		t.Fatalf("an upgrade during a recall: %+v", g)
+	}
+}
+
+func ptr(v uint16) *uint16 { return &v }
+
+// A v2 grant counts from its request's epoch, raised for the grant itself,
+// and wraps through zero; any other is not counted.
+func TestEpoch(t *testing.T) {
+	if g := New(rh, ptr(0x4711)); !g.V2 || g.Epoch != 0x4712 {
+		t.Errorf("a v2 grant from 0x4711: %+v, want epoch 0x4712", g)
+	}
+	g := New(rwh, ptr(0xffff))
+	if g.Break(rh); g.Epoch != 1 {
+		t.Errorf("a break past 0xffff: epoch %d, want 1, through zero", g.Epoch)
+	}
+	g = New(rwh, nil)
+	if g.Break(rh); g.V2 || g.Epoch != 0 {
+		t.Errorf("a v1 grant's break: %+v, want no epoch", g)
 	}
 }

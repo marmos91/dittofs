@@ -45,7 +45,8 @@ func Compatible(a, b Kind) bool {
 // Grant is one grant's state.
 type Grant struct {
 	Kind   Kind
-	Epoch  uint16  // raised by each change of Kind it announces; zero: not counted
+	Epoch  uint16  // a v2 lease's: raised by each change of Kind it announces, wrapping through zero
+	V2     bool    // the epoch is counted; fixed when the grant is made
 	Recall *Recall // the recall in flight; nil: none
 }
 
@@ -55,22 +56,21 @@ type Recall struct {
 	Required Kind // the kind every conflict met since it began leaves: To, or less
 }
 
-// New is a grant of kind k, its epoch counted from 1 if counted.
-func New(k Kind, counted bool) Grant {
+// New is a grant of kind k. A v2 lease's epoch, the one its request carries,
+// is counted from there, and raised for the grant itself; nil: not counted.
+func New(k Kind, epoch *uint16) Grant {
 	g := Grant{Kind: k}
-	if counted {
-		g.Epoch = 1
+	if epoch != nil {
+		g.Epoch, g.V2 = *epoch, true
+		g.raise()
 	}
 	return g
 }
 
-// raise raises a counted epoch, never to zero, which means not counted.
+// raise raises a counted epoch.
 func (g *Grant) raise() {
-	if g.Epoch == 0 {
-		return
-	}
-	if g.Epoch++; g.Epoch == 0 {
-		g.Epoch = 1
+	if g.V2 {
+		g.Epoch++
 	}
 }
 

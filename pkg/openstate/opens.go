@@ -66,6 +66,7 @@ type OpenRequest struct {
 	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
 	Lease         LeaseKey  // the key of the lease to cover it; zero: none
+	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
 	Want          GrantKind // the grant kind asked for; none: no grant
 	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 }

@@ -79,20 +79,22 @@ func (f *fixture) ack(who Caller, g *CachingGrant, to GrantKind) error {
 
 // One grant per client, lease key and file: a second open under the key is
 // covered by it and breaks nothing, a third under another key breaks it, and
-// each break carries a higher epoch. A delegation is never a handle grant,
-// and its holder may return it unasked.
+// each break carries a higher epoch. A v2 lease counts from its request's
+// epoch, and keeps its version whatever a later open under its key asks; a
+// v1 lease's epoch stays zero. A delegation is never a handle grant, and its
+// holder may return it unasked.
 func TestOneGrantPerLeaseKey(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
 	file := anyFile()
 	k1, k2 := LeaseKey{1}, LeaseKey{2}
-	o1, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: k1, Want: rwh})
-	if g == nil || g.Kind != rwh || o1.Grant != g.ID {
-		t.Fatalf("first open's grant %+v, open covered by %v", g, o1.Grant)
+	o1, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: k1, Epoch: ptr[uint16](0x4711), Want: rwh})
+	if g == nil || g.Kind != rwh || o1.Grant != g.ID || !g.V2 || g.Epoch != 0x4712 {
+		t.Fatalf("first open's grant %+v, open covered by %v; want a v2 lease at epoch 0x4712", g, o1.Grant)
 	}
 	o2, g2 := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: k1, Want: rwh})
-	if g2 == nil || g2.ID != g.ID || o2.Grant != g.ID || len(f.sink.takeRecalls()) != 0 {
-		t.Fatalf("second open under the key: grant %+v, covered by %v; want the first's, no recall", g2, o2.Grant)
+	if g2 == nil || g2.ID != g.ID || o2.Grant != g.ID || !g2.V2 || g2.Epoch != g.Epoch || len(f.sink.takeRecalls()) != 0 {
+		t.Fatalf("second open under the key, asking v1: grant %+v, covered by %v; want the first's, unchanged, no recall", g2, o2.Grant)
 	}
 	if _, err := f.open(a, file, OpenRequest{Access: rd, Lease: k2, Want: rwh}); delayedFor(err) != DelayRecall {
 		t.Fatalf("an open under a second key: %v, want ErrDelay(DelayRecall)", err)
@@ -100,6 +102,14 @@ func TestOneGrantPerLeaseKey(t *testing.T) {
 	r := f.sink.takeRecalls()
 	if len(r) != 1 || r[0].g.ID != g.ID || r[0].to != rh || r[0].g.Epoch <= g.Epoch {
 		t.Fatalf("recalls %+v; want the lease to RH, past epoch %d", r, g.Epoch)
+	}
+	v1 := anyFile()
+	_, g1 := f.grantOpen(t, a, v1, OpenRequest{Access: rd, Lease: LeaseKey{3}, Want: rwh})
+	if _, err := f.open(f.caller(t, smb("pc-b")), v1, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if r := f.sink.takeRecalls(); g1 == nil || g1.V2 || len(r) != 1 || r[0].g.Epoch != 0 {
+		t.Fatalf("a v1 lease %+v, its recalls %+v; want no epoch", g1, r)
 	}
 	if _, err := f.open(a, anyFile(), OpenRequest{Access: rd, Lease: k1}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("the key on another file: %v, want ErrInvalid", err)
@@ -133,7 +143,7 @@ func TestLeaseUpgradesOnALaterOpen(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
 	file := anyFile()
-	o1, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead})
+	o1, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Epoch: ptr[uint16](0), Want: GrantRead})
 	_, up := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 	if up == nil || up.ID != g.ID || up.Kind != rh || up.Epoch <= g.Epoch {
 		t.Fatalf("upgrade: %+v, from %+v", up, g)

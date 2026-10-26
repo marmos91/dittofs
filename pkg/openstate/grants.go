@@ -43,7 +43,8 @@ type CachingGrant struct {
 	File   entity.FileID
 	Kind   GrantKind
 	Key    LeaseKey // zero: it covers one open, or none
-	Epoch  uint16   // raised by every change of Kind it announces; zero: not counted
+	Epoch  uint16   // a v2 lease's: starts at its request's, raised by every change of Kind sent to the holder
+	V2     bool     // a v2 lease, whose Epoch is counted and sent; fixed when the lease is made
 	Recall *Recall  // a recall in flight; nil: none
 }
 
@@ -129,7 +130,7 @@ func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
 
 // public is g as a caller sees it, on e's file.
 func (g *grant) public(f entity.FileID) CachingGrant {
-	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch}
+	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch, V2: g.fsm.V2}
 	if r := g.fsm.Recall; r != nil {
 		p.Recall = &Recall{To: r.To, Deadline: g.sent}
 	}
@@ -282,6 +283,10 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 		return nil
 	}
 	ck := clientKey{who.Client, r.Lease}
+	var epoch *uint16
+	if r.Lease != (LeaseKey{}) {
+		epoch = r.Epoch
+	}
 	ref, err := t.mintUnder(e, who.Client, f.Shard, StateGrant, func(StateRef) error {
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
 			return ErrDelay
@@ -298,7 +303,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest) *
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, r.Lease != (LeaseKey{})), counted: true}
+	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, epoch), counted: true}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
