@@ -309,6 +309,11 @@ func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 	sinceOnly.index = nil
 	diverged(t, m.Compare(t.Context(), shareA, sinceOnly))
 
+	// And so is the index.
+	indexOnly := withLen(view, math.MaxInt64).(planted)
+	indexOnly.since = nil
+	diverged(t, m.Compare(t.Context(), shareA, indexOnly))
+
 	// A delete covers the whole file: Since yields it as [0, MaxInt64), and a
 	// delete yielded with any other extent is refused.
 	h := modelView{j, shareB}
