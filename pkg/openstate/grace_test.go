@@ -239,7 +239,7 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 
 	// Shard 7 is lost again after c was shown its instance: what it
 	// reclaimed there is gone, and its reference stale.
-	if err := g.Recovery().ServeShard(ctx, 7, g.shards[7].instance+100); err != nil {
+	if err := g.Recovery().ServeShard(ctx, entity.ShareID{}, 7, g.shards[7].instance+100); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Recovery().TestState(ctx, c, []StateRef{reclaimed.Ref, held.Ref}); !errors.Is(err[0], ErrStaleState) || !errors.Is(err[1], ErrStaleState) {
@@ -393,7 +393,7 @@ func TestShardLossToldToHosts(t *testing.T) {
 		n, _ := f.fs.Store.NSMState(ctx)
 		toldAt = append(toldAt, n)
 	}
-	if err := g.Recovery().ServeShard(ctx, 5, instances.Add(1)); err != nil {
+	if err := g.Recovery().ServeShard(ctx, entity.ShareID{}, 5, instances.Add(1)); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range toldAt {
@@ -418,7 +418,7 @@ func TestShardLossToldToHosts(t *testing.T) {
 	}
 	raised, _ := f.fs.Store.NSMState(ctx)
 	for _, s := range testShards[:2] {
-		if err := g.Recovery().ServeShard(ctx, s, instances.Add(1)); err != nil {
+		if err := g.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -471,7 +471,7 @@ func TestMissJudgedByGraceInstance(t *testing.T) {
 	f := newFixture(t)
 	const s ShardID = 9
 	serve := func(g *fixture, inst uint64) {
-		if err := g.Recovery().ServeShard(ctx, s, inst); err != nil {
+		if err := g.Recovery().ServeShard(ctx, entity.ShareID{}, s, inst); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -555,7 +555,7 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 0 {
 		t.Errorf("shards listed by the refusals: %+v", rec.Shards)
 	}
-	if err := f.Recovery().ServeShard(ctx, 9, 1); err != nil {
+	if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, 9, 1); err != nil {
 		t.Fatal(err)
 	}
 	o := f.mustOpen(t, c, file, OpenRequest{Access: rd})
@@ -564,7 +564,7 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	}
 	// Begun again under the same instance, as a handover is, it lost
 	// nothing: no grace.
-	if err := f.Recovery().ServeShard(ctx, 9, 1); err != nil {
+	if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, 9, 1); err != nil {
 		t.Fatal(err)
 	}
 	f.mustOpen(t, c, in(9), OpenRequest{Access: rd})
@@ -734,7 +734,7 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 	p, c := f.caller(t, smb("p-pc")), f.caller(t, nfsAs("c", entity.RecoverStatus))
 	for i := range 20 {
 		s := ShardID(100 + i)
-		if err := f.Recovery().ServeShard(ctx, s, instances.Add(1)); err != nil {
+		if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
 		file := in(s)
@@ -753,7 +753,7 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 		go f.step(file.ID, func(*entry) error { close(hold); <-release; return nil })
 		<-hold
 		served := make(chan error, 1)
-		go func() { served <- f.Recovery().ServeShard(ctx, s, instances.Add(1)) }()
+		go func() { served <- f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)) }()
 		waitUsers(2) // the loss waits for the file's step
 		if _, err := f.open(c, in(s), OpenRequest{Access: rd}); !errors.Is(err, ErrDelay) {
 			t.Errorf("an open while the shard's old state goes: %v, want ErrDelay", err)

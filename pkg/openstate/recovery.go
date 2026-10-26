@@ -20,15 +20,15 @@ type GraceRef struct {
 // loss, and a client's references with no file handle; it runs at the
 // primary of the shard each names.
 type Recovery interface {
-	// ServeShard begins serving s under its grace instance: a call minting
-	// state in a shard not begun is refused. Unless s is already served
-	// under instance, its state was lost, so s enters grace for one lease
-	// period: only the clients its records name may reclaim, and every
-	// other request for state is ErrGrace. Grace ends early once every such
-	// client has finished reclaiming or has ended. The restart-notice number
-	// is raised before grace when an NLM host is named, and each client
-	// told by Revoked is told then.
-	ServeShard(ctx context.Context, s ShardID, instance uint64) error
+	// ServeShard begins serving s, a shard of share, under its grace
+	// instance: a call minting state in a shard not begun is refused. Unless
+	// s is already served under instance, its state was lost, so s enters
+	// grace for one lease period: only the clients its records name may
+	// reclaim, and every other request for state is ErrGrace. Grace ends
+	// early once every such client has finished reclaiming or has ended. The
+	// restart-notice number is raised before grace when an NLM host is
+	// named, and each client told by Revoked is told then.
+	ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error
 	// ReclaimComplete ends the caller's reclaim in the grace instances it
 	// was shown, and in no later one of the same shard. A client that does
 	// not recover by status never finishes this way: its call ends nothing.
@@ -91,7 +91,10 @@ func (sh *served) settle() {
 	}
 }
 
-func (v recovery) ServeShard(ctx context.Context, s ShardID, instance uint64) error {
+// ponytail: share is taken but not read, since nothing is installed from the
+// durable-open index yet, whose range of a shard is keyed by its share. Read
+// it once ServeShard installs the shard's persistent opens.
+func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
