@@ -74,10 +74,8 @@ type outbox struct {
 // among the grant's recalls, so its deadline is armed only if it is still the
 // one in flight.
 type recallOut struct {
-	g     CachingGrant
-	to    GrantKind
-	token uint64
-	gen   uint32
+	g   CachingGrant
+	gen uint32
 }
 
 // waitOver is one LockWaitOver.
@@ -114,7 +112,7 @@ func (o *outbox) raise(t *Table, sink Sink) {
 		sink.RecallAny(c, keepGrants)
 	}
 	for _, r := range o.recalls {
-		sink.RecallGrant(r.g.Client, r.g, r.to)
+		sink.RecallGrant(r.g.Client, r.g, r.g.Recall.To)
 		t.idx.Lock()
 		t.unsent--
 		t.idx.Unlock()

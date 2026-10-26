@@ -218,14 +218,14 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 func (t *Table) queueRecall(e *entry, g *grant, out *outbox) {
 	g.gen++
 	g.sent = 0
-	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), to: g.fsm.Recall.To, token: g.id.Token, gen: g.gen})
+	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), gen: g.gen})
 }
 
 // arm starts the deadline of the recall r handed to the Sink, if it is still
 // the one in flight, and marks its file for the timer.
 func (t *Table) arm(r recallOut) {
 	_ = t.step(r.g.File, func(e *entry) error {
-		g := e.grants[r.token]
+		g := e.grants[r.g.ID.Token]
 		if g == nil || g.gen != r.gen || g.fsm.Recall == nil {
 			return nil
 		}
