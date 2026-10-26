@@ -63,7 +63,14 @@ func TestGraceAdmitsOnlyReclaims(t *testing.T) {
 		}
 	}
 
-	again := g.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo"), Reclaim: true})
+	res, err := g.Opens().Open(ctx, c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo"), Reclaim: true, Want: rw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Grant != nil {
+		t.Errorf("a reclaim in grace was offered a grant: %+v", *res.Grant)
+	}
+	again := res.Open
 	g.mustLock(t, c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(again), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
 	if _, err := g.lock(d, file, LockReq{Owner: owner(d, "lo"), Ranges: []LockRange{x(5, 1)}, Wait: WaitCallback, Reclaim: true}); !errors.Is(err, ErrReclaimConflict) {
 		t.Errorf("a second client's reclaim of the range: %v, want ErrReclaimConflict", err)
