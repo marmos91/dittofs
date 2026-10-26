@@ -5,17 +5,26 @@ import (
 	"hash/crc32"
 )
 
-// Test values. Each field gets its own range of byte values, so a field
-// written a byte off, big-endian or in another field's place reads back as
-// bytes from the wrong range, never as the right value by accident. Integers
-// are chosen so their little-endian bytes count up: 0x0807060504030201 is
-// stored as 01 02 03 04 05 06 07 08.
+// Test values. Within one structure every field gets its own range of byte
+// values, so a field written a byte off, big-endian or in another field's place
+// reads back as bytes from the wrong range, never as the right value by
+// accident. Separate structures never share a buffer, so ranges may repeat
+// across them. Integers are chosen so their little-endian bytes count up:
+// 0x0807060504030201 is stored as 01 02 03 04 05 06 07 08.
 //
 //	0x01-0x08  segment id         0x41-0x44  stream number
 //	0x10-0x1f  journal identity   0x47-0x48  catalog layout version
 //	0x21-0x28  marker offset      0x51-0x52  format version
 //	0x31-0x38  predecessor        0x53-0x5a  footer offset
 //	0x60-0x6f  installation ID    0x70-0xff  catalog entries
+//
+// Within the catalog entries' range, each field of a catalog entry has its own
+// range:
+//
+//	0x70-0x7f  FileID             0xa1-0xa8  length
+//	0x81-0x88  file offset        0xb1-0xb8  sequence number
+//	0x91-0x94  recordOffset       0xc1       kind
+//	                              0xd1-0xd4  share tag
 
 var testIdentity = [16]byte{
 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -55,6 +64,19 @@ var testEntries = func() [][CatalogEntrySize]byte {
 
 	return e[:]
 }()
+
+var testCatalogEntry = Entry{
+	FileID: [16]byte{
+		0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
+		0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f,
+	},
+	Offset:       0x8887868584838281,
+	RecordOffset: 0x94939291,
+	Length:       0xa8a7a6a5a4a3a2a1,
+	Seq:          0xb8b7b6b5b4b3b2b1,
+	Kind:         0xc1,
+	Tag:          0xd4d3d2d1,
+}
 
 // wantCRC is the standard library's CRC32C of b, computed here and not by
 // the package, so a test never checks raw against itself.
