@@ -1,5 +1,7 @@
 package journalv2
 
+import "context"
+
 // RepackScope aims a repack pass: at the segments holding one share's records,
 // at a set of segments, or, when zero, at every segment.
 type RepackScope struct {
@@ -17,6 +19,6 @@ type RepackScope struct {
 // their offloaded bits, and discards nothing. It decides which segments to
 // repack without reading them, taking the ones with the least live payload
 // first, and never selects a segment a running offer pins.
-func (j *Journal) Repack(budget int64, scope RepackScope) (freed int64, err error) {
+func (j *Journal) Repack(ctx context.Context, budget int64, scope RepackScope) (freed int64, err error) {
 	return 0, ErrNotImplemented
 }

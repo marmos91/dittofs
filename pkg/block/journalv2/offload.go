@@ -1,6 +1,9 @@
 package journalv2
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 // Offer is a frozen view of one file's dirty content, taken when an offload
 // call starts. A write or a removal while the call's callback runs changes what
@@ -50,7 +53,7 @@ type Capture struct {
 
 // Offload offers the dirty content of file id at or below through, and marks
 // exactly the extents reported offloaded. It is OffloadMany over one Capture.
-func (h *Handle) Offload(id FileID, through Version, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error {
+func (h *Handle) Offload(ctx context.Context, id FileID, through Version, limit, widen int64, fn func(ctx context.Context, o Offer, report func(offloaded []Extent) error) error) error {
 	return ErrNotImplemented
 }
 
@@ -91,10 +94,17 @@ func (h *Handle) Offload(id FileID, through Version, limit, widen int64, fn func
 // reserved headroom it appends none. After fn returns, report fails with
 // ErrOfferEnded.
 //
+// Once fn has been called, the call returns fn's error, possibly wrapped, or
+// nil: every append happened inside report.
+//
+// fn receives a context derived from ctx, so the work fn does under it, such
+// as an upload, ends with the call's deadline. report ignores ctx: what it
+// records has already committed, and refusing it would cost a second upload.
+//
 // Partial success is honoured: every extent reported before fn returns stays
 // marked, whatever fn returns, and the error fn returns covers only what was
 // not reported. No lock is held while fn runs.
-func (h *Handle) OffloadMany(files []Capture, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error {
+func (h *Handle) OffloadMany(ctx context.Context, files []Capture, limit, widen int64, fn func(ctx context.Context, offers []Offer, report func(id FileID, offloaded []Extent) error) error) error {
 	return ErrNotImplemented
 }
 
@@ -104,14 +114,14 @@ func (h *Handle) OffloadMany(files []Capture, limit, widen int64, fn func(offers
 // appends a record so the bits survive a restart, except below half the
 // reserved headroom, where it sets the bits and appends none, so a crash
 // loses them. It may be called on any file at any time.
-func (h *Handle) MarkOffloaded(id FileID, extents []Extent, oldest, newest Version) error {
+func (h *Handle) MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error {
 	return ErrNotImplemented
 }
 
 // Unmark clears the offloaded bit of the held extents of file id that extents
 // names, and appends a record so the change survives a restart. It may be
 // called on any file at any time.
-func (h *Handle) Unmark(id FileID, extents []Extent) error {
+func (h *Handle) Unmark(ctx context.Context, id FileID, extents []Extent) error {
 	return ErrNotImplemented
 }
 
@@ -128,6 +138,6 @@ func (h *Handle) Unmark(id FileID, extents []Extent) error {
 // naming LimitHeadroom when the headroom is exhausted, or LimitIndex when
 // splitting a held extent would pass the index's cap on what removals add. It
 // takes the file append domain.
-func (h *Handle) Release(id FileID, extents []Extent) error {
+func (h *Handle) Release(ctx context.Context, id FileID, extents []Extent) error {
 	return ErrNotImplemented
 }
