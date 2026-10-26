@@ -81,13 +81,17 @@ const poll = 10 * time.Millisecond
 // now, and registers a cleanup that fails tb if, when the test ends,
 // goroutines started since are still running, descriptors opened since are
 // still open, or the live heap has grown by more than opts.HeapSlack. Where
-// the platform cannot list descriptors, the descriptor check does not run;
-// under the race detector, the heap check does not run. The watch logs each
-// check it skips.
+// the descriptors cannot be listed, the descriptor check does not run; under
+// the race detector, the heap check does not run. The watch logs each check
+// it skips.
 //
-// Watches must not overlap: a watched test must not run in parallel with
-// another, and a watched test's subtests must not be watched. Two watches
-// active at once both fail.
+// The checks are process-wide, so no other test of the package may run during
+// a watch: a watched test must not call t.Parallel, nor run beside one that
+// does, and its subtests must not be watched.
+//
+// decision: only the overlap of two watches is detected, and both fail. An
+// unwatched test running in parallel goes unseen, and its goroutines,
+// descriptors and heap are blamed on the watched one.
 //
 // Cleanups run last-in first-out, so call Watch before anything it should
 // watch registers its own cleanup: the check then runs after they have closed.
@@ -100,7 +104,7 @@ func Watch(tb testing.TB, opts Options) {
 	before := goroutines()
 	fdsBefore, fdsChecked := descriptors()
 	if !fdsChecked {
-		tb.Logf("prof: this platform lists no descriptors; the descriptor check does not run")
+		tb.Logf("prof: the process's descriptors cannot be listed here; the descriptor check does not run")
 	}
 	slack := opts.HeapSlack
 	if slack == 0 {
@@ -120,7 +124,8 @@ func Watch(tb testing.TB, opts Options) {
 		// lock would deadlock a watched test that calls t.Parallel, or a
 		// watched parent whose subtests are watched too.
 		if w.end() {
-			tb.Errorf("prof: overlapping watches: another watch was active during this one, and the checks are process-wide, so neither can be trusted; do not run watched tests in parallel")
+			tb.Errorf("prof: overlapping watches: another watch was active during this one. " +
+				"The checks are process-wide, so neither can be trusted; do not run watched tests in parallel")
 			return
 		}
 
@@ -134,10 +139,11 @@ func Watch(tb testing.TB, opts Options) {
 
 		var leaked []string
 		var fdsLeaked []string
+		fdsListed := true
 		for deadline := time.Now().Add(settle); ; time.Sleep(poll) {
 			leaked = leakedGoroutines(before)
 			if fdsChecked {
-				fdsLeaked = leakedDescriptors(fdsBefore)
+				fdsLeaked, fdsListed = leakedDescriptors(fdsBefore)
 			}
 			if len(leaked)+len(fdsLeaked) == 0 || time.Now().After(deadline) {
 				break
@@ -147,6 +153,12 @@ func Watch(tb testing.TB, opts Options) {
 		var failures []string
 		if len(leaked) > 0 {
 			failures = append(failures, fmt.Sprintf("%d goroutine(s) leaked:\n\n%s", len(leaked), strings.Join(leaked, "\n\n")))
+		}
+		if !fdsListed {
+			// decision: a listing that worked at the start and fails at the
+			// end fails the watch rather than passing it, since a check that
+			// cannot look must not report that it saw nothing.
+			failures = append(failures, "the process's descriptors could not be listed at the end of the test")
 		}
 		if len(fdsLeaked) > 0 {
 			failures = append(failures, fmt.Sprintf("%d descriptor(s) leaked: %s", len(fdsLeaked), strings.Join(fdsLeaked, ", ")))
@@ -186,13 +198,17 @@ func warmPoller() {
 }
 
 // leakedDescriptors returns the descriptors open now that were not in before,
-// each as its number and, where the platform names it, its file.
+// each as its number and, where the platform names it, its file, and whether
+// the descriptors could be listed.
 //
 // ponytail: descriptors are compared by number only, so a test that closes a
 // descriptor opened before the watch and leaks one that reuses its number goes
 // unseen. Compare the Linux targets too if such a leak ever slips through.
-func leakedDescriptors(before map[int]string) []string {
-	now, _ := descriptors()
+func leakedDescriptors(before map[int]string) ([]string, bool) {
+	now, ok := descriptors()
+	if !ok {
+		return nil, false
+	}
 	var leaked []int
 	for fd := range now {
 		if _, ok := before[fd]; !ok {
@@ -209,5 +225,5 @@ func leakedDescriptors(before map[int]string) []string {
 		}
 	}
 
-	return out
+	return out, true
 }

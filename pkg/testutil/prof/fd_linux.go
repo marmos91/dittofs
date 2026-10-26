@@ -6,9 +6,9 @@ import (
 )
 
 // descriptors returns the process's open descriptors, each with the file it
-// refers to, and true: Linux lists them in /proc/self/fd.
+// refers to, from /proc/self/fd, and whether that could be read.
 func descriptors() (map[int]string, bool) {
-	fds := listDescriptors("/proc/self/fd")
+	fds, ok := listDescriptors("/proc/self/fd")
 	for fd := range fds {
 		// A descriptor closed since the listing has no link left; it keeps
 		// its empty name.
@@ -16,5 +16,5 @@ func descriptors() (map[int]string, bool) {
 		fds[fd] = target
 	}
 
-	return fds, true
+	return fds, ok
 }

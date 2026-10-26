@@ -43,6 +43,24 @@ func TestWatchFailsOnRetainedHeap(t *testing.T) {
 	}
 }
 
+func TestWatchFailsOnRetainedHeapAfterEarlierGarbage(t *testing.T) {
+	garbage := make([]byte, 64<<20)
+	for i := 0; i < len(garbage); i += 4096 {
+		garbage[i] = 1
+	}
+	garbage = nil
+	_ = garbage
+	rec := newRecorder(t)
+
+	Watch(rec, Options{})
+	plantRetained(t, 64<<20)
+	rec.finish()
+
+	if !rec.Failed() {
+		t.Fatal("64 MiB retained by the test did not fail the watch when 64 MiB of garbage preceded it")
+	}
+}
+
 func TestWatchPassesHeapDroppedBeforeTheEnd(t *testing.T) {
 	rec := newRecorder(t)
 

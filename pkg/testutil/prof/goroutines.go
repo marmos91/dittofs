@@ -6,15 +6,6 @@ import (
 	"strings"
 )
 
-// ignored names frames of goroutines the standard library starts lazily, on
-// first use, and keeps for the life of the process. A test that happens to be
-// the first user would otherwise be blamed for them.
-var ignored = []string{
-	"os/signal.signal_recv",
-	"os/signal.loop",
-	"runtime.ensureSigM",
-}
-
 // goroutines returns every live goroutine's stack, keyed by goroutine id.
 func goroutines() map[uint64]string {
 	out := make(map[uint64]string)
@@ -49,25 +40,21 @@ func dump() []byte {
 }
 
 // leakedGoroutines returns the stacks of the goroutines live now that were not
-// in before, leaving out the ones the standard library starts for itself.
+// in before.
+//
+// decision: no goroutine is exempt, not even the ones the standard library
+// starts on first use and keeps for the life of the process. A test that is
+// the first user of os/signal is blamed for its goroutines, and on macOS for
+// its descriptors too, which no goroutine filter could excuse. Warm such a
+// package up before the watch, as Watch does the poller, once a watched test
+// needs one.
 func leakedGoroutines(before map[uint64]string) []string {
 	var leaked []string
 	for id, stack := range goroutines() {
-		if _, ok := before[id]; ok || isIgnored(stack) {
-			continue
+		if _, ok := before[id]; !ok {
+			leaked = append(leaked, stack)
 		}
-		leaked = append(leaked, stack)
 	}
 
 	return leaked
-}
-
-func isIgnored(stack string) bool {
-	for _, frame := range ignored {
-		if strings.Contains(stack, frame) {
-			return true
-		}
-	}
-
-	return false
 }

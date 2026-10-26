@@ -8,18 +8,19 @@ import (
 )
 
 // listDescriptors returns the open descriptors the directory dir lists, one
-// entry per descriptor, leaving out the one used to read dir itself.
-func listDescriptors(dir string) map[int]string {
+// entry per descriptor, leaving out the one used to read dir itself, and
+// whether dir could be read.
+func listDescriptors(dir string) (map[int]string, bool) {
 	d, err := os.Open(dir)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer func() { _ = d.Close() }()
 
 	own := int(d.Fd())
 	names, err := d.Readdirnames(-1)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	out := make(map[int]string, len(names))
@@ -31,5 +32,5 @@ func listDescriptors(dir string) map[int]string {
 		out[fd] = ""
 	}
 
-	return out
+	return out, true
 }
