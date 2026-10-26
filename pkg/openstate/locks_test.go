@@ -71,11 +71,14 @@ func (f *fixture) unlock(t *testing.T, who Caller, file FileKey, o LockOwner, rs
 }
 
 // holder is the lock that refuses an exclusive lock of r by an owner holding
-// nothing, or nil.
+// nothing, or nil, read under the file's step so it answers in grace too.
 func (f *fixture) holder(t *testing.T, file FileKey, r ByteRange) *Lock {
 	t.Helper()
-	h, err := f.Locks().TestLock(ctx, Caller{}, file, LockOwner{Name: []byte("tester")}, r, true)
-	if err != nil {
+	var h *Lock
+	if err := f.step(file.ID, func(e *entry) error {
+		h = e.blocker(LockOwner{Name: []byte("tester")}, LockRange{r, true}, len(e.waiters))
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return h

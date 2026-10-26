@@ -94,6 +94,26 @@ func TestGraceAdmitsOnlyReclaims(t *testing.T) {
 	g.mustLock(t, d, in(5), LockReq{Owner: owner(d, "lo"), Ranges: []LockRange{x(0, 10)}})
 }
 
+// In grace a test of a range another client held before the loss is
+// ErrGrace, since that lock is not held again until it is reclaimed; after
+// grace it is answered as usual.
+func TestTestLockInGrace(t *testing.T) {
+	f := newFixture(t)
+	c, d := f.caller(t, nfsAs("c", entity.RecoverStatus)), f.caller(t, nfsAs("d", entity.RecoverStatus))
+	file := in(5)
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.renew(t, c, d)
+	if h, err := g.Locks().TestLock(ctx, d, file, owner(d, "lo"), br(0, 1), true); !errors.Is(err, ErrGrace) {
+		t.Errorf("TestLock in grace of a range c held: %+v, %v; want ErrGrace", h, err)
+	}
+	g.pass(t, leasePeriod, c.Client, d.Client)
+	if h, err := g.Locks().TestLock(ctx, d, file, owner(d, "lo"), br(0, 1), true); err != nil || h != nil {
+		t.Errorf("TestLock after grace: %+v, %v; want no conflict", h, err)
+	}
+}
+
 // In grace, anonymous I/O waits for its end in a shard whose records name a
 // client that can hold a deny mode or a mandatory lock, and not in one that
 // names only NLM hosts, which hold neither. A shard whose records name only

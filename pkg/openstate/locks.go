@@ -104,7 +104,8 @@ type Locks interface {
 	// owner's own lock or unlock of them answered first, which it leaves.
 	WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refused bool) error
 	// TestLock is the lock that would refuse o's lock of r, or nil; it
-	// changes nothing. o is the caller's client's owner.
+	// changes nothing. o is the caller's client's owner. It is admitted as a
+	// lock that is no reclaim is, so in grace it is ErrGrace.
 	TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
@@ -790,6 +791,11 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 	}
 	var held *Lock
 	err := t.step(f.ID, func(e *entry) error {
+		// In grace the locks still to be reclaimed are not held yet, so a
+		// test is refused as a lock is.
+		if _, err := t.admit(who, f.Shard, false); err != nil {
+			return err
+		}
 		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
 		return nil
 	})
