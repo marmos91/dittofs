@@ -91,7 +91,10 @@ func (c *clients) asUser(argv []string, dir string, env []string) ([]string, err
 func upClients(ctx context.Context, n, port int, logs string, out io.Writer) (*clients, error) {
 	c := &clients{n: n, out: out}
 	var err error
-	if c.dir, err = os.MkdirTemp("", "dt-clients-"); err != nil {
+	// decision: the directory is under /tmp, not the temporary directory the
+	// environment names, which can be long: ssh's control socket in it, with
+	// the suffix ssh adds while it binds it, must fit a socket path's bytes.
+	if c.dir, err = os.MkdirTemp("/tmp", "dt-clients-"); err != nil {
 		return nil, err
 	}
 	c.reap()
@@ -256,8 +259,12 @@ func (c *clients) writeFiles() error {
 			c.userSSHConfig = config
 		}
 		// The second client is new on every run, with a new host key.
-		files["ssh_config"] = fmt.Sprintf("Host %s\n  IdentityFile %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n  LogLevel ERROR\n",
-			c.addr(2), filepath.Join(c.dir, "id"))
+		// nfstest gives the server it starts there over ssh five seconds to
+		// listen, which a busy machine's handshake and login can use up, so
+		// every ssh reuses the connection startSSHD's check opens; down ends
+		// it with the client's processes.
+		files["ssh_config"] = fmt.Sprintf("Host %s\n  IdentityFile %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n  LogLevel ERROR\n  ControlMaster auto\n  ControlPath %s\n  ControlPersist yes\n",
+			c.addr(2), filepath.Join(c.dir, "id"), filepath.Join(c.dir, "ssh"))
 		// decision: StrictModes is off, since the key lives in the fixture's
 		// directory, not under the user's home, and sshd would otherwise
 		// refuse a directory above it that others can write, as /tmp. PAM
