@@ -36,6 +36,11 @@ var (
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
 	ErrRecordChanged = kvstore.ErrRecordChanged
+
+	// ErrLost is a flush through an open across a loss of the file's
+	// acknowledged writes; the service maps it to the content error it
+	// shares with the engine.
+	ErrLost = errors.New("openstate: acknowledged writes lost since the open last flushed")
 )
 
 // DelayError is a retry-later. errors.Is(err, ErrDelay) holds for it, and its

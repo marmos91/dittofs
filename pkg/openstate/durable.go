@@ -184,6 +184,20 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 	return res, err
 }
 
+func (v opens) Flushed(ctx context.Context, who Caller, id entity.OpenID, loss uint64) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(_ *entry, o *open) error {
+		if loss <= o.LossSeen {
+			return nil
+		}
+		o.LossSeen = loss
+		return ErrLost
+	})
+}
+
 // timeouts closes each open of e whose Timeout passed since its session
 // ended, as a close does, under e's step and the file's admission lock,
 // since a close may grant a waiter; the file leaves the timer's set once it

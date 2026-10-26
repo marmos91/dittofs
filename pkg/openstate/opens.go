@@ -196,6 +196,10 @@ type Opens interface {
 	// its lease key; anything else is ErrNoReclaim, as for an open that does
 	// not exist, and changes nothing.
 	Reconnect(ctx context.Context, who Caller, o entity.OpenID, m ReconnectMatch, s entity.SessionRef) (OpenResult, error)
+	// Flushed reports a flush through open o, at the file's loss sequence
+	// loss: ErrLost, once, when a loss happened since the open was made or
+	// last flushed.
+	Flushed(ctx context.Context, who Caller, o entity.OpenID, loss uint64) error
 	// Durable is the records of f's opens, for the unlink that may take
 	// f's last entry to write in its transaction; an open with no ID is
 	// issued one for its record. The service calls commit once, true when
