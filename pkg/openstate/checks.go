@@ -240,9 +240,7 @@ func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *
 	if err != nil {
 		return err
 	}
-	st := ref.State
-	st.Seq = 0 // judged against the lock state's own under the step
-	h, err := t.resolve(who.Client, f, st)
+	h, err := t.resolve(who.Client, f, ref.State)
 	if err != nil {
 		return err
 	}
