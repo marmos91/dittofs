@@ -18,18 +18,19 @@ import (
 )
 
 // fakeKnfsd puts on PATH a sudo that logs and runs its command, and a mount,
-// exportfs, rpc.nfsd and rpc.mountd that succeed, unless DT_FAKE_FAIL names
-// the program, and a umount that empties the directory it is given, as
-// unmounting the tmpfs would. With DT_FAKE_HANG set, rpc.nfsd waits 3
-// seconds before it starts the server, and logs that start. The kernel's
-// settings are files in a directory of their own, with lease and grace
-// times of 90 and the grace period on; rpc.nfsd writes the times it is
-// given there, lists the versions DT_FAKE_VERSIONS names, NFSv4.0, 4.1 and
-// 4.2 by default, or removes the list for -, and ends the grace period a
-// second later. rpc.mountd runs
+// exportfs, rpc.nfsd and rpc.mountd that succeed, unless DT_FAKE_FAIL names the
+// program, and a umount that empties the directory it is given, as unmounting
+// the tmpfs would. rpc.nfsd starts only once rpc.mountd can log its stop, so an
+// undo never ends one that couldn't yet. With DT_FAKE_HANG set, rpc.nfsd marks
+// that it hangs, in the file "rpc.nfsd hangs" beside the log, waits 3 seconds
+// before it starts the server, and logs that start. The kernel's settings are
+// files in a directory of their own, with lease and grace times of 90 and the
+// grace period on; rpc.nfsd writes the times it is given there, lists the
+// versions DT_FAKE_VERSIONS names, NFSv4.0, 4.1 and 4.2 by default, or removes
+// the list for -, and ends the grace period a second later. rpc.mountd runs
 // until SIGTERM, and logs it. dt runs as an ordinary user, and makes its
-// directories in one of the test's. It returns the settings' directory, and
-// a function giving the calls so far.
+// directories in one of the test's. It returns the settings' directory, and a
+// function giving the calls so far.
 func fakeKnfsd(t *testing.T) (nfsd string, calls func() []string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -50,9 +51,11 @@ func fakeKnfsd(t *testing.T) (nfsd string, calls func() []string) {
 		"umount":   `rm -rf "$1"/*`,
 		"rpc.mountd": fail + `
 trap 'echo "rpc.mountd stopped" >> "$DT_FAKE_LOG"; exit 0' TERM
+: > "${DT_FAKE_LOG%/*}/rpc.mountd runs"
 while :; do sleep 0.1; done`,
 		"rpc.nfsd": fail + `
-[ -z "$DT_FAKE_HANG" ] || [ "$1" = 0 ] || { sleep 3; echo "rpc.nfsd starts the server" >> "$DT_FAKE_LOG"; }
+[ "$1" = 0 ] || until [ -e "${DT_FAKE_LOG%/*}/rpc.mountd runs" ]; do sleep 0.01; done
+[ -z "$DT_FAKE_HANG" ] || [ "$1" = 0 ] || { : > "${DT_FAKE_LOG%/*}/rpc.nfsd hangs"; sleep 3; echo "rpc.nfsd starts the server" >> "$DT_FAKE_LOG"; }
 while [ $# -gt 1 ]; do
 	case "$1" in
 	--lease-time) echo "$2" > "$DT_FAKE_NFSD/nfsv4leasetime" ;;
@@ -225,17 +228,16 @@ func TestKnfsdFails(t *testing.T) {
 			listening(t, tc.up)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			// The setup's limit ends halfway through rpc.nfsd's 3 seconds, timed
-			// from its call, so steps a busy machine slows before it can't move
-			// the end out of them.
+			// The setup's limit ends once rpc.nfsd hangs, however long a busy
+			// machine took over the steps before it.
 			hung := make(chan time.Time, 1)
 			if tc.hang {
+				hangs := filepath.Join(filepath.Dir(os.Getenv("DT_FAKE_LOG")), "rpc.nfsd hangs")
 				go func() {
 					defer close(hung)
 					for ctx.Err() == nil {
-						if slices.ContainsFunc(calls(), func(c string) bool { return strings.HasPrefix(c, "rpc.nfsd ") && c != "rpc.nfsd 0" }) {
+						if _, err := os.Stat(hangs); err == nil {
 							hung <- time.Now()
-							time.Sleep(1500 * time.Millisecond)
 							cancel()
 							return
 						}
