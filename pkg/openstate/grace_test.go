@@ -621,3 +621,26 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 		t.Errorf("a reclaim admitted in grace landing after it: %v, want ErrNoReclaim", err)
 	}
 }
+
+// A host reclaiming the range a callback grant has just given it, while that
+// callback is still on its way, keeps the lock when it then refuses the
+// callback: the reclaim answered it granted.
+func TestHeldReclaimSettlesAnOfferedGrant(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.host(t, "a", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws := f.sink.takeWaits()
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("after the unlock: granted %v, want h", g)
+	}
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Errorf("h reclaimed the lock, then lost it to its own refused callback")
+	}
+}
