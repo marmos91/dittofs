@@ -919,3 +919,26 @@ func TestAckWithNoRecall(t *testing.T) {
 		t.Errorf("an oplock ack with no recall in flight: %v, want ErrNoRecall", err)
 	}
 }
+
+// Another client's stat open breaks no grant; one asking for extended
+// attributes besides, outside the sharing check as it is, still breaks
+// write caching.
+func TestStatOpenBreaksNoGrant(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{1}, Want: rwh})
+	stat := entity.ReadAttributes | entity.WriteAttributes | entity.Synchronize | entity.ReadACL
+	if _, err := f.open(b, file, OpenRequest{Access: stat, Deny: rd}); err != nil {
+		t.Fatalf("a stat open against a write lease: %v", err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 0 {
+		t.Fatalf("a stat open broke %+v", r)
+	}
+	if _, err := f.open(b, file, OpenRequest{Access: entity.ReadAttributes | entity.WriteNamedAttrs}); delayedFor(err) != DelayRecall {
+		t.Fatalf("an open asking write-EA: %v, want ErrDelay", err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].g.ID != g.ID || r[0].to != rh {
+		t.Errorf("recalls %+v, want the lease's write caching", r)
+	}
+}

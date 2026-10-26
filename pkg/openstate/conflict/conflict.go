@@ -50,11 +50,20 @@ func Shares(access, deny, heldAccess, heldDeny entity.AccessMask) bool {
 }
 
 // GrantKeeps is the caching a grant keeps beside another holder's open asking
-// access and denying deny: never write caching, whatever the open asks; read
-// caching only while the open neither writes, deletes nor denies read; and
-// handle caching, which only a deny-mode conflict over an open the grant
-// covers breaks.
-func GrantKeeps(access, deny entity.AccessMask) grantfsm.Kind {
+// access and denying deny: every caching beside a stat open, which asks only
+// read-attributes, write-attributes and synchronize, and read-control too
+// against a lease, whatever it denies, as MS-FSA breaks no oplock for it;
+// beside any other, never write caching; read caching only while the open
+// neither writes, deletes nor denies read; and handle caching, which only a
+// deny-mode conflict over an open the grant covers breaks.
+func GrantKeeps(access, deny entity.AccessMask, lease bool) grantfsm.Kind {
+	stat := entity.ReadAttributes | entity.WriteAttributes | entity.Synchronize
+	if lease {
+		stat |= entity.ReadACL
+	}
+	if access&^stat == 0 {
+		return grantfsm.Read | grantfsm.Write | grantfsm.Handle
+	}
 	k := grantfsm.Read | grantfsm.Handle
 	if Of(access)&(Write|Delete) != 0 || Of(deny)&Read != 0 {
 		k &^= grantfsm.Read

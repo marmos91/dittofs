@@ -55,24 +55,30 @@ func TestMatrix(t *testing.T) {
 	}
 }
 
-// A grant keeps no write caching beside another's open, read caching only
-// while that open neither writes, deletes nor denies read, and handle caching
-// always.
+// A grant keeps every caching beside a stat open, read-control counting as
+// one only against a lease, and otherwise no write caching beside another's
+// open, read caching only while that open neither writes, deletes nor denies
+// read, and handle caching always.
 func TestGrantKeeps(t *testing.T) {
 	rh := grantfsm.Read | grantfsm.Handle
+	rwh := rh | grantfsm.Write
 	for _, c := range []struct {
 		access, deny entity.AccessMask
+		lease        bool
 		want         grantfsm.Kind
 	}{
-		{entity.ReadData, 0, rh},
-		{entity.ReadAttributes, 0, rh},
-		{entity.WriteData, 0, grantfsm.Handle},
-		{entity.Delete, 0, grantfsm.Handle},
-		{entity.ReadData, entity.ReadData, grantfsm.Handle},
-		{entity.ReadData, entity.WriteData, rh},
+		{entity.ReadData, 0, true, rh},
+		{entity.ReadAttributes | entity.WriteAttributes | entity.Synchronize, entity.ReadData, false, rwh},
+		{entity.ReadAttributes | entity.ReadACL, 0, true, rwh},
+		{entity.ReadAttributes | entity.ReadACL, 0, false, rh},
+		{entity.ReadAttributes | entity.WriteNamedAttrs, 0, true, rh},
+		{entity.WriteData, 0, true, grantfsm.Handle},
+		{entity.Delete, 0, true, grantfsm.Handle},
+		{entity.ReadData, entity.ReadData, true, grantfsm.Handle},
+		{entity.ReadData, entity.WriteData, true, rh},
 	} {
-		if got := GrantKeeps(c.access, c.deny); got != c.want {
-			t.Errorf("GrantKeeps(%v, %v) = %b, want %b", c.access, c.deny, got, c.want)
+		if got := GrantKeeps(c.access, c.deny, c.lease); got != c.want {
+			t.Errorf("GrantKeeps(%v, %v, lease %v) = %b, want %b", c.access, c.deny, c.lease, got, c.want)
 		}
 	}
 }

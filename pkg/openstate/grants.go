@@ -362,7 +362,7 @@ func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want Gran
 	smb := who.Protocol == entity.ProtocolSMB
 	for _, h := range e.opens {
 		if !h.ownedBy(who.Client, key, o, smb) {
-			want = grantfsm.Within(want, conflict.GrantKeeps(h.Mode.Access, h.Mode.Deny))
+			want = grantfsm.Within(want, conflict.GrantKeeps(h.Mode.Access, h.Mode.Deny, key != (LeaseKey{})))
 		}
 	}
 	for _, g := range e.grants {

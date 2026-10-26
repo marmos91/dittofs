@@ -285,7 +285,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		if err := t.breakHandles(e, hs, own, out); err != nil {
 			return err
 		}
-		if err := t.recallOthers(e, own, func(*grant) GrantKind { return conflict.GrantKeeps(access, deny) }, out); err != nil {
+		if err := t.recallOthers(e, own, func(g *grant) GrantKind { return conflict.GrantKeeps(access, deny, g.key != (LeaseKey{})) }, out); err != nil {
 			return err
 		}
 		if granted != o {
