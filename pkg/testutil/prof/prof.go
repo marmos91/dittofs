@@ -7,8 +7,8 @@
 package prof
 
 import (
+	"flag"
 	"fmt"
-	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -85,13 +85,14 @@ const poll = 10 * time.Millisecond
 // the race detector, the heap check does not run. The watch logs each check
 // it skips.
 //
-// The checks are process-wide, so no other test of the package may run during
-// a watch: a watched test must not call t.Parallel, nor run beside one that
-// does, and its subtests must not be watched.
+// The checks are process-wide, so nothing else may change the process's
+// goroutines, descriptors or heap during a watch: a watched test must not run
+// beside a parallel test, and its subtests must not be watched.
 //
-// decision: only the overlap of two watches is detected, and both fail. An
-// unwatched test running in parallel goes unseen, and its goroutines,
-// descriptors and heap are blamed on the watched one.
+// decision: only the overlap of two watches is detected, and both fail. Work
+// an earlier test left running that starts goroutines or opens files during
+// the watch, a time.AfterFunc callback for one, goes unseen and is blamed on
+// the watched test, and so does an unwatched parallel subtest of it.
 //
 // Cleanups run last-in first-out, so call Watch before anything it should
 // watch registers its own cleanup: the check then runs after they have closed.
@@ -100,11 +101,10 @@ func Watch(tb testing.TB, opts Options) {
 
 	w := &watch{}
 	w.begin()
-	warmPoller()
 	before := goroutines()
 	fdsBefore, fdsChecked := descriptors()
 	if !fdsChecked {
-		tb.Logf("prof: the process's descriptors cannot be listed here; the descriptor check does not run")
+		logOnce(tb, &fdsSkipped, "prof: the process's descriptors cannot be listed here; the descriptor check does not run")
 	}
 	slack := opts.HeapSlack
 	if slack == 0 {
@@ -112,12 +112,14 @@ func Watch(tb testing.TB, opts Options) {
 	}
 	var heapBefore uint64
 	if raceEnabled {
-		tb.Logf("prof: the race detector changes the heap; the heap check does not run")
+		logOnce(tb, &heapSkipped, "prof: the race detector changes the heap; the heap check does not run")
 	} else {
 		heapBefore = liveHeap()
 	}
 
 	tb.Cleanup(func() {
+		tb.Helper()
+
 		// decision: two watches active at once fail rather than wait for each
 		// other. Goroutines, descriptors and the heap are the process's, so
 		// each watch would see the other test's work as its own leak; and a
@@ -177,24 +179,26 @@ func Watch(tb testing.TB, opts Options) {
 		if err := writeProfiles(dir); err != nil {
 			where = "profiles not all written to " + dir + ": " + err.Error()
 		}
+		if !artifactsKept() {
+			where += ", which is removed when the test ends; rerun with -artifacts to keep them"
+		}
 		tb.Errorf("prof: %s\n\n%s", strings.Join(failures, "\n\n"), where)
 	})
 }
 
-// warmPoller makes sure the runtime's network poller exists before the
-// snapshot.
-//
-// decision: the poller holds descriptors of its own (an epoll or kqueue
-// descriptor and a wakeup pipe or eventfd), created on the first file the
-// process opens through it and kept for the life of the process. Without this,
-// a test that happened to be that first user would be blamed for them.
-func warmPoller() {
-	r, w, err := os.Pipe()
-	if err != nil {
-		return
-	}
-	_ = r.Close()
-	_ = w.Close()
+// Each skipped check is logged once per process, not once per watched test.
+var fdsSkipped, heapSkipped sync.Once
+
+func logOnce(tb testing.TB, once *sync.Once, msg string) {
+	tb.Helper()
+	once.Do(func() { tb.Logf("%s", msg) })
+}
+
+// artifactsKept reports whether the test binary keeps what tests write to
+// their artifact directory, which it does only when run with -artifacts.
+func artifactsKept() bool {
+	f := flag.Lookup("test.artifacts")
+	return f != nil && f.Value.String() == "true"
 }
 
 // leakedDescriptors returns the descriptors open now that were not in before,

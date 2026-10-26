@@ -1,6 +1,7 @@
 package prof
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -249,4 +250,21 @@ func TestWatchOnARealTest(t *testing.T) {
 	done := make(chan struct{})
 	go func() { close(done) }()
 	<-done
+}
+
+func TestWatchSaysHowToKeepProfilesWhenTheyAreNotKept(t *testing.T) {
+	shortSettle(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	rec := newRecorder(t)
+
+	Watch(rec, Options{})
+	go plantedLeak(release)
+	rec.finish()
+
+	kept := flag.Lookup("test.artifacts").Value.String() == "true"
+	hinted := strings.Contains(rec.failure(), "rerun with -artifacts")
+	if hinted == kept {
+		t.Errorf("with -artifacts=%v, the failure hints at it: %v; want the hint exactly when the profiles are not kept:\n%s", kept, hinted, rec.failure())
+	}
 }
