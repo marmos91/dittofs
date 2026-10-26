@@ -3,8 +3,7 @@ package raw
 import "testing"
 
 // Offsets below are the catalog entry table's, written out here and never
-// taken from the package's constants. The content version at [44,60) is not
-// checked.
+// taken from the package's constants.
 
 func TestCatalogEntryLayout(t *testing.T) {
 	b := testCatalogEntry.Bytes()
@@ -27,6 +26,14 @@ func TestCatalogEntryLayout(t *testing.T) {
 
 	if got := le64(b[36:44]); got != testCatalogEntry.Seq {
 		t.Errorf("sequence number at [36,44) is %#x, want %#x", got, testCatalogEntry.Seq)
+	}
+
+	if got := le64(b[44:52]); got != testCatalogEntry.Version.Epoch {
+		t.Errorf("version epoch at [44,52) is %#x, want %#x", got, testCatalogEntry.Version.Epoch)
+	}
+
+	if got := le64(b[52:60]); got != testCatalogEntry.Version.Counter {
+		t.Errorf("version counter at [52,60) is %#x, want %#x", got, testCatalogEntry.Version.Counter)
 	}
 
 	if got := b[60]; got != testCatalogEntry.Kind {
