@@ -36,6 +36,10 @@ on:
         type: choice
         options: [pr, merge, nightly, manual]
         default: merge
+      suite:
+        description: Only this suite's cells, as test/suites.yaml names it; every suite of the tier when empty
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -101,10 +105,11 @@ jobs:
         id: plan
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          SUITE: ${{ inputs.suite }}
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
+            jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
