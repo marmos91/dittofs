@@ -29,11 +29,11 @@ type Table struct {
 	idx       sync.Mutex
 	refs      map[refKey]holder
 	byID      map[entity.OpenID]refKey
-	via       map[entity.FileID]int      // the opens made through each directory
-	polls     map[entity.FileID]struct{} // the files holding a poll waiter, which the timer lapses
-	revoked   map[refKey]revokedRef      // every client's revoked set, until each reference is freed
-	granted   map[entity.ClientID]int    // the grants each client holds
-	keys      map[clientKey]entity.FileID
+	via       map[entity.FileID]int           // the opens made through each directory
+	polls     map[entity.FileID]struct{}      // the files holding a poll waiter, which the timer lapses
+	revoked   map[refKey]revokedRef           // every client's revoked set, until each reference is freed
+	granted   map[entity.ClientID]int         // the grants each client holds
+	keys      map[clientKey]keyUse            // each lease key held by an open, from its first open to its last close
 	recalling map[entity.FileID]struct{}      // the files holding a recall handed to the Sink, which the timer lapses
 	recalled  map[entity.FileID]time.Duration // the Elapsed reading until which a file is offered no grant, after a recall ended
 	unsent    int                             // recalls started and not yet handed to the Sink
@@ -109,7 +109,7 @@ func New(d Deps) (*Table, error) {
 	}
 	t := &Table{
 		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
-		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]entity.FileID{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{},
+		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{},
 		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
 	}

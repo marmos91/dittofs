@@ -1009,3 +1009,26 @@ func TestNoGrantBeforeConfirm(t *testing.T) {
 		t.Errorf("a confirmed owner's open: Confirm %v, grant %+v, %v; want a grant offered", res.Confirm, res.Grant, err)
 	}
 }
+
+// A lease key is held from its first open, granted or not: an open under K
+// offered no grant, beside another client's writer, keeps K on its file, so K
+// on a second file is ErrInvalid until the first file's last open under K
+// closes.
+func TestLeaseKeyHeldWithoutAGrant(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file, second := anyFile(), anyFile()
+	k := LeaseKey{7}
+	f.mustOpen(t, b, file, OpenRequest{Access: rd | wr})
+	o, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: k, Want: rwh})
+	if g != nil {
+		t.Fatalf("an open beside another client's writer: grant %+v, want none", g)
+	}
+	if _, err := f.open(a, second, OpenRequest{Access: rd, Lease: k, Want: rwh}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("the key, held ungranted, on a second file: %v, want ErrInvalid", err)
+	}
+	f.close(t, a, o)
+	if _, err := f.open(a, second, OpenRequest{Access: rd, Lease: k, Want: rwh}); err != nil {
+		t.Errorf("the key on a second file once its last open closed: %v", err)
+	}
+}

@@ -262,9 +262,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 		if r.Lease != (LeaseKey{}) {
 			t.idx.Lock()
-			kf, held := t.keys[clientKey{who.Client, r.Lease}]
+			u, held := t.keys[clientKey{who.Client, r.Lease}]
 			t.idx.Unlock()
-			if held && kf != f.ID {
+			if held && u.file != f.ID {
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
@@ -371,11 +371,21 @@ func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, d
 // mintOpen mints o's reference and adds o to e, file o.File's entry, under
 // its step, if o's client is current here; the check and the mint share the
 // index lock, so an expiry that drops the client either sees the open or
-// refuses it.
+// refuses it. An open under a lease key holds the key on e's file, and one
+// whose key is held on another file is ErrInvalid.
 func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 	ref, err := t.mintUnder(e, o.Client, s, StateOpen, func(ref StateRef) error {
 		if !t.current(o.Client) {
 			return ErrStaleClient
+		}
+		if o.lease != (LeaseKey{}) {
+			ck := clientKey{o.Client, o.lease}
+			u := t.keys[ck]
+			if u.opens > 0 && u.file != e.file {
+				return ErrInvalid
+			}
+			u.file, u.opens = e.file, u.opens+1
+			t.keys[ck] = u
 		}
 		if o.ID != 0 {
 			t.byID[o.ID] = refKey{s, ref.Token}
@@ -397,13 +407,22 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 }
 
 // dropOpen removes o from e, its file's entry, under its step: its
-// reference, its ID and its count under Via.
+// reference, its ID, its count under Via and its hold on its lease key.
 func (t *Table) dropOpen(e *entry, o *open) {
 	delete(e.opens, o.Ref.Token)
 	t.release(e, o.Ref)
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	delete(t.byID, o.ID)
+	if o.lease != (LeaseKey{}) {
+		ck := clientKey{o.Client, o.lease}
+		if u := t.keys[ck]; u.opens <= 1 {
+			delete(t.keys, ck)
+		} else {
+			u.opens--
+			t.keys[ck] = u
+		}
+	}
 	if !o.Via.IsZero() {
 		if t.via[o.Via]--; t.via[o.Via] <= 0 {
 			delete(t.via, o.Via)

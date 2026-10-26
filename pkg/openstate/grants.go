@@ -107,6 +107,14 @@ type clientKey struct {
 	key    LeaseKey
 }
 
+// keyUse is the file a client's lease key is held on, and the opens holding
+// it there: a key is held from its first open, granted or not, to its last
+// close, and names one file meanwhile.
+type keyUse struct {
+	file  entity.FileID
+	opens int
+}
+
 // covers reports whether g covers opens: a lease, or an oplock.
 func (g *grant) covers() bool { return g.key != (LeaseKey{}) || g.open != nil }
 
@@ -297,14 +305,11 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
 			return ErrDelay
 		}
-		if _, taken := t.keys[ck]; taken && r.Lease != (LeaseKey{}) {
+		if r.Lease != (LeaseKey{}) && t.keys[ck].file != e.file {
 			return ErrDelay
 		}
 		if t.granted[who.Client]++; t.granted[who.Client] == maxGrants {
 			out.full = append(out.full, who.Client)
-		}
-		if r.Lease != (LeaseKey{}) {
-			t.keys[ck] = e.file
 		}
 		return nil
 	})
@@ -402,8 +407,8 @@ func (t *Table) uncover(e *entry, o *open) bool {
 	return true
 }
 
-// dropGrant drops g from e, under its step, with its reference, its count and
-// its key. A recall in flight ends with it, so the request it delayed is not
+// dropGrant drops g from e, under its step, with its reference and its count.
+// A recall in flight ends with it, so the request it delayed is not
 // overtaken by a grant to a holder that closed and opened again.
 func (t *Table) dropGrant(e *entry, g *grant) {
 	if g.fsm.Recall != nil {
@@ -413,11 +418,6 @@ func (t *Table) dropGrant(e *entry, g *grant) {
 	t.recount(g)
 	delete(e.grants, g.id.Token)
 	t.release(e, g.id.ref())
-	t.idx.Lock()
-	defer t.idx.Unlock()
-	if g.key != (LeaseKey{}) {
-		delete(t.keys, clientKey{g.client, g.key})
-	}
 }
 
 // recount keeps g in its client's budget while it caches anything: a grant cut
