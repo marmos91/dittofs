@@ -1,19 +1,17 @@
 package journalv2test
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"maps"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
+	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // The seam's operation names, as Calls and CallsFor count them.
@@ -37,12 +35,19 @@ const (
 //
 // Every call reaches the real files. Alongside, the seam remembers what is not
 // yet durable: per file, every WriteAt, Allocate and Truncate since that file's
-// last Sync, and every Create, Rename and Remove since the last SyncDir. Crash
-// discards exactly those, closes every open file, and leaves the directory as
-// a power loss would have, so a journal can be opened on it again.
+// last Sync, and every Create, Rename and Remove since the last SyncDir. A
+// change a failed Sync covered is lost: the file keeps serving it, but no
+// later Sync makes it durable, so from then on the seam keeps that file's
+// durable image and replays onto it what each later Sync covers. A failed
+// SyncDir does the same for the directory: its changes are lost, and the seam
+// keeps the durable directory and replays onto it what each later SyncDir
+// covers. Crash puts every file back to its durable image and the directory
+// back to its durable names, closes every open file, and leaves the directory
+// as a power loss would have, so a journal can be opened on it again.
 //
-// A removed or replaced file is not unlinked until the next SyncDir: it is
-// moved to a stash directory beside dir, so a crash can bring it back. The
+// A removed or replaced file is not unlinked while a crash could bring it
+// back: it is moved to a stash directory beside dir, and unlinked by the
+// first SyncDir after which the durable directory no longer holds it. The
 // stash lives in dir's parent, which a test's temporary directory already
 // cleans up.
 //
@@ -50,17 +55,27 @@ const (
 // record, not the device's, and nothing here survives a real power loss, so an
 // fsync would only slow every test down.
 type Seam struct {
-	dir   string
-	stash string
+	dir    string
+	stash  string
+	fault  sim.Fault
+	seq    uint64
+	names  map[string]*node // the directory as it is now
+	dirLog []dirOp          // Create, Rename and Remove since the last SyncDir
 
-	mu       sync.Mutex
-	seq      uint64
-	names    map[string]*node // the directory as it is now
-	dirLog   []dirOp          // Create, Rename and Remove since the last SyncDir
+	// dirSnap is the durable directory, kept from the first failed SyncDir
+	// until the next Crash: the directory then holds changes no SyncDir will
+	// make durable, so undoing dirLog no longer gives the durable names. Nil
+	// otherwise.
+	dirSnap map[string]*node
+
 	open     map[*seamFile]struct{}
 	calls    map[string]int
 	callsFor map[[2]string]int
 	stashed  int
+	holds    []*Hold
+	crashes  uint64 // Crash calls so far; a call that waited across one fails
+
+	mu sync.Mutex
 }
 
 // node is one file, followed across renames: its undo log stays with it.
@@ -68,6 +83,11 @@ type node struct {
 	path  string   // where the file is now, in dir or in the stash
 	undo  []change // what its last Sync did not cover, oldest first
 	stale bool     // ReadAt serves the durable image
+
+	// snap is the file's durable image, kept once a change was lost: the
+	// file then holds bytes no Sync will make durable, so undoing the
+	// unsynced changes no longer gives the durable image. Nil otherwise.
+	snap []byte
 }
 
 type changeKind int
@@ -85,6 +105,10 @@ type change struct {
 	data    []byte // write: the bytes written
 	old     []byte // the bytes it overwrote or cut off, at off for a write and at the new size for a shrink
 	oldSize int64  // the file's size before it
+	newSize int64  // resize: the file's size after it
+	lost    bool   // a failed Sync covered it, or it was dropped: no Sync ever makes it durable
+	dropped bool   // write: it never reached the device, so no crash keeps it either
+	reorder bool   // write: a Reorder fault marked it for Reordered's draw
 }
 
 type dirOpKind int
@@ -133,6 +157,113 @@ func NewSeam(dir string) (*Seam, error) {
 
 var _ storage.FS = (*Seam)(nil)
 
+// SetFault makes the seam consult f before every operation, and apply the
+// action it returns. A nil f, the default, passes every call.
+//
+// Each operation is named by one of the Op constants, and its key is the name
+// of the file it acts on: the old name for a rename, and empty for list and
+// sync_dir. Size and Name are not operations and consult nothing. A call on a
+// closed file fails with fs.ErrClosed before f is consulted, so it never
+// counts in a rule. f is called without the seam's lock held, so a Delay
+// stalls only its own call.
+//
+// How the seam applies each action:
+//   - Pass, Delay: performs the operation.
+//   - Drop on write: reports the whole write done, and the bytes reach the
+//     file, so ReadAt sees them, but they are lost: no Sync makes them
+//     durable, and Torn and Reordered never keep them.
+//   - Drop on sync or sync_dir: reports success and does nothing, so what
+//     was pending stays pending and a later sync can make it durable.
+//   - Tear on write: with the action's Err nil, a silent tear, performs the
+//     write whole and reports it done, but only its first N bytes can become
+//     durable: the rest is lost, as a dropped write is. With Err set it is a
+//     short write: only the first N bytes land, and it returns N and Err.
+//     With N at or past the write's length nothing is torn.
+//   - Reorder on write: performs it and marks it. While any pending write
+//     is marked, Reordered draws only among the marked ones; a plain Crash
+//     and Torn ignore marks. A Sync that covers the write clears its mark.
+//   - Fail: performs nothing and returns the action's Err. A failed sync
+//     also marks every pending change of the file lost: ReadAt still
+//     serves it, and no later Sync makes it durable, but a crash may still
+//     find it, as Torn and Reordered may keep it. A failed sync_dir
+//     loses its directory changes the same way: they stay in the directory,
+//     and no later SyncDir makes them durable.
+//
+// Any other kind, or Drop, Tear or Reorder on any other op, panics, naming the
+// kind and the op: it is a mistake in the test, not a storage fault.
+func (s *Seam) SetFault(f sim.Fault) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fault = f
+}
+
+// consult asks the seam's fault what to do with op on key, and panics on an
+// action the seam cannot apply to op. The caller must not hold mu, because a
+// Delay waits inside At.
+func (s *Seam) consult(op, key string) sim.FaultAction {
+	s.mu.Lock()
+	f := s.fault
+	s.mu.Unlock()
+
+	if f == nil {
+		return sim.FaultAction{}
+	}
+
+	a := f.At(op, []byte(key))
+	if !applies(a.Kind, op) {
+		panic(fmt.Sprintf("journalv2test: a %v fault on %s is not supported", a.Kind, op))
+	}
+
+	return a
+}
+
+// applies reports whether the seam can apply a fault of kind k to op.
+func applies(k sim.FaultKind, op string) bool {
+	switch k {
+	case sim.Pass, sim.Delay, sim.Fail:
+		return true
+	case sim.Drop:
+		return op == OpWrite || op == OpSync || op == OpSyncDir
+	case sim.Tear, sim.Reorder:
+		return op == OpWrite
+	default:
+		return false
+	}
+}
+
+// enter counts op on name, waits at any hold that matches it, then consults
+// the fault. It returns the fault's action holding mu, unless the fault fails
+// the call: then it returns the fault's error, without mu. A call during
+// which a Crash ran, while it was held or delayed, fails with an error
+// matching fs.ErrClosed and does nothing: it comes from a process the crash
+// ended, and must not act on the directory as the crash left it.
+func (s *Seam) enter(op, name string) (sim.FaultAction, error) {
+	s.mu.Lock()
+	s.count(op, name)
+	crashes := s.crashes
+	s.mu.Unlock()
+
+	s.hold(op, name)
+	a := s.consult(op, name)
+
+	s.mu.Lock()
+	if s.crashes != crashes {
+		s.mu.Unlock()
+		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+	}
+
+	if a.Kind == sim.Fail {
+		if op == OpSyncDir {
+			s.loseDirLog()
+		}
+
+		s.mu.Unlock()
+		return a, &fs.PathError{Op: op, Path: name, Err: a.Err}
+	}
+
+	return a, nil
+}
+
 // count records one call of op on name; the caller holds mu.
 func (s *Seam) count(op, name string) {
 	s.calls[op]++
@@ -154,9 +285,10 @@ func (s *Seam) CallsFor(op, name string) int {
 }
 
 func (s *Seam) Create(name string) (storage.File, error) {
-	s.mu.Lock()
+	if _, err := s.enter(OpCreate, name); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpCreate, name)
 
 	path := filepath.Join(s.dir, name)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
@@ -172,9 +304,10 @@ func (s *Seam) Create(name string) (storage.File, error) {
 }
 
 func (s *Seam) Open(name string) (storage.File, error) {
-	s.mu.Lock()
+	if _, err := s.enter(OpOpen, name); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpOpen, name)
 
 	n, ok := s.names[name]
 	if !ok {
@@ -196,9 +329,10 @@ func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
 }
 
 func (s *Seam) Rename(oldName, newName string) error {
-	s.mu.Lock()
+	if _, err := s.enter(OpRename, oldName); err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpRename, oldName)
 
 	n, ok := s.names[oldName]
 	if !ok {
@@ -246,9 +380,10 @@ func (s *Seam) Rename(oldName, newName string) error {
 }
 
 func (s *Seam) Remove(name string) error {
-	s.mu.Lock()
+	if _, err := s.enter(OpRemove, name); err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpRemove, name)
 
 	n, ok := s.names[name]
 	if !ok {
@@ -275,9 +410,10 @@ func (s *Seam) toStash(n *node) error {
 }
 
 func (s *Seam) List() ([]string, error) {
-	s.mu.Lock()
+	if _, err := s.enter(OpList, ""); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
-	s.count(OpList, "")
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -291,29 +427,124 @@ func (s *Seam) List() ([]string, error) {
 }
 
 func (s *Seam) SyncDir() error {
-	s.mu.Lock()
+	a, err := s.enter(OpSyncDir, "")
+	if err != nil {
+		return err
+	}
 	defer s.mu.Unlock()
-	s.count(OpSyncDir, "")
 
+	if a.Kind == sim.Drop {
+		return nil
+	}
+
+	if s.dirSnap != nil {
+		s.replayDirLog()
+	}
 	s.dirLog = nil
 
 	// decision: SyncDir's result is the commit of the directory log, which cannot
-	// fail here; unlinking the stash is cleanup, and what it leaves is removed by
-	// the next SyncDir or Crash.
+	// fail here. Unlinking the stashed files the durable directory no longer
+	// holds is cleanup, and what it leaves is removed by a later SyncDir or Crash.
 	_ = s.emptyStash()
 	return nil
 }
 
-// emptyStash unlinks every stashed file, now that nothing can bring one
-// back; the caller holds mu.
+// loseDirLog drops every pending directory change, after a SyncDir that
+// failed. The first failure keeps the durable directory in dirSnap; a later
+// one leaves dirSnap as it is. The caller holds mu.
+//
+// decision: a later success does not stand in for a SyncDir that failed, as
+// for a file's Sync. The changes stay in the directory, so List and Open
+// still see them, but only what is logged after the failure can become
+// durable, so code that retries a failed SyncDir and trusts the retry is
+// caught. The one exception is a lost rename that a later change depends on
+// (see replayDirLog).
+func (s *Seam) loseDirLog() {
+	if s.dirSnap == nil {
+		s.dirSnap = s.durableNames()
+	}
+	s.dirLog = nil
+}
+
+// replayDirLog applies the pending directory changes to dirSnap, oldest
+// first, after a SyncDir that succeeded; dirSnap stays set. The caller holds
+// mu.
+//
+// decision: a change is replayed by name, whatever the durable directory
+// holds under that name: a create or a rename sets the name, a remove deletes
+// it, and the file it removed under any name the durable directory gives it.
+// Replaying only changes whose node the durable directory still holds would
+// dead-end the re-append path: once the removal of an old file is lost, a new
+// file under its name could never become durable, and removing the name again
+// would act on the new file, which the durable directory never held. A node
+// keeps one name, so a rename also takes it away from any name it held.
+//
+// decision: a node a replayed change takes a name from keeps a durable name
+// while the directory still holds it: the one the directory holds it under
+// now, given it by a rename the failure lost. A filesystem commits directory
+// changes in order, so it cannot commit the change that reuses the name
+// without the rename that freed it, and a renamed file survives a crash
+// under one of its names, never under none. By the same order, a filesystem
+// would commit every lost change before a later success; the seam keeps the
+// others lost on purpose, as the worst case, so code that trusts a retried
+// SyncDir is caught. That is a harness choice, not a filesystem state.
+func (s *Seam) replayDirLog() {
+	now := make(map[*node]string, len(s.names))
+	for name, n := range s.names {
+		now[n] = name
+	}
+
+	// keep gives the node under name, and any node it displaces in turn, the
+	// name the directory holds it under now.
+	keep := func(name string) {
+		for n := s.dirSnap[name]; n != nil; {
+			to, ok := now[n]
+			if !ok || to == name {
+				return
+			}
+			n, s.dirSnap[to] = s.dirSnap[to], n
+		}
+	}
+
+	for _, op := range s.dirLog {
+		switch op.kind {
+		case dirCreate:
+			keep(op.name)
+			s.dirSnap[op.name] = op.node
+		case dirRemove:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.name)
+			delete(s.dirSnap, op.name)
+		case dirRename:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.oldName)
+			delete(s.dirSnap, op.oldName)
+			keep(op.name)
+			s.dirSnap[op.name] = op.node
+		}
+	}
+}
+
+// emptyStash unlinks every stashed file the durable directory does not hold,
+// now that nothing can bring one back; the caller holds mu.
 func (s *Seam) emptyStash() error {
+	held := map[string]bool{}
+	for _, n := range s.dirSnap {
+		held[n.path] = true
+	}
+
 	entries, err := os.ReadDir(s.stash)
 	if err != nil {
 		return err
 	}
 
 	for _, e := range entries {
-		if err := os.Remove(filepath.Join(s.stash, e.Name())); err != nil {
+		path := filepath.Join(s.stash, e.Name())
+		if held[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil {
 			return err
 		}
 	}
@@ -347,9 +578,14 @@ func (s *Seam) Durable(name string) ([]byte, error) {
 	return n.durableImage()
 }
 
-// durableNames returns the directory as the last SyncDir left it; the caller
-// holds mu.
+// durableNames returns the directory as the last SyncDir left it: dirSnap
+// when it is set, otherwise the current names with every pending change
+// undone. The caller holds mu.
 func (s *Seam) durableNames() map[string]*node {
+	if s.dirSnap != nil {
+		return maps.Clone(s.dirSnap)
+	}
+
 	names := make(map[string]*node, len(s.names))
 	maps.Copy(names, s.names)
 
@@ -373,503 +609,4 @@ func (s *Seam) durableNames() map[string]*node {
 	}
 
 	return names
-}
-
-// CrashOption selects how Crash treats the writes it would otherwise drop.
-type CrashOption func(*crashConfig)
-
-type crashConfig struct {
-	torn      bool
-	tornBytes int
-	reordered bool
-	seed      uint64
-}
-
-// Torn keeps the last unsynced write, across every file, cut to its first n
-// bytes. Every other unsynced operation is lost as usual.
-func Torn(n int) CrashOption {
-	return func(c *crashConfig) {
-		c.torn, c.tornBytes = true, n
-	}
-}
-
-// Reordered keeps a subset of the unsynced writes, chosen from seed, as a
-// device that wrote them in another order and lost power part-way would. The
-// kept writes land in the order they were issued, so a write never ends up
-// under an older one it overlapped. Unsynced allocations, truncations and
-// directory changes are lost as usual.
-//
-// decision: only data writes are reordered. Directory changes are undone
-// whole, because a filesystem's metadata journal does not apply them out of
-// order.
-func Reordered(seed uint64) CrashOption {
-	return func(c *crashConfig) {
-		c.reordered, c.seed = true, seed
-	}
-}
-
-// Crash simulates a power loss: it closes every open file, puts every file
-// back to its durable image, and undoes every Create, Rename and Remove made
-// since the last SyncDir. With no option, every unsynced write is lost. After
-// it returns, every call on a file opened before it fails with an error
-// matching fs.ErrClosed, and the seam serves the directory as the crash left
-// it. A Crash refused for its options returns an error and changes nothing.
-func (s *Seam) Crash(opts ...CrashOption) error {
-	var cfg crashConfig
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.torn && cfg.reordered {
-		return errors.New("journalv2test: Torn and Reordered cannot be combined")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	survivors := s.durableNames()
-	alive := make(map[*node]bool, len(survivors))
-	for _, n := range survivors {
-		alive[n] = true
-	}
-
-	var torn *change
-	var tornNode *node
-	if cfg.torn {
-		for n := range alive {
-			for i := range n.undo {
-				c := &n.undo[i]
-				if c.kind == changeWrite && (torn == nil || c.seq > torn.seq) {
-					torn, tornNode = c, n
-				}
-			}
-		}
-
-		if torn == nil {
-			return errors.New("journalv2test: Torn needs an unsynced write")
-		}
-
-		if cfg.tornBytes < 0 || cfg.tornBytes > len(torn.data) {
-			return fmt.Errorf("journalv2test: Torn(%d) of a %d-byte write", cfg.tornBytes, len(torn.data))
-		}
-	}
-
-	// Every refusal is above, so a refused Crash leaves every file open.
-	for sf := range s.open {
-		sf.closeLocked()
-	}
-
-	// The draws follow the order the writes were issued, never the map's, so
-	// a seed keeps the same writes on every run.
-	keep := map[*change]bool{}
-	if cfg.reordered {
-		var writes []*change
-
-		for n := range alive {
-			for i := range n.undo {
-				if n.undo[i].kind == changeWrite {
-					writes = append(writes, &n.undo[i])
-				}
-			}
-		}
-
-		slices.SortFunc(writes, func(a, b *change) int {
-			return cmp.Compare(a.seq, b.seq)
-		})
-
-		rng := rand.New(rand.NewPCG(cfg.seed, cfg.seed^0x9e3779b97f4a7c15))
-		for _, c := range writes {
-			keep[c] = rng.IntN(2) == 0
-		}
-	}
-
-	for n := range alive {
-		if len(n.undo) == 0 {
-			continue
-		}
-
-		img, err := n.durableImage()
-		if err != nil {
-			return err
-		}
-
-		switch {
-		case n == tornNode:
-			img = writeInto(img, torn.off, torn.data[:cfg.tornBytes])
-
-		case cfg.reordered:
-			for i := range n.undo {
-				if c := &n.undo[i]; keep[c] {
-					img = writeInto(img, c.off, c.data)
-				}
-			}
-		}
-
-		if err := os.WriteFile(n.path, img, 0o644); err != nil {
-			return err
-		}
-
-		n.undo = nil
-	}
-
-	if err := s.undoDir(); err != nil {
-		return err
-	}
-
-	s.names = survivors
-	for _, n := range survivors {
-		n.undo = nil
-	}
-
-	return s.emptyStash()
-}
-
-// undoDir puts the directory back as the last SyncDir left it, newest change
-// first; the caller holds mu.
-func (s *Seam) undoDir() error {
-	for i := range slices.Backward(s.dirLog) {
-		op := s.dirLog[i]
-
-		switch op.kind {
-		case dirCreate:
-			if err := os.Remove(op.node.path); err != nil {
-				return err
-			}
-		case dirRename:
-			old := filepath.Join(s.dir, op.oldName)
-			if err := os.Rename(op.node.path, old); err != nil {
-				return err
-			}
-
-			op.node.path = old
-			if op.replaced != nil {
-				back := filepath.Join(s.dir, op.name)
-
-				if err := os.Rename(op.replaced.path, back); err != nil {
-					return err
-				}
-
-				op.replaced.path = back
-			}
-		case dirRemove:
-			back := filepath.Join(s.dir, op.name)
-			if err := os.Rename(op.node.path, back); err != nil {
-				return err
-			}
-			op.node.path = back
-		}
-	}
-
-	s.dirLog = nil
-	return nil
-}
-
-// durableImage returns the file's bytes, read by path, with every unsynced
-// change undone.
-func (n *node) durableImage() ([]byte, error) {
-	img, err := os.ReadFile(n.path)
-	if err != nil {
-		return nil, err
-	}
-	return n.undone(img), nil
-}
-
-// undone returns img, the file's current bytes, with every unsynced change
-// undone, newest first.
-//
-// ponytail: it works on the whole file on every call, which is fine for the
-// small segments tests run with. Upgrade to undoing only the range asked for
-// if a test reads large files through ReadAtDirect in a loop.
-func (n *node) undone(img []byte) []byte {
-	for i := range slices.Backward(n.undo) {
-		c := n.undo[i]
-
-		switch c.kind {
-		case changeWrite:
-			copy(img[c.off:], c.old)
-		case changeResize:
-			if int64(len(img)) < c.oldSize {
-				img = resize(img, c.oldSize)
-				copy(img[c.oldSize-int64(len(c.old)):], c.old)
-			}
-		}
-
-		img = resize(img, c.oldSize)
-	}
-	return img
-}
-
-// resize returns b cut or zero-extended to size.
-func resize(b []byte, size int64) []byte {
-	if int64(len(b)) >= size {
-		return b[:size]
-	}
-
-	return append(b, make([]byte, size-int64(len(b)))...)
-}
-
-// writeInto returns img with p written at off, extending it as a write past
-// the end of a file does. An empty p leaves img as it is, as an empty write
-// leaves a file's size alone.
-func writeInto(img []byte, off int64, p []byte) []byte {
-	if len(p) == 0 {
-		return img
-	}
-
-	if end := off + int64(len(p)); end > int64(len(img)) {
-		img = resize(img, end)
-	}
-
-	copy(img[off:], p)
-	return img
-}
-
-// seamFile is one open file of a Seam.
-type seamFile struct {
-	seam   *Seam
-	f      *os.File
-	node   *node
-	name   string
-	closed bool
-}
-
-var _ storage.File = (*seamFile)(nil)
-
-// begin counts op and returns ErrClosed for a closed file. The caller holds
-// the seam's mu.
-func (sf *seamFile) begin(op string) error {
-	sf.seam.count(op, sf.name)
-
-	if sf.closed {
-		return &fs.PathError{
-			Op:   op,
-			Path: sf.name,
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	return nil
-}
-
-func (sf *seamFile) Name() string { return sf.name }
-
-func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpRead); err != nil {
-		return 0, err
-	}
-	if sf.node.stale {
-		return sf.readDurable(p, off)
-	}
-	return sf.f.ReadAt(p, off)
-}
-
-// ReadAtDirect serves the file's durable image.
-//
-// decision: reading past the page cache observes what reached the device, and
-// what is known to have reached it is what a Sync covered. A device may hold
-// more, but a test cannot rely on that, so the seam returns the durable image.
-func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpReadDirect); err != nil {
-		return 0, err
-	}
-	return sf.readDurable(p, off)
-}
-
-// readDurable reads through the open file rather than by path, so a file
-// removed or replaced while open still serves its durable image.
-func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
-	// The error os.File.ReadAt returns for a negative offset.
-	if off < 0 {
-		return 0, &fs.PathError{Op: "readat", Path: sf.name, Err: errors.New("negative offset")}
-	}
-
-	size, err := sf.size()
-	if err != nil {
-		return 0, err
-	}
-
-	img := make([]byte, size)
-	if _, err := sf.f.ReadAt(img, 0); err != nil {
-		return 0, err
-	}
-	img = sf.node.undone(img)
-
-	if off >= int64(len(img)) {
-		return 0, io.EOF
-	}
-
-	n := copy(p, img[off:])
-	if n < len(p) {
-		return n, io.EOF
-	}
-
-	return n, nil
-}
-
-func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-	if err := sf.begin(OpWrite); err != nil {
-		return 0, err
-	}
-
-	size, err := sf.size()
-	if err != nil {
-		return 0, err
-	}
-
-	var old []byte
-	if off < size {
-		old = make([]byte, min(int64(len(p)), size-off))
-		if _, err := sf.f.ReadAt(old, off); err != nil {
-			return 0, err
-		}
-	}
-
-	// decision: a failed write records the part of p the file's size after
-	// the call allows, not p[:n]. os.File.WriteAt reports n == 0 when a write
-	// fails part-way, even if some of p reached the file, and a byte left
-	// unrecorded would survive a crash. Recording a byte that never landed is
-	// harmless: its undo restores what old holds, which was there anyway.
-	n, err := sf.f.WriteAt(p, off)
-	landed := int64(len(p))
-	if err != nil {
-		after, serr := sf.size()
-		if serr != nil {
-			after = size
-		}
-		landed = min(landed, max(max(size, after)-off, 0))
-	}
-
-	if landed > 0 {
-		sf.record(change{
-			kind:    changeWrite,
-			off:     off,
-			data:    append([]byte(nil), p[:landed]...),
-			old:     old[:min(int64(len(old)), landed)],
-			oldSize: size,
-		})
-	}
-
-	return n, err
-}
-
-// Allocate extends the file to cover the n bytes at off, as sparse space that
-// reads as zeros. It never shrinks the file.
-//
-// decision: allocation is a sparse extension, not fallocate, because the
-// test components may use the standard library only. A full device is a
-// fault the test injects, not something this call reaches.
-func (sf *seamFile) Allocate(off, n int64) error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpAllocate); err != nil {
-		return err
-	}
-
-	size, err := sf.size()
-	if err != nil {
-		return err
-	}
-
-	if off+n <= size {
-		return nil
-	}
-
-	sf.record(change{kind: changeResize, oldSize: size})
-	return sf.f.Truncate(off + n)
-}
-
-func (sf *seamFile) Truncate(size int64) error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpTruncate); err != nil {
-		return err
-	}
-
-	cur, err := sf.size()
-	if err != nil {
-		return err
-	}
-
-	var old []byte
-	if size < cur {
-		old = make([]byte, cur-size)
-		if _, err := sf.f.ReadAt(old, size); err != nil {
-			return err
-		}
-	}
-
-	if err := sf.f.Truncate(size); err != nil {
-		return err
-	}
-
-	sf.record(change{
-		kind:    changeResize,
-		old:     old,
-		oldSize: cur,
-	})
-
-	return nil
-}
-
-func (sf *seamFile) Sync() error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpSync); err != nil {
-		return err
-	}
-
-	sf.node.undo = nil
-	return nil
-}
-
-func (sf *seamFile) Size() (int64, error) {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if sf.closed {
-		return 0, &fs.PathError{Op: "size", Path: sf.name, Err: fs.ErrClosed}
-	}
-
-	return sf.size()
-}
-
-func (sf *seamFile) Close() error {
-	sf.seam.mu.Lock()
-	defer sf.seam.mu.Unlock()
-
-	if err := sf.begin(OpClose); err != nil {
-		return err
-	}
-	return sf.closeLocked()
-}
-
-// closeLocked closes the file. The caller holds the seam's mu.
-func (sf *seamFile) closeLocked() error {
-	sf.closed = true
-	delete(sf.seam.open, sf)
-	return sf.f.Close()
-}
-
-func (sf *seamFile) size() (int64, error) {
-	st, err := sf.f.Stat()
-
-	if err != nil {
-		return 0, err
-	}
-
-	return st.Size(), nil
-}
-
-func (sf *seamFile) record(c change) {
-	sf.seam.seq++
-	c.seq = sf.seam.seq
-	sf.node.undo = append(sf.node.undo, c)
 }
