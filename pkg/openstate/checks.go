@@ -25,19 +25,19 @@ const (
 
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
-	// CheckIO admits I/O through o, an open, a lock state or a delegation.
+	// CheckIO admits I/O to f through o, an open, a lock state or a
+	// delegation.
 	// A lock state is judged as the open it was taken under: a granted open
 	// is used only by its opener and only for the access it holds, ErrAccess
 	// otherwise, and its deny modes were judged once, at open. An anonymous
 	// read or write, and one through a delegation, is judged against every
 	// deny mode held, per operation; a delegation writes only with write
-	// caching. In grace, an anonymous one, of the shard in o.State.Shard, is
-	// ErrGrace while the shard's records name a client that can hold a deny
-	// mode or a mandatory lock, which may still be reclaimed. Any is refused
-	// ErrLocked across a range a mandatory lock forbids it, and recalls
-	// another holder's caching the I/O conflicts with, answering ErrDelay
-	// until the recall ends.
-	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
+	// caching. In grace, an anonymous one is ErrGrace while f's shard's
+	// records name a client that can hold a deny mode or a mandatory lock,
+	// which may still be reclaimed. Any is refused ErrLocked across a range a
+	// mandatory lock forbids it, and recalls another holder's caching the I/O
+	// conflicts with, answering ErrDelay until the recall ends.
+	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f, made through via, an open of f, or
 	// through none: what the open state of f refuses. It recalls the caching
 	// grants the change conflicts with and never waits, answering ErrDelay
@@ -56,7 +56,7 @@ func (t *Table) Checks() Checks { return checks{t} }
 // ponytail: an anonymous check on a file with no state still creates and
 // frees its entry, an allocation per NFSv3 read or write. Look the entry up
 // without creating it when CheckIO shows in a profile.
-func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error {
+func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -102,15 +102,15 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 	}
 	switch o.Kind {
 	case RefAnonymous:
-		var f entity.FileID
-		if f, err = o.file(); err == nil && f.IsZero() {
+		var id entity.FileID
+		if id, err = o.file(); err == nil && id.IsZero() {
 			err = ErrBadState
 		}
-		if err == nil && t.guarded(o.State.Shard) {
+		if err == nil && t.guarded(f.Shard) {
 			err = ErrGrace
 		}
 		if err == nil {
-			err = t.step(f, func(e *entry) error {
+			err = t.step(id, func(e *entry) error {
 				return unopened(e, func(g *grant) bool { return g.heldBy(who.Client, LeaseKey{}, nil) })
 			})
 		}

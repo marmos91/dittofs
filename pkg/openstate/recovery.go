@@ -240,10 +240,6 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 // name, in shard s waits for grace's end: s is in grace, and its records
 // named, when grace began, a client that can hold a deny mode or a mandatory
 // lock.
-//
-// decision: anonymous I/O names no state, so the shard is the one the
-// service resolved for the file, carried in the reference's State.Shard. Take
-// a FileKey in CheckIO if the service is found unable to fill it.
 func (t *Table) guarded(s ShardID) bool {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()

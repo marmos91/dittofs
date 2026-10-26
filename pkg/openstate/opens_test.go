@@ -121,13 +121,13 @@ func TestDenyModesAtOpen(t *testing.T) {
 	file := anyFile()
 	held := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an anonymous write under a deny-write: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
 		t.Errorf("an anonymous read under a deny-write: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, true); err != nil {
 		t.Errorf("a write through the deny-write open itself: %v; a granted open is not judged again", err)
 	}
 
@@ -165,7 +165,7 @@ func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
 	}
 	file = anyFile()
 	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); err != nil {
 		t.Errorf("an anonymous write beside an attributes-only deny-all: %v", err)
 	}
 }
@@ -186,14 +186,14 @@ func TestDowngrade(t *testing.T) {
 	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
+	if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
 		t.Errorf("the reference as it was before the downgrade: %v, want ErrOldState", err)
 	}
 	now := OpenRef{Kind: RefOpened, State: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, Handle: handle(file.ID)}
-	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write through the open downgraded to read: %v, want ErrAccess", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, false); err != nil {
 		t.Errorf("a read through the open downgraded to read: %v", err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
@@ -215,11 +215,11 @@ func TestOpenRefCarriesItsHandle(t *testing.T) {
 		"no kind":                     {State: o.Ref, Handle: handle(file.ID)},
 		"anonymous with no handle":    {Kind: RefAnonymous},
 	} {
-		if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
 			t.Errorf("I/O through %s: %v, want ErrBadState", name, err)
 		}
 	}
-	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open with its own handle: %v", err)
 	}
 }
@@ -235,13 +235,13 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	o := f.mustOpen(t, opener, file, OpenRequest{Access: rd | del})
 
 	other := Caller{Client: id, Principal: entity.NewUser()}
-	if err := f.Checks().CheckIO(ctx, other, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
+	if err := f.Checks().CheckIO(ctx, other, file, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
 		t.Errorf("I/O through the open by another principal: %v, want ErrNotYours", err)
 	}
 	if _, err := f.Opens().Close(ctx, other, refOf(o), Seqs{}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, refOf(o), ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, file, refOf(o), ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open by the protecting owner: %v", err)
 	}
 }

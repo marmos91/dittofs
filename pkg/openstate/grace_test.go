@@ -132,7 +132,8 @@ func TestAnonymousIOWaitsForGrace(t *testing.T) {
 
 	g := f.restart(t)
 	write := func(file FileKey) error {
-		return g.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}, br(0, 1), true)
+		// The reference carries no shard: the file's key names it.
+		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
 	}
 	if err := write(file); !errors.Is(err, ErrGrace) {
 		t.Errorf("an anonymous write where an NFSv4 client held a deny mode: %v, want ErrGrace", err)
