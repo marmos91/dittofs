@@ -415,6 +415,47 @@ func TestGoJSONCellLimit(t *testing.T) {
 	}
 }
 
+// A suite run as root that its limit stops fails, a grace later, even when its
+// tests take the interrupt and then hang, as a cleanup unmounting a wedged
+// mount does: dt kills the go command it started, which needs no root, and
+// nothing left running holds the tests' output, a file, open.
+func TestRootPathCellLimit(t *testing.T) {
+	fakeSudo(t)
+	minute, sudoGrace = 200*time.Millisecond, time.Second
+	t.Cleanup(func() { minute, sudoGrace = time.Minute, 2*time.Minute })
+	started := filepath.Join(t.TempDir(), "started")
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": `package w
+
+import (
+	"os"
+	"os/signal"
+	"testing"
+	"time"
+)
+
+func TestHang(t *testing.T) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	_ = os.WriteFile(os.Getenv("DT_STARTED"), nil, 0o644)
+	<-c
+	time.Sleep(time.Minute)
+}
+`})
+	y := "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root], env: { DT_STARTED: \"" + started + "\" } }\n"
+	start := time.Now()
+	o, out, _ := goRun(t, y, files)
+	if _, err := os.Stat(started); err != nil {
+		t.Fatalf("the test didn't start within the cell's limit: %+v\n%s", o, out)
+	}
+	// The cell's limit is 12 seconds; the hang, a minute.
+	if took := time.Since(start); took > 40*time.Second {
+		t.Errorf("took %s: dt waited for the hung tests", took)
+	}
+	if o.Result != report.Failed || !strings.Contains(o.Note, "TestHang") || !strings.Contains(o.Note, "stopped at the cell's limit") {
+		t.Errorf("outcome %+v", o)
+	}
+}
+
 // A package that fails outside any test fails the cell, named as such: one
 // whose TestMain exits non-zero after its tests pass, and one whose goroutine
 // panics before any test. A test that calls os.Exit(0) fails, since go test
