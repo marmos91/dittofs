@@ -350,7 +350,10 @@ What stays, because it isn't an entry point:
 nfstest's `baseline-knfsd.sh` stays too, though it is an entry point, with `nfs-knfsd-baseline.yml`:
 a dispatch-only evidence job outside the registry, which nfstest's known list cites. Its export goes
 to namespaced clients and its report compares each known-failure row, so it stays until a `knfsd`
-fixture has `clients` and `dt` has a per-row comparison.
+fixture has `clients` and `dt` has a per-row comparison. What it runs stays with it: nfstest's
+`run.sh` and grader, `grade.sh`, `common/known-failures.sh`, the helpers they source, `fetch.sh`
+for nfstest alone, and nfstest's Markdown tables, which it grades knfsd against. Which tables grade
+which option set moves from `suites.json` into it.
 
 ### Getting `dt`
 
@@ -855,8 +858,10 @@ tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance su
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
 workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
-the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
-and any workflow still outside it (§4.8). Until then `suites.json`'s list names `tests.yml` too.
+the list moves into `ci-health.yml` itself and names `tests.yml`, the one workflow it watched beside
+`conformance.yml`; the workflows still outside `tests.yml` then were never on it. Its trigger, which
+repeated the list for the retry of a failed run, goes with `conformance.yml`, the last workflow it
+retried (§8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -1256,12 +1261,22 @@ test/harness/results/20261007T201500Z-d0efaa75/
   report.md           what `dt report --format md` prints
   logs/*.log          one per cell, with the command, commit, exit status and duration
   CELL/               each cell's {out}: what its tool writes, and dfs.log, its server's output
+    failed/SCENARIO/  a failed scenario's logs, from setup.sh's cache
 ```
 
 A fixture's `dfs` writes its output to `dfs.log` in its cell's `{out}`, beside the cell's results,
 and `dt` keeps it after the server stops, whatever the cell's result. So the server's own log is
 one file per cell, apart from `dt`'s log of the cell in `logs/`, and a check of what the server
 logged, such as a search of its lines for a planted secret, reads it there.
+
+A scenario run in podman's image (§4.5) keeps its logs in the cache volume, which a hosted runner
+loses with its VM. So when one fails, `dt` copies the logs `setup.sh` kept for it, its trace and the
+server's and the S3's logs, into `{out}/failed/SCENARIO/`: the last 4 MiB of each file, so a
+scenario that fails on gigabytes uploads megabytes. One that `dt` stopped at its limit gets those of
+its run so far, which `setup.sh` never got to keep. `dt` also prints, in the cell's log, how much
+disk is free where the volumes are once the scenario's container is gone, which is what the scenario
+had to start with: a full disk is the first suspect of one that writes gigabytes. A host whose own
+podman runs `setup.sh` keeps the logs in its own cache.
 
 ```json
 {
@@ -1627,7 +1642,7 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 One workflow, `tests.yml`, runs every registered suite:
 
 - **Triggers:** `pull_request` runs tier `pr`, a push `merge`, the schedule `nightly`, and
-  `workflow_dispatch` the tier it's given. Pull requests and pushes are those to `develop`, `main`
+  `workflow_dispatch` the tier it's given, only one suite's cells when it names a suite. Pull requests and pushes are those to `develop`, `main`
   and `feat/storage-v2`, as the workflows it replaces take them. Only develop's results alert or
   post: the develop-status issue, a test's own issue (§4.4) and `ci-health.yml` read develop's
   runs alone.
@@ -1998,9 +2013,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      with the mailbox job files' parse. When pynfs's cells move, `nfs-pynfs.yml` keeps only its
      knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8), and leaves
      `ci-health.yml`'s lists, since it no longer tests a commit.
-   - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
-     once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
-     retry replaces that.
+   - `ci-health.yml` watches `tests.yml` from its own list once `suites.json` goes (§4.1), and
+     re-runs no workflow's failed jobs once `conformance.yml` goes, since `dt`'s retry replaces
+     that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts. A script that an old job still running uses stays
