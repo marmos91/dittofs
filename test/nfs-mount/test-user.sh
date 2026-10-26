@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# The ordinary user cthon04 and nfstest run their tests as. Sourced, not
+# The ordinary user nfstest's run.sh runs its tests as. Sourced, not
 # executed; the functions need root.
 #
 # As root the tests would mostly exercise root's permission bypass: nfstest
-# grants every read and write check to a file root owns, and cthon04's
-# op_chmod passes whatever the server does. The export squashes root
-# (root_to_guest), and this user gets a read-write grant on it from the setup
-# step: TEST_USER_NAME and TEST_USER_UID must match the --test-user that
-# test/conformance/suites.json passes to setup-posix.sh.
+# grants every read and write check to a file root owns. The export squashes
+# root, so only the mount is root's.
 #
 # nfstest expects the user to have passwordless sudo, for mount and tcpdump,
 # and passwordless ssh to its second client.

@@ -106,7 +106,7 @@ jobs:
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients"
+                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
@@ -181,6 +181,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
+
+      # A namespaced client runs rpcbind and rpc.statd, and a second one sshd.
+      # cthon04's general group compiles against libtirpc on the mount and
+      # shells out to time(1); nfstest captures packets with tcpdump.
+      - name: Install the namespaced clients' tools
+        if: contains(matrix.needs, 'rpcbind')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind openssh-server libtirpc-dev pkg-config time tcpdump
 
       # mount.cifs for the smb-client need and smbclient for its own; the other
       # places' own clients are there already.

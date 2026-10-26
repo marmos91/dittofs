@@ -2,7 +2,7 @@
 
 Failures expected when nfstest runs against DittoFS under any option set. Each option set is graded against this table plus its version's overlay (`KNOWN_FAILURES_V3.md`, `_V4.md`, and `_V40.md` for `v4.0`), so a row every set shares is written once.
 
-`run.sh` grades every run against this table through `test/common/known-failures.sh`: a failure listed here is reported but does not fail CI, and any failure not listed does. A listed test that passes is reported as "consider removing". Which tables grade which option set is declared in `test/conformance/suites.json`.
+CI grades nfstest with [`known.yaml`](known.yaml). This table is the knfsd baseline's: [`baseline-knfsd.sh`](baseline-knfsd.sh) grades knfsd's runs against it through `test/common/known-failures.sh`, says which tables grade which option set, and reports which of knfsd's failures these rows cover.
 
 Names are as the grader prints them: `<module>/<subtest>: <message>`, and for a Python traceback `<module>/<subtest>: traceback: <exception line>`, with addresses as `<ip>` and numbers as `N`. Shell globs work.
 

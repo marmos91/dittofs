@@ -392,12 +392,9 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 ## Conformance test suites
 
 DittoFS is validated against industry-standard conformance suites for SMB and
-NFS. The table comes from the test registry, `test/suites.yaml`. pjdfstest
-([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS, smbtorture, with
-its Kerberos option, and the system scenarios run through `dt` (below); cthon04 and
-nfstest run through `test/conformance/run.sh`, as `test/conformance/suites.json`
-describes, until each moves to `dt`. Until then cthon04 runs on pull requests and
-nightly, not after merge as its tier says:
+NFS. The table comes from the test registry, `test/suites.yaml`. Every suite in it,
+pjdfstest ([`test/posix/README.md`](../../test/posix/README.md)) and the system scenarios
+included, runs through `dt` (below):
 
 <!-- conformance-suites:begin -->
 <!-- Generated from test/suites.yaml by test/harness/bin/dt docs. Do not edit by hand. -->
@@ -480,17 +477,17 @@ the option that caused it.
 
 - **Suites:** Connectathon (cthon04): basic, general, special, and lock on the v4 sets.
   NetApp's nfstest: `posix` and `dio`, plus `delegation` on the v4 sets and `lock` on `v4.0` and `v4.1`.
-- **Known failures:** `test/nfs-mount/<suite>/KNOWN_FAILURES.md`, shared by every option set, plus a
-  per-version overlay (`_V3.md`; for nfstest also `_V4.md`, and `_V40.md` for `v4.0` alone). Which
-  tables grade which set is declared in `test/conformance/suites.json`
+- **Known failures:** [`cthon04/known.yaml`](../../test/nfs-mount/cthon04/known.yaml) and
+  [`nfstest/known.yaml`](../../test/nfs-mount/nfstest/known.yaml); an entry's `where` names the
+  option sets it holds on
 - **Run locally:**
   ```bash
-  sudo test/conformance/run.sh --suite cthon04 --profile badger-s3 --variant v4.1   # Linux host, localstack on :4566
-  test/nfs-mount/dev-docker.sh cthon04 badger-s3 v4.1                               # anywhere with Docker
+  test/harness/bin/dt run cthon04/badger-s3/v4.1    # badger-s3 needs Localstack
+  test/harness/bin/dt run nfstest/badger-s3/v3
   ```
 
-Runs in the `nfs-mount` job of `.github/workflows/conformance.yml`. See
-[`test/nfs-mount/README.md`](../../test/nfs-mount/README.md).
+Runs in CI through `dt`, in `.github/workflows/tests.yml`: cthon04 on every PR, nfstest
+nightly. See [`test/nfs-mount/README.md`](../../test/nfs-mount/README.md).
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.

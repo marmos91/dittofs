@@ -13,13 +13,13 @@ sees. These suites mount the way a user would, and vary one option at a time.
 | `cthon04` | The Connectathon suite: basic, general, special and lock tests. Run once per option set, which is how interop events use it. | `git://git.linux-nfs.org/projects/steved/cthon04.git` |
 | `nfstest` | NetApp's NFS test modules. They mount with given options themselves and check the result, many of them against a packet capture. | `git://git.linux-nfs.org/projects/mora/nfstest.git` |
 
-Both are pinned to a commit in [`fetch.sh`](fetch.sh). The server answers `git://` only; `https`
-returns 403.
+Both are pinned in `flake.lock`, and `dt` builds them with Nix. The server answers `git://` only;
+`https` returns 403.
 
 ## Option sets
 
-The variant axis. They are defined in [`option-sets.sh`](option-sets.sh); the port is added by the
-runners.
+The `mount-options` axis of each suite in [`test/suites.yaml`](../suites.yaml). The knfsd baseline
+keeps the same sets in [`option-sets.sh`](option-sets.sh).
 
 | Name | Options | Adds over its base |
 |---|---|---|
@@ -35,34 +35,21 @@ stack of its own (below).
 
 ## Client and user
 
-The server runs on the host. The client runs in a network namespace of its own, joined to the host
-by a veth pair on the bridge `dfsnfs0`. See [`netns.sh`](netns.sh).
-
-| Who | Namespace | Address |
-|---|---|---|
-| `dfs`, and the host's `rpcbind` | host | `10.51.0.1` |
-| the client under test | `dfsnfs1` | `10.51.0.2` |
-| nfstest's second client, reached over ssh | `dfsnfs2` | `10.51.0.3` |
-
-Each client namespace gets a private `/run`, its own hostname, and its own `rpcbind` and
-`rpc.statd`. A client that shared the server's stack would fall short in three ways:
+The server runs on the host. `dt`'s fixture puts each client in a network namespace of its own
+(`client: namespace`), with a private `/run`, its own hostname, and its own `rpcbind` and
+`rpc.statd`, and registers DittoFS's MOUNT and NLM services with the host's rpcbind
+(`rpcbind: host`). nfstest gets a second client, which it reaches over ssh (`clients: 2`). A client
+that shared the server's stack would fall short in three ways:
 - Its lockd would take over DittoFS's NLM registration in their shared rpcbind, so a v3 lock would
   reach the client's own kernel.
 - nfstest could not tell client traffic from server traffic in a capture with `127.0.0.1` at both
   ends.
 - A second client would be the same NFSv4 client to the server.
 
-The setup step registers DittoFS's MOUNT and NLM services with the host's rpcbind
-(`setup-posix.sh --system-rpcbind`).
-
-Only the mount is root's; the tests run as `dfsnfstest` (uid 64000). See
-[`test-user.sh`](test-user.sh).
-- **Squash:** the export squashes root (`root_to_guest`).
-- **Access:** `dfsnfstest` gets a read-write grant from the setup step (`--test-user`).
-- **cthon04:** runs each program as that user.
-- **nfstest:** runs as that user with passwordless `sudo`, which is how it expects to run. It stops
-  its packet captures with `sudo kill` on every process the capture started, and logs in to the
-  second client with an ssh key.
+Only the mount is root's; the tests run as the user `dt` runs as (`users: [self]`), which gets a
+read-write grant. The export squashes root, and everyone else reads ([`shares.yaml`](shares.yaml)).
+nfstest needs that user to have passwordless `sudo`, which is how it expects to run: it stops its
+packet captures with `sudo kill` on every process the capture started.
 
 ## What runs
 
@@ -74,69 +61,40 @@ Only the mount is root's; the tests run as `dfsnfstest` (uid 64000). See
 | nfstest | v4 sets | + `nfstest_delegation` |
 | nfstest | `v3`, `v4.0`, `v4.1` | + `nfstest_lock` |
 
-cthon04's own `runtests` stops a group at its first failure. [`cthon04/run.sh`](cthon04/run.sh)
-runs each program on its own instead, so one failure cannot hide the tests after it.
+cthon04's own `runtests` stops a group at its first failure. [`cthon04/tests.txt`](cthon04/tests.txt)
+lists each program on its own instead, so one failure cannot hide the tests after it.
 
 `nfstest_cache` and the recall tests of `nfstest_delegation` drive the second client. The second
 client's traffic is mirrored into the first client's interface, because nfstest checks both in the
 one capture it takes, as on a shared segment. `nfstest_cache` runs on NFSv3 only: on NFSv4 the
 second client's change recalls the first client's delegation, and the first revalidates at once,
-which is correct and defeats every timing check the module makes. Any other
-module runs with `--modules`, e.g. `--modules posix,alloc`.
+which is correct and defeats every timing check the module makes. Another module runs once
+[`nfstest/tests.txt`](nfstest/tests.txt) lists it.
 
 ## Grading
 
-Each runner turns its suite's output into one verdict per test and grades it with
-[`grade.sh`](grade.sh). It uses the same table format and parser as pjdfstest and the SMB suites
-(`test/common/known-failures.sh`). Each suite has a shared table, `<suite>/KNOWN_FAILURES.md`, and
-small per-version overlays: `_V3.md`, and for nfstest `_V4.md` plus `_V40.md` for `v4.0` alone. An
-option set is graded against the shared table plus its overlays. Which tables grade which set is
-declared in `test/conformance/suites.json`; `test/conformance/run.sh` passes them to the runner in
-`DITTOFS_KNOWN_FAILURES`.
-
-- A failure on the table is reported and does not fail CI. Any other failure does.
-- A test that timed out, or a module whose own total disagrees with the lines parsed for it, fails even when the names are on the table.
-- A tabled test that passes is listed under "consider removing".
-- A log without its completion marker is not graded at all.
+`dt` grades every test against the suite's `known.yaml`, whose entries may name the option sets
+they hold on (`where`). cthon04 is graded per program (`basic/test6`), so an entry excuses any
+failure of that program.
 
 nfstest names each assertion `<module>/<subtest>: <message>`, e.g.
 `posix/read: file st_atime should be updated`, and a Python traceback
-`<module>/<subtest>: traceback: <exception line>`. So a table entry excuses one assertion or one
-exception, not a whole subtest. cthon04 is graded per program (`basic/test6`), so its rows excuse
-any failure of that program.
+`<module>/<subtest>: traceback: <exception line>`. So an entry excuses one assertion or one
+exception, not a whole subtest.
 
 ## Running
 
-In CI the suites are entries in [`test/conformance/suites.json`](../conformance/suites.json) and run
-in the `nfs-mount` job of `.github/workflows/conformance.yml`. That is an Ubuntu runner, with
-`sudo` for the mount and the namespaces. Both suites run on `badger-s3`, the production profile.
-PRs run cthon04 on every option set, six short jobs. nfstest runs only in the nightly, because a v4
-cell takes tens of minutes. Merges to develop run neither.
+In CI both run through `dt` in `.github/workflows/tests.yml`, on `badger-s3`, the production
+profile: cthon04 on every pull request, after a merge and nightly, six short cells, and nfstest
+nightly, because a v4 cell takes tens of minutes.
 
-On a Linux host with root, and a localstack on localhost:4566
+On a Linux host with Nix, as a user with passwordless `sudo`, and a localstack on localhost:4566
 (`docker run -d -p 4566:4566 -e SERVICES=s3 localstack/localstack:4.13.1`):
 
 ```bash
-test/conformance/run.sh --suite cthon04 --profile badger-s3 --variant v4.1
-test/conformance/run.sh --suite nfstest --profile badger-s3 --variant v3
+test/harness/bin/dt run cthon04/badger-s3/v4.1
+test/harness/bin/dt run nfstest/badger-s3/v3
 ```
-
-Anywhere with Docker, a Mac included:
-
-```bash
-test/nfs-mount/dev-docker.sh cthon04 badger-s3 v4.1
-test/nfs-mount/dev-docker.sh nfstest badger-s3 v3
-test/nfs-mount/dev-docker.sh shell
-```
-
-`dev-docker.sh` runs the same `run.sh` inside a privileged Ubuntu container. That container uses the
-Docker VM's kernel NFS client, so it needs nothing installed on the host, and a localstack beside it
-for the `-s3` profiles. Results land in `test/nfs-mount/results/`.
-
-Containers share the Docker VM's kernel, so `dev-docker.sh` runs one suite at a time. If a dfs
-hangs or dies under a mounted `hard` share, the kernel's writeback to it never finishes. Containers
-then can't be removed, and later runs block in `sync()`. Restarting the Docker VM (for example
-`colima restart`) clears it.
 
 ## Comparing against knfsd
 
@@ -144,8 +102,9 @@ Many nfstest `dio`, `delegation` and `cache` assertions check what the kernel *c
 sees: which WRITEs, whether it caches them, when it returns a delegation, when it notices another
 client's change. `cache` runs on NFSv3 only, as in the DittoFS cells. A failure there only points at
 DittoFS if the Linux kernel server passes the same assertion on the same kernel.
-[`nfstest/baseline-knfsd.sh`](nfstest/baseline-knfsd.sh) runs those modules through the same
-`run.sh` against knfsd, under every option set, grades each set against DittoFS's tables, and
+[`nfstest/baseline-knfsd.sh`](nfstest/baseline-knfsd.sh) runs those modules through
+[`nfstest/run.sh`](nfstest/run.sh), which stays for it, against knfsd, under every option set,
+grades each set against the Markdown tables beside it (`nfstest/KNOWN_FAILURES*.md`), and
 writes [`nfstest/baseline-knfsd.md`](nfstest/baseline-knfsd.md). A row knfsd fails every time is
 about the client; a row knfsd passes is ours. It needs the in-kernel nfsd, so it runs on a Linux
 host, or in CI on demand:
@@ -166,13 +125,12 @@ test/nfs-mount/nfstest/baseline-knfsd.sh --report-only <artifact>/results/baseli
 A row's pattern can cover assertions knfsd fails and others it passes, and one assertion name
 recurs within a module, so a row knfsd fails only in part does not cover every DittoFS failure
 under it. `--compare` sets DittoFS nfstest results beside knfsd's, assertion by assertion: pass it
-one or more nightly nfstest artifacts, or a local `test/conformance/results/nfstest`, and the
-report lists, per option set, every `dio` or `delegation` assertion DittoFS fails more often than
-knfsd, where knfsd passed it at least once or never reached it:
+one or more results directories as `nfstest/run.sh` writes them, a `results.tsv` or `nfstest.log`
+per option set, and the report lists, per option set, every `dio` or `delegation` assertion
+DittoFS fails more often than knfsd, where knfsd passed it at least once or never reached it:
 
 ```bash
-gh run download <nightly-run-id> --pattern 'nfstest-*' --dir <run-id>
-test/nfs-mount/nfstest/baseline-knfsd.sh --report-only <baseline-results> --compare <run-id>
+test/nfs-mount/nfstest/baseline-knfsd.sh --report-only <baseline-results> --compare <dittofs-results>
 ```
 
 Under `default` (NFSv4.2) knfsd never reaches the `DELEGRETURN should be sent after the close`
