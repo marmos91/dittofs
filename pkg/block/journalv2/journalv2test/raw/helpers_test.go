@@ -16,6 +16,9 @@ var testIdentity = [16]byte{
 const (
 	testSegment uint64 = 0x0807060504030201
 	testOffset  uint64 = 0x2827262524232221
+
+	testPredecessor uint64 = 0x3837363534333231
+	testStream      uint32 = 0x44434241
 )
 
 // wantCRC is the standard library's CRC32C of b, computed here and not by
@@ -29,6 +32,7 @@ func wantSeededCRC(identity [16]byte, b []byte) uint32 {
 	return wantCRC(append(identity[:], b...))
 }
 
+func le16(b []byte) uint16 { return binary.LittleEndian.Uint16(b) }
 func le32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
 func le64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
 
