@@ -406,7 +406,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		start := time.Now()
 		r := t.run(test, c.limit(test, lines, cold))
+		took := time.Since(start) // the test's time, without the copy of its logs below
 		cold = false
+		if t.podman && r.result == report.Failed {
+			t.keepLogs(test, r.timedOut)
+		}
 		interrupted = interrupted || r.interrupted
 		var why []string
 		if len(r.notRun) > 0 {
@@ -425,7 +429,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case read == nil && r.result == report.NotRun:
 			return nil, why
 		case read == nil:
-			tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
+			tc := report.Test{Name: test, Status: report.Passed, Duration: took}
 			if r.result == report.Failed {
 				tc.Status, tc.Message = report.Failed, r.note
 			}
@@ -456,7 +460,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// result: it has none, and the note says why.
 			return nil, why
 		}
-		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
+		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: took, Out: out})
 		if err != nil {
 			why = append(why, prefix+err.Error())
 		}
