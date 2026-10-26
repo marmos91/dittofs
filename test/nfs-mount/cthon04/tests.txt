@@ -2,7 +2,7 @@
 # upstream's runtests stop a group at its first failure, which hides every test after it.
 # The words after -- are a program's command line, with the arguments upstream gives it,
 # run in cthon04's tree. A line may give its own limit, as 20m; the suite gives each 10
-# minutes. It holds what nfs-mount/cthon04/run.sh runs, until that script goes.
+# minutes.
 
 # basic: test1 builds a tree that test2 removes, so the two share a directory. Each later
 # test deletes its directory and makes it again, and has one of its own: a file test5
