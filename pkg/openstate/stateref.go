@@ -24,7 +24,6 @@ const (
 // StateRef names one piece of state without a file handle: its type, its
 // shard, the low bits of the grace instance it was minted under, and a token
 // of 64 random bits unique within the shard. It resolves by shard, then token.
-// The table keeps no grace instance, so Instance is minted zero and not read.
 // A client that sees one cannot derive another's, so it is a bearer ID with
 // room: it carries no counter. Seq is the sequence presented with it, judged
 // against the state's own: zero is the current one, an older one ErrOldState,
@@ -70,7 +69,8 @@ func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (Sta
 }
 
 // mintUnder is mint, running under, if set, with idx held once the token is
-// free and before the reference is added: an error from it adds nothing.
+// free and before the reference is added: an error from it adds nothing. A
+// minted reference carries the low bits of its shard's grace instance.
 func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
 	var b [8]byte
 	for {
@@ -83,7 +83,7 @@ func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType,
 			t.idx.Unlock()
 			continue
 		}
-		ref := StateRef{Type: typ, Shard: s, Token: k.token, Seq: 1}
+		ref := StateRef{Type: typ, Shard: s, Instance: uint8(t.instance(s) & 31), Token: k.token, Seq: 1}
 		if under != nil {
 			if err := under(ref); err != nil {
 				t.idx.Unlock()
@@ -152,12 +152,7 @@ func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) 
 		return holder{}, &RevokedError{r.cause}
 	}
 	if !ok {
-		// decision: a miss outside the revoked set is always ErrBadState,
-		// never stale: the table keeps no grace state, so no miss can be
-		// told to name state a shard lost rather than released or forged
-		// state. Judge a miss against the shard's grace instance once the
-		// table records one.
-		return holder{}, ErrBadState
+		return holder{}, t.missed(ref)
 	}
 	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {
 		return holder{}, ErrBadState
@@ -169,6 +164,31 @@ func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) 
 		return holder{}, err
 	}
 	return h, nil
+}
+
+// instance is shard s's grace instance; zero for a shard not begun, where
+// admit lets nothing mint.
+func (t *Table) instance(s ShardID) uint64 {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if sh := t.shards[s]; sh != nil {
+		return sh.instance
+	}
+	return 0
+}
+
+// missed judges a reference whose record is not held: stale when it may name
+// state its shard lost, as in grace or minted under another grace instance,
+// so the client reclaims; bad otherwise, as for a released, freed or forged
+// one, or one of a shard not begun, which defaults to no instance.
+func (t *Table) missed(ref StateRef) error {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	sh := t.shards[ref.Shard]
+	if sh != nil && (sh.inGrace(t.d.Clock.Elapsed()) || uint8(sh.instance&31) != ref.Instance) {
+		return ErrStaleState
+	}
+	return ErrBadState
 }
 
 // seqErr judges a presented reference sequence against the state's current

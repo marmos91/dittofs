@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -180,7 +181,7 @@ func TestRecallDeadline(t *testing.T) {
 	}
 	f.pass(t, time.Second, a.Client, b.Client)
 	f.mustOpen(t, b, file, OpenRequest{Access: rd})
-	if r := f.sink.takeRevoked(); len(r) != 1 || r[0] != (Revocation{Client: a.Client, Grant: d.ID, Reason: RevokedGrant}) {
+	if r := f.sink.takeRevoked(); len(r) != 1 || !reflect.DeepEqual(r[0], Revocation{Client: a.Client, Grant: d.ID, Reason: RevokedGrant}) {
 		t.Errorf("Revoked %+v", r)
 	}
 	var rev *RevokedError
@@ -652,7 +653,7 @@ func TestDelegationIsItsClients(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, a, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write under a read delegation: %v, want ErrAccess", err)
 	}
-	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
+	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Instance, o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
 		t.Errorf("an open's token named as a grant: %v, want ErrBadState", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, delegated(d, file), br(0, 1), false); err != nil {

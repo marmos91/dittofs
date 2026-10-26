@@ -61,11 +61,12 @@ const (
 
 // LockReq is one lock request: every range in one step, all or none.
 type LockReq struct {
-	Owner  LockOwner
-	Open   OpenRef // the open, or the owner's lock state, it is taken under; RefAnonymous: none
-	Ranges []LockRange
-	Wait   WaitKind // only a single-range request waits
-	Seqs   Seqs
+	Owner   LockOwner
+	Open    OpenRef // the open, or the owner's lock state, it is taken under; RefAnonymous: none
+	Ranges  []LockRange
+	Wait    WaitKind // only a single-range request waits
+	Seqs    Seqs
+	Reclaim bool // locks the owner held before its shard lost its state; a reclaim never waits
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -91,7 +92,9 @@ type Locks interface {
 	// Lock grants every range of r or none. A conflict is a *LockedError
 	// naming the first holder found; a single-range request that waits
 	// records a waiter, by poll answered the conflict, by callback answered
-	// Waiting. Past 64 ranges it is ErrInvalid.
+	// Waiting. Past 64 ranges it is ErrInvalid. In grace only a reclaim is
+	// granted, judged against what was reclaimed before it; outside grace a
+	// reclaim is answered with the lock state holding every range asked.
 	Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (LockResult, error)
 	// CancelLock drops o's waiter on f for r, or reports that its lock was
 	// granted first.
@@ -531,8 +534,12 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 	if r.Owner.Client != who.Client {
 		return LockResult{}, ErrNotYours
 	}
-	if len(r.Ranges) > 1 {
+	if len(r.Ranges) > 1 || r.Reclaim {
 		r.Wait = WaitNone
+	}
+	grace, err := t.admit(who, f.Shard, r.Reclaim)
+	if err != nil {
+		return LockResult{}, err
 	}
 	var res LockResult
 	var out outbox
@@ -540,6 +547,9 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 		op, ls, cur, err := t.lockTarget(e, who, r.Open)
 		if err != nil {
 			return err
+		}
+		if r.Reclaim && !grace {
+			return reclaimHeld(e, r, op, &res)
 		}
 		if ls != nil && !sameOwner(ls.owner, r.Owner) {
 			return ErrBadState
@@ -570,7 +580,29 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 		})
 	})
 	out.raise(t, sink)
+	if grace && errors.Is(err, ErrLocked) {
+		err = ErrReclaimConflict
+	}
 	return res, err
+}
+
+// reclaimHeld answers a reclaim of locks in a shard that lost nothing, under
+// e's step: the owner's lock state under op, when it holds every range of r
+// as asked, else ErrNoReclaim.
+func reclaimHeld(e *entry, r LockReq, op *open, res *LockResult) error {
+	ls := e.lockState(r.Owner, openToken(op))
+	if ls == nil {
+		return ErrNoReclaim
+	}
+	for _, rg := range r.Ranges {
+		if !slices.ContainsFunc(ls.locks, func(l LockRange) bool {
+			return l.Exclusive == rg.Exclusive && len(ranges.Minus(rg.ByteRange, l.ByteRange)) == 0
+		}) {
+			return ErrNoReclaim
+		}
+	}
+	res.Ref = ls.ref
+	return nil
 }
 
 // lock decides r, under op (nil: none), on e under its step: every range
@@ -743,8 +775,11 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 
 func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) {
 	t := v.t
-	if o.Client != who.Client {
+	switch {
+	case o.Client != who.Client:
 		return nil, ErrNotYours
+	case t.mustConnect(who.Client):
+		return nil, ErrStaleClient
 	}
 	var held *Lock
 	err := t.step(f.ID, func(e *entry) error {
@@ -811,6 +846,9 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	sink, err := t.running()
 	if err != nil {
 		return err
+	}
+	if t.mustConnect(who.Client) {
+		return ErrStaleClient
 	}
 	if o.Client != who.Client {
 		return ErrNotYours

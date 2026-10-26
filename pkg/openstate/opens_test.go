@@ -303,7 +303,9 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 		t.Errorf("stored opens after an open of the file once its entry was freed: %v", ids(got))
 	}
 
+	f.Stop()
 	g := reopen(t, f.fs, f.clock)
+	g.clock.advance(leasePeriod) // past the restart's grace
 	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
 	later := g.mustOpen(t, b, file, req)
 	if got := f.stored(t, file); len(got) != 2 || got[1].Nonce != later.Ref.Token {
@@ -396,7 +398,9 @@ func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
 		t.Errorf("1000 opens and closes of a linked file: %+v, want the shard list's one write and its reads", got)
 	}
 
+	f.Stop()
 	g := reopen(t, f.fs, f.clock)
+	g.clock.advance(leasePeriod) // past the restart's grace
 	if _, err := g.Renew(ctx, b.Client); err != nil {
 		t.Fatal(err)
 	}

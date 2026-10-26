@@ -18,7 +18,11 @@ var (
 	ErrNoRecall    = errors.New("openstate: acknowledgement of a grant with no recall in flight")
 	ErrInvalid     = errors.New("openstate: request out of bounds")
 	ErrDelay       = errors.New("openstate: retry later")
-	ErrStopped     = errors.New("openstate: table not started, or stopped")
+	ErrGrace       = errors.New("openstate: in grace period")
+	ErrNoReclaim   = errors.New("openstate: nothing to reclaim in this shard")
+
+	ErrReclaimConflict = errors.New("openstate: reclaim conflicts with state already reclaimed")
+	ErrStopped         = errors.New("openstate: table not started, or stopped")
 
 	ErrShareViolation = errors.New("openstate: deny mode conflict")
 	ErrDeletePending  = errors.New("openstate: file is delete pending")

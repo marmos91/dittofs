@@ -69,6 +69,7 @@ type OpenRequest struct {
 	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
 	Want          GrantKind // the grant kind asked for; none: no grant
 	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
+	Reclaim       bool      // the open is one the client held before its shard lost its state
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -142,7 +143,11 @@ type Opens interface {
 	// Open grants an open of f, or refuses it ErrShareViolation against a
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
 	// never grants less than was asked. An owner of opens holds one open of
-	// a file: its second open of it upgrades the first.
+	// a file: its second open of it upgrades the first. In grace only a
+	// reclaim is granted, judged against what was reclaimed before it and
+	// with no grant offered, as the shard lost its grants; outside grace a
+	// reclaim is answered with the open, and the grant, the owner still
+	// holds, granting nothing new.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
@@ -223,6 +228,11 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		return err
 	})
 	out.raise(t, sink)
+	if err == nil && r.Reclaim && r.Seqs.Owner != nil {
+		t.smu.Lock()
+		t.seqs.Confirm(owner) // a reclaimed owner confirmed itself before the loss
+		t.smu.Unlock()
+	}
 	return res, err
 }
 
@@ -237,10 +247,13 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
 		return OpenResult{}, ErrInvalid // a lease key is SMB's
 	}
+	grace, err := t.admit(who, f.Shard, r.Reclaim)
+	if err != nil {
+		return OpenResult{}, err
+	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
 		// An SMB FileId names the open across a reconnect.
-		var err error
 		if id, err = t.nextOpenID(ctx); err != nil {
 			return OpenResult{}, err
 		}
@@ -254,7 +267,10 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
 	var res OpenResult
-	err := t.step(f.ID, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) error {
+		if r.Reclaim && !grace {
+			return t.reclaimHeld(e, who, r, &res)
+		}
 		if e.pending != nil {
 			return ErrDeletePending
 		}
@@ -295,16 +311,47 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		}
-		if res.Confirm = !t.ownerConfirmed(r); !res.Confirm {
+		confirmed := t.ownerConfirmed(r)
+		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
+		if !grace && confirmed {
 			res.Grant = t.offer(e, f, who, granted, r, out)
 		}
 		res.Open = granted.Open
 		return nil
 	})
+	if grace && errors.Is(err, ErrShareViolation) {
+		err = ErrReclaimConflict
+	}
 	if err != nil {
 		return OpenResult{}, err
 	}
 	return res, nil
+}
+
+// reclaimHeld answers a reclaim in a shard that lost nothing, under e's
+// step, with the open the owner still holds of e's file and the grant it
+// holds over it, granting nothing new.
+//
+// decision: a reclaim with no such open, or asking access or deny the open
+// does not hold, is ErrNoReclaim, the answer to a reclaim of state the
+// client did not hold. Answer the wider one ErrInvalid if a client is seen
+// reclaiming less than it holds and treating ErrNoReclaim as its state lost.
+func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult) error {
+	o := e.openOf(r.Owner, r.Stream)
+	switch {
+	case o == nil, r.Access&^o.Mode.Access != 0, r.Deny&^o.Mode.Deny != 0:
+		return ErrNoReclaim
+	case !t.mayUse(o, who):
+		return ErrNotYours
+	}
+	res.Open = o.Open
+	for _, g := range e.grants {
+		if g.heldBy(who.Client, o.lease, o) {
+			p := g.public(e.file)
+			res.Grant = &p
+		}
+	}
+	return nil
 }
 
 // addOpen adds o, a new open of f, to e under its step: its shard listed in
@@ -431,34 +478,32 @@ func (t *Table) dropOpen(e *entry, o *open) {
 }
 
 // markShard lists shard s in client c's record, once: it commits before the
-// answer granting c its first state there. Done is zero until the table
-// holds each shard's grace instance.
+// answer granting c its first state there. A client added to a shard takes
+// its grace instance as Done, so it owes no reclaim there.
 func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) error {
 	t.cmu.Lock()
 	k, ok := t.known[c]
-	listed := slices.Contains(k.shards, s)
+	listed := slices.ContainsFunc(k.shards, func(m entity.ShardMark) bool { return m.Shard == s })
 	t.cmu.Unlock()
-	if !ok {
+	switch {
+	case !ok:
 		return ErrStaleClient
-	}
-	if listed {
+	case listed:
 		return nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	if err != nil {
 		return staleIfGone(err)
 	}
-	if !slices.ContainsFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }) {
-		if err := t.d.Records.Clients().MarkShard(ctx, c, entity.ShardMark{Shard: s}); err != nil {
-			return staleIfGone(err)
-		}
+	m := entity.ShardMark{Shard: s, Done: t.instance(s)}
+	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
+		m = rec.Shards[i]
+	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {
+		return staleIfGone(err)
 	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
-	if k, ok := t.known[c]; ok {
-		k.shards = append(k.shards, s)
-		t.known[c] = k
-	}
+	t.noteMarkLocked(c, m)
 	return nil
 }
 

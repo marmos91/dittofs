@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -250,8 +251,20 @@ func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
+	for _, s := range testShards {
+		if err := f.Recovery().ServeShard(ctx, s, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return f
 }
+
+// testShards are the shards the tests hold state in, each begun at every
+// start under a grace instance never used before.
+var (
+	testShards = []ShardID{0, 1, 5, 7}
+	instances  atomic.Uint64
+)
 
 func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()

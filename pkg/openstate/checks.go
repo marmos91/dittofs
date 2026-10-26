@@ -31,9 +31,12 @@ type Checks interface {
 	// otherwise, and its deny modes were judged once, at open. An anonymous
 	// read or write, and one through a delegation, is judged against every
 	// deny mode held, per operation; a delegation writes only with write
-	// caching. Any is refused ErrLocked across a range a mandatory lock
-	// forbids it, and recalls another holder's caching the I/O conflicts
-	// with, answering ErrDelay until the recall ends.
+	// caching. In grace, an anonymous one, of the shard in o.State.Shard, is
+	// ErrGrace while the shard's records name a client that can hold a deny
+	// mode or a mandatory lock, which may still be reclaimed. Any is refused
+	// ErrLocked across a range a mandatory lock forbids it, and recalls
+	// another holder's caching the I/O conflicts with, answering ErrDelay
+	// until the recall ends.
 	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f, made through via, an open of f, or
 	// through none: what the open state of f refuses. It recalls the caching
@@ -101,6 +104,9 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 		var f entity.FileID
 		if f, err = o.file(); err == nil && f.IsZero() {
 			err = ErrBadState
+		}
+		if err == nil && t.guarded(o.State.Shard) {
+			err = ErrGrace
 		}
 		if err == nil {
 			err = t.step(f, func(e *entry) error {
@@ -230,7 +236,9 @@ func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, f, StateRef{Type: ref.State.Type, Shard: ref.State.Shard, Token: ref.State.Token})
+	st := ref.State
+	st.Seq = 0 // judged against the lock state's own under the step
+	h, err := t.resolve(who.Client, f, st)
 	if err != nil {
 		return err
 	}

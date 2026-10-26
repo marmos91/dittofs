@@ -51,14 +51,19 @@ const (
 	RevokedLeaseExpired RevokeReason = iota // its lease expired, or a reboot replaced it
 	RevokedByAdmin                          // an administrator revoked the client
 	RevokedGrant                            // one caching grant whose recall missed its deadline
+	RevokedShardState                       // a shard's open state was lost: Shard names it
 )
 
 // Revocation names state ended without the client asking: Grant for
-// RevokedGrant; every piece of the client's state for RevokedByAdmin.
+// RevokedGrant; Shard for RevokedShardState; every piece of the client's
+// state for RevokedByAdmin. Adapter is the client record's own bytes, so the
+// adapter acts with no read: an NLM host's notice address.
 type Revocation struct {
-	Client entity.ClientID
-	Grant  GrantID
-	Reason RevokeReason
+	Client  entity.ClientID
+	Grant   GrantID
+	Shard   ShardID
+	Reason  RevokeReason
+	Adapter []byte
 }
 
 // outbox is what a call's steps raised, handed to the Sink once the call holds

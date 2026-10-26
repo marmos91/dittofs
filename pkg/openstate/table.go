@@ -55,16 +55,17 @@ type Table struct {
 	cstep sync.Mutex
 
 	// cmu guards the client area: the clients this node serves, the
-	// proposals it answered and the lifecycle. It is held only to read or
-	// change those maps, never across a store call or a Sink call, and may
-	// be taken under idx, never the other way.
+	// proposals it answered, the shards it serves and the lifecycle. It is
+	// held only to read or change those maps, never across a store call or
+	// a Sink call, and may be taken under idx, never the other way.
 	cmu     sync.Mutex
 	leases  map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
 	known   map[entity.ClientID]known         // what the table reads of each client's record, with its lease
 	pending map[nameKey]pending
 	sources map[netip.Prefix]int              // pending proposals per source
 	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
-	sink    Sink                              // nil before Start and after Stop
+	shards  map[ShardID]*served
+	sink    Sink // nil before Start and after Stop
 	stopped bool
 	stop    func()
 
@@ -97,9 +98,9 @@ type entry struct {
 // here.
 type known struct {
 	recovery entity.RecoveryKind
-	owner    entity.Principal // the owner that may act on all its state; zero unless it protects it
-	down     bool             // its back channel is lost: it is offered no grant until it rebinds
-	shards   []ShardID        // shards seen listed in its record
+	owner    entity.Principal   // the owner that may act on all its state; zero unless it protects it
+	down     bool               // its back channel is lost: it is offered no grant until it rebinds
+	shards   []entity.ShardMark // its record's marks, as last read or written here
 }
 
 // New builds an empty table. It starts nothing: Start does.
@@ -112,6 +113,7 @@ func New(d Deps) (*Table, error) {
 		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{},
 		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
+		shards: map[ShardID]*served{},
 	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}
@@ -157,7 +159,8 @@ func (t *Table) Clients() Clients { return clients{t} }
 // Grants is the view of caching grants.
 func (t *Table) Grants() Grants { return grants{t} }
 
-// Recovery is the view of recovery: references tested and freed.
+// Recovery is the view of recovery: the shards served and their grace, and
+// references tested and freed.
 func (t *Table) Recovery() Recovery { return recovery{t} }
 
 // sweepEvery is how often lapsed leases, proposals and poll waiters are
