@@ -21,7 +21,8 @@ import (
 // exportfs, rpc.nfsd and rpc.mountd that succeed, unless DT_FAKE_FAIL names the
 // program, and a umount that empties the directory it is given, as unmounting
 // the tmpfs would. rpc.nfsd starts only once rpc.mountd can log its stop, so an
-// undo never ends one that couldn't yet. With DT_FAKE_HANG set, rpc.nfsd marks
+// undo never ends one that couldn't yet; that wait has no bound, so a case
+// failing rpc.mountd would end at the setup's limit, not with its own error. With DT_FAKE_HANG set, rpc.nfsd marks
 // that it hangs, in the file "rpc.nfsd hangs" beside the log, waits 3 seconds
 // before it starts the server, and logs that start. The kernel's settings are
 // files in a directory of their own, with lease and grace times of 90 and the
