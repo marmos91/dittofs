@@ -478,8 +478,8 @@ func TestPersistentOpensShareTheirLease(t *testing.T) {
 
 // Only a persistent open is installed, and one of a client the shard's
 // records do not name only to its Timeout, which closes it: the record an
-// unlink wrote for a volatile open stays in the store, for grace's end, and
-// holds nothing.
+// unlink wrote for a volatile open stays in the store, for the sweep at
+// grace's end to close, and holds nothing.
 func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))

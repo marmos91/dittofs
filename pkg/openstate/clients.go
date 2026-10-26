@@ -819,7 +819,10 @@ func (t *Table) sweep(ctx context.Context) {
 	}
 	// On a goroutine of its own, so the sweep never waits on an admission
 	// lock.
-	t.timer.Go(func() { t.serveFiles(ctx, sink, serve) })
+	t.timer.Go(func() {
+		t.serveFiles(ctx, sink, serve)
+		t.closeUnreclaimed(ctx, sink)
+	})
 }
 
 // held is one piece of state a client holds.
@@ -876,8 +879,8 @@ func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 // decision: an open is released here even when its durable record's delete
 // fails. The record stays a holder of its file, and the file stays unreleased
 // until the next start: a persistent record is installed there and closed
-// at its Timeout, and any other is closed by that start's grace end, once
-// grace's end closes the records nobody reclaimed; an expiry that kept the open instead would hold its deny modes for a client
+// at its Timeout, and any other is closed once that start's grace ends; an
+// expiry that kept the open instead would hold its deny modes for a client
 // that is gone. Keep the open if a store outage is shown to strand files.
 func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbox) {
 	for _, h := range t.heldBy(c) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
 )
 
@@ -583,4 +584,85 @@ func (t *Table) keepPending(ctx context.Context, e *entry, o *open, who Caller, 
 		return t.d.Records.Opens().SetDeletePending(ctx, o.share, e.file, by.ID, *pendingFrom(o, who.Principal))
 	}
 	return t.d.Records.Opens().ClearDeletePending(ctx, o.share, e.file)
+}
+
+// closeUnreclaimed closes, for each shard whose grace has ended since the
+// sweep last looked, every durable open record of the shard that no open
+// here holds, as a close would: the record goes, and a file it left with no
+// entry and no open is raised Closed as an orphan, for the service to
+// release. A persistent record is held by the open installed for it, which
+// its Timeout closes. Each record is judged under its file's admission lock and
+// step, so an unlink writing the records of the opens held, or a reclaim
+// writing its own, never loses one; a failed pass is run again at the next
+// sweep.
+//
+// ponytail: a record of a named stream is judged under the stream's
+// admission lock, not its base file's, since the record names only the
+// stream. Read the stream's base first if an unlink of a base is seen racing
+// the close of its stream's record.
+//
+// ponytail: a clone's source record is skipped, as nothing here makes one
+// yet. Close it at the clone's last batch once clones are built.
+func (t *Table) closeUnreclaimed(ctx context.Context, sink Sink) {
+	now := t.d.Clock.Elapsed()
+	due := map[ShardID]*served{}
+	t.cmu.Lock()
+	for s, sh := range t.shards {
+		if sh.unclosed && !sh.inGrace(now) {
+			sh.unclosed = false
+			due[s] = sh
+		}
+	}
+	t.cmu.Unlock()
+	for s, sh := range due {
+		if err := t.closeShardRecords(ctx, sink, s, sh.share); err != nil {
+			t.cmu.Lock()
+			sh.unclosed = true
+			t.cmu.Unlock()
+		}
+	}
+}
+
+// closeShardRecords is closeUnreclaimed of shard s of share.
+func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, share entity.ShareID) error {
+	ops := t.d.Records.Opens()
+	for d, err := range ops.Durable(ctx, share, uint64(s)) {
+		if err != nil {
+			return err
+		}
+		rec, err := ops.Get(ctx, share, d.File, d.Open)
+		if merrs.IsNotFoundError(err) {
+			continue // closed since the listing
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Kind == entity.OpenCloneSource {
+			continue
+		}
+		var orphan entity.FileID
+		unlock := t.order(d.File)
+		err = t.step(d.File, func(*entry) error {
+			t.idx.Lock()
+			_, held := t.byID[d.Open]
+			t.idx.Unlock()
+			if held {
+				return nil
+			}
+			o, err := ops.Delete(ctx, share, d.File, d.Open)
+			if merrs.IsNotFoundError(err) {
+				return nil
+			}
+			orphan = o.File
+			return err
+		})
+		unlock()
+		if err != nil {
+			return err
+		}
+		if !orphan.IsZero() {
+			sink.Closed(orphan, CloseResult{Orphan: true})
+		}
+	}
+	return nil
 }

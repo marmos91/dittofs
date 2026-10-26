@@ -50,7 +50,11 @@ type recovery struct{ t *Table }
 
 // served is a shard this table serves.
 type served struct {
-	instance uint64        // the grace instance its references are minted under
+	instance uint64         // the grace instance its references are minted under
+	share    entity.ShareID // the share it belongs to, whose durable-open index holds its records
+	// unclosed is set from a grace's start until, once the grace has ended,
+	// the sweep has closed the durable records nobody reclaimed.
+	unclosed bool
 	ends     time.Duration // the Elapsed reading its grace ends at; zero: not in grace
 	// reclaim is the clients its records named when grace began: those that
 	// may reclaim here and have not finished.
@@ -131,7 +135,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	case cur != nil:
 		t.lose(s)
 	}
-	sh := &served{instance: instance, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
+	sh := &served{instance: instance, share: share, unclosed: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
 	var told []Revocation
 	notice := false
 	named := map[entity.ClientID]entity.ClientRecord{}

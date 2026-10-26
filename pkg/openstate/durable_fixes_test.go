@@ -554,3 +554,87 @@ func TestUnlinkWritesTheLease(t *testing.T) {
 		t.Errorf("reconnected under %+v, %v; want the lease at rh", back.Grant, err)
 	}
 }
+
+// Once a shard's grace has ended, the sweep closes every durable record of
+// it that nobody reclaimed and that is not persistent: an unlinked file's
+// open lost with its shard, and a record a failed delete left, go, each file
+// left with no holder raised an orphan once. A reclaimed open's record, and a
+// persistent one, stay.
+func TestGraceEndClosesUnreclaimedRecords(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	gone := f.caller(t, nfsAs("gone", entity.RecoverStatus))
+	p := f.caller(t, smbMachine("pc-p"))
+	lost, lr := f.fileIn(t, "lost")
+	kept, kr := f.fileIn(t, "kept")
+	late, tr := f.fileIn(t, "late")
+	left, fr := f.fileIn(t, "left")
+	disk, dr := f.fileIn(t, "disk")
+	lr.Access, kr.Access, fr.Access, dr.Access, tr.Access = rd, rd, rd, rd, rd
+	kr.Owner, tr.Owner = owner(a, "oo"), owner(a, "oo")
+	f.mustOpen(t, a, late, tr)
+	f.mustOpen(t, a, lost, lr)
+	f.mustOpen(t, a, kept, kr)
+	f.mustOpen(t, gone, left, fr)
+	f.mustOpen(t, p, disk, keep(dr, entity.DurabilityPersistent, s1, time.Hour, 1))
+	for name, file := range map[string]FileKey{"lost": lost, "kept": kept, "left": left, "disk": disk} {
+		f.unlink(t, file, name)
+	}
+	st.fail.Store(true)
+	if err := f.Expire(ctx, gone.Client); err != nil {
+		t.Fatal(err)
+	}
+	st.fail.Store(false)
+	if got := f.stored(t, left); len(got) != 1 {
+		t.Fatalf("stored after a failed delete: %+v, want its record left", got)
+	}
+
+	g := f.restart(t)
+	g.renew(t, a)
+	kr.Reclaim, kr.Unlinked = true, true
+	g.mustOpen(t, a, kept, kr)
+	tr.Reclaim = true
+	g.mustOpen(t, a, late, tr)
+	g.unlink(t, late, "late") // in grace, so its record is written by this instance
+	g.ordered(lost)
+	g.closeUnreclaimed(ctx, g.sink)
+	if got := g.stored(t, lost); len(got) != 1 {
+		t.Errorf("stored in grace: %+v, want the record kept for its reclaim", got)
+	}
+	if g.ordered(lost) {
+		t.Error("the close in grace took a file's admission lock")
+	}
+	g.pass(t, leasePeriod, a.Client)
+	st.fail.Store(true)
+	g.closeUnreclaimed(ctx, g.sink) // refused: the next sweep runs it again
+	st.fail.Store(false)
+	g.sweep(ctx)
+	g.Stop() // waits for the steps the sweep started
+	if !g.ordered(lost) {
+		t.Error("the grace end's close ran without the file's admission lock")
+	}
+	st.reads.Store(0)
+	st.readAt.Store(1 << 40) // counts reads
+	g.closeUnreclaimed(ctx, g.sink)
+	if n := st.reads.Load(); n != 0 {
+		t.Errorf("a pass after the shard's records were closed read the store %d times, want none", n)
+	}
+	st.readAt.Store(0)
+	orphans := map[entity.FileID]int{}
+	for _, c := range g.sink.closed {
+		if c.r.Orphan {
+			orphans[c.f]++
+		}
+	}
+	for name, file := range map[string]FileKey{"lost": lost, "left": left} {
+		if got := g.stored(t, file); len(got) != 0 || orphans[file.ID] != 1 {
+			t.Errorf("%s after grace: stored %+v, raised an orphan %d times; want no record and one orphan", name, got, orphans[file.ID])
+		}
+	}
+	for name, file := range map[string]FileKey{"kept": kept, "late": late, "disk": disk} {
+		if got := g.stored(t, file); len(got) != 1 || orphans[file.ID] != 0 {
+			t.Errorf("%s after grace: stored %+v, raised an orphan %d times; want its one record kept", name, got, orphans[file.ID])
+		}
+	}
+}

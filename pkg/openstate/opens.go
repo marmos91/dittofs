@@ -497,7 +497,9 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 	// NFS open takes now.
 	err := error(nil)
 	if o.ID == 0 {
-		o.ID, err = t.nextOpenID(ctx)
+		if o.ID, err = t.nextOpenID(ctx); err == nil {
+			t.nameByID(o)
+		}
 	}
 	if err == nil {
 		err = t.d.Records.Opens().Put(ctx, o.share, o.record())
@@ -1017,7 +1019,11 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 					continue
 				}
 				if committed {
-					o.ID, o.durable = recs[i].ID, true
+					if o.ID == 0 {
+						o.ID = recs[i].ID
+						t.nameByID(o)
+					}
+					o.durable = true
 					if o.persistent() {
 						// The unlink wrote the snapshot, over any change a call
 						// with no admission lock made since, as an acknowledgement:
@@ -1037,6 +1043,14 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 		}
 	}
 	return recs, commit, nil
+}
+
+// nameByID indexes o by the ID it took for its record, so the record is
+// known held: grace's end closes only records no open holds.
+func (t *Table) nameByID(o *open) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	t.byID[o.ID] = refKey{o.Ref.Shard, o.Ref.Token}
 }
 
 // nextOpenID issues an open's ID, unique across the installation and never
