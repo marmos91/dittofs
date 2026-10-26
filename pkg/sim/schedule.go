@@ -89,7 +89,7 @@ func (r Rule) validate(clock Waiter) error {
 	case r.From < 0 || r.Count < 0:
 		return errors.New("negative From or Count")
 	case !(r.Prob >= 0 && r.Prob <= 1):
-		return fmt.Errorf("Prob %v outside [0, 1]", r.Prob)
+		return fmt.Errorf("a Prob of %v, outside [0, 1]", r.Prob)
 	case a.Kind < Pass || a.Kind > Reorder:
 		return fmt.Errorf("unknown kind %v", a.Kind)
 	case a.Kind == Fail && a.Err == nil:
@@ -114,7 +114,7 @@ func (r Rule) hash() uint64 {
 	}
 
 	h := fnv.New64a()
-	fmt.Fprintf(h, "%q %q %d %d %x %d %q %d %d",
+	_, _ = fmt.Fprintf(h, "%q %q %d %d %x %d %q %d %d",
 		r.Op, r.Key, r.From, r.Count, math.Float64bits(r.Prob),
 		r.Action.Kind, msg, r.Action.Delay, r.Action.N)
 	return h.Sum64()

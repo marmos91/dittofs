@@ -291,7 +291,7 @@ func (s *Seam) Create(name string) (storage.File, error) {
 	defer s.mu.Unlock()
 
 	path := filepath.Join(s.dir, name)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := openFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func (s *Seam) Open(name string) (storage.File, error) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
 
-	f, err := os.OpenFile(n.path, os.O_RDWR, 0)
+	f, err := openFile(n.path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
