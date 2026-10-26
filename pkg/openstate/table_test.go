@@ -96,6 +96,7 @@ type recordingSink struct {
 	onEnded  func(c entity.ClientID)
 	onWait   func(w LockWaiter)
 	onRecall func(g CachingGrant, to GrantKind)
+	onRevoke func(r Revocation)
 }
 
 func (s *recordingSink) RecallGrant(g CachingGrant) {
@@ -111,8 +112,12 @@ func (s *recordingSink) RecallGrant(g CachingGrant) {
 
 func (s *recordingSink) Revoked(r Revocation) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.revoked = append(s.revoked, r)
+	fn := s.onRevoke
+	s.mu.Unlock()
+	if fn != nil {
+		fn(r)
+	}
 }
 
 type recallAny struct {

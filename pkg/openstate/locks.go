@@ -537,19 +537,12 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 	if len(r.Ranges) > 1 || r.Reclaim {
 		r.Wait = WaitNone
 	}
-	grace, err := t.admit(who, f.Shard, r.Reclaim)
-	if err != nil {
-		return LockResult{}, err
-	}
 	var res LockResult
 	var out outbox
 	err = t.step(f.ID, func(e *entry) error {
 		op, ls, cur, err := t.lockTarget(e, who, r.Open)
 		if err != nil {
 			return err
-		}
-		if r.Reclaim && !grace {
-			return reclaimHeld(e, r, op, &res)
 		}
 		if ls != nil && !sameOwner(ls.owner, r.Owner) {
 			return ErrBadState
@@ -571,18 +564,27 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			if op != nil && !t.confirmed(op) {
 				return ErrBadState // the owner's sequence refuses it only when numbered
 			}
+			// Admitted under the step, so grace is judged as it stands when
+			// the lock is decided, and a refusal answers the owner's number.
+			grace, err := t.admit(who, f.Shard, r.Reclaim)
+			switch {
+			case err != nil:
+				return err
+			case r.Reclaim && !grace:
+				return reclaimHeld(e, r, op, &res)
+			}
 			if res, err = t.lock(ctx, e, f.Shard, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
 				t.smu.Lock()
 				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
 				t.smu.Unlock()
 			}
+			if grace && errors.Is(err, ErrLocked) {
+				err = ErrReclaimConflict
+			}
 			return err
 		})
 	})
 	out.raise(t, sink)
-	if grace && errors.Is(err, ErrLocked) {
-		err = ErrReclaimConflict
-	}
 	return res, err
 }
 
@@ -778,8 +780,9 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 	switch {
 	case o.Client != who.Client:
 		return nil, ErrNotYours
-	case t.mustConnect(who.Client):
-		return nil, ErrStaleClient
+	}
+	if err := t.staleClient(ctx, who.Client); err != nil {
+		return nil, err
 	}
 	var held *Lock
 	err := t.step(f.ID, func(e *entry) error {
@@ -847,8 +850,8 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	if err != nil {
 		return err
 	}
-	if t.mustConnect(who.Client) {
-		return ErrStaleClient
+	if err := t.staleClient(ctx, who.Client); err != nil {
+		return err
 	}
 	if o.Client != who.Client {
 		return ErrNotYours

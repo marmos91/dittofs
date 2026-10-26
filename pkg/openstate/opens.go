@@ -253,6 +253,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
 		return OpenResult{}, ErrInvalid // a lease key is SMB's
 	}
+	// Admitted before the open's ID is issued, so a refusal writes nothing,
+	// and again under the step, where grace is judged as it then stands.
 	grace, err := t.admit(who, f.Shard, r.Reclaim)
 	if err != nil {
 		return OpenResult{}, err
@@ -273,7 +275,10 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
 	var res OpenResult
-	err = t.step(f.ID, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) (err error) {
+		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+			return err
+		}
 		if r.Reclaim && !grace {
 			return t.reclaimHeld(e, who, r, &res)
 		}
@@ -360,6 +365,10 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 	return nil
 }
 
+// decision: a durable open's record is not rewritten: only an open of a file
+// with no entry is durable, and such a file has no name a rename could move.
+// Rewrite the record's Via once persistent opens, of named files, are
+// durable.
 func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -527,7 +536,8 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	if err != nil {
 		return staleIfGone(err)
 	}
-	m := entity.ShardMark{Shard: s, Done: t.instance(s)}
+	inst, _ := t.instance(s)
+	m := entity.ShardMark{Shard: s, Done: inst}
 	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
 		m = rec.Shards[i]
 	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {

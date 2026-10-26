@@ -83,7 +83,8 @@ func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType,
 			t.idx.Unlock()
 			continue
 		}
-		ref := StateRef{Type: typ, Shard: s, Instance: uint8(t.instance(s) & 31), Token: k.token, Seq: 1}
+		inst, _ := t.instance(s)
+		ref := StateRef{Type: typ, Shard: s, Instance: uint8(inst & 31), Token: k.token, Seq: 1}
 		if under != nil {
 			if err := under(ref); err != nil {
 				t.idx.Unlock()
@@ -166,21 +167,27 @@ func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) 
 	return h, nil
 }
 
-// instance is shard s's grace instance; zero for a shard not begun, where
-// admit lets nothing mint.
-func (t *Table) instance(s ShardID) uint64 {
+// instance is shard s's grace instance; ok is false for a shard not begun.
+func (t *Table) instance(s ShardID) (uint64, bool) {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	if sh := t.shards[s]; sh != nil {
-		return sh.instance
+		return sh.instance, true
 	}
-	return 0
+	return 0, false
 }
 
 // missed judges a reference whose record is not held: stale when it may name
 // state its shard lost, as in grace or minted under another grace instance,
 // so the client reclaims; bad otherwise, as for a released, freed or forged
 // one, or one of a shard not begun, which defaults to no instance.
+//
+// decision: a miss in a shard not begun is ErrBadState, while a minting call
+// there is ErrDelay. The service begins every shard it serves before it
+// answers anything, so a reference naming one it does not serve was forged or
+// names a removed share's state, and a retry would never end; a minting call
+// can only race a takeover. Answer ErrDelay if shards are found to move
+// between nodes, where a reference can reach a node about to serve it.
 func (t *Table) missed(ref StateRef) error {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()

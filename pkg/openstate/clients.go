@@ -347,6 +347,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	t.know(*rec)
 	t.cmu.Unlock()
 	if ended != nil {
+		t.unreclaim(ended.ID)
 		t.releaseClient(ctx, ended.ID, out)
 	}
 	return ended, nil
@@ -744,6 +745,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	delete(t.leases, who.Client)
 	delete(t.known, who.Client)
 	t.cmu.Unlock()
+	t.unreclaim(who.Client)
 	t.dropRevoked(who.Client)
 	return nil
 }

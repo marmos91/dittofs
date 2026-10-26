@@ -43,7 +43,8 @@ type Checks interface {
 	// grants the change conflicts with and never waits, answering ErrDelay
 	// until each recall ends. Only a grant under via's lease key, or the
 	// oplock over via, is the caller's own; with no via, every grant of the
-	// caller's client is.
+	// caller's client is. In grace, a remove or rename in a shard whose
+	// records name a client that can hold a deny mode is ErrGrace.
 	CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error
 }
 
@@ -171,6 +172,9 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	sink, err := t.running()
 	if err != nil {
 		return err
+	}
+	if what&(ChangeRemove|ChangeRename) != 0 && t.guarded(f.Shard) {
+		return ErrGrace // a name may be held by a deny mode still to be reclaimed
 	}
 	smb := who.Protocol == entity.ProtocolSMB
 	var out outbox

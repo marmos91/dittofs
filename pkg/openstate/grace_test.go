@@ -116,6 +116,17 @@ func TestAnonymousIOWaitsForGrace(t *testing.T) {
 	if err := write(sfile); err != nil {
 		t.Errorf("an anonymous write where only an SMB client held a lock: %v", err)
 	}
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := g.Checks().CheckChange(ctx, Caller{}, file, nil, what); !errors.Is(err, ErrGrace) {
+			t.Errorf("change %d where an NFSv4 client held a deny mode: %v, want ErrGrace", what, err)
+		}
+	}
+	if err := g.Checks().CheckChange(ctx, Caller{}, file, nil, ChangeAttrs); err != nil {
+		t.Errorf("a set-attribute in grace: %v", err)
+	}
+	if err := g.Checks().CheckChange(ctx, Caller{}, hfile, nil, ChangeRemove); err != nil {
+		t.Errorf("a remove where only an NLM host held a lock: %v", err)
+	}
 	g.clock.advance(leasePeriod)
 	if err := write(file); err != nil {
 		t.Errorf("an anonymous write after grace: %v", err)
@@ -135,7 +146,7 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 	}
 	a, b := in(5), in(7)
 	f.mustOpen(t, c, a, OpenRequest{Access: rd, Owner: owner(c, "oo")})
-	f.mustOpen(t, c, b, OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	held := f.mustOpen(t, c, b, OpenRequest{Access: rd, Owner: owner(c, "oo")})
 	if s, _ := f.Renew(ctx, c.Client); s.ReclaimNeeded {
 		t.Errorf("before any loss: %+v", s)
 	}
@@ -153,6 +164,7 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 		t.Fatalf("after the restart: %+v, want ReclaimNeeded for %v", st, want)
 	}
 	g.mustOpen(t, c, a, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true})
+	reclaimed := g.mustOpen(t, c, b, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true})
 	// None of these ends what c owes: confirming again, another principal's
 	// completion, or one naming an instance not yet begun.
 	g.connect(t, cl)
@@ -168,9 +180,13 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 		t.Errorf("owed after completions that end nothing: %+v, want both shards", st)
 	}
 
-	// Shard 7 is lost again after c was shown its instance.
+	// Shard 7 is lost again after c was shown its instance: what it
+	// reclaimed there is gone, and its reference stale.
 	if err := g.Recovery().ServeShard(ctx, 7, g.shards[7].instance+100); err != nil {
 		t.Fatal(err)
+	}
+	if err := g.Recovery().TestState(ctx, c, []StateRef{reclaimed.Ref, held.Ref}); !errors.Is(err[0], ErrStaleState) || !errors.Is(err[1], ErrStaleState) {
+		t.Errorf("references of shard 7 after its second loss: %v, want ErrStaleState", err)
 	}
 	if _, err := g.lock(other, in(5), LockReq{Owner: owner(other, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
 		t.Errorf("before c completes: %v, want ErrGrace", err)
@@ -200,7 +216,9 @@ func TestRefusalClientConnectsAgain(t *testing.T) {
 	f := newFixture(t)
 	cl := nfsAs("c40", entity.RecoverRefusal)
 	c, done := f.caller(t, cl), f.caller(t, nfsAs("done", entity.RecoverStatus))
+	c2 := f.caller(t, nfsAs("c40-2", entity.RecoverRefusal))
 	file := in(5)
+	f.mustLock(t, c2, in(5), LockReq{Owner: owner(c2, "lo"), Ranges: []LockRange{x(0, 1)}})
 	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo")})
 	lk := f.mustLock(t, c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
 	f.mustOpen(t, done, in(5), OpenRequest{Access: rd})
@@ -218,10 +236,11 @@ func TestRefusalClientConnectsAgain(t *testing.T) {
 	if _, err := g.open(c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("a reclaim before connecting again: %v, want ErrStaleClient", err)
 	}
-	if _, err := g.Locks().TestLock(ctx, c, file, owner(c, "lo"), br(0, 1), true); !errors.Is(err, ErrStaleClient) {
+	// c2 has sent nothing since the restart.
+	if _, err := g.Locks().TestLock(ctx, c2, file, owner(c2, "lo"), br(0, 1), true); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("TestLock: %v, want ErrStaleClient", err)
 	}
-	if err := g.Locks().ReleaseLockOwner(ctx, c, owner(c, "lo")); !errors.Is(err, ErrStaleClient) {
+	if err := g.Locks().ReleaseLockOwner(ctx, c2, owner(c2, "lo")); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("ReleaseLockOwner: %v, want ErrStaleClient", err)
 	}
 	if err := g.Recovery().TestState(ctx, c, []StateRef{lk.Ref})[0]; !errors.Is(err, ErrStaleState) {
@@ -240,21 +259,25 @@ func TestRefusalClientConnectsAgain(t *testing.T) {
 	if err := g.Expire(ctx, c.Client); err != nil {
 		t.Fatal(err)
 	}
+	if err := g.Expire(ctx, c2.Client); err != nil {
+		t.Fatal(err)
+	}
 	g.mustLock(t, done, in(5), LockReq{Owner: owner(done, "lo"), Ranges: []LockRange{x(0, 1)}})
 }
 
 // A shard where NLM hosts held locks raises the restart-notice number before
 // its grace begins and tells each host, with its adapter bytes, as it tells
 // an SMB client; the hosts' reclaims are granted, and a host revoked before
-// the restart is told nothing and reclaims nothing.
+// the restart, or whose record is ended, is told nothing and reclaims
+// nothing.
 func TestShardLossToldToHosts(t *testing.T) {
 	f := newFixture(t)
-	h1, h2, gone := f.host(t, "h1", 1), f.host(t, "h2", 1), f.host(t, "gone", 1)
+	h1, h2, gone, ended := f.host(t, "h1", 1), f.host(t, "h2", 1), f.host(t, "gone", 1), f.host(t, "ended", 1)
 	sc := smb("pc")
 	sc.Recovery = entity.RecoverReconnect
 	s := f.caller(t, sc)
 	file := in(5)
-	for i, h := range []Caller{h1, h2, gone} {
+	for i, h := range []Caller{h1, h2, gone, ended} {
 		f.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(uint64(i)*10, 10)}})
 	}
 	f.mustOpen(t, s, file, OpenRequest{Access: rd})
@@ -262,6 +285,15 @@ func TestShardLossToldToHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.Revoke(ctx, gone.Client); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := f.fs.Store.Clients().Get(ctx, ended.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := rec
+	next.Ended = true
+	if _, err := f.fs.Store.Clients().Put(ctx, rec, next); err != nil {
 		t.Fatal(err)
 	}
 	before, err := f.fs.Store.NSMState(ctx)
@@ -275,11 +307,18 @@ func TestShardLossToldToHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.sink.takeRevoked()
+	var toldAt []uint32 // the restart-notice number as each client is told
+	g.sink.onRevoke = func(Revocation) {
+		n, _ := f.fs.Store.NSMState(ctx)
+		toldAt = append(toldAt, n)
+	}
 	if err := g.Recovery().ServeShard(ctx, 5, instances.Add(1)); err != nil {
 		t.Fatal(err)
 	}
-	if after, _ := f.fs.Store.NSMState(ctx); after <= before {
-		t.Errorf("restart-notice number %d after the shard began, %d before", after, before)
+	for _, n := range toldAt {
+		if n <= before {
+			t.Errorf("restart-notice number %d as a client was told, %d before", n, before)
+		}
 	}
 	got := map[entity.ClientID]Revocation{}
 	for _, r := range g.sink.takeRevoked() {
@@ -458,15 +497,127 @@ func TestRenameMovesTheDeferredUnlink(t *testing.T) {
 	p := f.caller(t, smb("p-pc"))
 	file, d1, d2 := anyFile(), entity.NewFileID(), entity.NewFileID()
 	o := f.mustOpen(t, p, file, OpenRequest{Via: d1, Name: []byte("a"), Access: rd | del, DeleteOnClose: true})
+	link := f.mustOpen(t, p, file, OpenRequest{Via: d1, Name: []byte("c"), Access: rd}) // through another link
 	if err := f.Opens().Renamed(ctx, file, d1, []byte("a"), d2, []byte("b")); err != nil {
 		t.Fatal(err)
 	}
-	for dir, want := range map[entity.FileID]error{d1: nil, d2: ErrShareViolation} {
-		if err := f.Checks().CheckChange(ctx, p, FileKey{ID: dir}, nil, ChangeRemove); !errors.Is(err, want) || (want == nil) != (err == nil) {
-			t.Errorf("an SMB remove of the directory: %v, want %v", err, want)
-		}
+	f.idx.Lock()
+	n1, n2 := f.via[d1], f.via[d2]
+	f.idx.Unlock()
+	if n1 != 1 || n2 != 1 {
+		t.Errorf("opens made through each directory: %d and %d, want 1 and 1", n1, n2)
 	}
+	f.close(t, p, link)
 	if r := f.close(t, p, o); r.Unlink == nil || r.Unlink.Parent != d2 || string(r.Unlink.Name) != "b" {
 		t.Errorf("the deferred unlink: %+v, want b in the directory it was renamed to", r.Unlink)
+	}
+}
+
+// A client that ends in grace, by a reboot under a new Boot or a destroy, is
+// no longer waited for: grace ends early once the others have finished.
+func TestEndedClientEndsGraceEarly(t *testing.T) {
+	f := newFixture(t)
+	xc, yc := nfsAs("x", entity.RecoverStatus), nfsAs("y", entity.RecoverRefusal)
+	xcl, y, z := f.caller(t, xc), f.caller(t, yc), f.caller(t, nfsAs("z", entity.RecoverStatus))
+	f.mustOpen(t, xcl, in(5), OpenRequest{Access: rd})
+	f.mustOpen(t, y, in(5), OpenRequest{Access: rd})
+
+	g := f.restart(t)
+	g.renew(t, z)
+	free := func() error {
+		_, err := g.lock(z, in(5), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}})
+		return err
+	}
+	xc.Boot = [8]byte{2}
+	if _, err := g.Connect(ctx, xc, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := free(); !errors.Is(err, ErrGrace) {
+		t.Errorf("with y still recorded: %v, want ErrGrace", err)
+	}
+	if err := g.Destroy(ctx, y); err != nil {
+		t.Fatal(err)
+	}
+	if err := free(); err != nil {
+		t.Errorf("once x rebooted and y was destroyed: %v, want granted", err)
+	}
+}
+
+// A lock refused ErrGrace answers its owner's number, so the owner's next
+// request is judged as following it.
+func TestGraceRefusedLockAdvancesItsOwner(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	file, other := in(5), in(5)
+	oo := owner(c, "oo")
+	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Seqs: num(1)})
+	if _, err := f.Opens().ConfirmOpen(ctx, c, refOf(o), num(2)); err != nil {
+		t.Fatal(err)
+	}
+	f.mustOpen(t, c, other, OpenRequest{Access: rd, Owner: oo, Seqs: num(3)})
+	g := f.restart(t)
+	g.renew(t, c)
+	again := g.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Reclaim: true, Seqs: num(1)})
+	_, err := g.lock(c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(again), Ranges: []LockRange{x(0, 1)}, Seqs: Seqs{Owner: ptr(uint32(2)), NewOwner: 1}})
+	if !errors.Is(err, ErrGrace) {
+		t.Fatalf("a lock in grace: %v, want ErrGrace", err)
+	}
+	if _, err := g.open(c, other, OpenRequest{Access: rd, Owner: oo, Reclaim: true, Seqs: num(3)}); err != nil {
+		t.Errorf("the owner's next request after the refused lock: %v, want granted", err)
+	}
+}
+
+// A reclaim of locks answered from what the owner holds answers the lock
+// owner's number.
+func TestHeldLockReclaimAdvancesItsOwner(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	file := in(5)
+	oo, lo := owner(c, "oo"), owner(c, "lo")
+	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Seqs: num(1)})
+	if _, err := f.Opens().ConfirmOpen(ctx, c, refOf(o), num(2)); err != nil {
+		t.Fatal(err)
+	}
+	res := f.mustLock(t, c, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Seqs: Seqs{Owner: ptr(uint32(3)), NewOwner: 1}})
+	ref := res.Ref
+	ref.Seq = 0
+	byLock := OpenRef{Kind: RefLocked, State: ref}
+	if _, err := f.lock(c, file, LockReq{Owner: lo, Open: byLock, Ranges: []LockRange{x(0, 10)}, Reclaim: true, Seqs: num(2)}); err != nil {
+		t.Fatalf("a reclaim of a held lock: %v", err)
+	}
+	if _, err := f.lock(c, file, LockReq{Owner: lo, Open: byLock, Ranges: []LockRange{x(20, 10)}, Seqs: num(3)}); err != nil {
+		t.Errorf("the lock owner's next lock after the reclaim: %v, want granted", err)
+	}
+}
+
+// A reclaim admitted in grace that reaches its file's step after grace has
+// ended is judged as one sent after it: of state not held, ErrNoReclaim.
+func TestReclaimLandingAfterGrace(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	f.mustOpen(t, c, in(5), OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	g := f.restart(t)
+	g.renew(t, c)
+	g.clock.advance(leasePeriod / 2)
+	g.renew(t, c)
+	target := in(5) // c never held it
+	hold, release := make(chan struct{}), make(chan struct{})
+	go g.step(target.ID, func(*entry) error { close(hold); <-release; return nil })
+	<-hold
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.open(c, target, OpenRequest{Access: rd | wr, Deny: wr, Owner: owner(c, "oo"), Reclaim: true})
+		done <- err
+	}()
+	fs := &g.files[target.ID[0]]
+	for waiting := false; !waiting; {
+		fs.mu.Lock()
+		waiting = fs.entries[target.ID].users == 2
+		fs.mu.Unlock()
+	}
+	g.clock.advance(leasePeriod / 2) // grace ends while the reclaim waits for the step
+	close(release)
+	if err := <-done; !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim admitted in grace landing after it: %v, want ErrNoReclaim", err)
 	}
 }

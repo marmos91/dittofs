@@ -83,18 +83,45 @@ func (v recovery) ServeShard(ctx context.Context, s ShardID, instance uint64) er
 	if err != nil {
 		return err
 	}
+	// The client step is held from the scan to the install, so a revoke, an
+	// expiry or a reboot either lands before the scan, and the client is
+	// not listed, or after the install, and unreclaims it.
+	t.cstep.Lock()
+	told, err := t.beginShard(ctx, s, instance)
+	t.cstep.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, r := range told {
+		sink.Revoked(r)
+	}
+	return nil
+}
+
+// beginShard is ServeShard under the client step, and returns the clients to
+// tell.
+func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]Revocation, error) {
 	t.cmu.Lock()
 	cur := t.shards[s]
+	if cur != nil && cur.instance != instance {
+		delete(t.shards, s) // admission refuses while the old state goes
+	}
 	t.cmu.Unlock()
-	if cur != nil && cur.instance == instance {
-		return nil // a handover of the table: nothing was lost
+	switch {
+	case cur != nil && cur.instance == instance:
+		return nil, nil // a handover of the table: nothing was lost
+	case cur != nil:
+		t.lose(s)
 	}
 	sh := &served{instance: instance, reclaim: map[entity.ClientID]entity.RecoveryKind{}}
 	var told []Revocation
 	notice := false
 	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
 		if err != nil {
-			return err
+			return nil, err
+		}
+		if rec.Ended {
+			continue // its state is being released everywhere: nothing to reclaim
 		}
 		sh.reclaim[rec.ID] = rec.Recovery
 		sh.guarded = sh.guarded || rec.Protocol != entity.ProtocolNLM
@@ -105,7 +132,7 @@ func (v recovery) ServeShard(ctx context.Context, s ShardID, instance uint64) er
 	}
 	if notice {
 		if err := t.raiseNotice(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	t.cmu.Lock()
@@ -113,10 +140,56 @@ func (v recovery) ServeShard(ctx context.Context, s ShardID, instance uint64) er
 	sh.settle()
 	t.shards[s] = sh
 	t.cmu.Unlock()
-	for _, r := range told {
-		sink.Revoked(r)
+	return told, nil
+}
+
+// lose drops every piece of state held in shard s, as a loss of its open
+// state does: nothing is told and nothing closed, since the state is gone
+// rather than ended, and its references then miss.
+//
+// decision: a call admitted under the old instance, on a file holding no
+// state of s, that mints after the old state is dropped keeps its state,
+// stamped with the instance installed by then, or zero while none is, though
+// it was admitted outside the new grace. Only a failover onto a node already
+// serving the shard opens that window, which a single node never does. Mark
+// a shard swapping and refuse its mints if shards are found to move.
+func (t *Table) lose(s ShardID) {
+	t.idx.Lock()
+	var files []entity.FileID
+	for k, h := range t.refs {
+		if k.shard == s && !slices.Contains(files, h.file) {
+			files = append(files, h.file)
+		}
 	}
-	return nil
+	for k := range t.revoked {
+		if k.shard == s {
+			delete(t.revoked, k)
+		}
+	}
+	t.idx.Unlock()
+	for _, f := range files {
+		_ = t.step(f, func(e *entry) error {
+			for _, ls := range e.lstates {
+				if ls.ref.Shard == s {
+					t.dropLockState(e, ls)
+				}
+			}
+			for _, g := range e.grants {
+				if g.id.Shard == s {
+					t.dropGrant(e, g)
+				}
+			}
+			for _, o := range e.opens {
+				if o.Ref.Shard == s {
+					t.dropOpen(e, o)
+				}
+			}
+			if len(e.opens) == 0 {
+				e.pending = nil
+			}
+			return nil
+		})
+	}
 }
 
 // raiseNotice raises the restart-notice number durably, so every NLM host
@@ -163,9 +236,10 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 	return grace, nil
 }
 
-// guarded reports whether anonymous I/O in shard s waits for grace's end: s
-// is in grace, and its records named a client that can hold a deny mode or a
-// mandatory lock, which a reclaim may still restore.
+// guarded reports whether anonymous I/O, and a change that removes or moves a
+// name, in shard s waits for grace's end: s is in grace, and its records
+// named, when grace began, a client that can hold a deny mode or a mandatory
+// lock.
 //
 // decision: anonymous I/O names no state, so the shard is the one the
 // service resolved for the file, carried in the reference's State.Shard. Take
@@ -189,11 +263,27 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 	return owed
 }
 
-// mustConnect is mustConnectLocked, taking cmu.
-func (t *Table) mustConnect(c entity.ClientID) bool {
+// staleClient is ErrStaleClient for a client c that must connect again, as
+// mustConnectLocked judges it, adopting c first if this table has not yet
+// served it since a restart; a call naming no client is never stale.
+func (t *Table) staleClient(ctx context.Context, c entity.ClientID) error {
+	if c == 0 {
+		return nil
+	}
+	t.cmu.Lock()
+	_, ok := t.known[c]
+	t.cmu.Unlock()
+	if !ok {
+		if err := t.adopt(ctx, c); err != nil {
+			return err
+		}
+	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
-	return t.mustConnectLocked(c)
+	if t.mustConnectLocked(c) {
+		return ErrStaleClient
+	}
+	return nil
 }
 
 // mustConnectLocked reports whether c recovers by connecting again and owes
@@ -203,7 +293,8 @@ func (t *Table) mustConnectLocked(c entity.ClientID) bool {
 	return t.known[c].recovery == entity.RecoverRefusal && len(t.owedLocked(c)) > 0
 }
 
-// unreclaim drops c from every grace waiting on it: it ended.
+// unreclaim drops c from every grace waiting on it: it ended, or was
+// replaced by a reboot.
 func (t *Table) unreclaim(c entity.ClientID) {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
