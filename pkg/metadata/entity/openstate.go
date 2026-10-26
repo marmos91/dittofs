@@ -181,6 +181,7 @@ type OpenRecord struct {
 	Lease         *Lease    // the SMB lease covering a persistent open; nil: none
 	Suspended     TimeMask
 	Via           FileID // the directory it was opened through; zero: none named
+	Name          []byte // its entry in Via, which delete on close unlinks; nil: opened by handle
 	StateSeq      uint32 // NFSv4: its stateid's seqid
 	Nonce         uint64 // NFSv4: its stateid's random bits
 	LossSeen      uint64 // SMB: the file's loss sequence it last reported
@@ -204,6 +205,7 @@ type Lease struct {
 	Key, ParentKey [16]byte
 	State          uint8 // the lease's read, handle and write bits, as SMB numbers them
 	Epoch          uint16
+	V2             bool // a v2 lease, whose Epoch is counted
 }
 
 // SessionRef names the session that opened or last reconnected an open: a
@@ -221,8 +223,8 @@ type LockRecord struct {
 	ID        LockID
 	Open      OpenID
 	Owner     LockOwner
-	Offset    int64
-	Length    int64 // to the end of file when EndOfFile
+	Offset    uint64
+	Length    uint64 // a zero length included; all ones reaches the last byte
 	Exclusive bool
 }
 

@@ -26,13 +26,13 @@ func openCodecCases() []codecCase {
 	smb := entity.ClientRecord{ID: 8, Protocol: entity.ProtocolSMB, Name: []byte{0x11, 0x22}, Adapter: []byte{}}
 	op := entity.OpenRecord{ID: 9, Client: 7, Principal: alice, File: fid, Access: 0x1F, Privileged: true, Deny: 0x02,
 		Durability: entity.DurabilityPersistent, DeleteOnClose: true, DeleteBy: group,
-		Lease:     &entity.Lease{Key: [16]byte{15: 1}, ParentKey: [16]byte{15: 2}, State: 7, Epoch: 4},
-		Suspended: entity.TimeModify, Via: entity.FileID{15: 3}, StateSeq: 2, Nonce: 0xDEAD, LossSeen: 6,
+		Lease:     &entity.Lease{Key: [16]byte{15: 1}, ParentKey: [16]byte{15: 2}, State: 7, Epoch: 4, V2: true},
+		Suspended: entity.TimeModify, Via: entity.FileID{15: 3}, Name: []byte("a"), StateSeq: 2, Nonce: 0xDEAD, LossSeen: 6,
 		Session: entity.SessionRef{Node: 1, NodeEpoch: 2, ID: 3},
 		Kind:    entity.OpenCloneSource, CloneDst: entity.FileID{15: 4}, CloneVersion: entity.VersionOf(5),
 		CreateGUID: [16]byte{15: 5}, AppInstance: [16]byte{15: 6}, AppVersion: [2]uint64{1, 2},
 		Timeout: time.Minute, LockSeq: [64]uint8{0: 0x13}, ChannelSeq: 8}
-	lk := entity.LockRecord{ID: 4, Open: 9, Owner: entity.LockOwner{Client: 7, Owner: []byte("o")}, Offset: 100, Length: entity.EndOfFile, Exclusive: true}
+	lk := entity.LockRecord{ID: 4, Open: 9, Owner: entity.LockOwner{Client: 7, Owner: []byte("o")}, Offset: 100, Length: ^uint64(0), Exclusive: true}
 	dp := entity.DeleteRecord{Parent: entity.FileID{15: 1}, Name: []byte("a"), By: alice, Access: 0x10000, Privileged: true}
 	f16 := func(b byte) string { return strings.Repeat("00", 15) + hex.EncodeToString([]byte{b}) }
 	return []codecCase{
@@ -48,12 +48,12 @@ func openCodecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeClientID(b) }},
 		{"open", op, encodeOpen(op),
 			"01" + hexU64(7) + ph + hexU32(0x1F) + "01" + hexU32(2) + "02" + "01" + gh +
-				"01" + f16(1) + f16(2) + "07" + hexU32(4) +
-				"01" + f16(3) + hexU32(2) + hexU64(0xDEAD) + hexU64(6) + hexU64(1) + hexU64(2) + hexU64(3) +
+				"01" + f16(1) + f16(2) + "07" + hexU32(4) + "01" +
+				"01" + f16(3) + "0161" + hexU32(2) + hexU64(0xDEAD) + hexU64(6) + hexU64(1) + hexU64(2) + hexU64(3) +
 				"01" + f16(4) + v16(5) + f16(5) + f16(6) + hexU64(1) + hexU64(2) +
 				hexU64(uint64(time.Minute)) + "13" + strings.Repeat("00", 63) + hexU32(8),
 			func(b []byte) (any, error) { return decodeOpen(fid, 9, b) }},
-		{"lock", lk, encodeLock(lk), "01" + hexU64(7) + "016f" + hexU64(uint64(entity.EndOfFile)) + "01",
+		{"lock", lk, encodeLock(lk), "01" + hexU64(7) + "016f" + hexU64(^uint64(0)) + "01",
 			func(b []byte) (any, error) { return decodeLock(9, 100, 4, b) }},
 		{"shard", entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}, encodeShard(entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}),
 			"01" + hexU64(5) + hexU64(4),

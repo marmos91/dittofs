@@ -189,8 +189,8 @@ func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Op
 // persistent open of the file: no other open's locks are stored, and
 // closing the open drops them with it.
 func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.LockRecord) error {
-	if l.ID == 0 || l.Offset < 0 || l.Length <= 0 {
-		return merrs.NewInvalidArgumentError("a lock needs an ID, an offset and a length")
+	if l.ID == 0 {
+		return merrs.NewInvalidArgumentError("a lock needs an ID")
 	}
 	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
 		op, err := persistentOpen(tx, share, file, l.Open)
@@ -226,7 +226,7 @@ func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.File
 			if err != nil {
 				return err
 			}
-			l, err := decodeLock(open, int64(offset), entity.LockID(id), row.Value)
+			l, err := decodeLock(open, offset, entity.LockID(id), row.Value)
 			if err != nil {
 				return err
 			}
