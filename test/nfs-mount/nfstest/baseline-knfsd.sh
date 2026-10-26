@@ -83,13 +83,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 # tables VARIANT: the known-failure tables that grade VARIANT, colon-separated,
-# as run.sh takes them: the shared table, then its version's overlays.
+# as run.sh takes them: the shared table, then its version's overlays. It
+# fails for a set it doesn't name, so a new set needs its tables here.
 tables() {
     local d="$SCRIPT_DIR" overlays
     case "$1" in
         v3) overlays="$d/KNOWN_FAILURES_V3.md" ;;
         v4.0) overlays="$d/KNOWN_FAILURES_V4.md:$d/KNOWN_FAILURES_V40.md" ;;
-        *) overlays="$d/KNOWN_FAILURES_V4.md" ;;
+        default | v4.1 | v4.1-noac | v4.1-smallio) overlays="$d/KNOWN_FAILURES_V4.md" ;;
+        *) return 1 ;;
     esac
     echo "$d/KNOWN_FAILURES.md:$overlays"
 }
@@ -107,6 +109,7 @@ fi
 IFS=',' read -ra variants <<<"$VARIANTS"
 for v in "${variants[@]}"; do
     option_set_opts "$v" >/dev/null || die "unknown option set: $v"
+    tables "$v" >/dev/null || die "no known-failure tables for option set $v"
 done
 
 # run_knfsd — export a directory from knfsd and run every option set against
