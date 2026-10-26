@@ -437,13 +437,13 @@ func TestDeletePending(t *testing.T) {
 	if _, err := f.open(nfsCaller, file, OpenRequest{Access: rd}); !errors.Is(err, ErrDeletePending) {
 		t.Errorf("an open of the delete-pending file: %v, want ErrDeletePending", err)
 	}
-	if err := f.Checks().CheckChange(ctx, nfsCaller, file, ChangeRename); !errors.Is(err, ErrDeletePending) {
+	if err := f.Checks().CheckChange(ctx, nfsCaller, file, nil, ChangeRename); !errors.Is(err, ErrDeletePending) {
 		t.Errorf("a rename of the delete-pending file: %v, want ErrDeletePending", err)
 	}
-	if err := f.Checks().CheckChange(ctx, nfsCaller, file, ChangeAddEntry); !errors.Is(err, ErrDeletePending) {
+	if err := f.Checks().CheckChange(ctx, nfsCaller, file, nil, ChangeAddEntry); !errors.Is(err, ErrDeletePending) {
 		t.Errorf("a name added to a delete-pending directory: %v, want ErrDeletePending", err)
 	}
-	if err := f.Checks().CheckChange(ctx, nfsCaller, file, ChangeRemove); err != nil {
+	if err := f.Checks().CheckChange(ctx, nfsCaller, file, nil, ChangeRemove); err != nil {
 		t.Errorf("an unlink of the delete-pending file's name: %v", err)
 	}
 	r := f.close(t, q, other)
@@ -507,10 +507,10 @@ func TestChangeChecks(t *testing.T) {
 	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
 	file := anyFile()
 	f.mustOpen(t, s, file, OpenRequest{Access: rd | del, Deny: del})
-	if err := f.Checks().CheckChange(ctx, n, file, ChangeRemove); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckChange(ctx, n, file, nil, ChangeRemove); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an NFS remove against a deny-delete: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckChange(ctx, s, file, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, s, file, nil, ChangeRename); err != nil {
 		t.Errorf("an SMB rename through its own deny-delete open: %v", err)
 	}
 
@@ -518,22 +518,22 @@ func TestChangeChecks(t *testing.T) {
 	child := f.mustOpen(t, s, anyFile(), OpenRequest{Via: d, Access: rd})
 	f.mustOpen(t, s, anyFile(), OpenRequest{Via: e, Access: rd}) // e is a directory in d
 	for _, what := range []ChangeMask{ChangeRename, ChangeRemove} {
-		if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, what); !errors.Is(err, ErrShareViolation) {
+		if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, nil, what); !errors.Is(err, ErrShareViolation) {
 			t.Errorf("an SMB change %d of a directory with an open child: %v, want ErrShareViolation", what, err)
 		}
 	}
-	if err := f.Checks().CheckChange(ctx, n, FileKey{ID: d}, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, n, FileKey{ID: d}, nil, ChangeRename); err != nil {
 		t.Errorf("an NFS rename of a directory with an open child: %v", err)
 	}
 	// The caller's protocol decides, not a client the table knows.
-	if err := f.Checks().CheckChange(ctx, Caller{Principal: s.Principal, Protocol: entity.ProtocolSMB}, FileKey{ID: d}, ChangeRename); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckChange(ctx, Caller{Principal: s.Principal, Protocol: entity.ProtocolSMB}, FileKey{ID: d}, nil, ChangeRename); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an SMB rename of a directory with an open child, by a caller of no known client: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckChange(ctx, Caller{Client: s.Client, Principal: s.Principal}, FileKey{ID: d}, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, Caller{Client: s.Client, Principal: s.Principal}, FileKey{ID: d}, nil, ChangeRename); err != nil {
 		t.Errorf("an NFSv3 rename of a directory with an open child, under an SMB client's ID: %v", err)
 	}
 	f.close(t, s, child)
-	if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, ChangeRename); err != nil {
+	if err := f.Checks().CheckChange(ctx, s, FileKey{ID: d}, nil, ChangeRename); err != nil {
 		t.Errorf("an SMB rename of a directory whose only open is two levels below: %v", err)
 	}
 }

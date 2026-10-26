@@ -35,10 +35,13 @@ type Checks interface {
 	// forbids it, and recalls another holder's caching the I/O conflicts
 	// with, answering ErrDelay until the recall ends.
 	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
-	// CheckChange admits a change to f: what the open state of f refuses.
-	// It recalls the caching grants the change conflicts with and never
-	// waits, answering ErrDelay until each recall ends.
-	CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error
+	// CheckChange admits a change to f, made through via, an open of f, or
+	// through none: what the open state of f refuses. It recalls the caching
+	// grants the change conflicts with and never waits, answering ErrDelay
+	// until each recall ends. Only a grant under via's lease key, or the
+	// oplock over via, is the caller's own; with no via, every grant of the
+	// caller's client is.
+	CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error
 }
 
 type checks struct{ t *Table }
@@ -154,21 +157,27 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 // through an exclusive handle; and POSIX allows an NFS rename of a directory
 // with open children. Judge every caller if a protocol is served that
 // removes a name without an open of its own.
-//
-// decision: every grant of the caller's own client is its own here, under
-// any lease key, since a change names no open to tell one key from another;
-// only a setuid or setgid bit set recalls it, of its write caching. Judge the
-// key once the change carries the open it is made through.
-func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, what ChangeMask) error {
+func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
 		return err
 	}
 	smb := who.Protocol == entity.ProtocolSMB
-	own := func(g *grant) bool { return g.client == who.Client }
 	var out outbox
 	err = t.step(f.ID, func(e *entry) error {
+		own := func(g *grant) bool { return g.client == who.Client }
+		if via != nil {
+			_, k, err := t.findOpen(who, *via)
+			if err != nil {
+				return err
+			}
+			o := e.opens[k.token]
+			if o == nil {
+				return ErrBadState
+			}
+			own = func(g *grant) bool { return g.heldBy(who.Client, o.lease, o) }
+		}
 		// decision: a delete-pending directory also refuses an added name,
 		// beyond RFC 14's opens and renames, as Windows answers a create in
 		// one STATUS_DELETE_PENDING. Drop it if an NFS workload is shown to

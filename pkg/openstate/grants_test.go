@@ -510,7 +510,7 @@ func TestSetIDRecallsWriteCaching(t *testing.T) {
 	}
 	file := anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
-	if err := f.Checks().CheckChange(ctx, a, file, ChangeSetID); delayedFor(err) != DelayRecall {
+	if err := f.Checks().CheckChange(ctx, a, file, nil, ChangeSetID); delayedFor(err) != DelayRecall {
 		t.Fatalf("setting setuid under the holder's own write delegation: %v, want ErrDelay", err)
 	}
 	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantNone {
@@ -628,10 +628,10 @@ func TestIORecallsGrants(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, a, refOf(o), br(0, 1), true); err != nil {
 		t.Fatalf("a write through the lease's own open: %v", err)
 	}
-	if err := f.Checks().CheckChange(ctx, a, file, ChangeAttrs); err != nil {
+	if err := f.Checks().CheckChange(ctx, a, file, nil, ChangeAttrs); err != nil {
 		t.Fatalf("the holder's own set-attribute: %v", err)
 	}
-	if err := f.Checks().CheckChange(ctx, f.caller(t, smb("pc-b")), file, ChangeAttrs); delayedFor(err) != DelayRecall {
+	if err := f.Checks().CheckChange(ctx, f.caller(t, smb("pc-b")), file, nil, ChangeAttrs); delayedFor(err) != DelayRecall {
 		t.Fatalf("another client's set-attribute: %v, want ErrDelay", err)
 	}
 	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantNone {
@@ -946,5 +946,33 @@ func TestStatOpenBreaksNoGrant(t *testing.T) {
 	}
 	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].g.ID != g.ID || r[0].to != rh {
 		t.Errorf("recalls %+v, want the lease's write caching", r)
+	}
+}
+
+// A change through an open treats as the caller's own only the grant under
+// that open's lease key: another key of the same client is broken as another
+// client's would be. With no open named, every grant of the client is its own.
+func TestChangeThroughAnOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	file := anyFile()
+	oa := f.mustOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}})
+	ob, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh})
+	if g == nil {
+		t.Fatal("no lease under the second key")
+	}
+	for _, via := range []*OpenRef{nil, ptr(refOf(ob))} {
+		if err := f.Checks().CheckChange(ctx, a, file, via, ChangeRename); err != nil {
+			t.Fatalf("a rename through %+v: %v", via, err)
+		}
+	}
+	if r := f.sink.takeRecalls(); len(r) != 0 {
+		t.Fatalf("the caller's own rename broke %+v", r)
+	}
+	if err := f.Checks().CheckChange(ctx, a, file, ptr(refOf(oa)), ChangeRename); delayedFor(err) != DelayRecall {
+		t.Fatalf("a rename through the first key's open: %v, want ErrDelay", err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].g.ID != g.ID || r[0].to != GrantNone {
+		t.Errorf("recalls %+v, want the second key's lease to none", r)
 	}
 }
