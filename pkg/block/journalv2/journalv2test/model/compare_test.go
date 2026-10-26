@@ -303,6 +303,12 @@ func TestCompareReadsAToEndMarkerInOneForm(t *testing.T) {
 		t.Fatalf("message %q prints the journal's length as the model's", err)
 	}
 
+	// Since is held to the form on its own, with the index right.
+	view := modelView{j, shareA}
+	sinceOnly := withLen(view, math.MaxInt64).(planted)
+	sinceOnly.index = nil
+	diverged(t, m.Compare(t.Context(), shareA, sinceOnly))
+
 	// A delete covers the whole file: Since yields it as [0, MaxInt64), and a
 	// delete yielded with any other extent is refused.
 	h := modelView{j, shareB}
