@@ -14,7 +14,9 @@ type Recovery interface {
 	TestState(ctx context.Context, who Caller, s []StateRef) []error
 	// FreeState frees a revoked reference from the client's revoked set, or
 	// drops a lock state holding no locks. A lock state holding some, a live
-	// open or a live grant is ErrLocksHeld.
+	// open or a live grant is ErrLocksHeld. The waiters a drop frees are
+	// served under the file's admission lock, which the table takes itself:
+	// the service must not hold it when calling.
 	FreeState(ctx context.Context, who Caller, s StateRef) error
 }
 
@@ -49,7 +51,10 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 	case h.typ != StateLock:
 		return ErrLocksHeld
 	}
-	var out outbox
+	// A reference names no file, so the service holds no admission lock for
+	// it: the waiters the release frees are served after it, under the
+	// file's admission lock, as the timer serves them.
+	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
 		ls := e.lstates[s.Token]
 		switch {
@@ -63,5 +68,6 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 		return nil
 	})
 	out.raise(t, sink)
+	t.serveFiles(sink, out.serve)
 	return err
 }

@@ -64,7 +64,9 @@ type Grants interface {
 	// as for an answer after its recall timed out. One claiming caching the
 	// grant does not hold, or its recall did not offer, is ErrInvalid: an
 	// oplock's recall then ends with the oplock at none, and a lease's stays
-	// in flight.
+	// in flight. The waiters an answer frees are served under the file's
+	// admission lock, which the table takes itself: the service must not
+	// hold it when calling, though the answer names the file.
 	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind) error
 }
 
@@ -515,9 +517,8 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	if err != nil {
 		return err
 	}
-	// The service holds no admission lock for a file named by a GrantID
-	// alone, so the waiters an acknowledgement frees are served after it,
-	// under the file's admission lock, as the timer serves them.
+	// The waiters an acknowledgement frees are served after it, under the
+	// file's admission lock, as the timer serves them.
 	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
 		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {

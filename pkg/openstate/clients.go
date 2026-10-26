@@ -119,7 +119,9 @@ type Clients interface {
 	// each reference stays in its revoked set, answered ErrRevoked until
 	// freed, its record is kept and its Shards emptied. A client with no
 	// Owner has no revoked set to be told by: its revoke deletes its record.
-	// Either is raised Revoked.
+	// Either is raised Revoked. The waiters the releases free are served
+	// under each file's admission lock, which the table takes itself: the
+	// service must not hold one when calling.
 	Revoke(ctx context.Context, c entity.ClientID) error
 	// Rebind records a new back channel at node: it sets Reach.Callback and
 	// clears Reach.Down, so the client is offered grants again. Only its
