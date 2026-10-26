@@ -589,6 +589,7 @@ All workflows support `workflow_dispatch` for manual triggering:
 # Trigger via GitHub CLI
 gh workflow run tests.yml -f tier=merge
 gh workflow run tests.yml -f tier=nightly
+gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref my-branch   # one suite's cells
 gh workflow run smb-client-compat.yml
 ```
 
