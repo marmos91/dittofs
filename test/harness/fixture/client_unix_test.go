@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -74,6 +75,11 @@ esac`
 // down removes it all, every process in a namespace before the namespace.
 func TestClients(t *testing.T) {
 	calls, state := fakeClientTools(t)
+	long := filepath.Join(t.TempDir(), strings.Repeat("d", 80))
+	if err := os.Mkdir(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", long)
 	t.Setenv("DT_FAKE_TAKEN", "dtnfs0")
 	gone := exec.Command("true")
 	if err := gone.Run(); err != nil {
@@ -186,8 +192,15 @@ func TestClients(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(c.dir, "sshd_config")); !strings.Contains(string(data), "AllowUsers "+u.Username+"\n") {
 		t.Errorf("sshd_config admits another user:\n%s", data)
 	}
-	if data, _ := os.ReadFile(filepath.Join(c.dir, "ssh_config")); !strings.Contains(string(data), "  ControlMaster auto\n  ControlPath "+filepath.Join(c.dir, "ssh-%C")+"\n  ControlPersist yes\n") {
+	if data, _ := os.ReadFile(filepath.Join(c.dir, "ssh_config")); !strings.Contains(string(data), "  ControlMaster auto\n  ControlPath "+filepath.Join(c.dir, "ssh")+"\n  ControlPersist yes\n") {
 		t.Errorf("ssh_config doesn't keep one connection to the second client, in the fixture's directory:\n%s", data)
+	}
+	// ssh binds the control socket under its path and a 17-byte suffix, which
+	// must fit a socket path even with a long TMPDIR.
+	if l, err := net.Listen("unix", filepath.Join(c.dir, "ssh")+".0123456789abcdef"); err != nil {
+		t.Errorf("ssh can't bind its control socket: %v", err)
+	} else {
+		_ = l.Close()
 	}
 
 	c.down()
