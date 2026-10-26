@@ -1642,7 +1642,7 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 One workflow, `tests.yml`, runs every registered suite:
 
 - **Triggers:** `pull_request` runs tier `pr`, a push `merge`, the schedule `nightly`, and
-  `workflow_dispatch` the tier it's given. Pull requests and pushes are those to `develop`, `main`
+  `workflow_dispatch` the tier it's given, only one suite's cells when it names a suite. Pull requests and pushes are those to `develop`, `main`
   and `feat/storage-v2`, as the workflows it replaces take them. Only develop's results alert or
   post: the develop-status issue, a test's own issue (§4.4) and `ci-health.yml` read develop's
   runs alone.

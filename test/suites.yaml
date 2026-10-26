@@ -265,7 +265,7 @@ suites:
       client: namespace
       rpcbind: host
     known: test/nfs-mount/cthon04/known.yaml
-    timeout: { test: 10m }
+    timeout: { test: 1m }   # each takes 15 s or less, but lock/tlocklfs, which has its own
     tier: pr
     needs: [linux]
   nfstest:
