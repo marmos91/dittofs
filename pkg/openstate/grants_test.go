@@ -73,8 +73,8 @@ func delegated(g *CachingGrant, file FileKey) OpenRef {
 	return OpenRef{Kind: RefDelegated, State: g.ID.ref(), Handle: handle(file.ID)}
 }
 
-func (f *fixture) ack(who Caller, g *CachingGrant, to GrantKind, epoch uint16) error {
-	return f.Grants().AckRecall(ctx, who, g.ID, to, epoch)
+func (f *fixture) ack(who Caller, g *CachingGrant, to GrantKind) error {
+	return f.Grants().AckRecall(ctx, who, g.ID, to)
 }
 
 // One grant per client, lease key and file: a second open under the key is
@@ -119,10 +119,10 @@ func TestOneGrantPerLeaseKey(t *testing.T) {
 	if _, again := f.grantOpen(t, n, nfile, OpenRequest{Access: rd, Want: rw}); again != nil {
 		t.Errorf("a second delegation of one file to one client: %+v", again)
 	}
-	if err := f.ack(n, d, GrantNone, 0); err != nil {
+	if err := f.ack(n, d, GrantNone); err != nil {
 		t.Fatalf("an unasked return: %v", err)
 	}
-	if err := f.ack(n, d, GrantNone, 0); !errors.Is(err, ErrBadState) {
+	if err := f.ack(n, d, GrantNone); !errors.Is(err, ErrBadState) {
 		t.Errorf("a returned delegation: %v, want ErrBadState", err)
 	}
 }
@@ -272,7 +272,7 @@ func TestDeadlineStartsWhenSent(t *testing.T) {
 	if len(r) != 1 || r[0].g.Recall == nil {
 		t.Fatalf("recalls %+v", r)
 	}
-	if err := f.ack(a, &r[0].g, GrantNone, r[0].g.Epoch); err != nil {
+	if err := f.ack(a, &r[0].g, GrantNone); err != nil {
 		t.Fatalf("an answer within a deadline of the sending: %v", err)
 	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rwh}); g == nil {
@@ -354,12 +354,16 @@ func TestGrantBudget(t *testing.T) {
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xff, 0xff}, Want: rh}); g != nil {
 		t.Fatal("a grant past the budget")
 	}
-	if err := f.ack(a, first, GrantNone, 0); err != nil {
+	if _, err := f.open(f.caller(t, smb("pc-w")), firstFile, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if err := f.ack(a, first, GrantNone); err != nil {
 		t.Fatal(err)
 	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xfe, 0xff}, Want: rh}); g == nil {
 		t.Fatal("no grant once a lease went to none")
 	}
+	f.pass(t, coversDeadline, a.Client)
 	if _, g := f.grantOpen(t, a, firstFile, OpenRequest{Access: rd, Lease: first.Key, Want: rh}); g == nil || g.Kind != GrantNone {
 		t.Errorf("a lease at none widened past the budget: %+v", g)
 	}
@@ -397,7 +401,7 @@ func TestLockRecallsGrants(t *testing.T) {
 	h2 := f.host(t, "nlm-c", 1)
 	f.mustLock(t, h2, file, LockReq{Owner: owner(h2, "r"), Ranges: []LockRange{x(30, 5)}, Wait: WaitCallback})
 	f.ordered(file)
-	if err := f.ack(a, d, GrantNone, 0); err != nil {
+	if err := f.ack(a, d, GrantNone); err != nil {
 		t.Fatal(err)
 	}
 	if w := f.sink.takeWaits(); len(w) != 1 || w[0].w.Owner.Client != h2.Client {
@@ -510,7 +514,7 @@ func TestRecallNotRacedByANewGrant(t *testing.T) {
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
-	if err := f.ack(a, d, GrantNone, 0); err != nil {
+	if err := f.ack(a, d, GrantNone); err != nil {
 		t.Fatal(err)
 	}
 	f.close(t, a, ao)
@@ -532,13 +536,13 @@ func TestDelegationIsItsClients(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, b, delegated(d, file), br(0, 1), false); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client's I/O under the delegation: %v, want ErrNotYours", err)
 	}
-	if err := f.ack(b, d, GrantNone, 0); !errors.Is(err, ErrNotYours) {
+	if err := f.ack(b, d, GrantNone); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client's return: %v, want ErrNotYours", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write under a read delegation: %v, want ErrAccess", err)
 	}
-	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Token}, GrantNone, 0); !errors.Is(err, ErrBadState) {
+	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
 		t.Errorf("an open's token named as a grant: %v, want ErrBadState", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, delegated(d, file), br(0, 1), false); err != nil {
@@ -561,7 +565,7 @@ func TestHandleBreaksBeforeSharingViolation(t *testing.T) {
 	if len(r) != 1 || r[0].to != GrantRead {
 		t.Fatalf("recalls %+v, want handle caching broken", r)
 	}
-	if err := f.ack(a, g, GrantRead, r[0].g.Epoch); err != nil {
+	if err := f.ack(a, g, GrantRead); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
@@ -627,7 +631,7 @@ func TestIORecallsGrants(t *testing.T) {
 	if len(r) != 1 || r[0].to != rh {
 		t.Fatalf("an NFSv3 read: recalls %+v, want to RH", r)
 	}
-	if err := f.ack(a, &r[0].g, rh, r[0].g.Epoch); err != nil {
+	if err := f.ack(a, &r[0].g, rh); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Checks().CheckIO(ctx, Caller{}, anon, br(0, 1), true); delayedFor(err) != DelayRecall {
@@ -665,7 +669,7 @@ func TestRecallSinkMayCallBack(t *testing.T) {
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
 	file := anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
-	f.sink.onRecall = func(g CachingGrant, to GrantKind) { _ = f.ack(a, &g, to, g.Epoch) }
+	f.sink.onRecall = func(g CachingGrant, to GrantKind) { _ = f.ack(a, &g, to) }
 	done := make(chan error)
 	go func() {
 		done <- f.Checks().CheckIO(ctx, b, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
@@ -706,22 +710,20 @@ func TestOfferedBesideOthers(t *testing.T) {
 	}
 	file = anyFile()
 	var c0 Caller
-	var g0 *CachingGrant
+	var o0 Open
 	for i := range maxShared + 1 {
 		c := f.caller(t, smb(fmt.Sprint("pc-", i)))
-		_, g := f.grantOpen(t, c, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+		o, g := f.grantOpen(t, c, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 		if (g != nil) != (i < maxShared) {
 			t.Fatalf("grant %d on one file: %+v", i, g)
 		}
 		if i == 0 {
-			c0, g0 = c, g
+			c0, o0 = c, o
 		}
 	}
-	if err := f.ack(c0, g0, GrantNone, 0); err != nil {
-		t.Fatal(err)
-	}
+	f.close(t, c0, o0)
 	if _, g := f.grantOpen(t, f.caller(t, smb("pc-late")), file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh}); g == nil {
-		t.Error("no grant once one of 16 on the file went to none")
+		t.Error("no grant once one of 16 on the file was closed")
 	}
 	// A recall in flight on the file holds back every new grant, even one
 	// it would not conflict with.
@@ -832,5 +834,78 @@ func TestOnlyASentRecallLapses(t *testing.T) {
 		if fenced != (c != slow) {
 			t.Errorf("client %d fenced %v; want only the one whose recall was sent", c, fenced)
 		}
+	}
+}
+
+// grantNow is the grant id names on file, as the table holds it now.
+func (f *fixture) grantNow(t *testing.T, file FileKey, id GrantID) CachingGrant {
+	t.Helper()
+	var p CachingGrant
+	if err := f.step(file.ID, func(e *entry) error {
+		if g := e.grants[id.Token]; g != nil {
+			p = g.public(file.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// An acknowledgement of a lease or oplock is only ever an answer: with no
+// recall in flight, a duplicate or one after its recall timed out, it is
+// ErrNoRecall and changes nothing. One to a kind the recall did not ask is
+// ErrInvalid: a lease's recall stays in flight, an oplock's ends at none.
+func TestAckWithNoRecall(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	_, l := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
+	if err := f.ack(a, l, GrantRead); !errors.Is(err, ErrNoRecall) || f.grantNow(t, file, l.ID).Kind != rwh {
+		t.Fatalf("an unasked ack of a lease: %v, %+v; want ErrNoRecall, nothing changed", err, f.grantNow(t, file, l.ID))
+	}
+	if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if err := f.ack(a, l, rwh); !errors.Is(err, ErrInvalid) || f.grantNow(t, file, l.ID).Recall == nil {
+		t.Fatalf("an ack the recall did not ask: %v, %+v; want ErrInvalid, the recall in flight", err, f.grantNow(t, file, l.ID))
+	}
+	if err := f.ack(a, l, rh); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ack(a, l, rh); !errors.Is(err, ErrNoRecall) || f.grantNow(t, file, l.ID).Kind != rh {
+		t.Errorf("a duplicate ack: %v, %+v; want ErrNoRecall, nothing changed", err, f.grantNow(t, file, l.ID))
+	}
+
+	// A recall that took handle caching alone times out: its late answer is
+	// ErrNoRecall too.
+	f.sink.takeRecalls()
+	file = anyFile()
+	_, l = f.grantOpen(t, a, file, OpenRequest{Access: rd, Deny: wr, Lease: LeaseKey{2}, Want: rwh})
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != rw {
+		t.Fatalf("recalls %+v, want handle caching alone", r)
+	}
+	f.pass(t, coversDeadline, a.Client, b.Client)
+	if err := f.ack(a, l, rw); !errors.Is(err, ErrNoRecall) {
+		t.Errorf("an ack after its recall timed out: %v, want ErrNoRecall", err)
+	}
+
+	file = anyFile()
+	c := f.caller(t, smb("pc-c"))
+	_, op := f.grantOpen(t, c, file, OpenRequest{Access: rd, Want: rw})
+	if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if err := f.ack(c, op, rw); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an oplock ack the recall did not ask: %v, want ErrInvalid", err)
+	}
+	if g := f.grantNow(t, file, op.ID); g.Kind != GrantNone || g.Recall != nil {
+		t.Errorf("the oplock after it: %+v, want none, no recall", g)
+	}
+	if err := f.ack(c, op, GrantNone); !errors.Is(err, ErrNoRecall) {
+		t.Errorf("an oplock ack with no recall in flight: %v, want ErrNoRecall", err)
 	}
 }

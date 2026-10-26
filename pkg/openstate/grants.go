@@ -56,12 +56,15 @@ type Recall struct {
 // Grants is the view of caching grants; it runs at the primary of the shard a
 // GrantID names.
 type Grants interface {
-	// AckRecall is the holder's answer to a recall of g, to kind to, naming
-	// the epoch it answers. With no recall in flight it is the holder
-	// returning or narrowing the grant unasked; to GrantNone returns a
-	// grant that covers no open. One claiming caching the grant does not
-	// hold, or its recall did not offer, is ErrInvalid.
-	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind, epoch uint16) error
+	// AckRecall is the holder's answer to a recall of g, to kind to; to
+	// GrantNone returns a grant that covers no open. With no recall in
+	// flight, a grant that covers no open is being returned or narrowed
+	// unasked; one that covers opens is ErrNoRecall, and nothing changes,
+	// as for an answer after its recall timed out. One claiming caching the
+	// grant does not hold, or its recall did not offer, is ErrInvalid: an
+	// oplock's recall then ends with the oplock at none, and a lease's stays
+	// in flight.
+	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind) error
 }
 
 type grants struct{ t *Table }
@@ -489,7 +492,7 @@ func (e *entry) cachedByOther(w *LockWaiter) bool {
 	return false
 }
 
-func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantKind, epoch uint16) error {
+func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantKind) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -512,10 +515,18 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			return ErrBadState
 		}
 		inFlight := g.fsm.Recall != nil
-		next, err := g.fsm.Ack(to, epoch)
+		if !inFlight && g.covers() {
+			return ErrNoRecall
+		}
+		next, err := g.fsm.Ack(to)
+		if err != nil {
+			if !inFlight || g.open == nil {
+				return ErrInvalid
+			}
+			g.fsm.Timeout()
+			err = ErrInvalid
+		}
 		switch {
-		case err != nil:
-			return ErrInvalid
 		case next:
 			// decision: a recall's next stage is not held to maxUnsent: it
 			// continues a recall already counted once, and refusing it would
@@ -534,7 +545,7 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			t.recount(g)
 		}
 		t.serve(e, &out)
-		return nil
+		return err
 	})
 	out.raise(t, sink)
 	t.serveFiles(sink, out.serve)

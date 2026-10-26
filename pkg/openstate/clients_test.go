@@ -539,7 +539,7 @@ func TestStartAndStop(t *testing.T) {
 			return err
 		},
 		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },
-		"AckRecall":        func() error { return g.Grants().AckRecall(ctx, Caller{Client: id}, GrantID{}, GrantNone, 0) },
+		"AckRecall":        func() error { return g.Grants().AckRecall(ctx, Caller{Client: id}, GrantID{}, GrantNone) },
 		"Revoke":           func() error { return g.Revoke(ctx, id) },
 		"Rebind":           func() error { return g.Rebind(ctx, Caller{Client: id}, entity.NodeID{1}) },
 		"FreeState":        func() error { return g.Recovery().FreeState(ctx, Caller{Client: id}, StateRef{}) },

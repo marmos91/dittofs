@@ -60,52 +60,52 @@ func TestProgressiveBreak(t *testing.T) {
 		ack, next Kind
 		epoch     uint16
 	}{{rh, Read, 3}, {Read, None, 4}} {
-		next, err := g.Ack(stage.ack, g.Epoch)
+		next, err := g.Ack(stage.ack)
 		if err != nil || !next || g.Kind != stage.ack || g.Recall.To != stage.next || g.Epoch != stage.epoch {
 			t.Fatalf("ack to %b: next %v, %v, %+v, recall %+v; want a stage to %b at epoch %d", stage.ack, next, err, g, g.Recall, stage.next, stage.epoch)
 		}
 	}
-	if next, err := g.Ack(None, g.Epoch); err != nil || next || g.Recall != nil || g.Kind != None {
+	if next, err := g.Ack(None); err != nil || next || g.Recall != nil || g.Kind != None {
 		t.Fatalf("the last ack: next %v, %v, %+v", next, err, g)
 	}
 }
 
-// An acknowledgement names at most what its recall offered, or with none in
-// flight what the grant holds, and one naming an older epoch changes
-// nothing.
+// An acknowledgement names at most what its recall's stage offered, so a
+// late answer to an earlier stage is refused, or with none in flight what the
+// grant holds.
 func TestAck(t *testing.T) {
 	g := New(rwh, true)
 	g.Break(rh)
-	if _, err := g.Ack(rwh, g.Epoch); !errors.Is(err, ErrNotHeld) {
+	g.Break(None)
+	if _, err := g.Ack(rwh); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("ack past the recall's target: %v", err)
 	}
-	if _, err := g.Ack(Read, g.Epoch-1); err != nil || g.Kind != rwh || g.Recall == nil {
-		t.Errorf("ack of an older epoch: %v, %+v; want nothing changed", err, g)
+	if next, err := g.Ack(rh); err != nil || !next || g.Recall.To != Read {
+		t.Fatalf("ack to RH: next %v, %v, recall %+v; want a stage to R", next, err, g.Recall)
 	}
-	g.Ack(rh, g.Epoch)
-	if _, err := g.Ack(rw, g.Epoch); !errors.Is(err, ErrNotHeld) {
+	if _, err := g.Ack(rh); !errors.Is(err, ErrNotHeld) || g.Kind != rh || g.Recall.To != Read {
+		t.Errorf("the first stage's answer again: %v, %+v; want ErrNotHeld, nothing changed", err, g)
+	}
+	g.Ack(Read)
+	g.Ack(None)
+	g = New(rh, false)
+	if _, err := g.Ack(rw); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("unasked ack to caching not held: %v", err)
 	}
-	if _, err := g.Ack(Read, 0); err != nil || g.Kind != Read {
+	if _, err := g.Ack(Read); err != nil || g.Kind != Read {
 		t.Errorf("unasked narrowing: %v, %+v", err, g)
 	}
 }
 
-// A recall that times out cuts the grant to none; a late acknowledgement of
-// it changes nothing, and is accepted only where it took handle caching
-// alone.
-func TestLateAck(t *testing.T) {
-	for _, c := range []struct {
-		allowed Kind
-		ok      bool
-	}{{rw, true}, {rh, false}} {
-		g := New(rwh, true)
-		g.Break(c.allowed)
-		g.Timeout()
-		_, err := g.Ack(c.allowed, g.Epoch)
-		if g.Kind != None || (err == nil) != c.ok {
-			t.Errorf("late ack of a recall to %b: %v, %+v; want accepted %v and the grant left at none", c.allowed, err, g, c.ok)
-		}
+// A recall that times out cuts the grant to none and raises no epoch: the cut
+// is sent to no one.
+func TestTimeout(t *testing.T) {
+	g := New(rwh, true)
+	g.Break(rh)
+	e := g.Epoch
+	g.Timeout()
+	if g.Kind != None || g.Recall != nil || g.Epoch != e {
+		t.Errorf("after a timeout: %+v; want none, no recall, epoch %d", g, e)
 	}
 }
 

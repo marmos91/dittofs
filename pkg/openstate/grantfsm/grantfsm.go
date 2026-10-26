@@ -47,9 +47,6 @@ type Grant struct {
 	Kind   Kind
 	Epoch  uint16  // raised by each change of Kind it announces; zero: not counted
 	Recall *Recall // the recall in flight; nil: none
-	// Lapsed is the caching the last recall to time out was taking away; a
-	// late acknowledgement of it is judged by it. None: no recall timed out.
-	Lapsed Kind
 }
 
 // Recall is a recall in flight.
@@ -91,37 +88,24 @@ func (g *Grant) Break(allowed Kind) bool {
 		return false
 	}
 	g.Recall = &Recall{To: to, Required: to}
-	g.Lapsed = None
 	g.raise()
 	return true
 }
 
-// Ack applies the holder's acknowledgement to kind to, naming epoch, and
-// reports whether it starts the next stage of the recall.
+// Ack applies the holder's acknowledgement to kind to, and reports whether
+// it starts the next stage of the recall.
 //
-// An acknowledgement naming an epoch other than a counted grant's changes
-// nothing: it answers an older change. One with a recall in flight goes to
-// at most what the recall offered; if that still holds caching beyond what
-// the recall must reach, the next stage asks for that target, keeping read
-// caching while it gives up write or handle caching, and raises the epoch.
-// One with none in flight is the holder returning or narrowing the grant
-// unasked, to at most what it holds; one late for a recall that timed out
-// changes nothing, and is accepted only where that recall took no more than
-// handle caching.
-func (g *Grant) Ack(to Kind, epoch uint16) (next bool, err error) {
+// One with a recall in flight goes to at most what the recall offered, so an
+// answer to an earlier stage, asking more than this one offers, is refused;
+// if that still holds caching beyond what the recall must reach, the next
+// stage asks for that target, keeping read caching while it gives up write or
+// handle caching, and raises the epoch. One with none in flight is the holder
+// returning or narrowing the grant unasked, to at most what it holds.
+func (g *Grant) Ack(to Kind) (next bool, err error) {
 	if !Valid(to) {
 		return false, ErrNotHeld
 	}
-	if epoch != 0 && g.Epoch != 0 && epoch != g.Epoch {
-		return false, nil
-	}
 	if g.Recall == nil {
-		if g.Lapsed != None && to&^g.Kind != 0 {
-			if g.Lapsed&^Handle == 0 {
-				return false, nil
-			}
-			return false, ErrNotHeld
-		}
 		if to&^g.Kind != 0 {
 			return false, ErrNotHeld
 		}
@@ -145,19 +129,16 @@ func (g *Grant) Ack(to Kind, epoch uint16) (next bool, err error) {
 	return true, nil
 }
 
-// Timeout ends the recall in flight unanswered: the grant is cut to none,
-// keeping what the recall took away for a late acknowledgement.
+// Timeout ends the recall in flight unanswered: the grant is cut to none.
 //
 // decision: the cut raises no epoch. The epoch numbers the changes sent to
-// the holder, and a cut is sent nothing; a late acknowledgement still names
-// the recall's epoch and is judged by Lapsed, where a raised epoch would
-// answer it as an older change and accept it unjudged. Raise it here if a
-// protocol is served that announces a timed-out break.
+// the holder, and a cut is sent nothing; no acknowledgement carries an epoch,
+// so none is judged by it either. Raise it here if a protocol is served that
+// announces a timed-out break.
 func (g *Grant) Timeout() {
 	if g.Recall == nil {
 		return
 	}
-	g.Lapsed = g.Kind &^ g.Recall.To
 	g.Kind, g.Recall = None, nil
 }
 
@@ -169,7 +150,7 @@ func (g *Grant) Upgrade(want, allowed Kind) bool {
 	if g.Recall != nil || !Valid(want) || want == g.Kind || want&g.Kind != g.Kind || want&^allowed != 0 {
 		return false
 	}
-	g.Kind, g.Lapsed = want, None
+	g.Kind = want
 	g.raise()
 	return true
 }
