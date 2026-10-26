@@ -396,8 +396,10 @@ func (sf *seamFile) Close() error {
 	sf.seam.mu.Lock()
 	defer sf.seam.mu.Unlock()
 
+	// The injected error is the one the caller sees; the real close only
+	// releases the handle, as the decision above requires.
 	if !sf.closed {
-		sf.closeLocked()
+		_ = sf.closeLocked()
 	}
 
 	return err

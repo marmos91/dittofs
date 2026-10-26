@@ -98,8 +98,16 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	}
 
 	// Every refusal is above, so a refused Crash leaves every file open.
+	//
+	// decision: a close error is dropped. A crashed process never sees what
+	// close returns, and returning here would leave the crash half done, with
+	// some files closed and no undo applied.
+	//
+	// ponytail: dropping it assumes a failed close still releases the file.
+	// Report it if a close can ever fail without releasing the file, which
+	// would leave it open across a crash.
 	for sf := range s.open {
-		sf.closeLocked()
+		_ = sf.closeLocked()
 	}
 	s.crashes++
 

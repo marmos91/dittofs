@@ -291,7 +291,7 @@ func TestCloseCrashAndCreateRunConcurrently(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for _, f := range files {
-		wg.Go(func() { f.Close() }) // fs.ErrClosed when Crash got there first
+		wg.Go(func() { _ = f.Close() }) // fs.ErrClosed when Crash got there first
 	}
 	wg.Go(func() {
 		if err := s.Crash(); err != nil {
@@ -414,18 +414,18 @@ func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
 		kind sim.FaultKind
 		call func(s *Seam, f storage.File)
 	}{
-		{OpRename, sim.Drop, func(s *Seam, f storage.File) { s.Rename("seg", "other") }},
-		{OpRemove, sim.Drop, func(s *Seam, f storage.File) { s.Remove("seg") }},
-		{OpCreate, sim.Drop, func(s *Seam, f storage.File) { s.Create("new") }},
-		{OpClose, sim.Drop, func(s *Seam, f storage.File) { f.Close() }},
-		{OpAllocate, sim.Drop, func(s *Seam, f storage.File) { f.Allocate(0, 8) }},
-		{OpTruncate, sim.Drop, func(s *Seam, f storage.File) { f.Truncate(0) }},
-		{OpRead, sim.Drop, func(s *Seam, f storage.File) { f.ReadAt(make([]byte, 1), 0) }},
-		{OpSync, sim.Tear, func(s *Seam, f storage.File) { f.Sync() }},
-		{OpReadDirect, sim.Tear, func(s *Seam, f storage.File) { f.ReadAtDirect(make([]byte, 1), 0) }},
-		{OpSyncDir, sim.Tear, func(s *Seam, f storage.File) { s.SyncDir() }},
-		{OpRead, sim.Reorder, func(s *Seam, f storage.File) { f.ReadAt(make([]byte, 1), 0) }},
-		{OpSync, sim.Reorder, func(s *Seam, f storage.File) { f.Sync() }},
+		{OpRename, sim.Drop, func(s *Seam, f storage.File) { _ = s.Rename("seg", "other") }},
+		{OpRemove, sim.Drop, func(s *Seam, f storage.File) { _ = s.Remove("seg") }},
+		{OpCreate, sim.Drop, func(s *Seam, f storage.File) { _, _ = s.Create("new") }},
+		{OpClose, sim.Drop, func(s *Seam, f storage.File) { _ = f.Close() }},
+		{OpAllocate, sim.Drop, func(s *Seam, f storage.File) { _ = f.Allocate(0, 8) }},
+		{OpTruncate, sim.Drop, func(s *Seam, f storage.File) { _ = f.Truncate(0) }},
+		{OpRead, sim.Drop, func(s *Seam, f storage.File) { _, _ = f.ReadAt(make([]byte, 1), 0) }},
+		{OpSync, sim.Tear, func(s *Seam, f storage.File) { _ = f.Sync() }},
+		{OpReadDirect, sim.Tear, func(s *Seam, f storage.File) { _, _ = f.ReadAtDirect(make([]byte, 1), 0) }},
+		{OpSyncDir, sim.Tear, func(s *Seam, f storage.File) { _ = s.SyncDir() }},
+		{OpRead, sim.Reorder, func(s *Seam, f storage.File) { _, _ = f.ReadAt(make([]byte, 1), 0) }},
+		{OpSync, sim.Reorder, func(s *Seam, f storage.File) { _ = f.Sync() }},
 	}
 	for _, tc := range cases {
 		name := fmt.Sprintf("%v on %s", tc.kind, tc.op)
@@ -1385,7 +1385,7 @@ func TestTornWriteRecordsOnlyTheBytesWritten(t *testing.T) {
 		f := durableFile(t, s, "seg", "")
 
 		actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 2})
-		f.WriteAt([]byte("ABCD"), 0)
+		_, _ = f.WriteAt([]byte("ABCD"), 0)
 
 		crash(t, s, Reordered(seed))
 		if got := onDisk(t, s, "seg"); got != "" && got != "AB" {

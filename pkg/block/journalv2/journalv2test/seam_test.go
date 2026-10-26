@@ -17,6 +17,19 @@ func newSeam(t *testing.T) *Seam {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Every file the test left open is closed before t.TempDir removes the
+	// directory, which Windows refuses while a file in it is open. It bypasses
+	// Close, so no fault or hold the test armed fires on a cleanup.
+	t.Cleanup(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		for sf := range s.open {
+			_ = sf.closeLocked() // the test is over; only the release matters
+		}
+	})
+
 	return s
 }
 
@@ -310,7 +323,6 @@ func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open after the crash: %v, want the file back", err)
 	}
-	defer g.Close()
 
 	p := make([]byte, 4)
 	if _, err := g.ReadAt(p, 0); err != nil || string(p) != "keep" {
@@ -616,7 +628,6 @@ func TestStaleReadsCoversHandlesOpenedLater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
 
 	p := make([]byte, 6)
 	if _, err := g.ReadAt(p, 0); err != nil || string(p) != "synced" {

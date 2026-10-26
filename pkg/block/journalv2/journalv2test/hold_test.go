@@ -91,7 +91,7 @@ func TestWaitingCountsTheBlockedCalls(t *testing.T) {
 	const n = 16
 	var wg sync.WaitGroup
 	for i := range n {
-		wg.Go(func() { f.WriteAt([]byte("x"), int64(i)) })
+		wg.Go(func() { _, _ = f.WriteAt([]byte("x"), int64(i)) })
 	}
 
 	waitingReaches(t, h, n)
@@ -202,8 +202,8 @@ func TestConcurrentHoldsAndCalls(t *testing.T) {
 	for _, f := range files {
 		wg.Go(func() {
 			for range 20 {
-				f.WriteAt([]byte("x"), 0)
-				f.Sync()
+				_, _ = f.WriteAt([]byte("x"), 0)
+				_ = f.Sync()
 			}
 		})
 	}
