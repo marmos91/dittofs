@@ -725,3 +725,56 @@ func TestHeldReclaimSettlesAnOfferedGrant(t *testing.T) {
 		t.Errorf("h reclaimed the lock, then lost it to its own refused callback")
 	}
 }
+
+// A shard served again under a new instance refuses its requests while its
+// old state goes, and a file whose opens the loss drops is no longer delete
+// pending to a request that waited on the file's step meanwhile.
+func TestServedAgainWhileAFileIsStepped(t *testing.T) {
+	f := newFixture(t)
+	p, c := f.caller(t, smb("p-pc")), f.caller(t, nfsAs("c", entity.RecoverStatus))
+	for i := range 20 {
+		s := ShardID(100 + i)
+		if err := f.Recovery().ServeShard(ctx, s, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+		file := in(s)
+		o := f.mustOpen(t, p, file, OpenRequest{Access: rd | del, DeleteOnClose: true})
+		f.mustOpen(t, p, file, OpenRequest{Access: rd | del})
+		f.close(t, p, o) // delete pending, the other open staying
+		fs := &f.files[file.ID[0]]
+		waitUsers := func(n int) {
+			for u := 0; u != n; {
+				fs.mu.Lock()
+				u = fs.entries[file.ID].users
+				fs.mu.Unlock()
+			}
+		}
+		hold, release := make(chan struct{}), make(chan struct{})
+		go f.step(file.ID, func(*entry) error { close(hold); <-release; return nil })
+		<-hold
+		served := make(chan error, 1)
+		go func() { served <- f.Recovery().ServeShard(ctx, s, instances.Add(1)) }()
+		waitUsers(2) // the loss waits for the file's step
+		if _, err := f.open(c, in(s), OpenRequest{Access: rd}); !errors.Is(err, ErrDelay) {
+			t.Errorf("an open while the shard's old state goes: %v, want ErrDelay", err)
+		}
+		type seen struct {
+			opens   int
+			pending bool
+		}
+		after := make(chan seen, 1)
+		go f.step(file.ID, func(e *entry) error { after <- seen{len(e.opens), e.pending != nil}; return nil })
+		waitUsers(3)
+		close(release)
+		if err := <-served; err != nil {
+			t.Fatal(err)
+		}
+		if got := <-after; got.opens == 0 {
+			if got.pending {
+				t.Errorf("the file after the loss dropped its opens: still delete pending")
+			}
+			return
+		} // else the waiting step ran before the loss: try again
+	}
+	t.Fatal("the waiting step never ran after the loss")
+}
