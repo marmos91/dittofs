@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -222,6 +223,46 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 		}
 		return dropClient(tx, cl, true)
 	})
+}
+
+// ByShard lists every client with a mark in shard s, its marks included:
+// the clients a shard beginning grace tells to reclaim. A record deleted
+// between the scan and its read is skipped.
+//
+// ponytail: a scan of every client record and mark, since a mark's key puts
+// the shard last; a shard runs it once, when its grace begins. Add a
+// shard-first index, CLS‖shard‖clientID, written and deleted with each mark,
+// if a profile of a shard beginning grace shows the scan.
+func (c Clients) ByShard(ctx context.Context, s entity.ShardID) iter.Seq2[entity.ClientRecord, error] {
+	mark := keys.Uint64([]byte{keys.CLSh}, uint64(s))
+	ids := pages(ctx, c.s.kv, []byte{keys.KindCL}, nil, func(_ kv.Reader, row kv.KeyValue) (entity.ClientID, error) {
+		id, rest, err := keys.ReadUint64(row.Key[1:])
+		if err != nil {
+			return 0, fmt.Errorf("%w: client key", errMalformed)
+		}
+		if !bytes.Equal(rest, mark) {
+			return 0, nil // the record itself, or a mark in another shard
+		}
+		return entity.ClientID(id), nil
+	})
+	return func(yield func(entity.ClientRecord, error) bool) {
+		for id, err := range ids {
+			if err != nil {
+				yield(entity.ClientRecord{}, err)
+				return
+			}
+			if id == 0 {
+				continue
+			}
+			cl, err := c.Get(ctx, id)
+			if merrs.IsNotFoundError(err) {
+				continue
+			}
+			if !yield(cl, err) || err != nil {
+				return
+			}
+		}
+	}
 }
 
 // validClient checks what every written record must hold. An owner mapped to

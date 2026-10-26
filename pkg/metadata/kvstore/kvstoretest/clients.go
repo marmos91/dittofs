@@ -204,6 +204,22 @@ func testClientShards(t *testing.T, kvo Opener) {
 	if got, err := cs.Get(ctx, cl.ID); err != nil || len(got.Shards) != 0 {
 		t.Errorf("after a revoke: %+v, %v", got, err)
 	}
+
+	// ByShard finds the clients with a mark in one shard, and none other.
+	other := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNLM, Name: []byte("o")}
+	must(t, cs.Create(ctx, other))
+	must(t, cs.MarkShard(ctx, other.ID, entity.ShardMark{Shard: 4, Done: 1}))
+	must(t, cs.MarkShard(ctx, cl.ID, entity.ShardMark{Shard: 3, Done: 2}))
+	for shard, want := range map[entity.ShardID][]entity.ClientID{3: {cl.ID}, 4: {other.ID}, 5: nil} {
+		var got []entity.ClientID
+		for rec, err := range cs.ByShard(ctx, shard) {
+			must(t, err)
+			got = append(got, rec.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("ByShard(%d) = %v, want %v", shard, got, want)
+		}
+	}
 }
 
 // RFC 14 §2.1: a reboot moves the name to the new ID under a new Boot and
