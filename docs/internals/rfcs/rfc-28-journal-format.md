@@ -213,7 +213,10 @@ An implementation **MUST NOT** require any other file to reconstruct its state
 ([§2.4](#2.4%20The%20segment%20catalog)). A file it does not recognise **MUST** be left alone, not deleted.
 
 **Byte layouts.** Every on-disk structure in §2 is packed without padding, with
-integers little-endian. **CRC32C** is the Castagnoli CRC of RFC 3720 §B.4 (reflected,
+integers little-endian. A content version ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) is stored as two
+64-bit integers, the epoch then the counter, each little-endian, not as one
+little-endian 128-bit integer; this holds in the record header, the catalog
+entry and a `clone target` payload's `AsOf`. **CRC32C** is the Castagnoli CRC of RFC 3720 §B.4 (reflected,
 initial value and final XOR all ones), stored as a little-endian 32-bit integer.
 Where a checksum is **seeded with the journal identity**, it is the CRC32C of
 the 16 identity bytes followed by the bytes it covers; otherwise it is the CRC32C
@@ -537,7 +540,8 @@ padding; 96 bytes.
 | 32 | 8 | file offset |
 | 40 | 8 | length |
 | 48 | 8 | sequence number |
-| 56 | 16 | content version: epoch, then counter ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) |
+| 56 | 8 | content version, epoch half ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) |
+| 64 | 8 | content version, counter half |
 | 72 | 4 | share tag |
 | 76 | 8 | synced-through offset |
 | 84 | 4 | payload checksum |
@@ -702,7 +706,8 @@ against the seeded record header it leads to ([§2.4](#2.4%20The%20segment%20cat
 | 24 | 4 | `recordOffset` — the record's offset within this segment |
 | 28 | 8 | length |
 | 36 | 8 | sequence number |
-| 44 | 16 | content version: epoch, then counter ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) |
+| 44 | 8 | content version, epoch half ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) |
+| 52 | 8 | content version, counter half |
 | 60 | 1 | record kind ([§2.3](#2.3%20Records)) |
 | 61 | 3 | reserved, zero |
 | 64 | 4 | share tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) |
