@@ -19,7 +19,14 @@ const (
 
 	testPredecessor uint64 = 0x3837363534333231
 	testStream      uint32 = 0x44434241
+
+	testFormatVersion uint16 = 0x5251
 )
+
+var testInstallation = [16]byte{
+	0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+	0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+}
 
 // wantCRC is the standard library's CRC32C of b, computed here and not by
 // the package, so a test never checks raw against itself.
