@@ -1,0 +1,245 @@
+package model
+
+import (
+	"context"
+	"errors"
+	"iter"
+	"strings"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2"
+)
+
+// HandleView is the View of a real journal: a change to the handle's methods
+// that breaks it breaks the build here.
+var _ View = HandleView{}
+
+// An error says whose it is: the journal did what the RFC does not allow, or
+// the model was called in a way it cannot take.
+func TestErrorsSayWhetherTheJournalOrTheCallerIsWrong(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+
+	diverged := m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, ver(1), nil)
+	if !errors.Is(diverged, ErrDiverged) || errors.Is(diverged, ErrMisuse) {
+		t.Fatalf("a repeated version is the journal's fault: %v", diverged)
+	}
+	if !strings.Contains(diverged.Error(), "assigned version v1") {
+		t.Fatalf("message %q does not name the version as v1", diverged)
+	}
+
+	ok(t, m.Crash())
+	misuse := m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, ver(2), nil)
+	if !errors.Is(misuse, ErrMisuse) || errors.Is(misuse, ErrDiverged) {
+		t.Fatalf("a call between Crash and Reopen is the caller's: %v", misuse)
+	}
+}
+
+// A failure names the bytes, the version and what was broken, in the
+// caller's terms.
+func TestAFailureNamesTheBytesTheVersionAndTheRule(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	err := m.Compare(t.Context(), shareA, modelView{New(), shareA})
+	diverged(t, err)
+	for _, want := range []string{"[0,4)", "v1", "synced", "lost"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q does not say %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "{0 1}") {
+		t.Errorf("message %q prints a raw version", err)
+	}
+}
+
+// Since is compared from every version the file has, not only from the start:
+// a journal that yields changes at from itself is refused.
+func TestSinceIsComparedFromEveryVersion(t *testing.T) {
+	m, j := New(), New()
+	script(t, m, j)
+	h := modelView{j, shareA}
+	inclusive := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		if from.Counter > 0 {
+			from.Counter--
+		}
+		return h.Since(t.Context(), id, from)
+	}}
+	diverged(t, m.Compare(t.Context(), shareA, inclusive))
+}
+
+// Offload calls its callback while dirty content at or below through is held:
+// returning without it is refused. Once called, it returns what the callback
+// returned.
+func TestOffloadCallsItsCallbackAndReturnsWhatItReturned(t *testing.T) {
+	m := New()
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), nil, journalv2.ErrCorrupt))
+	ok(t, m.EndOffer(shareA, fid(1), ver(1), nil, nil))
+
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), nil, nil))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
+
+	upload := errors.New("upload failed")
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), upload, nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
+	ok(t, m.EndOffer(shareA, fid(1), ver(1), upload, upload))
+}
+
+// Unresolved names the files a crash left unknown, which Compare must see
+// before anything else is called on them.
+func TestUnresolvedNamesTheFilesACrashLeftUnknown(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareB, fid(2), 0, fill('B', 4), 0, ver(2), nil))
+	ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	if got := m.Unresolved(); len(got) != 1 || got[0] != fid(1) {
+		t.Fatalf("Unresolved = %s, want only file 1", fmtFiles(got))
+	}
+	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
+	if got := m.Unresolved(); len(got) != 0 {
+		t.Fatalf("Unresolved = %s after Compare", fmtFiles(got))
+	}
+}
+
+// Since is compared from every version a file has, up to the bound: a journal
+// wrong from one version only, among twenty, is refused.
+func TestSinceIsComparedFromEachOfManyVersions(t *testing.T) {
+	m, j := New(), New()
+	for _, x := range []*Model{m, j} {
+		for i := range 20 {
+			ok(t, x.WriteAt(shareA, fid(1), int64(i), []byte{byte('a' + i)}, 0, ver(uint64(i)+1), nil))
+		}
+	}
+	h := modelView{j, shareA}
+	wrongAtFive := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		if from == ver(5) {
+			from = ver(4)
+		}
+		return h.Since(t.Context(), id, from)
+	}}
+	diverged(t, m.Compare(t.Context(), shareA, wrongAtFive))
+}
+
+// A journal whose answer leaves more in doubt than the crash did is wrong, not
+// misused: serving a record's bytes in alternation with bytes no record holds
+// splits it into more undecided pieces than the search takes.
+func TestAnAnswerThatFragmentsTheSearchIsTheJournals(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(5), nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 40), ver(5), ver(5), nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 40)}, nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 40), ver(5), ver(5), nil))
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	h := modelView{j, shareA}
+	alternating := planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+		n, mi, he, as, err := h.ReadAt(t.Context(), id, off, p)
+		for i := range p {
+			if (off+int64(i))%2 == 1 {
+				p[i] = 'B'
+			}
+		}
+		return n, mi, he, as, err
+	}}
+	diverged(t, m.Compare(t.Context(), shareA, alternating))
+}
+
+// A call refused with its context's error changed nothing: the journal checks
+// the context before any refusal and any change.
+func TestACallCancelledByItsContextChangesNothing(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 4, fill('B', 4), 0, journalv2.Version{}, context.Canceled))
+	ok(t, m.Fill(shareA, fid(1), 8, fill('F', 4), ver(1), ver(1), context.DeadlineExceeded))
+	ok(t, m.Truncate(shareA, fid(1), 0, journalv2.Version{}, context.Canceled))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 4)}, context.Canceled))
+	ok(t, m.EndOffer(shareA, fid(1), ver(1), nil, context.Canceled))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 1, false}})
+}
+
+// A Sync whose context ended stops waiting, not the sync: the writes it named
+// are not known durable, and a crash may still lose them.
+func TestACancelledSyncMakesNothingDurable(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, context.Canceled))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
+}
+
+// A Compare whose context ends returns the context's error: neither the
+// journal nor the caller is wrong.
+func TestACompareCancelledByItsContextSaysSo(t *testing.T) {
+	m, j := New(), New()
+	script(t, m, j)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := m.Compare(ctx, shareA, modelView{j, shareA})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrDiverged) || errors.Is(err, ErrMisuse) {
+		t.Fatalf("a cancelled Compare returned %v", err)
+	}
+}
+
+// A context that ends while Compare reads the journal, so that Since ends its
+// iteration with the context's error, is reported as the context's error too.
+func TestACompareWhoseContextEndsMidwaySaysSo(t *testing.T) {
+	m, j := New(), New()
+	script(t, m, j)
+	ctx, cancel := context.WithCancel(t.Context())
+	h := modelView{j, shareA}
+	stopping := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		cancel()
+		return func(yield func(journalv2.Change, error) bool) { yield(journalv2.Change{}, ctx.Err()) }
+	}}
+	err := m.Compare(ctx, shareA, stopping)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrDiverged) || errors.Is(err, ErrMisuse) {
+		t.Fatalf("a Compare cancelled midway returned %v", err)
+	}
+}
+
+// Sync names files, so a Sync of another share's file is refused with
+// ErrOtherShare like any call naming one, and only then.
+func TestSyncOfAnotherSharesFileIsRefused(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Sync(shareB, []journalv2.FileID{fid(1)}, journalv2.ErrOtherShare))
+	diverged(t, m.Sync(shareB, []journalv2.FileID{fid(1)}, nil))
+	diverged(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, journalv2.ErrOtherShare))
+}
+
+// A read of a file with an index entry reports its change version exactly. A
+// reopen raises it up to the floor, so no read that began before can still
+// fill, until the file next changes.
+func TestAsOfIsTheChangeVersionOfAFileWithAnEntry(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareB, fid(2), 0, fill('B', 4), 0, ver(2), nil)) // raises the versions issued
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
+	j := clone(m)
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(2)}))
+
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, j.Crash())
+	ok(t, j.Reopen(ver(10)))
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(10)}))
+
+	for _, x := range []*Model{m, j} {
+		ok(t, x.WriteAt(shareA, fid(1), 0, fill('C', 4), 0, ver(11), nil))
+		ok(t, x.WriteAt(shareB, fid(2), 0, fill('D', 4), 0, ver(12), nil))
+	}
+	ok(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(11)}))
+	diverged(t, m.Compare(t.Context(), shareA, asOfView{modelView{j, shareA}, ver(12)}))
+}
