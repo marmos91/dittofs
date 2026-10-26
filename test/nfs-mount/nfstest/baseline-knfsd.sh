@@ -40,8 +40,8 @@
 # another run. It needs neither Linux nor root, and reports the option sets the
 # directory holds unless --variants narrows them.
 #
-# --compare names a DittoFS nfstest results directory: a nightly's
-# test/conformance/results/nfstest, or its downloaded artifact. Each option set
+# --compare names a DittoFS nfstest results directory, as run.sh writes one
+# under DITTOFS_RESULTS_DIR. Each option set
 # is looked up as a subdirectory named after it, or ending in -<set>, holding
 # results.tsv or nfstest.log. Repeat it to compare several runs. A table row
 # whose pattern covers assertions knfsd passes as well as ones it fails speaks
@@ -82,13 +82,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-command -v jq >/dev/null || die "jq is required to read test/conformance/suites.json"
-
-# tables VARIANT — the known-failure tables the manifest gives VARIANT,
-# colon-separated, exactly as test/conformance/run.sh hands them to run.sh.
+# tables VARIANT: the known-failure tables that grade VARIANT, colon-separated,
+# as run.sh takes them: the shared table, then its version's overlays.
 tables() {
-    jq -r --arg v "$1" --arg d "$TEST_DIR" '.suites.nfstest.known_failures[$v] | map($d + "/" + .) | join(":")' \
-        "$TEST_DIR/conformance/suites.json"
+    local d="$SCRIPT_DIR" overlays
+    case "$1" in
+        v3) overlays="$d/KNOWN_FAILURES_V3.md" ;;
+        v4.0) overlays="$d/KNOWN_FAILURES_V4.md:$d/KNOWN_FAILURES_V40.md" ;;
+        *) overlays="$d/KNOWN_FAILURES_V4.md" ;;
+    esac
+    echo "$d/KNOWN_FAILURES.md:$overlays"
 }
 
 for d in "${COMPARE[@]}"; do

@@ -39,7 +39,7 @@ jobs:
       - name: Install kernel NFS server and suite dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nfs-kernel-server nfs-common rpcbind openssh-server iproute2 tcpdump jq
+          sudo apt-get install -y nfs-kernel-server nfs-common rpcbind openssh-server iproute2 tcpdump
           sudo modprobe nfsd || echo "WARNING: could not load nfsd"
 
       - name: Cache the upstream suites

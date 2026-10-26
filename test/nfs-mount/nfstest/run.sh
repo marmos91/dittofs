@@ -64,12 +64,11 @@ MODULE_TIMEOUT="${NFSTEST_MODULE_TIMEOUT:-1200}"
 LOG="$RESULTS_DIR/nfstest.log"
 VERSION="$(option_set_version "$VARIANT")"
 
-# The known-failure tables come from test/conformance/suites.json, which
-# test/conformance/run.sh hands over in DITTOFS_KNOWN_FAILURES; the manifest is
-# the one place that says which tables grade which option set.
+# The known-failure tables come from the caller in DITTOFS_KNOWN_FAILURES:
+# baseline-knfsd.sh says which tables grade which option set.
 KNOWN_FAILURES="${DITTOFS_KNOWN_FAILURES:-}"
 [[ -n "$KNOWN_FAILURES" ]] || {
-    echo "no known-failure tables: run through test/conformance/run.sh, or set DITTOFS_KNOWN_FAILURES" >&2
+    echo "no known-failure tables: run through baseline-knfsd.sh, or set DITTOFS_KNOWN_FAILURES" >&2
     exit 2
 }
 

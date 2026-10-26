@@ -14,7 +14,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 [![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/cubbit/dittofs)
 
-[![Conformance](https://github.com/cubbit/dittofs/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/conformance.yml)
 [![Tests](https://github.com/cubbit/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/cubbit/dittofs/actions/workflows/tests.yml)
 
 **A modular virtual filesystem written entirely in Go**

@@ -69,9 +69,9 @@ func TestSharesFileRefuses(t *testing.T) {
 	}
 }
 
-// The share cthon04 and nfstest mount is the one the posix setup creates for
-// them, with suites.json's default permission, owned by {user} as a shares
-// file's shares are: the request the fixture sends is dfsctl's for those flags.
+// The share cthon04 and nfstest mount reads by default and is owned by {user},
+// as a shares file's shares are: the request the fixture sends is dfsctl's for
+// those flags.
 func TestNFSMountShare(t *testing.T) {
 	shares, err := loadShares(filepath.Join("..", "..", "nfs-mount", "shares.yaml"))
 	if err != nil {
