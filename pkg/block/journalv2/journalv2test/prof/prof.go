@@ -21,14 +21,14 @@ import (
 // Options tunes a watch. The zero value is the default.
 type Options struct {
 	// HeapSlack is how far the live heap may grow over the test before the
-	// watch fails it. Zero means DefaultHeapSlack.
+	// watch fails it. Zero means 16 MiB.
 	HeapSlack uint64
 }
 
-// DefaultHeapSlack is the heap growth a test may leave behind when its
+// defaultHeapSlack is the heap growth a test may leave behind when its
 // Options name none: room for the runtime's and the testing package's own
 // allocations, well under any buffer a component would plausibly leak.
-const DefaultHeapSlack = 16 << 20
+const defaultHeapSlack = 16 << 20
 
 // settle is how long, in real time, the check waits for leaks to go away.
 //
@@ -119,7 +119,7 @@ func Watch(tb testing.TB, opts Options) {
 	}
 	slack := opts.HeapSlack
 	if slack == 0 {
-		slack = DefaultHeapSlack
+		slack = defaultHeapSlack
 	}
 	var heapBefore uint64
 	if raceEnabled {
@@ -218,20 +218,29 @@ var artifactsKept = func() bool {
 }
 
 // leakedDescriptors returns the descriptors open now that were not in before,
-// each as its number and, where the platform names it, its file, and whether
-// the descriptors could be listed.
+// or that name another file than they did, each as its number and, where the
+// platform names it, its file, and whether the descriptors could be listed.
 //
-// ponytail: descriptors are compared by number only, so a test that closes a
-// descriptor opened before the watch and leaks one that reuses its number goes
-// unseen. Compare the Linux targets too if such a leak ever slips through.
+// decision: a descriptor whose file changed counts as leaked, since a test
+// that closes a descriptor opened before the watch and leaks a file under the
+// same number would otherwise go unseen. A file opened before the watch and
+// renamed during it is therefore reported too. A descriptor whose name is
+// missing on either side, because it closed between the listing and the read
+// of its name, is compared by number alone.
+//
+// ponytail: where the platform names no files, macOS among them, descriptors
+// are compared by number only, so the reused number goes unseen there. Read
+// the paths through fcntl F_GETPATH, which takes leaving the standard
+// library, if such a leak ever slips through on macOS alone.
 func leakedDescriptors(before map[int]string) ([]string, bool) {
 	now, ok := descriptors()
 	if !ok {
 		return nil, false
 	}
 	var leaked []int
-	for fd := range now {
-		if _, ok := before[fd]; !ok {
+	for fd, name := range now {
+		was, ok := before[fd]
+		if !ok || name != "" && was != "" && name != was {
 			leaked = append(leaked, fd)
 		}
 	}
