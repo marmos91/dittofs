@@ -973,7 +973,10 @@ or once everything it held was released — and dropping it raises the file's
 bucket to the entry's version. A file with no entry is compared against
 its bucket. At open every bucket starts at the highest content version on disk or
 in the floor, whichever is higher:
-no read that began before the open can still fill. Without this, a fetch that
+no read that began before the open can still fill. A file that has an entry at
+open is held to the same rule: until its next change, the change version a read
+reports for it, and a `Fill` is checked against, may be anything from its
+entry's version up to its bucket's. Without this, a fetch that
 began before a write, or before a truncate down and up, could land after it and
 put old bytes back, marked offloaded. The check is deliberately coarse: a needless
 refusal costs only a cache miss.
@@ -1335,7 +1338,11 @@ type Change struct {
 
 `Since(id, from)` yields every held extent of `id`, every unsettled removal
 marker and every synced loss record ([§3.8](#3.8%20Loss%20events)) whose version is strictly above
-`from`, each with its version, in version order. A loss is yielded so the engine
+`from`, each with its version, in version order. A removal marker that runs to
+the end of the file, a truncate's or a delete's, is yielded with
+`Extent.Len = MaxInt64 - Extent.Off`, never with its record's length 0
+([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and the index's read-out
+([§4.4](#4.4%20Inspection)) reports it the same way. A loss is yielded so the engine
 can commit a lost write's existence from it, and the range reads **Lost** rather
 than as the file was before the write ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); an unsynced loss is not
 yielded, since its write was never answered as stable. A synced loss record
