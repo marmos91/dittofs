@@ -973,7 +973,10 @@ or once everything it held was released — and dropping it raises the file's
 bucket to the entry's version. A file with no entry is compared against
 its bucket. At open every bucket starts at the highest content version on disk or
 in the floor, whichever is higher:
-no read that began before the open can still fill. Without this, a fetch that
+no read that began before the open can still fill. A file that has an entry at
+open is held to the same rule: until its next change, the change version a read
+reports for it, and a `Fill` is checked against, may be anything from its
+entry's version up to its bucket's. Without this, a fetch that
 began before a write, or before a truncate down and up, could land after it and
 put old bytes back, marked offloaded. The check is deliberately coarse: a needless
 refusal costs only a cache miss.
