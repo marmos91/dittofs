@@ -6,8 +6,7 @@ import (
 )
 
 // Offsets and sizes below are the record header table's, written out here and
-// never taken from the package's constants. The content version at [56,72) is
-// not checked.
+// never taken from the package's constants.
 
 func TestRecordHeaderLayout(t *testing.T) {
 	b := testRecord.Bytes()
@@ -42,6 +41,14 @@ func TestRecordHeaderLayout(t *testing.T) {
 
 	if got := le64(b[48:56]); got != testRecord.Seq {
 		t.Errorf("sequence number at [48,56) is %#x, want %#x", got, testRecord.Seq)
+	}
+
+	if got := le64(b[56:64]); got != testRecord.Version.Epoch {
+		t.Errorf("version epoch at [56,64) is %#x, want %#x", got, testRecord.Version.Epoch)
+	}
+
+	if got := le64(b[64:72]); got != testRecord.Version.Counter {
+		t.Errorf("version counter at [64,72) is %#x, want %#x", got, testRecord.Version.Counter)
 	}
 
 	if got := le32(b[72:76]); got != testRecord.Tag {

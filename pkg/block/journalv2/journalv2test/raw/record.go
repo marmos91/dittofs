@@ -12,10 +12,6 @@ const RecordHeaderSize = 96
 // decision: the synced-through offset is written as 0, because no check
 // plants a record that must prove an earlier one synced. Make it a field when
 // one does.
-//
-// ponytail: the content version at [56,72) is written as zeros and is not a
-// field. Add it once the byte order of its epoch and counter halves is
-// settled.
 type Record struct {
 	Identity [16]byte
 	Kind     uint8
@@ -24,6 +20,7 @@ type Record struct {
 	Offset   uint64 // file offset
 	Length   uint64 // written as given, for every kind
 	Seq      uint64 // sequence number
+	Version  Version
 	Tag      uint32 // share tag
 	Write    *WriteBody
 }
@@ -54,6 +51,8 @@ func (r Record) Bytes() []byte {
 	binary.LittleEndian.PutUint64(b[32:40], r.Offset)
 	binary.LittleEndian.PutUint64(b[40:48], r.Length)
 	binary.LittleEndian.PutUint64(b[48:56], r.Seq)
+	binary.LittleEndian.PutUint64(b[56:64], r.Version.Epoch)
+	binary.LittleEndian.PutUint64(b[64:72], r.Version.Counter)
 	binary.LittleEndian.PutUint32(b[72:76], r.Tag)
 	binary.LittleEndian.PutUint32(b[84:88], seededCRC32C(r.Identity, body))
 	binary.LittleEndian.PutUint32(b[92:96], seededCRC32C(r.Identity, b[0:92]))

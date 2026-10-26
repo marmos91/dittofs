@@ -21,18 +21,20 @@ import (
 // Within the catalog entries' range, each field of a catalog entry has its own
 // range:
 //
-//	0x70-0x7f  FileID             0xa1-0xa8  length
-//	0x81-0x88  file offset        0xb1-0xb8  sequence number
-//	0x91-0x94  recordOffset       0xc1       kind
-//	                              0xd1-0xd4  share tag
+//	0x70-0x7f  FileID             0xb1-0xb8  sequence number
+//	0x81-0x88  file offset        0xc1       kind
+//	0x91-0x94  recordOffset       0xd1-0xd4  share tag
+//	0xa1-0xa8  length             0xe1-0xe8  version epoch
+//	                              0xf1-0xf8  version counter
 //
 // A record's fields have ranges of their own; its segment id and the identity
 // its checksums are seeded with are the shared values above:
 //
-//	0x30-0x3f  FileID             0x71-0x78  modification time
-//	0x41-0x48  file offset        0x81-0x84  share tag
-//	0x51-0x58  length             0x91-...   payload
-//	0x61-0x68  sequence number    0xc5       kind
+//	0x30-0x3f  FileID             0x81-0x84  share tag
+//	0x41-0x48  file offset        0x91-0xa0  payload (at most 16 bytes)
+//	0x51-0x58  length             0xa1-0xa8  version epoch
+//	0x61-0x68  sequence number    0xb1-0xb8  version counter
+//	0x71-0x78  modification time  0xc5       kind
 
 var testIdentity = [16]byte{
 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -82,6 +84,7 @@ var testCatalogEntry = Entry{
 	RecordOffset: 0x94939291,
 	Length:       0xa8a7a6a5a4a3a2a1,
 	Seq:          0xb8b7b6b5b4b3b2b1,
+	Version:      Version{Epoch: 0xe8e7e6e5e4e3e2e1, Counter: 0xf8f7f6f5f4f3f2f1},
 	Kind:         0xc1,
 	Tag:          0xd4d3d2d1,
 }
@@ -96,10 +99,11 @@ var testRecord = Record{
 		0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
 		0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
 	},
-	Offset: 0x4847464544434241,
-	Length: 0x5857565554535251,
-	Seq:    0x6867666564636261,
-	Tag:    0x84838281,
+	Offset:  0x4847464544434241,
+	Length:  0x5857565554535251,
+	Seq:     0x6867666564636261,
+	Version: Version{Epoch: 0xa8a7a6a5a4a3a2a1, Counter: 0xb8b7b6b5b4b3b2b1},
+	Tag:     0x84838281,
 }
 
 const testMTime int64 = 0x7877767574737271
