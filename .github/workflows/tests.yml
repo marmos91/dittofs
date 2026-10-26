@@ -9,16 +9,11 @@
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
-# consecutive runs; unit, integration, operator, lint and e2e, whose old jobs
-# ran the commands dt runs, move in at once. plan keeps only the cells of those
-# that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
-# option, cthon04, nfstest, operator, the Windows unit run, e2e, the suites
-# with a job of their own, the system scenarios, which had no workflow, less
-# the cells the dedicated host runs itself, and clients, which runs beside
-# smb-client-compat.yml until their results match. A suite joins by being
-# added to the select in plan, with any step its cells need that run doesn't
-# give yet, such as another service; the select goes once every suite runs
-# here.
+# consecutive runs; a suite whose old job ran the commands dt runs moves in at
+# once. plan keeps only the cells of the suites that have moved, the ones its
+# select names. A suite joins by being added to the select in plan, with any
+# step its cells need that run doesn't give yet, such as another service; the
+# select goes once every suite runs here.
 #
 # The suites with a job of their own, named as the checks the develop ruleset
 # requires, run in the jobs after non-blocking, which gate waits for too.
@@ -110,8 +105,9 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
-                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest")
+                or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
+                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest"
+                or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
@@ -195,14 +191,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpcbind openssh-server libtirpc-dev pkg-config time tcpdump
 
-      # mount.cifs, which the smb-client need checks, and smbclient, which
-      # AD-DC's NTLM test runs and skips without. The other places' own
-      # clients are there already.
+      # mount.cifs for the smb-client need and smbclient for its own; the other
+      # places' own clients are there already.
       - name: Install the SMB clients
-        if: contains(matrix.needs, 'smb-client') && runner.os == 'Linux'
+        if: runner.os == 'Linux' && (contains(matrix.needs, 'smb-client') || contains(matrix.needs, 'smbclient'))
         run: |
           sudo apt-get update
           sudo apt-get install -y cifs-utils smbclient
+
+      # fio, for the fio need.
+      - name: Install fio
+        if: runner.os == 'Linux' && contains(matrix.needs, 'fio')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fio
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them
