@@ -1,6 +1,7 @@
 package openstate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -149,6 +150,11 @@ type Opens interface {
 	// reclaim is answered with the open, and the grant, the owner still
 	// holds, granting nothing new.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
+	// Renamed moves every open of f made through the entry fromName in
+	// fromDir to toName in toDir, as a rename of that entry commits through
+	// any open or none, so a deferred unlink removes the entry's current
+	// name. The service calls it under f's admission lock.
+	Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
@@ -352,6 +358,32 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 		}
 	}
 	return nil
+}
+
+func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	return t.step(f.ID, func(e *entry) error {
+		for _, o := range e.opens {
+			if o.Via != fromDir || !bytes.Equal(o.Name, fromName) {
+				continue
+			}
+			o.Name = slices.Clone(toName)
+			if o.Via == toDir {
+				continue
+			}
+			t.idx.Lock()
+			if t.via[o.Via]--; t.via[o.Via] <= 0 {
+				delete(t.via, o.Via)
+			}
+			t.via[toDir]++
+			t.idx.Unlock()
+			o.Via = toDir
+		}
+		return nil
+	})
 }
 
 // addOpen adds o, a new open of f, to e under its step: its shard listed in

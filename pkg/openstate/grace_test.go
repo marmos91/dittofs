@@ -449,3 +449,24 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	}
 	f.mustOpen(t, c, in(9), OpenRequest{Access: rd})
 }
+
+// A rename of the entry an open was made through moves the open's name, so
+// the deferred unlink removes the entry's current name, and the directory
+// it was made through follows it.
+func TestRenameMovesTheDeferredUnlink(t *testing.T) {
+	f := newFixture(t)
+	p := f.caller(t, smb("p-pc"))
+	file, d1, d2 := anyFile(), entity.NewFileID(), entity.NewFileID()
+	o := f.mustOpen(t, p, file, OpenRequest{Via: d1, Name: []byte("a"), Access: rd | del, DeleteOnClose: true})
+	if err := f.Opens().Renamed(ctx, file, d1, []byte("a"), d2, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[entity.FileID]error{d1: nil, d2: ErrShareViolation} {
+		if err := f.Checks().CheckChange(ctx, p, FileKey{ID: dir}, nil, ChangeRemove); !errors.Is(err, want) || (want == nil) != (err == nil) {
+			t.Errorf("an SMB remove of the directory: %v, want %v", err, want)
+		}
+	}
+	if r := f.close(t, p, o); r.Unlink == nil || r.Unlink.Parent != d2 || string(r.Unlink.Name) != "b" {
+		t.Errorf("the deferred unlink: %+v, want b in the directory it was renamed to", r.Unlink)
+	}
+}
