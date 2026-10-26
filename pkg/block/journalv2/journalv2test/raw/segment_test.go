@@ -92,6 +92,7 @@ func TestParseSegmentHeaderReadsAHeaderWithAStreamNumber(t *testing.T) {
 	if len(b) != 48 {
 		t.Fatalf("a segment header is %d bytes, want 48", len(b))
 	}
+
 	binary.LittleEndian.PutUint32(b[40:44], testStream)
 	rechecksum(b)
 
@@ -110,6 +111,7 @@ func TestParseSegmentHeaderRefusesAWrongMagic(t *testing.T) {
 	if len(b) != 48 {
 		t.Fatalf("a segment header is %d bytes, want 48", len(b))
 	}
+
 	copy(b[0:4], "DJS1")
 	rechecksum(b)
 
