@@ -20,6 +20,19 @@ func (t Test) NewFailure() bool {
 	return t.Status == Failed && (t.Grade == "" || t.Grade == New)
 }
 
+// Red is what turns a run red in the cell: its tests that failed newly or
+// passed unexpectedly, or, with none, the cell itself (alone) when it failed
+// or didn't run, as one stopped before any test or whose results it couldn't
+// read. A known, quarantined, flaky or skipped test is none.
+func (c Cell) Red() (tests []Test, alone bool) {
+	for _, t := range c.Tests {
+		if t.NewFailure() || t.Grade == UnexpectedPass {
+			tests = append(tests, t)
+		}
+	}
+	return tests, len(tests) == 0 && (c.Result == Failed || c.Result == NotRun)
+}
+
 // Title names the test within its cell: its own suite, such as a Go test's
 // package, then its name.
 func (t Test) Title() string {
