@@ -16,9 +16,8 @@
 #
 # Exit status: the number of failures not on the blacklist, capped at 254 so an
 # eight-bit status cannot wrap a large count to success. When a results
-# directory is given, a "verdict" sidecar records the count for
-# test/conformance/run.sh, which cannot tell a failure count from a crash by
-# the exit status alone.
+# directory is given, a "verdict" sidecar records the count, for a caller
+# that cannot tell a failure count from a crash by the exit status alone.
 #
 # Under the common runner, each failure is also recorded in its grades file,
 # and then the tests that passed or failed, unless a TIMEOUT or an INCOMPLETE

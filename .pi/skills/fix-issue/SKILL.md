@@ -270,8 +270,7 @@ gh pr diff <PR>
 ```
 
 **CI.** On a PR, `tests.yml` runs the suites of `test/suites.yaml` through
-`dt`, and its `gate` check decides, beside `conformance.yml`, the security scans
-and `ci-health`. The e2e suite runs there non-blocking, and on a PR only its
+`dt`, and its `gate` check decides, beside the security scans and `ci-health`. The e2e suite runs there non-blocking, and on a PR only its
 Kerberos tests, when the PR touches what they cover. The protocol suites are slow.
 
 ```bash

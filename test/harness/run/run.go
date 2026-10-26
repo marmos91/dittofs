@@ -142,23 +142,20 @@ func runName(start time.Time, commit string) string {
 	return name
 }
 
-// annotations are a cell's error annotations: one for each new failure, with
-// its message, and one for each unexpected pass, so a fix knows which known
-// entry to remove. A cell that failed or didn't run with no test to name, as
-// one stopped before any test or one whose results it couldn't read, is
-// annotated as itself, with its note, so every cell that turns a run red has
-// an annotation.
+// annotations are a cell's error annotations, one for each of what turns the
+// run red: a new failure with its message, an unexpected pass naming the known
+// entry a fix removes, or the cell itself with its note.
 func annotations(c report.Cell) []string {
+	tests, alone := c.Red()
 	var out []string
-	for _, t := range c.Tests {
-		switch {
-		case t.NewFailure():
-			out = append(out, annotation("dt "+c.Name+": "+t.Title(), cmp.Or(t.Message, "failed")))
-		case t.Grade == report.UnexpectedPass:
-			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
+	for _, t := range tests {
+		message := cmp.Or(t.Message, "failed")
+		if t.Grade == report.UnexpectedPass {
+			message = "passed unexpectedly: remove its known entry (" + t.Reason + ")"
 		}
+		out = append(out, annotation("dt "+c.Name+": "+t.Title(), message))
 	}
-	if len(out) == 0 && (c.Result == report.Failed || c.Result == report.NotRun) {
+	if alone {
 		out = append(out, annotation("dt "+c.Name, c.Result+": "+c.Note))
 	}
 	return out
@@ -409,7 +406,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		start := time.Now()
 		r := t.run(test, c.limit(test, lines, cold))
+		took := time.Since(start) // the test's time, without the copy of its logs below
 		cold = false
+		if t.podman && r.result == report.Failed {
+			t.keepLogs(test, r.timedOut)
+		}
 		interrupted = interrupted || r.interrupted
 		var why []string
 		if len(r.notRun) > 0 {
@@ -428,7 +429,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case read == nil && r.result == report.NotRun:
 			return nil, why
 		case read == nil:
-			tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
+			tc := report.Test{Name: test, Status: report.Passed, Duration: took}
 			if r.result == report.Failed {
 				tc.Status, tc.Message = report.Failed, r.note
 			}
@@ -459,7 +460,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// result: it has none, and the note says why.
 			return nil, why
 		}
-		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
+		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: took, Out: out})
 		if err != nil {
 			why = append(why, prefix+err.Error())
 		}

@@ -20,8 +20,8 @@
     "Adding one: name a test that already exists and passes on develop, or the",
     "check goes red on the pull request that adds it.",
     "",
-    "JSON with jq, matching test/conformance/suites.json, so a runner needs",
-    "nothing a dev shell does not already have."
+    "JSON with jq, so a runner needs nothing a dev shell does not already",
+    "have."
   ],
   "packages": {
     "./internal/adapter/nfs/auth": [
