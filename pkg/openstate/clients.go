@@ -110,9 +110,9 @@ type Clients interface {
 	// lock, which the table takes itself: the service must not hold one when
 	// calling.
 	Expire(ctx context.Context, c entity.ClientID) error
-	// Destroy deletes a client that holds no session and no state, revoked
-	// references included, refusing ErrClientBusy otherwise; it releases
-	// nothing.
+	// Destroy deletes a client that holds no session and no state, refusing
+	// ErrClientBusy otherwise; it releases nothing. A revoked reference is
+	// not state the client holds: its revoked set goes with the record.
 	Destroy(ctx context.Context, who Caller) error
 	// Revoke is an administrator's revoke of c at this node: every open,
 	// lock and grant it holds here is released, as Expire releases them, but
@@ -548,6 +548,11 @@ func (t *Table) forget(ctx context.Context, c entity.ClientID, out *outbox) {
 	delete(t.fenced, c)
 	t.cmu.Unlock()
 	t.releaseClient(ctx, c, out)
+	t.dropRevoked(c)
+}
+
+// dropRevoked drops c's revoked set.
+func (t *Table) dropRevoked(c entity.ClientID) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	for k, r := range t.revoked {
@@ -696,6 +701,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	delete(t.leases, who.Client)
 	delete(t.known, who.Client)
 	t.cmu.Unlock()
+	t.dropRevoked(who.Client)
 	return nil
 }
 
@@ -784,16 +790,11 @@ func (t *Table) holdsAny(c entity.ClientID) bool {
 	return t.holdsAnyLocked(c)
 }
 
-// holdsAnyLocked is holdsAny, with idx held. A revoked reference not yet
-// freed is state the client holds.
+// holdsAnyLocked is holdsAny, with idx held. A revoked reference is not
+// state the client holds.
 func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 	for _, h := range t.refs {
 		if h.client == c {
-			return true
-		}
-	}
-	for _, r := range t.revoked {
-		if r.client == c {
 			return true
 		}
 	}

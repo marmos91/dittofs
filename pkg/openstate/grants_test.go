@@ -439,7 +439,8 @@ func TestLockRecallsGrants(t *testing.T) {
 
 // An administrator's revoke releases the client's state for others at once,
 // keeps its record with its Shards emptied, and answers each reference
-// ErrRevoked, flagged AdminRevoked, until freed. An ownerless client's revoke
+// ErrRevoked, flagged AdminRevoked, until freed. Revoked references leave
+// Destroy free to delete the record, with them. An ownerless client's revoke
 // deletes its record.
 func TestRevoke(t *testing.T) {
 	f := newFixture(t)
@@ -468,9 +469,6 @@ func TestRevoke(t *testing.T) {
 	if s, _ := f.Renew(ctx, a.Client); !s.AdminRevoked || s.RecallableRevoked {
 		t.Errorf("renewal %+v, want AdminRevoked alone", s)
 	}
-	if err := f.Destroy(ctx, a); !errors.Is(err, ErrClientBusy) {
-		t.Errorf("Destroy holding revoked references: %v, want ErrClientBusy", err)
-	}
 	if rec, err := f.Record(ctx, a.Client); err != nil || len(rec.Shards) != 0 {
 		t.Errorf("record after the revoke: %+v, %v; want kept, its Shards empty", rec.Shards, err)
 	}
@@ -489,6 +487,21 @@ func TestRevoke(t *testing.T) {
 	}
 	if errs := f.Recovery().TestState(ctx, a, []StateRef{d.ID.ref()}); !errors.Is(errs[0], ErrBadState) {
 		t.Errorf("a revoked reference of an expired client: %v, want ErrBadState", errs[0])
+	}
+
+	c := f.caller(t, nfs("host-c", 1, entity.NewUser()))
+	co := f.mustOpen(t, c, anyFile(), OpenRequest{Access: rd})
+	if err := f.Revoke(ctx, c.Client); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Destroy(ctx, c); err != nil {
+		t.Fatalf("Destroy holding only revoked references: %v", err)
+	}
+	if _, err := f.Record(ctx, c.Client); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("the record after Destroy: %v, want deleted", err)
+	}
+	if errs := f.Recovery().TestState(ctx, c, []StateRef{co.Ref}); !errors.Is(errs[0], ErrBadState) {
+		t.Errorf("a revoked reference after Destroy: %v, want ErrBadState", errs[0])
 	}
 
 	s := f.caller(t, smb("pc-s"))
