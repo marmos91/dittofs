@@ -161,6 +161,35 @@ func TestAnonymousIOWaitsForGrace(t *testing.T) {
 	}
 }
 
+// Anonymous I/O waits only while a client that can hold a deny mode is left
+// to reclaim: once an NFSv4.1 client has completed, a write passes while
+// grace still runs for an NLM host, which holds no deny mode.
+func TestAnonymousIOFreedOnceDenyHoldersFinish(t *testing.T) {
+	f := newFixture(t)
+	c, h, z := f.caller(t, nfsAs("c", entity.RecoverStatus)), f.host(t, "h", 1), f.caller(t, nfsAs("z", entity.RecoverStatus))
+	file := in(5)
+	f.mustOpen(t, c, file, OpenRequest{Access: rd, Deny: wr})
+	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.renew(t, c, z)
+	write := func() error {
+		return g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
+	}
+	if err := write(); !errors.Is(err, ErrGrace) {
+		t.Errorf("an anonymous write before c completes: %v, want ErrGrace", err)
+	}
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, g.shards[5].instance}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := write(); err != nil {
+		t.Errorf("an anonymous write with only the host left to reclaim: %v", err)
+	}
+	if _, err := g.lock(z, in(5), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
+		t.Errorf("a new lock while the host may still reclaim: %v, want ErrGrace", err)
+	}
+}
+
 // A client that recovers by status is told the grace instances it owes,
 // and only those; its reclaim is accepted, and grace waits for it until it
 // completes. A completion ends only the instances it names: one begun after

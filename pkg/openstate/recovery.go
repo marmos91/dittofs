@@ -49,18 +49,28 @@ type recovery struct{ t *Table }
 type served struct {
 	instance uint64        // the grace instance its references are minted under
 	ends     time.Duration // the Elapsed reading its grace ends at; zero: not in grace
-	// reclaim is the clients its records named when grace began, by how each
-	// recovers: those that may reclaim here and have not finished.
-	reclaim map[entity.ClientID]entity.RecoveryKind
-	// guarded is set when one of them can hold a deny mode or a mandatory
+	// reclaim is the clients its records named when grace began: those that
+	// may reclaim here and have not finished.
+	reclaim map[entity.ClientID]reclaimer
+	// guarded is set while one of them can hold a deny mode or a mandatory
 	// lock: anonymous I/O then waits for grace's end.
 	guarded bool
+}
+
+// reclaimer is a client a grace waits for.
+type reclaimer struct {
+	kind entity.RecoveryKind // how it recovers
+	// deny is set when it can reclaim a deny mode or a mandatory lock: it is
+	// no NLM host, which holds neither, and does not recover by reconnecting,
+	// which reclaims nothing here.
+	deny bool
 }
 
 // inGrace reports whether sh is in grace at now.
 func (sh *served) inGrace(now time.Duration) bool { return sh.ends != 0 && now < sh.ends }
 
-// settle ends sh's grace early once no client it waits for is left; the
+// settle ends sh's grace early once no client it waits for is left, and
+// lifts the wait of anonymous I/O once none left can hold a deny mode; the
 // caller holds cmu.
 //
 // decision: a client that recovers by reconnecting counts as finished at
@@ -69,12 +79,15 @@ func (sh *served) inGrace(now time.Duration) bool { return sh.ends != 0 && now <
 // reconnected each persistent open, or each Timeout has passed, once
 // persistent opens are installed at ServeShard.
 func (sh *served) settle() {
-	for _, k := range sh.reclaim {
-		if k != entity.RecoverReconnect {
-			return
-		}
+	sh.guarded = false
+	done := true
+	for _, r := range sh.reclaim {
+		sh.guarded = sh.guarded || r.deny
+		done = done && r.kind == entity.RecoverReconnect
 	}
-	sh.ends = 0
+	if done {
+		sh.ends = 0
+	}
 }
 
 func (v recovery) ServeShard(ctx context.Context, s ShardID, instance uint64) error {
@@ -113,7 +126,7 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 	case cur != nil:
 		t.lose(s)
 	}
-	sh := &served{instance: instance, reclaim: map[entity.ClientID]entity.RecoveryKind{}}
+	sh := &served{instance: instance, reclaim: map[entity.ClientID]reclaimer{}}
 	var told []Revocation
 	notice := false
 	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
@@ -123,8 +136,10 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 		if rec.Ended {
 			continue // its state is being released everywhere: nothing to reclaim
 		}
-		sh.reclaim[rec.ID] = rec.Recovery
-		sh.guarded = sh.guarded || rec.Protocol != entity.ProtocolNLM
+		sh.reclaim[rec.ID] = reclaimer{
+			kind: rec.Recovery,
+			deny: rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
+		}
 		if rec.Recovery == entity.RecoverReconnect || rec.Recovery == entity.RecoverNotice {
 			told = append(told, Revocation{Client: rec.ID, Shard: s, Reason: RevokedShardState, Adapter: rec.Adapter})
 			notice = notice || rec.Recovery == entity.RecoverNotice
@@ -237,9 +252,8 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 }
 
 // guarded reports whether anonymous I/O, and a change that removes or moves a
-// name, in shard s waits for grace's end: s is in grace, and its records
-// named, when grace began, a client that can hold a deny mode or a mandatory
-// lock.
+// name, in shard s waits for grace's end: s is in grace, and a client it
+// still waits for can hold a deny mode or a mandatory lock.
 func (t *Table) guarded(s ShardID) bool {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
