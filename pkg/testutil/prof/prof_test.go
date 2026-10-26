@@ -1,7 +1,6 @@
 package prof
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,8 +23,13 @@ type recorder struct {
 	cleanups []func()
 }
 
+// newRecorder returns a recorder whose cleanups also run when t ends, so a
+// test that stops before calling finish leaves no watch active for the next.
 func newRecorder(t *testing.T) *recorder {
-	return &recorder{TB: t, dir: t.TempDir()}
+	r := &recorder{TB: t, dir: t.TempDir()}
+	t.Cleanup(r.finish)
+
+	return r
 }
 
 func (r *recorder) Helper() {}
@@ -243,7 +247,10 @@ func TestWatchCleanRepeatedly(t *testing.T) {
 }
 
 // TestWatchOnARealTest watches this test itself, through the testing
-// package's own Cleanup and ArtifactDir.
+// package's own Cleanup rather than a recorder's.
+//
+// No mutation of the package fails this test alone: the recorder tests cover
+// every check. It is kept as a smoke test of the path real callers take.
 func TestWatchOnARealTest(t *testing.T) {
 	Watch(t, Options{})
 
@@ -256,15 +263,19 @@ func TestWatchSaysHowToKeepProfilesWhenTheyAreNotKept(t *testing.T) {
 	shortSettle(t)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	rec := newRecorder(t)
+	prev := artifactsKept
+	t.Cleanup(func() { artifactsKept = prev })
 
-	Watch(rec, Options{})
-	go plantedLeak(release)
-	rec.finish()
+	for _, kept := range []bool{false, true} {
+		artifactsKept = func() bool { return kept }
+		rec := newRecorder(t)
 
-	kept := flag.Lookup("test.artifacts").Value.String() == "true"
-	hinted := strings.Contains(rec.failure(), "rerun with -artifacts")
-	if hinted == kept {
-		t.Errorf("with -artifacts=%v, the failure hints at it: %v; want the hint exactly when the profiles are not kept:\n%s", kept, hinted, rec.failure())
+		Watch(rec, Options{})
+		go plantedLeak(release)
+		rec.finish()
+
+		if hinted := strings.Contains(rec.failure(), "rerun with -artifacts"); hinted == kept {
+			t.Errorf("with the profiles kept: %v, the failure hints at -artifacts: %v; want the hint exactly when they are not kept:\n%s", kept, hinted, rec.failure())
+		}
 	}
 }

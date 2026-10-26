@@ -1,9 +1,8 @@
 // Package prof fails a test that leaves goroutines, open descriptors or live
 // heap behind it.
 //
-// It uses the standard library only, and must keep to it: the journal's tree,
-// which forbids every third-party package, reaches it through its test
-// components.
+// It uses the standard library only, and must keep to it, so that the
+// journal's tree, which forbids every third-party package, may use it.
 package prof
 
 import (
@@ -195,8 +194,9 @@ func logOnce(tb testing.TB, once *sync.Once, msg string) {
 }
 
 // artifactsKept reports whether the test binary keeps what tests write to
-// their artifact directory, which it does only when run with -artifacts.
-func artifactsKept() bool {
+// their artifact directory, which it does only when run with -artifacts. It is
+// a variable so the tests can take both answers.
+var artifactsKept = func() bool {
 	f := flag.Lookup("test.artifacts")
 	return f != nil && f.Value.String() == "true"
 }
