@@ -375,8 +375,8 @@ Equivalent YAML / env: `adapters.nfs.portmapper.register_with_system: true` /
 
 These tests need **root**, `rpcbind`, `rpc.statd`, and `iproute2` (network namespaces), so they
 run only on Linux. On unsupported environments (macOS, no root, no rpcbind) they `t.Skip` rather
-than fail. In CI the e2e workflow installs `rpcbind` and the job runs privileged enough to create
-namespaces; locally:
+than fail. In CI the e2e cells of `tests.yml` install `rpcbind`, and `dt` runs the tests as root,
+privileged enough to create namespaces; locally:
 
 ```bash
 cd test/e2e
@@ -509,8 +509,9 @@ throwaway podman container, with SMB and NFS clients and faults such as an S3 ou
   ```
 
 The 0x to 8x scenarios run after every merge to develop, in `.github/workflows/tests.yml`, split
-over four runners. They don't fail the gate yet: each scenario's setup runs `apt-get update`, which
-stalls for minutes there at times.
+over four runners. They don't fail the gate until a week of develop runs has no apt stall: each
+scenario's setup ran `apt-get update`, which stalled for minutes there at times, and now updates
+apt's lists once per runner.
 
 ---
 

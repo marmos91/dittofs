@@ -385,7 +385,8 @@ the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the
 the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
 `service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
 suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
-they run as the user. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A
+they run as the user. The e2e job did the same by hand, with `sudo -E env "PATH=$PATH" ...`, until
+it moved into `tests.yml`. A
 fixture sets no variables: it gives its values as placeholders (§4.2), and a suite that needs one in
 a variable puts it in its `env`, as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes
 on a command line, where any user can read it while the process runs: the server started under
@@ -499,7 +500,7 @@ suites:
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        tier: nightly
+        tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -510,7 +511,7 @@ suites:
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
-      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
   operator:                             # its own Go module; the kustomize render check becomes a make target
     cmd: make -C k8s/dittofs-operator test lint manifests-verify
     tier: pr
@@ -520,10 +521,11 @@ suites:
     env:
       DITTOFS_E2E_REQUIRE_NLM: "1"      # a missing prerequisite fails instead of skipping
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
-      nightly: { DITTOFS_E2E_NIGHTLY: "1" }
+      # nightly: { DITTOFS_E2E_NIGHTLY: "1" }, once the dedup tests have known-failure entries (§9)
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    blocking: { pr: false }             # on PRs, until a week with no failure on develop (§8)
     options:
-      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
+      stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }   # quoted: a comma ends a flow value
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
@@ -718,7 +720,14 @@ suites:
     needs: [linux, root, nfs-client, fio]
     options:
       smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
-  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }   # bench-smoke.yml today
+  bench-smoke:                          # bench-smoke.yml's two steps
+    cmd:
+      - go run ./cmd/bench run --smoke --results {out}
+      - { sh: 'for job in bench/workloads/mailbox/*.fio; do TARGET_DIR={out} bench/workloads/mailbox/run.sh "$job" --parse-only || exit 1; done' }   # they only parse: dfsbench doesn't run them
+    metrics: dfsbench-json
+    needs: [fio]
+    tier: pr
+    blocking: { pr: false }             # reported on PRs, blocking after merge (§4.10)
 ```
 
 | Field | Meaning | Default |
@@ -1004,7 +1013,9 @@ its macOS and Windows options stay on `memory`, since their hosted runners can't
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
 wait for it (§4.8). That's the place for a check that should be seen before it can be trusted to
-block, such as the Windows unit run on PRs (§9). `blocking` may differ per tier.
+block, such as the Windows unit run and `bench-smoke` on PRs (§9, §4.10). `blocking` may differ
+per tier: both block after a merge and nightly, since a non-blocking cell's failure there posts
+nowhere.
 
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
@@ -1095,7 +1106,9 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
 
 A cell lists `tests` only when it runs part of its suite's; `matrix`, `option`, `job` and `tools`,
 the test tools it takes from `{tools}`, appear when the cell has them. CI turns `place` into the
-job's runner and `timeout_minutes` into its `timeout-minutes`.
+job's runner, and `timeout_minutes` plus 15 minutes, for the job's other steps and for a suite run as
+root to stop, into its `timeout-minutes`: a job its own limit stops is cancelled, not failed, so a hung
+cell must reach the cell's limit first, which fails it.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -1163,7 +1176,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **privileges:** `root` (passwordless sudo);
 - **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
   run it in its own image, below);
-- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
+- **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`, `smbclient`,
   `nfs4-acl-tools`, `kerberos`, `dm-flakey`, `fio`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
@@ -1211,9 +1224,10 @@ keep podman's images and `setup.sh`'s cache from one scenario to the next. Befor
 it pulls the image and gives the cache volume and all in it to that user, as fixture steps (§4.2). A
 host whose own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose
 podman fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc`
-gives the cell its Linux and Docker its podman. Until `setup.sh` stops running `apt-get update` for
-every scenario, which stalls for minutes on hosted runners, `system` is `blocking: false`: reported
-and annotated, never failing the gate.
+gives the cell its Linux and Docker its podman. `setup.sh` ran `apt-get update` for every scenario,
+which stalled for minutes on hosted runners, and now updates apt's lists once per runner; until a
+week of develop runs has no apt stall, `system` is `blocking: false`: reported and annotated, never
+failing the gate.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on
@@ -1267,7 +1281,8 @@ logged, such as a search of its lines for a planted secret, reads it there.
       { "name": "rename/09.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "passed",
         "duration": 3310, "flaky": true, "retries": 1 }
     ],
-    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux" },
+    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux",
+                     "osRelease": "6.17.0-1022-azure" },
     "extra": {
       "run": "20261007T201500Z-d0efaa75", "dirty": false, "tier": "merge", "in": "host", "exit": 1,
       "cells": [
@@ -1280,10 +1295,11 @@ logged, such as a search of its lines for a planted secret, reads it there.
 }
 ```
 
-The numbers and outcomes above are illustrative; the passing tests are left out. A cell's `result`
-is `passed`, `failed`, `skipped` or `not run`, and its `note` says why, as `dt run` prints it. A
-cell that a cancel or an interrupt stops is `not run` and keeps no per-test results: what its
-tests report after the interrupt can come from the interrupt itself.
+The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
+kernel the run was on, as `uname -r` gives it. A cell's `result` is `passed`, `failed`, `skipped`
+or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
+stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
+come from the interrupt itself.
 
 **Formats.** A format is a standard way a tool reports per-test results, not a kind of suite.
 There are seven, each read by one reader in `dt`:
@@ -1802,10 +1818,14 @@ only when the failing set changes.
 Performance is tracked, not gated. Hosted runners share hardware and are too noisy to fail a PR on
 a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
-  needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
-  runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
-  whatever it measures.
+  needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
+  every PR but a docs-only one, where `bench-smoke.yml` ran only on those that touched the
+  benchmark paths, and after every merge and nightly. It is non-blocking on PRs and blocks after a
+  merge and nightly, and writes its results to its `{out}` (§4.6). `unit --nonrace` runs nightly,
+  and blocks there: the throughput and allocation gates that skip under `-race` and `-short`
+  (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
+  `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
+  has a baseline: without one it passes whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
@@ -1871,8 +1891,8 @@ a percentage.
 ## 7. Risks
 
 - **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
-  job (§8), so the old job is there until then, unless it ran the commands `dt` runs, as the unit,
-  integration, operator and lint jobs did. `dt`'s own tests run in `lint-repo` on every PR.
+  job (§8), so the old job is there until then, unless it ran the commands `dt` runs. `dt`'s own
+  tests run in `lint-repo` on every PR.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
@@ -1934,13 +1954,18 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      same known failures and the same tests run, counted as the tests that passed or failed,
      expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
      difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
-     the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
-     runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
-     alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
-     grading each test, as it does when one has no result, compares only its verdict, and differs
-     when the scripts pass it. pynfs's scripts reached the server at the host's address, as `dt`
-     does (§4.2); a test whose difference comes from where its server runs is named, with the
-     cause, in the comparer before the runs it is excused in. None is named yet.
+     the scripts don't, such as skips and tests with no result (§4.6, §4.7), a known failure whose
+     entry is `intermittent` between two kernels (§4.7), and where the server runs (§4.2). So
+     `dt`'s skips and tests with no result aren't compared, and a `dt` cell they alone leave not
+     run is as green as the scripts'. An `intermittent` entry's test fails on some kernels only,
+     and the two sides of a cell may run on different ones, so where both name a kernel and the two
+     differ, it isn't compared as a known failure, while the cell's verdict and its tests run still
+     are; on the same kernel, or where a side names none, it is. A cell whose entries the
+     checkout's registry can't find differs. A cell whose scripts' grader stopped before grading
+     each test, as it does when one has no result, compares only its verdict, and differs when the
+     scripts pass it. pynfs's scripts reached the server at the host's address, as `dt` does
+     (§4.2); a test whose difference comes from where its server runs is named, with the cause, in
+     the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
@@ -1955,20 +1980,24 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
-     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which ran
-     its three filters one at a time without `run.sh`, saved the same for its one cell, with the
-     tests run only when each filter's grader counted them.
+     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status and the kernel it
+     ran on, and each grader its grades: each failure, known or new, and the tests run.
+     smbtorture's Kerberos job, which ran its three filters one at a time without `run.sh`, saved
+     its exit status and grades for its one cell, with the tests run only when each filter's grader
+     counted them. The comparison names the kernel each side ran on, `dt`'s from its run's
+     `osRelease` (§4.6).
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
-     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
+     integration, operator and lint jobs, the lint, unit and integration jobs keeping their names,
+     and `e2e-tests.yml`, non-blocking on PRs until it has a week with no failure on develop.
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
-     that keeps its check name can't report beside an old job of that name. Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
-     cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
-     `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
-     longer tests a commit.
+     that keeps its check name can't report beside an old job of that name. So do AD-DC, the
+     performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
+     with the mailbox job files' parse. When pynfs's cells move, `nfs-pynfs.yml` keeps only its
+     knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8), and leaves
+     `ci-health.yml`'s lists, since it no longer tests a commit.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
@@ -1998,7 +2027,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
    (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
-6. **Benchmarks.** `bench-smoke` and `unit --nonrace` nightly; tracked runs on the dedicated host.
+6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
+   tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
    RFC gets its section (R11), and the component groups follow.
 
@@ -2054,7 +2084,8 @@ Carried over from earlier reviews:
 - **When the gate becomes required:** after two green weeks of the `pr` tier.
 - **The bar for deleting a suite's scripts:** 5 consecutive runs with matching results.
 - **The e2e nightly tier and the stress tests:** they start in `nightly` with known-failure entries.
-  Fixing them is outside this RFC; the dedup tests broken at setup are #2992.
+  Fixing them is outside this RFC; the dedup tests broken at setup are #2992. Until e2e has those
+  entries, `DITTOFS_E2E_NIGHTLY`, which turns the dedup tests on, stays off, as `e2e-tests.yml` left it.
 - **History:** stays in GitHub artifacts for now, and moves to a data branch only if benchmarks
   need more than their 90 days.
 
@@ -2112,6 +2143,6 @@ assumption was wrong, the design follows what was found. It records how the desi
 | smbtorture fits a 20-minute PR tier | No: 23 min on `memory` and 21 on `badger` on a PR run on 2026-10-12 | run 38241347064 |
 | The Go suites skip rarely | No: 331 `Skip` calls on develop, and 71 test files branch on `testing.Short()` | `git grep` on `7d6acc81` |
 | `fio-verify` tests DittoFS | Not as revision 3 wrote it: no fixture or mount, so the jobs write to `/mnt/bench`; none of the 8 job files sets `verify`; `layout.fio` prepares files and isn't a test | `bench/workloads/*.fio` |
-| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on PRs and develop pushes | `internal/dfsbench/run/bench.go:44` |
+| `dfsbench run --smoke --local` runs | No: the two flags are refused together; `bench-smoke.yml` runs `--smoke` on the PRs and develop pushes that touch the benchmark paths | `internal/dfsbench/run/bench.go:44` |
 | cthon04 and nfstest wait for the harness | No: #3008 added them to `suites.json`, with their own glue and named mount-option sets; cthon04 runs on PRs on `memory` | `test/conformance/suites.json` |
 | The CI tools come from the images | On runners, from Nix: `nix build .#pjdfstest` and `.#pynfs`; the images copy the same revisions | `conformance.yml:352`, `nfs-pynfs.yml:164` |

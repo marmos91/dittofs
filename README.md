@@ -14,7 +14,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 [![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/marmos91/dittofs)
 
-[![E2E Tests](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml)
 [![Conformance](https://github.com/marmos91/dittofs/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/conformance.yml)
 [![Tests](https://github.com/marmos91/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/tests.yml)
 

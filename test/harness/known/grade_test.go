@@ -138,3 +138,26 @@ func TestGrade(t *testing.T) {
 		})
 	}
 }
+
+// A failure's entry is intermittent when the entry Grade picks for it, among
+// those that apply where its cell runs, is: not one that applies elsewhere,
+// nor a pattern when an entry names the test.
+func TestIntermittent(t *testing.T) {
+	const fail = "status: fail, fix: wontfix, category: env, reason: r"
+	entries, err := Parse("known.yaml", []byte("- { test: 'a*', "+fail+", where: { nfs: ['4.1'] }, intermittent: true }\n- { test: a, "+fail+" }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		test, nfs string
+		want      bool
+	}{
+		{"a1", "4.1", true},
+		{"a1", "3", false},
+		{"a", "4.1", false},
+	} {
+		if got := Intermittent(entries, c.test, map[string]string{"nfs": c.nfs}); got != c.want {
+			t.Errorf("%s at nfs %s: %v, want %v", c.test, c.nfs, got, c.want)
+		}
+	}
+}
