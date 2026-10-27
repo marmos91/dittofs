@@ -549,3 +549,32 @@ func TestRFC28C_BitsSurviveRestart(t *testing.T) {
 		t.Fatalf("D's offloaded bit is set after a crash took the mark's record")
 	}
 }
+
+// TestRFC28C_ReseedByVersion checks that a mark names the versions it
+// vouches for: an extent overwritten since the offload is not marked by a
+// mark at the older versions, so the newer write is never evictable on the
+// strength of an older upload.
+func TestRFC28C_ReseedByVersion(t *testing.T) {
+	f := journalv2test.New(t)
+	h := f.Share(0)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	mark(t, h, a.id, a.extent, a.version)
+	syncFiles(t, h, a.id)
+	b := writeSynced(t, f, 0, 0, 0, 64<<10)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	f.Crash()
+	h = f.Share(0)
+	err := h.MarkOffloaded(t.Context(), a.id, []journalv2.Extent{a.extent}, a.version, a.version)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
+		t.Fatalf("mark at A's versions: %v", err)
+	}
+
+	wantRelease(t, h, a.id, a.extent, false)
+	if e := entryAt(t, f, a.id, 0); e.Version != b.version || e.Offloaded {
+		t.Fatalf("the extent is held as %+v, want B's version %v and no offloaded bit", e, b.version)
+	}
+	wantBytes(t, h, b.id, 0, b.p)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
