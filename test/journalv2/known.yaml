@@ -295,3 +295,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
   issue: '#3378'
+- test: TestRFC28C_UnknownVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'

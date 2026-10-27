@@ -772,3 +772,20 @@ func TestRFC28C_TrailerTorn(t *testing.T) {
 	wantNoFooter(t, g, s)
 	wantBadFooter(t, g, s.seg)
 }
+
+// TestRFC28C_UnknownVersion checks that a trailer carrying a catalog layout
+// version the journal does not know is only no footer: the open succeeds,
+// the segment is scanned, and nothing is reported as damage.
+func TestRFC28C_UnknownVersion(t *testing.T) {
+	f := journalv2test.New(t)
+	s := sealedSetup(t, f)
+	b := durable(t, f, s.name)
+	footerOffset, entries := trailerOf(t, b)
+
+	// The same trailer, with version 2 in place of 1 and its checksum over
+	// that: a reader that checks the version last meets a trailer that
+	// verifies.
+	overwrite(t, f, s.name, int64(len(b))-raw.TrailerSize, raw.Trailer(2, uint64(footerOffset), entries...))
+	f.Reopen()
+	wantNoFooter(t, f, s)
+}
