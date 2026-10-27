@@ -149,3 +149,36 @@ func TestCheckKeepsADivergenceShrinkingLoses(t *testing.T) {
 		t.Fatalf("wrote %d steps, want the %d that failed:\n%s", len(kept), len(steps), text)
 	}
 }
+
+// stubbed answers Truncate as a journal call not written yet.
+type stubbed struct{ *played }
+
+func (s stubbed) Share(i int) Handle { return stubbedHandle{s.played.Share(i)} }
+
+type stubbedHandle struct{ Handle }
+
+func (stubbedHandle) Truncate(context.Context, journalv2.FileID, int64) (journalv2.Version, error) {
+	return journalv2.Version{}, journalv2.ErrNotImplemented
+}
+
+// fatalRecorder is a recorder whose Fatalf records too, so a test can see
+// what Check ends a test with.
+type fatalRecorder struct{ recorder }
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) { r.Errorf(format, args...) }
+
+// A journal call not written yet ends the test as "stub: <call>", never as a
+// divergence to shrink into a corpus file.
+func TestCheckReportsAStubAsAStub(t *testing.T) {
+	rec := &fatalRecorder{recorder{TB: t, dir: t.TempDir()}}
+	steps := []Step{{Op: OpWrite, Len: 4}, {Op: OpTruncate, Off: 1}}
+	Check(rec, "stub.txt", steps, func() (Target, func(), error) {
+		return stubbed{newPlayed(t)}, func() {}, nil
+	})
+	if len(rec.errors) != 1 || !strings.HasPrefix(rec.errors[0], "stub: Truncate") {
+		t.Fatalf("want the test ended with stub: Truncate, got %q", rec.errors)
+	}
+	if _, err := os.Stat(filepath.Join(rec.dir, "stub.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a stub was written as a corpus file: %v", err)
+	}
+}

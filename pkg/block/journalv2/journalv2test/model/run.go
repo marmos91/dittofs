@@ -82,6 +82,7 @@ type runner struct {
 	ctx context.Context
 	tgt Target
 	m   *Model
+	s   stubs
 
 	// asOf is, per file, the change versions of its last two reads, the last
 	// first: what a fill and a stale fill are made as of.
@@ -98,7 +99,8 @@ var errStop = errors.New("model: the step failed inside the offload callback")
 // a model after every step. It returns the number of steps that ran
 // and the first error: one wrapping ErrDiverged when the journal did what the
 // RFC does not allow, ErrMisuse when the sequence drove the model where it
-// cannot follow, or the target's own error.
+// cannot follow, a StubError when a journal call it made is not written yet,
+// or the target's own error.
 //
 // decision: a sequence injects no storage fault but its crashes, so a sync
 // never fails and no loss is ever recorded, and the model takes any Sync
@@ -110,9 +112,13 @@ func Run(ctx context.Context, tgt Target, steps []Step) (int, error) {
 		if why := s.valid(); why != "" {
 			return i, fmt.Errorf("model: step %d %+v: %s: %w", i, s, why, ErrMisuse)
 		}
+		r.s = stubs{}
 		err := r.step(s)
 		if err == nil {
 			err = r.compare()
+		}
+		if err != nil && r.s.call != "" {
+			err = StubError{r.s.call}
 		}
 		if err != nil {
 			return i, fmt.Errorf("step %d, %s: %w", i, fmtStep(s), err)
@@ -121,6 +127,9 @@ func Run(ctx context.Context, tgt Target, steps []Step) (int, error) {
 	return len(steps), nil
 }
 
+// share returns the handle of share i, reporting its stubs to the step.
+func (r *runner) share(i int) Handle { return stubHandle{r.tgt.Share(i), &r.s} }
+
 // fmtStep prints a step as its corpus line.
 func fmtStep(s Step) string {
 	return strings.TrimSuffix(string(FormatCorpus([]Step{s})), "\n")
@@ -128,7 +137,7 @@ func fmtStep(s Step) string {
 
 func (r *runner) compare() error {
 	for i := range Shares {
-		if err := r.m.Compare(r.ctx, ShareTag(i), r.tgt.View(i)); err != nil {
+		if err := r.m.Compare(r.ctx, ShareTag(i), stubView{r.tgt.View(i), &r.s}); err != nil {
 			return err
 		}
 	}
@@ -146,7 +155,7 @@ func payload(s Step) []byte {
 
 func (r *runner) step(s Step) error {
 	ctx, m := r.ctx, r.m
-	h, tag, id := r.tgt.Share(s.Share), ShareTag(s.Share), FileOf(s.File)
+	h, tag, id := r.share(s.Share), ShareTag(s.Share), FileOf(s.File)
 
 	switch s.Op {
 	case OpWrite:
@@ -216,7 +225,9 @@ func (r *runner) step(s Step) error {
 		return m.Settle(tag, id, v)
 
 	case OpRepack:
-		if err := r.tgt.Repack(ctx); err != nil {
+		err := r.tgt.Repack(ctx)
+		r.s.seen("Repack", err)
+		if err != nil {
 			return m.mismatch("repack", journalv2.FileID{}, "returned %v", err)
 		}
 		return nil
@@ -351,7 +362,7 @@ func (r *runner) restart(s Step) error {
 			continue
 		}
 		i := int(f.tag) - 1
-		if err := m.Sync(f.tag, []journalv2.FileID{id}, r.tgt.Share(i).Sync(ctx, id)); err != nil {
+		if err := m.Sync(f.tag, []journalv2.FileID{id}, r.share(i).Sync(ctx, id)); err != nil {
 			return err
 		}
 		if uncertainAt(f) > crashSearchable {

@@ -74,7 +74,8 @@ func (e openError) Unwrap() error { return e.err }
 // to tb.ArtifactDir() as the corpus file name, with notes and the failure as
 // its comments, ready to commit. A misuse of the model, or an error of the
 // target, is reported as it is: it is no evidence about the journal, and
-// shrinking would only hide it. A target that cannot be opened ends the test.
+// shrinking would only hide it. A target that cannot be opened, or a journal
+// call not written yet, ends the test, the latter as "stub: <call>".
 // newTarget returns the target and the function that closes it.
 func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, func(), error), notes ...string) {
 	tb.Helper()
@@ -91,11 +92,15 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 
 	err := run(steps)
 	var open openError
+	var stub StubError
 	switch {
 	case err == nil:
 		return
 	case errors.As(err, &open):
 		tb.Fatalf("%v; opening the journal for %s", open, name)
+		return
+	case errors.As(err, &stub):
+		tb.Fatalf("%v; running %s: %v", stub, name, err)
 		return
 	case !errors.Is(err, ErrDiverged):
 		tb.Errorf("%s: %v", name, err)
