@@ -7,26 +7,32 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
-// shrinkAttempts bounds the sequences one Shrink runs.
+// shrinkAttempts and shrinkTime bound the sequences one Shrink runs, and the
+// real time it spends running them.
 //
 // ponytail: shrinking removes ever smaller chunks of the sequence until no
 // removal keeps it failing, then halves each kept extent, running the whole
 // candidate from a fresh journal every time: O(n log n) runs for n steps,
-// each O(n) steps long. The cap keeps a sequence whose failure comes and goes
-// from running for hours; past it the shrinker returns the shortest failing
+// each O(n) steps long. On a real journal one run can take seconds, more when
+// calls wait for spare segments, so the caps keep a failure from outlasting
+// the test's timeout; past either, the shrinker returns the shortest failing
 // sequence found so far. Shrink with a smarter search, such as dropping the
-// steps after the failing one first, if a real journal's failures hit the cap.
-const shrinkAttempts = 2000
+// steps after the failing one first, if a real journal's failures hit them.
+const (
+	shrinkAttempts = 2000
+	shrinkTime     = 5 * time.Minute
+)
 
 // Shrink returns a sequence that still fails, as short as the search finds:
 // steps removed, then each kept step's extent shortened, while fails holds.
 // steps must fail.
 func Shrink(steps []Step, fails func([]Step) bool) []Step {
-	attempts := 0
+	attempts, deadline := 0, time.Now().Add(shrinkTime)
 	try := func(c []Step) bool {
-		if attempts >= shrinkAttempts {
+		if attempts >= shrinkAttempts || time.Now().After(deadline) {
 			return false
 		}
 		attempts++
@@ -119,5 +125,5 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 	if werr := os.WriteFile(path, text, 0o644); werr != nil {
 		path = fmt.Sprintf("nowhere (%v)", werr)
 	}
-	tb.Errorf("%s: the journal diverged from the model: %v\nshrunk from %d to %d steps, written to %s:\n%s", name, err, len(steps), len(shrunk), path, text)
+	tb.Errorf("%s: the journal diverged from the model: %v\nshrunk from %d to %d steps; commit this as testdata/model/%s (written to %s, which outlives the test only under go test -artifacts):\n%s", name, err, len(steps), len(shrunk), name, path, text)
 }

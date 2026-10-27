@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/bits"
 	"slices"
 	"strings"
 
@@ -40,13 +41,23 @@ type Target interface {
 	Repack(ctx context.Context) error
 	// Crash loses the journal's storage as kind says, with arg the bytes a
 	// torn write keeps or the seed of a reordering, and opens the journal
-	// again on what is left.
+	// again on what is left. It returns a ReopenError when the journal does
+	// not open, and any other error when the crash itself could not be made.
 	Crash(kind CrashKind, arg uint64) error
-	// Reopen closes the journal cleanly and opens it again.
+	// Reopen closes the journal cleanly and opens it again, returning a
+	// ReopenError when it does not open.
 	Reopen() error
 	// Floor returns the floor the journal open now was opened with.
 	Floor() journalv2.Version
 }
+
+// ReopenError is a journal that did not open again after a crash or a clean
+// close: recovery refused a state the model allows, so Run reports it as a
+// divergence, never as the target's own failure.
+type ReopenError struct{ Err error }
+
+func (e ReopenError) Error() string { return "the journal did not open again: " + e.Err.Error() }
+func (e ReopenError) Unwrap() error { return e.Err }
 
 // ShareTag returns the tag share i of a Target is attached under.
 func ShareTag(i int) journalv2.ShareTag { return journalv2.ShareTag(i + 1) }
@@ -220,7 +231,8 @@ func (r *runner) step(s Step) error {
 
 	case OpSettle:
 		v := m.maxSeen
-		v.Counter = uint64(float64(v.Counter) * float64(s.Pick) / 255)
+		hi, lo := bits.Mul64(v.Counter, uint64(s.Pick))
+		v.Counter, _ = bits.Div64(hi, lo, 255)
 		h.Settle(id, v)
 		return m.Settle(tag, id, v)
 
@@ -379,7 +391,12 @@ func (r *runner) restart(s Step) error {
 	} else {
 		err = r.tgt.Reopen()
 	}
-	if err != nil {
+	var reopen ReopenError
+	switch {
+	case errors.As(err, &reopen):
+		r.s.seen("Open", reopen.Err)
+		return m.mismatch(s.Op.String(), journalv2.FileID{}, "the journal did not open again: %v", reopen.Err)
+	case err != nil:
 		return fmt.Errorf("model: %s: %w", s.Op, err)
 	}
 	return m.Reopen(r.tgt.Floor())

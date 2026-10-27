@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -18,8 +19,9 @@ import (
 // and removed when it ends. The fixtures are unwatched: the test watches
 // itself once, before calling it.
 func ModelTargets(t testing.TB) func() (model.Target, func(), error) {
+	parent := t.TempDir()
 	return func() (model.Target, func(), error) {
-		tb := &attemptTB{TB: t}
+		tb := &attemptTB{TB: t, parent: parent}
 		var tgt *fixtureTarget
 		err := tb.guard(func() {
 			f := NewUnwatched(tb)
@@ -36,14 +38,33 @@ func ModelTargets(t testing.TB) func() (model.Target, func(), error) {
 }
 
 // attemptFailed is the panic an attemptTB raises for a failure, so that one
-// sequence's fixture failing ends that sequence rather than the test.
-type attemptFailed struct{ msg string }
+// sequence's fixture failing ends that sequence rather than the test. It is
+// also the error guard returns: its message, wrapping every error the failure
+// was reported with, so errors.Is sees the journal's error through it.
+type attemptFailed struct {
+	msg  string
+	errs []error
+}
+
+func (e attemptFailed) Error() string   { return e.msg }
+func (e attemptFailed) Unwrap() []error { return e.errs }
+
+func failure(msg string, args []any) attemptFailed {
+	f := attemptFailed{msg: msg}
+	for _, a := range args {
+		if err, ok := a.(error); ok {
+			f.errs = append(f.errs, err)
+		}
+	}
+	return f
+}
 
 // attemptTB is the testing.TB of one sequence's fixture. A failure the
 // fixture reports panics with attemptFailed, which guard turns into an error;
 // cleanups run when the sequence ends, not when the test does.
 type attemptTB struct {
 	testing.TB
+	parent   string // where the sequence's directories are made
 	cleanups []func()
 }
 
@@ -53,25 +74,22 @@ func (a *attemptTB) Cleanup(f func()) { a.cleanups = append(a.cleanups, f) }
 // TempDir returns a new directory that is removed when the sequence ends, so
 // a test running many sequences holds the storage of one at a time.
 func (a *attemptTB) TempDir() string {
-	dir, err := os.MkdirTemp(a.TB.TempDir(), "sequence")
+	dir, err := os.MkdirTemp(a.parent, "sequence")
 	if err != nil {
 		a.Fatalf("fixture: temporary directory: %v", err)
 	}
 	a.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
-func (a *attemptTB) FailNow() { panic(attemptFailed{"FailNow"}) }
-func (a *attemptTB) Fatal(args ...any) {
-	panic(attemptFailed{fmt.Sprint(args...)})
-}
+
+func (a *attemptTB) FailNow()          { panic(attemptFailed{msg: "FailNow"}) }
+func (a *attemptTB) Fatal(args ...any) { panic(failure(fmt.Sprint(args...), args)) }
+func (a *attemptTB) Error(args ...any) { panic(failure(fmt.Sprint(args...), args)) }
 func (a *attemptTB) Fatalf(format string, args ...any) {
-	panic(attemptFailed{fmt.Sprintf(format, args...)})
-}
-func (a *attemptTB) Error(args ...any) {
-	panic(attemptFailed{fmt.Sprint(args...)})
+	panic(failure(fmt.Sprintf(format, args...), args))
 }
 func (a *attemptTB) Errorf(format string, args ...any) {
-	panic(attemptFailed{fmt.Sprintf(format, args...)})
+	panic(failure(fmt.Sprintf(format, args...), args))
 }
 
 // guard runs fn and returns the failure it reported, if any.
@@ -82,7 +100,7 @@ func (a *attemptTB) guard(fn func()) (err error) {
 			if !ok {
 				panic(r)
 			}
-			err = fmt.Errorf("%s", failed.msg)
+			err = failed
 		}
 	}()
 	fn()
@@ -126,10 +144,25 @@ func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 	case model.CrashReordered:
 		opts = append(opts, Reordered(arg))
 	}
-	return x.tb.guard(func() { x.f.Crash(opts...) })
+	return reopened(x.tb.guard(func() { x.f.Crash(opts...) }))
 }
 
-func (x *fixtureTarget) Reopen() error { return x.tb.guard(x.f.Reopen) }
+func (x *fixtureTarget) Reopen() error { return reopened(x.tb.guard(x.f.Reopen)) }
+
+// reopened returns err, the failure of a crash or a reopen, as a
+// model.ReopenError when it is the journal's Open that failed.
+//
+// decision: the fixture's open failure is told apart by the prefix of the
+// message it reports it with, "fixture: open:", since the fixture reports
+// every failure through the test. Anything else, such as the seam failing to
+// crash, stays the target's own error. Give the fixture a crash that returns
+// its errors if a second caller needs to tell them apart.
+func reopened(err error) error {
+	if err != nil && strings.HasPrefix(err.Error(), "fixture: open:") {
+		return model.ReopenError{Err: err}
+	}
+	return err
+}
 
 func (x *fixtureTarget) Floor() journalv2.Version { return x.f.Floor() }
 
