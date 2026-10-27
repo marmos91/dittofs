@@ -603,6 +603,25 @@ func (r *Runtime) ApplyShareDurability(name string, requireDurableCommit, relaxe
 	return r.sharesSvc.ApplyDurability(name, requireDurableCommit, relaxedMetadataCommit, r.GetMetadataService())
 }
 
+// AddShareFromStore loads a persisted share row into the runtime, building its
+// config with the same builder a startup load uses. A share created through the
+// API goes through here, so nothing it persisted can be missing from what it
+// serves until the next restart.
+func (r *Runtime) AddShareFromStore(ctx context.Context, name string) error {
+	share, err := r.store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to load share %q: %w", name, err)
+	}
+	cfg, err := buildShareConfig(ctx, r.store, share)
+	if err != nil {
+		return fmt.Errorf("failed to build share config for %q: %w", name, err)
+	}
+	if cfg == nil {
+		return fmt.Errorf("share %q references an unknown metadata store", name)
+	}
+	return r.AddShare(ctx, cfg)
+}
+
 // RebindShareBlockStore hot-reloads a running share's per-share BlockStore after
 // its local/remote block-store binding changed, so the change takes effect
 // without a server restart (#1532). It rebuilds the new ShareConfig from the
