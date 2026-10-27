@@ -38,8 +38,18 @@ recalls and lock grants go up through its `Sink` (D5). `*Table` exports `New`, `
 seven view accessors, `Clients()`, `Opens()`, `Locks()`, `Grants()`, `Watches()`, `Recovery()` and
 `Checks()`, and nothing else, so each area of the service fakes only the calls it makes (RFC 14
 §11.3). Its `Deps` are `Records`, the `*kvstore.Store` whose `Clients()` and `Opens()` are RFC 16's
-`OpenRecords` views, RFC 24's `Budget`, the `Clock`, `Rand` for every random bit, `Metrics` and
-`Logger`. Adapters never import it (RFC 20 §2.3): only the filesystem service
+`OpenRecords` views, the `Clock` and `Rand` for every random bit; `Metrics` and `Logger` join with
+the first metric and log line. RFC 24's `Budget` is not one: its pool does not exist on
+`feat/storage-v2`, so `DelayResources` is answered at RFC 14's fixed caps alone (§5.5's
+per-client caps, §5.4's 4,096 unsent recalls, §2.9's proposal caps):
+
+```go
+// ponytail: grants, watches and recalls are refused at RFC 14's fixed caps
+// alone; take RFC 24's Budget as a Dep once its pool exists, so a node-wide
+// limit can refuse before a per-client cap is reached.
+```
+
+Adapters never import it (RFC 20 §2.3): only the filesystem service
 calls it, and the service maps each `openstate` error once to RFC 17 §4.3's neutral errors. So every
 `ErrDelay` carries its cause (RFC 17 §4.3's `Delay…` values), or the mapping is not total and an
 adapter answers it as a server fault (RFC 20 §7.3).
@@ -78,14 +88,17 @@ ways by `FileID`; each entry has its own mutex, the inner level of RFC 14 §3's 
 outer level, the admission lock, is the service's; under it the table takes the entry mutex, then
 the files-map shard, then the client-index shard, then the outbox. Each operation is
 a pure `decide(state, request) → (mutations, events, result)`, which the entry runs, persists
-through `Records` and applies, and which the model fuzzer calls directly (RFC 14 §11.1). A call
+through `Records` and applies; it is the seam model-based fuzzing will call (RFC 14 §11.1), which
+the RFC's rollout builds in slice 9 with the multi-node simulation, not here. A call
 touching several files takes their steps in `FileID` order, then fold admission, then accept
 locks, as RFC 17 §5.0 orders every call. No call waits on a recall or a client while holding a
 step: a conflict with a caching grant starts the recall and returns `ErrDelay` at once, except a
 callback lock request, which becomes a waiter answered `Waiting` (L44). Events
 are queued in the step and handed to the `Sink` after the entry mutex is released, so the break
-is queued ahead of the reply that triggered it (RFC 20 §6.2). The pure parts are leaf packages
-tested alone: `ranges`, `conflict`, `grantfsm`, `sequence`, `deadline` and `grace`.
+is queued ahead of the reply that triggered it (RFC 20 §6.2). The pure parts that port existing
+tests are leaf packages tested alone: `ranges`, `conflict`, `grantfsm` and `sequence`. RFC 14
+§11.1's tree also lists `deadline/` and `grace/`; they are small and the table is their only
+caller, so they stay in `pkg/openstate`.
 
 **D5. Open state reports to the service through RFC 14's `Sink`.** Adapters implement RFC 17
 §3.2's `Callbacks` and may not import `openstate` (RFC 20 §2.3), so the service keeps the
@@ -136,9 +149,9 @@ that completes it is named beside it, e.g. L27 (→4).
 | 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Opens`: `Open`, `Downgrade`, `Update`, `Close`, `Durable`; `Checks`: `CheckIO`, `CheckChange`; the `Closed` event |
 | 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Locks`: `Lock`, `CancelLock`, `WaitAnswered`, `TestLock`, `Unlock`, `ReleaseLockOwner`; `Opens.ConfirmOpen`; the `LockWaitOver` event |
 | 5 | Caching grants and recalls | §2.4, §5 | `Grants`: `AckRecall`; `Clients`: `Revoke`, `ChannelDown`, `Rebind`; `Recovery`: `TestState`, `FreeState`; the `RecallGrant`, `RecallAny` and `Revoked` events |
-| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `Recovery`: `ServeShard`, `ReleaseShard`, `ReclaimComplete`; `Opens.Renamed` |
+| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `Recovery`: `ServeShard`, `ReclaimComplete`; `Opens.Renamed` |
 | 7 | SMB durable and persistent opens | §8.1, §9.2 | `Opens`: `Reconnect`, `Flushed`; `Clients`: `Disconnect`; the `GraceEnded` event |
-| 8 | The rest | §2.5, §2.7, §4.3, §8.1, §9.2 | `Watches`: `Watch`, `Unwatch`, `Changed`; `Recovery`: `DropShare`; `Opens`: `CloneOpen`, `CloneClose`; the `Notify` event |
+| 8 | The rest | §2.5, §4.3, §5.5, §8.1, §9.2 | `Watches`: `Watch`, `Unwatch`, `Changed`; `Recovery`: `DropShare`; `Opens`: `CloneOpen`, `CloneClose`; the `Notify` event |
 
 What each piece also carries, and its §12 rows:
 
@@ -171,14 +184,19 @@ What each piece also carries, and its §12 rows:
 6. **Grace and reclaim:** `ServeShard` and the refusal of a shard not begun; grace per shard
    after a restart, reclaims only, early end; every client a shard's records name told to
    reclaim (`Clients.ByShard`); a rename keeps an open's name for its deferred unlink
-   (`Renamed`). *Rows:* L2, L3, L3b, L24, L29, L29b, L47.
+   (`Renamed`). L3b is a direct case of two reclaims, not the model fuzzing §12 also names.
+   *Rows:* L2, L3, L3b, L24, L29, L29b, L47.
 7. **SMB durable and persistent opens:** timeouts, disconnect and reconnect, channel sequence,
    logoff, `Flushed`'s loss; persistent opens installed from the store's per-shard durable-open
    index (`S‖id‖do‖shard`) before the shard answers anything; grace's end closes every durable
    record nobody reclaimed, then raises `GraceEnded`, and a new primary releases nothing before.
    *Rows:* L15 (→8), L30, L30b, L43, L48 (→8), L52.
-8. **The rest:** watches, `DropShare`; clone source opens, installed with piece 7's; create and
-   lock replay and app instance (L15's rest). *Rows:* L54, L55.
+8. **The rest:** watches, `DropShare`; §5.5's other per-client caps (opens, ranges, owners,
+   waiters); create and lock replay and app instance (L15's rest); clone source opens. The
+   store's clone already writes the source's hold in its first phase (`clonePhase1`,
+   `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record through piece 7's install
+   path and `CloneClose` drops it; RFC 14 §11.3's "written in its own transaction" is edited to
+   match. Async copy is not offered (§2.7), so nothing is built for it. *Rows:* L54, L55.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
 `DropShare`'s part of it. Three rows are other layers': L1 and L20 are the service's, tested in
@@ -201,13 +219,16 @@ Ported test scenarios, rewritten to RFC 14's semantics (a recall answers `ErrDel
 `pkg/metadata/lock`'s lock and split tests (owners), lease key and epoch tests, progressive-break
 and late-ack tests (recall deadline), cross-protocol tests, and reconnect-matching tests.
 
-The §13.3 benchmarks come with the pieces they measure.
+Of §13.3's benchmarks only heap per state (RFC 24 M6) ships with its piece; the rest follow once
+the service can drive them.
 
 ## 5. What stays out of stage 1
 
 - Wiring into today's server: route B builds the service for stage 2 to call, and today's
   adapters keep `pkg/metadata/lock` until stage 5.
-- The cluster rules (D2) and layouts.
+- The cluster rules (D2) and layouts, and `Recovery.ReleaseShard`, a handover: on one node a
+  shard stops only at `Stop` or `DropShare`, which both drop its state.
+- Model-based fuzzing, slice 9 of RFC 14's rollout.
 - A deadlock detector, which RFC 14 does not ask for.
 
 ## 6. Open questions
