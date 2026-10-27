@@ -5,12 +5,14 @@ package conformance
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"syscall"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
 // The checks here fail by serving or destroying the wrong bytes without an
@@ -400,4 +402,91 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	abandonHeld(t, k, held)
 	<-synced // a call the process died in; what it returned means nothing
 	wantVerifiedThenReappended(t, k, u)
+}
+
+// sealedSegmentBytes returns the bytes of a segment of this journal sealed
+// early: its header, records from the first slot on, each under identity and
+// the segment's id, a seal marker at the slot after the last, the entries as
+// its footer, and the trailer, with nothing past it.
+func sealedSegmentBytes(identity [16]byte, id journalv2.SegmentID, records []raw.Record, entries []raw.Entry) []byte {
+	b := raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes()
+	for _, r := range records {
+		r.Identity, r.Segment = identity, uint64(id)
+		b = append(b, r.Bytes()...)
+	}
+	b = append(b, raw.SealMarker{Identity: identity, Segment: uint64(id), Offset: uint64(len(b))}.Bytes()...)
+
+	footerOffset := uint64(len(b))
+	var es [][raw.CatalogEntrySize]byte
+	for _, e := range entries {
+		eb := e.Bytes()
+		es = append(es, eb)
+		b = append(b, eb[:]...)
+	}
+	return append(b, raw.Trailer(1, footerOffset, es...)...)
+}
+
+// TestRFC28A_FooterIsNotAuthoritative checks that a footer is only an
+// accelerator: with the whole footer overwritten, the segment is scanned and
+// the index is the one the footer gave; and with a footer that verifies but
+// describes its record wrongly, the open trusts the footer and the read
+// through its entry finds the header disagreeing and refuses the record as
+// corruption rather than serving what the entry says.
+func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
+	f := journalv2test.New(t)
+	s := sealedSetup(t, f)
+	footerOffset, entries := trailerOf(t, durable(t, f, s.name))
+	junk := make([]byte, len(entries)*raw.CatalogEntrySize)
+	if _, err := rand.NewChaCha8([32]byte{'f', 'o', 'o', 't', 'e', 'r'}).Read(junk); err != nil {
+		t.Fatalf("draw the footer's junk: %v", err)
+	}
+	overwrite(t, f, s.name, footerOffset, junk)
+	f.Reopen()
+	wantNoFooter(t, f, s)
+
+	// A planted segment whose one entry says its record is 8 bytes longer
+	// than the record's header does.
+	g := journalv2test.NewUnwatched(t)
+	x := writeSynced(t, g, 0, 0, 0, 64<<10)
+	other := writeSynced(t, g, 1, 1, 0, 64<<10)
+	g.Reopen()
+	before := g.J.Stats()
+
+	const kindWrite = 1
+	const size = 64 << 10
+	extent := journalv2.Extent{Off: 1 << 20, Len: size}
+	id := newestID(t, g) + 1
+	version := raw.Version{Epoch: x.version.Epoch, Counter: x.version.Counter + 1}
+	p := pattern(fmtTag("p", 0, 0, extent.Off), size)
+	record := raw.Record{
+		Kind: kindWrite, FileID: x.id.Bytes(), Offset: uint64(extent.Off), Length: size,
+		Seq: 1 << 40, Version: version, Tag: uint32(journalv2test.Tag(0)),
+		Write: &raw.WriteBody{Payload: p},
+	}
+	entry := raw.Entry{
+		FileID: x.id.Bytes(), Offset: uint64(extent.Off), RecordOffset: raw.SegmentHeaderSize, Length: size + 8,
+		Seq: 1 << 40, Version: version, Kind: kindWrite, Tag: uint32(journalv2test.Tag(0)),
+	}
+	plant(t, g, segmentName(id), sealedSegmentBytes(journalIdentity(t, g), id, []raw.Record{record}, []raw.Entry{entry}))
+	g.Reopen()
+
+	r := g.J.Stats().Recovery
+	if r.CatalogSegments != before.Recovery.CatalogSegments+1 {
+		t.Fatalf("recovery read %d segments by catalog, want %d: the planted segment's footer verifies", r.CatalogSegments, before.Recovery.CatalogSegments+1)
+	}
+	if got := entryAt(t, g, x.id, extent.Off).Location; got.Segment != id {
+		t.Fatalf("the extent at %d is held from %+v, want the planted segment %d, whose catalog describes it", extent.Off, got, id)
+	}
+
+	wantMissing(t, g.Share(0), x.id, extent)
+	ev := lastLoss(t, g, before)
+	if ev.File != x.id || ev.Extent != extent || ev.Reason != journalv2.LossCorrupt {
+		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, x.id, extent)
+	}
+	if !segmentInfo(t, g, id).Damaged {
+		t.Fatalf("the planted segment %d holds a record its catalog misdescribes and is not reported damaged", id)
+	}
+
+	wantBytes(t, g.Share(0), x.id, 0, x.p)
+	wantBytes(t, g.Share(1), other.id, 0, other.p)
 }
