@@ -73,6 +73,7 @@ func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 	if !returned {
 		werr = <-wrote
 	}
+	stub(t, "WriteAt", werr)
 	if werr != nil {
 		t.Fatalf("the write: %v", werr)
 	}

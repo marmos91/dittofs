@@ -35,6 +35,7 @@ func fillUntilRefused(t *testing.T, f *journalv2test.Fixture, shares []int, firs
 		k := int(i) % len(shares)
 		id := journalv2test.File(first + k)
 		v, err := tryWrite(t, f.Share(shares[k]), id, offs[k], pattern(fmt.Sprint("fill", first, i), int(size)))
+		stub(t, "WriteAt", err)
 		if err != nil {
 			wantNoSpace(t, err, journalv2.LimitJournal, "a write past the journal's maximum")
 			return out
@@ -100,7 +101,9 @@ func TestRFC1D_WedgeIsVisibleUnreclaimed(t *testing.T) {
 			extents = append(extents, w.extent)
 		}
 		h := f.Share(fws[0].share)
-		if err := h.MarkOffloaded(t.Context(), id, extents, fws[0].version, fws[len(fws)-1].version); err != nil {
+		err := h.MarkOffloaded(t.Context(), id, extents, fws[0].version, fws[len(fws)-1].version)
+		stub(t, "MarkOffloaded", err)
+		if err != nil {
 			t.Fatalf("mark a file offloaded: %v", err)
 		}
 	}
@@ -112,7 +115,9 @@ func TestRFC1D_WedgeIsVisibleUnreclaimed(t *testing.T) {
 			kept += w.extent.Len
 			continue
 		}
-		if err := f.Share(w.share).Release(t.Context(), w.id, []journalv2.Extent{w.extent}); err != nil {
+		err := f.Share(w.share).Release(t.Context(), w.id, []journalv2.Extent{w.extent})
+		stub(t, "Release", err)
+		if err != nil {
 			t.Fatalf("release an offloaded extent: %v", err)
 		}
 		released[w.share] += w.extent.Len
@@ -141,11 +146,15 @@ func loseDirty(t *testing.T, f *journalv2test.Fixture, i int) {
 	h, id := f.Share(0), journalv2test.File(i)
 	p := pattern(fmt.Sprint("lost", i), 4096)
 	write(t, h, id, 0, p)
-	if err := h.Sync(t.Context(), id); err != nil {
+	err := h.Sync(t.Context(), id)
+	stub(t, "Sync", err)
+	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	corrupt(t, f, id, p)
-	_, _, _, _, _ = h.ReadAt(t.Context(), id, 0, make([]byte, len(p))) // the read finds the damage
+	// The read finds the damage, and its error is the loss it reports.
+	_, _, _, _, err = h.ReadAt(t.Context(), id, 0, make([]byte, len(p)))
+	stub(t, "ReadAt", err)
 }
 
 // TestRFC1D_GenerationNeverRepeats checks that the loss generation continues
@@ -199,6 +208,7 @@ func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 	select {
 	case <-held.Reached():
 	case err := <-wrote:
+		stub(t, "WriteAt", err)
 		t.Fatalf("the write returned (%v) without reaching storage", err)
 	}
 
@@ -216,7 +226,9 @@ func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 		t.Fatal("Stats did not return while a write was held at storage")
 	}
 	held.Release()
-	if err := <-wrote; err != nil {
+	err := <-wrote
+	stub(t, "WriteAt", err)
+	if err != nil {
 		t.Fatalf("the held write: %v", err)
 	}
 }
@@ -297,6 +309,7 @@ func TestRFC1D_CleanBytesCountAsOccupancy(t *testing.T) {
 	h := f.Share(0)
 
 	v, err := f.J.Draw()
+	stub(t, "Draw", err)
 	if err != nil {
 		t.Fatalf("draw a version for the filled content: %v", err)
 	}
@@ -305,12 +318,14 @@ func TestRFC1D_CleanBytesCountAsOccupancy(t *testing.T) {
 	for i := range 2 * journalv2test.FixtureMaxBytes / size {
 		id, buf := journalv2test.File(i), make([]byte, size)
 		_, _, _, asOf, err := h.ReadAt(t.Context(), id, 0, buf)
+		stub(t, "ReadAt", err)
 		if err != nil {
 			t.Fatalf("read an absent file: %v", err)
 		}
 		err = retrySpare(func() error {
 			return h.Fill(t.Context(), id, 0, pattern(fmt.Sprint("clean", i), size), asOf, v)
 		})
+		stub(t, "Fill", err)
 		if err != nil {
 			wantNoSpace(t, err, journalv2.LimitJournal, "a fill past the journal's maximum")
 			refused = true
@@ -341,6 +356,7 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	// maximum, and a refusal names the spare pool only when no other limit
 	// would refuse.
 	_, err := h.Reserve(2*journalv2test.FixtureMaxBytes, 1)
+	stub(t, "Reserve", err)
 	wantNoSpace(t, err, journalv2.LimitJournal, "a reservation of twice the journal's maximum")
 	if got := f.J.Stats().Counters.ReservationRefused; got == 0 {
 		t.Fatal("ReservationRefused is zero after a refused reservation")
@@ -350,7 +366,7 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	// it.
 	f.FailNext(journalv2test.OpSync, "*.seg", 1)
 	write(t, h, journalv2test.File(0), 0, pattern("sync", 4096))
-	_ = h.Sync(t.Context(), journalv2test.File(0))
+	stub(t, "Sync", h.Sync(t.Context(), journalv2test.File(0)))
 	f.Seam.SetFault(nil)
 	if got := f.J.Stats().Counters.SyncFailures; got == 0 {
 		t.Fatal("SyncFailures is zero after a sync failed at storage")
@@ -387,7 +403,9 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	const margin = 8
 	other := journalv2test.NewUnwatched(t)
 	write(t, other.Share(0), journalv2test.File(0), 0, pattern("foreign", 4096))
-	if err := other.Share(0).Sync(t.Context(), journalv2test.File(0)); err != nil {
+	err = other.Share(0).Sync(t.Context(), journalv2test.File(0))
+	stub(t, "Sync", err)
+	if err != nil {
 		t.Fatal(err)
 	}
 	data, err := other.Seam.Durable(segmentName(heldEntry(t, other, journalv2test.File(0)).Location.Segment))
@@ -429,6 +447,7 @@ func TestRFC1D_LossEvents(t *testing.T) {
 	staleID := journalv2test.File(1)
 	write(t, h, staleID, 0, pattern("stale", 4096))
 	newer, err := f.J.Draw()
+	stub(t, "Draw", err)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,6 +482,7 @@ func TestRFC1D_LossEvents(t *testing.T) {
 		id := journalv2test.File(100 + i)
 		write(t, h, id, 0, []byte{1})
 		v, err := f.J.Draw()
+		stub(t, "Draw", err)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -512,13 +532,16 @@ func TestRFC1D_SegmentHeldBytes(t *testing.T) {
 			continue
 		}
 		mark(t, h, w.id, w.extent, w.version)
-		if err := h.Release(t.Context(), w.id, []journalv2.Extent{w.extent}); err != nil {
+		err := h.Release(t.Context(), w.id, []journalv2.Extent{w.extent})
+		stub(t, "Release", err)
+		if err != nil {
 			t.Fatalf("release: %v", err)
 		}
 		check(fmt.Sprintf("release %d", i))
 	}
 	moved := f.J.Stats().Counters.RepackedBytes
 	freed, err := f.J.Repack(t.Context(), 2*journalv2test.FixtureSegmentCap, journalv2.RepackScope{})
+	stub(t, "Repack", err)
 	if err != nil {
 		t.Fatalf("repack: %v", err)
 	}
@@ -535,18 +558,23 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	h := f.Share(0)
 	id, p := journalv2test.File(0), pattern("verify", 4096)
 	write(t, h, id, 0, p)
-	if err := h.Sync(t.Context(), id); err != nil {
+	err := h.Sync(t.Context(), id)
+	stub(t, "Sync", err)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// A second file, on the other share, that stays whole.
 	whole := journalv2test.File(1)
 	write(t, f.Share(1), whole, 0, pattern("whole", 4096))
-	if err := f.Share(1).Sync(t.Context(), whole); err != nil {
+	err = f.Share(1).Sync(t.Context(), whole)
+	stub(t, "Sync", err)
+	if err != nil {
 		t.Fatal(err)
 	}
 	corrupt(t, f, id, p)
 
 	before, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,6 +589,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	writes, losses := segWrites(), f.J.Stats().Counters.CorruptExtentsDataLoss
 
 	report, err := f.J.Inspect().Verify(t.Context())
+	stub(t, "Inspect.Verify", err)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -572,6 +601,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	}
 
 	after, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
 	if err != nil {
 		t.Fatal(err)
 	}
