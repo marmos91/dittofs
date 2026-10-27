@@ -303,6 +303,12 @@ suites:
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
+      # decision: SMB 2.1, the newest dialect of Windows 7 and Server 2008 R2, keeps a real client:
+      # the Linux one asked for it, against the server as it ships. Nightly, as WPTS already checks
+      # its negotiation on every pull request.
+      smb21:
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
         cmd: "{test} {mount}"

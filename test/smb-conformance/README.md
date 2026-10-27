@@ -222,16 +222,19 @@ test/harness/bin/dt run smbtorture --kerberos
 ## Multi-OS Client Compatibility
 
 The `clients` suite in `test/suites.yaml` mounts the fixture's share with each OS's own SMB client
-and runs the scripts in `test/clients/` over the mount, nightly in `tests.yml`:
+and runs the scripts in `test/clients/` over the mount, in `tests.yml`: Linux after each merge, the
+others nightly. Each client mounts at SMB 3.1.1, and one more Linux run mounts at SMB 2.1, for the
+older clients:
 
 | Platform | Client | Profile | Checks |
 |----------|--------|---------|--------|
 | Linux | mount.cifs | `badger-s3` (Localstack) | file create and read, directory create, listing, delete, rename, a block reaching the bucket |
+| Linux, SMB 2.1 | mount.cifs, `vers=2.1` | `badger-s3` (Localstack) | the same checks as Linux |
 | macOS | mount_smbfs | `memory`: the runner has no Docker for Localstack | the same file checks, and xattrs surviving a remount |
 | Windows | the OS's own client | `memory`: the runner runs no Linux containers | the same file checks |
 
 ```bash
-test/harness/bin/dt run clients            # on Linux; --macos and --windows on those OSes
+test/harness/bin/dt run clients            # on Linux; --smb21 for SMB 2.1, --macos and --windows on those OSes
 ```
 
 ## CI Integration
