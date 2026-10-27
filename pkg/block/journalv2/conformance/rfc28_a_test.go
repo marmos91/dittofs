@@ -223,3 +223,35 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
+
+// TestRFC28A_UnmarkClears checks that an unmark outlives a restart and that a
+// mark over other extents changes no bit: a bit the metadata cannot justify
+// would let eviction drop the only copy of the content.
+func TestRFC28A_UnmarkClears(t *testing.T) {
+	f := journalv2test.New(t)
+	h := f.Share(0)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	c := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	mark(t, h, a.id, a.extent, a.version)
+	mark(t, h, c.id, c.extent, c.version)
+	unmark(t, h, a.id, a.extent)
+	syncFiles(t, h, a.id)
+	wantRelease(t, h, a.id, a.extent, false)
+
+	f.Crash()
+	h = f.Share(0)
+	wantRelease(t, h, a.id, a.extent, false)
+
+	// A mark over B's extent covers neither A nor C: A stays unmarked and C
+	// stays marked.
+	mark(t, f.Share(1), b.id, b.extent, b.version)
+	if entryAt(t, f, a.id, 0).Offloaded {
+		t.Fatalf("A's offloaded bit is set after a mark that did not cover it")
+	}
+	if !entryAt(t, f, c.id, c.extent.Off).Offloaded {
+		t.Fatalf("C's offloaded bit is unset after a mark that did not cover it")
+	}
+	wantRelease(t, h, a.id, a.extent, false)
+}
