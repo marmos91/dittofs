@@ -34,6 +34,15 @@ func newRun() *cobra.Command {
 		Short: "Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if place != "" {
+				var bad []string
+				cmd.Flags().Visit(func(f *pflag.Flag) {
+					if f.Name == "only" || f.Name == "skip" || options[f.Name] {
+						bad = append(bad, "--"+f.Name)
+					}
+				})
+				if len(bad) > 0 {
+					return fmt.Errorf("--place runs what dt plan gives the place: it takes no %s", strings.Join(bad, ", "))
+				}
 				return cobra.NoArgs(cmd, args)
 			}
 			return cobra.MinimumNArgs(1)(cmd, args)
