@@ -54,6 +54,24 @@ type Settings struct {
 	// exists yet; raise it if spare refusals are counted under a sustained
 	// write load.
 	SpareTarget int
+
+	// segmentCap overrides the segment size when positive; zero or less
+	// leaves the format's. It is not a setting: only SetSegmentCap writes it,
+	// so no value of it is refused.
+	segmentCap int64
+}
+
+// SetSegmentCap makes s give every segment a cap of n bytes instead of the
+// format's.
+//
+// decision: the cap is not a setting, and no name journalv2 exports may set
+// it, yet a check over hundreds of segments cannot run at the format's size
+// in a temporary directory. So the field is unexported, and this setter lives
+// in internal/core, which only code inside the journal's tree can import: its
+// tests' fixture sets it and passes the settings through WithSettings, and
+// the public surface does not change.
+func SetSegmentCap(s *Settings, n int64) {
+	s.segmentCap = n
 }
 
 // Clock is the journal's only source of time. The sync timer, every wait and

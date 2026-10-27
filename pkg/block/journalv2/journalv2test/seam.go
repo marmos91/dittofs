@@ -130,6 +130,7 @@ type dirOp struct {
 // NewSeam returns a seam over the existing directory dir. The files already
 // in dir are taken as durable.
 func NewSeam(dir string) (*Seam, error) {
+	dir = filepath.Clean(dir) // a file's key compares its directory with dir
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -157,15 +158,48 @@ func NewSeam(dir string) (*Seam, error) {
 
 var _ storage.FS = (*Seam)(nil)
 
+// FS returns a view of the seam for one process: a storage.FS that serves the
+// directory as the seam does until the next Crash, and from then on fails
+// every call with an error matching fs.ErrClosed and does nothing. A call it
+// has in flight when the Crash runs fails the same way. Files opened through
+// it are the seam's, which a Crash already closes.
+//
+// decision: a crash ends the process that made it, so nothing that process
+// still runs may act on the directory the crash left. Without a view, a
+// journal closed after a simulated crash could create, rename or sync files
+// after the power cut. A test gives each journal it opens a view of its own,
+// and the Seam itself always serves the current one.
+func (s *Seam) FS() storage.FS {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return view{s: s, epoch: s.crashes}
+}
+
+// view is the storage.FS FS returns: the seam, bound to the crashes it had
+// seen when the view was made.
+type view struct {
+	s     *Seam
+	epoch uint64
+}
+
+var _ storage.FS = view{}
+
+func (v view) Create(name string) (storage.File, error) { return v.s.createFrom(v.epoch, name) }
+func (v view) Open(name string) (storage.File, error)   { return v.s.openFrom(v.epoch, name) }
+func (v view) Rename(oldName, newName string) error     { return v.s.renameFrom(v.epoch, oldName, newName) }
+func (v view) Remove(name string) error                 { return v.s.removeFrom(v.epoch, name) }
+func (v view) List() ([]string, error)                  { return v.s.listFrom(v.epoch) }
+func (v view) SyncDir() error                           { return v.s.syncDirFrom(v.epoch) }
+
 // SetFault makes the seam consult f before every operation, and apply the
 // action it returns. A nil f, the default, passes every call.
 //
 // Each operation is named by one of the Op constants, and its key is the name
-// of the file it acts on: the old name for a rename, and empty for list and
-// sync_dir. Size and Name are not operations and consult nothing. A call on a
-// closed file fails with fs.ErrClosed before f is consulted, so it never
-// counts in a rule. f is called without the seam's lock held, so a Delay
-// stalls only its own call.
+// of the file it acts on, as the directory names it at the call: the old name
+// for a rename, and empty for list and sync_dir. Size and Name are not
+// operations and consult nothing. A call on a closed file fails with
+// fs.ErrClosed before f is consulted, so it never counts in a rule. f is
+// called without the seam's lock held, so a Delay stalls only its own call.
 //
 // How the seam applies each action:
 //   - Pass, Delay: performs the operation.
@@ -233,21 +267,29 @@ func applies(k sim.FaultKind, op string) bool {
 
 // enter counts op on name, waits at any hold that matches it, then consults
 // the fault. It returns the fault's action holding mu, unless the fault fails
-// the call: then it returns the fault's error, without mu. A call during
-// which a Crash ran, while it was held or delayed, fails with an error
-// matching fs.ErrClosed and does nothing: it comes from a process the crash
-// ended, and must not act on the directory as the crash left it.
-func (s *Seam) enter(op, name string) (sim.FaultAction, error) {
+// the call: then it returns the fault's error, without mu. A call from a
+// process a Crash ended, one made after the crashes epoch counts or during
+// which one ran while it was held or delayed, fails with an error matching
+// fs.ErrClosed and does nothing: it must not act on the directory as the crash
+// left it.
+//
+// A call refused on entry is not counted: its process no longer exists, so it
+// is no call of the journal under test. A call on a file a Crash closed is
+// counted, as file.go's enter does, because it is one the live process made.
+func (s *Seam) enter(op, name string, epoch uint64) (sim.FaultAction, error) {
 	s.mu.Lock()
+	if s.crashes != epoch {
+		s.mu.Unlock()
+		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+	}
 	s.count(op, name)
-	crashes := s.crashes
 	s.mu.Unlock()
 
 	s.hold(op, name)
 	a := s.consult(op, name)
 
 	s.mu.Lock()
-	if s.crashes != crashes {
+	if s.crashes != epoch {
 		s.mu.Unlock()
 		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
 	}
@@ -284,8 +326,10 @@ func (s *Seam) CallsFor(op, name string) int {
 	return s.callsFor[[2]string{op, name}]
 }
 
-func (s *Seam) Create(name string) (storage.File, error) {
-	if _, err := s.enter(OpCreate, name); err != nil {
+func (s *Seam) Create(name string) (storage.File, error) { return s.FS().Create(name) }
+
+func (s *Seam) createFrom(epoch uint64, name string) (storage.File, error) {
+	if _, err := s.enter(OpCreate, name, epoch); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -303,8 +347,10 @@ func (s *Seam) Create(name string) (storage.File, error) {
 	return s.track(f, n, name), nil
 }
 
-func (s *Seam) Open(name string) (storage.File, error) {
-	if _, err := s.enter(OpOpen, name); err != nil {
+func (s *Seam) Open(name string) (storage.File, error) { return s.FS().Open(name) }
+
+func (s *Seam) openFrom(epoch uint64, name string) (storage.File, error) {
+	if _, err := s.enter(OpOpen, name, epoch); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -328,8 +374,10 @@ func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
 	return sf
 }
 
-func (s *Seam) Rename(oldName, newName string) error {
-	if _, err := s.enter(OpRename, oldName); err != nil {
+func (s *Seam) Rename(oldName, newName string) error { return s.FS().Rename(oldName, newName) }
+
+func (s *Seam) renameFrom(epoch uint64, oldName, newName string) error {
+	if _, err := s.enter(OpRename, oldName, epoch); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -379,8 +427,10 @@ func (s *Seam) Rename(oldName, newName string) error {
 	return nil
 }
 
-func (s *Seam) Remove(name string) error {
-	if _, err := s.enter(OpRemove, name); err != nil {
+func (s *Seam) Remove(name string) error { return s.FS().Remove(name) }
+
+func (s *Seam) removeFrom(epoch uint64, name string) error {
+	if _, err := s.enter(OpRemove, name, epoch); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -409,8 +459,10 @@ func (s *Seam) toStash(n *node) error {
 	return nil
 }
 
-func (s *Seam) List() ([]string, error) {
-	if _, err := s.enter(OpList, ""); err != nil {
+func (s *Seam) List() ([]string, error) { return s.FS().List() }
+
+func (s *Seam) listFrom(epoch uint64) ([]string, error) {
+	if _, err := s.enter(OpList, "", epoch); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
@@ -426,8 +478,10 @@ func (s *Seam) List() ([]string, error) {
 	return names, nil
 }
 
-func (s *Seam) SyncDir() error {
-	a, err := s.enter(OpSyncDir, "")
+func (s *Seam) SyncDir() error { return s.FS().SyncDir() }
+
+func (s *Seam) syncDirFrom(epoch uint64) error {
+	a, err := s.enter(OpSyncDir, "", epoch)
 	if err != nil {
 		return err
 	}

@@ -11,9 +11,10 @@ import (
 	"time"
 )
 
-// TestClock is a clock a test drives. Time moves only when Advance is called:
-// Now and Elapsed stand still between calls, and a channel from After is
-// closed only by the Advance that reaches its deadline, never by real time.
+// TestClock is a clock a test drives. Time moves only when Advance or Jump is
+// called: Now and Elapsed stand still between calls, and a channel from After
+// is closed only by the Advance that reaches its deadline, never by real time
+// or by a Jump.
 // It satisfies the Clock every component declares (Now, Elapsed, After).
 // Its methods are safe for concurrent use.
 type TestClock struct {
@@ -39,7 +40,8 @@ func NewTestClock(start time.Time) *TestClock {
 	}
 }
 
-// Now returns the wall time: start plus everything Advance has moved the clock.
+// Now returns the wall time: start plus everything Advance and Jump have moved
+// it.
 func (c *TestClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -116,4 +118,14 @@ func (c *TestClock) SetRate(r float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rate = r
+}
+
+// Jump steps the wall clock by d, forward or back, as a host whose clock is
+// set by hand or by a time service would: Now moves by exactly d, unscaled by
+// the rate, while Elapsed stays where it is and no channel from After closes.
+// A component that times its waits by Now instead of Elapsed is caught by it.
+func (c *TestClock) Jump(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.wall = c.wall.Add(d)
 }
