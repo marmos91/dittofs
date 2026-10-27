@@ -267,3 +267,102 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 
 	wantDamagedOnly(t, g, loc.Segment)
 }
+
+// writeRec writes one record of size bytes at off of file i through share s
+// and does not sync it.
+func writeRec(t *testing.T, f *journalv2test.Fixture, s, i int, off int64, size int) rec {
+	t.Helper()
+
+	id := journalv2test.File(i)
+	p := pattern(fmtTag("u", s, i, off), size)
+	v := write(t, f.Share(s), id, off, p)
+
+	return rec{s, id, journalv2.Extent{Off: off, Len: int64(size)}, v, p}
+}
+
+// crashHeld simulates a power loss while the calls stopped at h are in
+// flight, and opens the journal again.
+//
+// decision: the seam's crash runs first, so nothing a held call does once
+// released reaches the directory; the hold is released second, so the calls
+// return; the fixture's crash runs last, because closing the dead journal
+// waits for its calls in flight. The fixture's crash repeats the seam's,
+// which then finds nothing pending to drop.
+func crashHeld(t *testing.T, f *journalv2test.Fixture, h *journalv2test.Hold) {
+	t.Helper()
+
+	if err := f.Seam.Crash(); err != nil {
+		t.Fatalf("crash: %v", err)
+	}
+	h.Release()
+	f.Crash()
+}
+
+// TestRFC28C_Rebuild checks that after a crash in the middle of a write the
+// rebuilt index serves every extent a returned Sync covered, holds nothing
+// past the last record that verifies, and seals the segment there.
+func TestRFC28C_Rebuild(t *testing.T) {
+	f := journalv2test.New(t)
+	const size = 32 << 10
+	var synced, unsynced []rec
+	for n := range 6 {
+		for s := range 2 {
+			r := writeRec(t, f, s, s, int64(n)*size, size)
+			if n < 3 {
+				synced = append(synced, r)
+			} else {
+				unsynced = append(unsynced, r)
+			}
+		}
+		if n == 2 {
+			syncFiles(t, f.Share(0), journalv2test.File(0))
+			syncFiles(t, f.Share(1), journalv2test.File(1))
+		}
+	}
+
+	// The last synced record of each segment is where the rebuilt index
+	// must end.
+	tail := map[journalv2.SegmentID]int64{}
+	for _, r := range synced {
+		loc := entryAt(t, f, r.id, r.extent.Off).Location
+		tail[loc.Segment] = max(tail[loc.Segment], loc.Offset)
+	}
+
+	held := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := f.Share(0).WriteAt(t.Context(), journalv2test.File(0), 6*size, pattern("mid", size), 0)
+		wrote <- err
+	}()
+	select {
+	case <-held.Reached():
+	case err := <-wrote:
+		stub(t, "WriteAt", err)
+		t.Fatalf("the write returned (%v) without reaching storage", err)
+	}
+	crashHeld(t, f, held)
+	<-wrote // a write the power cut took; what it returned means nothing
+
+	for _, r := range synced {
+		wantBytes(t, f.Share(r.share), r.id, r.extent.Off, r.p)
+	}
+	for _, r := range unsynced {
+		wantMissing(t, f.Share(r.share), r.id, r.extent)
+	}
+	if losses := f.J.Stats().Losses; len(losses) != 0 {
+		t.Fatalf("writes no Sync covered were reported as lost: %+v", losses)
+	}
+
+	for seg, end := range tail {
+		if !segmentInfo(t, f, seg).Sealed {
+			t.Fatalf("segment %d is not sealed after recovery cut it at its last verifying record", seg)
+		}
+		for id, entries := range f.J.Inspect().All() {
+			for _, e := range entries {
+				if e.Kind == journalv2.EntryHeld && e.Location.Segment == seg && e.Location.Offset > end {
+					t.Fatalf("file %v holds %+v past the last synced record of segment %d at %d", id, e, seg, end)
+				}
+			}
+		}
+	}
+}
