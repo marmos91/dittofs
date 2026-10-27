@@ -1085,10 +1085,10 @@ this implementation can identify, and open **MUST** fail on it. An
 implementation **MUST NOT** treat such a directory as an empty journal: that
 turns data it cannot read into data it silently no longer holds, and the first
 write then mixes its own segments into the unknown ones. A directory with neither
-holds no journal: `Open` fails on it, and only `Init` creates one there
-([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); any other files in it, such as `lost+found`, are left alone. `Init`'s
-refusal of a directory that holds a `format` file or a segment is
-[RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s.
+holds no journal: `Open` fails on it and changes nothing in it. `Init` creates
+a journal only in an empty directory and refuses one that holds any file, a
+`format` file, a segment or anything else such as `lost+found`, so a journal is
+never laid over files it did not write ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 **A journal that has gone is not replaced silently.** The journal is opened
 with the identity its caller has recorded for the directory (`expect`), as it
