@@ -10,15 +10,18 @@ package conformance
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
 // tryWrite writes p at off of file id through h, retrying a refusal for want
@@ -171,14 +174,41 @@ func flipAt(t *testing.T, f *journalv2test.Fixture, name string, off int64) {
 	}
 
 	b := make([]byte, 1)
-	if _, err := file.ReadAt(b, off); err != nil {
+	_, err = file.ReadAt(b, off)
+	if err = errors.Join(err, file.Close()); err != nil {
 		t.Fatalf("flip a byte of %s: read offset %d: %v", name, off, err)
 	}
 
-	_, err = file.WriteAt([]byte{b[0] ^ 0xff}, off)
-	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
-		t.Fatalf("flip a byte of %s: %v", name, err)
+	overwrite(t, f, name, off, []byte{b[0] ^ 0xff})
+}
+
+// overwrite writes p at off of the segment file name, through the seam, and
+// syncs the file, so the durable image holds the change: an edit from
+// outside, which the journal never sees made.
+func overwrite(t *testing.T, f *journalv2test.Fixture, name string, off int64, p []byte) {
+	t.Helper()
+
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		t.Fatalf("overwrite %d bytes of %s: %v", len(p), name, err)
 	}
+
+	_, err = file.WriteAt(p, off)
+	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
+		t.Fatalf("overwrite %d bytes of %s: %v", len(p), name, err)
+	}
+}
+
+// durable returns the durable image of the file name in the journal's
+// directory: what a crash would leave of it.
+func durable(t *testing.T, f *journalv2test.Fixture, name string) []byte {
+	t.Helper()
+
+	b, err := f.Seam.Durable(name)
+	if err != nil {
+		t.Fatalf("read the durable image of %s: %v", name, err)
+	}
+	return b
 }
 
 // liveBytes returns the bytes of the segment file name as a read of it sees
@@ -400,4 +430,77 @@ func wantNoSpace(t *testing.T, err error, limit journalv2.Limit, what string) {
 	if ns.Limit != limit {
 		t.Fatalf("%s was refused by the %v limit, want %v", what, ns.Limit, limit)
 	}
+}
+
+// indexSnapshot returns a copy of the placement index: every file's entries,
+// as Inspect reports them now.
+func indexSnapshot(t *testing.T, f *journalv2test.Fixture) map[journalv2.FileID][]journalv2.IndexEntry {
+	t.Helper()
+
+	index := map[journalv2.FileID][]journalv2.IndexEntry{}
+	for id, entries := range f.J.Inspect().All() {
+		if len(entries) != 0 {
+			index[id] = slices.Clone(entries)
+		}
+	}
+	return index
+}
+
+// wantSameIndex fails the test unless the placement index is want: the same
+// files, and for each the same entries in the same order, kind, extent,
+// version, tag, location and offloaded bit alike.
+func wantSameIndex(t *testing.T, f *journalv2test.Fixture, want map[journalv2.FileID][]journalv2.IndexEntry) {
+	t.Helper()
+
+	got := indexSnapshot(t, f)
+	for id, entries := range want {
+		if !slices.Equal(got[id], entries) {
+			t.Fatalf("file %v is indexed as\n%+v\nwant\n%+v", id, got[id], entries)
+		}
+	}
+	for id, entries := range got {
+		if _, ok := want[id]; !ok {
+			t.Fatalf("file %v is indexed as %+v, want nothing of it", id, entries)
+		}
+	}
+}
+
+// trailerOf reads the trailer that ends the segment bytes b, at the offsets
+// the format's tables give and checking no checksum: the footer's offset and
+// its entries. b must end in a trailer, with a seal marker just before the
+// footer it names.
+func trailerOf(t *testing.T, b []byte) (footerOffset int64, entries [][raw.CatalogEntrySize]byte) {
+	t.Helper()
+
+	if len(b) < raw.TrailerSize || string(b[len(b)-raw.TrailerSize:][:4]) != "DJT1" {
+		t.Fatalf("the segment's last %d bytes are not a trailer", raw.TrailerSize)
+	}
+	trailer := b[len(b)-raw.TrailerSize:]
+	footerOffset = int64(binary.LittleEndian.Uint64(trailer[8:16]))
+	count := int64(binary.LittleEndian.Uint32(trailer[16:20]))
+
+	end := footerOffset + count*raw.CatalogEntrySize
+	if footerOffset < raw.SegmentHeaderSize+raw.SealMarkerSize || end > int64(len(b))-raw.TrailerSize {
+		t.Fatalf("the trailer names %d entries at %d, outside the segment's %d bytes", count, footerOffset, len(b))
+	}
+	if string(b[footerOffset-raw.SealMarkerSize:][:4]) != "DJS1" {
+		t.Fatalf("the %d bytes before the footer at %d are not a seal marker", raw.SealMarkerSize, footerOffset)
+	}
+
+	for i := range count {
+		entries = append(entries, [raw.CatalogEntrySize]byte(b[footerOffset+i*raw.CatalogEntrySize:][:raw.CatalogEntrySize]))
+	}
+	return footerOffset, entries
+}
+
+// journalIdentity returns the journal's identity, read from its durable
+// format file: what every seeded checksum starts with.
+func journalIdentity(t *testing.T, f *journalv2test.Fixture) [16]byte {
+	t.Helper()
+
+	format, err := raw.ParseFormat(durable(t, f, "format"))
+	if err != nil {
+		t.Fatalf("parse the format file: %v", err)
+	}
+	return format.Identity
 }
