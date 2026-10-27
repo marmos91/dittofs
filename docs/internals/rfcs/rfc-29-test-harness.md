@@ -1644,7 +1644,9 @@ contain. A failure or skip whose message doesn't contain it is graded as if the 
 (`new`, or `unexpected_skip`), and its reason says what the entry expects. A test listed while it
 fails on a stub, with `message: "stub:"`, turns the cell red as soon as it fails on anything else,
 so a known failure can't hide a second one. An entry without `message:` matches on the name alone,
-and a pass is judged on the name alone either way.
+and a pass is judged on the name alone either way. The message is what the reader keeps: a Go test's
+whole output, its logs included and its subtests' left out; JUnit's `message` attribute; TRX's
+`ErrorInfo/Message`; TAP's failing lines. So pick text only the failure prints.
 
 **Scenarios.** Each one that fails today gets a known-failure entry naming its issue. The suite is
 then green, a regression shows as a new failure, and a fix shows as an unexpected pass.

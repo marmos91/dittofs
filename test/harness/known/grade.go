@@ -57,11 +57,11 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 					t.Grade = report.Quarantined
 				}
 				t.Reason, t.Issue = apply[e].Reason, apply[e].Issue
-			case e >= 0:
-				t.Reason = notCovered(apply[e])
 			case throughSubtests[i]:
 				t.Status, t.RawStatus, t.Grade = report.Skipped, report.Failed, report.Known
 				t.Reason = "only its subtests failed, and they are known failures"
+			case e >= 0:
+				t.Reason = notCovered(apply[e])
 			}
 		case report.Skipped:
 			switch e := entryFor(apply, t.Name, "skip"); {
