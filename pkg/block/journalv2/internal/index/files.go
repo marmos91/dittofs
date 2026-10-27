@@ -27,8 +27,7 @@ const fileShards = 64
 // than kept behind one lock. One lock, even a read-write one held only for
 // the map access, is a store-wide lock taken by every read of every file, and
 // its shared counter is a cache line every reader writes. 64 shards spread
-// that over 64 locks, each padded to 64 bytes so that, on a 64-byte cache
-// line, no two share one. Revisit if a profile shows shard locks contended
+// that over 64 locks spaced 64 bytes apart. Revisit if a profile shows shard locks contended
 // under many concurrent readers.
 //
 // decision: the file map and the file entry are unexported, like the rest of
@@ -106,7 +105,9 @@ func (fs *files) len() int {
 // view runs fn on id's entry holding the file's lock for reading, so it runs
 // beside other readers of the file and sees no write half made. It reports
 // false, and runs nothing, when the file has no entry: a read claims nothing,
-// so it never creates one. fn must not keep the entry past its return.
+// so it never creates one. It can find an empty entry an update has just
+// created and may yet drop, which fn sees holding nothing and owned by no
+// tag. fn must not keep the entry past its return.
 func (fs *files) view(id core.FileID, fn func(*file)) bool {
 	s := fs.shard(id)
 	for {
@@ -117,7 +118,7 @@ func (fs *files) view(id core.FileID, fn func(*file)) bool {
 			return false
 		}
 		f.mu.RLock()
-		// A gone entry still carries its tag, which the file no longer has.
+		// A gone entry is no longer the file's: look again.
 		if f.gone {
 			f.mu.RUnlock()
 			continue
@@ -191,6 +192,7 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 		return
 	}
 	f.gone = true
+	f.tagged, f.tag = false, 0
 	s.mu.Lock()
 	delete(s.m, id)
 	s.mu.Unlock()
@@ -198,10 +200,13 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 
 // claim checks the file's tag against tag and claims the file for it when it
 // has none. A file owned by another tag is refused, naming both, and keeps its
-// owner. The caller passes the FileID the refusal names. A claim lasts only
-// while the file has a record on disk or holds something, so it is made in
-// the same update that notes the claiming record, or under a lock that keeps
-// the file's appends serialised until that record is noted.
+// owner. The caller passes the FileID the refusal names.
+//
+// decision: a claim alone does not keep the entry; only a record on disk or
+// held content does. So a check made before a record's I/O, to refuse a call
+// that would append nothing, is advisory, and the claim that counts is the
+// one recorded makes when the record is noted, which a refusal there leaves
+// unnoted. Revisit if a call must hold a claim across I/O without a record.
 func (f *file) claim(tag core.ShareTag, id core.FileID) error {
 	if !f.tagged {
 		f.tagged, f.tag = true, tag
@@ -227,18 +232,24 @@ func (f *file) write(p Placed) {
 }
 
 // changeVersion returns the file's change version, and false when the file
-// has no change-version entry.
+// has no change version of its own.
 func (f *file) changeVersion() (core.Version, bool) {
 	return f.change, f.change != core.Version{}
 }
 
-// recorded notes that seg holds a record of the file. It is called for every
-// record appended for the file, and once a segment is noted again it changes
-// nothing.
-func (f *file) recorded(seg core.SegmentID) {
+// recorded notes that seg holds a record of the file, appended through tag.
+// It is called for every record appended for the file, and once a segment is
+// noted again it changes nothing. It claims the file for tag, so no record is
+// noted without the file's owner, and refuses a tag that does not own the
+// file, noting nothing.
+func (f *file) recorded(seg core.SegmentID, tag core.ShareTag, id core.FileID) error {
+	if err := f.claim(tag, id); err != nil {
+		return err
+	}
 	if !slices.Contains(f.segs, seg) {
 		f.segs = append(f.segs, seg)
 	}
+	return nil
 }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record

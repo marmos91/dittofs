@@ -28,10 +28,9 @@ func TestTagOutlivesChangeVersion(t *testing.T) {
 	var fs files
 	id, seg := fid(1), core.SegmentID(3)
 	err := fs.update(id, func(f *file) error {
-		if err := f.claim(7, id); err != nil {
+		if err := f.recorded(seg, 7, id); err != nil {
 			return err
 		}
-		f.recorded(seg)
 		f.held.fill(write(0, 8, rec(seg, 0), 5))
 		f.write(write(8, 8, rec(seg, 64), 6))
 		return nil
@@ -82,7 +81,7 @@ func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		f.recorded(2)
+		_ = f.recorded(2, 1, id)
 		f.write(write(0, 4, rec(2, 0), 9))
 		f.segmentGone(2)
 		return nil
@@ -107,9 +106,8 @@ func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		f.recorded(4)
-		f.recorded(4)
-		return f.claim(1, id)
+		_ = f.recorded(4, 1, id)
+		return f.recorded(4, 1, id)
 	})
 	_ = fs.update(id, func(f *file) error { f.segmentGone(4); return nil })
 	if present(&fs, id) {
@@ -133,6 +131,46 @@ func TestWriteNeverLowersChangeVersion(t *testing.T) {
 			t.Fatalf("change version = %v, want %v", v, ver(6))
 		}
 	})
+}
+
+// TestRecordedRefusesOtherTag: a record noted through a tag that does not
+// own the file is refused and leaves no segment noted, so a refused append
+// cannot keep the owner's entry alive.
+func TestRecordedRefusesOtherTag(t *testing.T) {
+	var fs files
+	id := fid(1)
+	_ = fs.update(id, func(f *file) error { return f.recorded(1, 4, id) })
+	err := fs.update(id, func(f *file) error { return f.recorded(2, 5, id) })
+	if !errors.Is(err, core.ErrOtherShare) {
+		t.Fatalf("recorded through another tag = %v, want ErrOtherShare", err)
+	}
+	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
+	if present(&fs, id) {
+		t.Fatal("a refused record kept the entry alive")
+	}
+}
+
+// TestPanicLeavesFileUsable: a panic inside an update, recovered by its
+// caller, must still release the file's lock, or every later call on the
+// file waits forever.
+func TestPanicLeavesFileUsable(t *testing.T) {
+	var fs files
+	id := fid(1)
+	func() {
+		defer func() { _ = recover() }()
+		_ = fs.update(id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); panic("fn") })
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fs.view(id, func(*file) {})
+		_ = fs.update(id, func(*file) error { return nil })
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a panic in an update left the file locked")
+	}
 }
 
 // TestReadClaimsNothing: a read appends nothing and claims nothing, so a view
@@ -160,8 +198,7 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		f.recorded(1)
-		return f.claim(4, id)
+		return f.recorded(1, 4, id)
 	})
 	err := fs.update(id, func(f *file) error { return f.claim(5, id) })
 	var other *core.OtherShareError
@@ -293,7 +330,7 @@ func TestConcurrentFiles(t *testing.T) {
 			for r := range rounds {
 				seg := core.SegmentID(w*rounds + r + 1)
 				_ = fs.update(churn, func(f *file) error {
-					f.recorded(seg)
+					_ = f.recorded(seg, 1, churn)
 					f.held.fill(write(off, 1, rec(seg, 0), 1))
 					return nil
 				})
