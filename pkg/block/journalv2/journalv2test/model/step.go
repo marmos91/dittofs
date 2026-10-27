@@ -69,8 +69,8 @@ func (o Op) String() string {
 // The shares and files a sequence reaches: two shares on one journal, and
 // files enough that each share has two of its own on the journal's streams.
 const (
-	Shares = 2
-	Files  = 4
+	numShares = 2
+	numFiles  = 4
 )
 
 // CrashKind is the storage loss of a crash step.
@@ -88,6 +88,9 @@ const (
 )
 
 func (k CrashKind) String() string {
+	if k > CrashReordered {
+		return fmt.Sprintf("crash(%d)", uint8(k))
+	}
 	return [...]string{"lost", "torn", "reordered"}[k]
 }
 
@@ -104,7 +107,7 @@ func (k CrashKind) String() string {
 type Step struct {
 	Op    Op
 	Share int // 0 or 1
-	File  int // 0 to Files-1
+	File  int // 0 to numFiles-1
 	Off   int64
 	Len   int64
 	Byte  byte  // the bytes written, and a write's mtime
@@ -116,9 +119,9 @@ func (s Step) valid() string {
 	switch {
 	case s.Op == 0 || s.Op >= opEnd:
 		return fmt.Sprintf("no operation %d", s.Op)
-	case s.Share < 0 || s.Share >= Shares:
+	case s.Share < 0 || s.Share >= numShares:
 		return fmt.Sprintf("no share %d", s.Share)
-	case s.File < 0 || s.File >= Files:
+	case s.File < 0 || s.File >= numFiles:
 		return fmt.Sprintf("no file %d", s.File)
 	case s.Off < 0 || s.Len < 0:
 		return "a negative offset or length"

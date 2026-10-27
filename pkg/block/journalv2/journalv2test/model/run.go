@@ -52,18 +52,18 @@ type Target interface {
 }
 
 // ReopenError is a journal that did not open again after a crash or a clean
-// close: recovery refused a state the model allows, so Run reports it as a
+// close: recovery refused a state the model allows, so the runner reports it as a
 // divergence, never as the target's own failure.
 type ReopenError struct{ Err error }
 
 func (e ReopenError) Error() string { return "the journal did not open again: " + e.Err.Error() }
 func (e ReopenError) Unwrap() error { return e.Err }
 
-// ShareTag returns the tag share i of a Target is attached under.
-func ShareTag(i int) journalv2.ShareTag { return journalv2.ShareTag(i + 1) }
+// tagOf returns the tag share i of a Target is attached under.
+func tagOf(i int) journalv2.ShareTag { return journalv2.ShareTag(i + 1) }
 
-// FileOf returns the ID of file i of a sequence.
-func FileOf(i int) journalv2.FileID {
+// fileOf returns the ID of file i of a sequence.
+func fileOf(i int) journalv2.FileID {
 	var id [16]byte
 	copy(id[:], fmt.Sprintf("model-file-%05d", i))
 	return journalv2.NewFileID(id)
@@ -97,31 +97,43 @@ type runner struct {
 
 	// asOf is, per file, the change versions of its last two reads, the last
 	// first: what a fill and a stale fill are made as of.
-	asOf [Files][2]journalv2.Version
+	asOf [numFiles][2]journalv2.Version
+	// skipped counts the crash and reopen steps that did nothing.
+	skipped int
+
 	// remote is, per file, what offloads of it reported.
-	remote [Files][]remoteExtent
+	remote [numFiles][]remoteExtent
 }
 
 // errStop ends an offload callback because the model found a divergence
 // inside it, which the runner reports instead.
 var errStop = errors.New("model: the step failed inside the offload callback")
 
-// Run runs steps against tgt, a journal holding nothing, and compares it with
+// runSteps runs steps against tgt, a journal holding nothing, and compares it with
 // a model after every step. It returns the number of steps that ran
 // and the first error: one wrapping ErrDiverged when the journal did what the
 // RFC does not allow, ErrMisuse when the sequence drove the model where it
-// cannot follow, a StubError when a journal call it made is not written yet,
+// cannot follow, a stubError when a journal call it made is not written yet,
 // or the target's own error.
 //
 // decision: a sequence injects no storage fault but its crashes, so a sync
 // never fails and no loss is ever recorded, and the model takes any Sync
 // error as a divergence. Failed sync windows and losses are checked by the
 // conformance tests that own them, each against its fault.
-func Run(ctx context.Context, tgt Target, steps []Step) (int, error) {
+func runSteps(ctx context.Context, tgt Target, steps []Step) (int, error) {
+	n, _, err := runCounting(ctx, tgt, steps)
+	return n, err
+}
+
+// runCounting is runSteps that also returns how many crash and reopen steps
+// did nothing, because a file's settled markers alone were more than a crash
+// may leave in doubt.
+func runCounting(ctx context.Context, tgt Target, steps []Step) (ran, skipped int, err error) {
 	r := &runner{ctx: ctx, tgt: tgt, m: New()}
+	defer func() { skipped = r.skipped }()
 	for i, s := range steps {
 		if why := s.valid(); why != "" {
-			return i, fmt.Errorf("model: step %d %+v: %s: %w", i, s, why, ErrMisuse)
+			return i, 0, fmt.Errorf("model: step %d %+v: %s: %w", i, s, why, ErrMisuse)
 		}
 		r.s = stubs{}
 		err := r.step(s)
@@ -129,13 +141,13 @@ func Run(ctx context.Context, tgt Target, steps []Step) (int, error) {
 			err = r.compare()
 		}
 		if err != nil && r.s.call != "" {
-			err = StubError{r.s.call}
+			err = stubError{r.s.call}
 		}
 		if err != nil {
-			return i, fmt.Errorf("step %d, %s: %w", i, fmtStep(s), err)
+			return i, 0, fmt.Errorf("step %d, %s: %w", i, fmtStep(s), err)
 		}
 	}
-	return len(steps), nil
+	return len(steps), 0, nil
 }
 
 // share returns the handle of share i, reporting its stubs to the step.
@@ -143,12 +155,12 @@ func (r *runner) share(i int) Handle { return stubHandle{r.tgt.Share(i), &r.s} }
 
 // fmtStep prints a step as its corpus line.
 func fmtStep(s Step) string {
-	return strings.TrimSuffix(string(FormatCorpus([]Step{s})), "\n")
+	return strings.TrimSuffix(string(formatCorpus([]Step{s})), "\n")
 }
 
 func (r *runner) compare() error {
-	for i := range Shares {
-		if err := r.m.Compare(r.ctx, ShareTag(i), stubView{r.tgt.View(i), &r.s}); err != nil {
+	for i := range numShares {
+		if err := r.m.Compare(r.ctx, tagOf(i), stubView{r.tgt.View(i), &r.s}); err != nil {
 			return err
 		}
 	}
@@ -166,7 +178,7 @@ func payload(s Step) []byte {
 
 func (r *runner) step(s Step) error {
 	ctx, m := r.ctx, r.m
-	h, tag, id := r.share(s.Share), ShareTag(s.Share), FileOf(s.File)
+	h, tag, id := r.share(s.Share), tagOf(s.Share), fileOf(s.File)
 
 	switch s.Op {
 	case OpWrite:
@@ -276,7 +288,7 @@ func (r *runner) readRefusal(tag journalv2.ShareTag, id journalv2.FileID, err er
 // reported goes to the remote tier.
 func (r *runner) offload(s Step, h Handle) error {
 	ctx, m := r.ctx, r.m
-	tag, id := ShareTag(s.Share), FileOf(s.File)
+	tag, id := tagOf(s.Share), fileOf(s.File)
 	through := m.maxSeen
 
 	var stepErr error
@@ -363,9 +375,10 @@ func notOffered(o journalv2.Offer) journalv2.Extent {
 // decision: when syncing is not enough, because a file's settled markers
 // alone are too many, the step does nothing rather than fail, so the sequence
 // stays valid for shrinking. Only a crash resolves settled markers, so from
-// then on every crash and reopen of the sequence is skipped. Settle steps are
-// rare and removals settle in batches, so few sequences reach it; draw fewer
-// removals per file if crash steps are found skipped often.
+// then on every crash and reopen of the sequence is skipped. Each skip is
+// counted, and Check logs the count, so a sequence that lost its crashes this
+// way shows it; draw fewer removals per file if that count is often above
+// zero.
 func (r *runner) restart(s Step) error {
 	ctx, m := r.ctx, r.m
 	for _, id := range sortedIDs(m) {
@@ -378,6 +391,7 @@ func (r *runner) restart(s Step) error {
 			return err
 		}
 		if uncertainAt(f) > crashSearchable {
+			r.skipped++
 			return nil
 		}
 	}

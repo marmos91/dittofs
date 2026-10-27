@@ -149,16 +149,21 @@ func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 
 func (x *fixtureTarget) Reopen() error { return reopened(x.tb.guard(x.f.Reopen)) }
 
+// journalFailures are the prefixes of the fixture's failures, during a crash
+// or a reopen, that are the journal's: closing it or a handle, opening it
+// again, and attaching its shares again.
+var journalFailures = []string{"fixture: close", "fixture: open:", "fixture: attach share"}
+
 // reopened returns err, the failure of a crash or a reopen, as a
-// model.ReopenError when it is the journal's Open that failed.
+// model.ReopenError when the journal failed to close or to open again.
 //
-// decision: the fixture's open failure is told apart by the prefix of the
-// message it reports it with, "fixture: open:", since the fixture reports
-// every failure through the test. Anything else, such as the seam failing to
-// crash, stays the target's own error. Give the fixture a crash that returns
-// its errors if a second caller needs to tell them apart.
+// decision: the journal's failures are told apart by the prefix of the
+// message the fixture reports them with, since it reports every failure
+// through the test. Anything else, such as the seam failing to crash, stays
+// the target's own error. Give the fixture a crash and a reopen that return
+// their errors if a second caller needs to tell them apart.
 func reopened(err error) error {
-	if err != nil && strings.HasPrefix(err.Error(), "fixture: open:") {
+	if err != nil && slices.ContainsFunc(journalFailures, func(p string) bool { return strings.HasPrefix(err.Error(), p) }) {
 		return model.ReopenError{Err: err}
 	}
 	return err

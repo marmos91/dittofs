@@ -118,8 +118,8 @@ type played struct {
 
 func newPlayed(t testing.TB) *played { return &played{t: t, j: New()} }
 
-func (p *played) Share(i int) Handle                  { return playedHandle{p, ShareTag(i)} }
-func (p *played) View(i int) View                     { return modelView{p.j, ShareTag(i)} }
+func (p *played) Share(i int) Handle                  { return playedHandle{p, tagOf(i)} }
+func (p *played) View(i int) View                     { return modelView{p.j, tagOf(i)} }
 func (p *played) Repack(context.Context) error        { return nil }
 func (p *played) Floor() journalv2.Version            { return p.floor }
 func (p *played) Reopen() error                       { return p.restart(0) }

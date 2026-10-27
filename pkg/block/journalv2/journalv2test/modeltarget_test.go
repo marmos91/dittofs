@@ -73,6 +73,12 @@ func TestAFailedOpenIsAReopenError(t *testing.T) {
 	if !errors.As(open, &re) || !errors.Is(open, errNoJournal) {
 		t.Fatalf("a failed open returned %v", open)
 	}
+	for _, msg := range []string{"fixture: attach share %d: %v", "fixture: close a handle: %d %v"} {
+		err := reopened(a.guard(func() { a.Fatalf(msg, 1, errNoJournal) }))
+		if !errors.As(err, &re) {
+			t.Fatalf("%q returned %v, want a reopen error", msg, err)
+		}
+	}
 	crash := reopened(a.guard(func() { a.Fatalf("fixture: crash: %v", errNoJournal) }))
 	if errors.As(crash, &re) || crash == nil {
 		t.Fatalf("a failed crash returned %v", crash)

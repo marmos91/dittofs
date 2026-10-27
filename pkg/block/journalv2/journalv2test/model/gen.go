@@ -27,8 +27,8 @@ func Generate(seed uint64, n int) []Step {
 	}
 	steps := make([]Step, n)
 	for i := range steps {
-		s := Step{File: r.IntN(Files), Byte: byte(r.Uint32()), Pick: byte(r.Uint32())}
-		s.Share = s.File % Shares
+		s := Step{File: r.IntN(numFiles), Byte: byte(r.Uint32()), Pick: byte(r.Uint32())}
+		s.Share = s.File % numShares
 		if r.IntN(10) == 0 {
 			s.Share = 1 - s.Share
 		}

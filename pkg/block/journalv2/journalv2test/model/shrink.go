@@ -10,26 +10,27 @@ import (
 	"time"
 )
 
-// shrinkAttempts and shrinkTime bound the sequences one Shrink runs, and the
+// shrinkAttempts and shrinkTime bound the sequences one shrink runs, and the
 // real time it spends running them.
 //
 // ponytail: shrinking removes ever smaller chunks of the sequence until no
 // removal keeps it failing, then halves each kept extent, running the whole
-// candidate from a fresh journal every time: O(n log n) runs for n steps,
-// each O(n) steps long. On a real journal one run can take seconds, more when
-// calls wait for spare segments, so the caps keep a failure from outlasting
-// the test's timeout; past either, the shrinker returns the shortest failing
-// sequence found so far. Shrink with a smarter search, such as dropping the
+// candidate from a fresh journal every time: O(n log n) runs for n steps
+// per pass, each O(n) steps long, and as many passes as keep removing steps,
+// so O(n²) runs at worst. On a real journal one run can take seconds, more
+// when calls wait for spare segments, so the caps keep a failure from
+// outlasting the test's timeout; past either, the shrinker returns the
+// shortest failing sequence found so far. Shrink with a smarter search, such as dropping the
 // steps after the failing one first, if a real journal's failures hit them.
 const (
 	shrinkAttempts = 2000
 	shrinkTime     = 5 * time.Minute
 )
 
-// Shrink returns a sequence that still fails, as short as the search finds:
+// shrink returns a sequence that still fails, as short as the search finds:
 // steps removed, then each kept step's extent shortened, while fails holds.
 // steps must fail.
-func Shrink(steps []Step, fails func([]Step) bool) []Step {
+func shrink(steps []Step, fails func([]Step) bool) []Step {
 	attempts, deadline := 0, time.Now().Add(shrinkTime)
 	try := func(c []Step) bool {
 		if attempts >= shrinkAttempts || time.Now().After(deadline) {
@@ -86,19 +87,23 @@ func (e openError) Unwrap() error { return e.err }
 func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, func(), error), notes ...string) {
 	tb.Helper()
 
+	skipped := 0
 	run := func(c []Step) error {
 		tgt, done, err := newTarget()
 		if err != nil {
 			return openError{err}
 		}
 		defer done()
-		_, err = Run(tb.Context(), tgt, c)
+		_, skipped, err = runCounting(tb.Context(), tgt, c)
 		return err
 	}
 
 	err := run(steps)
+	if skipped > 0 {
+		tb.Logf("%s: %d crash and reopen steps did nothing: a file held more settled markers than a crash may leave in doubt", name, skipped)
+	}
 	var open openError
-	var stub StubError
+	var stub stubError
 	switch {
 	case err == nil:
 		return
@@ -113,14 +118,14 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 		return
 	}
 
-	shrunk := Shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) })
+	shrunk := shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) })
 	again := run(shrunk)
 	if !errors.Is(again, ErrDiverged) {
 		// The failure did not come back on the shrunk sequence, so the
 		// journal does not fail the same way every time: keep it all.
 		shrunk, again = steps, err
 	}
-	text := FormatCorpus(shrunk, append(slices.Clone(notes), fmt.Sprintf("diverged: %v", again))...)
+	text := formatCorpus(shrunk, append(slices.Clone(notes), fmt.Sprintf("diverged: %v", again))...)
 	path := filepath.Join(tb.ArtifactDir(), name)
 	if werr := os.WriteFile(path, text, 0o644); werr != nil {
 		path = fmt.Sprintf("nowhere (%v)", werr)

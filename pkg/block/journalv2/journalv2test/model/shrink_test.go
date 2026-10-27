@@ -24,10 +24,10 @@ func TestShrinkKeepsOnlyWhatTheFailureNeeds(t *testing.T) {
 		i := slices.IndexFunc(c, func(s Step) bool { return s.Op == OpDelete && s.File == 2 })
 		return i >= 0 && slices.ContainsFunc(c[i:], func(s Step) bool { return s.Op == OpTruncate && s.File == 2 })
 	}
-	got := Shrink(steps, fails)
+	got := shrink(steps, fails)
 	want := []Step{{Op: OpDelete, File: 2}, {Op: OpTruncate, File: 2, Off: 9}}
 	if !slices.Equal(got, want) {
-		t.Fatalf("shrunk to\n%s\nwant\n%s", FormatCorpus(got), FormatCorpus(want))
+		t.Fatalf("shrunk to\n%s\nwant\n%s", formatCorpus(got), formatCorpus(want))
 	}
 }
 
@@ -36,9 +36,9 @@ func TestShrinkShortensExtents(t *testing.T) {
 	fails := func(c []Step) bool {
 		return slices.ContainsFunc(c, func(s Step) bool { return s.Op == OpWrite && s.Len >= 3 })
 	}
-	got := Shrink([]Step{{Op: OpWrite, Len: 1000}}, fails)
+	got := shrink([]Step{{Op: OpWrite, Len: 1000}}, fails)
 	if len(got) != 1 || got[0].Len >= 6 {
-		t.Fatalf("shrunk to\n%s\nwant one write shorter than 6 bytes", FormatCorpus(got))
+		t.Fatalf("shrunk to\n%s\nwant one write shorter than 6 bytes", formatCorpus(got))
 	}
 }
 
@@ -62,7 +62,7 @@ type flipView struct{ View }
 
 func (v flipView) ReadAt(ctx context.Context, id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
 	n, missing, held, asOf, err := v.View.ReadAt(ctx, id, off, p)
-	if id == FileOf(1) && len(held) > 0 {
+	if id == fileOf(1) && len(held) > 0 {
 		p[held[0].Extent.Off-off] ^= 1
 	}
 	return n, missing, held, asOf, err
@@ -87,15 +87,15 @@ func TestCheckShrinksAPlantedDivergence(t *testing.T) {
 
 	text, err := os.ReadFile(filepath.Join(rec.dir, "planted.txt"))
 	ok(t, err)
-	shrunk, err := ParseCorpus(text)
+	shrunk, err := parseCorpus(text)
 	ok(t, err)
 	if len(shrunk) > 3 {
 		t.Fatalf("shrunk to %d steps, want at most 3:\n%s", len(shrunk), text)
 	}
-	if _, err := Run(t.Context(), flipTarget{newPlayed(t)}, shrunk); !errors.Is(err, ErrDiverged) {
+	if _, err := runSteps(t.Context(), flipTarget{newPlayed(t)}, shrunk); !errors.Is(err, ErrDiverged) {
 		t.Fatalf("the corpus file replayed with %v, want a divergence", err)
 	}
-	if _, err := Run(t.Context(), newPlayed(t), shrunk); err != nil {
+	if _, err := runSteps(t.Context(), newPlayed(t), shrunk); err != nil {
 		t.Fatalf("the corpus file fails against an honest journal: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestCheckKeepsADivergenceShrinkingLoses(t *testing.T) {
 	}
 	text, err := os.ReadFile(filepath.Join(rec.dir, "once.txt"))
 	ok(t, err)
-	kept, err := ParseCorpus(text)
+	kept, err := parseCorpus(text)
 	ok(t, err)
 	if !slices.Equal(kept, steps) {
 		t.Fatalf("wrote %d steps, want the %d that failed:\n%s", len(kept), len(steps), text)

@@ -20,9 +20,9 @@ import (
 // and the failure it shows; blank lines are ignored. Fields are s (share), f
 // (file), off, len, b (byte) and pick, all decimal.
 
-// FormatCorpus returns steps as a corpus file, with each note as a comment
+// formatCorpus returns steps as a corpus file, with each note as a comment
 // line before them.
-func FormatCorpus(steps []Step, notes ...string) []byte {
+func formatCorpus(steps []Step, notes ...string) []byte {
 	var b bytes.Buffer
 	for _, n := range notes {
 		for line := range strings.SplitSeq(n, "\n") {
@@ -47,9 +47,9 @@ func FormatCorpus(steps []Step, notes ...string) []byte {
 	return b.Bytes()
 }
 
-// ParseCorpus reads a corpus file. It refuses any line it cannot read whole,
+// parseCorpus reads a corpus file. It refuses any line it cannot read whole,
 // rather than reading it as another step.
-func ParseCorpus(text []byte) ([]Step, error) {
+func parseCorpus(text []byte) ([]Step, error) {
 	var steps []Step
 	sc := bufio.NewScanner(bytes.NewReader(text))
 	for n := 1; sc.Scan(); n++ {
@@ -138,7 +138,7 @@ func ReadCorpus(dir string) ([]Sequence, error) {
 		if err != nil {
 			return nil, err
 		}
-		steps, err := ParseCorpus(text)
+		steps, err := parseCorpus(text)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}

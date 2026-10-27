@@ -37,7 +37,7 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 				k, _ := s.crash()
 				crashes[k] = true
 			}
-			otherShare = otherShare || s.Share != s.File%Shares
+			otherShare = otherShare || s.Share != s.File%numShares
 			farOut = farOut || s.Op == OpWrite && s.Off > 1<<62
 		}
 	}
@@ -51,7 +51,7 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 			t.Errorf("never drew a %s crash", k)
 		}
 	}
-	if len(shares) != Shares || len(files) != Files || !otherShare || !farOut {
+	if len(shares) != numShares || len(files) != numFiles || !otherShare || !farOut {
 		t.Errorf("shares %v, files %v, through another share %t, far out %t", shares, files, otherShare, farOut)
 	}
 }

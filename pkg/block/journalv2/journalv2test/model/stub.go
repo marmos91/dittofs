@@ -9,12 +9,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 )
 
-// StubError is a journal call answered with ErrNotImplemented: a call not
+// stubError is a journal call answered with ErrNotImplemented: a call not
 // written yet, which says nothing about whether the journal agrees with the
 // model, so it is never shrunk.
-type StubError struct{ Call string }
+type stubError struct{ Call string }
 
-func (e StubError) Error() string { return "stub: " + e.Call }
+func (e stubError) Error() string { return "stub: " + e.Call }
 
 // stubs records the first journal call of a step that was a stub. Every call
 // the runner makes, Compare's reads included, goes through it, so the step's

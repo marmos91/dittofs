@@ -27,8 +27,8 @@ func TestCorpusRoundTrips(t *testing.T) {
 		{Op: OpCrash, Pick: 2, Off: 1 << 62},
 		{Op: OpReopen},
 	}
-	text := FormatCorpus(steps, "seed 7", "diverged at step 3")
-	got, err := ParseCorpus(text)
+	text := formatCorpus(steps, "seed 7", "diverged at step 3")
+	got, err := parseCorpus(text)
 	ok(t, err)
 	if !slices.Equal(got, steps) {
 		t.Fatalf("read back\n%s\nas %v, want %v", text, got, steps)
@@ -53,7 +53,7 @@ func TestCorpusRefusesWhatItCannotRead(t *testing.T) {
 		"write off=9223372036854775807 len=1", // past the largest offset
 		"write off",                           // no value
 	} {
-		if _, err := ParseCorpus([]byte(line + "\n")); err == nil {
+		if _, err := parseCorpus([]byte(line + "\n")); err == nil {
 			t.Errorf("%q was accepted", line)
 		}
 	}
@@ -97,7 +97,7 @@ func TestCommittedCorpusFollowsAnHonestJournal(t *testing.T) {
 		t.Fatalf("no sequence in %s", committedCorpus)
 	}
 	for _, seq := range corpus {
-		if _, err := Run(t.Context(), newPlayed(t), seq.Steps); err != nil {
+		if _, err := runSteps(t.Context(), newPlayed(t), seq.Steps); err != nil {
 			t.Errorf("%s: %v", seq.Name, err)
 		}
 	}
