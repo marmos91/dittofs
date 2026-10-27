@@ -554,8 +554,8 @@ either serving or as it was built.
    ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)):
    a call that needs, or conflicts with, state that may still be reclaimed
    answers `ErrGrace` until the shard's grace ends. Arm the lease, recall and
-   lock-waiter timers, and schedule the recovery of pending releases for the
-   end of grace ([§5.3](#5.3%20Open%20and%20close)). `Start` does not wait for
+   lock-waiter timers, and run the recovery of pending releases when the table
+   raises `Sink.GraceEnded` for the shard ([§5.3](#5.3%20Open%20and%20close)). `Start` does not wait for
    grace to end.
 2. **Shares.** Read the share list, build the pseudo-filesystem from it
    ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), start following the share
@@ -611,7 +611,7 @@ holds.
 | `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
 | `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Caller.Client`) — and carries no identity: the call's `id` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
-| `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
+| `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
 | `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
@@ -1131,7 +1131,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
-| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename`; `Opens.Renamed` after a rename | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
 | `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
@@ -1314,7 +1314,7 @@ default: // anonymous, delegated or no open: the caller afresh
 	err = meta.Files.Authorize(ctx, caller, h, parent, want) // parent: the directory h was resolved through, or zero
 }
 // the chokepoint has emitted the access event the audit policy selects (§3.3)
-err = open.CheckIO(ctx, ref, r, write)  // or CheckChange: deny modes, locks, grants — RFC 14 §7
+err = open.CheckIO(ctx, keyOf(f), ref, r, write)  // or CheckChange: deny modes, locks, grants — RFC 14 §7
 ```
 
 - **The share grant is checked on every call**, not only at `Root`. The
@@ -1607,7 +1607,7 @@ func (s *Server) writeOnce(ctx context.Context, c Caller, ref OpenRef, f File, o
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	if err = s.checks.CheckIO(ctx, c.Who(), ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
+	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, growth(f, off, src)) // step 4: §5.6
@@ -1772,8 +1772,8 @@ or reports through `Sink.Closed` a close the table made itself — a timeout,
 grace's end, an expiry or revoke ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
 when a release commits that wrote the pending releases of its file's named
 streams ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)),
-for each of those streams; and in recovery, for every pending release, once the
-shard's grace has ended (§2.5), read with `PendingReleases(share, shard)`, never by a
+for each of those streams; and in recovery, for every pending release, when the
+table raises `Sink.GraceEnded(share, shard)` (§2.5), read with `PendingReleases(share, shard)`, never by a
 scan of the share's files. The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
@@ -1819,7 +1819,8 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 	}
 	// Opens of others: a deny-delete refuses after handle caching is broken (§5.3);
 	// a grant on the file is recalled (ErrDelay); an SMB delete of a directory with
-	// an open child is ErrShareViolation (RFC 14 §9.5).
+	// an open child is ErrShareViolation (RFC 14 §9.5). dir.Open, when set, is an open
+	// of f, the one the delete came through (§3.0's Target), never the directory's.
 	if err := s.checks.CheckChange(ctx, c.Who(), keyOf(f), dir.Open, ChangeRemove); err != nil {
 		return UnlinkResult{}, false, err
 	}
@@ -1890,6 +1891,11 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 			r.Moved = &moved
 		}
 	}, fileOf(from.H), fileOf(to), src.ID, dst.ID)
+	if err == nil { // still under the admission locks: the opens made through the old entry follow it (RFC 14 §9.4)
+		if rerr := s.opens.Renamed(ctx, keyOf(src), fileOf(from.H), fromName, fileOf(to), toName); rerr != nil {
+			s.log.Warn("open names not moved", "err", rerr) // the rename committed; a stale record is safe (RFC 14 §9.4)
+		}
+	}
 	if err == nil && orphan.File != 0 {
 		err = s.engine.Delete(ctx, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
 	}
