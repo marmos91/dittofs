@@ -619,7 +619,14 @@ func (t *Table) keepPending(ctx context.Context, e *entry, o *open, who Caller, 
 // its Timeout closes. Each record is judged under its file's admission lock and
 // step, so an unlink writing the records of the opens held, or a reclaim
 // writing its own, never loses one; a failed pass is run again at the next
-// sweep.
+// sweep. Once a shard's pass succeeds it raises GraceEnded for the shard,
+// after the pass's Closed events; a shard enters the pass once per grace.
+//
+// ponytail: grace's end is found by the sweep, so a timed end is acted on up
+// to a sweep late, and an early end, when the last named client finishes, at
+// the next sweep rather than in that client's call. Arm the end on a deadline
+// and take this step in the finishing call if a shard's pending releases are
+// seen waiting on the sweep.
 //
 // ponytail: a record of a named stream is judged under the stream's
 // admission lock, not its base file's, since the record names only the
@@ -644,7 +651,9 @@ func (t *Table) closeUnreclaimed(ctx context.Context, sink Sink) {
 			t.cmu.Lock()
 			sh.unclosed = true
 			t.cmu.Unlock()
+			continue
 		}
+		sink.GraceEnded(sh.share, s)
 	}
 }
 

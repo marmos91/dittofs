@@ -649,10 +649,20 @@ func TestGraceEndClosesUnreclaimedRecords(t *testing.T) {
 	if g.ordered(lost) {
 		t.Error("the close in grace took a file's admission lock")
 	}
+	for _, e := range g.sink.graces {
+		if e.s == lost.Shard {
+			t.Errorf("GraceEnded for shard %d in its grace", e.s)
+		}
+	}
 	g.pass(t, leasePeriod, a.Client)
 	st.fail.Store(true)
 	g.closeUnreclaimed(ctx, g.sink) // refused: the next sweep runs it again
 	st.fail.Store(false)
+	for _, e := range g.sink.graces {
+		if e.s == lost.Shard {
+			t.Errorf("GraceEnded for shard %d after a refused close", e.s)
+		}
+	}
 	g.sweep(ctx)
 	g.Stop() // waits for the steps the sweep started
 	if !g.ordered(lost) {
@@ -669,6 +679,27 @@ func TestGraceEndClosesUnreclaimedRecords(t *testing.T) {
 	for _, c := range g.sink.closed {
 		if c.r.Orphan {
 			orphans[c.f]++
+		}
+	}
+	// Each shard's grace ends once, after the Closed of every file its close left.
+	last := map[ShardID]int{}
+	for i, c := range g.sink.closed {
+		for _, file := range []FileKey{lost, left} {
+			if c.r.Orphan && c.f == file.ID {
+				last[file.Shard] = i + 1
+			}
+		}
+	}
+	ends := map[ShardID]int{}
+	for _, e := range g.sink.graces {
+		ends[e.s]++
+		if e.share != fs.Share.ID || e.closed < last[e.s] {
+			t.Errorf("GraceEnded %+v: want share %v, after the %d Closed its close raised", e, fs.Share.ID, last[e.s])
+		}
+	}
+	for _, s := range testShards {
+		if ends[s] != 1 {
+			t.Errorf("shard %d's grace ended %d times, want once", s, ends[s])
 		}
 	}
 	for name, file := range map[string]FileKey{"lost": lost, "left": left} {

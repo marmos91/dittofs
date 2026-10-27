@@ -32,6 +32,11 @@ type Sink interface {
 	// Revoked: state ended without the client asking; the service tells the
 	// client and answers what it holds pending on it.
 	Revoked(r Revocation)
+	// GraceEnded: shard s of share ended its grace, and every durable open
+	// record nobody reclaimed is closed, each file it left raised Closed
+	// first; the service runs the shard's pending releases. Raised once per
+	// grace, never dropped.
+	GraceEnded(share entity.ShareID, s ShardID)
 }
 
 // Order takes a file's admission lock and returns its unlock. The table takes
