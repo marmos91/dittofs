@@ -105,7 +105,9 @@ func (t *btree[V]) floor(k uint64) (key uint64, v V, ok bool) {
 }
 
 // ascend calls fn on every key at or above from, in ascending order, until fn
-// returns false.
+// returns false. fn may replace a visited key's value with set, which never
+// changes the tree's shape, but must not insert or delete: either moves keys
+// between nodes under the walk, and the walk then skips keys without failing.
 func (t *btree[V]) ascend(from uint64, fn func(k uint64, v V) bool) {
 	if t.root == nil {
 		return
