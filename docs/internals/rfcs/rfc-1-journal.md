@@ -1167,7 +1167,7 @@ walk can produce is omitted.
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
-| `LossGeneration` | value | raised on every loss of content not yet offloaded and every failed sync window; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
+| `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
 
@@ -1255,10 +1255,15 @@ report the same loss again.
 
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
-event whose extent's offloaded bit was unset, and on every failed sync window
-([§5.3](#5.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
-a loss of offloaded content — corrupt or stale content that the remote tier
-holds and the next read fetches — because the engine folds the generation into
+event of a corrupt extent whose offloaded bit was unset, and on every failed
+sync window ([§5.3](#5.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
+a loss of content the remote tier holds and the next read fetches: a corrupt
+extent whose offloaded bit was set, or a stale one whatever its bit. A stale
+extent is older than content the remote tier holds ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so dropping
+it loses nothing even where its bit was unset, as it is when an old segment
+comes back from outside. Its event still reports the bit as it was: the event
+states the extent's state, and whether a loss raises the generation is decided
+by its reason. The generation **MUST NOT** rise for these because the engine folds the generation into
 its write verifier ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), and a change makes every client of every
 share on the journal resend its unstable writes. It is raised before the event
 is published and before any `Sync` the failure fails returns. A failed sync
@@ -2092,7 +2097,13 @@ that back the headroom and the repack reserve are not in that pool: a content
 roll and a `Reserve` never take one, and one that finds only those is refused
 `spare`. A pool that
 cannot be refilled because the device is full is not that refusal: the roll is
-refused with `ENOSPC`, a full device ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)).
+refused with `ENOSPC`, a full device ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). A refusal names the spare pool only
+when no other limit would refuse the write: a write that also passes the
+share's limit, the journal's maximum, the index's bound, the headroom's
+threshold or the version limit is refused naming that limit. The two ask
+opposite things of the engine — `spare` clears on its own and is retried,
+every other limit clears only once the engine reclaims space — so a full
+journal refused as `spare` would be retried while nothing is reclaimed.
 
 **The headroom is finite, and what frees nothing stops first.** Once the
 headroom falls below half its size, three classes of record are treated
