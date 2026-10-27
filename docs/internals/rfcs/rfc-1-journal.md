@@ -2098,7 +2098,7 @@ roll and a `Reserve` never take one, and one that finds only those is refused
 `spare`. A pool that
 cannot be refilled because the device is full is not that refusal: the roll is
 refused with `ENOSPC`, a full device ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). A refusal names the spare pool only
-when no other limit would refuse the write: a write that also passes the
+when no other limit would refuse the write: a write that would also exceed the
 share's limit, the journal's maximum, the index's bound, the headroom's
 threshold or the version limit is refused naming that limit. The two ask
 opposite things of the engine — `spare` clears on its own and is retried,
