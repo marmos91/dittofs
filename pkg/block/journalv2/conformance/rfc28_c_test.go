@@ -789,3 +789,65 @@ func TestRFC28C_UnknownVersion(t *testing.T) {
 	f.Reopen()
 	wantNoFooter(t, f, s)
 }
+
+// TestRFC28C_ScanResynchronises checks that a scan meeting a record whose
+// header does not verify refuses that record alone and resumes at the next
+// header that does, counting the resynchronisation once; and that a copy of
+// a segment held inside a record's payload hands the scan no record, because
+// a header verifies only in the segment it names.
+func TestRFC28C_ScanResynchronises(t *testing.T) {
+	f := journalv2test.New(t)
+	s := sealedSetup(t, f)
+	mid := s.recs[len(s.recs)/2]
+	loc := entryAt(t, f, mid.id, mid.extent.Off).Location
+	before := f.J.Stats()
+
+	// The trailer first, so the segment has no catalog; then the length
+	// field of a record in the middle, so the scan cannot step over it.
+	flipAt(t, f, s.name, int64(len(durable(t, f, s.name)))-raw.TrailerSize)
+	flipAt(t, f, s.name, loc.Offset+raw.RecordLengthOffset)
+	f.Reopen()
+
+	wantScanned(t, f, s.recovery, 1)
+	ev := lastLoss(t, f, before)
+	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
+		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
+	}
+	wantMissing(t, f.Share(0), mid.id, mid.extent)
+	for _, r := range s.recs {
+		if r.extent != mid.extent {
+			wantBytes(t, f.Share(0), r.id, r.extent.Off, r.p)
+		}
+	}
+	if got := f.J.Stats().Counters.ScanResyncs; got != 1 {
+		t.Fatalf("ScanResyncs = %d after one bad header with records behind it, want 1", got)
+	}
+	wantBytes(t, f.Share(1), s.other.id, 0, s.other.p)
+
+	// The first 128 KiB of the sealed segment, its header and first records
+	// among them, as file 1's content on the other stream; the crash makes
+	// the segment holding that record one the open scans.
+	g := journalv2test.NewUnwatched(t)
+	s = sealedSetup(t, g)
+	copied := durable(t, g, s.name)[:128<<10]
+	const off = 1 << 20
+	write(t, g.Share(1), s.other.id, off, copied)
+	syncFiles(t, g.Share(1), s.other.id)
+	want := indexSnapshot(t, g)[journalv2test.File(0)]
+	g.Crash()
+
+	got, err := g.J.Inspect().File(journalv2test.File(0))
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("inspect file 0: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("file 0 is indexed as\n%+v\nafter a scan over a copy of its segment, want\n%+v", got, want)
+	}
+	wantBytes(t, g.Share(1), s.other.id, off, copied)
+
+	st := g.J.Stats()
+	if st.Counters.ScanResyncs != 0 || len(st.Losses) != 0 || st.DamagedSegments != 0 {
+		t.Fatalf("the copied headers were taken for records: ScanResyncs = %d, losses %+v, DamagedSegments = %d", st.Counters.ScanResyncs, st.Losses, st.DamagedSegments)
+	}
+}
