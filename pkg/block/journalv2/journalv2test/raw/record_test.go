@@ -131,4 +131,7 @@ func TestRecordOffsets(t *testing.T) {
 	if RecordLengthOffset != 40 {
 		t.Errorf("RecordLengthOffset is %d, want 40", RecordLengthOffset)
 	}
+	if WriteMTimeOffset != 96 {
+		t.Errorf("WriteMTimeOffset is %d, want 96", WriteMTimeOffset)
+	}
 }

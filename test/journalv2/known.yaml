@@ -307,3 +307,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that resynchronises past a bad record, corrupt reads and the loss ring.'
   issue: '#3378'
+- test: TestRFC28A_WriteCarriesItsMtime
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Since with the modification time, recovery and corrupt reads.'
+  issue: '#3378'

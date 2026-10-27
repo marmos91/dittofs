@@ -9,6 +9,11 @@ const RecordHeaderSize = 96
 // for a check that damages that field alone.
 const RecordLengthOffset = 40
 
+// WriteMTimeOffset is the offset of a write record's modification time from
+// the record's first byte: the 8 bytes just past the header, before the
+// payload.
+const WriteMTimeOffset = RecordHeaderSize
+
 // Record is one record: its 96-byte header, its body and the zero padding
 // that brings it to a multiple of 8 bytes. Both checksums are seeded with
 // Identity, which is not written.

@@ -490,3 +490,82 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 	wantBytes(t, g.Share(0), x.id, 0, x.p)
 	wantBytes(t, g.Share(1), other.id, 0, other.p)
 }
+
+// wantMtime fails the test unless Since yields r's extent as a write
+// carrying modification time mtime.
+func wantMtime(t *testing.T, h *journalv2.Handle, r rec, mtime int64) {
+	t.Helper()
+
+	for c, err := range h.Since(t.Context(), r.id, journalv2.Version{}) {
+		stub(t, "Since", err)
+		if err != nil {
+			t.Fatalf("Since: %v", err)
+		}
+		if c.Kind == journalv2.ChangeWrite && c.Extent == r.extent {
+			if c.Mtime != mtime {
+				t.Fatalf("Since yields %+v with modification time %d, want %d", r.extent, c.Mtime, mtime)
+			}
+			return
+		}
+	}
+	t.Fatalf("Since yields no write for extent %+v", r.extent)
+}
+
+// wantLost fails the test unless Stats holds a loss event for r's extent,
+// dropped as corrupt.
+func wantLost(t *testing.T, f *journalv2test.Fixture, r rec) {
+	t.Helper()
+
+	losses := f.J.Stats().Losses
+	for _, ev := range losses {
+		if ev.File == r.id && ev.Extent == r.extent && ev.Reason == journalv2.LossCorrupt {
+			return
+		}
+	}
+	t.Fatalf("no loss event names extent %+v of file %v as corrupt: %+v", r.extent, r.id, losses)
+}
+
+// TestRFC28A_WriteCarriesItsMtime checks that a write's modification time
+// comes back from its record after a crash, the time the client saw for A
+// and the zero of a suspended time for B, and that the time is under the
+// payload checksum: with one byte of it flipped, the record no longer
+// serves.
+func TestRFC28A_WriteCarriesItsMtime(t *testing.T) {
+	f := journalv2test.New(t)
+	const t1 = int64(1_767_225_600_123_456_789) // 2026-01-01T00:00:00.123456789Z
+	const size = 64 << 10
+	a := rec{0, journalv2test.File(0), journalv2.Extent{Off: 0, Len: size}, journalv2.Version{}, pattern(fmtTag("t", 0, 0, 0), size)}
+	v, err := tryWriteMtime(t, f.Share(0), a.id, 0, a.p, t1)
+	stub(t, "WriteAt", err)
+	if err != nil {
+		t.Fatalf("write A with a modification time: %v", err)
+	}
+	a.version = v
+	syncFiles(t, f.Share(0), a.id)
+	b := writeSynced(t, f, 1, 1, 0, size) // its time is zero
+	f.Crash()
+
+	wantMtime(t, f.Share(0), a, t1)
+	wantMtime(t, f.Share(1), b, 0)
+
+	for _, r := range []rec{a, b} {
+		loc := entryAt(t, f, r.id, r.extent.Off).Location
+		flipAt(t, f, segmentName(loc.Segment), loc.Offset+raw.WriteMTimeOffset)
+	}
+	f.Reopen()
+
+	for _, r := range []rec{a, b} {
+		wantMissing(t, f.Share(r.share), r.id, r.extent)
+		wantLost(t, f, r)
+	}
+}
+
+// tryWriteMtime is tryWrite with the write's modification time.
+func tryWriteMtime(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, p []byte, mtime int64) (journalv2.Version, error) {
+	var v journalv2.Version
+	err := retrySpare(func() (err error) {
+		v, err = h.WriteAt(t.Context(), id, off, p, mtime)
+		return err
+	})
+	return v, err
+}
