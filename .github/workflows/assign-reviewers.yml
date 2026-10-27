@@ -1,0 +1,32 @@
+# Assign Reviewers: request two random maintainers on every new PR, never its
+# author, so the two-approval ruleset always has someone asked.
+#
+# pull_request_target runs the copy of this file on the PR's base branch, so it
+# must live on every branch listed below. It is safe for fork PRs because it
+# never checks out or runs the PR's code.
+
+name: Assign Reviewers
+
+on:
+  pull_request_target:
+    types: [opened]
+    branches: [develop, feat/storage-v2]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+        # ponytail: the maintainer list is hardcoded because the workflow token
+        # cannot list collaborators; edit it when the team changes.
+        run: |
+          picks=$(printf '%s\n' marmos91 rif simonebaracchi llucian-iws didimelli viquitorreis \
+            | grep -vx "$AUTHOR" | shuf -n 2 | paste -sd, -)
+          gh pr edit "$PR" --repo "$REPO" --add-reviewer "$picks"
