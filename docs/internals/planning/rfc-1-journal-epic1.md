@@ -192,8 +192,8 @@ type Clock interface {
 Faults are injected by the storage seam implementation, which epic 2 writes in
 `journalv2test` and which consults the set's fault schedule. The journal only ever sees
 `storage.FS`. The fault interface lands in `pkg/sim` with epic 2's seam, its first
-consumer, and RFC 8 lists `FaultAction`'s kinds without declaring the type, so declaring it
-is epic 2's.
+consumer. `FaultAction` is node-wide, with `pkg/sim` as its one home (RFC 8 §2.1, epic 2
+D5).
 
 **D5. Dependencies are injected through variadic options appended to RFC 1's
 signatures.**

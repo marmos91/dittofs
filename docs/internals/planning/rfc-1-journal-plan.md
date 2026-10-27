@@ -108,7 +108,9 @@ Epic 2 makes "done" measurable before any implementation exists, following
   standard-library types (`Now`, `Elapsed`, `After`). The journal declares the subset it
   uses, so the production clock and the test clock satisfy it as they are, with no
   adapter (epic 1, D3). Epic 2 implements `TestClock` in `pkg/sim`, and the seeded fault
-  schedule there too: `Fault` lands with the crash seam, its first consumer. The
+  schedule there too: `Fault` lands with the crash seam, its first consumer. `pkg/sim` is
+  node-wide (RFC 8 §2.1) and imports nothing of the journal, so other components, open
+  state first, use the same `TestClock` and `Fault` (epic 2, D5). The
   production clock (`pkg/clock`: `Clock` and `System`) lands with its first caller, the
   stage-3 composition root (epic 11).
 - **Crash-simulating storage seam.** It wraps a **real** filesystem and records every
@@ -121,17 +123,20 @@ Epic 2 makes "done" measurable before any implementation exists, following
   extent's offloaded bit, removal markers, and what `Since` yields. The model-based test
   and the e2e assertions compare against it after every step. A failing seed is kept and
   replayed, never retried into green.
-- **Known-failure mechanism for Go tests.** Today one exists only for shell suites
-  (`test/common/known-failures.sh`). Epic 2 adds a Go helper that reads the same Markdown
-  table format, so one list can serve both the Go and shell runners. A listed test that
-  fails is reported as expected. **A listed test that passes fails the run**
+- **Known failures, graded by `dt`.** RFC 29 §4.7's `known.yaml`, which `dt` already
+  reads and grades, so epic 2 writes no reader of its own (epic 2, D1). A listed test that
+  fails is graded as expected. **A listed test that passes fails the run**
   ([RFC index, harness requirement 6](../rfcs/rfc-index.md)), so a test that turns green
-  forces its entry out of the list.
+  forces its entry out of the list. An entry also names the failure it expects, once
+  `dt` can match one ([#3391](https://github.com/marmos91/dittofs/issues/3391), an
+  optional `message:` in RFC 29 §4.7), so a test failing for a new reason is graded new
+  rather than known (epic 2, D4).
 - **Profiling harness.** A helper wrapped around each test and benchmark that snapshots
   goroutines, open file descriptors and heap before and after. It fails on leaked
   goroutines or descriptors and on heap growth past a threshold, and writes pprof profiles
-  as artefacts when it fails. It also provides an allocations-per-operation assertion for
-  the RFC 1 §9.7 counted checks. The allocation and heap assertions are skipped under
+  as artefacts when it fails. The allocations-per-operation assertion of the RFC 1 §9.7
+  counted checks lands with its first hot path, in epics 4 and 8, since a threshold cannot
+  be set against a stub. The allocation and heap assertions are skipped under
   `-race`, which changes both, and run in a separate non-race job. The heap threshold is
   calibrated per test with slack, not one global number, so that it does not flake.
 
@@ -145,27 +150,34 @@ Epic 2 makes "done" measurable before any implementation exists, following
   platform checks of RFC 28 Appendix A, the run of storage-agnostic tests on the
   operating system's storage, and any test that builds on-disk bytes with the encoders
   (§5, epic 3). Epic 2's format checks write their bytes by hand from RFC 28 §2.
-- **System e2e, scaffolding only.** The system tests run a real `dfs` process on v2, with
-  kernel NFS and SMB clients, under `test/e2e`. They cover what only the composed system
-  shows: one journal per disk serving several shares, restart, device loss, a full disk,
-  and the start check that refuses v1 state. No `dfs` can run v2 before epic 11 wires it, and there is no
-  configuration key to select it, so a system test written now could only fail at start,
-  never on its own assertion. Epic 2 therefore builds the runner, the fixtures and the
-  known-failure wiring, and keeps the system scenarios as a catalogue. **Epic 10 writes
-  the start-check refusals**, which need no engine, and **epic 11 writes the rest**, listed
-  as known failures. Epic 12 turns them green.
+- **System tests, as a catalogue only.** They cover what only the composed system shows:
+  one journal per disk serving several shares, restart, device loss, a full disk, and the
+  start check that refuses v1 state. No `dfs` can run v2 before epic 11 wires it, and there
+  is no configuration key to select it, so a system test written now could only fail at
+  start, never on its own assertion. Epic 2 therefore writes no system scaffolding: the
+  existing `e2e` suite and its framework already start a real `dfs` and mount NFS and SMB,
+  and the fixtures specific to the journal land with the first test that uses them (epic
+  2, D11). Epic 2 keeps the catalogue, split by the tier each row runs at: the filesystem
+  service's integration tier (`vfs.Server` over the real engine, no kernel client) or a
+  real `dfs` with kernel clients (epic 2, §7). **Epic 10 writes the start-check
+  refusals**, which need no engine, and **epic 11 writes the rest**, listed as known
+  failures. Epic 12 turns them green.
 
-The scenario catalogue the suite must cover is in §5, epic 2.
+The scenario catalogue the suite must cover is in §5, epic 2, and in full in the epic's
+file.
 
 **3. A traceability matrix.** It maps every RFC 1 §9.4 row and every RFC 28 §4.2 row to
-the test that implements it. A script fails CI when a row has no test, or when a test was
-expected to run and did not. A check that did not run is a failure
-([RFC index, test tiers](../rfcs/rfc-index.md)).
+the test that implements it, and every other suite test (edge cases, model, counted,
+damage and clock checks) to its row of RFC 1 §9.1, §9.2 and §9.7, RFC 28 §4.1 and §4.4,
+RFC 0 §1.4 or RFC 8 §15 (epic 2, D3). A Go test fails CI when a row has no test, or a test
+no row; `dt` fails it when a test was expected to run and did not. A check that did not
+run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 
 **Exit criteria:**
 
 - The whole suite compiles against epic 1's stubs and runs in CI.
-- Every test fails on its own assertion, not on a build error or a skip.
+- Every test fails without a build error, a panic or a skip. Until `Open` works, every
+  test fails in the fixture, not on its own assertion (epic 2, D4).
 - Every test is on the known-failure list, so the run is green.
 - The matrix has no unmapped rows.
 - The seam, clock, model and profiler each have their own unit tests. These are green from
@@ -239,7 +251,7 @@ expected to run and did not. A check that did not run is a failure
 | # | Epic | Content | Est. subtasks | Owner | Blocks |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | Public package, exported symbols, signatures, storage seam, `Stats`, `Tracer`, errors, stubs | 9 | team | **everything** |
-| 2 | **E2E suite + test foundations** ⛔ | Test clock and fault schedule, crash-simulating seam, reference model, Go known-failure list, profiler, red conformance suite, system e2e scaffolding and catalogue, traceability matrix | 14 | team | **all testing** in 3–12 |
+| 2 | **E2E suite + test foundations** ⛔ | Test clock and fault schedule, crash-simulating seam, reference model, profiler, red conformance suite graded by `dt` from `known.yaml`, system scenario catalogue, traceability matrix | 17 | team | **all testing** in 3–12 |
 | 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7 |
 | 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7, 8, 9 |
 | 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7, 8 |
@@ -250,7 +262,7 @@ expected to run and did not. A check that did not run is a failure
 | 10 | **Start and initialisation** | Start check and its two refusals, `journalv2.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
-| | | | **~118 + E11** | | |
+| | | | **~121 + E11** | | |
 
 ⛔ = blocker: other epics cannot finish until this one has delivered.
 🔀 = synchronisation point: the team converges, and the work that follows depends on
@@ -296,12 +308,13 @@ everything before it.
   seam.
   Nothing in E3–E9 starts before this point.
 - **S2. Red suite in CI** (end of E2). The conformance suite compiles, runs, fails, and is
-  all listed as known failures. The system e2e scaffolding is in place. The seam, clock, model and profiler are
-  green. Implementation epics start here.
+  all listed as known failures. The system scenario catalogue is written. The seam, clock,
+  model and profiler are green. Implementation epics start here.
 - **S3. Walking skeleton** (mid E5 / mid E8). A minimal append stream from E5 (one stream,
   no spare pool, no seal) plus E8's `WriteAt` and `ReadAt` on top of E4's index. The first
-  conformance tests turn green and leave the known-failure list. **E8's integration tests
-  are blocked on this point.** E5 therefore delivers the minimal stream as its first
+  conformance tests turn green and leave the known-failure list, and the entries still red
+  move from failing in the fixture to failing on a stub (epic 2, D4). **E8's integration
+  tests are blocked on this point.** E5 therefore delivers the minimal stream as its first
   subtasks.
 - **S4. Core complete** (E3–E9 done). All component conformance tests are green. Only
   system e2e tests remain on the known-failure list. E11 cannot finish before this point.
@@ -309,12 +322,20 @@ everything before it.
   engine interface is rif's; both sides agree on it before stage 3 starts. E11 is planned
   only once it exists, and its engine wiring, version-limit raise and store contracts
   cannot start before it. S4a is independent of S1–S4 and can be reached at any time
-  before E11.
+  before E11. It also settles who writes the system scenarios that run at the
+  filesystem service's integration tier, and the shape of the `Content` conformance
+  check that both a fake `Content` and the engine pass, which is E11's deliverable (epic
+  2, §7).
 - **S5. Wired** (end of E11). The engine runs on v2 and the RFC 16 store, and the system
   e2e suite, written in E10 and E11, runs against it. **S5 has an external dependency:**
   the RFC 16 metadata store of [#3120](https://github.com/marmos91/dittofs/pull/3120) must
   be on `feat/storage-v2`, because E10's initialisation and E11's engine work both rely
-  on it. E12 then burns down the known-failure list.
+  on it. **The protocol rows have a second one:** a `dfs` serving NFS or SMB on v2 needs
+  the filesystem service, `vfs.Server` (#3119 stage 2, RFC 17), and the adapters moved onto
+  it, not only E11. The write-verifier row is `vfs.Server` behaviour (RFC 17 §5.8). The
+  rows that need no kernel client (several shares per journal, capacity, cold reads,
+  lifecycle) run at the filesystem service's integration tier once E11 and stage 2's
+  `vfs.New` exist (epic 2, §7). E12 then burns down the known-failure list.
 
 ### 3.3 Blockers
 
@@ -330,6 +351,8 @@ everything before it.
 - **S4a (with rif)** blocks E11: its engine wiring, version-limit raise and store
   contracts cannot start before it.
 - **E11** blocks E12's system tests.
+- **#3119 stage 2 (external)**, the filesystem service, blocks the integration-tier system
+  scenarios; it and the adapters moved onto it block the protocol scenarios.
 - **#3120 (external)**, the RFC 16 metadata store, blocks E10's initialisation step, and
   E11's version-limit raise and store contracts.
 - **The init command (RFC 16, external)** blocks E10's initialisation step.
@@ -351,7 +374,7 @@ owner (for example, epic 1's 1.4 is on track B).
 | Phase | Track A — storage | Track B — model and operations | Joint |
 | --- | --- | --- | --- |
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
-| 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, system e2e scaffolding | E2: known-failure mechanism, reference model, conformance test bodies, traceability matrix | → **S2** |
+| 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
 | 2 | E3, then E5 (minimal stream first) | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
 | 3 | E6, then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
 | 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
@@ -388,10 +411,11 @@ pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
   internal/reclaim/               repack, retirement                             (E9)
   conformance/                    component e2e: RFC 1 §9.4, RFC 28 §4.2         (E2)
   journalv2test/                  crash seam, reference model, profiler, fixtures (E2)
-pkg/sim/                          TestClock (E2); Fault lands with the crash seam  (E2)
+pkg/sim/                          TestClock, Fault, Schedule; node-wide (RFC 8 §2.1) (E2)
 pkg/clock/                        Clock + System, with its first caller (stage-3 composition root, E11)
-test/journalv2/KNOWN_FAILURES.md  one list, Markdown table read by Go and shell  (E2)
-test/e2e/journalv2_*_test.go      system e2e              (E2 scaffolding, E10 and E11 tests)
+test/journalv2/known.yaml         known failures, graded by dt (RFC 29 §4.7)     (E2)
+test/journalv2/trace.yaml         RFC row → test or owner, checked by trace_test.go (E2)
+test/e2e/journalv2_*_test.go      system e2e with kernel clients        (E10 and E11 tests)
 ```
 
 The package is named `journalv2` while v1 exists. Renaming it once v1 is removed is out of
@@ -434,10 +458,12 @@ Candidate subtasks:
 8. The storage seam (`storage.FS`, `storage.File`) and `WithStorage`.
 9. Joint review and freeze.
 
-### Epic 2 — E2E suite and test foundations ⛔ (≈14 subtasks, team)
+### Epic 2 — E2E suite and test foundations ⛔ (17 subtasks, team)
 
-Epic 2 delivers §1.4. The suite must cover **as many use cases as can be named**. The
-scenario catalogue below is the minimum. Each family becomes one or more subtasks. Each
+Epic 2 delivers §1.4; its breakdown is
+[rfc-1-journal-epic2.md](rfc-1-journal-epic2.md), which supersedes this section where they
+differ. The suite must cover **as many use cases as can be named**. The scenario
+catalogue below is the minimum. Each family becomes one or more subtasks. Each
 test is named after its RFC row where it has one, and every test is listed as a known
 failure.
 
@@ -446,15 +472,17 @@ failure.
 - the test clock in `pkg/sim`;
 - the crash-simulating seam, with `Fault` and the seeded fault schedule;
 - the reference model and the seeded model-based test (RFC 1 §9.1);
-- the Go known-failure mechanism;
+- the fixture, and the suite's registration with `dt` and its `known.yaml`;
 - the profiler;
-- the traceability script.
+- `raw`, RFC 28's bytes written by hand;
+- the traceability map and its check.
 
 **Scenario catalogue (component level):**
 
-- **RFC 1 §9.4 Group A, silent data loss** (34 checks):
+- **RFC 1 §9.4 Group A, silent data loss** (35 checks):
   - no zero-fill;
   - a write during offload;
+  - an offer stopping at `through`, and a lost stamp still offered;
   - fill safety and fill setting the offloaded bit;
   - release refusal;
   - partial release keeps the record whole;
@@ -482,7 +510,7 @@ failure.
   - no deadlock;
   - background work is joined at close;
   - per-extent drop, share-aimed repack, segment accounting.
-- **Group C, recovery** (17 checks):
+- **Group C, recovery** (19 checks):
   - reseed after repack;
   - release across a restart, and a lost release record;
   - fill beats an older write, and a stale fill;
@@ -491,6 +519,7 @@ failure.
   - monotonicity in shuffled segment order;
   - an attached share raises the counter;
   - unclaimed tags are the caller's to name;
+  - a cancelled call changes nothing or completes;
   - restamp;
   - forget leaves nothing to settle;
   - stranded tag reported, then salvaged;
@@ -521,10 +550,15 @@ failure.
 - **Model-based**: random sequences of write, fill, offload, release, truncate,
   deallocate, delete, settle, repack, crash and reopen, at least two files on two streams
   and two shares on one journal (RFC 1 §9.3).
-- **Clock**: a clock jump, and a clock 5% fast, driven on the test clock (RFC 0 §1.4).
+- **Clock**: a step of the wall clock fires and delays no timer, driven on the test clock
+  (the journal's half of RFC 8 §15's "one clock"). The 5%-fast leg is not the journal's:
+  it cannot fail on a component with no wait on another clock's timeout, and runs at the
+  node in epic 11 (RFC 0 §1.4).
 
-**Scenario catalogue (system level, `test/e2e`, real `dfs` with v2; written as tests in
-epic 11, the start-check refusals in epic 10):**
+**Scenario catalogue (system level; written as tests in epic 11, the start-check refusals
+in epic 10).** Several shares, capacity, cold reads and lifecycle run at the filesystem
+service's integration tier, the rest on a real `dfs` with kernel clients; the split and
+each tier's dependencies are in the epic's file, §7:
 
 - **Single node, several shares, one journal per device** (RFC 15 §2.2 and §2.4,
   RFC 8 §2.3):
@@ -972,7 +1006,11 @@ broken down into subtasks and estimated only once that interface is agreed with 
   `go run ./cmd/gendocs` is rerun afterwards.
 - **System e2e tests.** E11 writes the system scenarios catalogued in epic 2, except the
   start-check refusals of E10, lists them as known failures, and turns green those its
-  own wiring satisfies.
+  own wiring satisfies. The integration-tier rows need #3119 stage 2's `vfs.New`, and
+  the protocol rows the adapters moved onto it (S5).
+- **The `Content` conformance check:** one check that both a fake `Content` and the engine
+  pass, so the filesystem service's unit tier tests against the contract the engine
+  meets. Its shape is agreed at S4a.
 
 ### Epic 12 — E2E green 🔀 (≈8 subtasks, team)
 
@@ -1002,6 +1040,9 @@ explicit, recorded decision.
   bridge into the v1 engine.
 - **E11 waits on S4a.** It is not estimated, and is planned only once the engine interface
   is agreed with rif (stage 2 of #3119).
+- **The system scenarios wait on stage 2 too.** Under route B, NFS and SMB reach v2 only
+  through `vfs.Server` and the adapters moved onto it, so E11 alone turns no protocol
+  scenario green (S5).
 - **E10 and E11 depend on #3120.** The metadata RFC 1 assumes (installation ID, share tags,
   the durable version limit, the derived version floor, `Applied`) comes from RFC 16's
   store, which [#3120](https://github.com/marmos91/dittofs/pull/3120) implements. Neither
