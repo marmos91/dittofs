@@ -1002,6 +1002,10 @@ break it: e2e's Kerberos run is a protocol feature that a change under `pkg/bloc
 it runs on pull requests that touch the adapters, the metadata (auth metadata included), the
 authentication code, the control plane, the configuration or the server's start-up, and after
 every merge.
+The cross-protocol e2e group is a second: while the adapters move onto the VFS service it runs on
+pull requests that touch the adapters, the service or the metadata, with the system scenarios of
+the slices landed so far ([RFC 17 §9](rfc-17-vfs.md#9.%20Migration)), because a drift between
+two protocols is invisible to every single-protocol suite.
 
 ### 4.4 The command line
 

@@ -40,7 +40,7 @@ tags:
 >   ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions));
 > - the node epoch and the shard incarnation carried in the NFS write verifier
 >   ([§7](#7.%20Protocol%20state), rule 3);
-> - one binary, with roles chosen by configuration ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+> - one binary and one node type ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)).
 >
 > Adding nodes migrates each journal's format one way, behind a gate
 > ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)).
@@ -56,8 +56,9 @@ tags:
 Files are grouped into shards, like classrooms in a school. Each classroom has
 one teacher, the primary, who decides everything in it: writes, opens and locks.
 The metadata store keeps one card per classroom, naming its teacher and a
-ticket number, the epoch. Protocol nodes act as receptionists: they read the
-card and send each request to that teacher. A new teacher always gets a higher
+ticket number, the epoch. Every node also keeps a reception desk: whichever
+desk a request reaches reads the card and carries the request, unopened, to that
+teacher. The desk decides nothing; the teacher decides everything. A new teacher always gets a higher
 ticket, so an old one who wanders back is ignored. Classrooms are spread over
 nodes by a fixed seating chart of 4,096 slots. Moving a classroom moves its
 recent notes, never the books, which stay in the shared library, the bucket.
@@ -72,35 +73,56 @@ doing the writing.
 
 **The pieces.**
 
-- A **node** is one running DittoFS server process, with one or both of two
-  roles. A `protocol` node holds client connections (SMB, NFS): it translates
-  each call and, when it is not the file's primary, forwards it — for that call
-  it is the **front-end** — and keeps no file state of its own. A `storage`
-  node holds **journals** — logs of recent writes on a local disk — and does
-  the work. A single-node install runs both roles in one process.
+- A **node** is one running DittoFS server process. Every node is alike: it
+  holds client connections (SMB, NFS), runs the filesystem, and holds
+  **journals** — logs of recent writes on a local disk
+  ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)). The node a
+  client's call arrives at is its **gateway node**: when it is not the file's
+  primary, its gateway forwards the call there and keeps no file state of its own.
 - A **shard** is a set of files that move together. By default a whole share is
   one shard. A directory can be marked so that each child directory created in
   it gets its own: with `profiles/` marked, `profiles/alice/` is shard A and
   `profiles/bob/` is shard B.
-- The **primary** of a shard is the one storage node that owns it right now. It
+- The **primary** of a shard is the one node that owns it right now. It
   orders every write and holds every open, lock and lease (caching grant) on the
   shard's files; reads go to it, or are checked with it first ([§6](#6.%20Reads%20on%20other%20nodes)).
   The shard's replicas hold copies of its journal, ready to take over
   ([RFC 10](rfc-10-journal-replication.md)).
+
+**Who decides.** The node a call arrives at forwards it; the primary decides it.
+
+| Where | Runs | Decides |
+| --- | --- | --- |
+| every node | adapters, which sign clients in; `vfs.Gateway`; `vfs.Serve`; `vfs.Server`; open state, journals, engine | — |
+| the gateway node | the adapter, then `vfs.Gateway`: looks the file's shard and primary up, calls the local server if this node is the primary, else stamps the route envelope and sends the call | nothing: a wrong route is refused by the receiver ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)) |
+| the primary | `vfs.Serve`: fence by node epoch, shard epoch and hop count, dedup by request ID; then `vfs.Server` | everything: admission, identity, squash, ordering, open state, metadata, content |
+
+```text
+ adapter ─► vfs.Gateway ─┬─ local primary ───────────────────────────► vfs.Server
+                         └─ envelope ─► transport ─► vfs.Serve ──────► vfs.Server
+                                                    (fence, dedup)   (decides: open state,
+                                                                      metadata, engine)
+```
+
+The cut is at the filesystem service, not under it, so that open state lives in
+one place, a `WRITE` is one forwarded call rather than several, the chatty
+engine interface never crosses the network, and one epoch fences the whole
+call. Every node runs both halves, because splitting them buys only isolation
+and costs nothing to defer ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type), [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 
 **One write, followed.**
 
 ```text
    alice-pc (SMB)                      build01 (NFS)
         │                                   │
-   ┌────▼────┐                         ┌────▼────┐   protocol nodes: hold
-   │   P1    │                         │   P2    │   connections, translate,
-   └────┬────┘                         └─────────┘   forward
+   ┌────▼────┐                         ┌────▼────┐   gateway nodes: hold
+   │   P1    │                         │   P2    │   connections, forward;
+   └────┬────┘                         └─────────┘   decide nothing
         │ 1  ODFC_alice.vhdx → shard A → primary S1
         ▼
-   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   storage nodes:
-   │     S1      │   │     S2      │   │     S3      │   hold journals,
-   │ primary   A │   │ primary   B │   │ primary   C │   do the work
+   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   primaries: fence,
+   │     S1      │   │     S2      │   │     S3      │   decide, journal
+   │ primary   A │   │ primary   B │   │ primary   C │
    │ replica B,C │   │ replica A,C │   │ replica A,B │
    └──────┬──────┘   └──────▲──────┘   └──────▲──────┘
           │ 2  journal it, copy to A's replicas │
@@ -108,15 +130,17 @@ doing the writing.
           3  S2 and S3 hold it → OK → P1 → alice-pc
 
    shard A = profiles/alice/   shard B = profiles/bob/   shard C = builds
+   every node runs everything; P1 and P2 are primaries and replicas of other shards too
 ```
 
 1. alice-pc is connected to P1 and writes 64 KiB into
    `profiles/alice/ODFC_alice.vhdx`.
-2. P1 looks up the file's shard (A) and A's primary (S1) in its cache of shard
-   records, and forwards the write, stamped with the shard and epoch it expects.
-3. S1 checks it is still A's primary at that epoch, checks alice's open and the
-   locks others hold, stages the write in its journal and copies it to S2 and
-   S3 ([RFC 10](rfc-10-journal-replication.md)).
+2. P1's gateway looks up the file's shard (A) and A's primary (S1) in its cache
+   of shard records, and forwards the write, stamped with the shard and epoch it
+   expects.
+3. At S1, `vfs.Serve` checks S1 is still A's primary at that epoch; S1's server
+   checks alice's open and the locks others hold, stages the write in its
+   journal and copies it to S2 and S3 ([RFC 10](rfc-10-journal-replication.md)).
 4. When all three hold it, S1 answers OK, and P1 passes it to alice-pc.
 
 Had P1's cache been stale — A moved to S2 a moment ago — S1 would refuse,
@@ -148,28 +172,28 @@ replicas and by the raise before a move
   the same and no client resends anything.
 
 **Moving a shard moves no bytes in the remote tier.** Uploaded content lives in
-the bucket and is described in the metadata store, and every storage node
+the bucket and is described in the metadata store, and every node
 reaches both. A handover ships only the shard's journal content not yet
 uploaded, with its open-state table; a rebalance moves primaries and replicas,
 never files.
 
 **How a very big share scales.** A share is one shard by default, so one node,
 its primary, orders all its writes, opens and locks: any number of clients can
-write through any protocol node, but the share gets at most one node's
+write through any node, but the share gets at most one node's
 throughput — and, since a shard's journal content lives on one journal device of
 that node, at most one device's write bandwidth, on a single node too — and
 replicas add durability, not write throughput
 ([§1.1](#1.1%20What%20scaling%20is%20being%20designed%20for), [§2.1](#2.1%20One%20primary%20per%20shard)). Marking a directory
 gives each child directory created in it its own shard, and moves existing
 children over in batches; every shard hashes to one of 4096 fixed slots,
-and a slot table assigns slots to storage nodes in proportion to their
+and a slot table assigns slots to nodes in proportion to their
 capacity, so alice's and bob's shards land on different nodes
 ([§2.2](#2.2%20Automatic%20per-child%20shards)). An operator can also split chosen subtrees by hand.
 One shard stays the unit of parallelism: a directory's entries are never split
 across shards and neither is a file, so one huge flat directory or one hot file
 — alice's 30 GB container — is still bounded by one node; per-file and range
-shards are deferred ([Appendix C](#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)). Reads spread further:
-any storage node may serve an extent, from its journal or by fetching from the
+shards are deferred ([Appendix C](#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)). Reads can later spread
+further, once a path delivers them off the primary: any node may then serve an extent, from its journal or by fetching from the
 bucket, after one round trip asking the primary for the newest version, which
 carries no bytes ([§6](#6.%20Reads%20on%20other%20nodes)). Placing whole shares on separate nodes
 behind a balancer, without shards that move, is an open question, and its
@@ -177,13 +201,15 @@ proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
 
 **The words you need.**
 
-- **node**, **role** — one server process / what it runs, `protocol` or
-  `storage` ([glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **node** — one server process; every node runs everything
+  ([glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **gateway node** — the node a client's call arrives at; its `vfs.Gateway`
+  forwards the call to the primary and decides nothing ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
 - **shard** — a set of files with one primary at a time; a share by default,
   a subtree, or a child of a marked directory ([§2](#2.%20Shards)).
-- **primary** — the storage node that runs a shard's writes, open state and
+- **primary** — the node that runs a shard's writes, open state and
   locks now ([§3](#3.%20The%20primary)).
-- **replica** — a storage node holding a copy of the shard's journal content,
+- **replica** — another node holding a copy of the shard's journal content,
   ready to take over ([RFC 10](rfc-10-journal-replication.md)).
 - **epoch** — the shard record's fencing number; what raises it is
   [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms)'s, and every receiver refuses an older
@@ -191,7 +217,7 @@ proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
 - **shard incarnation** — the record's second number, raised whenever a node
   begins serving the shard as primary; the write verifier follows it
   ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
-- **node lease** — the one lease each storage node renews for all its shards; a
+- **node lease** — the one lease each node renews for all its shards; a
   node whose lease lapsed is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 - **slot table** — the record that assigns each of a fixed number of slots to
   nodes, placing every shard ([§2.2](#2.2%20Automatic%20per-child%20shards)).
@@ -215,7 +241,7 @@ proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
 
 ### Scenarios
 
-**A fourth storage node joins.**
+**A fourth node joins.**
 
 1. S4 joins the placement set, with its capacity setting
    ([§2.2](#2.2%20Automatic%20per-child%20shards)).
@@ -234,10 +260,10 @@ S4 takes slots in proportion to its capacity, and no byte in the bucket moves.
 
 **Ten build machines write into one share.**
 
-1. Ten machines write into `builds/`, a share that is one shard, through P1 and
-   P2 ([§2](#2.%20Shards)).
-2. P1 and P2 forward every write to the shard's primary, S3, which orders them
-   all ([§2.1](#2.1%20One%20primary%20per%20shard), [§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+1. Ten machines write into `builds/`, a share that is one shard, through gateway
+   nodes P1 and P2 ([§2](#2.%20Shards)).
+2. P1's and P2's gateways forward every write to the shard's primary, S3, which orders them
+   all ([§2.1](#2.1%20One%20primary%20per%20shard), [§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
 3. The share gets one node's throughput, and one journal device's, however many
    clients write ([§2.1](#2.1%20One%20primary%20per%20shard)).
 4. Where two writes overlap, the one reaching S3 later wins, byte by byte
@@ -246,7 +272,7 @@ S4 takes slots in proportion to its capacity, and no byte in the bucket moves.
 Correctness costs nothing extra; more throughput needs the share split into
 subtree or per-child shards.
 
-**The primary follows its writer.** Nodes run both roles. N1 is primary of shard
+**The primary follows its writer.** N1 is primary of shard
 A; N2 is a replica of A and holds alice-pc's connection.
 
 1. Over 5 min, at least 90% of A's written bytes arrive forwarded from N2
@@ -275,17 +301,17 @@ once per 30 min.
 
 Users spread across nodes by slot, and new children start in their own shard.
 
-**A primary the protocol nodes cannot reach.**
+**A primary the gateways cannot reach.**
 
-1. N1 still renews its lease, but P1 and P2 cannot reach it
-   ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
-2. They report the failed forwards, and the store records a health condition on
-   N1 ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+1. N1 still renews its lease, but the gateways of P1 and P2 cannot reach it
+   ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
+2. Their nodes record the failed forwards and the store records a health condition on
+   N1 ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
 3. After the unreachable delay, proposed 30 s, each of N1's shards is handed to a
-   replica they can reach ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+   replica they can reach ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
 4. If N1 does not finish within the handover bound, proposed 60 s, its next
    renewal is refused, which makes it a failover
-   ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+   ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)).
 
 A node that is alive to the store but lost to its clients does not keep its
 shards.
@@ -301,11 +327,11 @@ questions.
 
 ## 1. Purpose
 
-A **node** is one DittoFS server process, whatever roles it runs ([RFC 15 §2](rfc-15-topology.md#2.%20Roles)).
-Only nodes with the `storage` role hold journals, so only they can be a primary
-or a replica. There are no metadata-only DittoFS nodes: the metadata store is
-either embedded in a storage node or an external replicated store
-([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+A **node** is one DittoFS server process, and every node is alike
+([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)): each holds
+journals, so each can be a primary or a replica. There are no metadata-only
+DittoFS nodes: the metadata store is either embedded in the single node or an
+external replicated store ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 
 On one node, every write to a share goes through one engine and one journal, and
 the order of writes is the order that journal appends them. A write is
@@ -324,16 +350,16 @@ replaced:
 defined once for every RFC in the [RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary). Read in this order
 they define one another without a loop: a **shard** is a set of files the shard
 policy groups ([§2](#2.%20Shards)), with no reference to who serves it; its **shard record**
-is one store record per shard; the **primary** is the storage node that record
+is one store record per shard; the **primary** is the node that record
 names; the **epoch** and **shard incarnation** are numbers in that record; a
-**replica** is a storage node the record lists besides the primary. This
+**replica** is a node the record lists besides the primary. This
 document adds:
 
 | Term | Means |
 | --- | --- |
 | **shard record** | a shard's entry in the metadata store, one per shard: the node it names as primary, as (node, node epoch, journal identity, join incarnation); its epoch and its shard incarnation; its replicas, replica count and floor ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). It changes only by compare-and-swap |
 | **fence records** | two records per file, `F_x` and `F_o`, each holding the (shard, epoch) the file's commits must carry ([§8](#8.%20Metadata%20consistency)) |
-| **front-end** | the node a client's call arrives at; when it is not the primary, it forwards the call there ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)), as the [RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary) defines it |
+| **gateway node** | the node a client's call arrives at; when it is not the primary, its `vfs.Gateway` forwards the call there and decides nothing ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)), as the [RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary) defines it |
 | **handover** | a planned change of a shard's primary, with no lease wait and no grace period ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) |
 | **move** | a change of the shard some files belong to, run in batches ([§4](#4.%20Moving%20files%20and%20primaries)) |
 | **re-placement delay** | how long a shard stays on the replica that took it over before it is moved to the node its slot names ([§2.2](#2.2%20Automatic%20per-child%20shards)) |
@@ -356,7 +382,7 @@ considered:
 
 A share is **one shard by default**, which gives B, and B with failover gives A.
 Subtree and per-child shards give C for a share one node cannot carry
-([§2](#2.%20Shards)). One node is any of them with one storage node. The same mechanism
+([§2](#2.%20Shards)). One node is any of them with one node. The same mechanism
 serves all of them, so no deployment runs a code path another does not.
 
 ### 1.2 Non-goals
@@ -368,7 +394,7 @@ This document **MUST NOT**:
 - define client-visible open state and locking — [RFC 14](rfc-14-open-state.md). Shard records are
   internal and **MUST NOT** be exposed as, or stored with, client state
   ([§7](#7.%20Protocol%20state));
-- decide which nodes may be primaries — [RFC 15](rfc-15-topology.md)'s roles;
+- define what a node runs — [RFC 15](rfc-15-topology.md); every node may be a primary;
 - let more than one node write the same bytes at once
   ([RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered));
 - split one file across shards, or give one file its own shard —
@@ -430,7 +456,7 @@ checked.
 
 **Many writers, one shard.** One primary does not mean one client. Any number of
 clients write to a share at once, each through whichever node it is connected to.
-Every write to a shard is forwarded to its primary ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)), which orders and
+Every write to a shard is forwarded to its primary ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)), which orders and
 journals them all. What one primary caps is throughput: a shard gets at most one
 node's worth. A share that needs more is split into subtree or per-child shards,
 each with its own primary on its own node. [§10](#10.%20Worked%20examples) (a) walks through both.
@@ -468,7 +494,7 @@ shard, and a directory renamed into it keeps its own.
   **slots** — the shard slot count setting (proposal: 4096), fixed when
   the installation is created and never changed after. The **slot table**, a record in the metadata store
   ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), assigns each slot an ordered list of nodes from the
-  **placement set** — the storage nodes that joined and were not decommissioned,
+  **placement set** — the nodes that joined and were not decommissioned,
   less any absent for longer than the re-placement delay — the first as primary,
   the rest as replicas. Each node receives slots in proportion to its
   **capacity**, a node setting ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)). **A slot's nodes MUST lie in
@@ -557,8 +583,8 @@ shard, and a directory renamed into it keeps its own.
 A node is primary of a shard while the shard record names it — as (node, node
 epoch) — and its **node lease** for that node epoch is live. There is one lease
 per node, held in its node record and renewed once for every shard it is
-primary of, never per shard ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement)). A `protocol`-only node holds one too, so
-it can be fenced before its client addresses are taken over
+primary of, never per shard ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement)). The lease also fences a node's
+gateway, so its forwarded calls can be refused before its client addresses are taken over
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
 
 | Installation setting ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)) | Proposed default | Used by |
@@ -613,7 +639,7 @@ it can be fenced before its client addresses are taken over
   already named, runs grace as after a failover
   ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)), and before it
   serves it writes `GraceInstance` = its incarnation by compare-and-swap on the
-  shard record. A stateid carries the instance's low bits, and a miss is judged
+  shard record. A state reference carries the instance's low bits, and a miss is judged
   against it, never against the incarnation, which a handover raises.
 - **An epoch never decreases for a file.** A shard's epoch **MUST** exceed that of
   every shard that previously held any of its files. A shard that receives files
@@ -732,7 +758,7 @@ a renewal writes, so renewals never conflict with commits.
 ### 3.2 The primary stays until another node needs it
 
 - A shard that has never had a primary, or whose last primary released it
-  cleanly after offloading everything, is **claimed** by the first storage node
+  cleanly after offloading everything, is **claimed** by the first node
   that needs it, with one compare-and-swap.
 - A shard whose record names a primary with a lapsed lease is **not** claimed
   that way. It is taken over by a replica that is not a learner
@@ -741,7 +767,7 @@ a renewal writes, so renewals never conflict with commits.
 - Nothing is exchanged per write or per file while the primary stays; its node
   renews one lease for every shard it holds.
 - Any other node that receives a write forwards it to the primary
-  ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)), or, under [§3.3](#3.3%20The%20primary%20follows%20the%20writer), asks for the primary to move.
+  ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)), or, under [§3.3](#3.3%20The%20primary%20follows%20the%20writer), asks for the primary to move.
 
 A single writer therefore pays one metadata-store transaction per shard it
 claims, not per file or per write.
@@ -758,8 +784,8 @@ Forwarding is the default. A shard's primary is handed over to another node
 3. **The new node is a replica that is not a learner**, or becomes one first
    ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)).
 
-Only the primary decides, from the forwarded writes it counts itself; front-ends
-never request a move. A handover whose un-offloaded tail does not shrink while it
+Only the primary decides, from the forwarded writes it counts itself; a gateway
+never requests a move. A handover whose un-offloaded tail does not shrink while it
 is shipped — the writer is outrunning the copy — is abandoned, and the dwell time
 restarts. Two nodes writing one shard by turns therefore never pull it back and
 forth faster than once per dwell time, and two writing at once never meet
@@ -768,8 +794,8 @@ condition 1.
 **The dwell binds every planned change of primary**: follow-the-writer,
 re-placement and rebalance each wait until the dwell time has passed since the
 shard's last one. A failover is not gated and does not restart the dwell, and
-neither is the handover away from a primary the front-ends cannot reach
-([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)): both answer a primary that is lost to its clients, which no dwell may
+neither is the handover away from a primary the gateways cannot reach
+([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)): both answer a primary that is lost to its clients, which no dwell may
 keep in place. Without the one dwell, a follow-the-writer move and a
 re-placement back to the slot's node could alternate, shipping the tail each time.
 
@@ -794,6 +820,14 @@ the dedup entries of the open-state calls, which leave no durable result
 request records and journal request entries on a miss; it re-applies existence
 and serves with no grace period.
 A handover whose old primary is lost before it completes becomes a failover.
+
+**A node that stops hands its shards over first.** `Node.Stop` hands each shard
+the node is primary of to a replica, by the handover above, after its adapters
+and gateway have stopped and before its `vfs.Serve` stops
+([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). Until a shard's new primary
+serves, other nodes' calls to it are still answered here, so a planned stop
+costs them a freeze, never a refusal held until the lease lapses. A shard whose
+handover does not complete is left to fail over.
 
 **Files move between shards in batches.** A subtree can hold more files than one
 transaction may write. A move from giving shard G to receiving shard R keeps its
@@ -867,24 +901,24 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    shipped again under the new epochs.
 4. **Serve.** R's primary re-applies existence for the batch's files, as after a
    takeover ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover) step 5), installs the open-state entries, whose
-   client records already name R, and serves the files. A stateid or SMB
-   persistent FileId names the shard that held its record when it was issued
+   client records already name R, and serves the files. A state reference, or
+   an `OpenID` an adapter carries as a persistent handle, names the shard that
+   held its record when it was issued
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), so the batch's commit also writes, at G, a
    **forwarding entry** for each moved entry naming R, keyed by a tagged
-   reference: the stateid's 64 random bits or, for an SMB persistent `FileId`,
-   its `OpenID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); G answers a call naming one with a routing error that
+   reference: the state reference's 64-bit token or the `OpenID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); G answers a call naming one with a routing error that
    names R. The forwarding entry also records R's `GraceInstance` at the
    batch's commit, and G's routing error carries it to R with the re-routed
-   call. A moved stateid keeps G's shard number and grace-instance bits, which
+   call. A moved reference keeps G's shard number and grace-instance bits, which
    name G's instance, not R's, so R judges a miss against the recorded
    instance: stale while R is in grace or R's `GraceInstance` has moved past
    it, since R then lost open state the client must reclaim; bad otherwise, as
-   for a moved stateid later freed. Without the entry, G answers a moved
-   stateid as bad, breaking the promise that a move hands state over unseen.
+   for a moved reference later freed. Without the entry, G answers a moved
+   reference as bad, breaking the promise that a move hands state over unseen.
    The state lives at R, so G never sees it end, and deleting the entry on R's
    close would write G's key on the close path
    ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)). G deletes it
-   **lazily**, and only on a bad answer from R: the front-end whose re-routed
+   **lazily**, and only on a bad answer from R: the gateway whose re-routed
    call R answered bad reports it to G, and G's primary asks R itself about
    that reference and deletes the entry in its own transaction if R answers
    bad again; a stale answer keeps it, so the client's calls during R's grace
@@ -898,7 +932,7 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    Share removal deletes a share's forwarding entries with its other records
    ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). G's
    primary refuses any later call for them with a routing error, because their
-   recorded shard is no longer G, and front-ends re-route.
+   recorded shard is no longer G, and gateways re-route.
 5. **Discard.** G's primary sends its replicas a committed point covering the
    batch, then tells every node of G's replica set, itself included, to `Discard`
    the files under G. A node in R's replica set too keeps its entries under R:
@@ -927,25 +961,36 @@ subtree cut, which closes only its covered shards' gates
 
 ## 5. Routing
 
-### 5.1 Front-ends forward to the primary
+### 5.1 Gateways forward to the primary
 
 File protocols carry operations on many files over one connection and cannot
-redirect a client per file, so the front-end routes each operation:
+redirect a client per file, so the gateway node's `vfs.Gateway` routes each
+operation, and does nothing else: it authenticates, admits, maps, squashes and
+orders nothing, and calls neither open state, the metadata store nor the engine
+([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)):
 
-- it looks up the shard of what the operation touches, and the shard's primary,
-  in a cache of shard records read from the metadata store ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries));
-- it forwards the operation to that primary. Every routed call is callable across
+![The cut is vfs.Service: on the gateway node an adapter signs in and calls vfs.Gateway, which decides nothing; the gateway either calls the local vfs.Server or stamps an envelope (request ID, shard and epoch, node and node epoch, hop 0) and sends it over vfs.Transport to vfs.Serve at the primary, which checks the fence and dedup; vfs.Server at the primary then decides admission, identity, squash and ordering and calls open state, the metadata store and the engine, while the legend gives the reasons the cut is not under the VFS](img/rfc15-cut.svg)
+
+- it looks up the shard of the handle the operation names, and the shard's
+  primary, through `vfs.Router` over a cache of shard records read from the
+  metadata store ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries));
+- if the primary is this node, it calls the checked `vfs.Service` that
+  `vfs.Serve` returns, which fences and deduplicates it as a forwarded call; otherwise it forwards the operation to that primary through
+  `vfs.Transport`. Every routed call is callable across
   a network ([RFC 15 §4.1](rfc-15-topology.md#4.1%20Every%20call%20is%20safe%20to%20route)) and carries the route envelope
   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)): a request ID, so a retry is answered once; the shard and
   epoch the sender expects; the sending node and its node epoch; and a **hop
   count**;
-- the receiver refuses the call if the epoch is not its current one, if the
-  file's recorded shard is not the one named, or if the sender's node epoch has
-  been fenced; the front-end re-reads the shard record and retries with backoff
+- the receiver's `vfs.Serve` refuses the call if the epoch is not its current
+  one or if the sender's node epoch has been fenced, and answers a retry from
+  the dedup table below; only then does the primary's `vfs.Server` see the
+  call, refuse it with `ErrWrongShard` if the file's recorded shard is not the
+  one named, and otherwise decide it. The
+  gateway re-reads the shard record and retries with backoff
   until the call's deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)), never for a fixed count, so a
   failover's stall is waited out rather than turned into an error;
-- only the front-end forwards. A node that receives a call it is not primary
-  for refuses it, naming the primary it knows, and **MUST NOT** forward a call
+- only the gateway forwards. `vfs.Serve` never forwards: it refuses a call
+  for a shard it is not primary of, naming the primary it knows, and any call
   whose hop count is not zero, so a call never cycles between stale caches.
 
 ![Routing and a stale route](img/rfc11-routing.svg)
@@ -977,26 +1022,22 @@ before it serves, and deletes expired request records through its shards' own
 expiry index, `SH‖shard‖rqx‖expiry‖requestID`, which spreads the inserts over
 every shard's key range ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). A retry
 after a takeover is therefore answered from the operation's own durable record,
-never applied a second time. The request ID is keyed on the protocol's own
-retry identity, not on the connection, because an NFSv4 client retries only on a
-new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0 it
-is (client address, XID, procedure, checksum of the arguments), as a server's
-reply cache keys a retry; for NFSv4.1 it is (front-end node ID, the node epoch
-the session was created under, session, slot, sequence ID), since each
-front-end mints its own session IDs and nothing makes them unique across
-front-ends; a front-end that re-acquires a higher node epoch keeps its sessions,
-so a retry on one carries the ID its first send did. An NFSv3 or NFSv4.0 retry
-carrying the same identity, on any connection and through any front-end that
-holds the client's address, maps to the same request ID, and an NFSv4.1 retry
-does on any connection of its session ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). An NFSv4.1 retry after its session was lost
-comes under a new session and is a new request, and an SMB replay is matched by
-the primary from its open's own state.
+never applied a second time. The request ID is the adapter's, derived from its
+protocol's own retry identity rather than the connection, so every retry the
+protocol lets a client send carries it again
+([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope); each
+adapter's derivation is [RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state)'s
+and [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)'s). A
+retry whose identity died with its gateway node's connection state is a new
+request, and a replay the protocol names by open state is matched by the
+primary from its open's own state.
 
-**A primary the front-ends cannot reach** while it still reaches the store would
-keep its lease forever. Front-ends report failed forwards to the store, which
-records a health condition on the node. If it persists for the **unreachable
+**A primary the gateways cannot reach** while it still reaches the store would
+keep its lease forever. Each node records, from its gateway's counts of failed
+forwards, a health condition on the unreachable node in the store; the gateway
+itself writes nothing. If it persists for the **unreachable
 delay** (`shard.unreachable_delay`), each of the node's shards is handed over to
-a replica the front-ends can reach; a primary that does not complete a handover
+a replica the gateways can reach; a primary that does not complete a handover
 within the **unreachable handover bound** (`shard.unreachable_handover_bound`)
 is refused its next renewal, which turns the handover into a failover. The
 refusal marks the node record lapsed in the transaction that refuses, as a
@@ -1008,28 +1049,28 @@ installation settings ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%
 > decision: the unreachable delay is not the re-placement delay. That one waits
 > for a lost node to come back and is settled by node return times; here the
 > node is up, its clients stall for the whole delay, and it is settled by how
-> long clients tolerate a stall against how often front-ends lose a primary
+> long clients tolerate a stall against how often gateways lose a primary
 > briefly. The handover bound is one installation-wide time, not sized from each
 > shard's tail, because the failover it falls back to loses nothing the replicas
 > hold and costs only a grace period. Both are unmeasured. Overturned by
 > unreachable-primary handovers on the reference deployment that complete past
 > the bound often enough that the failover's grace shows up in client stalls,
-> or by brief front-end losses that trip the delay.
+> or by brief gateway losses that trip the delay.
 
-On one node the front-end and the primary are one process, and routing is a
-function call.
+On one node there is no gateway and no receive side: the adapters call the
+node's `vfs.Server` directly.
 
 ### 5.2 Clients that can route themselves
 
 A protocol that lets the server direct a client's I/O per file — parallel NFS
 layouts — **MAY** point the client at the primary directly, so its reads and
-writes skip the front-end hop. A layout is another holder of the routing
+writes skip the gateway hop. A layout is another holder of the routing
 decision: it records the (shard, epoch) it was granted under, the primary as data
 server checks it on every `READ`, `WRITE` and `COMMIT`, and it **MUST** be recalled
 or revoked when the shard's primary changes or its file moves
 ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). The flex-files layout's own fence — the metadata server
 changing a synthetic uid — is not a substitute: it fences every client at once
-and is not tied to an epoch. Clients without layouts use the front-end path;
+and is not tied to an epoch. Clients without layouts use the gateway path;
 nothing in this document depends on layouts.
 
 ## 6. Reads on other nodes
@@ -1037,7 +1078,7 @@ nothing in this document depends on layouts.
 | Served by | When |
 | --- | --- |
 | the primary | content the whole replica set holds ([RFC 10 §8](rfc-10-journal-replication.md#8.%20Reads)) |
-| any other storage node, replicas included | only bytes carrying, at every extent within the read, the version the primary names for it |
+| any other node, replicas included | only bytes carrying, at every extent within the read, the version the primary names for it |
 | a learner | never |
 
 A node other than the primary **MAY** serve an extent, from its own journal or by
@@ -1047,12 +1088,21 @@ read covers — one version per extent, since a read can span bytes written at
 many versions — and only bytes that carry exactly the version named for their
 extent, under the checks [RFC 10 §8](rfc-10-journal-replication.md#8.%20Reads) makes of the
 answer's epoch and lease — its own checks, not the primary's. **Otherwise it MUST
-forward the read.** Metadata
+refuse the read, naming the primary, and the gateway re-routes it.** No path
+delivers a read to a node other than the primary yet (decision below), so this
+paragraph binds only once one does. Metadata
 alone cannot tell it: the primary acknowledges a write before offloading it, so
 the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)) can be older than an acknowledged write, and a
 replica's copy can be older than one the primary holds. A cached copy older than
 the named version is dropped ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) and filled again. The question costs
 one round trip and no bytes.
+
+> decision: the gateway forwards every read to the primary and serves none
+> itself, because choosing to serve one locally would be a decision at the
+> gateway. A read off the primary is therefore served only by a node's
+> `vfs.Server` that the primary's answer names, and that path is not built yet
+> ([§15](#15.%20Open%20questions)). Overturned when the primary's read bandwidth
+> is measured as the limit on a shard with idle replicas.
 
 **Attributes follow the same line.** A file's size and times after an
 acknowledged but unflushed write live only at its primary. A `GETATTR`, or any
@@ -1206,8 +1256,8 @@ to recall, a directory watch. So:
 
 1. **One primary runs it**: the source directory's, or, for a link, the target
    directory's. It is the **coordinator**.
-2. **Prepare.** The coordinator asks the primary of every other shard involved
-   to check the operation against its open state — deny modes, conflicting
+2. **Prepare.** The coordinator asks the primary of every other shard involved,
+   through `vfs.Peers` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), to check the operation against its open state — deny modes, conflicting
    opens — to recall the caching grants it breaks, and to **hold** the files:
    refuse new opens and grants that would conflict, until an outcome arrives or a
    deadline passes. The deadline, in store time, is at most the participant's own
@@ -1237,7 +1287,7 @@ to recall, a directory watch. So:
 
 A by-reference clone or copy is not among these operations: one whose source
 and destination are in different shards is refused at admission with
-`ErrCrossShard`, whatever their primaries, and the adapter falls back to a
+`ErrCross` (`OtherShard`), whatever their primaries, and the adapter falls back to a
 server-side byte copy or a cross-device answer ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
 
 On any no, the coordinator sends abort and returns the protocol's
@@ -1266,16 +1316,15 @@ it, which bounds how long it keeps a gate from closing.
 
 | Failure | Outcome |
 | --- | --- |
-| a storage node is lost | its shards fail over to replicas as soon as its lease lapses ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); after the re-placement delay they are handed to the nodes their slots name ([§2.2](#2.2%20Automatic%20per-child%20shards)); front-ends re-route on the first refusal |
+| a node is lost | its client addresses are taken over by another node ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), and its clients reconnect and lose no open state held at other primaries; its own shards fail over to replicas as soon as its lease lapses ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); after the re-placement delay they are handed to the nodes their slots name ([§2.2](#2.2%20Automatic%20per-child%20shards)); gateways re-route on the first refusal |
 | a node pauses past its lease | on resuming, everything it sends is refused: by replicas by epoch, by the store by its node record or fence ([§8](#8.%20Metadata%20consistency)); its renewal fails and it is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | the store stalls for longer than a lease | every node self-fences at half its lease and its lease lapses in store time; each node keeps retrying its renewal at the renewal period past its self-fence ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)); when the store returns, its next retry, within a period, resumes its lease at the same node epoch, completing its journals' generation swaps first, and keeps its shards, open state and verifier with no grace; every node holds its claims and address takeovers for two renewal periods plus the drift bound so resumption wins ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | a node reaches the store but its journal device or serving loop stalls | it stops renewing once the stall passes the stall bound, and its shards fail over ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | a primary reaches the store but none of a shard's replicas | it removes none of them and relinquishes that shard, which a replica takes over at once; its other shards are unaffected ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
-| a front-end is lost | another front-end takes over its client addresses ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)); clients reconnect and lose no open state, which primaries hold |
 | a primary is lost | its shards fail over; clients reclaim their state in them in grace ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); layouts naming it are revoked |
 | the store is unreachable from a node | it can neither renew nor commit; it fences itself after half its lease, and its shards fail over wherever the store is reachable |
 | a partition separates nodes but not the store | who is primary does not change, since the store decides it; replication across the partition fails and [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) removes the unreachable replicas while one still answers; a primary cut off from every replica removes none and relinquishes the shard to them |
-| front-ends cannot reach a primary that reaches the store | a health condition; handover after the unreachable delay, failover past the unreachable handover bound ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
+| gateways cannot reach a primary that reaches the store | a health condition; handover after the unreachable delay, failover past the unreachable handover bound ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)) |
 | a coordinator is lost mid-prepare | holds end at their deadline; nothing was committed ([§8.1](#8.1%20Operations%20across%20shards)) |
 
 ## 10. Worked examples
@@ -1290,7 +1339,7 @@ Thirty clients mount through A, B and C.
 
 | t | node A | nodes B, C | metadata store | client sees |
 | --- | --- | --- | --- | --- |
-| 0 | primary of S(e5); journals writes from its own 10 clients | front-ends forward their 20 clients' writes to A | S: e5, A; B, C | all 30 write |
+| 0 | primary of S(e5); journals writes from its own 10 clients | their gateways forward their 20 clients' writes to A | S: e5, A; B, C | all 30 write |
 | 1 | orders and journals all 30 streams; network or disk at 100% | replicate A's operations as replicas | existence commits at e5 | throughput flat at one node's |
 | 2 | operator marks `/data/users` per-child | — | mark on `/data/users` | — |
 | 3 | moves each `/data/users/u*` tree into its own shard, in batches (as (d)) | — | shards U1…U30 placed by their slots: U1 → B, U2 → C, U3 → A, … | brief waits on files in a frozen batch |
@@ -1407,7 +1456,7 @@ conflicted on A's node record and aborted — `S-shard-stale-commit-node-guard`.
 Signatures are indicative; the obligations above are normative.
 
 ```go
-// Shards is what storage nodes and front-ends ask of the metadata store.
+// Shards is what primaries and gateways ask of the metadata store.
 type Shards interface {
 	// ShardOf returns the shard a file belongs to, recorded with it (§2).
 	ShardOf(ctx context.Context, file FileID) (ShardID, error)
@@ -1455,7 +1504,8 @@ type Claim struct {
 	NodeEpoch uint64
 }
 
-// Router is a front-end's routing cache (§5.1, RFC 15 §6).
+// Router is a gateway's routing cache (§5.1, RFC 15 §6); vfs.Router is
+// declared in package vfs and implemented over it.
 type Router interface {
 	Route(ctx context.Context, file FileID) (NodeID, Claim, error)
 	Invalidate(s ShardID) // after a refusal
@@ -1514,13 +1564,13 @@ Metric names are shown without the deployment's prefix.
 | shards this node is primary of, and replica of | `shard_primaries`, `shard_replicas` | gauge |
 | shard records in the store; they follow shares and directories, not files | `shard_records` | gauge |
 | planned moves back to a primary the shard left within the dwell time; nonzero is a bug | `shard_bounces_total` | counter |
-| self-fences, labelled `reason` = `lease` or `clock` | `shard_self_fences_total` | counter |
 | cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `shard_cross_ops_total` | counter |
 | shards away from their placed node, waiting out the re-placement delay | `shard_displaced` | gauge |
 | slots per node, and the node's share of capacity, so a skew is visible | `shard_slots`, `shard_capacity_share` | gauge |
 | slots whose nodes a rebalance changed, and slots whose shards are still being handed over | `shard_slot_moves_total`, `shard_slots_pending` | counter, gauge |
 
-Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability).
+Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability);
+self-fences are counted once, in [RFC 8 §14](rfc-8-engine.md#14.%20Observability)'s `engine_self_fences_total`.
 
 Logs: a change of primary and a move batch at `Info`, with shard, old and new
 primary, epoch and reason. A node that fences itself on its lease or its clock
@@ -1583,14 +1633,14 @@ a claim or address mark waited out the claim hold.
 | `S-shard-flapping-node` | a node misses renewals repeatedly within the delay: failovers, no slot-table change |
 | `S-shard-slot-rebalance` | a node joins with twice the others' capacity: it gains about twice their slots, only those slots' shards are handed over, at the configured rate and under the dwell; no file changes shard |
 | `S-shard-slot-cas-race` | two nodes recompute the slot table at once: one compare-and-swap wins, the other recomputes from it, and no slot's shards are handed over twice |
-| `S-shard-unreachable-primary` | front-ends cannot reach a primary that reaches the store: handover after the unreachable delay; with the handover stalled, the primary is refused renewal once the unreachable handover bound passes and its shards fail over; the primary then calls `Resume`: assert it fails as `Renew` does and the node takes a new node epoch. An unmarked refusal lets `Resume` rewrite the expiry and race the claim |
+| `S-shard-unreachable-primary` | gateways cannot reach a primary that reaches the store: handover after the unreachable delay; with the handover stalled, the primary is refused renewal once the unreachable handover bound passes and its shards fail over; the primary then calls `Resume`: assert it fails as `Renew` does and the node takes a new node epoch. An unmarked refusal lets `Resume` rewrite the expiry and race the claim |
 | `S-shard-retry-running` | a forwarded mutation is admitted and stalls in its transaction; the client's retry arrives through another connection; assert the retry waits for the first's result and returns it, and the mutation is applied once |
-| `S-shard-session-id-collision` | two front-ends mint the same NFSv4.1 session ID and send the same slot and sequence to one primary; assert both calls are applied. A request ID without the front-end's node ID answers the second from the first's entry |
-| `S-shard-session-new-epoch` | a front-end paused past its lease is marked, re-acquires a higher node epoch and keeps its sessions; a call it forwarded under the old epoch lost its reply; the client retries on the same session, slot and sequence; assert it is answered from the first result. A request ID built from the front-end's current epoch applies it twice |
-| `S-shard-handover-open-state-retry` | an SMB `LOCK`, an NFSv4.1 `CLOSE` and a sequenced NFSv4.0 `LOCKU` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no bad stateid, no `BAD_SEQID`. A handover that ships no dedup entries fails all three |
-| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved stateid: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
-| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert NFSv4.2 `CLONE` answers `NFS4ERR_XDEV` and a `COPY` of the same range is copied server-side, with the source extent writable throughout |
-| `S-shard-hop-loop` | two front-ends with crossed stale caches: refused at the hop limit, then routed |
+| `S-shard-session-id-collision` | two gateway nodes mint the same NFSv4.1 session ID and send the same slot and sequence to one primary; assert both calls are applied. A request ID without the gateway node's ID answers the second from the first's entry |
+| `S-shard-session-new-epoch` | a gateway node paused past its lease is marked, re-acquires a higher node epoch and keeps its sessions; a call it forwarded under the old epoch lost its reply; the client retries on the same session, slot and sequence; assert it is answered from the first result. A request ID built from the gateway node's current epoch applies it twice |
+| `S-shard-handover-open-state-retry` | a `Lock`, a `Close` and a sequenced `Unlock` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no `ErrBadState`, no `ErrBadSeqID`. A handover that ships no dedup entries fails all three |
+| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved state reference: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
+| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert the clone is refused `ErrCross` (`OtherShard`) and a copy of the same range is copied server-side, with the source extent writable throughout |
+| `S-shard-hop-loop` | two gateways with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
 | `S-shard-cross-hold-release` | a participant releases an expired hold while the coordinator's commit is in flight, the release committing first, on a store that chooses the commit timestamp after the commit's reads; the commit conflicts with the deletion of the hold record and aborts, and the deny-delete open the participant then grants stands |
 | `S-shard-cross-dir-loop` | two cross-shard directory renames that together would make a cycle: one commits |
@@ -1599,14 +1649,14 @@ a claim or address mark waited out the claim hold.
 | `S-shard-resume-vs-claim` | a primary's resume and a replica's claim race on one node record; assert exactly one commits, and a resumed primary serves only if the claim lost |
 | `S-shard-journal-stall` | a primary's journal device stops completing syncs while the node still reaches the store; assert it stops renewing after the stall bound and a replica takes over. A health check by store reachability alone keeps the shard stuck |
 | `S-shard-move-client-records` | fail R over immediately after a batch commits; assert every client whose open moved is told to reclaim in R. A client record updated after the commit misses them |
-| `S-shard-retry-after-takeover` | a namespace mutation and a write each lose their reply; the primary fails over after the write's content was offloaded and evicted; the client retries through the same front-end on the same connection; assert each is answered with its first result and applied once. A request entry dropped with the evicted content applies the write twice |
+| `S-shard-retry-after-takeover` | a namespace mutation and a write each lose their reply; the primary fails over after the write's content was offloaded and evicted; the client retries through the same gateway node on the same connection; assert each is answered with its first result and applied once. A request entry dropped with the evicted content applies the write twice |
 | `S-shard-raise-live-primary` | a replica joins, then a learner is cleared, under a live primary with existence commits and puts in flight; assert every commit lands at the new epoch after the primary rewrites the touched files' fences, GC removes none of its intents, and no ref names a removed object. A design where only a new primary writes fences refuses every commit after the raise; one that supersedes intents by epoch leaks a dangling ref |
 | `S-shard-resume-rollback` | image a primary's VM while it holds its lease, let the lease lapse with no takeover, restore the image; assert its resume's generation swap loses, it serves nothing from that journal, and the shard fails over with every acknowledged write. A resume that skips the swap serves the rolled-back journal under the old verifier |
 | `S-shard-stall-renew-phase` | stall the store for one and a half node leases with every node's renewal timer just past its last attempt; assert every node's first renewal after the stall lands within one renewal period of the store's return, no node marks another lapsed within the hold, and no shard fails over. A claim hold of one period, as the failing control, fails over shards |
 | `S-shard-repair-one-join` | lose the first replica of a per-child shard's slot; let repair restore the count, then let the node leave the placement set; assert the recomputed slot names the node repair joined, and the shard saw one join and one tail copy |
 | `S-shard-verifier-roundtrip` | hand a shard A → B → A with no restart; assert the write verifier A gives the second time differs from the first. A verifier from node, node epoch and process instance alone repeats |
 | `S-shard-slot-domains` | four nodes in two racks, replica count 2; assert every slot's nodes lie in different racks, and that a rack loss leaves every shard a replica |
-| `S-shard-handover-lost-table` | kill the old primary after a handover's compare-and-swap and before the new one holds the table, with an NFSv4.1 client that sent `RECLAIM_COMPLETE` since the last loss; assert the new primary writes `GraceInstance` before serving and the client's reclaims are accepted. A primary that keeps the old instance answers them `NO_GRACE` |
+| `S-shard-handover-lost-table` | kill the old primary after a handover's compare-and-swap and before the new one holds the table, with a client that called `ReclaimComplete` since the last loss; assert the new primary writes `GraceInstance` before serving and the client's reclaims are accepted. A primary that keeps the old instance refuses them as out of grace |
 | `S-shard-move-request-records` | an `REMOVE` in a directory commits and loses its reply, the directory moves G→R, then R fails over; assert the retry at R is answered from its request record, and that R's recovery finds a moved file's pending release. A request record left under G applies the remove twice (`NOENT`) |
 | `S-shard-move-running-clone` | admit a slow clone with both files in G, then mark their directory per-child; assert the batches skip both files until the clone is done and move them after, and that the source extent is never writable while the clone runs |
 | `S-shard-intent-reclaim` | a primary of a shard with no replica crashes between an intent and its put, restarts and re-claims; assert the intent is superseded by the node epoch and collected |
@@ -1627,13 +1677,13 @@ a claim or address mark waited out the claim hold.
 | The store's shard-record count follows directories, not files (O11) | a per-file record or a file-to-shard map kept as shard records |
 | A shard's writes resume after a handover, move or failover without operator action | a move that waits on a primary that is gone |
 
-**Benchmarks**, on three storage nodes on one local network:
+**Benchmarks**, on three nodes on one local network:
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
 | Claims per file | store transactions per file written, one writer, shard already claimed | 0 |
 | Handover | a shard with 64 MiB un-offloaded | ≤ 2 s at 10 Gb/s |
-| Forwarding overhead | p50 latency one front-end hop adds | ≤ one network round trip + 100 µs |
+| Forwarding overhead | p50 latency one gateway hop adds | ≤ one network round trip + 100 µs |
 | Stale route | operations after a move | each refused at most once, then applied once |
 | Batch move | files per second moved, 10^6 small files | report |
 | One share, many writers | throughput of 30 writers, one shard vs 30 per-child shards | per-child ≥ 2.5× one shard |
@@ -1650,8 +1700,11 @@ a claim or address mark waited out the claim hold.
 
 1. **Follow-the-writer defaults.** The window, share and dwell in [§3.3](#3.3%20The%20primary%20follows%20the%20writer) are
    proposals, to be tuned from measured workloads.
-2. **Read grants** ([§6](#6.%20Reads%20on%20other%20nodes)): a shared grant per extent, revoked before a write is
-   accepted over it, if the per-read round trip shows in measurement.
+2. **Reads off the primary** ([§6](#6.%20Reads%20on%20other%20nodes)): how the primary's server
+   names another node to serve a read — a redirect the gateway follows, or a
+   shared read grant per extent revoked before a write is accepted over it — so
+   that the gateway still decides nothing. Taken up if the primary's read
+   bandwidth or the per-read round trip shows in measurement.
 3. **A per-share balancer as an interim step.** Before shards move between
    nodes, a balancer in front of several single-node installations could place
    whole shares on nodes — shape B of [§1.1](#1.1%20What%20scaling%20is%20being%20designed%20for) without shard moves. It needs a
