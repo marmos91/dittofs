@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -627,4 +628,88 @@ func TestRFC28C_ReseedByVersion(t *testing.T) {
 	}
 	wantBytes(t, h, b.id, 0, b.p)
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
+
+// sealedSegments returns the sealed segments the journal owns whose file ends
+// in a trailer, in id order: the ones recovery reads by catalog.
+func sealedSegments(t *testing.T, f *journalv2test.Fixture) []journalv2.SegmentID {
+	t.Helper()
+
+	var ids []journalv2.SegmentID
+	for _, s := range f.J.Inspect().Segments() {
+		if !s.Sealed {
+			continue
+		}
+		b := durable(t, f, segmentName(s.ID))
+		if len(b) >= raw.TrailerSize && string(b[len(b)-raw.TrailerSize:][:4]) == "DJT1" {
+			ids = append(ids, s.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// TestRFC28C_SourcesAgree checks that the index built from catalogs and the
+// one built by scanning the same segments are identical: every record kind a
+// catalog must carry is written before the segment seals, the index is read
+// once by catalog, every trailer is damaged, and the index read by scan must
+// match it entry by entry.
+func TestRFC28C_SourcesAgree(t *testing.T) {
+	f := journalv2test.New(t)
+	h := f.Share(0)
+	const size = 64 << 10
+
+	// Every kind a catalog must carry, through file 0's share before file 0's
+	// fill rolls the stream: an extent marked and released, one marked and
+	// unmarked, a deallocate, a truncate and a delete, each left unsettled.
+	id := journalv2test.File(2)
+	var ws []rec
+	for n := range 4 {
+		ws = append(ws, writeRec(t, f, 0, 2, int64(n)*size, size))
+	}
+	mark(t, h, id, ws[0].extent, ws[0].version)
+	wantRelease(t, h, id, ws[0].extent, true)
+	mark(t, h, id, ws[1].extent, ws[1].version)
+	unmark(t, h, id, ws[1].extent)
+
+	_, err := h.Deallocate(t.Context(), id, journalv2.Extent{Off: ws[2].extent.Off + 16<<10, Len: 16 << 10})
+	stub(t, "Deallocate", err)
+	if err != nil {
+		t.Fatalf("deallocate inside a write: %v", err)
+	}
+	_, err = h.Truncate(t.Context(), id, ws[3].extent.Off+32<<10)
+	stub(t, "Truncate", err)
+	if err != nil {
+		t.Fatalf("truncate inside a write: %v", err)
+	}
+
+	gone := journalv2test.File(3)
+	writeRec(t, f, 0, 3, 0, size)
+	_, err = h.Delete(t.Context(), gone)
+	stub(t, "Delete", err)
+	if err != nil {
+		t.Fatalf("delete a file: %v", err)
+	}
+	syncFiles(t, h, id, gone)
+
+	s := sealedSetup(t, f)
+
+	flipped := sealedSegments(t, f)
+	if !slices.Contains(flipped, s.seg) {
+		t.Fatalf("segment %d, sealed full, carries no trailer; sealed segments with one: %v", s.seg, flipped)
+	}
+	for _, seg := range flipped {
+		name := segmentName(seg)
+		flipAt(t, f, name, int64(len(durable(t, f, name)))-raw.TrailerSize)
+	}
+	f.Reopen()
+
+	r := f.J.Stats().Recovery
+	if r.CatalogSegments != 0 {
+		t.Fatalf("recovery read %d segments by catalog with every trailer damaged", r.CatalogSegments)
+	}
+	if want := s.recovery.ScannedSegments + len(flipped); r.ScannedSegments < want {
+		t.Fatalf("recovery read %d segments by scan, want at least %d: %d before and %d trailers damaged", r.ScannedSegments, want, s.recovery.ScannedSegments, len(flipped))
+	}
+	wantSameIndex(t, f, s.index)
 }

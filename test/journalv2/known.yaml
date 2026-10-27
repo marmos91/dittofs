@@ -277,3 +277,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
   issue: '#3378'
+- test: TestRFC28C_SourcesAgree
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and the index built the same way from both.'
+  issue: '#3378'
