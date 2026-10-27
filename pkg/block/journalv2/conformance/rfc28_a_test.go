@@ -1,0 +1,113 @@
+//go:build journal_conformance
+
+package conformance
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+)
+
+// The checks here fail by serving or destroying the wrong bytes without an
+// error, through the on-disk format or recovery.
+
+// rec is one write a check made and the bytes it wrote.
+type rec struct {
+	share   int
+	id      journalv2.FileID
+	extent  journalv2.Extent
+	version journalv2.Version
+	p       []byte
+}
+
+// writeSynced writes one record of size bytes at off of file i through share
+// s and syncs it.
+func writeSynced(t *testing.T, f *journalv2test.Fixture, s, i int, off int64, size int) rec {
+	t.Helper()
+
+	id := journalv2test.File(i)
+	p := pattern(fmtTag("s", s, i, off), size)
+	v := write(t, f.Share(s), id, off, p)
+	syncFiles(t, f.Share(s), id)
+
+	return rec{s, id, journalv2.Extent{Off: off, Len: int64(size)}, v, p}
+}
+
+// fmtTag names a write by its share, file and offset, so no two writes of a
+// check share a pattern.
+func fmtTag(kind string, s, i int, off int64) string {
+	return fmt.Sprintf("%s%d.f%d@%d", kind, s, i, off)
+}
+
+// corruptAndRead damages A's record on disk, reads it, and returns the loss
+// event the read raised and the stats from before the damage. The read must
+// report A's whole extent missing and leave its buffer untouched.
+func corruptAndRead(t *testing.T, f *journalv2test.Fixture, a rec) (journalv2.LossEvent, journalv2.Stats) {
+	t.Helper()
+
+	before := f.J.Stats()
+	corrupt(t, f, a.id, a.p)
+	wantMissing(t, f.Share(a.share), a.id, a.extent)
+
+	ev := lastLoss(t, f, before)
+	if ev.Share != journalv2test.Tag(a.share) || ev.File != a.id || ev.Extent != a.extent || ev.Reason != journalv2.LossCorrupt {
+		t.Fatalf("loss event %+v, want share %d, file %v, extent %+v, dropped as corrupt", ev, journalv2test.Tag(a.share), a.id, a.extent)
+	}
+
+	return ev, before
+}
+
+// TestRFC28A_CorruptDirty checks that a corrupt record whose content was
+// never offloaded is reported as data loss: the read says the extent is
+// missing, writes nothing into the caller's buffer, and the event says the
+// bit was unset, since no other copy of those bytes exists.
+func TestRFC28A_CorruptDirty(t *testing.T) {
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	// The reseed after a restart marks what the remote tier holds: B here,
+	// and nothing of A, which stays dirty.
+	f.Reopen()
+	mark(t, f.Share(1), b.id, b.extent, b.version)
+
+	ev, before := corruptAndRead(t, f, a)
+	if ev.Offloaded {
+		t.Fatalf("loss event %+v says the bit was set; A was never offloaded", ev)
+	}
+	// A loss of content not yet offloaded raises the generation by one, so
+	// every client resends the writes it has not seen confirmed stable.
+	if got, want := f.J.Stats().LossGeneration, before.LossGeneration+1; got != want {
+		t.Fatalf("LossGeneration = %d after dropping dirty content, want %d", got, want)
+	}
+
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
+
+// TestRFC28A_CorruptOffloaded checks that a corrupt record whose content the
+// remote tier holds is reported as repairable: the read says the extent is
+// missing, the event says the bit was set, and the loss generation does not
+// move, since the next read fetches the content and no client needs to
+// resend anything.
+func TestRFC28A_CorruptOffloaded(t *testing.T) {
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	f.Reopen()
+	mark(t, f.Share(0), a.id, a.extent, a.version)
+	mark(t, f.Share(1), b.id, b.extent, b.version)
+
+	ev, before := corruptAndRead(t, f, a)
+	if !ev.Offloaded {
+		t.Fatalf("loss event %+v says the bit was unset; A was marked offloaded", ev)
+	}
+
+	if got := f.J.Stats().LossGeneration; got != before.LossGeneration {
+		t.Fatalf("LossGeneration = %d after dropping offloaded content, want %d unchanged", got, before.LossGeneration)
+	}
+
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
