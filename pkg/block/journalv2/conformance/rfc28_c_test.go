@@ -43,6 +43,56 @@ func fillSegment(t *testing.T, f *journalv2test.Fixture, s, i int, size int) ([]
 	panic("unreachable")
 }
 
+// sealed is a journal with one segment sealed full and catalogued, as the
+// checks of the catalog start from: file 0's records in that segment, a
+// record of file 1 on the other stream, how the open that read the catalog
+// rebuilt the journal, and the index it built.
+type sealed struct {
+	recs     []rec
+	seg      journalv2.SegmentID
+	name     string
+	other    rec
+	recovery journalv2.RecoveryStats
+	index    map[journalv2.FileID][]journalv2.IndexEntry
+}
+
+// sealedSetup fills file 0's first segment with 64 KiB records until its
+// stream rolls, writes file 1 on the other stream, syncs both and reopens the
+// journal cleanly, so the sealed segment's catalog is what the open read.
+func sealedSetup(t *testing.T, f *journalv2test.Fixture) sealed {
+	t.Helper()
+
+	recs, seg := fillSegment(t, f, 0, 0, 64<<10)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	syncFiles(t, f.Share(0), journalv2test.File(0))
+	f.Reopen()
+
+	recovery := f.J.Stats().Recovery
+	if recovery.CatalogSegments == 0 {
+		t.Fatalf("recovery read no segment by its catalog: %+v", recovery)
+	}
+	if !segmentInfo(t, f, seg).Sealed {
+		t.Fatalf("segment %d is not sealed after its stream rolled past it", seg)
+	}
+
+	return sealed{recs, seg, segmentName(seg), other, recovery, indexSnapshot(t, f)}
+}
+
+// wantScanned fails the test unless the last open read n segments by scan
+// that the open before, which rebuilt the journal as before says, read by
+// catalog: n fewer by catalog, and at least n more by scan.
+func wantScanned(t *testing.T, f *journalv2test.Fixture, before journalv2.RecoveryStats, n int) {
+	t.Helper()
+
+	r := f.J.Stats().Recovery
+	if r.CatalogSegments != before.CatalogSegments-n {
+		t.Fatalf("recovery read %d segments by catalog, want %d: %d before, %d without a footer now", r.CatalogSegments, before.CatalogSegments-n, before.CatalogSegments, n)
+	}
+	if r.ScannedSegments < before.ScannedSegments+n {
+		t.Fatalf("recovery read %d segments by scan, want at least %d: %d before, %d without a footer now", r.ScannedSegments, before.ScannedSegments+n, before.ScannedSegments, n)
+	}
+}
+
 // TestRFC28C_NeighboursSurvive checks that one corrupt record in a segment
 // read by its catalog costs that record alone: the damage is found by the
 // read that would serve it, not at open, and every other record of the
