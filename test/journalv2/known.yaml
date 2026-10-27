@@ -235,3 +235,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs segments taken from spares, Sync and recovery.'
   issue: '#3378'
+- test: TestRFC28A_AZeroSlotIsNotTheEnd
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
+  issue: '#3378'

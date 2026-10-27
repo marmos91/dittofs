@@ -3,8 +3,10 @@
 package conformance
 
 import (
+	"errors"
 	"fmt"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -145,5 +147,79 @@ func TestRFC28A_DirectoryEntrySurvives(t *testing.T) {
 	}
 
 	wantBytes(t, f.Share(0), a.id, off, a.p)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
+
+// TestRFC28A_AZeroSlotIsNotTheEnd checks that a write whose storage call
+// failed, leaving its slot zeros between two writes that succeeded and
+// synced, costs nothing but itself: the write after it reads back, nothing
+// is reported as damage or as a torn tail, and the segment is not cut below
+// it.
+func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	const size = 64 << 10
+
+	// Three reservations on one file, so three slots of one stream, taken in
+	// order.
+	var rs [3]*journalv2.Reservation
+	var ps [3][]byte
+	for i := range rs {
+		r, err := h.Reserve(size, 1)
+		stub(t, "Reserve", err)
+		if err != nil {
+			t.Fatalf("reserve a write: %v", err)
+		}
+		rs[i] = r
+		ps[i] = pattern(fmtTag("z", 0, 0, int64(i)), size)
+	}
+
+	_, err := rs[0].WriteAt(t.Context(), id, 0, ps[0], 0)
+	stub(t, "WriteAt", err)
+	if err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+	name := segmentName(entryAt(t, f, id, 0).Location.Segment)
+
+	f.FailNext(journalv2test.OpWrite, name, 1)
+	_, err = rs[1].WriteAt(t.Context(), id, size, ps[1], 0)
+	stub(t, "WriteAt", err)
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the write whose storage call failed returned %v, want the device's error", err)
+	}
+
+	_, err = rs[2].WriteAt(t.Context(), id, 2*size, ps[2], 0)
+	stub(t, "WriteAt", err)
+	if err != nil {
+		t.Fatalf("the third write: %v", err)
+	}
+	syncFiles(t, h, id)
+	third := entryAt(t, f, id, 2*size).Location
+	for _, r := range rs {
+		if err := r.Close(); err != nil {
+			t.Fatalf("close a reservation: %v", err)
+		}
+	}
+
+	f.Crash()
+
+	wantBytes(t, f.Share(0), id, 2*size, ps[2])
+	s := f.J.Stats()
+	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("the failed write's zero slot was reported as damage: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
+	}
+	if s.Counters.TornTails != 0 {
+		t.Fatalf("TornTails = %d; the zero slot is neither damage nor a torn tail", s.Counters.TornTails)
+	}
+
+	durable, err := f.Seam.Durable(name)
+	if err != nil {
+		t.Fatalf("read the segment: %v", err)
+	}
+	if end := third.Offset + 96 + 8 + size; int64(len(durable)) < end {
+		t.Fatalf("the segment is %d bytes after recovery, cut below the third record's end at %d", len(durable), end)
+	}
+
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
