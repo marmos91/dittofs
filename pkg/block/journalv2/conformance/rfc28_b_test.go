@@ -1,0 +1,119 @@
+//go:build journal_conformance
+
+package conformance
+
+import (
+	"errors"
+	"io/fs"
+	"strings"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
+)
+
+// The checks here fail by reaching a state the journal cannot leave, or by
+// consuming without bound.
+
+// spareCount returns how many segment files in the journal's directory hold
+// no segment header: spares no stream has taken.
+func spareCount(t *testing.T, f *journalv2test.Fixture) int {
+	t.Helper()
+
+	names, err := f.Seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's directory: %v", err)
+	}
+
+	n := 0
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".seg") {
+			continue
+		}
+
+		b, err := f.Seam.Durable(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+
+		if len(b) < raw.SegmentHeaderSize {
+			t.Fatalf("%s is %d bytes, shorter than a segment header", name, len(b))
+		}
+
+		if _, err := raw.ParseSegmentHeader(b[:raw.SegmentHeaderSize]); err != nil {
+			n++
+		}
+	}
+
+	return n
+}
+
+// TestRFC28B_SegmentReclaimable checks that a segment whose only record was
+// dropped as corrupt is retired by repack and its storage recovered, so one
+// flipped bit never pins a segment's storage for good.
+//
+// decision: the retirement may unlink the segment or recycle it as a spare,
+// and the check accepts either, because the format decides between them by
+// the spare pool's level at the retirement, which a check cannot pin from
+// the public surface, and no rule makes a damaged segment one or the other.
+// Only a segment whose sync or append failed is never recycled, and this one
+// failed neither.
+func TestRFC28B_SegmentReclaimable(t *testing.T) {
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, 128<<10)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	// A's segment is sealed while idle, so A is its only record and the
+	// segment carries nothing else repack would have to carry forward.
+	f.Advance(journalv2test.IdleSealAge)
+	seg := entryAt(t, f, a.id, 0).Location.Segment
+	name := segmentName(seg)
+	if !segmentInfo(t, f, seg).Sealed {
+		t.Fatalf("segment %d holding A is not sealed after %v idle", seg, journalv2test.IdleSealAge)
+	}
+
+	corruptAndRead(t, f, a)
+
+	spares, newest, used := spareCount(t, f), newestID(t, f), f.J.Stats().UsedBytes
+	_, err := f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("repack the segment: %v", err)
+	}
+
+	removed, renamed := f.Seam.CallsFor(journalv2test.OpRemove, name), f.Seam.CallsFor(journalv2test.OpRename, name)
+	switch {
+	case removed == 1 && renamed == 0:
+		if _, err := f.Seam.Durable(name); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s was removed, and a crash would still leave it: %v", name, err)
+		}
+
+		if got := f.J.Stats().UsedBytes; got != used-journalv2test.FixtureSegmentCap {
+			t.Fatalf("UsedBytes = %d after unlinking a segment of %d from %d", got, journalv2test.FixtureSegmentCap, used)
+		}
+	case renamed == 1 && removed == 0:
+		if got := spareCount(t, f); got != spares+1 {
+			t.Fatalf("%d spares after recycling the segment, want %d", got, spares+1)
+		}
+
+		if got := newestID(t, f); got <= newest {
+			t.Fatalf("the recycled segment's id %d is not above every id the directory named, %d", got, newest)
+		}
+
+		for id, entries := range f.J.Inspect().All() {
+			if id == a.id {
+				t.Fatalf("the recycled segment's old record is still attached: %+v", entries)
+			}
+		}
+	default:
+		t.Fatalf("segment %s was removed %d times and renamed %d times by repack, want exactly one of the two", name, removed, renamed)
+	}
+
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID == seg {
+			t.Fatalf("segment %d is still among the journal's after its retirement: %+v", seg, s)
+		}
+	}
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
