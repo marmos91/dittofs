@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,27 +131,190 @@ func corrupt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []by
 func corruptAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []byte, at int) {
 	t.Helper()
 
-	loc := heldEntry(t, f, id).Location
+	corruptRecordAt(t, f, heldEntry(t, f, id).Location, p, at)
+}
+
+// corruptRecord is corrupt for the record at loc, whose payload p need not
+// be the first its file holds. It finds p in the segment's bytes as a read
+// sees them now, so a record no sync made durable, as one a failed sync
+// covered, is found too.
+func corruptRecord(t *testing.T, f *journalv2test.Fixture, loc journalv2.RecordRef, p []byte) {
+	t.Helper()
+
+	corruptRecordAt(t, f, loc, p, len(p)/2)
+}
+
+// corruptRecordAt is corruptRecord flipping byte at of p rather than its
+// middle one.
+func corruptRecordAt(t *testing.T, f *journalv2test.Fixture, loc journalv2.RecordRef, p []byte, at int) {
+	t.Helper()
+
 	name := segmentName(loc.Segment)
-	data, err := f.Seam.Durable(name)
-	if err != nil {
-		t.Fatalf("read the segment holding the record: %v", err)
-	}
+	data := liveBytes(t, f, name)
 
 	start := bytes.Index(data[loc.Offset:], p)
 	if start < 0 {
 		t.Fatalf("the payload is not in segment %d past offset %d", loc.Segment, loc.Offset)
 	}
-	off := loc.Offset + int64(start) + int64(at)
+
+	flipAt(t, f, name, loc.Offset+int64(start)+int64(at))
+}
+
+// flipAt inverts the byte at off of the segment file name, through the seam,
+// and syncs the file, so the durable image holds the damage.
+func flipAt(t *testing.T, f *journalv2test.Fixture, name string, off int64) {
+	t.Helper()
 
 	file, err := f.Seam.Open(name)
 	if err != nil {
-		t.Fatalf("corrupt %s: %v", name, err)
+		t.Fatalf("flip a byte of %s: %v", name, err)
 	}
-	_, err = file.WriteAt([]byte{data[off] ^ 0xff}, off)
+
+	b := make([]byte, 1)
+	if _, err := file.ReadAt(b, off); err != nil {
+		t.Fatalf("flip a byte of %s: read offset %d: %v", name, off, err)
+	}
+
+	_, err = file.WriteAt([]byte{b[0] ^ 0xff}, off)
 	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
-		t.Fatalf("corrupt %s: %v", name, err)
+		t.Fatalf("flip a byte of %s: %v", name, err)
 	}
+}
+
+// liveBytes returns the bytes of the segment file name as a read of it sees
+// them now, unsynced and lost changes included, unlike the seam's durable
+// image.
+func liveBytes(t *testing.T, f *journalv2test.Fixture, name string) []byte {
+	t.Helper()
+
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+
+	size, err := file.Size()
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+
+	b := make([]byte, size)
+	_, err = file.ReadAt(b, 0)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+
+	if err = errors.Join(err, file.Close()); err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+
+	return b
+}
+
+// sentinel fills a read's buffer before the read, so a byte the journal did
+// not write is told from one it did: no pattern byte has this value.
+const sentinel byte = 0xa5
+
+// readAt reads n bytes at off of file id through h into a buffer filled with
+// sentinel, and returns the buffer, the extents reported missing and the
+// read's error, which a read that drops a corrupt record may return.
+func readAt(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, n int) ([]byte, []journalv2.Extent, error) {
+	t.Helper()
+
+	p := bytes.Repeat([]byte{sentinel}, n)
+	_, missing, _, _, err := h.ReadAt(t.Context(), id, off, p)
+	stub(t, "ReadAt", err)
+	return p, missing, err
+}
+
+// wantBytes fails the test unless a read at off of file id returns want
+// exactly, with nothing missing.
+func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, want []byte) {
+	t.Helper()
+
+	p, missing, err := readAt(t, h, id, off, len(want))
+	if err != nil {
+		t.Fatalf("read %d bytes at %d: %v", len(want), off, err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("read %d bytes at %d: missing %+v, want none", len(want), off, missing)
+	}
+	if !bytes.Equal(p, want) {
+		t.Fatalf("read %d bytes at %d: got % x..., want % x...", len(want), off, p[:16], want[:16])
+	}
+}
+
+// wantMissing fails the test unless a read of extent e of file id reports
+// exactly e missing and leaves every byte of its buffer untouched.
+func wantMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent) {
+	t.Helper()
+
+	p, missing, _ := readAt(t, h, id, e.Off, int(e.Len))
+	if len(missing) != 1 || missing[0] != e {
+		t.Fatalf("read of %+v reports missing %+v, want exactly it", e, missing)
+	}
+
+	if i := bytes.IndexFunc(p, func(r rune) bool { return r != rune(sentinel) }); i >= 0 {
+		t.Fatalf("read of %+v wrote byte %#x into p at %d, want p untouched", e, p[i], i)
+	}
+}
+
+// syncFiles syncs ids through h.
+func syncFiles(t *testing.T, h *journalv2.Handle, ids ...journalv2.FileID) {
+	t.Helper()
+
+	err := h.Sync(t.Context(), ids...)
+	stub(t, "Sync", err)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+}
+
+// entryAt returns the held index entry of file id that covers offset off.
+func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off int64) journalv2.IndexEntry {
+	t.Helper()
+
+	entries, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("inspect a file: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.Kind == journalv2.EntryHeld && e.Extent.Off <= off && off < e.Extent.Off+e.Extent.Len {
+			return e
+		}
+	}
+
+	t.Fatalf("no held extent of the file covers offset %d; entries: %+v", off, entries)
+	panic("unreachable")
+}
+
+// segmentInfo returns the accounting of segment id, which the journal must
+// own.
+func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID) journalv2.SegmentInfo {
+	t.Helper()
+
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID == id {
+			return s
+		}
+	}
+
+	t.Fatalf("segment %d is not among the journal's", id)
+	panic("unreachable")
+}
+
+// lastLoss fails the test unless Stats holds exactly one loss event more than
+// before, and returns it.
+func lastLoss(t *testing.T, f *journalv2test.Fixture, before journalv2.Stats) journalv2.LossEvent {
+	t.Helper()
+
+	losses := f.J.Stats().Losses
+	if len(losses) != len(before.Losses)+1 {
+		t.Fatalf("%d loss events, want %d: %+v", len(losses), len(before.Losses)+1, losses)
+	}
+
+	return losses[len(losses)-1]
 }
 
 // plant writes data to a new, durable file name in the fixture's directory,
