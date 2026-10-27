@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
 // The checks here fail by coming back up describing something other than
@@ -397,4 +398,119 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 	f.Crash()
 	wantBytes(t, f.Share(0), id, a.extent.Off, a.p)
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
+
+// truncateSegment cuts the segment file name to size bytes through the seam
+// and syncs it, as an edit from outside would.
+func truncateSegment(t *testing.T, f *journalv2test.Fixture, name string, size int64) {
+	t.Helper()
+
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		t.Fatalf("truncate %s: %v", name, err)
+	}
+	err = file.Truncate(size)
+	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
+		t.Fatalf("truncate %s: %v", name, err)
+	}
+}
+
+// wantMissingFrom fails the test unless a read of extent e of file id
+// reports its start missing: the record was dropped, whether whole or, for
+// a write split at a segment cap, its first piece.
+func wantMissingFrom(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent) {
+	t.Helper()
+
+	_, missing, _ := readAt(t, h, id, e.Off, int(e.Len))
+	if len(missing) == 0 || missing[0].Off != e.Off {
+		t.Fatalf("read of %+v reports missing %+v, want its start missing", e, missing)
+	}
+}
+
+// TestRFC28C_TruncatedSealedSegment checks that recovery tells a truncation
+// from a crash by the predecessor link: a segment a later one names as its
+// predecessor was sealed before the later one existed, so a short one is
+// corruption and is reported; the newest segment of a stream cut the same way
+// is a torn tail.
+func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
+	f := journalv2test.New(t)
+	const size = 64 << 10
+	recs, s1 := fillSegment(t, f, 0, 0, size)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	id := journalv2test.File(0)
+	syncFiles(t, f.Share(0), id)
+
+	s2 := entryAt(t, f, id, int64(len(recs))*size).Location.Segment
+	hdr, err := f.Seam.Durable(segmentName(s2))
+	if err != nil {
+		t.Fatalf("read the successor segment: %v", err)
+	}
+	h2, err := raw.ParseSegmentHeader(hdr[:raw.SegmentHeaderSize])
+	if err != nil {
+		t.Fatalf("parse the successor's header: %v", err)
+	}
+	if h2.Predecessor != uint64(s1) {
+		t.Fatalf("segment %d names predecessor %d, want %d", s2, h2.Predecessor, s1)
+	}
+
+	cut := len(recs) / 2
+	cutLoc := entryAt(t, f, id, recs[cut].extent.Off).Location
+	truncateSegment(t, f, segmentName(s1), cutLoc.Offset+96+100)
+	f.Reopen()
+
+	s := f.J.Stats()
+	if s.Counters.TornTails != 0 {
+		t.Fatalf("TornTails = %d; a truncated segment with a successor is corruption, not a torn tail", s.Counters.TornTails)
+	}
+	if !segmentInfo(t, f, s1).Damaged {
+		t.Fatalf("the truncated segment %d is not reported as corruption", s1)
+	}
+	for i, r := range recs {
+		if i < cut {
+			wantBytes(t, f.Share(0), id, r.extent.Off, r.p)
+		} else {
+			wantMissingFrom(t, f.Share(0), id, r.extent)
+		}
+	}
+	lost := map[int64]bool{}
+	for _, ev := range s.Losses {
+		if ev.File == id && ev.Reason == journalv2.LossCorrupt {
+			lost[ev.Extent.Off] = true
+		}
+	}
+	for i, r := range recs {
+		if (i >= cut) != lost[r.extent.Off] {
+			t.Fatalf("record at %d: cut %t, reported as corrupt %t; losses %+v", r.extent.Off, i >= cut, lost[r.extent.Off], s.Losses)
+		}
+	}
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	// The newest segment of a stream, cut the same way.
+	g := journalv2test.NewUnwatched(t)
+	var rs []rec
+	for n := range 4 {
+		rs = append(rs, writeSynced(t, g, 0, 0, int64(n)*size, size))
+	}
+	seg := entryAt(t, g, id, 0).Location.Segment
+	cutLoc = entryAt(t, g, id, rs[2].extent.Off).Location
+	truncateSegment(t, g, segmentName(seg), cutLoc.Offset+96+100)
+	g.Reopen()
+
+	s = g.J.Stats()
+	if s.Counters.TornTails != 1 {
+		t.Fatalf("TornTails = %d after cutting the newest segment, want 1", s.Counters.TornTails)
+	}
+	if len(s.Losses) != 0 {
+		t.Fatalf("a cut newest segment reported losses: %+v", s.Losses)
+	}
+	if !segmentInfo(t, g, seg).Sealed {
+		t.Fatalf("the newest segment %d was not sealed after its torn tail was cut off", seg)
+	}
+	for i, r := range rs {
+		if i < 2 {
+			wantBytes(t, g.Share(0), id, r.extent.Off, r.p)
+		} else {
+			wantMissingFrom(t, g.Share(0), id, r.extent)
+		}
+	}
 }

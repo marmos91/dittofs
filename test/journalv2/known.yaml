@@ -247,3 +247,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery that cuts a torn tail, seals the segment and counts it.'
   issue: '#3378'
+- test: TestRFC28C_TruncatedSealedSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
+  issue: '#3378'
