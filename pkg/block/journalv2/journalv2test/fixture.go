@@ -278,6 +278,26 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 	f.open()
 }
 
+// Abandon ends the process holding the journal without a storage loss, as a
+// kill does: the seam stops serving the journal's view and closes its files,
+// every byte written stays readable as the operating system's cache keeps a
+// dead process's writes, and what no sync covered is still lost by a later
+// Crash. Then the journal is opened again on what the process left, through
+// the path Reopen and Crash take.
+//
+// decision: the abandoned journal is not closed. A dead process closes, seals
+// and syncs nothing, and a close through the dead view would still count its
+// calls on the files the seam closed. Its goroutines, once a journal has any,
+// run on until they fail on the dead view; the profiler's goroutine check at
+// the test's end shows them if they never stop, and a close outside the call
+// counts is the upgrade then.
+func (f *Fixture) Abandon() {
+	f.tb.Helper()
+
+	f.Seam.Abandon()
+	f.open()
+}
+
 // Reopen closes the journal cleanly and opens it again.
 func (f *Fixture) Reopen() {
 	f.tb.Helper()

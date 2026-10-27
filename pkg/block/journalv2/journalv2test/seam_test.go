@@ -946,3 +946,103 @@ func TestFailedWriteLeavesNoUndo(t *testing.T) {
 		t.Fatalf("ReadAtDirect after a failed write: %q, %v; want %q", got, err, "ab")
 	}
 }
+
+// An Abandon leaves a dead process's unsynced writes in the cache, readable
+// through a new handle, while the durable image holds only what was synced.
+// An Abandon that put the files back to their durable images, as Crash does,
+// would lose the write; one that synced them would put it in the image.
+func TestAbandonKeepsUnsyncedWritesReadable(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+
+	s.Abandon()
+
+	g, err := s.Open("seg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAt(t, g, 6); got != "aaaabb" {
+		t.Fatalf("after Abandon a read serves %q, want the cache's %q", got, "aaaabb")
+	}
+
+	durable, err := s.Durable("seg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(durable) != "aaaa" {
+		t.Fatalf("after Abandon the durable image holds %q, want the synced %q", durable, "aaaa")
+	}
+}
+
+// A Crash after an Abandon drops what no sync covered, as a crash with no
+// Abandon before it does. An Abandon that forgot the pending changes, by
+// clearing the undo log, would let the crash keep the write.
+func TestAbandonThenCrashDropsUnsyncedWrites(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+
+	s.Abandon()
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "aaaa" {
+		t.Fatalf("after Abandon then Crash the file holds %q, want the synced %q", got, "aaaa")
+	}
+}
+
+// An Abandon issues no call on the seam: the dead process closes, seals and
+// syncs nothing. What it opened fails from then on as after a crash, and a
+// new view serves the directory. An Abandon that closed the files through
+// Close, or synced them, would count those calls.
+func TestAbandonIssuesNoCallOnTheSeam(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	old := s.FS()
+
+	closes, syncs, dirSyncs := s.Calls(OpClose), s.Calls(OpSync), s.Calls(OpSyncDir)
+	s.Abandon()
+	if got := [3]int{s.Calls(OpClose), s.Calls(OpSync), s.Calls(OpSyncDir)}; got != [3]int{closes, syncs, dirSyncs} {
+		t.Fatalf("Abandon made close, sync and sync_dir calls: %v, want %v", got, [3]int{closes, syncs, dirSyncs})
+	}
+
+	if _, err := f.WriteAt([]byte("x"), 0); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a write through the dead process's handle returned %v, want an error matching fs.ErrClosed", err)
+	}
+	if _, err := old.Open("seg"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("an open through the dead process's view returned %v, want an error matching fs.ErrClosed", err)
+	}
+	if _, err := s.Open("seg"); err != nil {
+		t.Fatalf("an open through a new view failed: %v", err)
+	}
+}
+
+// A synced write survives an Abandon and the crash after it, with the
+// durable image a failed sync left behind kept as it was. An Abandon that
+// reset the image kept from a failed sync would let the crash rebuild it
+// from the file, and bring the lost write back.
+func TestAbandonKeepsSyncedWritesThroughACrash(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+	failNextSync(t, s)
+	if err := f.Sync(); err == nil {
+		t.Fatal("the failing sync returned nil")
+	}
+	write(t, f, "cc", 6)
+	syncFile(t, f)
+
+	s.Abandon()
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "aaaa\x00\x00cc" {
+		t.Fatalf("after Abandon then Crash the file holds %q, want %q: the synced writes, and not the one the failed sync lost", got, "aaaa\x00\x00cc")
+	}
+}

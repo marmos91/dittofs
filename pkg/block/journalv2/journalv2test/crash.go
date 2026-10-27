@@ -209,6 +209,23 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	return s.emptyStash()
 }
 
+// Abandon ends the process using the seam without a power loss, as a kill
+// does: it closes every open file and stops serving every view made before,
+// as Crash does, and changes nothing else. Every file and the directory stay
+// as they are, unsynced changes included, as the operating system keeps a
+// dead process's writes in its cache. The durable images do not change, so
+// what no sync covered is still lost by a later Crash, and a read past the
+// cache still serves only what was synced.
+func (s *Seam) Abandon() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for sf := range s.open {
+		_ = sf.closeLocked() // a dead process never sees what close returns
+	}
+	s.crashes++
+}
+
 // restoreDir makes the directory hold exactly names, the durable directory
 // dirSnap keeps: every file now in it moves to the stash, and every durable
 // one back under its name. Undoing dirLog cannot do it once a SyncDir failed,

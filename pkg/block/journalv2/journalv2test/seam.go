@@ -73,7 +73,7 @@ type Seam struct {
 	callsFor map[[2]string]int
 	stashed  int
 	holds    []*Hold
-	crashes  uint64 // Crash calls so far; a call that waited across one fails
+	crashes  uint64 // Crash and Abandon calls so far; a call that waited across one fails
 
 	mu sync.Mutex
 }
@@ -159,10 +159,10 @@ func NewSeam(dir string) (*Seam, error) {
 var _ storage.FS = (*Seam)(nil)
 
 // FS returns a view of the seam for one process: a storage.FS that serves the
-// directory as the seam does until the next Crash, and from then on fails
-// every call with an error matching fs.ErrClosed and does nothing. A call it
-// has in flight when the Crash runs fails the same way. Files opened through
-// it are the seam's, which a Crash already closes.
+// directory as the seam does until the next Crash or Abandon, and from then
+// on fails every call with an error matching fs.ErrClosed and does nothing. A
+// call it has in flight when either runs fails the same way. Files opened
+// through it are the seam's, which a Crash or an Abandon already closes.
 //
 // decision: a crash ends the process that made it, so nothing that process
 // still runs may act on the directory the crash left. Without a view, a
@@ -268,10 +268,10 @@ func applies(k sim.FaultKind, op string) bool {
 // enter counts op on name, waits at any hold that matches it, then consults
 // the fault. It returns the fault's action holding mu, unless the fault fails
 // the call: then it returns the fault's error, without mu. A call from a
-// process a Crash ended, one made after the crashes epoch counts or during
-// which one ran while it was held or delayed, fails with an error matching
-// fs.ErrClosed and does nothing: it must not act on the directory as the crash
-// left it.
+// process a Crash or an Abandon ended, one made after the crashes epoch
+// counts or during which one ran while it was held or delayed, fails with an
+// error matching fs.ErrClosed and does nothing: it must not act on the
+// directory as the crash left it.
 //
 // A call refused on entry is not counted: its process no longer exists, so it
 // is no call of the journal under test. A call on a file a Crash closed is
