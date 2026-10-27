@@ -241,3 +241,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
   issue: '#3378'
+- test: TestRFC28C_TornTailCutOff
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that cuts a torn tail, seals the segment and counts it.'
+  issue: '#3378'
