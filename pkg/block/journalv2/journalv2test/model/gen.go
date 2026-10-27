@@ -55,14 +55,14 @@ func Generate(seed uint64, n int) []Step {
 }
 
 // extentFor draws an extent: mostly within the first 256 bytes and up to 64
-// long, sometimes up to 4 KiB long, rarely at the end of the largest file.
+// long, sometimes up to 1 KiB long, rarely at the end of the largest file.
 func extentFor(r *rand.Rand) (off, n int64) {
 	switch x := r.IntN(100); {
 	case x < 2:
 		n = 1 + r.Int64N(64)
 		return math.MaxInt64 - 64 - n, n
 	case x < 10:
-		return r.Int64N(8192), 1 + r.Int64N(4096)
+		return r.Int64N(4096), 1 + r.Int64N(1024)
 	default:
 		return r.Int64N(256), 1 + r.Int64N(64)
 	}

@@ -46,6 +46,14 @@
 // and ErrMisuse when the model was called in a way it cannot take, which is
 // the caller's bug, never the journal's.
 //
+// # The model-based test
+//
+// Run drives a Target, a journal with two shares, through a sequence of
+// Steps and compares it with the model after every one. Generate draws a
+// sequence from a seed, Check runs one and shrinks a divergence to a short
+// sequence written as a corpus file, and ReadCorpus reads the sequences kept,
+// which are replayed before any seed.
+//
 // decision: the model covers writes, fills, offers and their reports,
 // releases, truncates, deallocates, deletes, settles, crashes and reopens,
 // and Compare checks what Since yields. Repack changes no content, so it has no operation here. What it
