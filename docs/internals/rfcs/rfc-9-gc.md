@@ -441,8 +441,8 @@ checks the counts and never deletes.
 
 **One GC per node; a namespace is a context.** `node.New` ([RFC 23](rfc-23-control-plane.md)) builds
 one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node, as it
-builds one engine per node and a share is a context there
-([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). The node adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
+builds one engine per node and a share is a storage binding there
+([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). The node adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
 context is one namespace with a remote store, holding that namespace's `View`.
 GC runs five sources — deleter, compactor, collector, auditor, recheck — on its
 one scheduler instance, whose tenants are the (namespace, partition) pairs this
@@ -453,7 +453,7 @@ from its index keys and cursors.
 
 | Component | Made of | Depends on | Calls | Injected how | Owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
-| `*gc.GC`, one per node | namespace contexts, five sources, the lease keeper | everything below | `Blocks`, `Remote`, the syncer, `Keys` | `New(Deps)` | the composition root; the node drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
+| `*gc.GC`, one per node | namespace contexts, five sources, the lease keeper | everything below | `Blocks`, `Remote`, the syncer, `Keys` | `New(Deps)` | the composition root; the node drives it | `New` starts nothing; `Start` after the storage bindings; `Drain` and `Close` before they are joined |
 | namespace context | a `View` and the partitions this node holds | `Blocks`, `Remote`, `Keys`, its store's flow | its `View` | `Add(ns, View)` | GC, one per namespace with a remote store | added when the namespace's records name a remote store; removed once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3), or at `Close` |
 | deleter, compactor, collector, auditor, recheck | one scheduler source each | the context's `Blocks`, `Remote` and flow; `Clock` | `Blocks`, `Remote`, the flow | registered by `Start` | GC | run while a partition of the context is leased; `Recheck` by the holder of the first partition |
 | lease keeper | acquire, renew at a third of the lease, release | `Blocks.Lease`, `Clock` | `Blocks.Lease` | internal | GC | acquires at `Add`, releases at `Remove` and `Close`, never lowering an epoch |
@@ -465,7 +465,7 @@ from its index keys and cursors.
 | clock, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
 | health evaluator | the node's ([RFC 25](rfc-index.md) §8.2) | — | `Conditions` on GC | nothing is injected: `*gc.GC` is a `health.Source` the node adds | the root | asks at each evaluation until the node removes GC |
 
-The engine is not a dependency: GC reaches neither its share contexts nor its
+The engine is not a dependency: GC reaches neither its storage bindings nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
 
 **Start.** The node starts GC in build order: after the metadata store and
@@ -627,6 +627,10 @@ the compactor, the audit and collection are its sources. The scheduler batches,
 retries with backoff and jitter, bounds concurrency and applies rate limits; each
 source owns its durability, and GC's is the index keys. A restart resumes from
 them — `BD` first, then `BR` up to store time — with no scan of block records.
+The scheduler drops a post past its tenant's reservation of the total, a tenant being a
+namespace (RFC 24 §5.1); each GC source
+**MUST** then re-derive the dropped work from its index keys and cursors, so a
+dropped item costs latency, never a deletion.
 
 ### 3.2 A retirement not yet deleted is durably recorded
 
@@ -944,7 +948,7 @@ that finds another installation's nonce fences itself as
 
 The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
 claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
-store never recorded. That check runs before any share context serves or GC
+store never recorded. That check runs before any storage binding serves or GC
 starts ([RFC 23](rfc-index.md) §2.2 step 4).
 
 **An object is deleted only after a claim rewrite later than its `deleted`
@@ -1502,8 +1506,16 @@ refused, and every other block it passed was checked against its refs
 
 GC schedules through the shared work scheduler ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), one instance
 per process, with one source each for the deleter, the compactor, the audit and
-collection of every lease partition it holds. The scheduler supplies the bounds; GC
-**MUST** configure and state them:
+collection of every lease partition it holds.
+
+> decision: GC runs one scheduler instance per process, not one per lease
+> partition, because the bounds below are per process and fairness is between
+> namespaces: an instance per partition would multiply deletes in flight and
+> pending entries by the partitions a node leases, and could not share one
+> budget. Overturned if one namespace's partitions are shown starving
+> another's under the shared instance's weights.
+
+The scheduler supplies the bounds; GC **MUST** configure and state them:
 
 - deletes in flight per process;
 - the memory held for them;
@@ -1929,7 +1941,7 @@ type Deps struct {
 	Sched    *sched.Scheduler           // RFC 8 §6.1.1: GC's own instance, one per process
 	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
-	Clock    clock.Clock                // RFC 8 §2.1
+	Clock    Clock                      // the package's own subset of RFC 8 §2.1's Clock
 	Metrics  *metrics.Registry
 	Logger   *slog.Logger
 }
@@ -1962,7 +1974,7 @@ func (g *GC) Close() error                    // releases leases (epochs kept), 
 func (g *GC) Conditions(dst []health.Condition) []health.Condition
 
 // Add and Remove are the node's (RFC 23 §2.1): a namespace with a remote store is
-// a context, as a share is in the engine (RFC 8 §2.3).
+// a context, as a share is a storage binding in the engine (RFC 8 §2.3).
 func (g *GC) Add(ctx context.Context, ns NamespaceID, v View) error
 func (g *GC) Remove(ctx context.Context, ns NamespaceID) error
 
@@ -2112,7 +2124,10 @@ settings, each with its `decision:` where it is set.
 Metric names are shown without the deployment's prefix.
 
 Every metric is labelled by namespace. Per-block outcomes are metrics, not log
-lines.
+lines. GC's scheduler instance also exports the scheduler library's series
+([RFC 8 §14](rfc-8-engine.md#14.%20Observability)) — entries, the oldest due, runs in flight and overdue, drops and
+expiries — labelled by `source` (`gc_deleter`, `gc_compactor`, `gc_audit`,
+`gc_collect`) and tenant namespace, so a stalled GC source is seen as one.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
@@ -2127,7 +2142,7 @@ lines.
 | space amplification: stored bytes of live blocks over their referenced bytes | `gc_space_amplification_ratio` | gauge |
 | audit mismatches, labelled `kind` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
 | refs dropped whose chunk record was absent | `gc_lost_refs_dropped_total` | counter |
-| time since each hash range was last audited | `gc_audit_coverage_age_seconds` | gauge |
+| time since the namespace's least recently audited hash range was audited, one series per namespace; each range's age is read through the management API | `gc_audit_coverage_age_seconds` | gauge |
 | index keys missing, extra or in the wrong state, labelled `cause` = `audit` or `check` | `gc_index_mismatches_total` | counter |
 | collection outcomes, labelled `cause` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
 | put intents older than one pass interval; one that only grows means abandonment stopped | `gc_intents_stale` | gauge |

@@ -900,8 +900,7 @@ then synced with the directory; one that verified at neither read is dropped by
 record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
 limit, so a journal opened at its maximum after the process was killed still
 opens. The cost is one sync and one read of the writes past the last proven
-sync point per stream — at most one sync bound's worth under `bounded`, and
-under `standard` whatever the operating system had not yet written back — and it makes "verified at open" mean "on the device"; in the
+sync point per stream — at most one sync bound's worth — and it makes "verified at open" mean "on the device"; in the
 common case it re-appends nothing, and leaves no duplicate copies behind.
 
 ### 3.2 Offload state after recovery
@@ -1336,7 +1335,7 @@ write path.
 > decision: zero-filled on Linux because `fallocate` alone leaves unwritten extents on
 > ext4 and XFS: the first write into each converts it in a filesystem-journal
 > transaction, so every `fdatasync` after new appends would also force a
-> filesystem-journal commit, and [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)'s one flush per `Sync` would not
+> filesystem-journal commit, and [RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)'s one flush per `Sync` would not
 > hold. Written zeros make an append an overwrite of allocated, written blocks
 > whose size never changes, which `fdatasync` makes durable with the data alone.
 > Zero-filling every new segment would write each segment twice, so above half
@@ -1377,11 +1376,11 @@ it reports a journal on a device the platform names as thin-provisioned as a
 health condition, and the deployment owns keeping snapshots off the journal's
 volume.
 
-Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)):
+Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)):
 
 - **macOS**: `fsync` does not flush the device's write cache; the journal uses
   `fcntl(F_FULLFSYNC)` for every sync, the directory's included.
-- **Linux**: `fdatasync` on the file ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), and `fsync` on the directory's
+- **Linux**: `fdatasync` on the file ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), and `fsync` on the directory's
   descriptor after a create, a rename or an unlink. Open **MUST** refuse a
   filesystem mounted without cache flushes where the mount options say so
   (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync

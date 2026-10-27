@@ -1,90 +1,124 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 486" width="900" height="486" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
-<defs><style>
-.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
-.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
-.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
-.pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}.sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
-.st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}.pe{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
-.rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}.box{fill:#ffffff;stroke:#5b6472;stroke-width:1}
-.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}
-.rarr{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#hr)}
-.garr{stroke:#4c8a58;stroke-width:1.5;fill:none;marker-end:url(#hg)}
-.aarr{stroke:#b07a2a;stroke-width:1.3;fill:none;marker-end:url(#ha)}
-.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
-.rt{font-size:11px;fill:#b04a4a}.gt{font-size:11px;fill:#4c8a58}.at{font-size:11px;fill:#b07a2a}
-</style>
-<marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker>
-<marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b04a4a"/></marker>
-<marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4c8a58"/></marker>
-<marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b07a2a"/></marker>
-</defs>
-<rect width="900" height="486" fill="#ffffff"/>
-<text x="16" y="26" class="t">The entities: everything is held against a file, in its table, and names a client.</text>
-<rect x="20" y="50" width="220" height="140" rx="4" class="st"/>
-<text x="32" y="70" class="h">Client (durable)</text>
-<text x="32" y="90" class="s">ID · Owner · Verifier · Principal</text>
-<text x="32" y="106" class="s">LeaseOwner · Callback · Shards</text>
-<text x="32" y="122" class="s">indexed by (protocol, owner)</text>
-<text x="32" y="146" class="s">Expires: volatile, held by</text>
-<text x="32" y="162" class="s">the lease owner; 90 s for NFSv4</text>
-<text x="32" y="178" class="s">NLM host: no lease</text>
-<rect x="20" y="244" width="220" height="72" rx="4" class="pe"/>
-<text x="32" y="264" class="h">Unconfirmed (volatile)</text>
-<text x="32" y="284" class="s">at the protocol node that answered</text>
-<text x="32" y="300" class="s">SETCLIENTID or EXCHANGE_ID</text>
-<path d="M130 244V194" class="aarr"/>
-<text x="138" y="224" class="at">confirm writes it</text>
-<rect x="20" y="346" width="220" height="72" rx="4" class="box"/>
-<text x="32" y="366" class="h">OwnerSeq (NFSv4.0)</text>
-<text x="32" y="386" class="s">next seqid of an open- or lock-owner</text>
-<text x="32" y="402" class="s">at its home shard's primary</text>
-<rect x="276" y="44" width="604" height="394" rx="6" class="sv"/>
-<text x="290" y="64" class="h">The file's table, at the primary of the file's shard (§3)</text>
-<rect x="296" y="80" width="264" height="104" rx="4" class="pr"/>
-<text x="308" y="100" class="h">Open</text>
-<text x="308" y="120" class="s">Client · Principal · File</text>
-<text x="308" y="136" class="s">Access · Deny · Durability</text>
-<text x="308" y="152" class="s">OpenID unique, never reused</text>
-<text x="308" y="168" class="s">used only by its opener's principal</text>
-<rect x="640" y="80" width="224" height="104" rx="4" class="pr"/>
-<text x="652" y="100" class="h">CachingGrant</text>
-<text x="652" y="120" class="s">Client · File · Kind · Key</text>
-<text x="652" y="136" class="s">delegation, oplock or lease</text>
-<text x="652" y="152" class="s">one per (client, lease key, file)</text>
-<text x="652" y="168" class="s">a delegation covers no open</text>
-<path d="M560 124H636" class="arr"/>
-<text x="572" y="117" class="s">Grant</text>
-<text x="572" y="142" class="s">SMB only</text>
-<rect x="296" y="236" width="132" height="72" rx="4" class="box"/>
-<text x="306" y="256" class="h">Lock</text>
-<text x="306" y="274" class="s">Owner · Range</text>
-<text x="306" y="290" class="s">Open: zero for NLM</text>
-<rect x="440" y="236" width="132" height="72" rx="4" class="box"/>
-<text x="450" y="256" class="h">LockState</text>
-<text x="450" y="274" class="s">NFSv4 lock stateid</text>
-<text x="450" y="290" class="s">Owner · Open · Seq</text>
-<rect x="584" y="236" width="132" height="72" rx="4" class="box"/>
-<text x="594" y="256" class="h">LockWaiter</text>
-<text x="594" y="274" class="s">Open: zero for NLM</text>
-<text x="594" y="290" class="s">Arrived orders, FIFO</text>
-<rect x="728" y="236" width="136" height="72" rx="4" class="box"/>
-<text x="738" y="256" class="h">Layout (cluster)</text>
-<text x="738" y="274" class="s">Open · Ranges</text>
-<text x="738" y="290" class="s">Shard · Epoch</text>
-<path d="M362 236L362 188" class="arr"/>
-<path d="M506 236L460 188" class="arr"/>
-<path d="M650 236L520 188" class="arr"/>
-<path d="M796 236L552 188" class="arr"/>
-<text x="296" y="216" class="s">Open</text>
-<rect x="296" y="330" width="264" height="56" rx="4" class="box"/>
-<text x="308" y="350" class="h">Copy (NFSv4.2 async)</text>
-<text x="308" y="370" class="s">in the destination file's table</text>
-<rect x="600" y="330" width="264" height="56" rx="4" class="box"/>
-<text x="612" y="350" class="h">Watch</text>
-<text x="612" y="370" class="s">at its directory's shard primary</text>
-<text x="292" y="412" class="s">Each entity names its Client; lease expiry or a revoke releases</text>
-<text x="292" y="428" class="s">every open, lock, waiter, grant, layout and watch in one step (§4.3).</text>
-<path d="M276 120H244" class="arr"/>
-<text x="16" y="460" class="l">Arrows run from the entity that names to the entity it names, by the field on the arrow.</text>
-<text x="16" y="477" class="s">Closing an open releases the locks taken under it; an NLM lock names no open and is held by its owner alone.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 456" width="900" height="456" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .dd{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4;stroke-dasharray:5 3}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="456" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Open state's entities: every per-file entry names its client and its file; the colour says what is written down.</text>
+
+  <rect x="24" y="48" width="210" height="124" rx="6" class="st"/>
+  <text x="36" y="67" class="h">Client</text>
+  <text x="36" y="85" class="s">ID, Protocol, Name, Boot, Owner,</text>
+  <text x="36" y="100" class="s">Protect, Recovery, Lease, Reach,</text>
+  <text x="36" y="115" class="s">Shards (each with Done), Adapter</text>
+  <text x="36" y="133" class="s">found by (protocol, name);</text>
+  <text x="36" y="148" class="s">durable as ClientRecord; Expires</text>
+  <text x="36" y="163" class="s">held by the lease owner (§2.1)</text>
+
+  <rect x="24" y="192" width="210" height="72" rx="6" class="pr"/>
+  <text x="36" y="211" class="h">Client.Pending</text>
+  <text x="36" y="228" class="s">a proposal awaiting its confirm;</text>
+  <text x="36" y="243" class="s">held in open state on the node</text>
+  <text x="36" y="258" class="s">that answered, never written (§2.9)</text>
+  <path d="M129,190 L129,174" class="cb"/>
+  <text x="136" y="186" class="s">confirm: Connect</text>
+
+  <rect x="24" y="284" width="210" height="72" rx="6" class="pr"/>
+  <text x="36" y="303" class="h">Sequence</text>
+  <text x="36" y="320" class="s">the number an owner's next</text>
+  <text x="36" y="335" class="s">sequenced request carries, at its</text>
+  <text x="36" y="350" class="s">home primary; orders opens, locks</text>
+  <path d="M236,300 L268,244" class="cb"/>
+
+  <rect x="270" y="48" width="226" height="124" rx="6" class="dr"/>
+  <text x="282" y="67" class="h">Open</text>
+  <text x="282" y="85" class="s">Principal, Via, Mode: access, deny;</text>
+  <text x="282" y="100" class="s">Durability, Session, Grant, Delete</text>
+  <text x="282" y="115" class="s">Token, Seq: its StateRef</text>
+  <text x="282" y="133" class="s">Suspended, LossSeen, Channel;</text>
+  <text x="282" y="148" class="s">Durable keys when SMB-durable;</text>
+  <text x="282" y="163" class="s">Clone for a clone source (§2.2)</text>
+  <path d="M236,90 L268,90" class="ln"/>
+  <text x="238" y="84" class="s">holds</text>
+
+  <rect x="270" y="192" width="226" height="72" rx="6" class="dd"/>
+  <text x="282" y="211" class="h">Lock, LockState</text>
+  <text x="282" y="228" class="s">Owner, Range (exclusive or not);</text>
+  <text x="282" y="243" class="s">taken under an open, released by</text>
+  <text x="282" y="258" class="s">its close, or under none (§2.3)</text>
+  <path d="M383,174 L383,190" class="ln"/>
+
+  <rect x="270" y="284" width="226" height="72" rx="6" class="pr"/>
+  <text x="282" y="303" class="h">LockWaiter</text>
+  <text x="282" y="320" class="s">a conflicting request that waits:</text>
+  <text x="282" y="335" class="s">first in, first out per range,</text>
+  <text x="282" y="350" class="s">holding no worker (§2.10)</text>
+  <path d="M383,282 L383,266" class="cb"/>
+  <text x="390" y="278" class="s">waits on</text>
+
+  <rect x="532" y="48" width="222" height="88" rx="6" class="pr"/>
+  <text x="544" y="67" class="h">CachingGrant</text>
+  <text x="544" y="85" class="s">covers opens; read, write, handle</text>
+  <text x="544" y="100" class="s">Key, Epoch, Adapter (opaque)</text>
+  <text x="544" y="115" class="s">Recall: To and a Deadline</text>
+  <text x="544" y="130" class="s">one per (client, key, file)</text>
+  <path d="M530,100 L498,100" class="cb"/>
+  <text x="501" y="90" class="s">covers</text>
+
+  <rect x="532" y="150" width="222" height="60" rx="6" class="pr"/>
+  <text x="544" y="169" class="h">Watch</text>
+  <text x="544" y="186" class="s">a directory, Recursive, Filter;</text>
+  <text x="544" y="201" class="s">never reclaimed (§2.5)</text>
+
+  <rect x="532" y="224" width="222" height="60" rx="6" class="zone"/>
+  <text x="544" y="243" class="h">Layout</text>
+  <text x="544" y="260" class="s">reserved (cluster), §2.6</text>
+
+
+  <rect x="782" y="48" width="94" height="308" rx="6" class="zone"/>
+  <text x="794" y="67" class="h">File</text>
+  <text x="794" y="85" class="s">RFC 7's.</text>
+  <text x="794" y="103" class="s">Every entry</text>
+  <text x="794" y="118" class="s">is keyed by</text>
+  <text x="794" y="133" class="s">its FileID,</text>
+  <text x="794" y="148" class="s">never by a</text>
+  <text x="794" y="163" class="s">name or a</text>
+  <text x="794" y="178" class="s">handle; a</text>
+  <text x="794" y="193" class="s">stream's are</text>
+  <text x="794" y="208" class="s">its base</text>
+  <text x="794" y="223" class="s">file's (§3)</text>
+  <path d="M756,92 L780,92" class="ln"/><path d="M756,180 L780,180" class="ln"/>
+  <path d="M756,254 L780,254" class="ln"/>
+
+  <rect x="24" y="378" width="14" height="14" rx="2" class="st"/>
+  <text x="46" y="389" class="s">durable: written to the metadata store (§8)</text>
+  <rect x="330" y="378" width="14" height="14" rx="2" class="dr"/>
+  <text x="352" y="389" class="s">durable only if persistent, a clone source, or keeping an unlinked file alive</text>
+  <rect x="24" y="402" width="14" height="14" rx="2" class="pr"/>
+  <text x="46" y="413" class="s">volatile: held in memory, lost with its node; reclaimed in grace or asked for again</text>
+  <rect x="530" y="402" width="14" height="14" rx="2" class="dd"/>
+  <text x="552" y="413" class="s">durable only under a persistent open</text>
+  <text x="16" y="440" class="s">A client's expiry or revoke releases every Open, Lock, LockWaiter, CachingGrant and Watch it holds, at every shard, in one step (§4.3).</text>
 </svg>

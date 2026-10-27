@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#3d444d}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.4}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .gone{fill:#ffffff;stroke:#5b6472;stroke-width:1.2;stroke-dasharray:4 3}
+      .ln{stroke:#3d444d;stroke-width:1.4;fill:none;marker-end:url(#a)}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A share's states. Only API calls and the removal move it, and a removal never comes back.</text>
+
+  <path d="M30,99 L106,99" class="ln"/><text x="30" y="88" class="k">POST</text>
+
+  <rect x="110" y="72" width="170" height="54" rx="6" class="sv"/>
+  <text x="124" y="95" class="m">enabled</text><text x="124" y="114" class="s">admission admits</text>
+
+  <rect x="110" y="232" width="170" height="54" rx="6" class="dr"/>
+  <text x="124" y="255" class="m">quiesced</text><text x="124" y="274" class="e">ErrDelay: client retries</text>
+
+  <path d="M170,128 L170,228" class="ln"/><text x="100" y="182" class="k">:quiesce</text>
+  <path d="M220,230 L220,130" class="ln"/><text x="230" y="182" class="k">:resume</text>
+
+  <text x="110" y="316" class="s">on enabled and quiesced alike:</text>
+  <text x="110" y="332" class="s">rename · re-path · :rehome leave the state as it is</text>
+
+  <rect x="420" y="152" width="190" height="54" rx="6" class="bad"/>
+  <text x="434" y="175" class="m">being removed</text><text x="434" y="194" class="e">ErrStale; name and path free</text>
+
+  <path d="M282,104 L416,166" class="ln"/><text x="330" y="118" class="k">DELETE</text>
+  <path d="M282,254 L416,194" class="ln"/><text x="330" y="246" class="k">DELETE</text>
+
+  <rect x="700" y="72" width="186" height="54" rx="6" class="st"/>
+  <text x="714" y="95" class="m">retired</text><text x="714" y="114" class="e">ErrStale; in no export list</text>
+
+  <rect x="700" y="232" width="186" height="54" rx="6" class="gone"/>
+  <text x="714" y="255" class="m">no record</text><text x="714" y="274" class="s">ShareID and tag never reused</text>
+
+  <path d="M612,166 L696,108" class="ln"/><text x="560" y="112" class="s">snapshots</text><text x="560" y="126" class="s">detached</text>
+  <path d="M612,194 L696,250" class="ln"/><text x="600" y="236" class="s">last step</text>
+  <path d="M793,128 L793,228" class="ln"/><text x="802" y="166" class="s">last detached</text><text x="802" y="180" class="s">snapshot deleted</text>
+
+  <text x="16" y="372" class="s">States, admission answers and the removal's steps are RFC 16's; this RFC names the call that moves each.</text>
+</svg>
