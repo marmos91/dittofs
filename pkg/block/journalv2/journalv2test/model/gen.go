@@ -13,11 +13,17 @@ var weights = [...]int{
 	OpTruncate: 3, OpDeallocate: 3, OpDelete: 1, OpSettle: 3, OpRepack: 2, OpCrash: 3, OpReopen: 1,
 }
 
+// recordHeader is the size of a record's header on disk. A torn crash cuts
+// the last unsynced write anywhere in its header, its write's 8-byte mtime
+// or the first of its usually short payload, so the tear lands in each.
+const recordHeader = 96
+
 // Generate draws n steps from seed. The same seed draws the same steps.
 //
 // Extents are mostly small and near the start of the file, so writes overlap
 // and split one another, and now and then far out, close to the largest
-// offset. A write or a deallocate is now and then zero-length. One call in
+// offset. A write or a deallocate is now and then zero-length, and one
+// truncate in four is to zero. One call in
 // ten goes through the share that does not have the file.
 func Generate(seed uint64, n int) []Step {
 	r := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
@@ -42,8 +48,11 @@ func Generate(seed uint64, n int) []Step {
 		if (s.Op == OpWrite || s.Op == OpDeallocate) && r.IntN(50) == 0 {
 			s.Len = 0 // a zero-length call, which the journal may refuse
 		}
+		if s.Op == OpTruncate && r.IntN(4) == 0 {
+			s.Off = 0 // a truncate to zero, after which the file is written again
+		}
 		if s.Op == OpCrash {
-			s.Off = r.Int64N(64) // the bytes a torn write keeps
+			s.Off = r.Int64N(recordHeader + 8 + 64) // the bytes a torn write keeps
 			if k, _ := s.crash(); k == CrashReordered {
 				s.Off = r.Int64N(math.MaxInt64) // the seed of the reordering
 			}

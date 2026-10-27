@@ -21,12 +21,13 @@ func TestGenerateIsDecidedBySeed(t *testing.T) {
 }
 
 // Over a few seeds every operation, every crash, every share and every file is
-// drawn, along with a call through the share that does not have the file and
-// a write far out in the file, and every step drawn can be run.
+// drawn, along with a call through the share that does not have the file, a
+// write far out in the file, a truncate to zero and a torn crash that keeps
+// part of a payload, and every step drawn can be run.
 func TestGenerateReachesEveryStep(t *testing.T) {
 	ops, crashes := map[Op]bool{}, map[CrashKind]bool{}
 	shares, files := map[int]bool{}, map[int]bool{}
-	var otherShare, farOut bool
+	var otherShare, farOut, toZero, tornPayload bool
 	for seed := range uint64(20) {
 		for _, s := range Generate(seed, 200) {
 			if why := s.valid(); why != "" {
@@ -38,6 +39,10 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 				crashes[k] = true
 			}
 			otherShare = otherShare || s.Share != s.File%numShares
+			toZero = toZero || s.Op == OpTruncate && s.Off == 0
+			if k, n := s.crash(); s.Op == OpCrash && k == CrashTorn && n > recordHeader {
+				tornPayload = true
+			}
 			farOut = farOut || s.Op == OpWrite && s.Off > 1<<62
 		}
 	}
@@ -54,4 +59,22 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 	if len(shares) != numShares || len(files) != numFiles || !otherShare || !farOut {
 		t.Errorf("shares %v, files %v, through another share %t, far out %t", shares, files, otherShare, farOut)
 	}
+	if !toZero || !tornPayload {
+		t.Errorf("truncate to zero %t, torn past a record header %t", toZero, tornPayload)
+	}
+}
+
+// The seed TestModel runs by default truncates a file to zero and writes it
+// again, the edge case a single fixed sequence must reach on its own.
+func TestTheDefaultSeedTruncatesToZeroAndWritesAgain(t *testing.T) {
+	steps := Generate(1, 200)
+	for i, s := range steps {
+		if s.Op != OpTruncate || s.Off != 0 {
+			continue
+		}
+		if slices.ContainsFunc(steps[i+1:], func(w Step) bool { return w.Op == OpWrite && w.File == s.File && w.Len > 0 }) {
+			return
+		}
+	}
+	t.Fatal("seed 1 never truncates a file to zero and writes it again")
 }

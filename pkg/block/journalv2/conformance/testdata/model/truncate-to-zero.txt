@@ -1,0 +1,10 @@
+# A file truncated to zero and written again holds only the new bytes, and
+# the truncate's marker spans the whole old file. A crash keeps both: the
+# truncate is durable on return, and the write was synced.
+write len=32 b=65
+sync
+truncate
+write len=8 b=97
+sync
+crash
+read len=32

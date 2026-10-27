@@ -35,6 +35,7 @@ type spy struct {
 	fills    []journalv2.Version // the asOf each fill was made with
 	reported []error             // what each report answered
 	events   []string            // writes, reports, syncs, settles and crashes, in order
+	written  []error             // what each write answered
 	offering bool                // an offload's callback is running
 	// readAnswer, when set, replaces the answer of every read.
 	readAnswer func(id journalv2.FileID, tag journalv2.ShareTag) error
@@ -73,7 +74,9 @@ func (h spyHandle) WriteAt(ctx context.Context, id journalv2.FileID, off int64, 
 		e = "write during offer"
 	}
 	h.s.events = append(h.s.events, e)
-	return h.Handle.WriteAt(ctx, id, off, p, mtime)
+	v, err := h.Handle.WriteAt(ctx, id, off, p, mtime)
+	h.s.written = append(h.s.written, err)
+	return v, err
 }
 
 func (h spyHandle) Sync(ctx context.Context, ids ...journalv2.FileID) error {
@@ -228,5 +231,16 @@ func TestACrashTooLargeToSearchIsCounted(t *testing.T) {
 	ok(t, err)
 	if ran != len(steps) || skipped != 1 {
 		t.Fatalf("ran %d of %d steps, skipped %d crashes, want all and 1", ran, len(steps), skipped)
+	}
+}
+
+// The played journal keeps a file's tag while its records are on disk, as a
+// journal must: a file whose content was released is still refused through
+// another share until a repack has run, and is claimed by it after.
+func TestThePlayedJournalKeepsATagUntilRepack(t *testing.T) {
+	s := &spy{played: newPlayed(t)}
+	ok(t, runText(t, s, "write len=4\noffload\nrelease\nwrite s=1 len=4\nrepack\nwrite s=1 len=4\n"))
+	if len(s.written) != 3 || s.written[0] != nil || !errors.Is(s.written[1], journalv2.ErrOtherShare) || s.written[2] != nil {
+		t.Fatalf("writes answered %v, want nil, ErrOtherShare, nil", s.written)
 	}
 }

@@ -110,17 +110,48 @@ func keepPrefixes(f *file, before []*record, durable map[*record]bool) {
 // played is a Target played by a second model: it answers every call as the
 // RFC allows, and after a crash keeps a random state of those the crash
 // allows. It is the honest journal the runner's own tests drive.
+//
+// It keeps a file's tag while its records may be on disk, as a journal does:
+// a call through another share is refused until a repack has run since the
+// file last took a record and no longer holds anything, and accepted after.
 type played struct {
 	t     testing.TB
 	j     *Model
 	floor journalv2.Version
+
+	// dropped holds the files a repack ran over after they held nothing:
+	// their records are gone, and another share may claim them.
+	dropped map[journalv2.FileID]bool
 }
 
-func newPlayed(t testing.TB) *played { return &played{t: t, j: New()} }
+func newPlayed(t testing.TB) *played {
+	return &played{t: t, j: New(), dropped: map[journalv2.FileID]bool{}}
+}
+
+// refuse is the journal's answer to a call through tag on id when another
+// share has the file. A call it does not refuse may append a record, so the
+// file is no longer one a repack dropped.
+func (p *played) refuse(id journalv2.FileID, tag journalv2.ShareTag) error {
+	f := p.j.files[id]
+	if f != nil && f.tag != tag && (f.holdsAnything() || !p.dropped[id]) {
+		return journalv2.ErrOtherShare
+	}
+	delete(p.dropped, id)
+	return nil
+}
+
+// Repack drops the records of every file that holds nothing.
+func (p *played) Repack(context.Context) error {
+	for id, f := range p.j.files {
+		if !f.holdsAnything() {
+			p.dropped[id] = true
+		}
+	}
+	return nil
+}
 
 func (p *played) Share(i int) Handle                  { return playedHandle{p, tagOf(i)} }
 func (p *played) View(i int) View                     { return modelView{p.j, tagOf(i)} }
-func (p *played) Repack(context.Context) error        { return nil }
 func (p *played) Floor() journalv2.Version            { return p.floor }
 func (p *played) Reopen() error                       { return p.restart(0) }
 func (p *played) Crash(_ CrashKind, arg uint64) error { return p.restart(arg) }
@@ -158,7 +189,7 @@ type playedHandle struct {
 
 func (h playedHandle) WriteAt(_ context.Context, id journalv2.FileID, off int64, b []byte, mtime int64) (journalv2.Version, error) {
 	var v journalv2.Version
-	err := refuseOther(h.p.j, id, h.tag)
+	err := h.p.refuse(id, h.tag)
 	switch {
 	case err == nil && len(b) == 0:
 		err = journalv2.ErrZeroLength
@@ -172,21 +203,21 @@ func (h playedHandle) WriteAt(_ context.Context, id journalv2.FileID, off int64,
 func (h playedHandle) Sync(_ context.Context, ids ...journalv2.FileID) error {
 	var err error
 	for _, id := range ids {
-		err = cmp.Or(err, refuseOther(h.p.j, id, h.tag))
+		err = cmp.Or(err, h.p.refuse(id, h.tag))
 	}
 	h.p.must(h.p.j.Sync(h.tag, ids, err))
 	return err
 }
 
 func (h playedHandle) ReadAt(ctx context.Context, id journalv2.FileID, off int64, b []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
-	if err := refuseOther(h.p.j, id, h.tag); err != nil {
+	if err := h.p.refuse(id, h.tag); err != nil {
 		return 0, nil, nil, journalv2.Version{}, err
 	}
 	return modelView{h.p.j, h.tag}.ReadAt(ctx, id, off, b)
 }
 
 func (h playedHandle) Fill(_ context.Context, id journalv2.FileID, off int64, b []byte, asOf, v journalv2.Version) error {
-	err := refuseOther(h.p.j, id, h.tag)
+	err := h.p.refuse(id, h.tag)
 	if err == nil && h.p.j.current(id).change.Compare(asOf) > 0 {
 		err = journalv2.ErrStaleFill
 	}
@@ -196,7 +227,7 @@ func (h playedHandle) Fill(_ context.Context, id journalv2.FileID, off int64, b 
 
 func (h playedHandle) Offload(ctx context.Context, id journalv2.FileID, through journalv2.Version, limit, widen int64, fn func(context.Context, journalv2.Offer, func([]journalv2.Extent) error) error) error {
 	j := h.p.j
-	if err := refuseOther(j, id, h.tag); err != nil {
+	if err := h.p.refuse(id, h.tag); err != nil {
 		h.p.must(j.EndOffer(h.tag, id, through, nil, err))
 		return err
 	}
@@ -229,7 +260,7 @@ func (h playedHandle) Offload(ctx context.Context, id journalv2.FileID, through 
 }
 
 func (h playedHandle) Release(_ context.Context, id journalv2.FileID, es []journalv2.Extent) error {
-	err := refuseOther(h.p.j, id, h.tag)
+	err := h.p.refuse(id, h.tag)
 	if err == nil {
 		st := h.p.j.current(id)
 		for off := range st.held {
@@ -247,7 +278,7 @@ func (h playedHandle) Release(_ context.Context, id journalv2.FileID, es []journ
 // zero-length extent, otherwise given the next version.
 func (h playedHandle) remove(id journalv2.FileID, zero bool, apply func(v journalv2.Version, err error) error) (journalv2.Version, error) {
 	var v journalv2.Version
-	err := refuseOther(h.p.j, id, h.tag)
+	err := h.p.refuse(id, h.tag)
 	switch {
 	case err == nil && zero:
 		err = journalv2.ErrZeroLength
