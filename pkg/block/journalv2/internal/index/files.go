@@ -27,8 +27,9 @@ const fileShards = 64
 // than kept behind one lock. One lock, even a read-write one held only for
 // the map access, is a store-wide lock taken by every read of every file, and
 // its shared counter is a cache line every reader writes. 64 shards spread
-// that over 64 locks, each padded to a cache line of its own. Revisit if a
-// profile shows shard locks contended under many concurrent readers.
+// that over 64 locks, each padded to 64 bytes so that, on a 64-byte cache
+// line, no two share one. Revisit if a profile shows shard locks contended
+// under many concurrent readers.
 //
 // decision: the file map and the file entry are unexported, like the rest of
 // this package. Their only consumer until the journal's operations are wired
@@ -116,6 +117,7 @@ func (fs *files) view(id core.FileID, fn func(*file)) bool {
 			return false
 		}
 		f.mu.RLock()
+		// A gone entry still carries its tag, which the file no longer has.
 		if f.gone {
 			f.mu.RUnlock()
 			continue
@@ -174,9 +176,12 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 //
 // decision: only held extents keep the change-version entry for now. Removal
 // markers and retained extents keep it too once the index carries them; until
-// then a file holds nothing exactly when its held set is empty. Dropping the
-// change version is where the file's floor is raised to it, so that a stale
-// fill is still refused after the entry has gone.
+// then a file holds nothing exactly when its held set is empty.
+//
+// The dropped change version is not recorded anywhere yet, so nothing here
+// refuses a stale fill once the entry has gone: no check of a fill may be
+// built on changeVersion until dropping the version raises the file's floor
+// to it, which belongs at the line that zeroes it.
 func (f *file) settle(s *fileShard, id core.FileID) {
 	if f.held.len() > 0 {
 		return

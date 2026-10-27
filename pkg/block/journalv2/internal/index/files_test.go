@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
+// fid returns a test FileID. Every one of them falls in the same shard.
 func fid(n byte) core.FileID { return core.NewFileID([16]byte{15: n}) }
 
 // present reports whether the map holds an entry for id.
@@ -116,6 +117,24 @@ func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
 	}
 }
 
+// TestWriteNeverLowersChangeVersion: the change version is the highest
+// version of any change, so an older write held after a newer one keeps it.
+// Assigning instead of raising would let a stale fill through.
+func TestWriteNeverLowersChangeVersion(t *testing.T) {
+	var fs files
+	id := fid(1)
+	_ = fs.update(id, func(f *file) error {
+		f.write(write(0, 4, rec(1, 0), 6))
+		f.write(write(8, 4, rec(1, 64), 5))
+		return nil
+	})
+	fs.view(id, func(f *file) {
+		if v, _ := f.changeVersion(); v != ver(6) {
+			t.Fatalf("change version = %v, want %v", v, ver(6))
+		}
+	})
+}
+
 // TestReadClaimsNothing: a read appends nothing and claims nothing, so a view
 // of an unknown file must not create an entry, and an update that leaves
 // nothing behind, a refused one included, must not leave one either.
@@ -162,9 +181,10 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 	})
 }
 
-// TestReadOtherFileWhileWriting is R17 made deterministic: while one file's
-// update is stopped inside its lock, a read of another file must complete,
-// and so must a write to it. A store-wide index lock blocks both.
+// TestReadOtherFileWhileWriting: while one file's update is stopped inside
+// its lock, a read of another file must complete, and so must a write to it.
+// A store-wide index lock blocks both. Both files fall in one shard, so a
+// shard lock held across fn would block them too.
 func TestReadOtherFileWhileWriting(t *testing.T) {
 	var fs files
 	a, b := fid(1), fid(2)
@@ -195,7 +215,7 @@ func TestReadOtherFileWhileWriting(t *testing.T) {
 	}
 }
 
-// TestSameFileReadSeesWholeWrite is R49's consistent view: a writer replaces
+// TestSameFileReadSeesWholeWrite is the consistent view: a writer replaces
 // every piece of the file inside one update, and a reader copying the pieces
 // out must see them all at one version. Locking per piece, or copying outside
 // the lock, lets a reader see a mix.
