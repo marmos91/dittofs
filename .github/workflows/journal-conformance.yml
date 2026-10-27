@@ -1,0 +1,64 @@
+name: Journal Conformance
+
+# The feature branch only: develop runs every suite from tests.yml, which takes
+# this one once the branch takes develop, and this file goes.
+on:
+  push:
+    branches: [feat/storage-v2]
+  pull_request:
+    branches: [feat/storage-v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # As in lint.yml: cancel only a superseded pull-request run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The tier the suite runs at: pr on pull requests, merge on pushes.
+env:
+  TIER: ${{ github.event_name == 'pull_request' && 'pr' || 'merge' }}
+
+# The journal's conformance checks, run by dt as the journal-conformance suite of
+# test/suites.yaml. Every check that fails is graded against
+# test/journalv2/known.yaml: the job is green while each failure is a listed one,
+# and red on a failure that is not listed or on a listed check that passes, whose
+# entry the change that made it pass must remove.
+jobs:
+  journal-conformance:
+    name: Journal Conformance
+    runs-on: ubuntu-latest
+    # The checks run against stubs in seconds today. Forty minutes leaves the
+    # suite's own 30-minute go test timeout room to fire first and print its
+    # goroutine dump; it is a hang detector, not a budget.
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true  # Built-in Go module caching
+
+      - name: Build dt
+        id: build
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      - name: Run journal-conformance
+        run: '"$RUNNER_TEMP/dt" run journal-conformance --tier "$TIER" --ci'
+
+      - name: Report
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+
+      - name: Upload results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dt-results-journal-conformance-${{ github.run_attempt }}
+          path: test/harness/results/
+          if-no-files-found: ignore

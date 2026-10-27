@@ -476,6 +476,24 @@ func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
 	}
 }
 
+func TestTornInTearsTheNamedFileOnly(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	g := create(t, s, "other")
+
+	write(t, f, "aaaa", 0) // the named file's last write, torn
+	write(t, g, "cccc", 0) // newer, in another file: lost as usual
+
+	crash(t, s, TornIn("seg", 3))
+
+	if got := onDisk(t, s, "seg"); got != "aaa" {
+		t.Fatalf("seg holds %q, want its last write cut to %q", got, "aaa")
+	}
+	if got := onDisk(t, s, "other"); got != "" {
+		t.Fatalf("other holds %q, want its unsynced write lost", got)
+	}
+}
+
 func TestTornDropsEarlierWritesOfTheTornFile(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")

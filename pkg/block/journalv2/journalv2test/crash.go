@@ -16,6 +16,7 @@ type CrashOption func(*crashConfig)
 type crashConfig struct {
 	torn      bool
 	tornBytes int
+	tornName  string // TornIn: the only file Torn picks from
 	reordered bool
 	seed      uint64
 }
@@ -26,6 +27,21 @@ type crashConfig struct {
 func Torn(n int) CrashOption {
 	return func(c *crashConfig) {
 		c.torn, c.tornBytes = true, n
+	}
+}
+
+// TornIn is Torn restricted to one file: the file called name in the
+// directory as the last SyncDir left it. Its last unsynced write is cut to n
+// bytes, however much newer a write to another file is, and every other
+// unsynced write is lost as usual. It is for a check that tears one file
+// while the code under test may write others in the background.
+//
+// It names the file by its durable name, unlike holds, faults and call
+// counts, which use the name the directory gives it now. The two differ only
+// for a rename no SyncDir has made durable.
+func TornIn(name string, n int) CrashOption {
+	return func(c *crashConfig) {
+		c.torn, c.tornBytes, c.tornName = true, n, name
 	}
 }
 
@@ -79,7 +95,10 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	var torn *change
 	var tornNode *node
 	if cfg.torn {
-		for n := range alive {
+		for name, n := range survivors {
+			if cfg.tornName != "" && name != cfg.tornName {
+				continue
+			}
 			for i := range n.undo {
 				c := &n.undo[i]
 				if c.kind == changeWrite && !c.dropped && (torn == nil || c.seq > torn.seq) {
@@ -89,7 +108,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		}
 
 		if torn == nil {
-			return errors.New("journalv2test: Torn needs an unsynced write")
+			return errors.New("journalv2test: Torn needs an unsynced write in a file it may pick from")
 		}
 
 		if cfg.tornBytes < 0 || cfg.tornBytes > len(torn.data) {
