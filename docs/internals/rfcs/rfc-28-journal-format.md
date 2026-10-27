@@ -811,11 +811,17 @@ been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 **A segment with no record is a spare again.** A segment under a name this
 journal produces whose header slot is zeros — a spare no stream took — or whose
-header verifies or does not, or names a segment id other than its file name's —
-a recycle a crash interrupted after the rename (§2.2) — and in which no record
-header verifies anywhere — a take whose first records a crash lost — holds
-nothing that was ever durable: a take is made durable only with the records after
-it. A spare reaches its `.seg` name only once whole (§2.2), but recovery still
+header does not verify, or verifies and names this journal's identity, with the
+segment id of its file name or another — a recycle a crash interrupted after the
+rename (§2.2) — and in which no record header verifies anywhere — a take whose
+first records a crash lost — holds nothing that was ever durable: a take is made
+durable only with the records after it. A segment whose header verifies and
+names another journal is never one, whatever its records: it is foreign (above),
+and is left alone. The identity is checked first because no record of another
+journal verifies here, its checksums being seeded with that journal's identity,
+so the test for a record-less segment alone would take a foreign segment for a
+spare and zero its slots, destroying what may be the only copy of another
+journal's content. A spare reaches its `.seg` name only once whole (§2.2), but recovery still
 checks its size against the cap and, where the platform reports it, that no
 extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot

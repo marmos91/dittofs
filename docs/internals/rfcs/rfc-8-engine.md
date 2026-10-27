@@ -985,7 +985,7 @@ after a loss, each client resends its recent unstable writes once.
 - **Each file has a loss sequence.** The engine keeps, in memory and monotonic
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
-  corrupt or stale record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). `Commit` returns it,
+  corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). `Commit` returns it,
   read after its sync, and the filesystem service hands it to open state, which
   fails one SMB flush per open that was open across the loss
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)). The engine raises it from the journal's loss events;
