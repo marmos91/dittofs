@@ -211,3 +211,33 @@ func TestPendingCountsOpenTimers(t *testing.T) {
 		t.Fatalf("Pending = %d after one timer fired, want 1", got)
 	}
 }
+
+func TestJumpMovesOnlyTheWallClock(t *testing.T) {
+	c := NewTestClock(start)
+	c.SetRate(2)
+	timer := c.After(10 * time.Second)
+
+	c.Jump(time.Hour)
+	if got, want := c.Now(), start.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("Now = %v after a jump of 1 h, want %v: a jump is not scaled by the rate", got, want)
+	}
+	if got := c.Elapsed(); got != 0 {
+		t.Fatalf("Elapsed = %v after a jump, want 0", got)
+	}
+	if fired(timer) {
+		t.Fatal("a jump of the wall clock fired a timer")
+	}
+
+	c.Jump(-2 * time.Hour)
+	if got, want := c.Now(), start.Add(-time.Hour); !got.Equal(want) {
+		t.Fatalf("Now = %v after jumping back 2 h, want %v", got, want)
+	}
+
+	c.Advance(5 * time.Second)
+	if !fired(timer) {
+		t.Fatal("a timer due at 10 s did not fire once Advance reached it after the jumps")
+	}
+	if got, want := c.Now(), start.Add(-time.Hour+10*time.Second); !got.Equal(want) {
+		t.Fatalf("Now = %v after the jumps and an Advance, want %v", got, want)
+	}
+}
