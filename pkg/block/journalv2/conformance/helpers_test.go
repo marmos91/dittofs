@@ -304,6 +304,34 @@ func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID)
 	panic("unreachable")
 }
 
+// unmark clears the offloaded bit of extent e of file id.
+func unmark(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent) {
+	t.Helper()
+
+	err := h.Unmark(t.Context(), id, []journalv2.Extent{e})
+	stub(t, "Unmark", err)
+	if err != nil {
+		t.Fatalf("unmark %+v of a file: %v", e, err)
+	}
+}
+
+// wantRelease fails the test unless a release of extent e of file id is
+// permitted, when permitted is set, or refused as not offloaded otherwise.
+// A release is the one call that answers whether the journal holds the
+// extent's offloaded bit.
+func wantRelease(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, permitted bool) {
+	t.Helper()
+
+	err := h.Release(t.Context(), id, []journalv2.Extent{e})
+	stub(t, "Release", err)
+	switch {
+	case permitted && err != nil:
+		t.Fatalf("release of %+v refused: %v; its offloaded bit should be set", e, err)
+	case !permitted && !errors.Is(err, journalv2.ErrNotOffloaded):
+		t.Fatalf("release of %+v returned %v, want ErrNotOffloaded; its offloaded bit should be unset", e, err)
+	}
+}
+
 // lastLoss fails the test unless Stats holds exactly one loss event more than
 // before, and returns it.
 func lastLoss(t *testing.T, f *journalv2test.Fixture, before journalv2.Stats) journalv2.LossEvent {
