@@ -313,10 +313,11 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 	f.Stop()
 	g := reopen(t, f.fs, f.clock)
 	g.clock.advance(leasePeriod) // past the restart's grace
+	g.closeUnreclaimed(ctx, g.sink) // as the first sweep after grace does: a's open was not reclaimed
 	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
 	later := g.mustOpen(t, b, file, req)
-	if got := f.stored(t, file); len(got) != 2 || got[1].Nonce != later.Ref.Token {
-		t.Errorf("stored opens after an open of the file after a restart: %v", ids(got))
+	if got := f.stored(t, file); len(got) != 1 || got[0].Nonce != later.Ref.Token {
+		t.Errorf("stored opens after an open of the file after a restart: %v, want only b's", ids(got))
 	}
 }
 
