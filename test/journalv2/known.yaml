@@ -1,4 +1,4 @@
-# The journal's conformance tests that fail today, one entry per test, never a pattern, each
+# The journal's conformance tests that fail or skip today, one entry per test, never a pattern, each
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green.
 - test: TestClock_WallJumpMovesNoTimer
@@ -55,12 +55,18 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs per-segment accounting, release and repack.'
   issue: '#3379'
-- test: TestRFC1D_StatsAreCheap
+- test: TestRFC1D_StatsTakeNoWriteLock
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
   issue: '#3378'
+- test: TestRFC1D_StatsCostIsFlat
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
+  issue: '#3395'
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned

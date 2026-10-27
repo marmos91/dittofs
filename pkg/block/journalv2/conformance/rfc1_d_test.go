@@ -178,15 +178,15 @@ func TestRFC1D_GenerationNeverRepeats(t *testing.T) {
 	}
 }
 
-// TestRFC1D_StatsAreCheap checks that Stats takes no lock a write needs, and
-// that its cost does not grow with the extents the journal holds.
+// TestRFC1D_StatsTakeNoWriteLock checks that Stats takes no lock a write
+// needs.
 //
 // decision: the lock leg holds a write at its storage call, so it catches a
 // Stats that waits on a lock the write keeps across that call, not one a
 // write takes and drops before it, such as the index's: from the public
 // surface, only a write stopped at storage can be held at all. The lock-order
 // recorder of the data path is what pins the rest.
-func TestRFC1D_StatsAreCheap(t *testing.T) {
+func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 	f := journalv2test.New(t)
 	h := f.Share(0)
 
@@ -219,16 +219,23 @@ func TestRFC1D_StatsAreCheap(t *testing.T) {
 	if err := <-wrote; err != nil {
 		t.Fatalf("the held write: %v", err)
 	}
+}
 
-	// decision: the cost leg counts allocations, the one cost a check can
-	// measure without timing it. Its ceiling: it catches a Stats whose
-	// allocations grow with the index, not a walk that allocates nothing, which
-	// only a counted hook in the journal would show. It is skipped under the
-	// race detector, which changes allocation counts, so it runs only in a
-	// leg without it.
+// TestRFC1D_StatsCostIsFlat checks that the cost of Stats does not grow with
+// the extents the journal holds.
+//
+// decision: it counts allocations, the one cost a check can measure without
+// timing it. Its ceiling: it catches a Stats whose allocations grow with the
+// index, not a walk that allocates nothing, which only a counted hook in the
+// journal would show. It skips under the race detector, which changes
+// allocation counts, so it runs only in a leg without it.
+func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 	if raceEnabled {
-		return
+		t.Skip("the race detector changes allocation counts")
 	}
+	f := journalv2test.New(t)
+	h := f.Share(0)
+
 	// AllocsPerRun counts the whole process's allocations, so each size is
 	// measured once the journal's background work, such as making spares, has
 	// gone quiet, and the smallest of several samples is kept.
