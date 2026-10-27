@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
@@ -232,6 +233,65 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 	must(t, err)
 	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 0 {
 		t.Errorf("locks after their open closed %+v, %v", got, err)
+	}
+}
+
+// A change to an open's locks lands whole in one transaction: its deletes
+// and its writes together, nothing for an open that is missing or not
+// persistent, and nothing for one past the backend's limits.
+func testDurableLockChanges(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	p := f.newOpen(file.ID)
+	p.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, p))
+	plain := f.newOpen(file.ID)
+	must(t, opens.Put(ctx, f.share.ID, plain))
+	lock := func(id entity.LockID, off, length uint64) entity.LockRecord {
+		return entity.LockRecord{ID: id, Owner: entity.LockOwner{Client: 1, Owner: []byte("x")}, Offset: off, Length: length}
+	}
+	locks := func(open entity.OpenID) []entity.LockRecord {
+		got, err := opens.Locks(ctx, f.share.ID, file.ID, open)
+		must(t, err)
+		return got
+	}
+	a, b := lock(1, 0, 10), lock(1, 100, 10)
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, []entity.LockRecord{a, b}, nil))
+	b2, c := lock(1, 100, 20), lock(2, 100, 5)
+	f.c.Take()
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, []entity.LockRecord{b2, c}, []entity.LockRecord{a, b}))
+	if n := f.c.Take(); n.Sets != 2 || n.Deletes != 2 {
+		t.Errorf("the change wrote %+v, want its 2 writes and 2 deletes", n)
+	}
+	if got := locks(p.ID); len(got) != 2 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[0].Open != p.ID {
+		t.Fatalf("locks after the change %+v, want b rewritten and c added, a gone", got)
+	}
+
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID, []entity.LockRecord{a}, nil); err == nil {
+		t.Error("locks stored under an open that is not persistent")
+	}
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID+1000, []entity.LockRecord{a}, nil); !merrs.IsNotFoundError(err) {
+		t.Errorf("locks under an open with no record: %v, want not found", err)
+	}
+	if got := locks(plain.ID); len(got) != 0 {
+		t.Errorf("a refused change stored %+v", got)
+	}
+
+	// Writes past the transaction's byte limit, with a delete: neither lands.
+	l := f.c.Limits()
+	owner := min(l.Value/2, 1<<16)
+	var big []entity.LockRecord
+	for i := range l.TxnBytes/owner + 1 {
+		r := lock(entity.LockID(i+1), 1000, 1)
+		r.Owner.Owner = make([]byte, owner)
+		big = append(big, r)
+	}
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, big, []entity.LockRecord{c}); !errors.Is(err, kv.ErrTooLarge) {
+		t.Fatalf("a change past the limits: %v, want kv.ErrTooLarge", err)
+	}
+	if got := locks(p.ID); len(got) != 2 || got[1].ID != 2 {
+		t.Errorf("locks after a change past the limits %+v, want them as they were", got)
 	}
 }
 

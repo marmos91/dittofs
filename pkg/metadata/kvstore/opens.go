@@ -209,6 +209,38 @@ func (o Opens) DeleteLock(ctx context.Context, share entity.ShareID, file entity
 	})
 }
 
+// SetLocks changes the durable locks beneath open, which must be a
+// persistent open of the file, in one transaction: del are deleted, then
+// put written, so a change lands whole or not at all, and a lock in both is
+// written. Each record is stored under open whatever its Open names. A
+// change past the backend's limits fails with kv.ErrTooLarge and writes
+// nothing; it is never split, as a part written alone would store locks
+// held with others not.
+func (o Opens) SetLocks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID, put, del []entity.LockRecord) error {
+	for _, l := range put {
+		if l.ID == 0 {
+			return merrs.NewInvalidArgumentError("a lock needs an ID")
+		}
+	}
+	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, err := persistentOpen(tx, share, file, open); err != nil {
+			return err
+		}
+		for _, l := range del {
+			if err := tx.Delete(lockKey(share, file, open, l.Offset, l.ID)); err != nil {
+				return err
+			}
+		}
+		for _, l := range put {
+			l.Open = open
+			if err := tx.Set(lockKey(share, file, open, l.Offset, l.ID), encodeLock(l)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // Locks lists the durable locks beneath one open, in offset order.
 func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID) (out []entity.LockRecord, err error) {
 	err = o.s.kv.View(ctx, func(r kv.Reader) error {
