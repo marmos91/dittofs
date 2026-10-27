@@ -1422,11 +1422,11 @@ test that passes without a report has no numbers, which is lost coverage: its ce
 | Grade | The result | CTRF | JUnit | The cell |
 |---|---|---|---|---|
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
-| `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
-| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `new` | failed, and no known-failure entry matches it, or the one that does names a `message:` its message doesn't contain; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
+| `known` | failed, and a known-failure entry matches it, its message too when the entry names one; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
 | `quarantined` | failed or passed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | failed: `skipped`, `rawStatus: failed`; passed: `passed`; in `extra` the reason "quarantined as flaky, see #N" and the entry's issue | failed: `<skipped>` with the reason; passed: a pass with a `quarantined` property, the issue | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
-| `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
+| `expected_skip` | skipped, and an expected-skip entry matches it, its message too when the entry names one, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
 | `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
 | `incomplete` | its output stopped before its result, and the code under test didn't crash (§4.6) | `other` | `<error>` | exits 2 |
@@ -1480,6 +1480,7 @@ file, and `dt known import` converts the old lists once.
   reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"
   where: { nfs: ["4", "4.1"] } # optional: the matrix values, tiers, options or OS it applies to
   # intermittent: true        # optional: it fails on some runs only; a pass is reported, not failed
+  # message: "stub:"          # optional: it is known only while its message contains this
 - test: utimensat/09.t
   status: fail
   fix: wontfix
@@ -1637,6 +1638,15 @@ and passes on others, for a known reason, says `intermittent: true`: its pass is
 failed, so it doesn't turn a cell red while the old scripts stay green. A flaky test with no entry
 belongs in quarantine. An expected skip that runs and fails is a new failure, unless a
 known-failure entry covers it too.
+
+**Failing for the right reason.** An entry may name `message:`, text the result's message must
+contain. A failure or skip whose message doesn't contain it is graded as if the entry weren't there
+(`new`, or `unexpected_skip`), and its reason says what the entry expects. A test listed while it
+fails on a stub, with `message: "stub:"`, turns the cell red as soon as it fails on anything else,
+so a known failure can't hide a second one. An entry without `message:` matches on the name alone,
+and a pass is judged on the name alone either way. The message is what the reader keeps: a Go test's
+whole output, its logs included and its subtests' left out; JUnit's `message` attribute; TRX's
+`ErrorInfo/Message`; TAP's failing lines. So pick text only the failure prints.
 
 **Scenarios.** Each one that fails today gets a known-failure entry naming its issue. The suite is
 then green, a regression shows as a new failure, and a fix shows as an unexpected pass.
