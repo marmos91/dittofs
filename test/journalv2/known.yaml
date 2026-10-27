@@ -265,3 +265,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
   issue: '#3379'
+- test: TestRFC28C_ReseedByVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded by version, release and recovery.'
+  issue: '#3379'
