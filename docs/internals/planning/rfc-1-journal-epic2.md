@@ -239,11 +239,17 @@ stubs until epics 7 and 8 land, so every test fails at the fixture's first step.
 - *What S2 can check:* every test compiles, runs, fails without a panic or a skip, and is
   listed. The fixture reports its own failures with the prefix `fixture:`, so a fixture
   failure is never mistaken for the check's.
+- *The fixture carries the stub's error.* When `Init` or `Open` fails, the fixture reports
+  the step and the error itself, `fixture: <step>: %v`, so a stubbed `Init` reads
+  `fixture: Init: journal: not implemented`. A failure of the fixture's own setup (the
+  seam, the temporary directory, the profiler) reads differently, so it never passes for
+  the stub's.
 - *Stubs name themselves.* Once `Open` works, a test can fail on a journal call that is
   still a stub. The suite's assertion helpers report an error that `Is`
   `ErrNotImplemented` as `stub: <call>` (`stub: Offload`), never as the check's failure.
 - *Failing for the right reason is graded, once `dt` can* (D1, #3391). Every entry carries
-  `message: "fixture:"` until `Open` works. The change that makes `Open` work, at S3, moves the entries
+  `message: "journal: not implemented"` until `Open` works, not `"fixture:"`, which would
+  also match a fixture broken in its own setup. The change that makes `Open` work, at S3, moves the entries
   still red to `message: "stub:"`, so a test still failing in the fixture after S3 is
   graded new. From S3 on, an epic that implements a call a test was failing on either
   turns the test green or sets its entry's `message:` to the assertion it now fails on;
@@ -536,14 +542,16 @@ Every conformance subtask also:
     `Open` with `WithStorage`, `WithClock` and settings of two append streams and a 1 MiB
     segment cap (D8). It attaches two shares on request and offers `Crash()` (seam crash,
     then reopen with the recorded identity and floor), `Reopen()`, `Advance`, `Jump` and
-    `Now`. Every failure of its own starts with `fixture:`, and its assertion helpers
-    report a stub as `stub: <call>` (D4).
+    `Now`. Every failure of its own starts with `fixture:`, a failing `Init` or `Open`
+    carries its error (`fixture: Init: journal: not implemented`), and its assertion
+    helpers report a stub as `stub: <call>` (D4).
   - **`internal/core`:** the unexported segment-cap field and `SetSegmentCap` (D8).
   - **Registration** (D1, D2): the `journal_conformance` tag, the `journal-conformance`
     suite and `journal` group in `test/suites.yaml`, the tag on `lint-go`'s vet line, and
     `test/journalv2/known.yaml`.
 - **Done when:**
   - `dt run journal-conformance` is green, with every test graded `known`;
+  - every test's failure contains `journal: not implemented`;
   - removing any one entry from `known.yaml` makes the run fail with that test as new;
   - a fixture test that does not open a journal (the seam and clock wiring) is green.
 - **Rules:**
