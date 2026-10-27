@@ -103,7 +103,13 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 	}
 
 	shrunk := Shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) })
-	text := FormatCorpus(shrunk, append(slices.Clone(notes), fmt.Sprintf("diverged: %v", run(shrunk)))...)
+	again := run(shrunk)
+	if !errors.Is(again, ErrDiverged) {
+		// The failure did not come back on the shrunk sequence, so the
+		// journal does not fail the same way every time: keep it all.
+		shrunk, again = steps, err
+	}
+	text := FormatCorpus(shrunk, append(slices.Clone(notes), fmt.Sprintf("diverged: %v", again))...)
 	path := filepath.Join(tb.ArtifactDir(), name)
 	if werr := os.WriteFile(path, text, 0o644); werr != nil {
 		path = fmt.Sprintf("nowhere (%v)", werr)

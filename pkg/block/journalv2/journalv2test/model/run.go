@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -58,8 +59,13 @@ func FileOf(i int) journalv2.FileID {
 }
 
 // crashSearchable is how many records of one file a crash step leaves
-// uncertain at most. A file with more is synced before the crash, so the
-// search for what the crash left stays fast.
+// uncertain at most.
+//
+// ponytail: a file with more is synced before the crash, so the search for
+// what the crash left, which doubles with each record the bytes cannot
+// decide, stays fast; a crash therefore never finds more than eight of one
+// file's records in doubt. Raise it toward the model's own limit if a
+// failure needs a crash over a longer unsynced run of one file.
 const crashSearchable = 8
 
 // remoteExtent is content an offload reported: what the remote tier holds,
@@ -153,6 +159,9 @@ func (r *runner) step(s Step) error {
 
 	case OpRead:
 		_, _, _, asOf, err := h.ReadAt(ctx, id, s.Off, make([]byte, max(s.Len, 1)))
+		if err := r.readRefusal(tag, id, err); err != nil {
+			return err
+		}
 		if err == nil {
 			r.asOf[s.File] = [2]journalv2.Version{asOf, r.asOf[s.File][0]}
 		}
@@ -216,6 +225,26 @@ func (r *runner) step(s Step) error {
 		return r.restart(s)
 	}
 	return fmt.Errorf("model: no operation %v: %w", s.Op, ErrMisuse)
+}
+
+// readRefusal checks a read's error: a read through the share holding the
+// file, or of a file no share holds, is never refused, and one through
+// another share is refused with ErrOtherShare while that share holds the
+// file, as every call naming it is, and may be once it holds nothing.
+func (r *runner) readRefusal(tag journalv2.ShareTag, id journalv2.FileID, err error) error {
+	f := r.m.files[id]
+	other := f != nil && f.tag != tag
+	switch {
+	case cancelled(err):
+		return nil
+	case other && errors.Is(err, journalv2.ErrOtherShare):
+		return nil
+	case err != nil:
+		return r.m.mismatch("read", id, "returned %v", err)
+	case other && f.holdsAnything():
+		return r.m.mismatch("read", id, "read through share %d a file share %d holds", tag, f.tag)
+	}
+	return nil
 }
 
 // offload offloads the file through every version seen. Inside the callback
@@ -306,21 +335,17 @@ func notOffered(o journalv2.Offer) journalv2.Extent {
 // nothing about durability, so both leave every unsynced record of the model
 // uncertain, and the comparison after the step finds what the journal kept.
 // Every file with more uncertain records than the search takes is synced
-// first; when that is not enough, because its settled markers alone are too
-// many, the step does nothing.
+// first.
+//
+// decision: when syncing is not enough, because a file's settled markers
+// alone are too many, the step does nothing rather than fail, so the sequence
+// stays valid for shrinking. Only a crash resolves settled markers, so from
+// then on every crash and reopen of the sequence is skipped. Settle steps are
+// rare and removals settle in batches, so few sequences reach it; draw fewer
+// removals per file if crash steps are found skipped often.
 func (r *runner) restart(s Step) error {
 	ctx, m := r.ctx, r.m
-	ids := slices.SortedFunc(func(yield func(journalv2.FileID) bool) {
-		for id := range m.files {
-			if !yield(id) {
-				return
-			}
-		}
-	}, func(a, b journalv2.FileID) int {
-		x, y := a.Bytes(), b.Bytes()
-		return slices.Compare(x[:], y[:])
-	})
-	for _, id := range ids {
+	for _, id := range sortedIDs(m) {
 		f := m.files[id]
 		if uncertainAt(f) <= crashSearchable {
 			continue
@@ -347,6 +372,15 @@ func (r *runner) restart(s Step) error {
 		return fmt.Errorf("model: %s: %w", s.Op, err)
 	}
 	return m.Reopen(r.tgt.Floor())
+}
+
+// sortedIDs returns the files of m in ID order, so what is done to each never
+// depends on the order of a map.
+func sortedIDs(m *Model) []journalv2.FileID {
+	return slices.SortedFunc(maps.Keys(m.files), func(a, b journalv2.FileID) int {
+		x, y := a.Bytes(), b.Bytes()
+		return slices.Compare(x[:], y[:])
+	})
 }
 
 // uncertainAt counts what a crash now would leave uncertain in f.

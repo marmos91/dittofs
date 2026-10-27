@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -55,16 +56,14 @@ func (r *recorder) Errorf(format string, args ...any) {
 	r.errors = append(r.errors, fmt.Sprintf(format, args...))
 }
 
-// flipView serves file 1's byte 7 with its low bit flipped whenever it is
-// held: a journal returning one wrong byte.
+// flipView serves the first held byte of every read of file 1 with its low
+// bit flipped: a journal returning one wrong byte.
 type flipView struct{ View }
 
 func (v flipView) ReadAt(ctx context.Context, id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
 	n, missing, held, asOf, err := v.View.ReadAt(ctx, id, off, p)
-	const at = 7
-	if id == FileOf(1) && off <= at && at-off < int64(n) &&
-		!slices.ContainsFunc(missing, func(e journalv2.Extent) bool { return covers(e, at) }) {
-		p[at-off] ^= 1
+	if id == FileOf(1) && len(held) > 0 {
+		p[held[0].Extent.Off-off] ^= 1
 	}
 	return n, missing, held, asOf, err
 }
@@ -116,7 +115,7 @@ func TestCheckDoesNotShrinkAMisuse(t *testing.T) {
 	Check(rec, "misuse.txt", steps, func() (Target, func(), error) {
 		return lowFloor{newPlayed(t)}, func() {}, nil
 	})
-	if len(rec.errors) != 1 || !errors.Is(firstErr(t, steps), ErrMisuse) {
+	if len(rec.errors) != 1 || !strings.Contains(rec.errors[0], ErrMisuse.Error()) {
 		t.Fatalf("want the misuse reported, got %q", rec.errors)
 	}
 	if _, err := os.Stat(filepath.Join(rec.dir, "misuse.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -124,7 +123,29 @@ func TestCheckDoesNotShrinkAMisuse(t *testing.T) {
 	}
 }
 
-func firstErr(t *testing.T, steps []Step) error {
-	_, err := Run(t.Context(), lowFloor{newPlayed(t)}, steps)
-	return err
+// A divergence that does not come back on the shrunk sequence is kept whole,
+// so the corpus file written still shows a failure.
+func TestCheckKeepsADivergenceShrinkingLoses(t *testing.T) {
+	rec := &recorder{TB: t, dir: t.TempDir()}
+	steps := Generate(0, 50)
+	opened := 0
+	Check(rec, "once.txt", steps, func() (Target, func(), error) {
+		// The run and the first two shrinking attempts fail; later runs,
+		// the rerun of the shrunk sequence among them, do not.
+		opened++
+		if opened <= 3 {
+			return flipTarget{newPlayed(t)}, func() {}, nil
+		}
+		return newPlayed(t), func() {}, nil
+	})
+	if len(rec.errors) != 1 {
+		t.Fatalf("want the divergence reported once, got %q", rec.errors)
+	}
+	text, err := os.ReadFile(filepath.Join(rec.dir, "once.txt"))
+	ok(t, err)
+	kept, err := ParseCorpus(text)
+	ok(t, err)
+	if !slices.Equal(kept, steps) {
+		t.Fatalf("wrote %d steps, want the %d that failed:\n%s", len(kept), len(steps), text)
+	}
 }

@@ -52,7 +52,8 @@ func offerAll(j *Model, id journalv2.FileID, through journalv2.Version) journalv
 // or fill split at a random point, and each piece and uncertain record kept or
 // lost.
 func loseUnsynced(j *Model, rng *rand.Rand) {
-	for _, f := range j.files {
+	for _, id := range sortedIDs(j) {
+		f := j.files[id]
 		if !f.unresolved {
 			continue
 		}
