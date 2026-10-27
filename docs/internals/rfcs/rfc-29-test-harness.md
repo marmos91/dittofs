@@ -672,16 +672,14 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount:
-  # on each OS, the checks of smb-client-compat.yml's job there, which this replaces once its
-  # results match. The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
+  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount.
+  # The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
   clients:
     tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
     cmd: "{test} {mount} {bucket}"     # s3.sh sees a block reach the bucket; the others take the mount alone
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
-    tier: nightly
-    blocking: false                     # until the three cells match smb-client-compat.yml; blocking when it goes
+    tier: merge                         # after each merge, on every branch tests.yml runs; macOS and Windows nightly
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
@@ -689,11 +687,13 @@ suites:
         env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
         needs: [macos]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
       windows:                          # a script isn't a program there: PowerShell runs it
         tests: [test/clients/files.ps1]
         cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
         needs: [windows]
         fixture: { profile: memory, smb: { mount: true } }   # New-SmbMapping -TcpPort, no port 445
+        tier: nightly
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
@@ -1785,7 +1785,7 @@ Four things stay outside the registry:
 - **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
 - **nfstest's knfsd baseline,** `nfs-knfsd-baseline.yml`, a dispatch-only evidence job (§3).
 
-`smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
+`smb-client-compat.yml` went once the `clients` suite's results matched it on each OS.
 
 **Develop goes red.** `tests.yml`'s `post` job does this for `tests.yml`, and the dedicated host for
 its own cells (§4.5). A workflow still outside `tests.yml` runs no `dt`, so it has no failing set

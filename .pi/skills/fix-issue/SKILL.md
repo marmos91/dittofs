@@ -277,10 +277,6 @@ Kerberos tests, when the PR touches what they cover. The protocol suites are slo
 gh pr checks <PR> --watch
 ```
 
-Do not wait on `smb-client-compat` or `ad-dc`: they are
-postsubmit/nightly only and never appear on a PR. Waiting for them hangs step 9
-forever.
-
 When a check goes red, investigate the actual failure rather than re-running.
 Pull the failing job's log, find the assertion, and check whether the same job
 fails on `origin/develop` before assuming it is yours — `develop` is
