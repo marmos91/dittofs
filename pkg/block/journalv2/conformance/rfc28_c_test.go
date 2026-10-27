@@ -366,3 +366,35 @@ func TestRFC28C_Rebuild(t *testing.T) {
 		}
 	}
 }
+
+// TestRFC28C_TornTailCutOff checks that a torn record at the end of the
+// newest segment is cut off and the segment sealed, so the next write lands
+// in a new segment and a second crash cannot lose it behind the torn bytes.
+func TestRFC28C_TornTailCutOff(t *testing.T) {
+	f := journalv2test.New(t)
+	id := journalv2test.File(0)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	x := writeRec(t, f, 0, 0, 0, 64<<10)
+	xSeg := entryAt(t, f, id, 0).Location.Segment
+
+	// Only X's segment is torn: its last unsynced write is cut in half,
+	// whatever the journal wrote elsewhere since.
+	f.Crash(journalv2test.TornIn(segmentName(xSeg), 32<<10))
+
+	if got := f.J.Stats().Counters.TornTails; got != 1 {
+		t.Fatalf("TornTails = %d after a torn record, want 1", got)
+	}
+	if !segmentInfo(t, f, xSeg).Sealed {
+		t.Fatalf("the torn segment %d was not sealed", xSeg)
+	}
+	wantMissing(t, f.Share(0), id, x.extent)
+
+	a := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
+	if seg := entryAt(t, f, id, a.extent.Off).Location.Segment; seg == xSeg {
+		t.Fatalf("A was appended into the torn segment %d", seg)
+	}
+
+	f.Crash()
+	wantBytes(t, f.Share(0), id, a.extent.Off, a.p)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
