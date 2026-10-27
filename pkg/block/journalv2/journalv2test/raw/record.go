@@ -5,6 +5,10 @@ import "encoding/binary"
 // RecordHeaderSize is the size of a record header.
 const RecordHeaderSize = 96
 
+// RecordLengthOffset is the offset of the length field in a record header,
+// for a check that damages that field alone.
+const RecordLengthOffset = 40
+
 // Record is one record: its 96-byte header, its body and the zero padding
 // that brings it to a multiple of 8 bytes. Both checksums are seeded with
 // Identity, which is not written.

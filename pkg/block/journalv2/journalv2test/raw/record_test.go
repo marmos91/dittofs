@@ -124,3 +124,11 @@ func TestWriteOfWholeWordsGetsNoPadding(t *testing.T) {
 		t.Errorf("a write of 16 payload bytes is %d bytes, want 120", got)
 	}
 }
+
+// The exported offsets are the tables' values, so a check that damages one
+// field through them damages that field.
+func TestRecordOffsets(t *testing.T) {
+	if RecordLengthOffset != 40 {
+		t.Errorf("RecordLengthOffset is %d, want 40", RecordLengthOffset)
+	}
+}
