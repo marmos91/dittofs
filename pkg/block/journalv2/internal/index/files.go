@@ -51,7 +51,9 @@ type fileShard struct {
 // holds nothing, the change version is dropped. The tag lasts longer, while
 // any segment holds a record of the file, so a file whose every extent was
 // released keeps its owner, as recovery would rebuild it from the records on
-// disk. The entry leaves the map only when both have ended.
+// disk. The entry leaves the map only when both have ended. Forgetting a
+// tag, which drops it whole while its records are still on disk, is the one
+// other way a tag ends, and clears it directly.
 //
 // decision: a file's state is guarded by a read-write lock, not kept in a
 // copy-on-write tree that would give readers a stable view without one.
@@ -203,10 +205,12 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 // owner. The caller passes the FileID the refusal names.
 //
 // decision: a claim alone does not keep the entry; only a record on disk or
-// held content does. So a check made before a record's I/O, to refuse a call
-// that would append nothing, is advisory, and the claim that counts is the
-// one recorded makes when the record is noted, which a refusal there leaves
-// unnoted. Revisit if a call must hold a claim across I/O without a record.
+// held content does. The check that refuses a call is this one, made before
+// the record's I/O, so a refused call appends nothing. It holds across the
+// I/O only because the caller keeps the file's appends serialised from the
+// claim until recorded notes the record, and recorded claims again, since a
+// claim left alone is dropped when its update returns. Revisit if a call must
+// hold a claim across I/O without that serialisation.
 func (f *file) claim(tag core.ShareTag, id core.FileID) error {
 	if !f.tagged {
 		f.tagged, f.tag = true, tag
@@ -240,16 +244,19 @@ func (f *file) changeVersion() (core.Version, bool) {
 // recorded notes that seg holds a record of the file, appended through tag.
 // It is called for every record appended for the file, and once a segment is
 // noted again it changes nothing. It claims the file for tag, so no record is
-// noted without the file's owner, and refuses a tag that does not own the
-// file, noting nothing.
+// noted without an owner.
+//
+// The record is on disk by the time it is noted, so the segment is noted
+// whatever the tag: a segment dropped here would end the file's tag while a
+// record of it remains. A tag that does not own the file is reported with
+// OtherShareError and leaves the owner in place. The claim made before the
+// I/O makes that unreachable, so reaching it means the file now has records
+// of two tags on disk, which only a fault leaves.
 func (f *file) recorded(seg core.SegmentID, tag core.ShareTag, id core.FileID) error {
-	if err := f.claim(tag, id); err != nil {
-		return err
-	}
 	if !slices.Contains(f.segs, seg) {
 		f.segs = append(f.segs, seg)
 	}
-	return nil
+	return f.claim(tag, id)
 }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record

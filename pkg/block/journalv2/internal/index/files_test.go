@@ -133,10 +133,12 @@ func TestWriteNeverLowersChangeVersion(t *testing.T) {
 	})
 }
 
-// TestRecordedRefusesOtherTag: a record noted through a tag that does not
-// own the file is refused and leaves no segment noted, so a refused append
-// cannot keep the owner's entry alive.
-func TestRecordedRefusesOtherTag(t *testing.T) {
+// TestRecordedReportsOtherTagAndKeepsTheRecord: a record is noted after its
+// I/O, so one noted through a tag that does not own the file is already on
+// disk. It is reported, the owner stays, and its segment still counts: one
+// left unnoted would let the owner's last segment end the tag while that
+// record remains, and a later claim by a third tag would succeed.
+func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error { return f.recorded(1, 4, id) })
@@ -145,8 +147,12 @@ func TestRecordedRefusesOtherTag(t *testing.T) {
 		t.Fatalf("recorded through another tag = %v, want ErrOtherShare", err)
 	}
 	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
-	if present(&fs, id) {
-		t.Fatal("a refused record kept the entry alive")
+	if !fs.view(id, func(f *file) {
+		if tag, ok := f.owner(); !ok || tag != 4 {
+			t.Fatalf("owner = %d, %v, want 4, true", tag, ok)
+		}
+	}) {
+		t.Fatal("entry dropped while segment 2 holds a record of the file")
 	}
 }
 
