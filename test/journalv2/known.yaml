@@ -283,3 +283,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and the index built the same way from both.'
   issue: '#3378'
+- test: TestRFC28C_TrailerTorn
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and Verify.'
+  issue: '#3378'
