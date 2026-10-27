@@ -377,12 +377,12 @@ interface:
 A call to a method no row names is a build failure, not a review comment, and a
 component method no row names is unreachable from the engine.
 
-**One clock and one fault interface, declared here.** The root composes the
-node, so it declares the two interfaces every component takes at construction
+**One clock and one fault interface, fixed here.** This section fixes the
+signatures of the two interfaces every component takes at construction
 ([the index's test harness](rfc-index.md#Test%20tiers), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
 seam — the journal's storage seam, the fake store, the fault transport, the
-fault-injecting metadata store — implements `Fault`. A component with a private
+fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
 **The clock is written in standard-library types only.** Each component declares
@@ -413,6 +413,11 @@ type Fault interface {
     At(op string, key []byte) FaultAction // pass, fail with an error, delay by d, drop, tear after n bytes, reorder
 }
 ```
+
+`Fault` cannot be declared in each component's package the way `Clock` is,
+because `FaultAction` is not a standard type. Its home is `pkg/sim`, which
+defines `Fault`, `FaultAction`, `Schedule`, the seeded implementation, and `TestClock`;
+every fault-injecting seam and every check imports them from there; production code never does.
 
 ### 2.2 Capabilities are parameters, never assertions
 
