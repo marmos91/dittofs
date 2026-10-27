@@ -255,3 +255,149 @@ func TestRFC28A_UnmarkClears(t *testing.T) {
 	}
 	wantRelease(t, h, a.id, a.extent, false)
 }
+
+// deviceSync makes the pending writes of the segment file name durable
+// through the seam, as the operating system's own writeback would, without
+// the journal seeing a sync.
+func deviceSync(t *testing.T, f *journalv2test.Fixture, name string) {
+	t.Helper()
+
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		t.Fatalf("sync %s behind the journal's back: %v", name, err)
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		t.Fatalf("sync %s behind the journal's back: %v", name, err)
+	}
+}
+
+// abandonHeld ends the process while the calls stopped at h are in flight,
+// and opens the journal again.
+//
+// decision: the seam's abandon runs first, so a held call, once released,
+// fails as a dead process's; the hold is released second, so the call
+// returns; the fixture's abandon runs last, repeating the seam's with nothing
+// left to close, and opens the journal on what the process left.
+func abandonHeld(t *testing.T, f *journalv2test.Fixture, h *journalv2test.Hold) {
+	t.Helper()
+
+	f.Seam.Abandon()
+	h.Release()
+	f.Abandon()
+}
+
+// unproven is a pair of records past the last sync the journal knows of: A
+// reached the device behind the journal's back, B only the cache.
+type unproven struct {
+	a, b       rec
+	aLoc, bLoc journalv2.RecordRef
+	name       string // the segment holding both
+}
+
+// writeUnproven writes A and B on file 0, syncing the segment through the
+// seam between them, so A is on the device and B is not, and the journal has
+// seen no sync of either.
+func writeUnproven(t *testing.T, f *journalv2test.Fixture) unproven {
+	t.Helper()
+
+	a := writeRec(t, f, 0, 0, 0, 64<<10)
+	aLoc := entryAt(t, f, a.id, 0).Location
+	name := segmentName(aLoc.Segment)
+	deviceSync(t, f, name)
+	b := writeRec(t, f, 0, 0, 64<<10, 64<<10)
+	bLoc := entryAt(t, f, b.id, b.extent.Off).Location
+
+	return unproven{a, b, aLoc, bLoc, name}
+}
+
+// wantVerifiedThenReappended fails the test unless, after the open that
+// followed the process's death, A and B read back with their original
+// versions, A where it was and B in another segment, and unless both still
+// read back after a crash that drops what no sync covered.
+func wantVerifiedThenReappended(t *testing.T, f *journalv2test.Fixture, u unproven) {
+	t.Helper()
+
+	check := func(when string) {
+		for _, r := range []rec{u.a, u.b} {
+			if got := entryAt(t, f, r.id, r.extent.Off).Version; got != r.version {
+				t.Fatalf("%s, the record at %d is held at version %v, want its original %v", when, r.extent.Off, got, r.version)
+			}
+			wantBytes(t, f.Share(0), r.id, r.extent.Off, r.p)
+		}
+	}
+	check("after the open")
+
+	if got := entryAt(t, f, u.a.id, 0).Location; got != u.aLoc {
+		t.Fatalf("A moved from %+v to %+v; it verified on the device and was to stay in place", u.aLoc, got)
+	}
+	if got := entryAt(t, f, u.b.id, u.b.extent.Off).Location; got.Segment == u.bLoc.Segment {
+		t.Fatalf("B is still served from segment %d; it did not verify on the device and was to be re-appended", got.Segment)
+	}
+	if got := f.J.Stats().Counters.SyncReappendedBytes; got < uint64(len(u.b.p)) {
+		t.Fatalf("SyncReappendedBytes = %d after re-appending %d bytes", got, len(u.b.p))
+	}
+
+	f.Crash()
+	check("after the crash")
+}
+
+// TestRFC28A_UnprovenTailVerifiedAtOpen checks that a journal whose process
+// died trusts no record it cannot prove synced: at open it syncs the newest
+// segment, re-reads every record past the last proven sync point from the
+// device, keeps the ones that verify there and re-appends the others from
+// the copy the cache still serves, so a power loss after the restart takes
+// nothing a client was answered. Three legs: a journal with room, one at its
+// maximum, and one whose segment's sync failed before the process died.
+//
+// decision: in every leg the open's own sync of the segment is dropped at
+// the seam, so it reports success and puts nothing on the device: without
+// that, the open would make B durable before it re-read it, and the row's
+// case of a record that does not verify on the device could not be reached.
+func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
+	f := journalv2test.New(t)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	u := writeUnproven(t, f)
+	f.Drop(journalv2test.OpSync, u.name)
+	f.Abandon()
+	f.Seam.SetFault(nil)
+	wantVerifiedThenReappended(t, f, u)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	// At the maximum: the re-append draws on the repack reserve, never on a
+	// share's limit, so the open succeeds. The fills are synced, so B is the
+	// only record the open has to re-append.
+	g := journalv2test.NewUnwatched(t)
+	u = writeUnproven(t, g)
+	filled := map[journalv2.FileID]bool{}
+	for _, w := range fillUntilRefused(t, g, []int{1}, 2, 256<<10) {
+		filled[w.id] = true
+	}
+	for id := range filled {
+		syncFiles(t, g.Share(1), id)
+	}
+	g.Drop(journalv2test.OpSync, u.name)
+	g.Abandon()
+	g.Seam.SetFault(nil)
+	wantVerifiedThenReappended(t, g, u)
+
+	// A segment whose sync failed, the process dying before the window was
+	// resolved: the journal's resolution, a re-append or a loss record, is a
+	// write to a new segment, and the process dies with that write held.
+	// The segment names no predecessor, so recovery treats it as one that
+	// could have been open at the crash, and the outcome is the same.
+	k := journalv2test.NewUnwatched(t)
+	u = writeUnproven(t, k)
+	k.FailNext(journalv2test.OpSync, u.name, 1)
+	held := k.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
+	synced := make(chan error, 1)
+	go func() { synced <- k.Share(0).Sync(t.Context(), u.a.id) }()
+	select {
+	case <-held.Reached():
+	case err := <-synced:
+		stub(t, "Sync", err)
+		t.Fatalf("Sync returned (%v) without writing the window's resolution", err)
+	}
+	abandonHeld(t, k, held)
+	<-synced // a call the process died in; what it returned means nothing
+	wantVerifiedThenReappended(t, k, u)
+}

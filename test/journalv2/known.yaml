@@ -271,3 +271,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded by version, release and recovery.'
   issue: '#3379'
+- test: TestRFC28A_UnprovenTailVerifiedAtOpen
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
+  issue: '#3378'
