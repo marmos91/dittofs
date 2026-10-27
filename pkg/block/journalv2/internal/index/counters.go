@@ -43,16 +43,20 @@ var ErrSeqExhausted = errors.New("index: sequence numbers exhausted")
 // the greatest counter value, since the version limit is exclusive and never
 // above it; sequence numbers stop at the same value so the two read alike.
 //
-// decision: a floor or a record above these is refused when it arrives, as an
-// unknown format: it carries a number this journal never issues, so it comes
-// from another writer or from damage, and failing the open or the attach that
-// meets it is louder than any later refusal. Everything the counters issue
-// stays at or below them, so a journal always reopens on its own records, and
-// on floors at or below the last version it issued, even after issuing its
-// last number. A floor taken from a version limit can be higher, and is
-// refused; SetVersionLimit says when. The format allows the values
-// above, so the refusal is narrower than the format; widen it, and the
-// issuing caps with it, if another writer can legitimately carry them.
+// decision: a record above these is refused when it arrives, as an unknown
+// format: it carries a number this journal never issues, so it comes from
+// another writer or from damage, and failing the open that meets it is louder
+// than any later refusal. A floor above the greatest version is clamped to it
+// instead, because the attach rule feeds a share's durable version limit back
+// as the floor, and SetVersionLimit accepts a limit at the greatest counter
+// value, which a caller may pass for "no limit": refusing it would fail the
+// attach and leave that share's offloaded content unreadable, while a clamped
+// counter refuses only draws, which is the true state once every version below
+// the top may have been issued. Everything the counters issue stays at or
+// below them, so a journal always reopens on its own records and on floors
+// taken from its own limits. The format allows the values above, so the
+// refusal is narrower than the format; widen it, and the issuing caps with it,
+// if another writer can legitimately carry them.
 const (
 	maxVersion = math.MaxUint64 - 1
 	maxSeq     = math.MaxUint64 - 1
@@ -78,15 +82,14 @@ const (
 // limit check and the increment one step, so concurrent draws can never pass
 // the limit between them.
 //
-// decision: a lowered limit binds only the draws that start after
-// SetVersionLimit returns. The swap guards the counter, not the limit, so each
-// draw in flight that read the old limit can still issue one version at or
-// above the new limit, though below the old one. That is
-// safe because the limit falls only when a share attaches with a lower limit
-// of its own, and the draws already in flight belong to shares whose durable
-// limits are no lower than the old one, so none of their versions can be
-// issued again after a crash. Withdraw it, and take a lock that covers the
-// limit too, if a caller ever lowers the limit of a share already attached.
+// decision: the swap guards the counter, not the limit, so a draw in flight
+// that read the old limit can still issue one version at or above a limit set
+// since, though below the old one. That window is unreachable under the attach
+// rule, which writes a share's limit as a tracked max-write that never lowers
+// it and writes an attaching share's limit at the journal's, so the journal's
+// limit never falls; setting rather than raising is the safe direction all the
+// same. Take a lock that covers the limit too if a caller ever sets a limit
+// below the current one.
 type Counters struct {
 	high    atomic.Uint64 // the highest version issued, observed or raised to
 	limit   atomic.Uint64 // versions are issued only below it; zero issues none
@@ -126,20 +129,16 @@ func (c *Counters) NextSeq() (core.Seq, error) {
 }
 
 // SetVersionLimit sets the version limit: versions are issued only below
-// mark. It sets rather than raises, since the limit is the smallest of the
-// limits of the shares the journal serves, and attaching a share can lower it.
+// mark, and none at all until one is set. It sets rather than raises, so a
+// limit below the current one takes effect at once.
 //
 // decision: a mark with a non-zero epoch is accepted, unlike a floor or a
-// record, and kept as the top of the counter's range, so VersionLimit reads
-// back that value rather than the mark. A mark is the caller's durable bound,
-// not a version this format stores, and every version the counter can issue
-// lies below one with a non-zero epoch, so taking it as the top leaves nothing
-// issued that the mark forbids. The leniency lasts only until the mark comes
-// back: the caller's durable limit is fed back as the floor at the next open
-// or attach, and a floor above every version this journal issues is refused
-// there as an unknown format. That holds for every mark above one past the
-// greatest version issued: one with a non-zero epoch, and one whose counter
-// is the greatest counter value, which a caller might pass for "no limit".
+// record, and kept as the top of the counter's range. A mark is the caller's
+// durable bound, not a version this format stores, and every version the
+// counter can issue lies below one with a non-zero epoch, so taking it as the
+// top leaves nothing issued that the mark forbids. The mark comes back as the
+// floor at the next open or attach: a counter half is clamped to the greatest
+// version issued, and a non-zero epoch is refused there as an unknown format.
 // Refuse such a mark here instead if a later format issues versions with a
 // non-zero epoch, where the mark's counter half would be its limit.
 func (c *Counters) SetVersionLimit(mark core.Version) {
@@ -152,18 +151,16 @@ func (c *Counters) SetVersionLimit(mark core.Version) {
 
 // RaiseFloor raises the version counter so that every version issued after it
 // returns exceeds floor: the floor given at open, or a share's own floor when
-// it attaches. A lower floor leaves the counter where it is. A floor with a
-// non-zero epoch, or above every version this journal issues, is refused with
-// ErrUnknownFormat and changes nothing: at open, which it fails, and at a
-// share's attach, which it fails the same way.
+// it attaches. A lower floor leaves the counter where it is, and one above
+// every version this journal issues is clamped to the greatest, where draws
+// are refused. A floor with a non-zero epoch is refused with ErrUnknownFormat
+// and changes nothing: at open, which it fails, and at a share's attach, which
+// it fails the same way.
 func (c *Counters) RaiseFloor(floor core.Version) error {
 	if floor.Epoch != 0 {
 		return fmt.Errorf("%w: version floor %v has a non-zero epoch", core.ErrUnknownFormat, floor)
 	}
-	if floor.Counter > maxVersion {
-		return fmt.Errorf("%w: version floor %v is above every version issued", core.ErrUnknownFormat, floor)
-	}
-	raise(&c.high, floor.Counter)
+	raise(&c.high, min(floor.Counter, maxVersion))
 	return nil
 }
 
@@ -190,12 +187,6 @@ func (c *Counters) Observe(n Numbers) error {
 // allows and the counter never issues.
 func (c *Counters) NextVersion() core.Version {
 	return core.Version{Counter: c.high.Load() + 1}
-}
-
-// VersionLimit returns the version limit, zero when none is set. A limit set
-// with a non-zero epoch reads as the top of the counter's range.
-func (c *Counters) VersionLimit() core.Version {
-	return core.Version{Counter: c.limit.Load()}
 }
 
 // VersionsLeft returns how many versions remain to be issued below the limit:

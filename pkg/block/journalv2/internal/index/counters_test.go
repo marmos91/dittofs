@@ -14,6 +14,12 @@ import (
 
 func ver(counter uint64) core.Version { return core.Version{Counter: counter} }
 
+// roomy is a version limit no test reaches, so a draw is refused only by the
+// counter's own top. A test that wants room says so with a finite number: the
+// greatest counter value is a limit a caller may pass for "no limit", and a
+// test drawing under it would model that rather than room.
+const roomy = 1 << 62
+
 // limited returns counters whose version limit is limit.
 func limited(limit uint64) *Counters {
 	c := &Counters{}
@@ -117,20 +123,21 @@ func TestDrawJustBelowAndAtLimit(t *testing.T) {
 	}
 	_, err := c.Draw()
 	assertVersionRefusal(t, err)
-	if got := c.VersionLimit(); got != ver(4) {
-		t.Errorf("VersionLimit = %v, want %v", got, ver(4))
-	}
 
-	c.SetVersionLimit(ver(5))
+	c.SetVersionLimit(ver(6))
 	if got := mustDraw(t, c); got != ver(4) {
 		t.Fatalf("after raising the limit: Draw = %v, want %v", got, ver(4))
 	}
+	if left := c.VersionsLeft(); left != 1 {
+		t.Errorf("VersionsLeft = %d, want 1", left)
+	}
 }
 
-// TestLoweredLimitRefuses checks that the limit is set, not raised: the
-// smallest of the shares' limits can fall when a share attaches. It catches
-// the limit kept as a maximum, and VersionsLeft underflowing once the counter
-// stands above the limit.
+// TestLoweredLimitRefuses checks that SetVersionLimit sets the limit rather
+// than keeping a maximum, and that VersionsLeft does not underflow once the
+// counter stands above it. The journal's limit never falls under the attach
+// rule, which writes a share's limit as a tracked max-write; this is what the
+// API does with a lower limit regardless, since nothing in it refuses one.
 func TestLoweredLimitRefuses(t *testing.T) {
 	c := limited(100)
 	for range 10 {
@@ -149,7 +156,7 @@ func TestLoweredLimitRefuses(t *testing.T) {
 // write through the share draws a version. It catches a floor assigned rather
 // than raised to, which a later, lower floor would pull back down.
 func TestShareFloorRaisesCounter(t *testing.T) {
-	c := limited(math.MaxUint64)
+	c := limited(roomy)
 	if err := c.RaiseFloor(ver(1000)); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +269,7 @@ func TestNoVersionRepeats(t *testing.T) {
 // counters above the greatest of each, which is what lets recovery read
 // segments in any order. It catches Observe assigning rather than raising.
 func TestObserveAnyOrder(t *testing.T) {
-	c := limited(math.MaxUint64)
+	c := limited(roomy)
 	for _, n := range []Numbers{{ver(40), 7}, {ver(90), 3}, {ver(10), 80}, {ver(20), 20}} {
 		if err := c.Observe(n); err != nil {
 			t.Fatal(err)
@@ -342,7 +349,7 @@ func TestConcurrentDraw(t *testing.T) {
 		}
 	}
 
-	c := limited(math.MaxUint64)
+	c := limited(roomy)
 	issued, _ := run(func() (uint64, error) { got, err := c.Draw(); return got.Counter, err })
 	check("Draw", issued, goroutines*each)
 	issued, _ = run(func() (uint64, error) { got, err := c.NextSeq(); return uint64(got), err })
@@ -364,7 +371,7 @@ func TestConcurrentDraw(t *testing.T) {
 // the counter, then stores over whatever draws issued in between.
 func TestRaiseFloorConcurrentWithDraw(t *testing.T) {
 	const goroutines, each = 8, 5000
-	c := limited(math.MaxUint64)
+	c := limited(roomy)
 	issued := make([][]uint64, goroutines+1)
 	var stop atomic.Bool
 	var drawers, raiser sync.WaitGroup
@@ -422,7 +429,7 @@ func TestRaiseFloorConcurrentWithDraw(t *testing.T) {
 // observer raised it to in between.
 func TestConcurrentObserve(t *testing.T) {
 	const goroutines, each = 8, 20000
-	c := limited(math.MaxUint64)
+	c := limited(roomy)
 	var stop atomic.Bool
 	var observers, watcher sync.WaitGroup
 	watcher.Go(func() {
@@ -461,24 +468,24 @@ func TestConcurrentObserve(t *testing.T) {
 	}
 }
 
-// TestExhaustionNeverWraps checks the top of both counters' ranges. A floor
-// or a record carrying a number above every one the counters issue is refused
-// when it arrives and changes nothing. The counters issue up to that top and
-// then refuse rather than wrap to zero, which would outrank nothing and be
-// issued again, and a journal recovered from the last numbers it issued
-// reopens and refuses as before. It catches an overflowing increment, a
-// counter let in where it could issue nothing, and a journal that refuses to
-// reopen on its own records.
+// TestExhaustionNeverWraps checks the top of both counters' ranges. A record
+// carrying a number above every one the counters issue is refused when it
+// arrives and changes nothing, and a floor there is clamped to the top instead.
+// The counters issue up to that top and then refuse rather than wrap to zero,
+// which would outrank nothing and be issued again, and a journal recovered from
+// the last numbers it issued reopens and refuses as before. It catches an
+// overflowing increment, a counter let in where it could issue nothing, a
+// clamped floor that wraps, and a journal that refuses to reopen on its own
+// records.
 func TestExhaustionNeverWraps(t *testing.T) {
 	c := &Counters{}
 	c.SetVersionLimit(core.Version{Epoch: 1})
 	for _, err := range []error{
-		c.RaiseFloor(ver(math.MaxUint64)),
 		c.Observe(Numbers{ver(math.MaxUint64), 1}),
 		c.Observe(Numbers{ver(1), math.MaxUint64}),
 	} {
 		if !errors.Is(err, core.ErrUnknownFormat) {
-			t.Errorf("a number above every one issued: got %v, want ErrUnknownFormat", err)
+			t.Errorf("a record above every number issued: got %v, want ErrUnknownFormat", err)
 		}
 	}
 	if got := c.NextVersion(); got != ver(1) {
@@ -528,5 +535,33 @@ func TestExhaustionNeverWraps(t *testing.T) {
 	assertVersionRefusal(t, err)
 	if _, err := reopened.NextSeq(); !errors.Is(err, ErrSeqExhausted) {
 		t.Fatalf("reopened NextSeq: got %v, want ErrSeqExhausted", err)
+	}
+}
+
+// TestFloorAboveTopIsClamped checks the floor the attach rule feeds back from
+// a limit at the greatest counter value: the floor is clamped to the top
+// rather than refused, so the share attaches and its offloaded content stays
+// readable, and only draws are refused, which is the true state. It catches a
+// refused floor, which fails the attach, and a clamp that wraps the counter.
+func TestFloorAboveTopIsClamped(t *testing.T) {
+	c := limited(math.MaxUint64)
+	mustDraw(t, c)
+
+	if err := c.RaiseFloor(ver(math.MaxUint64)); err != nil {
+		t.Fatalf("RaiseFloor at the limit the journal was given: %v", err)
+	}
+	if got := c.NextVersion(); got != ver(math.MaxUint64) {
+		t.Errorf("NextVersion = %v, want %v", got, ver(math.MaxUint64))
+	}
+	if got := c.VersionsLeft(); got != 0 {
+		t.Errorf("VersionsLeft = %d, want 0", got)
+	}
+	_, err := c.Draw()
+	assertVersionRefusal(t, err)
+
+	// A floor with a non-zero epoch is still refused, as a version this
+	// format never carries.
+	if err := c.RaiseFloor(core.Version{Epoch: 1}); !errors.Is(err, core.ErrUnknownFormat) {
+		t.Errorf("RaiseFloor with a non-zero epoch: got %v, want ErrUnknownFormat", err)
 	}
 }
