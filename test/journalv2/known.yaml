@@ -1,0 +1,87 @@
+# The journal's conformance tests that fail or skip today, one entry per test, never a pattern, each
+# naming the epic expected to turn it green. A test that starts to pass fails the run: remove
+# its entry in the change that turned it green.
+- test: TestClock_WallJumpMovesNoTimer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the bounded sync timer and the data path.'
+  issue: '#3378'
+- test: TestRFC1D_AccountingFollowsCap
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segments, their accounting and the data path.'
+  issue: '#3378'
+- test: TestRFC1D_BacklogAge
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path and MarkOffloaded.'
+  issue: '#3379'
+- test: TestRFC1D_CleanBytesCountAsOccupancy
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, capacity refusals and MarkOffloaded.'
+  issue: '#3379'
+- test: TestRFC1D_GenerationNeverRepeats
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the loss generation and corrupt reads.'
+  issue: '#3378'
+- test: TestRFC1D_LossEvents
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
+  issue: '#3379'
+- test: TestRFC1D_MetricsAreReachable
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed syncs, corrupt reads, torn tails and foreign segments counted.'
+  issue: '#3378'
+- test: TestRFC1D_NamedInequalitiesHold
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, release, truncate and repack.'
+  issue: '#3379'
+- test: TestRFC1D_SegmentHeldBytes
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs per-segment accounting, release and repack.'
+  issue: '#3379'
+- test: TestRFC1D_StatsTakeNoWriteLock
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
+  issue: '#3378'
+- test: TestRFC1D_StatsCostIsFlat
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
+  issue: '#3395'
+- test: TestRFC1D_VerificationReports
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Verify and the data path.'
+  issue: '#3378'
+- test: TestRFC1D_WedgeIsVisibleDirty
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals and Stats per share.'
+  issue: '#3378'
+- test: TestRFC1D_WedgeIsVisibleUnreclaimed
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, MarkOffloaded and release.'
+  issue: '#3379'
