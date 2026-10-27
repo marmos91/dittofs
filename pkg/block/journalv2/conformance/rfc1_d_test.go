@@ -3,7 +3,6 @@
 package conformance
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -331,16 +330,11 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	f := journalv2test.New(t)
 	h := f.Share(0)
 
-	// A refused reservation.
-	// decision: such a reservation exceeds both the journal's maximum and its
-	// spares, and which limit a refusal names when two would refuse is not
-	// pinned, so either is accepted: the leg is about the counter moving.
-	// Pin the order and this names one limit.
+	// A refused reservation. It exceeds the spares as well as the journal's
+	// maximum, and a refusal names the spare pool only when no other limit
+	// would refuse.
 	_, err := h.Reserve(2*journalv2test.FixtureMaxBytes, 1)
-	var ns *journalv2.NoSpaceError
-	if !errors.As(err, &ns) || (ns.Limit != journalv2.LimitJournal && ns.Limit != journalv2.LimitSpare) {
-		t.Fatalf("a reservation of twice the journal's maximum returned %v, want a NoSpaceError naming the journal or spare limit", err)
-	}
+	wantNoSpace(t, err, journalv2.LimitJournal, "a reservation of twice the journal's maximum")
 	if got := f.J.Stats().Counters.ReservationRefused; got == 0 {
 		t.Fatal("ReservationRefused is zero after a refused reservation")
 	}
@@ -378,34 +372,22 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 		t.Fatal("TornTails is zero after an open that found a torn tail")
 	}
 
-	// A segment from another journal, copied in under its own name. Its id
-	// must be one this journal has not used, and its name must match its
-	// header: a segment whose name and header disagree, with no record that
-	// verifies, is adopted as a spare rather than rejected. So the other
-	// journal writes until a record lands in a segment above every id here,
-	// spares included, which is every id the directory names. The margin
-	// keeps it clear of spares this journal may still be making, which take
-	// the next ids up; the directory is read again each time, just before
-	// the copy.
+	// A segment from another journal, copied in under an id this journal has
+	// not used. Its header names the other journal, so it is foreign whatever
+	// id its header gives and whatever its records, never a spare. The
+	// margin keeps the id clear of spares this journal may still be making,
+	// which take the next ids up.
 	const margin = 8
 	other := journalv2test.NewUnwatched(t)
-	var foreign journalv2.SegmentID
-	for i := 0; foreign <= newestID(t, f)+margin; i++ {
-		if i > 2*journalv2test.FixtureMaxBytes/(256<<10) {
-			t.Fatalf("the other journal never reached a segment %d above this one's newest", margin)
-		}
-		id := journalv2test.File(i)
-		write(t, other.Share(0), id, 0, pattern(fmt.Sprint("foreign", i), 256<<10))
-		if err := other.Share(0).Sync(t.Context(), id); err != nil {
-			t.Fatal(err)
-		}
-		foreign = heldEntry(t, other, id).Location.Segment
+	write(t, other.Share(0), journalv2test.File(0), 0, pattern("foreign", 4096))
+	if err := other.Share(0).Sync(t.Context(), journalv2test.File(0)); err != nil {
+		t.Fatal(err)
 	}
-	data, err := other.Seam.Durable(segmentName(foreign))
+	data, err := other.Seam.Durable(segmentName(heldEntry(t, other, journalv2test.File(0)).Location.Segment))
 	if err != nil {
 		t.Fatal(err)
 	}
-	plant(t, f, segmentName(foreign), data)
+	plant(t, f, segmentName(newestID(t, f)+margin), data)
 	f.Reopen()
 	if got := f.J.Stats().RejectedSegments; got == 0 {
 		t.Fatal("RejectedSegments is zero after an open beside a segment of another journal")
@@ -454,12 +436,10 @@ func TestRFC1D_LossEvents(t *testing.T) {
 		if l.Reason != r || l.Share != journalv2test.Tag(0) || l.Extent != e {
 			t.Fatalf("loss event %+v, want reason %v for share %d over %+v", l, r, journalv2test.Tag(0), e)
 		}
-		// decision: the corrupt extent was dirty, so its event reports the
-		// bit unset. Which bit a stale drop reports is open: the extent was
-		// dirty here, yet the remote tier holds newer content, and a stale
-		// drop raises no generation, so either is accepted. Pin it and this
-		// checks the stale event's bit too.
-		if r == journalv2.LossCorrupt && l.Offloaded {
+		// Both extents were dirty, so both events report the bit unset: an
+		// event reports the bit as it was, even for a stale drop, which
+		// loses nothing the remote tier lacks.
+		if l.Offloaded {
 			t.Fatalf("loss event %+v for a dirty extent reports its offloaded bit set", l)
 		}
 		delete(want, l.File)
