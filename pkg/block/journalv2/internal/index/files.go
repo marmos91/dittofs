@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"slices"
 	"sync"
+	"unsafe"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
@@ -26,8 +27,8 @@ const fileShards = 64
 // than kept behind one lock. One lock, even a read-write one held only for
 // the map access, is a store-wide lock taken by every read of every file, and
 // its shared counter is a cache line every reader writes. 64 shards spread
-// that over more lines than a node has cores to contend for them. Revisit if
-// a profile shows shard locks contended under many concurrent readers.
+// that over 64 locks, each padded to a cache line of its own. Revisit if a
+// profile shows shard locks contended under many concurrent readers.
 //
 // decision: the file map and the file entry are unexported, like the rest of
 // this package. Their only consumer until the journal's operations are wired
@@ -40,6 +41,7 @@ type files struct {
 type fileShard struct {
 	mu sync.Mutex
 	m  map[core.FileID]*file
+	_  [64 - unsafe.Sizeof(sync.Mutex{}) - unsafe.Sizeof(map[core.FileID]*file(nil))]byte
 }
 
 // file is one FileID's entry in the placement index.
@@ -67,10 +69,18 @@ type file struct {
 	tag    core.ShareTag
 
 	held heldSet
-	// change is the file's change version, the zero Version when the file
-	// has no change-version entry.
+	// change is the file's change version. The zero Version means the file
+	// has none of its own, which is also the case for a file holding only
+	// filled content, since a fill changes no version: either way a check
+	// against it must use the file's floor instead.
 	change core.Version
 	// segs are the segments holding a record of the file, in no order.
+	//
+	// ponytail: a slice scanned on every record appended, O(s) for the s
+	// segments holding the file, and nothing more than which segments those
+	// are. Upgrade to per-segment entries kept in a map or sorted, carrying
+	// the drop ranges of each, when the index tracks drop ranges or a
+	// profile shows the scan on the append path.
 	segs []core.SegmentID
 }
 
@@ -110,10 +120,16 @@ func (fs *files) view(id core.FileID, fn func(*file)) bool {
 			f.mu.RUnlock()
 			continue
 		}
-		fn(f)
-		f.mu.RUnlock()
+		f.read(fn)
 		return true
 	}
+}
+
+// read runs fn and releases the file's read lock, which the caller took, even
+// if fn panics.
+func (f *file) read(fn func(*file)) {
+	defer f.mu.RUnlock()
+	fn(f)
 }
 
 // update runs fn on id's entry holding the file's lock exclusively, creating
@@ -139,11 +155,16 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 			f.mu.Unlock()
 			continue
 		}
-		err := fn(f)
-		f.settle(s, id)
-		f.mu.Unlock()
-		return err
+		return f.apply(s, id, fn)
 	}
+}
+
+// apply runs fn and settles the entry's lifetimes, then releases the file's
+// lock, which the caller took; both happen even if fn panics.
+func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
+	defer f.mu.Unlock()
+	defer f.settle(s, id)
+	return fn(f)
 }
 
 // settle applies the two lifetimes. The shard lock is taken after the file's,
@@ -153,7 +174,9 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 //
 // decision: only held extents keep the change-version entry for now. Removal
 // markers and retained extents keep it too once the index carries them; until
-// then a file holds nothing exactly when its held set is empty.
+// then a file holds nothing exactly when its held set is empty. Dropping the
+// change version is where the file's floor is raised to it, so that a stale
+// fill is still refused after the entry has gone.
 func (f *file) settle(s *fileShard, id core.FileID) {
 	if f.held.len() > 0 {
 		return
@@ -170,7 +193,10 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 
 // claim checks the file's tag against tag and claims the file for it when it
 // has none. A file owned by another tag is refused, naming both, and keeps its
-// owner. The caller passes the FileID the refusal names.
+// owner. The caller passes the FileID the refusal names. A claim lasts only
+// while the file has a record on disk or holds something, so it is made in
+// the same update that notes the claiming record, or under a lock that keeps
+// the file's appends serialised until that record is noted.
 func (f *file) claim(tag core.ShareTag, id core.FileID) error {
 	if !f.tagged {
 		f.tagged, f.tag = true, tag
@@ -186,7 +212,8 @@ func (f *file) claim(tag core.ShareTag, id core.FileID) error {
 func (f *file) owner() (core.ShareTag, bool) { return f.tag, f.tagged }
 
 // write holds p as a client write and raises the change version to its
-// version.
+// version. A file's writes take their versions in order, so the raise is a
+// plain maximum and never lowers the change version.
 func (f *file) write(p Placed) {
 	f.held.insert(p)
 	if p.Version.Compare(f.change) > 0 {

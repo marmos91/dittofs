@@ -98,6 +98,24 @@ func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 	}
 }
 
+// TestSegmentNotedTwiceIsGoneOnce: every record appended notes its segment,
+// so one segment is noted many times for a file. If each note were kept, one
+// unlink would remove one of them and the entry, tag and all, would outlive
+// its last record for good.
+func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
+	var fs files
+	id := fid(1)
+	_ = fs.update(id, func(f *file) error {
+		f.recorded(4)
+		f.recorded(4)
+		return f.claim(1, id)
+	})
+	_ = fs.update(id, func(f *file) error { f.segmentGone(4); return nil })
+	if present(&fs, id) {
+		t.Fatal("entry kept after the only segment holding its records was unlinked")
+	}
+}
+
 // TestReadClaimsNothing: a read appends nothing and claims nothing, so a view
 // of an unknown file must not create an entry, and an update that leaves
 // nothing behind, a refused one included, must not leave one either.
