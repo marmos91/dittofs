@@ -60,9 +60,13 @@ func Shrink(steps []Step, fails func([]Step) bool) []Step {
 	return cur
 }
 
-// errOpen marks a target that could not be opened, which says nothing about a
-// sequence.
-var errOpen = errors.New("model: opening the target")
+// openError is a target that could not be opened, which says nothing about a
+// sequence. It reads as the target's own error, so a fixture's failure keeps
+// the prefix that tells it from the check's.
+type openError struct{ err error }
+
+func (e openError) Error() string { return e.err.Error() }
+func (e openError) Unwrap() error { return e.err }
 
 // Check runs steps against a journal newTarget opens, which holds nothing,
 // and reports to tb what goes wrong. A divergence is shrunk, each candidate
@@ -78,7 +82,7 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 	run := func(c []Step) error {
 		tgt, done, err := newTarget()
 		if err != nil {
-			return fmt.Errorf("%w: %w", errOpen, err)
+			return openError{err}
 		}
 		defer done()
 		_, err = Run(tb.Context(), tgt, c)
@@ -86,11 +90,12 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 	}
 
 	err := run(steps)
+	var open openError
 	switch {
 	case err == nil:
 		return
-	case errors.Is(err, errOpen):
-		tb.Fatalf("%s: %v", name, err)
+	case errors.As(err, &open):
+		tb.Fatalf("%v; opening the journal for %s", open, name)
 		return
 	case !errors.Is(err, ErrDiverged):
 		tb.Errorf("%s: %v", name, err)

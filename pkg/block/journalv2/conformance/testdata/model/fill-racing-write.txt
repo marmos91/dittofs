@@ -1,0 +1,13 @@
+# A fill made as of a read races a write to the same file: once the write
+# lands, the fill is stale and refused, and the write's bytes stay. A fill as
+# of a read after the write brings back only what is absent.
+write s=1 f=1 len=32 b=97
+offload s=1 f=1
+release s=1 f=1
+read s=1 f=1 len=32
+write s=1 f=1 off=8 len=4 b=120
+fill s=1 f=1
+read s=1 f=1 len=32
+fill s=1 f=1
+stalefill s=1 f=1
+crash s=1 f=1

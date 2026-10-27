@@ -83,3 +83,22 @@ func TestCorpusIsReadInNameOrder(t *testing.T) {
 		t.Fatalf("read %v with %v", names, ops)
 	}
 }
+
+// committedCorpus is where the conformance suite keeps its sequences.
+const committedCorpus = "../../conformance/testdata/model"
+
+// Every sequence the conformance suite keeps runs against a journal that
+// answers as the RFC allows: a corpus file that misuses the model, or fails on
+// a correct journal, would only ever report itself.
+func TestCommittedCorpusFollowsAnHonestJournal(t *testing.T) {
+	corpus, err := ReadCorpus(committedCorpus)
+	ok(t, err)
+	if len(corpus) == 0 {
+		t.Fatalf("no sequence in %s", committedCorpus)
+	}
+	for _, seq := range corpus {
+		if _, err := Run(t.Context(), newPlayed(t), seq.Steps); err != nil {
+			t.Errorf("%s: %v", seq.Name, err)
+		}
+	}
+}

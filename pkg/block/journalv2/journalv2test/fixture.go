@@ -222,6 +222,10 @@ func (f *Fixture) attach(i int) *journalv2.Handle {
 	return h
 }
 
+// Floor returns the floor the journal open now was opened with: every
+// version it issues exceeds it.
+func (f *Fixture) Floor() journalv2.Version { return f.floor }
+
 // Tag returns the tag of the fixture's share i.
 func Tag(i int) journalv2.ShareTag {
 	return journalv2.ShareTag(i + 1)
