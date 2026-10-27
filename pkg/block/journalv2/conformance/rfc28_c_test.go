@@ -851,3 +851,39 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 		t.Fatalf("the copied headers were taken for records: ScanResyncs = %d, losses %+v, DamagedSegments = %d", st.Counters.ScanResyncs, st.Losses, st.DamagedSegments)
 	}
 }
+
+// TestRFC28C_SealMarkerCopiedIntoAPayload checks that a seal marker that
+// verifies for the segment and the offset it lies at, placed there as the
+// first bytes of a write's payload, does not end a scan: a scan tells a slot
+// only where the record lengths lead it, never inside a payload.
+func TestRFC28C_SealMarkerCopiedIntoAPayload(t *testing.T) {
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	const size = 64 << 10
+	other := writeSynced(t, f, 1, 1, 0, size)
+	x := writeRec(t, f, 0, 0, 0, size)
+	loc := entryAt(t, f, id, 0).Location
+
+	// The next slot of X's stream is X's end: its header, its modification
+	// time and its payload, which ends 8-aligned. The marker names the
+	// payload's first byte there, so it verifies exactly where it lies.
+	slot := loc.Offset + raw.RecordHeaderSize + 8 + size
+	marker := raw.SealMarker{Identity: journalIdentity(t, f), Segment: uint64(loc.Segment), Offset: uint64(slot + raw.WriteMTimeOffset + 8)}
+	p := append(marker.Bytes(), pattern(fmtTag("m", 0, 0, size), size-raw.SealMarkerSize)...)
+	write(t, h, id, size, p)
+	if got := entryAt(t, f, id, size).Location; got != (journalv2.RecordRef{Segment: loc.Segment, Offset: slot}) {
+		t.Fatalf("the record carrying the marker landed at %+v, not at the predicted slot %d of segment %d: the marker names the wrong place and this check proves nothing", got, slot, loc.Segment)
+	}
+
+	b := writeSynced(t, f, 0, 0, 2*size, size)
+	f.Crash()
+
+	wantBytes(t, f.Share(0), id, 2*size, b.p)
+	wantBytes(t, f.Share(0), id, size, p)
+	wantBytes(t, f.Share(0), id, 0, x.p)
+	st := f.J.Stats()
+	if st.Counters.TornTails != 0 || len(st.Losses) != 0 {
+		t.Fatalf("the scan ended at the copied marker: TornTails = %d, losses %+v", st.Counters.TornTails, st.Losses)
+	}
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}

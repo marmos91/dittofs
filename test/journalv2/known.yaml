@@ -313,3 +313,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, Since with the modification time, recovery and corrupt reads.'
   issue: '#3378'
+- test: TestRFC28C_SealMarkerCopiedIntoAPayload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync and recovery by scan.'
+  issue: '#3378'
