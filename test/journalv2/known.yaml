@@ -229,3 +229,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync, and recovery that cuts and seals a torn tail.'
   issue: '#3378'
+- test: TestRFC28A_DirectoryEntrySurvives
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segments taken from spares, Sync and recovery.'
+  issue: '#3378'

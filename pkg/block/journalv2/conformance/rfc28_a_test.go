@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -110,4 +111,39 @@ func TestRFC28A_CorruptOffloaded(t *testing.T) {
 	}
 
 	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
+
+// TestRFC28A_DirectoryEntrySurvives checks that a record synced into a
+// segment the journal took since the last directory sync survives a crash
+// that drops every directory change not yet synced: the segment's name must
+// be durable before the sync covering the record returns, or the record is
+// gone with the name.
+func TestRFC28A_DirectoryEntrySurvives(t *testing.T) {
+	f := journalv2test.New(t)
+	const size = 256 << 10
+	recs, first := fillSegment(t, f, 0, 0, size)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	// The write that rolled the stream took a segment the journal had made
+	// ahead; A follows it there.
+	off := int64(len(recs)+1) * size
+	a := writeSynced(t, f, 0, 0, off, 64<<10)
+	seg := entryAt(t, f, a.id, off).Location.Segment
+	if seg == first {
+		t.Fatalf("A landed in the first segment %d, not in the one the roll took", seg)
+	}
+	name := segmentName(seg)
+
+	f.Crash()
+
+	names, err := f.Seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's directory: %v", err)
+	}
+	if !slices.Contains(names, name) {
+		t.Fatalf("segment %s is gone after a crash dropped the unsynced directory changes; a record synced into it was acknowledged", name)
+	}
+
+	wantBytes(t, f.Share(0), a.id, off, a.p)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
