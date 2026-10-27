@@ -253,3 +253,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
   issue: '#3378'
+- test: TestRFC28C_BitsSurviveRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
+  issue: '#3379'

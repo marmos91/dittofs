@@ -514,3 +514,38 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 		}
 	}
 }
+
+// TestRFC28C_BitsSurviveRestart checks that a synced offloaded bit outlives a
+// crash, that a dirty extent comes back without one, and that a mark no sync
+// covered is lost with the crash rather than kept: a bit never set where the
+// remote tier may not hold the content.
+func TestRFC28C_BitsSurviveRestart(t *testing.T) {
+	f := journalv2test.New(t)
+	h := f.Share(0)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	mark(t, h, a.id, a.extent, a.version)
+	syncFiles(t, h, a.id)
+	b := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	f.Crash()
+	h = f.Share(0)
+	wantRelease(t, h, a.id, a.extent, true)
+	wantRelease(t, h, b.id, b.extent, false)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	// The mark's record never reaches the device: every sync of its segment
+	// reports success and makes nothing durable, so the crash takes it.
+	g := journalv2test.NewUnwatched(t)
+	h = g.Share(0)
+	d := writeSynced(t, g, 0, 0, 0, 64<<10)
+	g.Drop(journalv2test.OpSync, segmentName(entryAt(t, g, d.id, 0).Location.Segment))
+	mark(t, h, d.id, d.extent, d.version)
+
+	g.Crash()
+	h = g.Share(0)
+	wantRelease(t, h, d.id, d.extent, false)
+	if entryAt(t, g, d.id, 0).Offloaded {
+		t.Fatalf("D's offloaded bit is set after a crash took the mark's record")
+	}
+}
