@@ -289,3 +289,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and Verify.'
   issue: '#3378'
+- test: TestRFC28A_FooterIsNotAuthoritative
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
+  issue: '#3378'
