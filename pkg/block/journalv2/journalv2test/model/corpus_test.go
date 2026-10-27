@@ -50,6 +50,9 @@ func TestCorpusRefusesWhatItCannotRead(t *testing.T) {
 		"write s=2",                           // no such share
 		"write f=4",                           // no such file
 		"write b=256",                         // not a byte
+		"write pick=-1",                       // a negative pick
+		"write s=4294967296",                  // a share that wraps to 0 in 32 bits
+		"write f=-4294967295",                 // a file that wraps to 1 in 32 bits
 		"write off=9223372036854775807 len=1", // past the largest offset
 		"write off",                           // no value
 	} {

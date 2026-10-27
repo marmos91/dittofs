@@ -87,29 +87,34 @@ func parseStep(line string) (Step, error) {
 			return s, fmt.Errorf("field %q given twice", name)
 		}
 		seen[name] = true
-		v, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return s, fmt.Errorf("field %q: %w", name, err)
-		}
-		limit := map[string]int64{"b": 0xff, "pick": 0xff}
-		if l, ok := limit[name]; ok && (v < 0 || v > l) {
-			return s, fmt.Errorf("field %q is %d, outside 0..%d", name, v, l)
-		}
+		// The share, the file, the byte and the pick each fit in a byte, so
+		// they are parsed as one: a value that does not fit is refused here,
+		// never narrowed into another one.
+		var err error
 		switch name {
-		case "s":
-			s.Share = int(v)
-		case "f":
-			s.File = int(v)
+		case "s", "f", "b", "pick":
+			var u uint64
+			if u, err = strconv.ParseUint(value, 10, 8); err == nil {
+				switch name {
+				case "s":
+					s.Share = int(u)
+				case "f":
+					s.File = int(u)
+				case "b":
+					s.Byte = uint8(u)
+				case "pick":
+					s.Pick = uint8(u)
+				}
+			}
 		case "off":
-			s.Off = v
+			s.Off, err = strconv.ParseInt(value, 10, 64)
 		case "len":
-			s.Len = v
-		case "b":
-			s.Byte = byte(v)
-		case "pick":
-			s.Pick = uint8(v)
+			s.Len, err = strconv.ParseInt(value, 10, 64)
 		default:
 			return s, fmt.Errorf("no field %q", name)
+		}
+		if err != nil {
+			return s, fmt.Errorf("field %q: %w", name, err)
 		}
 	}
 	if why := s.valid(); why != "" {
