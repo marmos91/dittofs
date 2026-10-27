@@ -713,3 +713,62 @@ func TestRFC28C_SourcesAgree(t *testing.T) {
 	}
 	wantSameIndex(t, f, s.index)
 }
+
+// wantNoFooter fails the test unless the open after the damage to s's
+// footer read that segment by scan in place of its catalog, built the same
+// index, reported no loss and no damage, and every record still reads.
+func wantNoFooter(t *testing.T, f *journalv2test.Fixture, s sealed) {
+	t.Helper()
+
+	wantScanned(t, f, s.recovery, 1)
+	wantSameIndex(t, f, s.index)
+
+	if losses := f.J.Stats().Losses; len(losses) != 0 {
+		t.Fatalf("a footer that does not verify was reported as a loss: %+v", losses)
+	}
+	if segmentInfo(t, f, s.seg).Damaged {
+		t.Fatalf("segment %d is reported damaged; a footer that does not verify is only no footer", s.seg)
+	}
+
+	for _, r := range s.recs {
+		wantBytes(t, f.Share(0), r.id, r.extent.Off, r.p)
+	}
+	wantBytes(t, f.Share(1), s.other.id, 0, s.other.p)
+}
+
+// wantBadFooter fails the test unless Verify names segment seg among those
+// whose footer did not verify.
+func wantBadFooter(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) {
+	t.Helper()
+
+	report, err := f.J.Inspect().Verify(t.Context())
+	stub(t, "Inspect.Verify", err)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !slices.Contains(report.BadFooters, seg) {
+		t.Fatalf("Verify names %v as the segments whose footer did not verify, want segment %d among them", report.BadFooters, seg)
+	}
+}
+
+// TestRFC28C_TrailerTorn checks that a footer cut short behind its seal
+// marker, and separately a footer with one entry byte changed, are each
+// treated as no footer: the segment is scanned, the index is the one the
+// catalog gave, nothing is reported as damage, and Verify names the footer.
+func TestRFC28C_TrailerTorn(t *testing.T) {
+	f := journalv2test.New(t)
+	s := sealedSetup(t, f)
+	footerOffset, _ := trailerOf(t, durable(t, f, s.name))
+	truncateSegment(t, f, s.name, footerOffset+10)
+	f.Reopen()
+	wantNoFooter(t, f, s)
+	wantBadFooter(t, f, s.seg)
+
+	g := journalv2test.NewUnwatched(t)
+	s = sealedSetup(t, g)
+	footerOffset, _ = trailerOf(t, durable(t, g, s.name))
+	flipAt(t, g, s.name, footerOffset+30)
+	g.Reopen()
+	wantNoFooter(t, g, s)
+	wantBadFooter(t, g, s.seg)
+}
