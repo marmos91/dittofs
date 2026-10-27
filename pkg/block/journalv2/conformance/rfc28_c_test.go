@@ -1,0 +1,269 @@
+//go:build journal_conformance
+
+package conformance
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+)
+
+// The checks here fail by coming back up describing something other than
+// what is on disk.
+
+// fillSegment writes records of size bytes on file i through share s, from
+// offset 0, until the stream rolls into a second segment, and returns the
+// writes that landed in the first segment and that segment's id. The first
+// segment is then sealed full and carries a catalog.
+func fillSegment(t *testing.T, f *journalv2test.Fixture, s, i int, size int) ([]rec, journalv2.SegmentID) {
+	t.Helper()
+
+	id := journalv2test.File(i)
+	var recs []rec
+	var first journalv2.SegmentID
+	for n := 0; n <= 2*journalv2test.FixtureSegmentCap/size; n++ {
+		off := int64(n) * int64(size)
+		p := pattern(fmtTag("r", s, i, off), size)
+		v := write(t, f.Share(s), id, off, p)
+		seg := entryAt(t, f, id, off).Location.Segment
+		if n == 0 {
+			first = seg
+		}
+
+		if seg != first {
+			return recs, first
+		}
+
+		recs = append(recs, rec{s, id, journalv2.Extent{Off: off, Len: int64(size)}, v, p})
+	}
+	t.Fatalf("%d records of %d bytes never rolled a segment of %d", len(recs), size, journalv2test.FixtureSegmentCap)
+	panic("unreachable")
+}
+
+// TestRFC28C_NeighboursSurvive checks that one corrupt record in a segment
+// read by its catalog costs that record alone: the damage is found by the
+// read that would serve it, not at open, and every other record of the
+// segment still reads.
+func TestRFC28C_NeighboursSurvive(t *testing.T) {
+	f := journalv2test.New(t)
+	recs, seg := fillSegment(t, f, 0, 0, 32<<10)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	syncFiles(t, f.Share(0), recs[0].id)
+
+	mid := recs[len(recs)/2]
+	corruptRecord(t, f, entryAt(t, f, mid.id, mid.extent.Off).Location, mid.p)
+	f.Reopen()
+
+	s := f.J.Stats()
+	if s.Recovery.CatalogSegments == 0 {
+		t.Fatalf("recovery read no segment by its catalog: %+v", s.Recovery)
+	}
+
+	if len(s.Losses) != 0 {
+		t.Fatalf("the damage was noticed at open, with the catalog in use: %+v", s.Losses)
+	}
+
+	wantMissing(t, f.Share(0), mid.id, mid.extent)
+	ev := lastLoss(t, f, s)
+	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
+		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
+	}
+
+	for _, r := range recs {
+		if r.extent != mid.extent {
+			wantBytes(t, f.Share(0), r.id, r.extent.Off, r.p)
+		}
+	}
+
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	if got := f.J.Stats().DamagedSegments; got != 1 {
+		t.Fatalf("DamagedSegments = %d with one segment holding a record that does not verify, want 1", got)
+	}
+
+	if !segmentInfo(t, f, seg).Damaged {
+		t.Fatalf("segment %d holds the corrupt record and is not reported damaged", seg)
+	}
+}
+
+// TestRFC28C_SyncedDamageIsNotATornTail checks that damage to a synced record
+// near the end of the newest segment is reported as corruption, and that the
+// synced records after it are kept, never cut off as a torn tail: the later
+// record's header proves the earlier one was synced.
+func TestRFC28C_SyncedDamageIsNotATornTail(t *testing.T) {
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	b := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
+	write(t, h, id, 128<<10, pattern("c", 64<<10)) // C, never synced
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	bLoc := entryAt(t, f, id, b.extent.Off).Location
+
+	before := f.J.Stats()
+	corrupt(t, f, id, a.p)
+	f.Crash()
+
+	ev := lastLoss(t, f, before)
+	if ev.File != id || ev.Extent != a.extent || ev.Reason != journalv2.LossCorrupt {
+		t.Fatalf("loss event %+v, want A's extent %+v dropped as corrupt", ev, a.extent)
+	}
+
+	if got := entryAt(t, f, id, b.extent.Off).Location; got != bLoc {
+		t.Fatalf("B moved from %+v to %+v across the crash; it was synced where it was", bLoc, got)
+	}
+
+	wantBytes(t, h, id, b.extent.Off, b.p)
+
+	// The segment's header is 96 bytes, then a write's 8-byte modification
+	// time, then its payload: B's end is where no truncation may reach.
+	durable, err := f.Seam.Durable(segmentName(bLoc.Segment))
+	if err != nil {
+		t.Fatalf("read B's segment: %v", err)
+	}
+
+	if end := bLoc.Offset + 96 + 8 + int64(len(b.p)); int64(len(durable)) < end {
+		t.Fatalf("B's segment is %d bytes after recovery, truncated below B's end at %d", len(durable), end)
+	}
+
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
+
+// recordAt returns the offset of the first record header of kind at or past
+// from in the segment bytes b, searching at each 8-byte slot, or -1. A
+// header starts with the magic DJR1 and carries its kind in the fifth byte.
+func recordAt(b []byte, from int64, kind byte) int64 {
+	for off := from; off+5 <= int64(len(b)); off += 8 {
+		if string(b[off:off+4]) == "DJR1" && b[off+4] == kind {
+			return off
+		}
+	}
+	return -1
+}
+
+// wantDamagedOnly fails the test unless the journal reports no loss event
+// and marks segment seg, the one whose sync failed, as damaged.
+func wantDamagedOnly(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) {
+	t.Helper()
+
+	if losses := f.J.Stats().Losses; len(losses) != 0 {
+		t.Fatalf("a loss was recorded while a copy of the record verifies: %+v", losses)
+	}
+	if !segmentInfo(t, f, seg).Damaged {
+		t.Fatalf("the failed segment %d holds a copy that does not verify and is not reported damaged", seg)
+	}
+}
+
+// TestRFC28C_BadCopyDoesNotMaskAGoodOne checks that a record whose original
+// rots on a failed segment after it was re-appended is served from the good
+// copy, and that no loss record is written for the rotten one: a loss names
+// a sequence number, and both copies carry it, so a loss for the dead copy
+// would take the live one at the next open.
+//
+// The first leg is the row's: a content write, re-appended. The second forces
+// the re-append with a truncate, which the journal always re-appends and
+// never fails, so the rule is reached on a journal that fails every content
+// window too.
+//
+// decision: the row crashes before the failed segment is unlinked; this check
+// closes cleanly and reopens instead. A failed sync leaves the window's
+// writes as changes no sync made durable, so the seam's plain crash drops
+// them with the rest, and its torn and reordered crashes keep them only by
+// chance: the rotten original the row needs on disk would be gone. A clean
+// close leaves the file as a dead process's page cache would, which is the
+// state the failed-sync rule describes, and recovery then meets both copies
+// as the row intends.
+func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	a := rec{0, id, journalv2.Extent{Off: 0, Len: 64 << 10}, journalv2.Version{}, pattern("a", 64<<10)}
+	a.version = write(t, h, id, 0, a.p)
+	loc := entryAt(t, f, id, 0).Location
+	name := segmentName(loc.Segment)
+
+	f.FailNext(journalv2test.OpSync, name, 1)
+	err := h.Sync(t.Context(), id)
+	stub(t, "Sync", err)
+	// decision: a journal may resolve a failed window by failing it, and this
+	// row then has nothing to check: the bug it exists for needs a good copy
+	// for the rotten original to mask. The check fails rather than passes on
+	// that branch, so a journal that always fails content windows is seen
+	// here, not hidden; its window handling is RFC 1's failed-window checks'
+	// to judge.
+	var se *journalv2.SyncError
+	if errors.As(err, &se) {
+		t.Fatalf("the journal failed the window (%v); this check needs the re-append", err)
+	}
+
+	if err != nil {
+		t.Fatalf("sync after a failed sync: %v", err)
+	}
+
+	if got := entryAt(t, f, id, 0).Location; got.Segment == loc.Segment {
+		t.Fatalf("A is still served from the failed segment at %+v, not re-appended", got)
+	}
+
+	if got := f.J.Stats().Counters.SyncReappendedBytes; got < uint64(len(a.p)) {
+		t.Fatalf("SyncReappendedBytes = %d after re-appending %d bytes", got, len(a.p))
+	}
+
+	corruptRecord(t, f, loc, a.p)
+	f.Reopen()
+	wantBytes(t, f.Share(0), id, 0, a.p)
+	wantDamagedOnly(t, f, loc.Segment)
+
+	// The forced leg, on a journal of its own.
+	g := journalv2test.NewUnwatched(t)
+	h, id = g.Share(1), journalv2test.File(1)
+	x := writeSynced(t, g, 1, 1, 0, 64<<10)
+	loc = entryAt(t, g, id, 0).Location
+	name = segmentName(loc.Segment)
+
+	g.FailNext(journalv2test.OpSync, name, 1)
+	_, err = h.Truncate(t.Context(), id, 4096)
+	stub(t, "Truncate", err)
+	if err != nil {
+		t.Fatalf("truncate whose sync failed: %v; a record without bytes is re-appended, never failed", err)
+	}
+
+	// The truncate's original is the first record of its kind past X's in
+	// the failed segment's bytes as a read sees them; one byte of its
+	// header, inside the header checksum's range, is flipped.
+	const kindTruncate = 4
+	live := liveBytes(t, g, name)
+	off := recordAt(live, loc.Offset+8, kindTruncate)
+	if off < 0 {
+		t.Fatalf("no truncate record past offset %d in %s", loc.Offset, name)
+	}
+
+	flipAt(t, g, name, off+16)
+	g.Reopen()
+	h = g.Share(1)
+
+	p, missing, _ := readAt(t, h, id, 0, len(x.p))
+	if len(missing) != 1 || missing[0] != (journalv2.Extent{Off: 4096, Len: int64(len(x.p)) - 4096}) {
+		t.Fatalf("read of the truncated file reports missing %+v, want exactly the bytes past the truncate", missing)
+	}
+
+	if string(p[:4096]) != string(x.p[:4096]) {
+		t.Fatalf("the bytes below the truncate changed")
+	}
+
+	found := false
+	for c, err := range h.Since(t.Context(), id, journalv2.Version{}) {
+		stub(t, "Since", err)
+		if err != nil {
+			t.Fatalf("Since: %v", err)
+		}
+		if c.Kind == journalv2.ChangeTruncate && c.Extent.Off == 4096 {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Fatalf("Since yields no truncate at 4096; the re-appended copy was not held")
+	}
+
+	wantDamagedOnly(t, g, loc.Segment)
+}
