@@ -114,7 +114,7 @@ func TestAscendSearchesOnce(t *testing.T) {
 }
 
 // TestAllocations asserts what the read and write paths allocate. Lookups,
-// ascends, deletes and replaces off any path of full nodes allocate nothing;
+// ascends, deletes and replaces allocate nothing;
 // inserts allocate the nodes their splits create and nothing else: one
 // allocation a leaf, two an inner node, for its child array. It catches a
 // value boxed into an interface, a closure that escapes, a node that grows a

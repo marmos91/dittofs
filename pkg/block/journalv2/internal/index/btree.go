@@ -11,14 +11,14 @@ import "sync/atomic"
 //
 // ponytail: leaves are only as full as the insert order leaves them: about 94%
 // for ascending or nearly ascending keys, 69% for random ones, 59% after heavy
-// churn and 50% for descending ones. With a 40-byte entry that is about 47,
-// 64, 69 to 76 and 95 bytes an entry, and a node of 32 such entries is 1,296
-// bytes, which the allocator rounds up to 1,408. The index's budget is 56
-// bytes an entry, so every order but an ascending one already exceeds it, and
-// random overwrites, the common case, exceed it most often. Upgrade to
-// splitting into a sibling with room, as a B*-tree does, and to a slot count
-// that fills an allocator size class, before bytes per entry are checked
-// against that budget.
+// churn and 50% for descending ones. A held extent's entry is 48 bytes, its
+// 8-byte key beside a 40-byte value, so a node of 32 is 1,552 bytes, which the
+// allocator rounds up to 1,792: ascending keys cost about 60 bytes an entry
+// and random ones about 82, and the index's budget is 56, so no insert order
+// meets it. Upgrade before bytes per entry are checked against that budget.
+// 31 slots fit the 1,536-byte size class and bring ascending keys to about
+// 53; splitting into a sibling with room, as a B*-tree does, raises the fill
+// of the other orders.
 const (
 	maxItems = 32
 	minItems = (maxItems - 1) / 2
@@ -41,6 +41,13 @@ type node[V any] struct {
 // Lookup, insert and delete cost O(log n) comparisons; ascend costs
 // O(log n + k) for k keys visited. It is not safe for concurrent mutation:
 // the caller serialises writers, and readers against writers.
+//
+// decision: keys are unsigned, and the tree trusts them. The journal's API
+// takes offsets as int64, so a negative offset converted to a key becomes one
+// of the largest, and floor would answer with a file's last extent instead of
+// nothing. Refusing a negative offset, or an offset and length whose sum
+// overflows, is the API's job, before anything reaches the index. Check here
+// as well if a caller is ever found converting without that refusal.
 type btree[V any] struct {
 	root *node[V]
 	n    int
@@ -132,10 +139,9 @@ func ascendNode[V any](n *node[V], from uint64, bounded bool, fn func(uint64, V)
 // set inserts k with value v, or replaces the value of k if it is held,
 // returning the value it replaced.
 //
-// Full nodes are split on the way down, before the search below them knows
-// whether k is held, so the insert never has to walk back up. A replace on a
-// path of full nodes therefore splits them, and allocates, as an insert there
-// would.
+// The descent changes nothing, so a replace never touches the tree's shape and
+// never allocates. Only an insert splits, on the way back up, and only the
+// nodes it overflows: the leaf, then each parent its separator fills.
 //
 // A split on the rightmost path is biased: it leaves the left node nearly full
 // instead of half full. Content written front to back appends at the right
@@ -150,49 +156,82 @@ func ascendNode[V any](n *node[V], from uint64, bounded bool, fn func(uint64, V)
 // journal's writers rarely write in that order; mirror the bias on the left
 // edge if a workload that does shows up in the index's bytes per entry.
 func (t *btree[V]) set(k uint64, v V) (old V, replaced bool) {
-	var cmps uint64
 	if t.root == nil {
 		t.root = &node[V]{}
 	}
-	if t.root.count == maxItems {
+	old, replaced, up, cmps := t.root.insert(k, v, true)
+	if up.right != nil {
 		r := &node[V]{children: new([maxItems + 1]*node[V])}
-		r.children[0] = t.root
+		r.keys[0], r.vals[0], r.count = up.key, up.val, 1
+		r.children[0], r.children[1] = t.root, up.right
 		t.root = r
-		r.splitChild(0, true)
 	}
-	n, rightmost := t.root, true
-	for {
-		i, found, c := n.search(k)
-		cmps += c
-		if found {
-			old, n.vals[i] = n.vals[i], v
-			replaced = true
-			break
-		}
-		if n.children == nil {
-			n.insertAt(i, k, v, nil)
-			t.n++
-			break
-		}
-		rightmost = rightmost && i == n.count
-		if n.children[i].count == maxItems {
-			n.splitChild(i, rightmost)
-			cmps++
-			if k == n.keys[i] {
-				old, n.vals[i] = n.vals[i], v
-				replaced = true
-				break
-			}
-			cmps++
-			if k > n.keys[i] {
-				i++
-			}
-			rightmost = rightmost && i == n.count
-		}
-		n = n.children[i]
+	if !replaced {
+		t.n++
 	}
 	t.counted(cmps)
 	return old, replaced
+}
+
+// promoted is what a split hands up to its parent: the median, which moves
+// up, and the new node to the median's right. right is nil when nothing split.
+type promoted[V any] struct {
+	key   uint64
+	val   V
+	right *node[V]
+}
+
+// insert sets k to v in n's subtree, replacing the value if k is held. It
+// returns what n's split hands up when the insert overflowed n. rightmost says
+// whether n is on the tree's rightmost path.
+func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, up promoted[V], cmps uint64) {
+	i, found, cmps := n.search(k)
+	if found {
+		old, n.vals[i] = n.vals[i], v
+		return old, true, up, cmps
+	}
+	if n.children == nil {
+		return old, false, n.insertOrSplit(i, k, v, nil, rightmost), cmps
+	}
+	old, replaced, below, c := n.children[i].insert(k, v, rightmost && i == n.count)
+	cmps += c
+	if below.right != nil {
+		up = n.insertOrSplit(i, below.key, below.val, below.right, rightmost)
+	}
+	return old, replaced, up, cmps
+}
+
+// insertOrSplit puts k and v at slot i, and right after them in an inner
+// node, as insertAt does. A full node is split first, around a median that
+// moves up, and the slot goes to whichever half it now falls in. When the
+// node is on the rightmost path the split is biased: the median is its
+// second-to-last key, so the left half stays nearly full.
+func (n *node[V]) insertOrSplit(i int, k uint64, v V, right *node[V], rightmost bool) promoted[V] {
+	if n.count < maxItems {
+		n.insertAt(i, k, v, right)
+		return promoted[V]{}
+	}
+	mid := maxItems / 2
+	if rightmost {
+		mid = maxItems - 2
+	}
+	r := &node[V]{}
+	r.count = copy(r.keys[:], n.keys[mid+1:n.count])
+	copy(r.vals[:], n.vals[mid+1:n.count])
+	if n.children != nil {
+		r.children = new([maxItems + 1]*node[V])
+		copy(r.children[:], n.children[mid+1:n.count+1])
+		clear(n.children[mid+1 : n.count+1])
+	}
+	up := promoted[V]{key: n.keys[mid], val: n.vals[mid], right: r}
+	clear(n.vals[mid:n.count])
+	n.count = mid
+	if i <= mid {
+		n.insertAt(i, k, v, right)
+	} else {
+		r.insertAt(i-mid-1, k, v, right)
+	}
+	return up
 }
 
 // delete removes k and returns its value, if k is held.
@@ -294,29 +333,6 @@ func (n *node[V]) growChild(i int) {
 		copy(l.children[l.count:], r.children[:r.count+1])
 	}
 	l.count += r.count
-}
-
-// splitChild splits n's full child i in two around a median key, which moves
-// up into n. When biased, the median is the child's second-to-last key, so
-// the left half stays nearly full and the right half takes one key.
-func (n *node[V]) splitChild(i int, biased bool) {
-	c := n.children[i]
-	mid := maxItems / 2
-	if biased {
-		mid = maxItems - 2
-	}
-	r := &node[V]{}
-	r.count = copy(r.keys[:], c.keys[mid+1:c.count])
-	copy(r.vals[:], c.vals[mid+1:c.count])
-	if c.children != nil {
-		r.children = new([maxItems + 1]*node[V])
-		copy(r.children[:], c.children[mid+1:c.count+1])
-		clear(c.children[mid+1 : c.count+1])
-	}
-	mk, mv := c.keys[mid], c.vals[mid]
-	clear(c.vals[mid:c.count])
-	c.count = mid
-	n.insertAt(i, mk, mv, r)
 }
 
 // lowerBound returns the index of the first key at or above k.

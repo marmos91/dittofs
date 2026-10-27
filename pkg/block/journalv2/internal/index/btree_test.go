@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -388,22 +389,22 @@ func TestConcurrentReaders(t *testing.T) {
 	}
 }
 
-// TestAppendBiasStaysOnTheRightEdge builds the one shape in which an insert
-// leaves the rightmost path partway down: a full inner node on that path is
-// split, biased, and the key goes left of the median, into the gap above a
-// full leaf that is the left half's last child. That leaf is no longer on the
-// right edge, so it must be split evenly. It catches an insert that keeps
-// treating the path as rightmost after it turned left, which would leave a
-// node of two keys inside the tree, where it never fills again.
+// TestAppendBiasStaysOnTheRightEdge builds a path that follows the right edge
+// down to a full inner node and turns left only at its last step, into a full
+// leaf, then inserts a key above every key of that leaf. Every node above the
+// leaf is on the right edge and the key looks like an append, but the leaf is
+// not on the edge, so it must split evenly; its separator then overflows the
+// inner node, which is, and that one splits biased. It catches an insert that
+// keeps treating the path as rightmost after it turned left, which would leave
+// a node of two keys inside the tree, where it never fills again.
 func TestAppendBiasStaysOnTheRightEdge(t *testing.T) {
 	var tr btree[int]
 	next := uint64(0)
 	appendKey := func() { tr.set(next, 0); next += 10 }
 	lastChild := func() *node[int] { return tr.root.children[tr.root.count] }
 
-	// A biased split of a full inner node keeps keys and children up to slot
-	// target on its left, so the leaf in that slot becomes the left half's
-	// last child. Append until that leaf is behind the right edge, so later
+	// Append until the root's last child is an inner node with a leaf in slot
+	// target, one of its last children but not the last, so that later
 	// appends leave it alone.
 	const target = maxItems - 2
 	for tr.root == nil || tr.root.children == nil || lastChild().children == nil || lastChild().count <= target {
@@ -467,4 +468,38 @@ func leafFill(tr *btree[int]) float64 {
 		walk(tr.root)
 	}
 	return float64(keys) / float64(leaves*maxItems)
+}
+
+// TestReplaceKeepsTheShape replaces a key held in a full root leaf, the path
+// on which an insert must split, and checks that the tree's nodes are the
+// ones it had before and that nothing was allocated. It catches an insert
+// that splits full nodes on its way down, before it knows whether the key is
+// already held: a replace then restructures the tree, allocates three times
+// and leaves two half-empty leaves where one full one was. Narrowing an extent
+// and marking it offloaded are both replaces, so they would pay for it.
+func TestReplaceKeepsTheShape(t *testing.T) {
+	var tr btree[int]
+	for i := range uint64(maxItems) {
+		tr.set(i*2, 0)
+	}
+	root := tr.root
+	if root.children != nil || root.count != maxItems {
+		t.Fatalf("setup: root holds %d keys, inner %v; want one full leaf", root.count, root.children != nil)
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	old, replaced := tr.set(maxItems, 1)
+	runtime.ReadMemStats(&after)
+
+	if !replaced || old != 0 {
+		t.Fatalf("set(%d) = (%d, %v), want a replace of 0", maxItems, old, replaced)
+	}
+	if tr.root != root || root.children != nil || root.count != maxItems {
+		t.Errorf("replace restructured the tree: root %p was %p, holds %d keys", tr.root, root, tr.root.count)
+	}
+	if !raceEnabled && after.Mallocs != before.Mallocs {
+		t.Errorf("replace allocated %d times, want 0", after.Mallocs-before.Mallocs)
+	}
+	checkInvariants(t, &tr)
 }
