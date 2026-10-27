@@ -139,7 +139,7 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 					off := int64(i) * 16 << 10
 					v, err := tryWrite(t, h, id, off, pattern(fmt.Sprint(round, k, i), 16<<10))
 					if err != nil {
-						report(err)
+						report(called("WriteAt", err))
 						return
 					}
 					if i%2 == 0 {
@@ -147,22 +147,22 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 					}
 					e := []journalv2.Extent{{Off: off, Len: 16 << 10}}
 					if err := h.MarkOffloaded(ctx, id, e, v, v); err != nil {
-						report(err)
+						report(called("MarkOffloaded", err))
 						return
 					}
 					if err := h.Release(ctx, id, e); err != nil {
-						report(err)
+						report(called("Release", err))
 						return
 					}
 				}
 				if _, err := h.Truncate(ctx, id, 64<<10); err != nil {
-					report(err)
+					report(called("Truncate", err))
 				}
 			})
 		}
 		workers.Go(func() {
 			if _, err := f.J.Repack(ctx, 4*journalv2test.FixtureSegmentCap, journalv2.RepackScope{}); err != nil {
-				report(err)
+				report(called("Repack", err))
 			}
 		})
 
@@ -184,6 +184,12 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 		}
 	}
 
+	for _, err := range errs {
+		var c *callError
+		if errors.As(err, &c) {
+			stub(t, c.call, c.err)
+		}
+	}
 	if err := errors.Join(errs...); err != nil {
 		t.Fatal(err)
 	}

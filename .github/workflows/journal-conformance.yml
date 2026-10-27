@@ -1,10 +1,12 @@
 name: Journal Conformance
 
+# The feature branch only: develop runs every suite from tests.yml, which takes
+# this one once the branch takes develop, and this file goes.
 on:
   push:
-    branches: [develop, feat/storage-v2]
+    branches: [feat/storage-v2]
   pull_request:
-    branches: [develop, main, feat/storage-v2]
+    branches: [feat/storage-v2]
 
 permissions:
   contents: read

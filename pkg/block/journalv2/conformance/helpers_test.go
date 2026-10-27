@@ -12,8 +12,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,6 +36,7 @@ func write(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, p 
 	t.Helper()
 
 	v, err := tryWrite(t, h, id, off, p)
+	stub(t, "WriteAt", err)
 	if err != nil {
 		t.Fatalf("write %d bytes at %d: %v", len(p), off, err)
 	}
@@ -56,7 +55,9 @@ func pattern(tag string, n int) []byte {
 func mark(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, v journalv2.Version) {
 	t.Helper()
 
-	if err := h.MarkOffloaded(t.Context(), id, []journalv2.Extent{e}, v, v); err != nil {
+	err := h.MarkOffloaded(t.Context(), id, []journalv2.Extent{e}, v, v)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
 		t.Fatalf("mark %+v of a file offloaded: %v", e, err)
 	}
 }
@@ -95,6 +96,7 @@ func heldEntry(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID) jour
 	t.Helper()
 
 	entries, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
 	if err != nil {
 		t.Fatalf("inspect a file: %v", err)
 	}
@@ -110,7 +112,9 @@ func heldEntry(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID) jour
 // corrupt flips one byte of payload p of file id where the journal stored it,
 // behind the journal's back, as a disk fault would: the index still claims
 // the extent, and its record no longer verifies. p must be what one write
-// stored in one record, and unique on disk.
+// stored in one record, synced, and unique on disk. The byte is written and
+// synced through the seam, so its durable image holds the damage and a crash
+// keeps it.
 //
 // decision: a check that corrupts and then reads relies on the read going to
 // the segment, verifying the record's whole payload as every path that hands
@@ -121,8 +125,8 @@ func corrupt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []by
 	t.Helper()
 
 	loc := heldEntry(t, f, id).Location
-	path := filepath.Join(f.Dir, segmentName(loc.Segment))
-	data, err := os.ReadFile(path)
+	name := segmentName(loc.Segment)
+	data, err := f.Seam.Durable(name)
 	if err != nil {
 		t.Fatalf("read the segment holding the record: %v", err)
 	}
@@ -133,15 +137,13 @@ func corrupt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []by
 	}
 	off := loc.Offset + int64(at) + int64(len(p)/2)
 
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	file, err := f.Seam.Open(name)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("corrupt %s: %v", name, err)
 	}
-	if _, err := file.WriteAt([]byte{data[off] ^ 0xff}, off); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
+	_, err = file.WriteAt([]byte{data[off] ^ 0xff}, off)
+	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
+		t.Fatalf("corrupt %s: %v", name, err)
 	}
 }
 
@@ -162,6 +164,32 @@ func plant(t *testing.T, f *journalv2test.Fixture, name string, data []byte) {
 		t.Fatalf("plant %s: %v", name, err)
 	}
 }
+
+// stub fails the test with "stub: <call>" when err is the journal's
+// ErrNotImplemented, so a check that fails on a journal call not yet written
+// never reads as failing its own assertion. Every journal call whose error a
+// check reads passes it here first.
+func stub(t *testing.T, call string, err error) {
+	t.Helper()
+
+	if errors.Is(err, journalv2.ErrNotImplemented) {
+		t.Fatalf("stub: %s", call)
+	}
+}
+
+// callError is the error of the journal call named call, made on a goroutine
+// that cannot fail the test itself: the test passes it to stub once it has
+// joined the goroutine.
+type callError struct {
+	call string
+	err  error
+}
+
+func (e *callError) Error() string { return e.call + ": " + e.err.Error() }
+func (e *callError) Unwrap() error { return e.err }
+
+// called returns err as the error of the journal call named call.
+func called(call string, err error) error { return &callError{call, err} }
 
 // wantNoSpace fails the test unless err is a NoSpaceError naming limit.
 func wantNoSpace(t *testing.T, err error, limit journalv2.Limit, what string) {

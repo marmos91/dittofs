@@ -80,7 +80,6 @@ suites:
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
-    job: Journal Conformance
     format: go-json
     cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/block/journalv2/conformance/...
     known: test/journalv2/known.yaml
