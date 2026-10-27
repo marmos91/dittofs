@@ -43,13 +43,19 @@ methods §3.5's table calls, no more. A fake implements it until stage 3; the re
 `*engine.Engine` then satisfies it unchanged. The method list (§4) is the contract to agree
 with the journal v2 team before either side builds against it.
 
-**D4. Identity through fakes of RFC 18's exact signatures.** `Deps.Identity` is RFC 18 §6.1's
-`Resolver`, `Resolve(ctx, id Identity, p metadata.SharePolicy, readOnly bool) (*Caller, error)`
-(RFC 18 is on #3142). Until identity lands, a fake implements that signature over
-`Principals.SharePolicy`, `Groups` and `Grant`, filling `Caller.Mapped` before squash and
-`Principal` after it, so open state receives the unsquashed principal (RFC 14's
-`Caller.Principal`). `Deps.Auth` (`identity.Authenticator`) and `Deps.Names`
-(`identity.Identities`), behind the `Principals` area, are faked the same way.
+**D4. Identity through a minimal real resolver.** `Deps.Identity` is RFC 18 §6.1's `Resolver`,
+`Resolve(ctx, id Identity, p metadata.SharePolicy, readOnly bool) (*Caller, error)`. Until RFC
+18's lands, a minimal one in `internal/identity` implements it over `Principals.SharePolicy`,
+`Groups` and `Grant`, filling `Caller.Mapped` before squash and `Principal` after it, so open
+state receives the unsquashed principal (RFC 14's `Caller.Principal`). It is the resolver, not a
+fake of it, so squash is written once:
+
+```go
+// ponytail: resolves from the store's SharePolicy, Groups and Grant alone,
+// uncached; RFC 18's resolver replaces it, adding the cache and directories.
+```
+
+`Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
 
 **D5. Packages as RFC 17 §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID
 codecs, `Service`, `Callbacks`, `Events`) plus `vfstest` (`Record`, `Null`,
@@ -57,7 +63,8 @@ codecs, `Service`, `Callbacks`, `Events`) plus `vfstest` (`Record`, `Null`,
 with `admit`, `pseudofs`, `lockorder`, `quota` and `authz` as subpackages.
 
 **D6. Tests in RFC 17 §8's tiers, cheapest first.** Every piece lands with its unit-tier cases
-over the in-memory store, the fake `Content` and real open state on a fake clock. The
+over the in-memory store, the fake `Content` and the real open-state table on `sim.TestClock`
+(`pkg/sim/clock.go`); no area fakes an open-state view. The
 integration tier needs the real engine, so it starts with stage 3; until then its cases run
 against the fake. Every case is revert-checked, and tests that cannot fail are not written.
 
@@ -76,11 +83,11 @@ RFC 14 §2.5 asks for and §3.5's rows lack (pieces 5 and 6).
 | 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | stage 1 pieces 2, 4, 5, 6, 7 |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`), 8 (`Changed`) |
 | 6 | Attributes | §5.5, §5.7 | piece 3; stage 1 pieces 3 (`CheckChange`, `Opens.Update`), 8 (`Changed`) |
-| 7 | Open and close | §5.3 | pieces 3, 5; stage 1 piece 3 |
-| 8 | Data | §5.1, §5.2, §5.6, §5.8 | piece 7; the `Content` contract (§4) |
+| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 5; stage 1 pieces 3, 6, 7 |
+| 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
+| 8b | Quota | §5.6 | piece 8; the store's quota read views |
 | 9 | Locks, grants, watches | §5.11, §3.2 | stage 1 pieces 4, 5, 8 |
-| 10 | Copy and clone | §5.9 | piece 8; stage 1 piece 6 (`CloneOpen`, `CloneClose`) |
-| 11 | Grace and release recovery | §2.5, §5.3 | stage 1 piece 6 |
+| 10 | Copy and clone | §5.9 | piece 8; stage 3; stage 1 piece 8 (`CloneOpen`, `CloneClose`) |
 
 What each piece carries:
 
@@ -96,28 +103,45 @@ What each piece carries:
    (RFC 14 §11.3); the
    `lockorder` sorter that takes open-state steps, fold admission and accept locks in one
    order; `Content` and its fake; the architecture test (imports and call sites).
-3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS`, `Quota` and
-   `Snapshots`; the pseudo-filesystem as a pure function of the share list; admission on every
-   call with its cache key; `authz` as the one caller of `Authorize` and `Granted`; and the
-   `Principals` area, `SignIn`, `Spell` and `Find`, over `Deps.Auth` and `Deps.Names`.
+3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
+   the pseudo-filesystem, ported from `internal/adapter/nfs/v4/pseudofs` (already rebuilt from
+   the share list) to `internal/vfs/pseudofs` with only the handle encoding changed to §3.4's
+   digest, today's copy staying under today's server; admission on every call, uncached;
+   `authz` as the one caller of `Authorize` and `Granted`. `Snapshots` and the `Principals` area
+   are stubs, since nothing calls them before stage 5 and nothing is under them yet: `Snapshots`
+   answers an empty list until RFC 12's store view exists, and `SignIn`, `Spell` and `Find`
+   answer `ErrAccess` until RFC 18 lands, `Deps.Auth` and `Deps.Names` with it:
+
+   ```go
+   // ponytail: admission's steps 1-4 run on every call, uncached; cache their
+   // result per (share, client, identity) as RFC 17 §4.6 allows once a profile
+   // shows them, with a key that names every field the result depends on.
+   ```
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's
    `Sink`, handed to `Table.Start` with the server's admission lock; its `Closed` and
    `GraceEnded` are stubs until piece 7 builds release. Each area holds only the open
-   state views it calls (`Opens`, `Locks`, `Grants`, `Watches`, `Recovery`, `Checks`), and fakes
-   only those in its unit tests.
+   state views it calls (`Opens`, `Locks`, `Grants`, `Watches`, `Recovery`, `Checks`); its tests
+   use the real table on `sim.TestClock`.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change and
    `Watches.Changed` after each commit (a D7 edit to RFC 17 §3.5).
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams and `Access`,
    each returning the `WCC` its reply needs, and `Watches.Changed` after each commit.
-7. **Open and close:** opens, deny modes, delete on close and the four moments of release.
-8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, the write
-   verifier, and quota reservations.
+7. **Open and close, grace and release recovery:** opens, deny modes, delete on close and the
+   four moments of release; the pending releases run when a shard's grace ends
+   (`Sink.GraceEnded`), which is release's own work, as grace itself is `Start`'s step 1.
+8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, and the write
+   verifier. `WriteOpts.Done` is a no-op until piece 8b:
+
+   ```go
+   // ponytail: Done releases nothing, as no quota is reserved yet; piece 8b
+   // reserves quota and releases it here.
+   ```
+8b. **Quota:** quota reservations and their release through `WriteOpts.Done`.
 9. **Locks, grants, watches:** byte-range locks with waiters, `AckRecall`, `Watch`/`Unwatch`.
-10. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`.
-11. **Grace and release recovery:** grace per shard at `Start`, and the pending releases run
-    when it ends.
+10. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after stage 3:
+    against the fake, `Copy` is a memcpy whose tests can only pass.
 
 ## 4. The engine contract
 
@@ -138,9 +162,10 @@ The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Sus
 (Verifier, error)`, where `Done` releases the quota reservation, and `Commit(ctx, f, off, n)
 (Verifier, lossSeq uint64, error)`, whose loss sequence `Opens.Flushed` reads.
 
-Proposal: stage 2 writes the fake and a short check that any `Content` passes, such as
-verified bytes back, a version above the last drawn, and nothing returned before its stage.
-Stage 3's engine runs the same check, so the fake cannot drift from the engine. `Apply`,
+Stage 2 writes the fake; neither today's `engine.Store` nor `journalv2test/model` can stand in
+for it. A check that any `Content` passes (verified bytes back, a version above the last drawn,
+nothing returned before its stage) waits for stage 3: run against the fake alone it only proves
+the fake agrees with itself. `Apply`,
 `Start`, `Close`, the storage-binding calls `Bind`, `Unbind` and `Drop`, and the controls
 `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats` are the node's (or a removal's,
 or a cut's) to call, not the server's.
