@@ -14,14 +14,11 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 
 ## 1. What already exists
 
-- **The store** (`pkg/metadata/kvstore`, merged) has the RFC 16 views, short of the calls listed
-  in plan §5 Q3. The server calls only `Namespace`, `Files` and `Capacity` (RFC 7); the others
-  are its dependencies' (RFC 16 §3): open state holds `OpenRecords` (`Clients`, `Opens`), the
-  engine `Existence` and `Content`, identity `Principals`, `Records` and `Minter`, and the API
-  `ControlPlane`.
-- **Open state** (`pkg/openstate`): pieces 1–7 of stage 1 in review (#3256, #3330, #3336, #3341,
-  #3344, #3363, #3400), piece 8 planned in #3202. `vfs.New` takes `*openstate.Table` in
-  `Deps.Open` but keeps only its seven views (§2.3).
+- **The store** (`pkg/metadata/kvstore`, merged): the server calls only `Namespace`, `Files` and
+  `Capacity` (RFC 7), short of the calls listed in plan §5 Q3.
+- **Open state** (`pkg/openstate`): stage 1 piece 1 merged (#3256), pieces 2–7 in review (#3330,
+  #3336, #3341, #3344, #3363, #3400), piece 8 planned in #3202. `vfs.New` takes
+  `*openstate.Table` in `Deps.Open` but keeps only its seven views (§2.3).
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
 - **Today's server** on `develop`: `pkg/metadata.Service`, the protocol handlers that each order
@@ -45,18 +42,18 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 (§10.2) and compound batching (§10.1).
 
 **D3. The engine through `Content`.** `internal/vfs` declares `Content`: exactly the RFC 8 methods
-§3.5's table and §5.3 call, no more. A fake implements it until stage 3; the real `*engine.Engine` then
-satisfies it unchanged. The method list (plan §4) is the contract to agree with the journal v2
-team before either side builds against it.
+§3.5's table and §5.3 call, no more. A fake implements it until stage 3; the real
+`*engine.Engine` then satisfies it unchanged. The method list (plan §4) is the contract to agree
+with the journal v2 team before either side builds against it.
 
 **D4. Identity through a minimal real resolver.**
 - `Deps.Identity` is RFC 18 §6.1's `Resolver`, `Resolve(ctx, id Identity, p metadata.SharePolicy,
   readOnly bool) (*Caller, error)`.
 - Until RFC 18's lands, a minimal one in `internal/identity` implements it over
   `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups` and `Grant`, and
-  `Records.User` and `Group` (refusing a disabled or deleted principal, RFC 18 §6.1), filling `Caller.Mapped` before squash and
-  `Principal` after it, so open state receives the unsquashed principal (RFC 14's
-  `Caller.Principal`). It is the resolver, not a fake of it, so squash is written once:
+  `Records.User` and `Group` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
+  `Caller.Mapped` before squash and `Principal` after it, so open state receives the unsquashed
+  principal (RFC 14's `Caller.Principal`). It is the resolver, not a fake of it, so squash is written once:
 
   ```go
   // ponytail: resolves from the store's SharePolicy, Groups and Grant alone,
@@ -73,7 +70,6 @@ team before either side builds against it.
 in-memory store, the fake `Content` and the real open-state table on `sim.TestClock`
 (`pkg/sim/clock.go`); no area fakes an open-state view. The integration tier needs the real
 engine, so it starts with stage 3; until then its cases, and so the V-rows, run against the fake.
-Every case is revert-checked, and tests that cannot fail are not written.
 
 **D7. The RFC moves with the code** (§9): a piece that needs a signature change edits the RFC in
 the same PR. Three are known:
@@ -92,7 +88,7 @@ the same PR. Three are known:
 | 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7 |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`) |
 | 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`) |
-| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6, 7 (`GraceEnded`) |
+| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`) |
 | 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
@@ -114,10 +110,12 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    Done when: every codec matches RFC 21's and RFC 22's golden bytes, and `vfs.Errors()` holds
    every sentinel and typed kind of §4.3.
 2. **Server skeleton:** `Deps` and `New`; the four states (built, serving, draining, closed) and
-   the `Start`, `Drain` and `Close` transitions; the server's RFC 14 `Sink`, every method stubbed,
-   which the node hands to `Table.Start` with the server's admission lock, since `Table.Start`
-   refuses a nil one; the `lockorder` sorter that takes open-state steps, then fold admission, then accept
-   locks ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
+   the `Start`, `Drain` and `Close` transitions; the server's RFC 14
+   [`Sink`](../rfcs/rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring), every
+   method stubbed, which the node hands to `Table.Start` with the server's admission lock, since
+   `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
+   [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
+   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
    and its fake; the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→3), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
@@ -126,8 +124,9 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
      from the share list, to `internal/vfs/pseudofs`, with §3.4's digest, and file IDs and change
      attributes derived from the path and the share list's version, not counters; today's copy
      stays under today's server.
-   - `Snapshots` and the `Principals` area (`SignIn`, `Spell`, `Find`) are stubs, since nothing
-     calls them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
+   - `Snapshots` and the `Principals` area (`SignIn`,
+     [`Spell`](../rfcs/rfc-17-vfs.md#3.1%20Operations), `Find`) are stubs, since nothing calls
+     them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
      RFC 18 lands, with `Deps.Auth` and `Deps.Names`.
    - §4.9 allows admission's steps 1–4 to be cached; stage 2 does not, so it has no cache key to
@@ -143,8 +142,8 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
-   delivery to it. The `Sink`'s `Closed` and `GraceEnded` stay stubs until piece 7 builds release. Each area holds only
-   the open-state views it calls (`Opens`, `Locks`, `Grants`, `Watches`, `Recovery`, `Checks`).
+   delivery to it. The `Sink`'s `Closed` and `GraceEnded` stay stubs until piece 7 builds
+   release.
    Done when: V36 passes.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change.
@@ -163,8 +162,8 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    verifier. `WriteOpts.Done` is a no-op until piece 9:
 
    ```go
-   // ponytail: Done releases nothing, as no quota is reserved yet; piece 9
-   // reserves quota and releases it here.
+   // ponytail: Done releases nothing, as no quota is reserved yet; once writes
+   // reserve quota, Done releases the reservation here.
    ```
    Done when: V3 (→9), V7 (→10), V16, V18, V19 (→stage 3), V20 (→9), V22 (→11), V25, V31 (→11)
    pass.
@@ -211,8 +210,7 @@ which are the node's, a removal's or a cut's.
 
 ## 5. Open questions
 
-1. **The engine contract (plan §4):** who writes the fake, and is `Content` frozen against E11 of
-   #3152 before piece 2?
+1. **The engine contract (plan §4):** is `Content` frozen against E11 of #3152 before piece 2?
 2. **D4:** when does RFC 18's resolver land to replace the minimal one?
 3. **Gaps below the server** (§10.4): the store calls the server needs that `feat/storage-v2`
    lacks. All are store work, and so ours. Quota records already have a read view,
@@ -221,11 +219,10 @@ which are the node's, a removal's or a cut's.
 
    | Needed by | Missing on `feat/storage-v2` |
    |---|---|
-   | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
+   | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)`; RFC 16's `Records` (`User`, `Group`) |
    | piece 3 `authz`, piece 6 streams | `Files.Granted`, `Files.Streams` (RFC 7) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 3, admission's steps 1–3 | a read view of the share list, path index, export policy, client rules and netgroups |
-   | D4's resolver (admission's step 4) | RFC 16's `Records` (`User`, `Group`) |
    | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2) |
 
 ## 6. What sets the pace
