@@ -77,28 +77,30 @@ Every case is revert-checked, and tests that cannot fail are not written.
 **D7. The RFC moves with the code** (§9): a piece that needs a signature change edits the RFC in
 the same PR. Two are known:
 - §2.3's `Deps.Meta` becomes `*kvstore.Store` (D1, piece 2);
-- §3.5 gains `Watches.Changed` after each change committed in a directory, which RFC 14 §2.5
-  asks for and §3.5's rows lack (pieces 5 and 6).
+- §3.5 gains `Watches.Changed` after each change committed in a directory (RFC 14 §2.5), and
+  §2.3 gives `Names`, `Attributes`, `Open` and `Data` the `Watches` view (piece 10).
 
 ## 3. Pieces, in build order
 
 | # | Piece | RFC 17 | Needs |
 |---|---|---|---|
 | 1 | Contract | §3.0–§3.4, §4.3 | `develop`'s RFCs on `feat/storage-v2` |
-| 2 | Server skeleton | §2.3, §2.5, §5.0 | piece 1; the `Content` contract (plan §4); stage 1 piece 6 (`ServeShard`) |
+| 2 | Server skeleton | §2.3, §2.5, §5.0 | piece 1; the `Content` contract (plan §4); stage 1 piece 2 (`Table.Start`) |
 | 3 | Shares, admission and principals | §3.1 `Shares`, `Principals`, §4.6, §4.9 | piece 2; the store's read views (plan §5 Q3) |
 | 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7 |
-| 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`), 8 (`Changed`) |
-| 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`), 8 (`Changed`) |
+| 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`) |
+| 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`) |
 | 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6, 7 (`GraceEnded`) |
 | 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
-| 10 | Locks, grants, watches | §5.11, §3.2 | piece 4; stage 1 pieces 4, 5, 8 |
+| 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
 | 11 | Copy and clone | §5.9 | piece 8; stage 3; stage 1 piece 8 (`CloneOpen`, `CloneClose`) |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
-beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's.
+beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's. Of the rows outside the V-list:
+RFC 14's L1 is piece 10's and L20 piece 8's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2
+rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
 1. **Contract:** `pkg/vfs`'s value types and the aliases §3.0 lists from the metadata store and
    open state (`StateRef`, `Revocation`, `RevokeReason`, `ClientStatus`, `LockRange`,
@@ -110,12 +112,12 @@ beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's.
    Done when: every codec matches RFC 21's and RFC 22's golden bytes, and `vfs.Errors()` holds
    every sentinel and typed kind of §4.3.
 2. **Server skeleton:** `Deps` and `New`; the four states (built, serving, draining, closed) and
-   the `Start`, `Drain` and `Close` transitions, `Start`'s step 1 calling
-   `Recovery.ServeShard` for each shard, since open state refuses a shard not begun (RFC 14
-   §11.3); the `lockorder` sorter that takes open-state steps, then fold admission, then accept
+   the `Start`, `Drain` and `Close` transitions; the server's RFC 14 `Sink`, every method stubbed,
+   which the node hands to `Table.Start` with the server's admission lock, since `Table.Start`
+   refuses a nil one; the `lockorder` sorter that takes open-state steps, then fold admission, then accept
    locks ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
    and its fake; the architecture test (imports and call sites).
-   Done when: V29, V32, V33, V34 pass.
+   Done when: V29 (→11), V32, V33 (→3), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
    admission on every call, uncached; `authz` as the one caller of `Authorize` and `Granted`.
    - The pseudo-filesystem is ported from `internal/adapter/nfs/v4/pseudofs`, already rebuilt
@@ -133,26 +135,25 @@ beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's.
      // per (share, identity) with every version §4.9 lists in the key once a
      // profile shows them.
      ```
-   Done when: V9, V12, V13, V14, V39, V40 (→5) pass.
+   Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
-   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's
-   RFC 14 `Sink`, which the node hands to `Table.Start` with the server's admission lock. The
-   `Sink`'s `Closed` and `GraceEnded` are stubs until piece 7 builds release. Each area holds only
+   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
+   delivery to it. The `Sink`'s `Closed` and `GraceEnded` stay stubs until piece 7 builds release. Each area holds only
    the open-state views it calls (`Opens`, `Locks`, `Grants`, `Watches`, `Recovery`, `Checks`).
    Done when: V36 passes.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
-   store's `Namespace`, with open state's `CheckChange` before each change and `Watches.Changed`
-   after each commit (D7).
+   store's `Namespace`, with open state's `CheckChange` before each change.
    Done when: V3 (→8), V28 (→7), V31 (→8), V40 pass.
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams and `Access`,
-   each returning the `WCC` its reply needs, and `Watches.Changed` after each commit.
+   each returning the `WCC` its reply needs.
    Done when: V22 (→8), V31 (→8) pass.
-7. **Open, close and release recovery:** opens, deny modes, delete on close and the four moments
-   of release; the pending releases a shard holds run when its grace ends (`Sink.GraceEnded`),
-   which is release's own work, as grace itself is `Start`'s step 1.
-   Done when: V8 (→10), V17, V21, V28, V35, V38 pass: open then close, and delete on close, run in
-   the unit tier, and a deny-mode conflict returns `ErrShareViolation` only after handle caching
-   is broken.
+7. **Open, close and release recovery:** `Start`'s step 1, `Recovery.ServeShard` for each shard
+   (RFC 14 §11.3); opens, deny modes, delete on close and the four moments of release; the pending
+   releases a shard holds run when its grace ends (`Sink.GraceEnded`).
+   Done when: V8 (→10), V17, V21, V28, V35 (→10), V38 pass: open then close, and delete on close,
+   run in the unit tier, and each open meeting a deny mode held only in a handle cache gets
+   `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes only
+   after handle caching is broken (§4.3).
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, and the write
    verifier. `WriteOpts.Done` is a no-op until piece 9:
 
@@ -160,11 +161,14 @@ beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's.
    // ponytail: Done releases nothing, as no quota is reserved yet; piece 9
    // reserves quota and releases it here.
    ```
-   Done when: V3, V7, V16, V18, V19, V20 (→9), V22, V25, V31 pass.
+   Done when: V3 (→9), V7 (→10), V16, V18, V19 (→stage 3), V20 (→9), V22 (→11), V25, V31 (→11)
+   pass.
 9. **Quota:** reservations and their release through `WriteOpts.Done`, a create charged to the
    new file's owner.
    Done when: V10, V20, V37 pass.
-10. **Locks, grants, watches:** byte-range locks with waiters, `AckRecall`, `Watch`/`Unwatch`.
+10. **Locks, grants, watches:** byte-range locks with waiters, `AckRecall`, `Watch`/`Unwatch`, and
+    `Watches.Changed` after each change committed in a directory, from `Names`, `Attributes`,
+    `Open` and `Data` (D7).
     Done when: V6, V8, V23, V24 pass.
 11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after stage 3:
     against the fake, `Copy` is a memcpy whose tests can only pass.
