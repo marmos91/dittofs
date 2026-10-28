@@ -917,3 +917,61 @@ func TestParkedOpenIsNotUsedByItsID(t *testing.T) {
 		t.Errorf("the reconnect after the refusals: %v", err)
 	}
 }
+
+// A grace-end pass that finds its shard served again under a new instance
+// stops: it closes none of the records the new grace waits on, and raises no
+// GraceEnded inside it.
+func TestGraceEndPassStopsWhenServedAgain(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	lost, lr := f.fileIn(t, "lost")
+	lr.Access = rd
+	f.mustOpen(t, a, lost, lr)
+	f.unlink(t, lost, "lost")
+	g := f.restart(t)
+	g.pass(t, leasePeriod)
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	g.Table.order = func(entity.FileID) func() { entered <- struct{}{}; <-gate; return func() {} }
+	done := make(chan struct{})
+	go func() { g.closeUnreclaimed(ctx, g.sink); close(done) }()
+	<-entered // the pass waits on lost's admission lock
+	if err := g.Recovery().ServeShard(ctx, g.fs.Share.ID, lost.Shard, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	<-done
+	if got := g.stored(t, lost); len(got) != 1 {
+		t.Errorf("stored after a pass over a shard served again: %+v, want the record kept for the new grace", got)
+	}
+	for _, e := range g.sink.graces {
+		if e.s == lost.Shard {
+			t.Errorf("GraceEnded for shard %d inside its new grace", e.s)
+		}
+	}
+}
+
+// A grace-end pass whose shard is served again after its last record raises
+// no GraceEnded inside the new grace.
+func TestGraceEndIsNotRaisedWhenServedAgain(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	lost, lr := f.fileIn(t, "lost")
+	lr.Access = rd
+	f.mustOpen(t, a, lost, lr)
+	f.unlink(t, lost, "lost")
+	g := f.restart(t)
+	g.pass(t, leasePeriod)
+	g.Table.order = func(entity.FileID) func() {
+		return func() { // after the record's step: the shard is served again
+			if err := g.Recovery().ServeShard(ctx, g.fs.Share.ID, lost.Shard, instances.Add(1)); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	g.closeUnreclaimed(ctx, g.sink)
+	for _, e := range g.sink.graces {
+		if e.s == lost.Shard {
+			t.Errorf("GraceEnded for shard %d inside its new grace", e.s)
+		}
+	}
+}

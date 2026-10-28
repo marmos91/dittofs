@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -654,7 +655,9 @@ func (t *Table) savePending(ctx context.Context, e *entry) {
 // step, so an unlink writing the records of the opens held, or a reclaim
 // writing its own, never loses one; a failed pass is run again at the next
 // sweep. Once a shard's pass succeeds it raises GraceEnded for the shard,
-// after the pass's Closed events; a shard enters the pass once per grace.
+// after the pass's Closed events; a shard enters the pass once per grace. A
+// pass whose shard is served again meanwhile stops, closing nothing more and
+// raising no GraceEnded, since the new grace waits on those records.
 //
 // ponytail: grace's end is found by the sweep, so a timed end is acted on up
 // to a sweep late, and an early end, when the last named client finishes, at
@@ -681,18 +684,32 @@ func (t *Table) closeUnreclaimed(ctx context.Context, sink Sink) {
 	}
 	t.cmu.Unlock()
 	for s, sh := range due {
-		if err := t.closeShardRecords(ctx, sink, s, sh.share); err != nil {
+		switch err := t.closeShardRecords(ctx, sink, s, sh); {
+		case errors.Is(err, errServedAgain):
+		case err != nil:
 			t.cmu.Lock()
 			sh.unclosed = true
 			t.cmu.Unlock()
-			continue
+		case t.serves(s, sh):
+			sink.GraceEnded(sh.share, s)
 		}
-		sink.GraceEnded(sh.share, s)
 	}
 }
 
-// closeShardRecords is closeUnreclaimed of shard s of share.
-func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, share entity.ShareID) error {
+// errServedAgain ends a pass over a shard served again since it was picked:
+// the new grace waits on the records the pass would close.
+var errServedAgain = errors.New("openstate: shard served again")
+
+// serves reports whether sh is still how s is served.
+func (t *Table) serves(s ShardID, sh *served) bool {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	return t.shards[s] == sh
+}
+
+// closeShardRecords is closeUnreclaimed of shard s, served as sh.
+func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh *served) error {
+	share := sh.share
 	ops := t.d.Records.Opens()
 	for d, err := range ops.Durable(ctx, share, uint64(s)) {
 		if err != nil {
@@ -711,6 +728,9 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sha
 		var orphan entity.FileID
 		unlock := t.order(d.File)
 		err = t.step(d.File, func(*entry) error {
+			if !t.serves(s, sh) {
+				return errServedAgain
+			}
 			t.idx.Lock()
 			_, held := t.byID[d.Open]
 			t.idx.Unlock()
