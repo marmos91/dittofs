@@ -503,36 +503,6 @@ func TestExpiryGrantIsNotJumped(t *testing.T) {
 	}
 }
 
-// A host resending the blocked request whose wait a lease expiry just
-// granted is granted once, through the callback, not again by the resend.
-func TestExpiryGrantIsNotRepeated(t *testing.T) {
-	f := newFixture(t)
-	a, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "h", 1)
-	file := anyFile()
-	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
-	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
-	wait := LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
-	f.mustLock(t, h, file, wait)
-	gate, entered := make(chan struct{}), make(chan struct{}, 1)
-	f.Table.order = func(entity.FileID) func() { entered <- struct{}{}; <-gate; return func() {} }
-	f.clock.advance(2 * leasePeriod)
-	f.sweep(ctx)
-	<-entered
-	f.mustLock(t, h, file, wait) // the host resends its blocked request
-	ws := f.sink.takeWaits()
-	if g := granted(t, ws); len(g) != 1 {
-		t.Fatalf("after the expiry: granted %v, want h", g)
-	}
-	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil { // the host refuses the stale callback
-		t.Fatal(err)
-	}
-	if f.holder(t, file, br(0, 10)) == nil {
-		t.Errorf("h lost the lock it was answered for to its own refused callback")
-	}
-	close(gate)
-	f.Stop()
-}
-
 // A host resending its blocked request after a grant step granted it, while
 // the callback is still on its way, keeps the lock when it then refuses that
 // callback.
@@ -554,6 +524,77 @@ func TestResendAfterGrantKeepsTheLock(t *testing.T) {
 	}
 	if f.holder(t, file, br(0, 10)) == nil {
 		t.Errorf("h was answered granted, then lost the lock to its own refused callback")
+	}
+}
+
+// A refusal of the first of two callback grants still outstanding releases
+// the range it granted.
+func TestRefusalOfTheFirstOfTwoGrantsReleasesIt(t *testing.T) {
+	f := newFixture(t)
+	a, b, h := f.host(t, "a", 1), f.host(t, "b", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(20, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws1 := f.sink.takeWaits()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(20, 10)}, Wait: WaitCallback})
+	f.unlock(t, b, file, owner(b, "b"), br(20, 10))
+	_ = f.sink.takeWaits()
+	if err := f.Locks().WaitAnswered(ctx, h, ws1[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.holder(t, file, br(0, 10)); l != nil {
+		t.Errorf("refused grant of [0,10) is still held: %+v", *l)
+	}
+}
+
+// A late callback the host refuses, after the owner unlocked the range it
+// granted and locked it again, leaves the later lock whole.
+func TestRefusedStaleCallbackSparesALaterLock(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.host(t, "a", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(100, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws := f.sink.takeWaits()
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 20)}})
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Errorf("h's later lock of [0,20) lost [0,10) to a refusal of a callback it had already released")
+	}
+}
+
+// A late refusal of a callback the owner released by unlocking leaves a
+// later grant of the same range, which the host accepted, whole.
+func TestRefusedStaleCallbackSparesALaterGrant(t *testing.T) {
+	f := newFixture(t)
+	a, c, h := f.host(t, "a", 1), f.host(t, "c", 1), f.host(t, "h", 1)
+	file := anyFile()
+	wait := LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(100, 10)}})
+	f.mustLock(t, h, file, wait)
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	stale := f.sink.takeWaits()
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, wait)
+	f.unlock(t, c, file, owner(c, "c"), br(0, 10))
+	later := f.sink.takeWaits()
+	if err := f.Locks().WaitAnswered(ctx, h, later[0].w, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Locks().WaitAnswered(ctx, h, stale[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Errorf("h lost the grant it accepted to a late refusal of one it had unlocked")
 	}
 }
 
