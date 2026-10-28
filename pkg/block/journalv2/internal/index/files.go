@@ -182,10 +182,10 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 
 // apply runs fn and settles the entry's lifetimes, then releases the file's
 // lock, which the caller took; all happen even if fn panics. The drop-range
-// gauge is moved by what fn's ranges ended at, inside the same deferred run,
-// so a command that panics still counts what it noted or dropped. The unlock
-// is deferred separately and runs first on unwinding, so even a panic in
-// settle cannot leave the file locked.
+// gauge is moved by what fn's ranges ended at, beside settle, so a command
+// that panics still counts what it noted or dropped. The unlock is deferred
+// first, so it runs last: even a panic in settle cannot leave the file
+// locked.
 func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) error) error {
 	before := f.nranges
 	defer f.mu.Unlock()
