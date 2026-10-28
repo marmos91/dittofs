@@ -2014,3 +2014,58 @@ func TestRFC28C_InterruptedInit(t *testing.T) {
 
 	wantIdentityError(t, f.TryReopenAs(journalv2.JournalID{}), f.ID(), journalv2test.FixtureInstall, true)
 }
+
+// wantLeftAlone fails the test unless the file name still holds bytes b and
+// no call changed it since the call counts before: no write, truncate,
+// rename or remove.
+func wantLeftAlone(t *testing.T, f *journalv2test.Fixture, name string, b []byte, before map[string]int) {
+	t.Helper()
+
+	if !bytes.Equal(durable(t, f, name), b) {
+		t.Fatalf("%s was changed; it was to be left alone", name)
+	}
+	for _, op := range []string{journalv2test.OpWrite, journalv2test.OpTruncate, journalv2test.OpRename, journalv2test.OpRemove} {
+		if got := f.Seam.CallsFor(op, name); got != before[op] {
+			t.Fatalf("%s was %sd %d times; it was to be left alone", name, op, got-before[op])
+		}
+	}
+}
+
+// callsFor returns the seam's count of each of the changing calls on name.
+func callsFor(f *journalv2test.Fixture, name string) map[string]int {
+	calls := map[string]int{}
+	for _, op := range changingOps {
+		calls[op] = f.Seam.CallsFor(op, name)
+	}
+	return calls
+}
+
+// TestRFC28C_ForeignSegment checks that a segment of another journal, copied
+// into the directory, is not attached: no read serves its bytes, it is
+// counted as rejected, and it is left on disk as it was.
+func TestRFC28C_ForeignSegment(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	g := journalv2test.NewUnwatched(t)
+	recs, seg := fillSegment(t, g, 0, 5, size)
+	syncFiles(t, g.Share(0), recs[0].id)
+	foreign := durable(t, g, segmentName(seg))
+
+	a := writeSynced(t, f, 0, 0, 0, size)
+	b := writeSynced(t, f, 1, 1, 0, size)
+	name := segmentName(newestID(t, f) + 1)
+	plant(t, f, name, foreign)
+	before := callsFor(f, name)
+	f.Reopen()
+
+	if got := f.J.Stats().RejectedSegments; got != 1 {
+		t.Fatalf("RejectedSegments = %d with a foreign segment in the directory, want 1", got)
+	}
+	if entries := heldEntries(t, f, journalv2test.File(5)); len(entries) != 0 {
+		t.Fatalf("the foreign segment's file is indexed as %+v", entries)
+	}
+	wantMissing(t, f.Share(0), journalv2test.File(5), recs[0].extent)
+	wantLeftAlone(t, f, name, foreign, before)
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
