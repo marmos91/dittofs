@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -534,6 +535,29 @@ func TestStartAndStop(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the client was not expired after the clock passed its lease")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// The lease timer outlives the ctx Start was given: once that is cancelled,
+// a client silent for a lease period is still expired.
+func TestStartContextDoesNotStopTheTimer(t *testing.T) {
+	f0 := newFixture(t)
+	f := unstarted(t, f0.fs, f0.clock)
+	sctx, cancel := context.WithCancel(ctx)
+	if err := f.Start(sctx, f.sink, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
+	cancel()
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		f.clock.advance(sweepEvery)
+		if len(f.sink.endedOf(id)) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the client was not expired after Start's ctx was cancelled")
 		}
 		time.Sleep(time.Millisecond)
 	}

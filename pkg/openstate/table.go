@@ -122,7 +122,14 @@ const sweepEvery = 10 * time.Second
 
 // Start starts the lease timer and takes the service's Sink and admission
 // lock. Before Start and after Stop every mutating call is ErrStopped, and a
-// table starts once.
+// table starts once. The timer outlives ctx: only Stop ends it.
+//
+// ponytail: Start arms no lease, so after a restart an NFSv4 client that
+// never renews keeps its record, its name and its shard marks until it
+// renews, which may be never; one that renews is adopted with a full period.
+// Arm a lease for every NFSv4 record this node owns here instead, which
+// needs a store call listing a node's clients, added as a store follow-up
+// before stage 2's service calls Start.
 func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
 	if sink == nil {
 		return errors.New("openstate: Start needs a Sink")
@@ -132,7 +139,7 @@ func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
 	if t.sink != nil || t.stopped {
 		return errors.New("openstate: table already started")
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		for {
