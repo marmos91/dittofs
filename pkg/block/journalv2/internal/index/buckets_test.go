@@ -352,9 +352,10 @@ func TestWhatRaisesTheChangeVersion(t *testing.T) {
 // the file's bucket to the entry's change version, before the entry can be
 // found missing, and never lowers it. The drop raises the bucket also for a
 // file in its tag-only life, which keeps its entry while its change version
-// is zeroed, and one whose entry then holds only filled content, whose change
-// version is the zero Version and would otherwise answer a read begun before
-// a delete.
+// is zeroed, for a file whose entry keeps only retained content — the
+// change-version entry drops, the map entry stays — and for one whose entry
+// then holds only filled content, whose change version is the zero Version
+// and would otherwise answer a read begun before a delete.
 func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	var fs files
 	a := idInBucket(0)
@@ -413,12 +414,38 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 		t.Fatalf("fill below the bucket in the tag-only life = %v, want ErrStaleFill", err)
 	}
 
+	// A file whose only content is retained keeps its map entry — the retained
+	// guard's case, with no segment noted either — while its change version
+	// drops: the drop must raise the bucket even though the entry never
+	// leaves the map, or the entry would answer every check with a zero
+	// Version and let a fill read before the superseding write through.
+	cr := (cb + 1) % floorBuckets
+	e := idInBucket(cr, a, b, c)
+	change(t, &fs, e, func(f *file) error {
+		f.write(write(0, 8, rec(10, 0), 1))
+		f.writeRetain(write(0, 8, rec(10, 64), 2)) // supersedes the v1 write
+		f.held.cut(ext(0, 8))                      // holds nothing; the v1 piece stays retained
+		return nil
+	})
+	if !present(&fs, e) {
+		t.Fatal("entry dropped while it retains content")
+	}
+	if got := fs.buckets[cr].Load(); got != 2 {
+		t.Fatalf("bucket after the retained-only drop = %d, want 2", got)
+	}
+	if got := fs.asOf(e); got != ver(2) {
+		t.Fatalf("asOf of a retained-only entry = %v, want the bucket's 2", got)
+	}
+	if err := fs.fill(e, write(0, 4, rec(10, 128), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("fill below the bucket of a retained-only entry = %v, want ErrStaleFill", err)
+	}
+
 	// A file whose entry holds only filled content after its own delete and
 	// drop at v is checked against the bucket, so a fill with an asOf below v
 	// — a fetch that began before the delete — is refused, and one at v
 	// reports v. Reporting the entry's zero change version there would let
 	// the first through.
-	d := idInBucket(0, a, b, c)
+	d := idInBucket(0, a, b, c, e)
 	change(t, &fs, d, func(f *file) error {
 		f.write(write(0, 4, rec(3, 0), 12))
 		f.delete(ver(13))

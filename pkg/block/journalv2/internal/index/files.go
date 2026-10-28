@@ -121,6 +121,9 @@ type file struct {
 	rival    core.ShareTag
 
 	held heldSet
+	// retained is the superseded content the file still keeps. It is never
+	// consulted to answer a read.
+	retained retainedSet
 	// change is the file's change version. The zero Version means the file
 	// has no change version of its own, which is also the case for a file
 	// holding only filled content, since a fill changes no version: either
@@ -283,14 +286,20 @@ func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) err
 // yield until the caller settles it.
 //
 // decision: retained extents do not keep the change-version entry; see the
-// decision at the bucket table.
+// decision at the bucket table. Retained extents keep the entry itself in
+// the map, with its tag. That guard is defensive only: a retained piece's
+// record keeps its segment noted, so the segments alone already keep the
+// entry, unless a caller notes that segment gone too early. Then this guard
+// keeps superseded content an offload has still to offer from being dropped
+// with the entry.
 //
-// When the change-version entry drops, the file's bucket is raised to the
-// entry's change version before the entry can be found missing, so a read
-// that began below that version is refused by the bucket rather than by the
-// entry. The change version is zeroed only after the raise, and a reader
-// that finds the entry gone — or was never given one — reads the raised
-// bucket.
+// When the change-version entry drops — while retained content, a segment or
+// nothing at all keeps the map entry — the file's bucket is raised to the
+// entry's change version before the entry can be found missing and before
+// any early return, so a read that began below that version is refused by
+// the bucket rather than by the entry. The change version is zeroed only
+// after the raise, and a reader that finds the entry gone — or was never
+// given one — reads the raised bucket.
 func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	if f.held.len() > 0 || len(f.markers) > 0 {
 		return
@@ -298,7 +307,7 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
 	f.held = heldSet{} // free the empty tree and its scratch for the tag-only life
-	if len(f.segs) > 0 {
+	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
 	f.gone = true
