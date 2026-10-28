@@ -45,7 +45,7 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 (§10.2) and compound batching (§10.1).
 
 **D3. The engine through `Content`.** `internal/vfs` declares `Content`: exactly the RFC 8 methods
-§3.5's table calls, no more. A fake implements it until stage 3; the real `*engine.Engine` then
+§3.5's table and §5.3 call, no more. A fake implements it until stage 3; the real `*engine.Engine` then
 satisfies it unchanged. The method list (plan §4) is the contract to agree with the journal v2
 team before either side builds against it.
 
@@ -53,7 +53,8 @@ team before either side builds against it.
 - `Deps.Identity` is RFC 18 §6.1's `Resolver`, `Resolve(ctx, id Identity, p metadata.SharePolicy,
   readOnly bool) (*Caller, error)`.
 - Until RFC 18's lands, a minimal one in `internal/identity` implements it over
-  `Principals.SharePolicy`, `Groups` and `Grant`, filling `Caller.Mapped` before squash and
+  `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups` and `Grant`, and
+  `Records.User` and `Group` (refusing a disabled or deleted principal, RFC 18 §6.1), filling `Caller.Mapped` before squash and
   `Principal` after it, so open state receives the unsquashed principal (RFC 14's
   `Caller.Principal`). It is the resolver, not a fake of it, so squash is written once:
 
@@ -75,8 +76,9 @@ engine, so it starts with stage 3; until then its cases, and so the V-rows, run 
 Every case is revert-checked, and tests that cannot fail are not written.
 
 **D7. The RFC moves with the code** (§9): a piece that needs a signature change edits the RFC in
-the same PR. Two are known:
+the same PR. Three are known:
 - §2.3's `Deps.Meta` becomes `*kvstore.Store` (D1, piece 2);
+- RFC 7 §11.1's `Capacity` gains `Quota`, the read view the server already uses (piece 9);
 - §3.5 gains `Watches.Changed` after each change committed in a directory (RFC 14 §2.5), and
   §2.3 gives `Names`, `Attributes`, `Open` and `Data` the `Watches` view (piece 10).
 
@@ -121,8 +123,9 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
    admission on every call, uncached; `authz` as the one caller of `Authorize` and `Granted`.
    - The pseudo-filesystem is ported from `internal/adapter/nfs/v4/pseudofs`, already rebuilt
-     from the share list, to `internal/vfs/pseudofs`, with only the handle encoding changed to
-     §3.4's digest; today's copy stays under today's server.
+     from the share list, to `internal/vfs/pseudofs`, with §3.4's digest, and file IDs and change
+     attributes derived from the path and the share list's version, not counters; today's copy
+     stays under today's server.
    - `Snapshots` and the `Principals` area (`SignIn`, `Spell`, `Find`) are stubs, since nothing
      calls them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
@@ -135,6 +138,8 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
      // per (share, identity) with every version §4.9 lists in the key once a
      // profile shows them.
      ```
+
+     §8's cache-key unit case and its cached-against-uncached benchmark wait with the cache.
    Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
@@ -220,6 +225,8 @@ which are the node's, a removal's or a cut's.
    | piece 3 `authz`, piece 6 streams | `Files.Granted`, `Files.Streams` (RFC 7) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 3, admission's steps 1–3 | a read view of the share list, path index, export policy, client rules and netgroups |
+   | D4's resolver (admission's step 4) | RFC 16's `Records` (`User`, `Group`) |
+   | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2) |
 
 ## 6. What sets the pace
 
