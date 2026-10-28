@@ -17,17 +17,6 @@ import (
 // methods are safe for concurrent use.
 type Handle struct{}
 
-// CloneSpec describes the range a clone copies into its destination: Len bytes
-// of Src, in share SrcShare, from SrcOff, as of Src's change version AsOf,
-// placed at DstOff of the destination.
-type CloneSpec struct {
-	SrcShare       ShareID
-	Src            FileID
-	SrcOff, DstOff int64
-	Len            int64
-	AsOf           Version
-}
-
 // Change is one thing Since reports about a file: a held extent, an unsettled
 // removal marker, or a synced loss.
 type Change struct {
