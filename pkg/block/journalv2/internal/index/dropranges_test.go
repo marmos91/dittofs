@@ -132,8 +132,14 @@ func overlaps(aLo, aHi, bLo, bHi int64) bool { return aLo < bHi && bLo < aHi }
 // TestDropRangesAgainstExactOracle is the property test: whatever the note and
 // merge order, every record lies inside exactly one range of its segment with
 // a low pair no greater than its own, the set of segments marks exactly those
-// holding a record, and a drop query is answered soundly. Keeping the higher
-// pair on a merge, merging the largest gap, or losing coverage all fail here.
+// holding a record, and a drop query is answered soundly. The counted check at
+// the end proves the run reaches the ninth-range merge, so checks (a) and (c)
+// cover the merged ranges under random arrival order: removing the cap fails
+// (a), and merging away coverage or keeping a pair above a record fails (c).
+// Which pair the ninth merge picks — smallest gap, lowest offsets on a tie —
+// is asserted exactly by TestNinthMergesSmallestGap and
+// TestNinthMergeTieTakesLowestOffsets, which the one-directional soundness
+// check (d) cannot see.
 func TestDropRangesAgainstExactOracle(t *testing.T) {
 	var fs files
 	const filesN, segsN = 3, 5
@@ -142,6 +148,10 @@ func TestDropRangesAgainstExactOracle(t *testing.T) {
 
 	rng := rand.New(rand.NewPCG(3374, 42))
 	const space = 64 << 10
+	// ninthNotes counts notes that must have run the ninth-range merge: a
+	// record with an extent noted into a segment that already holds eight
+	// ranges none of which it overlaps.
+	ninthNotes := 0
 	for step := 0; step < 4000; step++ {
 		fi := rng.IntN(filesN)
 		seg := core.SegmentID(1 + rng.IntN(segsN))
@@ -158,9 +168,29 @@ func TestDropRangesAgainstExactOracle(t *testing.T) {
 				e.Len = math.MaxInt64 - e.Off
 			default:
 				off := int64(rng.IntN(space))
-				e = ext(off, 1+int64(rng.IntN(int(space-off))))
+				var n int64
+				if rng.IntN(2) == 0 {
+					n = 1 + int64(rng.IntN(64)) // short: lets a segment reach nine ranges
+				} else {
+					n = 1 + int64(rng.IntN(int(space-off)))
+				}
+				e = ext(off, n)
 			}
 			n := nums(1+uint64(rng.Int64N(64)), uint64(step+1))
+			if e.Len > 0 {
+				if rs, ok := rangesOf(&fs, ids[fi], seg); ok && len(rs) == maxDropRanges {
+					overlapped := false
+					for _, r := range rs {
+						if r.overlaps(e.Off, e.Off+e.Len) {
+							overlapped = true
+							break
+						}
+					}
+					if !overlapped {
+						ninthNotes++
+					}
+				}
+			}
 			noteRec(t, &fs, ids[fi], seg, e, n)
 			os[fi].note(seg, e, n)
 		}
@@ -233,6 +263,9 @@ func TestDropRangesAgainstExactOracle(t *testing.T) {
 			t.Fatalf("after step %d: gauge = %d, want %d", step, got, want)
 		}
 	}
+	if ninthNotes == 0 {
+		t.Fatal("no note ever reached the ninth-range merge: the run's extents never gave a segment nine disjoint records")
+	}
 }
 
 // TestDropRangesExactUpToEight: with at most eight disjoint ranges, no merge
@@ -268,12 +301,44 @@ func TestDropRangesExactUpToEight(t *testing.T) {
 	}
 }
 
-// lowerPair returns the lower of two pairs.
-func lowerPair(a, b Numbers) Numbers {
-	if a.Compare(b) <= 0 {
-		return a
+// TestNinthMergeTieTakesLowestOffsets: on a tie between two equal smallest
+// gaps, the pair at the lower offsets merges and the pair above stays split.
+// The tie-break is the deterministic ordering behind the rebuild decision, so
+// a comparison flipped to <= changes which ranges merge with nothing else
+// noticing.
+func TestNinthMergeTieTakesLowestOffsets(t *testing.T) {
+	var fs files
+	id := fid(1)
+	// Eight disjoint ranges, four bytes each. Sorted starts: 0, 12, 40, 52,
+	// 100, 140, 180, 220; the gaps are 8, 24, 8, 44, 36, 36, 36 — the
+	// smallest gap, 8, ties between the pairs at 0 and 12 and at 40 and 52.
+	offs := []int64{220, 100, 40, 12, 140, 180, 52, 0}
+	for i, off := range offs {
+		noteRec(t, &fs, id, 1, ext(off, 4), nums(uint64(100-i), uint64(100-i)))
 	}
-	return b
+	before, _ := rangesOf(&fs, id, 1)
+	if len(before) != 8 {
+		t.Fatalf("%d ranges before the ninth, want 8", len(before))
+	}
+	// The ninth: far from every gap, with the highest pair.
+	noteRec(t, &fs, id, 1, ext(300, 4), nums(200, 200))
+	rs, _ := rangesOf(&fs, id, 1)
+	if len(rs) != 8 {
+		t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+	}
+	// The lower-offset tied pair merged into [0, 16): offs[i] carries the
+	// pair 100-i, so the records at 0 (offs[7]) and 12 (offs[3]) carry 93
+	// and 97, and the merged low is 93. The higher tied pair at 40 and 52
+	// stays as its two ranges.
+	want := dropRange{start: 0, end: 16, low: nums(93, 93)}
+	if !slices.Contains(rs, want) {
+		t.Fatalf("the lowest-offset tied pair did not merge: %+v not in %+v", want, rs)
+	}
+	for _, start := range []int64{40, 52} {
+		if !slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == start && r.end == start+4 }) {
+			t.Fatalf("the higher tied pair at %d merged too or was changed: %+v", start, rs)
+		}
+	}
 }
 
 // TestNinthMergesSmallestGap: a ninth range in one segment merges the adjacent
@@ -378,6 +443,16 @@ func TestDropQueryNeedsOverlap(t *testing.T) {
 	}
 	if !fs.mayOutrank(id, 1, ext(15, 2), nums(5, 2)) { // [15, 17): one byte
 		t.Fatal("a one-byte overlap fails to keep the removal")
+	}
+	// A zero-length extent covers no byte, so nothing overlaps it — not even
+	// a lower record whose range spans the offset. Without the guard, the
+	// strict-overlap test r.start < hi && lo < r.end holds of a range around
+	// the offset, and a no-extent removal would be wrongly kept.
+	if fs.mayOutrank(id, 1, core.Extent{Off: 20, Len: 0}, nums(5, 2)) {
+		t.Fatal("a zero-length removal inside a lower range is kept")
+	}
+	if fs.mayOutrank(id, 1, core.Extent{}, nums(5, 2)) {
+		t.Fatal("a zero-length removal at 0 inside a lower range is kept")
 	}
 }
 

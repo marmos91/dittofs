@@ -182,14 +182,16 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 
 // apply runs fn and settles the entry's lifetimes, then releases the file's
 // lock, which the caller took; all happen even if fn panics. The drop-range
-// gauge is moved by what fn's ranges ended at, before the unlock, so a command
-// that panics still counts what it noted or dropped.
+// gauge is moved by what fn's ranges ended at, inside the same deferred run,
+// so a command that panics still counts what it noted or dropped. The unlock
+// is deferred separately and runs first on unwinding, so even a panic in
+// settle cannot leave the file locked.
 func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) error) error {
 	before := f.nranges
+	defer f.mu.Unlock()
 	defer func() {
 		f.settle(s, id)
 		fs.dropRanges.Add(int64(f.nranges - before))
-		f.mu.Unlock()
 	}()
 	return fn(f)
 }
@@ -340,6 +342,7 @@ func (f *file) segmentGone(seg core.SegmentID) {
 // file, at most maxDropRanges ranges each.
 func (f *file) mayOutrank(seg core.SegmentID, e core.Extent, n Numbers) bool {
 	if e.Len == 0 {
+		// A zero-length extent covers no byte, so no record overlaps it.
 		return false
 	}
 	lo, hi := e.Off, e.Off+e.Len

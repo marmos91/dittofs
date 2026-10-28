@@ -78,16 +78,16 @@ func (s *segRecords) note(e core.Extent, n Numbers) int {
 		s.ranges[i] = r
 	}
 	// A ninth range merges the adjacent pair with the smallest gap between
-	// them. Step 2 adds at most one range, so one merge is ever needed.
+	// them. The insert above adds at most one range, so one merge is ever
+	// needed.
 	if len(s.ranges) > maxDropRanges {
-		// decision: which two ranges the ninth-note merges depends on the
-		// order records arrive in, so a rebuild that notes the same records
-		// in another order can give different ranges. Rebuilt ranges are
-		// therefore ever only compared with an incremental build for
-		// soundness — the same segments, and never under-covering the
-		// records — and not for equality. Overturn it if a consumer needs
-		// identical ranges, which would cost keeping records rather than
-		// ranges.
+		// decision: which two ranges the ninth-range merge collapses depends
+		// on the order records arrive in, so a rebuild that notes the same
+		// records in another order can give different ranges. Rebuilt ranges
+		// are therefore compared with an incremental build for soundness
+		// only — the same segments, and never under-covering the records —
+		// and not for equality. Overturn it if a consumer needs identical
+		// ranges, which would cost keeping records rather than ranges.
 		k, gap := 0, int64(^uint64(0)>>1)
 		for m := 1; m < len(s.ranges); m++ {
 			if g := s.ranges[m].start - s.ranges[m-1].end; g < gap {
