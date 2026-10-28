@@ -98,6 +98,36 @@ func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 	}
 }
 
+// TestRetainedKeepsEntryWithoutHeldOrSegments: a file whose held set is empty
+// and whose segments are all gone still keeps its entry while it retains
+// content, and loses it once the last retained piece is dropped. Dropping the
+// entry with retained content in it would lose the superseded versions an
+// offload still has to offer.
+func TestRetainedKeepsEntryWithoutHeldOrSegments(t *testing.T) {
+	var fs files
+	id := fid(1)
+	_ = fs.update(id, func(f *file) error {
+		f.write(write(0, 8, rec(1, 0), 1))
+		f.writeRetain(write(0, 8, rec(2, 0), 2))
+		f.held.cut(ext(0, 8))
+		return nil
+	})
+	if !fs.view(id, func(f *file) {
+		if f.retained.len() != 1 {
+			t.Fatalf("retained %d pieces, want 1", f.retained.len())
+		}
+	}) {
+		t.Fatal("entry dropped while it retains content")
+	}
+	_ = fs.update(id, func(f *file) error {
+		f.retained.drop(whole, bySuperseder(ver(2)), nil)
+		return nil
+	})
+	if present(&fs, id) {
+		t.Fatal("entry kept with nothing held, retained or on disk")
+	}
+}
+
 // TestSegmentNotedTwiceIsGoneOnce: every record appended notes its segment,
 // so one segment is noted many times for a file. If each note were kept, one
 // unlink would remove one of them and the entry, tag and all, would outlive

@@ -180,9 +180,14 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // before it is removed, so a caller that found it before the removal sees
 // the mark once it gets the lock.
 //
-// decision: only held extents keep the change-version entry for now. Removal
-// markers and retained extents keep it too once the index carries them; until
-// then a file holds nothing exactly when its held set is empty.
+// decision: only held extents keep the change-version entry for now; removal
+// markers keep it too once the index carries them. Whether retained extents
+// keep it is decided with the floor that dropping it raises, so for now they
+// do not: retained content is no longer held.
+//
+// Retained extents do keep the entry itself in the map, with its tag: a file
+// whose segments are gone has nothing else to keep superseded content an
+// offload has still to offer.
 //
 // The dropped change version is not recorded anywhere yet, so nothing here
 // refuses a stale fill once the entry has gone: no check of a fill may be
@@ -193,7 +198,7 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 		return
 	}
 	f.change = core.Version{}
-	if len(f.segs) > 0 {
+	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
 	f.gone = true

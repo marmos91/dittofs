@@ -222,14 +222,14 @@ func TestFailWindowShuffledRestoresExactly(t *testing.T) {
 }
 
 // TestFailWindowDropsItsOwnRetainedPieces: a failed record that a later,
-// surviving write had superseded leaves no retained piece behind. Its record
-// is gone, so a retained piece of it would offer bytes nothing vouches for.
+// surviving write had superseded, and still retains, leaves no retained piece
+// behind. Its record is gone, so a retained piece of it would offer bytes
+// nothing vouches for.
 func TestFailWindowDropsItsOwnRetainedPieces(t *testing.T) {
 	var f file
 	f.write(write(0, 8, rec(1, 0), 1))
 	f.writeRetain(write(0, 8, rec(2, 0), 2))
-	f.writeRetain(write(0, 8, rec(3, 0), 3))
-	f.retained.drop(ext(0, 8), bySuperseder(ver(3)), nil) // write 3 synced
+	f.writeRetain(write(0, 8, rec(3, 0), 3)) // survives, still retaining record 2
 	f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
 	assertPieces(t, &f.held, piece(0, 8, rec(3, 0), 0, 3, false))
 	for _, r := range f.retained.list(nil) {
