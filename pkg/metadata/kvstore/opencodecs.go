@@ -86,7 +86,10 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenReco
 		l.State, l.Epoch, l.V2 = r.Uint8(), uint16(r.Uint32()), r.Bool()
 		o.Lease = l
 	}
-	o.Suspended, o.Via, o.Name = entity.TimeMask(r.Uint8()), readFileID(r), r.Bytes()
+	o.Suspended, o.Via = entity.TimeMask(r.Uint8()), readFileID(r)
+	if n := r.Bytes(); len(n) > 0 {
+		o.Name = n // nil: opened by handle
+	}
 	o.StateSeq, o.Nonce, o.LossSeen = r.Uint32(), r.Uint64(), r.Uint64()
 	o.Session = entity.SessionRef{Node: r.Uint64(), NodeEpoch: r.Uint64(), ID: r.Uint64()}
 	o.Kind, o.CloneDst, o.CloneVersion = entity.OpenKind(r.Uint8()), readFileID(r), readVersion(r)

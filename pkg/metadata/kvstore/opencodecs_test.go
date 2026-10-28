@@ -32,6 +32,7 @@ func openCodecCases() []codecCase {
 		Kind:    entity.OpenCloneSource, CloneDst: entity.FileID{15: 4}, CloneVersion: entity.VersionOf(5),
 		CreateGUID: [16]byte{15: 5}, AppInstance: [16]byte{15: 6}, AppVersion: [2]uint64{1, 2},
 		Timeout: time.Minute, LockSeq: [64]uint8{0: 0x13}, ChannelSeq: 8}
+	byHandle := entity.OpenRecord{ID: 10, Client: 7, Principal: alice, File: fid, Access: 0x1, Durability: entity.DurabilityDurable}
 	lk := entity.LockRecord{ID: 4, Open: 9, Owner: entity.LockOwner{Client: 7, Owner: []byte("o")}, Offset: 100, Length: ^uint64(0), Exclusive: true}
 	dp := entity.DeleteRecord{Parent: entity.FileID{15: 1}, Name: []byte("a"), By: alice, Access: 0x10000, Privileged: true}
 	f16 := func(b byte) string { return strings.Repeat("00", 15) + hex.EncodeToString([]byte{b}) }
@@ -53,6 +54,12 @@ func openCodecCases() []codecCase {
 				"01" + f16(4) + v16(5) + f16(5) + f16(6) + hexU64(1) + hexU64(2) +
 				hexU64(uint64(time.Minute)) + "13" + strings.Repeat("00", 63) + hexU32(8),
 			func(b []byte) (any, error) { return decodeOpen(fid, 9, b) }},
+		{"open by handle", byHandle, encodeOpen(byHandle),
+			"01" + hexU64(7) + ph + hexU32(1) + "00" + hexU32(0) + "01" + "00" + "00" + f16(0) +
+				"00" + "00" + f16(0) + "00" + hexU32(0) + hexU64(0) + hexU64(0) + hexU64(0) + hexU64(0) + hexU64(0) +
+				"00" + f16(0) + v16(0) + f16(0) + f16(0) + hexU64(0) + hexU64(0) +
+				hexU64(0) + strings.Repeat("00", 64) + hexU32(0),
+			func(b []byte) (any, error) { return decodeOpen(fid, 10, b) }},
 		{"lock", lk, encodeLock(lk), "01" + hexU64(7) + "016f" + hexU64(^uint64(0)) + "01",
 			func(b []byte) (any, error) { return decodeLock(9, 100, 4, b) }},
 		{"shard", entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}, encodeShard(entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}),
