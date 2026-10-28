@@ -790,17 +790,10 @@ func (t *Table) sweep(ctx context.Context) {
 	maps.DeleteFunc(t.fenced, func(_ entity.ClientID, until time.Duration) bool { return now >= until })
 	t.cmu.Unlock()
 	t.idx.Lock()
-	serve := slices.Collect(maps.Keys(t.polls))
-	for f := range t.parked {
-		if !slices.Contains(serve, f) {
-			serve = append(serve, f)
-		}
-	}
-	for f := range t.recalling {
-		if !slices.Contains(serve, f) {
-			serve = append(serve, f)
-		}
-	}
+	due := maps.Clone(t.polls)
+	maps.Copy(due, t.parked)
+	maps.Copy(due, t.recalling)
+	serve := slices.Collect(maps.Keys(due))
 	maps.DeleteFunc(t.recalled, func(_ entity.FileID, until time.Duration) bool { return now >= until })
 	maps.DeleteFunc(t.ended, func(_ sessionKey, at time.Duration) bool { return now >= at+leasePeriod })
 	t.idx.Unlock()
