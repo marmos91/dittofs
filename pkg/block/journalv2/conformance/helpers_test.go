@@ -123,6 +123,12 @@ func heldEntry(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID) jour
 // checks reopen between the damage and the read.
 func corrupt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []byte) {
 	t.Helper()
+	corruptAt(t, f, id, p, len(p)/2)
+}
+
+// corruptAt is corrupt flipping byte at of p rather than its middle one.
+func corruptAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []byte, at int) {
+	t.Helper()
 
 	loc := heldEntry(t, f, id).Location
 	name := segmentName(loc.Segment)
@@ -131,11 +137,11 @@ func corrupt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, p []by
 		t.Fatalf("read the segment holding the record: %v", err)
 	}
 
-	at := bytes.Index(data[loc.Offset:], p)
-	if at < 0 {
+	start := bytes.Index(data[loc.Offset:], p)
+	if start < 0 {
 		t.Fatalf("the payload is not in segment %d past offset %d", loc.Segment, loc.Offset)
 	}
-	off := loc.Offset + int64(at) + int64(len(p)/2)
+	off := loc.Offset + int64(start) + int64(at)
 
 	file, err := f.Seam.Open(name)
 	if err != nil {
