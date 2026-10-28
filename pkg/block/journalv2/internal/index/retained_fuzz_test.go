@@ -93,7 +93,9 @@ func retainedOps(t *testing.T, data []byte) {
 
 	for step := 0; len(data) > 0; step++ {
 		op, e := take()%10, span()
-		if op != 1 && op != 9 && len(window) > 0 {
+		// Only retaining writes and reads keep the window pure; failing it is
+		// the op that checks it.
+		if op != 1 && op != 6 && op != 9 && len(window) > 0 {
 			pure = false
 		}
 		switch op {
@@ -148,7 +150,7 @@ func retainedOps(t *testing.T, data []byte) {
 				f.retained.drop(whole, bySuperseder(w.Version), nil)
 				kept = slices.DeleteFunc(kept, func(b rbyte) bool { return b.by == w.Version })
 			}
-			window = window[:0]
+			window, pure = window[:0], false
 		case 6: // the window fails, handed over in any order
 			win := slices.Clone(window)
 			rng.Shuffle(len(win), func(i, j int) { win[i], win[j] = win[j], win[i] })
@@ -165,16 +167,18 @@ func retainedOps(t *testing.T, data []byte) {
 				}
 				kept = slices.DeleteFunc(kept, func(b rbyte) bool { return b.record == w.Record })
 				kept = slices.DeleteFunc(kept, func(b rbyte) bool {
-					if b.by != w.Version {
-						return false
-					}
-					if !was[b.off] {
-						want = append(want, b)
+					if b.by != w.Version || !was[b.off] {
 						return false
 					}
 					o.put(Piece{Extent: ext(b.off, 1), Record: b.record, Skip: b.at, Version: b.version, Offloaded: b.offloaded})
 					return true
 				})
+			}
+			// Reported is what stays retained once the whole window has failed.
+			for _, b := range kept {
+				if slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == b.by }) {
+					want = append(want, b)
+				}
 			}
 			slices.SortFunc(want, compareRbyte)
 			if g := rbytes(got); !slices.Equal(g, want) {
@@ -185,7 +189,7 @@ func retainedOps(t *testing.T, data []byte) {
 					t.Fatalf("step %d: a failed window did not restore the held set:\n got  %+v\n want %+v", step, got, before)
 				}
 			}
-			window = window[:0]
+			window, pure = window[:0], false
 		case 7: // an offload commit drops what is retained inside e
 			f.retained.drop(e, func(Retained) bool { return true }, nil)
 			kept = slices.DeleteFunc(kept, func(b rbyte) bool { return inside(b.off, e) })

@@ -12,7 +12,8 @@ import (
 // journal still keeps, for offload to offer or until the superseding record is
 // synced. It is the piece as it was held, with its extent, record, skip,
 // version and offloaded bit, and By, the version of the record that superseded
-// it.
+// it. A part a failed window leaves retained keeps the failed record's version
+// (see failWindow).
 //
 // The superseder is named by version, not by where its record sits: a record
 // re-appended after a failed sync, or copied by repack, moves but keeps its
@@ -193,6 +194,15 @@ func (f *file) writeRetain(p Placed) {
 // retained, and are appended to out for the caller, which knows whether
 // anything still keeps them.
 //
+// decision: a part left retained keeps the failed record's version as its By,
+// though that record will never sync, so selecting by superseder on a later
+// sync never drops it: the caller must drop what out names, or keep it under
+// a hold, by its own selection. The index does not re-attribute it to the
+// surviving write over it, because that write may cover it in several records,
+// or have been released, and only the caller knows which retention, if any,
+// still applies. Revisit if callers end up re-attributing every reported part
+// themselves.
+//
 // The change version is left where the failed writes raised it: it never
 // goes down.
 //
@@ -225,10 +235,13 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
 				return r, false
 			})
 		}
-		for _, r := range f.retained.pieces {
-			if by(r) {
-				out = append(out, r)
-			}
+	}
+	// What is left superseded by a record of the window is reported once
+	// every record has failed: a part one record's pass leaves can be a piece
+	// of an older record of the window, which that record's own pass drops.
+	for _, r := range f.retained.pieces {
+		if slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == r.By }) {
+			out = append(out, r)
 		}
 	}
 	return out

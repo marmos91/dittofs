@@ -261,6 +261,30 @@ func TestFailWindowReturnsUnrestorable(t *testing.T) {
 	assertRetained(t, &f, want...)
 }
 
+// TestFailWindowReturnsNoPieceOfTheWindow: two overlapping records of one
+// window, the newer superseded by a surviving write. The newer record's pass
+// finds the older record's piece it retained unrestorable, but the older
+// record fails in the same call, so that piece is dropped and must not be
+// reported as still retained. Reporting it would have a caller keep, under a
+// hold, bytes of a record the window just declared gone.
+func TestFailWindowReturnsNoPieceOfTheWindow(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))
+	f.writeRetain(write(0, 8, rec(3, 0), 3))
+	f.writeRetain(write(0, 4, rec(5, 0), 5))
+	f.write(write(0, 4, rec(7, 0), 7))
+	out := f.failWindow([]WindowRecord{failed(rec(3, 0), 3), failed(rec(5, 0), 5)}, nil)
+	want := []Retained{kept(piece(0, 4, rec(1, 0), 0, 1, false), 3)}
+	if !slices.Equal(out, want) {
+		t.Fatalf("unrestored %+v, want %+v", out, want)
+	}
+	assertRetained(t, &f, want...)
+	assertPieces(t, &f.held,
+		piece(0, 4, rec(7, 0), 0, 7, false),
+		piece(4, 4, rec(1, 0), 4, 1, false),
+	)
+}
+
 // TestRepointRetainedKeepsVersionAndBit: repack carries a retained record
 // forward to a new place; its pieces inside the copied extent move, keeping
 // their version, bit and superseder, and those outside stay. A repoint that
