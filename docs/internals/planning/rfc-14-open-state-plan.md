@@ -138,8 +138,8 @@ table is their only caller, so they stay in `pkg/openstate`.
 - The node hands the service to `Start` as the `Sink`, with its per-file admission lock as `order`,
   since the table is built before the service. The table takes `order` itself wherever it may
   grant or revoke on a file the call does not name: in the timer's steps, and in `AckRecall`,
-  `FreeState`, `Clients.Expire`, `Revoke` and `Disconnect`, which serve the waiters their releases
-  free. The service must not hold it when making those calls:
+  `FreeState`, `Clients.Connect` (whose reboot or lapsed-lease release frees another client's
+  waiters), `Expire`, `Revoke` and `Disconnect`, which serve the waiters their releases free. The service must not hold it when making those calls:
 
   ```go
   func New(d Deps) (*Table, error)                                       // starts nothing; open state takes no settings
