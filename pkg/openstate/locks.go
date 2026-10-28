@@ -936,7 +936,11 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 // loop pays a record write, its Connect, and a delete per cycle, and each
 // lock after a delete is first refused ErrStaleClient for its adapter to
 // connect it again. Keep the record through a lease period of idleness,
-// swept by the timer, if NLM lock churn shows those writes in a profile.
+// swept by the timer, if NLM lock churn shows those writes in a profile. A
+// record outlives idleness while a grace still waits on the host's reclaim,
+// since the host holds nothing in a shard until it reclaims there. One left
+// idle when grace ends stays until a later call of the host's leaves it idle,
+// which only adds the host to the next failover's notices.
 //
 // decision: the record is deleted without asking whether a restart notice to
 // the host is outstanding, since the table records none. A failed delete
@@ -945,6 +949,12 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
 	t.cmu.Lock()
 	notice := t.known[c].recovery == entity.RecoverNotice
+	now := t.d.Clock.Elapsed()
+	for _, sh := range t.shards {
+		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
+			notice = false // a grace still waits on its reclaim
+		}
+	}
 	t.cmu.Unlock()
 	if !notice {
 		return

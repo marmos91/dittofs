@@ -780,3 +780,21 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 	}
 	t.Fatal("the waiting step never ran after the loss")
 }
+
+// An NLM host's unlock in grace, leaving it nothing here, keeps its record
+// while another shard's grace still waits on its reclaim, which is then
+// admitted.
+func TestHostRecordOutlivesIdlenessInGrace(t *testing.T) {
+	f := newFixture(t)
+	h := f.host(t, "h", 1)
+	a, b := in(5), in(7)
+	f.mustLock(t, h, a, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, b, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	g := f.restart(t)
+	g.renew(t, h)
+	g.mustLock(t, h, a, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+	g.unlock(t, h, a, owner(h, "p"), br(0, 10))
+	if _, err := g.lock(h, b, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); err != nil {
+		t.Errorf("the reclaim on b after the host's last unlock in grace: %v", err)
+	}
+}
