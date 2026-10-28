@@ -1,6 +1,7 @@
 package fixture
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,9 +13,9 @@ import (
 	"strings"
 )
 
-// smbDialect is the dialect an SMB mount must report: SMB 3.1.1, the newest,
-// which mount.cifs is asked for, and mount_smbfs and New-SmbMapping
-// negotiate.
+// smbDialect is the dialect an SMB mount must report unless the fixture sets
+// one: SMB 3.1.1, the newest, which mount.cifs is asked for, and mount_smbfs
+// and New-SmbMapping negotiate. Only mount.cifs can be asked for another.
 const smbDialect = "3.1.1"
 
 // goos is the system dt runs on, whose own SMB client mounts the share; the
@@ -23,7 +24,7 @@ var goos = runtime.GOOS
 
 // mountSMB mounts the first share from server over SMB as {user}, with the
 // machine's own client, on the server's SMB port, and checks that the client
-// reports it mounted at smbDialect: with mount.cifs or mount_smbfs at a new
+// reports it mounted at the fixture's dialect: with mount.cifs or mount_smbfs at a new
 // directory, {mount}, or with New-SmbMapping on a free drive, which is then
 // {mount}. The server's own port is what lets New-SmbMapping's client reach
 // it where the system's own SMB server holds 445.
@@ -41,15 +42,15 @@ func (s *Server) mountSMB(ctx context.Context, server, password string) error {
 	if err != nil {
 		return err
 	}
-	if dialect != smbDialect {
-		return fmt.Errorf("%s is mounted at SMB %s, not %s", s.mount, dialect, smbDialect)
+	if want := cmp.Or(s.f.SMB.Dialect, smbDialect); dialect != want {
+		return fmt.Errorf("%s is mounted at SMB %s, not %s", s.mount, dialect, want)
 	}
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: SMB %s mounted at %s, as %s\n", dialect, s.mount, User)
 	return nil
 }
 
 // mountCIFS mounts the share with the kernel's client, as root, asked for
-// smbDialect, and returns the dialect the kernel reports. The password is in
+// the fixture's dialect, and returns the dialect the kernel reports. The password is in
 // a credentials file of the server's data, which only the user dt runs as
 // and root can read, so it never shows on mount's command line.
 func (s *Server) mountCIFS(ctx context.Context, server, password string) (string, error) {
@@ -57,7 +58,7 @@ func (s *Server) mountCIFS(ctx context.Context, server, password string) (string
 	if err := os.WriteFile(creds, []byte("username="+User+"\npassword="+password+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	opts, err := s.mountAt(ctx, "cifs", fmt.Sprintf("vers=%s,port=%d,credentials=%s", smbDialect, s.smbPort, creds), "//"+server+s.shares[0].Name)
+	opts, err := s.mountAt(ctx, "cifs", fmt.Sprintf("vers=%s,port=%d,credentials=%s", cmp.Or(s.f.SMB.Dialect, smbDialect), s.smbPort, creds), "//"+server+s.shares[0].Name)
 	return versOf(opts), err
 }
 

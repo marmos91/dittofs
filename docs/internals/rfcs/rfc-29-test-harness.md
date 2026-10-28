@@ -672,28 +672,31 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount:
-  # on each OS, the checks of smb-client-compat.yml's job there, which this replaces once its
-  # results match. The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
+  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount.
+  # The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
   clients:
     tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
     cmd: "{test} {mount} {bucket}"     # s3.sh sees a block reach the bucket; the others take the mount alone
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
-    tier: nightly
-    blocking: false                     # until the three cells match smb-client-compat.yml; blocking when it goes
+    tier: merge                         # after each merge, on every branch tests.yml runs; macOS and Windows nightly
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
+      smb21:                            # SMB 2.1, Windows 7's newest, from a real client: Linux's, asked for it
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
         cmd: "{test} {mount}"
         env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
         needs: [macos]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
       windows:                          # a script isn't a program there: PowerShell runs it
         tests: [test/clients/files.ps1]
         cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
         needs: [windows]
         fixture: { profile: memory, smb: { mount: true } }   # New-SmbMapping -TcpPort, no port 445
+        tier: nightly
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
@@ -880,7 +883,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison: the kernel's NFS server, serving NFSv4.0, 4.1 and 4.2 over TCP on 2049, its `{nfs-port}`, and not NFSv3. `rpc.nfsd` still reads the host's `/etc/nfs.conf` for the rest, so a listener it adds there, such as RDMA's, is the host's. It exports a tmpfs of its own to `{server}` alone, as the NFSv4 root, with `/export` in it, since the kernel won't export the overlay file system a container's `/tmp` is. Where the kernel's tmpfs has no POSIX ACLs, as Docker Desktop's, the server has none either, and pynfs's ACL tests skip, which the cell reports. A `knfsd` fixture sets `nfs: export`, and at most `squash: none` and `lease`; it gives `{server}` and `{nfs-port}`, and no `{bin}`. It implies `root`, `knfsd` and `port:2049` (below), so the kernel's server that `dt` starts and stops is its own. It fails when the kernel's list of versions lacks one of the three, since `rpc.nfsd` only logs a version the kernel refuses. It sets the server's grace period to 10 seconds, the least, and waits it out before the first test. The lease and grace times are the kernel's for every server on that network stack, so `dt` restores them when it stops the server |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. In the mapping the version may be left out, for options that name it: their `vers=` gives it, and with none the kernel negotiates it, as cthon04's `default` set does. `export` exports the share without a mount, for pynfs and nfstest, which mounts by itself |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1`, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, or at `{ dialect: ... }` when the fixture sets one, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1` or that dialect, the only client that can be asked for one, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -1716,7 +1719,9 @@ One workflow, `tests.yml`, runs every registered suite:
   `integration`'s Kerberos and portmap options as steps after the suite, each even when one
   before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
-  the unit job did, unless a retry rewrote it with the retried tests' alone. A fixed job's
+  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov's project
+  check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
+  profile moves by up to about 0.1% between runs of the same code. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
@@ -1785,7 +1790,7 @@ Four things stay outside the registry:
 - **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
 - **nfstest's knfsd baseline,** `nfs-knfsd-baseline.yml`, a dispatch-only evidence job (§3).
 
-`smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
+`smb-client-compat.yml` went once the `clients` suite's results matched it on each OS.
 
 **Develop goes red.** `tests.yml`'s `post` job does this for `tests.yml`, and the dedicated host for
 its own cells (§4.5). A workflow still outside `tests.yml` runs no `dt`, so it has no failing set
