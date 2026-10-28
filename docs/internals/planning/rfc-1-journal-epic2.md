@@ -51,7 +51,7 @@ At the end of the epic:
 - `pkg/block/journalv2/journalv2test`: the crash seam, the profiler, the fixture, the
   reference model and the hand-written byte builders.
 - `pkg/block/journalv2/conformance`: the conformance tests, the model-based test and its
-  seed corpus.
+  corpus.
 - `test/journalv2/`: the known-failure file and the traceability map with its check.
 - `test/suites.yaml`: the `journal-conformance` suite, the `journal` group, and the new
   build tag added to `lint-go`'s vet line.
@@ -307,8 +307,8 @@ failures on develop (RFC 29 §4.7).
   another.
 - *Corpus:* `conformance/testdata/model/` holds sequences, not seeds: hand-written ones
   for the interleavings and edge cases RFC 1 §9.1 and §9.2 name, and the shrunk sequence
-  of every seed that failed. The model-based test replays every one before any random
-  seed. A failing seed is shrunk to the shortest failing sequence, written to
+  of every seed that failed. The model-based test replays every one before the seeded
+  sequence. A failing seed is shrunk to the shortest failing sequence, written to
   `t.ArtifactDir()` as a ready-to-commit corpus file, and printed; the fix that resolves
   it commits the file.
 - *Random seeds* run only where a tier sets `DITTOFS_SEED` from a fresh draw, which epic 12
@@ -394,7 +394,7 @@ pkg/block/journalv2/
     rfc1_a_test.go  rfc1_b_test.go  rfc1_c_test.go  rfc1_d_test.go
     rfc28_a_test.go  rfc28_b_test.go  rfc28_c_test.go  damage_test.go
     edge_test.go  model_test.go  counted_test.go  clock_test.go
-    testdata/model/              hand-written and shrunk failing sequences       (2.6)
+    testdata/model/              hand-written sequences and shrunk failures      (2.6)
 test/journalv2/
   known.yaml                     one entry per conformance test                  (2.5a onwards)
   trace.yaml  trace_test.go      RFC row → test or owner                         (2.14)
