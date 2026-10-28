@@ -2114,3 +2114,60 @@ func TestRFC28C_ForeignHeaderIsForeignNotDamaged(t *testing.T) {
 	wantBytes(t, f.Share(0), a.id, 0, a.p)
 	wantBytes(t, f.Share(1), b.id, 0, b.p)
 }
+
+// plantKind plants a segment of the journal, under a fresh name, holding one
+// record of kind kind at its first slot and nothing after it: a write's body
+// when kind is a write, no body otherwise, no seal marker and no trailer, as
+// a segment left open at a crash.
+func plantKind(t *testing.T, f *journalv2test.Fixture, kind uint8) {
+	t.Helper()
+
+	const kindWrite = 1
+	id := newestID(t, f) + 1
+	identity := journalIdentity(t, f)
+	r := raw.Record{
+		Identity: identity, Kind: kind, Segment: uint64(id), FileID: journalv2test.File(0).Bytes(),
+		Seq: 1 << 40, Version: raw.Version{Counter: 1 << 40}, Tag: uint32(journalv2test.Tag(0)),
+	}
+	if kind == kindWrite {
+		r.Offset, r.Length = 1<<20, 4096
+		r.Write = &raw.WriteBody{Payload: pattern(fmtTag("k", 0, 0, 1<<20), 4096)}
+	}
+	b := append(raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes(), r.Bytes()...)
+	plant(t, f, segmentName(id), b)
+}
+
+// TestRFC28C_KindValuesRefused checks that a verifying header whose kind the
+// format does not define, in the reserved range and in the extension range,
+// fails the open rather than being skipped by its length. A control with a
+// known kind and the same bytes otherwise opens, so the refusal is the
+// kind's and not the planted segment's.
+//
+// decision: the golden vectors of the kinds table, and their decoding, live
+// with the encoder's tests; this is the row's refusal half.
+func TestRFC28C_KindValuesRefused(t *testing.T) {
+	for i, kind := range []uint8{15, 128} {
+		f := journalv2test.NewUnwatched(t)
+		if i == 0 {
+			f = journalv2test.New(t)
+		}
+		writeSynced(t, f, 0, 0, 0, 64<<10)
+		f.Shutdown()
+		plantKind(t, f, kind)
+
+		err := f.TryReopen()
+		stub(t, "Open", err)
+		if !errors.Is(err, journalv2.ErrUnknownFormat) {
+			t.Fatalf("opening with a record of kind %d returned %v, want ErrUnknownFormat", kind, err)
+		}
+	}
+
+	g := journalv2test.NewUnwatched(t)
+	a := writeSynced(t, g, 0, 0, 0, 64<<10)
+	g.Shutdown()
+	plantKind(t, g, 1)
+	if err := g.TryReopen(); err != nil {
+		t.Fatalf("opening with a planted record of a known kind: %v; the refusals above are the plant's, not the kind's", err)
+	}
+	wantBytes(t, g.Share(0), a.id, 0, a.p)
+}

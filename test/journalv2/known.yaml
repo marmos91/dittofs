@@ -379,3 +379,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery that checks the identity a header names before anything else.'
   issue: '#3378'
+- test: TestRFC28C_KindValuesRefused
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that fails the open on a kind the format does not define.'
+  issue: '#3378'
