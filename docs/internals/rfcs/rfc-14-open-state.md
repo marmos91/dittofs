@@ -575,7 +575,7 @@ type CachingGrant struct {
 	Epoch   uint16    // a v2 lease's: starts at the request's, raised by every change of Kind sent to the holder, wraps through zero
 	V2      bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
 	Recall  *Recall   // a recall in flight; nil: none (§5.3)
-	Adapter []byte    // the adapter's, kept with the grant and written with a persistent open; never read here
+	Parent  LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
 }
 
 type Recall struct {
@@ -627,7 +627,7 @@ none (MS-SMB2 3.3.5.22.1). The rule reads the grant, not the caller's
 protocol, as §5.3's timeout does.
 
 **What is persisted.** A grant is volatile ([§8](#8.%20What%20is%20durable)). A lease covering a
-persistent open is written with it, key, kind, epoch and `Adapter`, so the
+persistent open is written with it, key, kind, epoch and `Parent`, so the
 reconnected open finds its lease as it left it.
 
 ### 2.5 Watch
@@ -908,9 +908,13 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
   or `DropShare` ends its share. `WaitAnswered` returns the client's answer
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): on an acknowledgement the
   calls stop; on a refusal or a cancel the primary releases the lock as an
-  unlock would and considers the next waiter. The schedule is the adapter's;
-  the resending is a timer and holds no worker. An unanswered grant is never
-  released for a silence
+  unlock would and considers the next waiter. A lock granted by callback
+  stays offered until the client answers, and its owner keeps a list of those
+  offers: the owner's own lock or unlock of a range answers first for every
+  offer the range overlaps and drops it, so a refusal arriving later releases
+  nothing, as Linux lockd ignores a `GRANTED` reply for a block it has
+  already unlinked. The schedule is the adapter's; the resending is a timer
+  and holds no worker. An unanswered grant is never released for a silence
   ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)'s `decision:`).
 
 **First in, first out per range.** When an unlock, close, expiry or revocation
@@ -1279,10 +1283,14 @@ it, it **MUST** refuse every request for open state that is not a reclaim — a
 new lock, a new open, a deny mode, a grant — whether or not it appears to
 conflict: the state it would be checked against is what was lost, so a conflict
 cannot be decided. For the same reason, in a shard whose records name any
-client that can hold a deny mode or a mandatory lock (an SMB or NFSv4 client),
-it **MUST** refuse, with `ErrGrace`, every read or write through an anonymous or
-unreclaimed open; without that, an NFSv3 write lands in an extent an SMB client
-is about to reclaim a lock on. In the same shards `CheckChange` refuses a
+client that can hold a deny mode or a mandatory lock (an NFSv4 client; an SMB
+client reconnects rather than reclaims, so it holds none grace waits for: its
+persistent opens are installed with their deny modes and locks when
+`ServeShard` begins serving the shard, and anonymous I/O is judged against
+them as against any open, §8.1), it **MUST** refuse, with `ErrGrace`, every
+read or write through an anonymous or unreclaimed open; without that, an NFSv3
+write lands in an extent a client is about to reclaim a lock on. In the same
+shards `CheckChange` refuses a
 remove or a rename of a file (`ChangeRemove`, `ChangeRename`) with `ErrGrace`,
 as an NFSv4 server refuses `REMOVE` and `RENAME` in grace: either can conflict
 with a deny mode, or a grant, still to be reclaimed. Every other change passes:
@@ -1942,7 +1950,7 @@ volatile state never is.
 | **Client** | **durable**: every field of `ClientRecord` ([§2.1](#2.1%20Client)), each shard's `Done` instance included; `Client.Expires` and `Client.Pending` are **volatile**, the first held by the lease owner, which extends it by one lease period when it takes the client over or restarts (§4.1) | without it every reclaim after a loss must be refused ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)); one record per client, not per open, rewritten only when one of its fields changes. A durable `Expires` would make every renewal a store write: 10⁵ clients renewing is 10⁵ writes per lease period for no reclaim it enables |
 | **Open** | **volatile**, reclaimed in grace — except **durable** when it keeps an unlinked file alive ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)), is a clone's source open ([§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)), or is persistent, and then as an `OpenRecord`: every field but `LossSeen` and `Channel.Outstanding` | a durable record per open costs a write per open; only these cases lose data or a promise without one |
 | **Lock**, **LockState** | **volatile**, reclaimed in grace — **durable** only when its open is persistent | reclaim restores it |
-| **CachingGrant** | **volatile**, never reclaimed; an SMB lease survives only inside a persistent open, with its key, kind, epoch and `Adapter` ([§2.4](#2.4%20CachingGrant)) | a lost grant costs a client its cache, never correctness |
+| **CachingGrant** | **volatile**, never reclaimed; an SMB lease survives only inside a persistent open, with its key, kind, epoch and `Parent` ([§2.4](#2.4%20CachingGrant)) | a lost grant costs a client its cache, never correctness |
 | **delete pending** | **volatile** with the opens — **durable** while the file has a persistent open ([§9.4](#9.4%20Delete%20on%20close)) | a pending delete is a promise to the client that set it, which only a persistent open carries across a failover |
 | **Watch** | **volatile**, never reclaimed | the client re-registers; the NFSv4.1 specification does not allow reclaiming directory notifications |
 | **Layout** (cluster) | reserved ([§2.6](#2.6%20Layout)) | |
@@ -2008,6 +2016,11 @@ its create request; the protocol's rules and their reasons are
 | none | nothing: a disconnect closes it | the primary's table |
 | durable (SMB-durable, v1 and v2) | a disconnect, for `Timeout`; a handover. Not a restart or failover of its primary: a reconnect after one finds no open | the primary's table |
 | persistent | a disconnect, for `Timeout`; a handover; a restart or failover of its primary | an `OpenRecord` ([§8](#8.%20What%20is%20durable)), with its locks and its lease |
+
+A persistent open of a named stream is refused `ErrInvalid`: its record would
+name the stream, not the base file whose table a new primary installs it into.
+The adapter asks such an open durable instead
+([RFC 22 §6.4](rfc-22-smb.md#6.4%20Durable%20and%20persistent%20handles)).
 
 **Writes that survive a restart are stable.** Every write through a persistent
 open, and through any open on a continuously available share, **MUST** be
@@ -2079,9 +2092,10 @@ the session was created under and the session ID, since each node numbers its
 sessions alone and a restarted node may number one again.
 
 **A reconnect matches an open only when all of these do:** the client, the
-principal (`Caller`), the open's `Durable.Create` when it has one, and the lease
-key when the open has a lease (`ReconnectMatch`). Anything else is refused as if
-the open did not exist. A reconnect that matches rebinds the open's `Session`
+principal (`Caller`), the share the reconnect arrived on, the open's
+`Durable.Create` when it has one, and the lease key when the open has a lease
+(`ReconnectMatch`). Anything else is refused as if the open did not exist. A
+reconnect that matches rebinds the open's `Session`
 to the reconnecting session in the step that answers it, durably for a
 persistent open, so a later disconnect of that session times it.
 
@@ -2483,8 +2497,7 @@ type Opens interface {
 	Delete(ctx, f FileID, o OpenID) error                       // the record, its locks and its index entry
 	ByFile(ctx, f FileID) ([]OpenRecord, error)                 // the file's and its streams' durable opens
 	ByShard(ctx, share ShareID, s ShardID) iter.Seq2[OpenRecord, error] // the shard's range of S‖id‖do: ServeShard installs from it, grace end closes from it (§9.2)
-	PutLock(ctx, f FileID, o OpenID, l LockRecord) error         // only under a persistent open (§8)
-	DeleteLock(ctx, f FileID, o OpenID, l LockRecord) error
+	SetLocks(ctx, f FileID, o OpenID, rec *OpenRecord, put, del []LockRecord) error // one transaction, only under a persistent open (§8); rec: the open's new record, nil: unchanged; never split, kv.ErrTooLarge past the limits
 	SetDeletePending(ctx, f FileID, d *DeleteRecord) error       // nil clears it; written only while the file has a persistent open (§9.4)
 }
 ```
@@ -2618,7 +2631,7 @@ type Clients interface {
 
 type Opens interface {
 	Open(ctx, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
-	Reconnect(ctx, who Caller, o OpenID, m ReconnectMatch, s SessionRef) (Open, error)
+	Reconnect(ctx, who Caller, o OpenID, m ReconnectMatch, s SessionRef) (OpenResult, error) // the open and its lease's state and epoch, which the response carries (MS-SMB2 3.3.5.9.7, 3.3.5.9.12)
 	Downgrade(ctx, who Caller, o OpenRef, q Seqs, access, deny Access) (seq uint32, err error) // the open's new Seq
 	ConfirmOpen(ctx, who Caller, o OpenRef, q Seqs) (seq uint32, err error)                   // §2.8; the open's new Seq
 	Update(ctx, who Caller, o OpenID, u OpenUpdate) error                   // delete on close and suspended times, through the open (§2.2, §9.4)
@@ -2681,6 +2694,7 @@ type OpenRequest struct {
 	DeleteOnClose bool
 	Lease         LeaseKey      // the key of the grant to cover it; zero: none
 	Epoch         *uint16       // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; ignored for an existing lease (§2.4)
+	Parent        LeaseKey      // a v2 lease request's parent key, kept with a new lease (CachingGrant.Parent); zero: none
 	SetID         bool          // the file's mode has setuid or setgid, as the service read it: no write caching (§5.4)
 	Want          GrantKind     // the grant kind asked for
 	MaxRead       bool          // the caller's maximal access to the file includes read (§8.1's app instance)
@@ -2714,6 +2728,7 @@ type OpenUpdate struct {
 
 // ReconnectMatch is what a reconnect presents beside its Caller (§8.1).
 type ReconnectMatch struct {
+	Share  ShareID  // the share of the tree the reconnect arrived on
 	Create [16]byte // the create's ID; zero: none presented
 	Lease  LeaseKey // zero: none presented
 }
@@ -2847,7 +2862,7 @@ Deleted numbers are not reused.
 | # | Invariant | Test |
 | --- | --- | --- |
 | L1 | All open state is keyed by file, held in one table per file at the file's primary, and visible to every adapter; that primary also runs the file's I/O. A grant is broken by exactly what §5.2's table names. | Service layer, cross-protocol: for every row of [§7](#7.%20Conflicts%20across%20protocols)'s table and §5.2's, assert the stated outcome with one protocol holding and the other requesting; a read delegation is recalled before an SMB open that denies read is granted. A single-adapter rig cannot fail this. |
-| L2 | After a loss of open state, every non-reclaim request, and every anonymous or unreclaimed I/O in a shard whose records name a client that can hold a deny mode or a mandatory lock, is refused `ErrGrace` until grace ends, and grace ends on its own. | Grant a lock, restart, have a different client request the conflicting lock at once: assert refused for the lease period; a lock on a file nobody held is refused too, and a reclaim is granted. Hold an SMB mandatory lock, fail over, write the range anonymously before the reclaim: assert `ErrGrace`; remove or rename the file over NFSv3 then: `ErrGrace`, and a mode change passes. |
+| L2 | After a loss of open state, every non-reclaim request, and every anonymous or unreclaimed I/O in a shard whose records name a client that can hold a deny mode or a mandatory lock, is refused `ErrGrace` until grace ends, and grace ends on its own. | Grant a lock, restart, have a different client request the conflicting lock at once: assert refused for the lease period; a lock on a file nobody held is refused too, and a reclaim is granted. Hold an NFSv4 deny-write open, fail over, write the file anonymously before the reclaim: assert `ErrGrace`; remove or rename the file over NFSv3 then: `ErrGrace`, and a mode change passes. An SMB client holds no deny mode grace waits for: with its deny-write open and an NLM host's lock in one shard, after the restart an anonymous write to the SMB client's file passes while a lock that is no reclaim is `ErrGrace`. |
 | L3 | A reclaim is accepted only from a client whose durable record names the shard, and every client so named is told to reclaim. | Lose the client records, restart, reclaim: assert `ErrNoReclaim`. Client C holds state only in shard U1, D a lock in U2; fail U2 over: assert C's reclaim of D's lock is refused. |
 | L3b | Two reclaims never both hold conflicting state. | Clients C and D both have records in a shard; both reclaim an exclusive lock on one range: the second is `ErrReclaimConflict` and one holder remains. Model fuzzing holds it as an invariant over every reclaim sequence. |
 | L5 | A recall ends within its deadline, by acknowledgement or revocation, and no worker waits on it. | Hold grants on 10⁴ files with a client that never answers; send conflicting opens from another. Assert each gets `ErrDelay` at once, unrelated `CheckIO` p99 stays within 2× its idle value, and no goroutine is blocked on a recall (counted). |
@@ -2858,7 +2873,7 @@ Deleted numbers are not reused.
 | L9 | Open state never makes an extent ineligible for eviction or reclamation. | Engine layer: hold an open and a lock on a file, evict and reclaim its extent: assert both proceed. |
 | L11 | (cluster) A primary serves no open state past its node lease expiry less the drift bound. | Pause a primary past its node lease, let a new primary finish grace, resume the old one: assert it grants nothing. |
 | L14 | A delete-pending file refuses every new open and every rename, keeps its name until its last open closes, and then loses that name through the ordinary unlink, run as the marker; it is durable while the file has a persistent open. | Open a file twice over SMB, the first delete-on-close; close the first. The name resolves, a third open through each protocol and a rename are refused `ErrDeletePending`; close the second, the name is gone and the file released; with a second hard link, only the opened name goes. Repeat on a persistent open across a failover, and with the last open closed by an administrator's revoke: the unlink runs as the marker. |
-| L15 | A reconnect matches only on client, principal, create ID and lease key, and rebinds the open to the reconnecting session; a replay returns its first result; an app instance closes only another client's open, for a caller that may read the file. | Reconnect an SMB durable v2 open with each of another client, principal, create ID and lease key: each refused, the exact match accepted. Replay a create with a dropped reply: one open, `Replayed`. On a persistent open, replay a lock with a sequence after a failover: success and one lock; a two-range lock under one sequence takes both ranges, and its retry after a refusal is applied, not answered as a replay. Reconnect in S2, drop S2's last channel: `Timeout` starts; equal session IDs on two nodes: disconnecting one leaves the other's opens. App instance: B with A's instance closes A's open; a lower version, a caller without read, and A's own second create do not. |
+| L15 | A reconnect matches only on client, principal, share, create ID and lease key, and rebinds the open to the reconnecting session; a replay returns its first result; an app instance closes only another client's open, for a caller that may read the file. | Reconnect an SMB durable v2 open with each of another client, principal, share, create ID and lease key: each refused, the exact match accepted. Replay a create with a dropped reply: one open, `Replayed`. On a persistent open, replay a lock with a sequence after a failover: success and one lock; a two-range lock under one sequence takes both ranges, and its retry after a refusal is applied, not answered as a replay. Reconnect in S2, drop S2's last channel: `Timeout` starts; equal session IDs on two nodes: disconnecting one leaves the other's opens. App instance: B with A's instance closes A's open; a lower version, a caller without read, and A's own second create do not. |
 | L16 | One grant per (client, lease key, file); opens under one key never break their own lease; a v2 lease's epoch rises with every change of its kind sent to the holder, and a v1 lease's stays zero; an NFS delegation is never a handle grant; a new v2 lease starts at its request's epoch and a timeout raises none; an unasked return of a delegation is valid, an acknowledgement of a lease or oplock with no recall in flight is `ErrNoRecall`; a stat open breaks no grant; a change through an open breaks the caller's other keys. | Open a file twice from one client under one key, then under a second key: the second open does not break the first's lease, the third does, the first lease starts at the request's epoch (smbtorture `v2_epoch1`), each break carries a higher epoch, and no delegation is offered with the handle kind. Return a delegation with no recall outstanding: accepted, the grant gone. Acknowledge a lease break twice, and once after its recall timed out: each `ErrNoRecall`, nothing changed (smbtorture `breaking2`, `breaking5`, `lease.timeout`); an acknowledgement to a kind the recall did not ask is `ErrInvalid`, and the recall stays for a lease and ends at none for an oplock. A stat open from another client against a write lease: no break; one asking write-EA: broken. Rename through an open under key A a file with a lease under key B from the same client: B is broken; with no `via`, it is not. |
 | L17 | A lock names an owner, and an NFSv4 or NLM owner's locks never conflict with each other; an NLM lock needs no open. A lock request's ranges are granted all or none, at most 64 of them, and only a single range waits; an unlock stops at the first range its owner does not hold, `ErrRangeNotLocked`, which an NFSv4 or NLM owner never meets. A loss of NLM locks raises the durable NSM state number and reports it before grace. | Two NFSv4 lock-owners of one client lock one range: the second refused, its `LockedError` naming the first; one owner's overlapping ranges merge. An NLM lock is held with no open and refuses an overlapping NFSv4 lock. Over SMB, lock three ranges in one call whose third conflicts: refused, none held; a 65-range list: `ErrInvalid`, no step taken; a two-range list asking to wait: answered as not waiting. Unlock three in one call whose second is not held: `ErrRangeNotLocked`, the first released and the third held. Fail over a shard holding two hosts' NLM locks: the number rose before grace, both are reported through `Revoked`, their reclaims granted and a non-reclaim lock `ErrGrace`; a restart notice from one releases its locks at once. |
 | L20 | Each write request is applied whole under one version at the file's primary; overlapping writes resolve byte by byte in the primary's arrival order. | Service layer: two clients, one per protocol, write overlapping 1 MiB extents of distinct patterns 10⁴ times, with commits and offloads between: the overlap holds one writer's pattern, whole, the one acknowledged last. |

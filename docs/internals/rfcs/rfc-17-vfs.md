@@ -1684,7 +1684,7 @@ it. `Close` drops the open after checking that the named client holds it.
 
 ```go
 func (s *Server) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenResult, error) {
-	if r.Reconnect != nil { // SMB DHnC, DH2C: RFC 14 §8.1, matched on client, principal, create GUID, lease key
+	if r.Reconnect != nil { // SMB DHnC, DH2C: RFC 14 §8.1, matched on client, principal, share, create GUID, lease key
 		return s.reconnect(ctx, c, r)
 	}
 	for {
