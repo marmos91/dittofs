@@ -221,36 +221,21 @@ test/harness/bin/dt run smbtorture --kerberos
 
 ## Multi-OS Client Compatibility
 
-Validates DittoFS SMB adapter against native OS SMB clients on two platforms.
+The `clients` suite in `test/suites.yaml` mounts the fixture's share with each OS's own SMB client
+and runs the scripts in `test/clients/` over the mount, in `tests.yml`: Linux after each merge, the
+others nightly. Each client mounts at SMB 3.1.1, and one more Linux run mounts at SMB 2.1, for the
+older clients:
 
-### Workflow
+| Platform | Client | Profile | Checks |
+|----------|--------|---------|--------|
+| Linux | mount.cifs | `badger-s3` (Localstack) | file create and read, directory create, listing, delete, rename, a block reaching the bucket |
+| Linux, SMB 2.1 | mount.cifs, `vers=2.1` | `badger-s3` (Localstack) | the same checks as Linux |
+| macOS | mount_smbfs | `memory`: the runner has no Docker for Localstack | the same file checks, and xattrs surviving a remount |
+| Windows | the OS's own client | `memory`: the runner runs no Linux containers | the same file checks |
 
-`.github/workflows/smb-client-compat.yml`
-
-### Platforms
-
-| Platform | Client | Mount Command | Profile |
-|----------|--------|---------------|---------|
-| Ubuntu (latest) | mount.cifs + smbclient | `sudo mount -t cifs //localhost/share /mnt/test -o port=12445,...` | `badger-s3` (Localstack) |
-| macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` | `memory`: the runner has no Docker for Localstack |
-
-### When It Runs
-
-- **Push to develop** (SMB paths changed)
-- **Weekly** (Sunday 21:55 UTC)
-- **Manual dispatch** (`workflow_dispatch`)
-
-NOT on pull requests (too slow for PR checks).
-
-### What It Tests
-
-Each platform runs the same core operations:
-1. Build DittoFS from source
-2. Start server and bootstrap SMB adapter via dfsctl
-3. Mount SMB share
-4. Create file, read file, create directory, list directory, delete
-5. Verify dialect/connection info where available
-6. Cleanup
+```bash
+test/harness/bin/dt run clients            # on Linux; --smb21 for SMB 2.1, --macos and --windows on those OSes
+```
 
 ## CI Integration
 
@@ -258,8 +243,7 @@ Each platform runs the same core operations:
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly | ~15 min |
-| `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
+| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly; the `clients` suite on Linux, macOS and Windows nightly | ~15 min |
 
 ### Speed Tiers
 

@@ -31,6 +31,7 @@ DittoFS negotiates the highest mutually-supported dialect with each client.
 | Dialect | Hex | Key Features |
 | --------- | -------- | -------------- |
 | SMB 2.0.2 | 0x0202 | Basic file operations, credits, HMAC-SHA256 signing |
+| SMB 2.1 | 0x0210 | Leasing, large MTU |
 | SMB 3.0 | 0x0300 | AES-128-CCM encryption, AES-128-CMAC signing, secure dialect negotiation |
 | SMB 3.0.2 | 0x0302 | VALIDATE_NEGOTIATE_INFO downgrade protection |
 | SMB 3.1.1 | 0x0311 | Preauth integrity (SHA-512), AES-256/128-GCM & -CCM encryption (AES-256-GCM preferred), GMAC signing, negotiate contexts |
@@ -93,7 +94,7 @@ The matching `dfsctl` convenience wrapper is shown under
 
 | Feature | Status | Notes |
 | --------- | -------- | ------- |
-| Multi-Dialect Negotiation | Implemented | 2.0.2, 3.0, 3.0.2, 3.1.1 |
+| Multi-Dialect Negotiation | Implemented | 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1 |
 | Negotiate Contexts | Implemented | PREAUTH_INTEGRITY, ENCRYPTION, SIGNING |
 | Preauth Integrity Hash | Implemented | SHA-512 chain over raw wire bytes |
 | AES-GCM Encryption | Implemented | Default for 3.1.1 |
@@ -341,6 +342,7 @@ Signing algorithms by dialect:
 | Dialect | Algorithm |
 | --------- | ----------- |
 | SMB 2.0.2 | HMAC-SHA256 |
+| SMB 2.1 | HMAC-SHA256 |
 | SMB 3.0 | AES-128-CMAC |
 | SMB 3.0.2 | AES-128-CMAC |
 | SMB 3.1.1 | AES-128-GMAC (preferred) or AES-128-CMAC |
