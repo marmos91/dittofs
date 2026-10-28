@@ -610,11 +610,10 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 		}
 	}
 
-	// Punch ascending holes: while the count fits the ceiling the splitting
-	// ones are admitted, and the first that would not fit is refused, naming
-	// the index, with the count still at the ceiling. The refusal's Missing
-	// counts what the reservation lacked: one entry here, the marker's, since
-	// each committed punch replaced its reservation with the same two.
+	// Punch ascending holes: each punch's commit replaces its reservation
+	// with the same two entries, so the count climbs to the ceiling in steps
+	// of two, and the punches are admitted until it stands there; the one
+	// after that is refused, naming the index, with the count at the ceiling.
 	refused := 0
 	for i := range int64(nPunch) {
 		e := ext(i*2*4096, 4096)
@@ -623,8 +622,8 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 			assertIndexRefusal(t, err)
 			refused++
 			if refused == 1 {
-				if c := fs.extentCount(); c < ceiling-1 {
-					t.Fatalf("the first refusal came at count %d, below the ceiling less its marker %d", c, ceiling)
+				if c := fs.extentCount(); c < ceiling {
+					t.Fatalf("the first refusal came at count %d, below the ceiling %d", c, ceiling)
 				}
 				var ns *core.NoSpaceError
 				if errors.As(err, &ns) && ns.Missing < 1 {
@@ -688,6 +687,117 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 	}
 	if _, err := fs.admitRemoval(ring, ext(4096, 4096), 1); err == nil {
 		t.Fatal("a splitting release past the ceiling was not refused")
+	} else {
+		assertIndexRefusal(t, err)
+	}
+}
+
+// TestSplittingRemovalsRefusedAtTheCeiling pins the exact start of the
+// allowance's refusals, which the RFC gives: once the count stands an eighth
+// of the limit above it — at the ceiling, not before it. A check that refused
+// when the reservation would not fit, while the count still stood below the
+// ceiling, would refuse a trim pass one punch early; the punches would stop
+// one entry short of the allowance, failing before they had it.
+func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
+	// A small limit, so the ceiling is easy to stand at: one offloaded piece
+	// to split, and a second file's writes to lift the count with.
+	var fs files
+	const limit = 80
+	const ceiling = limit + limit/8
+	fs.setExtentLimit(limit)
+	id := fid(1)
+	if err := fs.update(id, func(f *file) error {
+		f.held.insert(Placed{Extent: ext(0, 3*4096), Record: rec(1, 0), Version: ver(1)})
+		f.held.markOffloaded(whole, ver(1), ver(1))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pad := func(upto int64) {
+		for n := fs.extentCount(); n < upto; n++ {
+			if err := fs.update(fid(2), func(f *file) error {
+				f.write(Placed{Extent: fillExtent(n), Record: rec(2, uint32(n)*4096), Version: ver(uint64(n) + 1)})
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// One below the ceiling both a splitting deallocate, of two entries, and
+	// a splitting release, of one, are admitted: the count does not yet stand
+	// an eighth above the limit, and no reservation of what a removal may add
+	// is allowed to refuse before it does.
+	pad(ceiling - 1)
+	if c := fs.extentCount(); c != ceiling-1 {
+		t.Fatalf("count = %d, want %d", c, ceiling-1)
+	}
+	a, err := fs.admitRemoval(id, ext(4096, 4096), 2)
+	if err != nil || a != 2 {
+		t.Fatalf("a splitting deallocate one below the ceiling = (%d, %v), want (2, nil)", a, err)
+	}
+	// Its commit replaces the reservation with the same two entries — the
+	// piece's split halves and the marker — leaving the count at the ceiling
+	// above it by the one marker the deallocation added.
+	if err := fs.commit(id, a, func(f *file) error { return f.deallocate(ext(4096, 4096), ver(2)) }); err != nil {
+		t.Fatal(err)
+	}
+	if c := fs.extentCount(); c != ceiling+1 {
+		t.Fatalf("count = %d after the deallocate, want the ceiling %d and its marker", c, ceiling+1)
+	}
+
+	// Which stands above the ceiling. The pieces left cannot be split — the
+	// deallocate took their middles — so a further removal of either is
+	// admitted to narrow, whatever the count: removals that split nothing
+	// are never refused.
+	if a, err := fs.admitRemoval(id, ext(0, 4096), 1); err != nil || a != 0 {
+		t.Fatalf("a narrowing release above the ceiling = (%d, %v), want (0, nil)", a, err)
+	}
+	if a, err := fs.admitRemoval(id, ext(2*4096, 4096), 1); err != nil || a != 0 {
+		t.Fatalf("an edge release above the ceiling = (%d, %v), want (0, nil)", a, err)
+	}
+
+	// A fresh setup at the ceiling less a release's one: a splitting release
+	// is admitted — the count does not stand above it — and at the ceiling,
+	// after its commit, the next is refused. The file holds two long pieces
+	// so that a second splitting target survives the first release.
+	var fs2 files
+	fs2.setExtentLimit(limit)
+	id2 := fid(1)
+	if err := fs2.update(id2, func(f *file) error {
+		f.held.insert(Placed{Extent: ext(0, 4*4096), Record: rec(1, 0), Version: ver(1)})
+		f.held.insert(Placed{Extent: ext(6*4096, 4*4096), Record: rec(1, 16*4096), Version: ver(1)})
+		f.held.markOffloaded(whole, ver(1), ver(1))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for n := fs2.extentCount(); n < ceiling-1; n++ {
+		if err := fs2.update(fid(2), func(f *file) error {
+			f.write(Placed{Extent: fillExtent(n), Record: rec(2, uint32(n)*4096), Version: ver(uint64(n) + 1)})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a2, err := fs2.admitRemoval(id2, ext(4096, 4096), 1)
+	if err != nil || a2 != 1 {
+		t.Fatalf("a splitting release at the ceiling less one = (%d, %v), want (1, nil)", a2, err)
+	}
+	if err := fs2.commit(id2, a2, func(f *file) error {
+		_, err := f.held.release(ext(4096, 4096), nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c := fs2.extentCount(); c != ceiling {
+		t.Fatalf("count = %d after the release, want the ceiling %d", c, ceiling)
+	}
+	// The tail piece still splits, and the count now stands at the ceiling:
+	// the release that would split it is refused. A trim pass ends one
+	// punch past the ceiling, where its own refusals stop it.
+	if _, err := fs2.admitRemoval(id2, ext(7*4096, 4096), 1); err == nil {
+		t.Fatal("a splitting release at the ceiling was admitted")
 	} else {
 		assertIndexRefusal(t, err)
 	}

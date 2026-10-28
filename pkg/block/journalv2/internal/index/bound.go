@@ -137,13 +137,13 @@ func (fs *files) reserve(want int64) (int64, error) {
 // admitRemoval reserves the entries a removal that would split a held extent
 // adds: one for a release, which splits a piece — a release leaves no
 // marker — and two for a deallocate or a clone target, which split a piece
-// and leave one. It is never refused
-// when e splits nothing: a removal that narrows or covers whole pieces only
-// lowers the count, so refusing it would wedge the very calls that bring the
-// count down. A splitting one is refused, with the same named refusal, once
-// the count stands an eighth of the limit above it, so a trim pass of
-// millions of punches inside held extents cannot add an entry a punch past
-// any memory budget; its own refusals stop it there.
+// and leave one. It is never refused when e splits nothing: a removal that
+// narrows or covers whole pieces only lowers the count, so refusing it would
+// wedge the very calls that bring the count down. A splitting one is
+// refused, with the same named refusal, once the count stands an eighth of
+// the limit above it, so a trim pass of millions of punches inside held
+// extents cannot add an entry a punch past any memory budget; its own
+// refusals stop it there.
 //
 // decision: a clone target is admitted like a deallocate, because it removes
 // as deallocate does and splits a held extent the same way. The RFC names only
@@ -177,9 +177,15 @@ func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64,
 			eighth = room
 		}
 		ceiling := limit + eighth
-		if c+adds > ceiling {
+		// The refusal begins once the count stands at the ceiling, not when
+		// a reservation no longer fits: the RFC's words are "once the count
+		// stands an eighth of ExtentLimit above it." Reserving the adds
+		// rather than testing them lets the count peak one removal above
+		// the ceiling — the two entries a deallocate or a clone target can
+		// add — before it stands there.
+		if c >= ceiling {
 			fs.refusals.Add(1)
-			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + adds - ceiling, Unit: core.UnitEntries}
+			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + 1 - ceiling, Unit: core.UnitEntries}
 		}
 		if fs.count.CompareAndSwap(c, c+adds) {
 			return adds, nil
