@@ -100,6 +100,15 @@ func cloneFSM(f grantfsm.Grant) grantfsm.Grant {
 	return f
 }
 
+// grantOf is the grant covering o on e, as its caller sees it; nil: none.
+func (e *entry) grantOf(o *open) *CachingGrant {
+	if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
+		p := g.public(e.file)
+		return &p
+	}
+	return nil
+}
+
 // handleCached reports whether o is covered by a grant holding handle
 // caching, the one under which a durable open is kept.
 func (e *entry) handleCached(o *open) bool {
@@ -295,11 +304,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		t.cmu.Lock()
 		delete(t.adopted, o.Client) // it came back: its installed state is its own again
 		t.cmu.Unlock()
-		res.Open = o.Open
-		if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
-			p := g.public(e.file)
-			res.Grant = &p
-		}
+		res.Open, res.Grant = o.Open, e.grantOf(o)
 		return nil
 	})
 	return res, err
@@ -446,7 +451,8 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 		Mode:       OpenMode{Access: rec.Access, Deny: rec.Deny, Privileged: rec.Privileged},
 		Delete:     DeleteMark{OnClose: rec.DeleteOnClose, By: rec.DeleteBy},
 		Suspended:  rec.Suspended,
-		Durability: rec.Durability, Session: rec.Session, Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID},
+		Durability: rec.Durability, Session: rec.Session,
+		Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID, Instance: AppInstance{rec.AppInstance, rec.AppVersion}, LockSeq: rec.LockSeq},
 	}}
 	if cl.Recovery == entity.RecoverReconnect {
 		o.owedTo = sh
@@ -539,7 +545,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 // offset. SMB, the one protocol with persistent opens, names one owner per
 // open. Draw IDs from NextID if a protocol is served whose persistent opens
 // hold several owners' locks.
-func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now []LockRange) error {
+func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now []LockRange, rec *entity.OpenRecord) error {
 	if o == nil || !o.persistent() {
 		return nil
 	}
@@ -559,10 +565,10 @@ func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now [
 			del = append(del, record(k, l))
 		}
 	}
-	if len(put)+len(del) == 0 {
+	if len(put)+len(del) == 0 && rec == nil {
 		return nil
 	}
-	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, nil, put, del)
+	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, rec, put, del)
 }
 
 // lockName is a stored lock's key under its owner: its offset and its place,
