@@ -1,10 +1,12 @@
 package index
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"runtime"
+	"slices"
 	"sync/atomic"
 	"testing"
 )
@@ -50,8 +52,8 @@ func measureCosts(n int) costs {
 // catches a linear walk of the keys and a tree that has stopped balancing,
 // without timing anything.
 //
-// The ratio has little headroom: with nodes of 32 keys a correct B-tree lands
-// at about 1.89 for lookups and 1.97 for inserts, and with nodes of 16 just
+// The ratio has little headroom: with nodes of 31 keys a correct B-tree lands
+// at about 1.88 for lookups and 1.99 for inserts, and with nodes of 16 just
 // above 2, from rounding alone. Nor can it see a linear scan inside each node,
 // which with nodes of bounded size is still logarithmic overall and lands near
 // 2. So both are also held to absolute bounds: lookups to 1.25 log2(n), which
@@ -181,22 +183,30 @@ func TestAllocations(t *testing.T) {
 }
 
 // TestFrontToBackInsertsFillLeaves checks that keys inserted in ascending
-// order, and in nearly ascending order — ascending blocks of a few keys, each
-// shuffled, as a client with several writes in flight sends them — leave the
-// leaves nearly full. Biased, the split leaves them about 94% full. It catches
-// the loss of the bias at the right edge, a weaker bias, and a bias kept only
-// for a key above every key of the node: an even split there leaves a leaf
-// about half full for good, so strictly ascending keys fill leaves 50% and
-// shuffled blocks of four 74%.
+// order, and in nearly ascending order — each key up to a few places late, as
+// a client with several writes in flight sends them — leave the leaves nearly
+// full. Biased, the split leaves them about 94% full. It catches the loss of
+// the bias at the right edge, a weaker bias, and a bias kept only for a key
+// above every key of the node: an even split there leaves a leaf about half
+// full for good.
+//
+// Lateness is drawn per key rather than by shuffling fixed blocks: blocks of a
+// fixed size line up with the period at which the right edge splits, and for
+// some sizes every split then strands keys below the median, whatever the
+// node size, which a client's window of writes in flight does not do.
 func TestFrontToBackInsertsFillLeaves(t *testing.T) {
-	for _, block := range []int{1, 2, 4, 8} {
-		t.Run(fmt.Sprintf("block=%d", block), func(t *testing.T) {
-			rng := rand.New(rand.NewPCG(uint64(block), 5))
+	for _, late := range []float64{0, 2, 4} {
+		t.Run(fmt.Sprintf("late=%v", late), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(uint64(late), 5))
+			keys := make([]uint64, 100_000)
+			arrival := make([]float64, len(keys))
+			for i := range keys {
+				keys[i], arrival[i] = uint64(i), float64(i)+late*rng.Float64()
+			}
+			slices.SortFunc(keys, func(a, b uint64) int { return cmp.Compare(arrival[a], arrival[b]) })
 			var tr btree[int]
-			for base := 0; base < 100_000; base += block {
-				for _, j := range rng.Perm(block) {
-					tr.set(uint64(base+j), 0)
-				}
+			for _, k := range keys {
+				tr.set(k, 0)
 			}
 			if fill := leafFill(&tr); fill < 0.92 {
 				t.Errorf("leaves %.1f%% full, want at least 92%%", 100*fill)
