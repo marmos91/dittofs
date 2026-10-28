@@ -2,7 +2,6 @@ package openstate
 
 import (
 	"context"
-	"crypto/rand"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -294,10 +293,11 @@ var (
 
 func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()
-	tab, err := New(Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := New(Deps{Records: fs.Store, Clock: clock, Rand: newSeeded(t.Name())})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
+	checked(t, tab)
 	return &fixture{Table: tab, Clients: tab.Clients(), fs: fs, clock: clock, sink: &recordingSink{}, order: &orderLog{}}
 }

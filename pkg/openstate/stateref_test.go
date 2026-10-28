@@ -25,6 +25,7 @@ func (t *Table) entryOf(f entity.FileID) *entry {
 
 func mintIn(t *testing.T, tab *Table, f entity.FileID, c entity.ClientID, s ShardID) StateRef {
 	t.Helper()
+	unchecked.Store(tab, true)
 	var ref StateRef
 	if err := tab.step(f, func(e *entry) (err error) {
 		ref, err = tab.mint(e, c, s, StateOpen)

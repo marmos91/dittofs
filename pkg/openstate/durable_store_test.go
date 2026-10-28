@@ -442,6 +442,7 @@ func TestInstalledLeaseCountsInTheBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.granted[a.Client] = maxGrants - 1
+	unchecked.Store(g.Table, true)
 	if err := g.Recovery().ServeShard(ctx, file.Share, file.Shard, instances.Add(1)); err != nil {
 		t.Fatal(err)
 	}
