@@ -38,13 +38,20 @@ type indexes struct {
 	granted map[entity.ClientID]int
 	keys    map[clientKey]keyUse
 	states  map[entity.FileID]int
+	held    map[heldKey]int
+	owners  map[ownerKey]int
+}
+
+func newIndexes() indexes {
+	return indexes{refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{},
+		granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, states: map[entity.FileID]int{},
+		held: map[heldKey]int{}, owners: map[ownerKey]int{}}
 }
 
 // kept is the indexes as the table holds them, and each entry's count of its
 // state.
 func (t *Table) kept() indexes {
-	x := indexes{refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{},
-		granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, states: map[entity.FileID]int{}}
+	x := newIndexes()
 	t.idx.Lock()
 	for k, v := range t.refs {
 		x.refs[k] = v
@@ -61,6 +68,12 @@ func (t *Table) kept() indexes {
 	for k, v := range t.keys {
 		x.keys[k] = v
 	}
+	for k, v := range t.held {
+		x.held[k] = v
+	}
+	for k, v := range t.owners {
+		x.owners[k] = v
+	}
 	t.idx.Unlock()
 	t.entries(func(e *entry) { x.states[e.file] = e.states })
 	return x
@@ -68,8 +81,7 @@ func (t *Table) kept() indexes {
 
 // rebuild derives the indexes from the files' entries alone.
 func (t *Table) rebuild() indexes {
-	x := indexes{refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{},
-		granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, states: map[entity.FileID]int{}}
+	x := newIndexes()
 	t.entries(func(e *entry) {
 		for tok, o := range e.opens {
 			k := refKey{o.Ref.Shard, tok}
@@ -80,6 +92,7 @@ func (t *Table) rebuild() indexes {
 			if !o.Via.IsZero() {
 				x.via[o.Via]++
 			}
+			x.count(o.Client, cappedOpens, 1)
 			if o.lease != (LeaseKey{}) {
 				u := x.keys[clientKey{o.Client, o.lease}]
 				u.file, u.opens = e.file, u.opens+1
@@ -88,6 +101,11 @@ func (t *Table) rebuild() indexes {
 		}
 		for tok, ls := range e.lstates {
 			x.refs[refKey{ls.ref.Shard, tok}] = holder{StateLock, e.file, ls.owner.Client, ls.ref.Seq}
+			x.count(ls.owner.Client, cappedRanges, len(ls.locks))
+			k := ownerKey{ls.owner.Client, string(ls.owner.Name)}
+			if x.owners[k]++; x.owners[k] == 1 {
+				x.count(ls.owner.Client, cappedOwners, 1)
+			}
 		}
 		for tok, g := range e.grants {
 			x.refs[refKey{g.id.Shard, tok}] = holder{StateGrant, e.file, g.client, 1}
@@ -95,11 +113,21 @@ func (t *Table) rebuild() indexes {
 				x.granted[g.client]++
 			}
 		}
+		for _, w := range e.waiters {
+			x.count(w.Owner.Client, cappedWaiters, 1)
+		}
 		if n := len(e.opens) + len(e.lstates) + len(e.grants); n > 0 {
 			x.states[e.file] = n
 		}
 	})
 	return x
+}
+
+// count adds n of kind k to what client c holds, as the table counts it.
+func (x indexes) count(c entity.ClientID, k capped, n int) {
+	if c != 0 && n != 0 {
+		x.held[heldKey{c, k}] += n
+	}
 }
 
 // entries runs fn on every file's entry, under its step.
@@ -125,7 +153,7 @@ func (t *Table) check() error {
 	for _, d := range []struct {
 		name       string
 		kept, want any
-	}{{"refs", k.refs, b.refs}, {"byID", k.byID, b.byID}, {"via", k.via, b.via}, {"granted", k.granted, b.granted}, {"keys", k.keys, b.keys}, {"states", k.states, b.states}} {
+	}{{"refs", k.refs, b.refs}, {"byID", k.byID, b.byID}, {"via", k.via, b.via}, {"granted", k.granted, b.granted}, {"keys", k.keys, b.keys}, {"states", k.states, b.states}, {"held", k.held, b.held}, {"owners", k.owners, b.owners}} {
 		if !reflect.DeepEqual(d.kept, d.want) {
 			return fmt.Errorf("the index %s kept, %v, is not the one the entries derive, %v", d.name, d.kept, d.want)
 		}

@@ -389,6 +389,15 @@ func (t *Table) lockStateFor(ctx context.Context, e *entry, o LockOwner, op *ope
 		if !t.current(o.Client) {
 			return ErrStaleClient
 		}
+		// An owner is counted once, by its first lock state; an installed
+		// open's owner is never refused.
+		k := ownerKey{o.Client, string(o.Name)}
+		if t.owners[k] == 0 {
+			if err := t.chargeLocked(o.Client, cappedOwners, 1, op == nil || op.parked == 0); err != nil {
+				return err
+			}
+		}
+		t.owners[k]++
 		return nil
 	})
 	if err != nil {
@@ -405,11 +414,46 @@ func (t *Table) lockStateFor(ctx context.Context, e *entry, o LockOwner, op *ope
 
 // dropLockState drops ls from e, with its locks and its waiter.
 func (t *Table) dropLockState(e *entry, ls *lockState) {
-	e.waiters = slices.DeleteFunc(e.waiters, func(w *LockWaiter) bool {
-		return sameOwner(w.Owner, ls.owner) && w.Open == ls.openToken()
-	})
+	for i := len(e.waiters) - 1; i >= 0; i-- {
+		if w := e.waiters[i]; sameOwner(w.Owner, ls.owner) && w.Open == ls.openToken() {
+			t.unwait(e, i)
+		}
+	}
 	delete(e.lstates, ls.ref.Token)
 	t.release(e, ls.ref)
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	c := ls.owner.Client
+	_ = t.chargeLocked(c, cappedRanges, -len(ls.locks), false)
+	k := ownerKey{c, string(ls.owner.Name)}
+	if t.owners[k]--; t.owners[k] <= 0 {
+		delete(t.owners, k)
+		_ = t.chargeLocked(c, cappedOwners, -1, false)
+	}
+}
+
+// relock sets ls's locks to next, charging its client for the ranges next
+// adds, refused past the cap where capped, and writing them first where ls
+// is under a persistent open, so a refusal of either changes nothing.
+func (t *Table) relock(ctx context.Context, ls *lockState, next []LockRange, capped bool) error {
+	n := len(next) - len(ls.locks)
+	if err := t.charge(ls.owner.Client, cappedRanges, n, capped); err != nil {
+		return err
+	}
+	if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next); err != nil {
+		_ = t.charge(ls.owner.Client, cappedRanges, -n, false)
+		return err
+	}
+	ls.locks = next
+	return nil
+}
+
+// unwait drops e's waiter i, which its client no longer holds.
+func (t *Table) unwait(e *entry, i int) *LockWaiter {
+	w := e.waiters[i]
+	e.waiters = slices.Delete(e.waiters, i, i+1)
+	_ = t.charge(w.Owner.Client, cappedWaiters, -1, false)
+	return w
 }
 
 // tidy drops ls once nothing keeps it: no lock, no waiter, and no open, whose
@@ -425,8 +469,7 @@ func (t *Table) tidy(e *entry, ls *lockState) {
 
 // dropWaiter drops e's waiter i, and its lock state if nothing else keeps it.
 func (t *Table) dropWaiter(e *entry, i int) *LockWaiter {
-	w := e.waiters[i]
-	e.waiters = slices.Delete(e.waiters, i, i+1)
+	w := t.unwait(e, i)
 	if ls := e.lockState(w.Owner, w.Open); ls != nil {
 		t.tidy(e, ls)
 	}
@@ -460,13 +503,12 @@ func (t *Table) serve(ctx context.Context, e *entry, out *outbox) {
 		case w.Wait == WaitPoll:
 			w.Reserved, w.Deadline = true, now+leasePeriod
 		default:
-			e.waiters = slices.Delete(e.waiters, i, i+1)
+			t.unwait(e, i)
 			granted := true
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
-				// A refused write is a lock not held, answered not granted.
-				next := ls.adding(w.Range)
-				if granted = t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next) == nil; granted {
-					ls.locks = next
+				// A refused write, or a lock past its client's ranges, is a
+				// lock not held, answered not granted.
+				if granted = t.relock(ctx, ls, ls.adding(w.Range), true) == nil; granted {
 					ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 				}
 				t.tidy(e, ls)
@@ -673,14 +715,13 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if ls, minted, err = t.lockStateFor(ctx, e, r.Owner, op, s); err != nil {
 			return LockResult{}, err
 		}
-		next := ls.adding(r.Ranges...)
-		if err := t.keepLocks(ctx, op, r.Owner, ls.locks, next); err != nil {
+		// Held before the earlier waiter goes, so its drop keeps ls.
+		if err := t.relock(ctx, ls, ls.adding(r.Ranges...), true); err != nil {
 			if minted {
 				t.dropLockState(e, ls)
 			}
 			return LockResult{}, err
 		}
-		ls.locks = next // held before the earlier waiter goes, so its drop keeps ls
 	}
 	prev := e.waiterOf(r.Owner)
 	repeat := prev >= 0 && r.Wait == e.waiters[prev].Wait && r.Ranges[0] == e.waiters[prev].Range && id == e.waiters[prev].Open
@@ -715,8 +756,14 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			w.Deadline = now + leasePeriod
 		}
 	default:
-		ls, _, err := t.lockStateFor(ctx, e, r.Owner, op, s)
+		ls, minted, err := t.lockStateFor(ctx, e, r.Owner, op, s)
 		if err != nil {
+			return LockResult{}, err
+		}
+		if err := t.charge(r.Owner.Client, cappedWaiters, 1, true); err != nil {
+			if minted {
+				t.dropLockState(e, ls)
+			}
 			return LockResult{}, err
 		}
 		w := &LockWaiter{File: e.file, Owner: ls.owner, Open: id, Range: r.Ranges[0], Wait: r.Wait}
@@ -791,11 +838,11 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		o := ls.offers[i]
 		others := slices.Delete(slices.Clone(ls.offers), i, i+1)
 		if refused {
+			// An answer is never refused for the ranges a refusal splits.
 			next, _ := ls.removing(ls.unoffered(o.left, others))
-			if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); err != nil {
+			if err := t.relock(ctx, ls, next.locks, false); err != nil {
 				return err // the grant stays offered, for the client's answer again
 			}
-			ls.locks = next.locks
 			ls.offers = others
 			t.tidy(e, ls)
 			t.serve(ctx, e, &out)
@@ -872,11 +919,13 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 				}
 				return nil
 			}
+			// An unlock splitting a range is refused past the client's
+			// ranges, as a lock is; one releasing nothing writes nothing.
 			next, err := ls.removing(rs)
-			if werr := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); werr != nil {
-				return werr // an unlock releasing nothing writes nothing
+			if werr := t.relock(ctx, ls, next.locks, true); werr != nil {
+				return werr
 			}
-			ls.locks, ls.offers = next.locks, next.offers
+			ls.offers = next.offers
 			if err == nil {
 				ls.ref.Seq, err = t.advance(e, ls.ref)
 				seq = ls.ref.Seq

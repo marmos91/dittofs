@@ -470,6 +470,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 				return err
 			}
 			ls.locks = append(ls.locks, LockRange{ByteRange{Offset: l.Offset, Length: l.Length}, l.Exclusive})
+			_ = t.charge(o.Client, cappedRanges, 1, false)
 		}
 		if e.pending == nil {
 			e.pending = pending

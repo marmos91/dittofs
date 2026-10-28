@@ -563,12 +563,17 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		if o.parked == 0 && t.endedLocked(o.Client, o.Session) {
 			return ErrStaleClient
 		}
+		ck := clientKey{o.Client, o.lease}
+		u := t.keys[ck]
+		if o.lease != (LeaseKey{}) && u.opens > 0 && u.file != e.file {
+			return ErrInvalid
+		}
+		// An installed open, minted disconnected, is counted and never
+		// refused: it was granted before the restart.
+		if err := t.chargeLocked(o.Client, cappedOpens, 1, o.parked == 0); err != nil {
+			return err
+		}
 		if o.lease != (LeaseKey{}) {
-			ck := clientKey{o.Client, o.lease}
-			u := t.keys[ck]
-			if u.opens > 0 && u.file != e.file {
-				return ErrInvalid
-			}
 			u.file, u.opens = e.file, u.opens+1
 			t.keys[ck] = u
 		}
@@ -603,6 +608,7 @@ func (t *Table) dropOpen(e *entry, o *open) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	delete(t.byID, o.ID)
+	_ = t.chargeLocked(o.Client, cappedOpens, -1, false)
 	if o.lease != (LeaseKey{}) {
 		ck := clientKey{o.Client, o.lease}
 		if u := t.keys[ck]; u.opens <= 1 {
