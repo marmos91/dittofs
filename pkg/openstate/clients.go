@@ -103,6 +103,9 @@ type Clients interface {
 	// record and raises no ClientEnded: the lease timer's expiry does both,
 	// and the service then calls Expire at each node holding the client's
 	// state. Each file a close left orphaned or to unlink is raised Closed.
+	// The waiters the releases free are served under each file's admission
+	// lock, which the table takes itself: the service must not hold one when
+	// calling.
 	Expire(ctx context.Context, c entity.ClientID) error
 	// Destroy deletes a client that holds no session and no state, refusing
 	// ErrClientBusy otherwise; it releases nothing.
@@ -445,12 +448,13 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 	if err != nil {
 		return err
 	}
-	var out outbox
+	out := outbox{timer: true}
 	t.cstep.Lock()
 	t.releaseClient(ctx, c, &out)
 	t.forget(ctx, c, &out)
 	t.cstep.Unlock()
 	out.raise(sink)
+	t.serveFiles(sink, out.serve)
 	return nil
 }
 

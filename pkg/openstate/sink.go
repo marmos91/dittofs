@@ -22,8 +22,8 @@ type Sink interface {
 
 // Order takes a file's admission lock and returns its unlock. The table takes
 // it to grant a callback waiter on a range freed by a call that names no file:
-// the timer, Connect and ReleaseLockOwner. Their callers must hold no admission
-// lock.
+// the timer, Expire, Connect and ReleaseLockOwner. Their callers must hold no
+// admission lock.
 type Order func(f entity.FileID) (unlock func())
 
 // RevokeReason is why a client's state ended without the client asking.

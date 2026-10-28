@@ -621,6 +621,32 @@ func TestReleaseLockOwnerGrantsWaitersUnderOrder(t *testing.T) {
 	}
 }
 
+// Expire, which names a client and no file, grants the waiters its release
+// frees under each file's admission lock.
+func TestExpireGrantsWaitersUnderOrder(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "h", 1)
+	file := anyFile()
+	file.Shard = 1
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.order.mu.Lock()
+	f.order.files = nil
+	f.order.mu.Unlock()
+	if err := f.Expire(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after a's expiry: granted %v, want h", got)
+	}
+	f.order.mu.Lock()
+	defer f.order.mu.Unlock()
+	if !slices.Contains(f.order.files, file.ID) {
+		t.Errorf("Expire granted the host without the file's admission lock: taken for %v", f.order.files)
+	}
+}
+
 // A range a lease expiry frees goes to the waiter on it, even when a request
 // for it arrives after the expiry and before the timer serves the file.
 func TestExpiryGrantIsNotJumped(t *testing.T) {
