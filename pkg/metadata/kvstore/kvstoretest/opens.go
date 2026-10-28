@@ -16,9 +16,9 @@ func (f *fs) release(file entity.FileID, v uint64) error {
 
 func (f *fs) newOpen(file entity.FileID) entity.Open {
 	f.t.Helper()
-	id, err := f.s.NextOpenID(ctx)
+	id, err := f.s.NextID(ctx, kvstore.IDOpen)
 	must(f.t, err)
-	return entity.Open{ID: id, File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
+	return entity.Open{ID: entity.OpenID(id), File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
 }
 
 func (f *fs) durable(shard uint64) []kvstore.DurableOpen {
@@ -180,9 +180,9 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 	plain := f.newOpen(file.ID)
 	must(t, opens.Put(ctx, f.share.ID, plain))
 	lock := func(open entity.OpenID, off int64, owner string) entity.Lock {
-		id, err := f.s.NextLockID(ctx)
+		id, err := f.s.NextID(ctx, kvstore.IDLock)
 		must(t, err)
-		return entity.Lock{ID: id, Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
+		return entity.Lock{ID: entity.LockID(id), Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
 	}
 	if err := opens.PutLock(ctx, f.share.ID, file.ID, lock(plain.ID, 0, "x")); err == nil {
 		t.Error("a lock stored under an open that is not persistent")
@@ -272,5 +272,39 @@ func testNSMState(t *testing.T, kvo Opener) {
 	must(t, err)
 	if n, err := again.NSMState(ctx); err != nil || n != 3 {
 		t.Errorf("after a restart: %d, %v", n, err)
+	}
+}
+
+// RFC 14 §2.11: a client, open or lock ID from NextID is never zero and never
+// issued twice, by this process or a later one over the same store, which
+// may abandon a reserved range but never reissue it. A kind with no
+// allocator is refused.
+func testNextID(t *testing.T, kvo Opener) {
+	s, c := newStore(t, kvo)
+	kinds := []kvstore.IDKind{kvstore.IDClient, kvstore.IDOpen, kvstore.IDLock}
+	seen := map[kvstore.IDKind]map[uint64]bool{}
+	draw := func(s *kvstore.Store, n int) {
+		t.Helper()
+		for _, k := range kinds {
+			if seen[k] == nil {
+				seen[k] = map[uint64]bool{}
+			}
+			for range n {
+				id, err := s.NextID(ctx, k)
+				if err != nil || id == 0 || seen[k][id] {
+					t.Fatalf("kind %d: id %d, %v", k, id, err)
+				}
+				seen[k][id] = true
+			}
+		}
+	}
+	draw(s, 1100) // past one reserved range
+	again, err := kvstore.Open(ctx, c)
+	must(t, err)
+	draw(again, 3)
+	for _, k := range []kvstore.IDKind{0, 4} {
+		if _, err := s.NextID(ctx, k); !isCode(err, merrs.ErrInvalidArgument) {
+			t.Errorf("kind %d: %v", k, err)
+		}
 	}
 }
