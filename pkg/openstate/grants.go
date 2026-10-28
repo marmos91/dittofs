@@ -517,8 +517,6 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	if err != nil {
 		return err
 	}
-	// The waiters an acknowledgement frees are served after it, under the
-	// file's admission lock, as the timer serves them.
 	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
 		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {

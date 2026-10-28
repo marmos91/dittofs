@@ -51,9 +51,6 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 	case h.typ != StateLock:
 		return ErrLocksHeld
 	}
-	// A reference names no file, so the service holds no admission lock for
-	// it: the waiters the release frees are served after it, under the
-	// file's admission lock, as the timer serves them.
 	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
 		ls := e.lstates[s.Token]

@@ -570,8 +570,6 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 	if err != nil {
 		return err
 	}
-	// A revoke names a client, not a file, so the waiters its releases
-	// free are served after it, under each file's admission lock.
 	out := outbox{timer: true}
 	t.cstep.Lock()
 	err = t.revoke(ctx, c, &out)
