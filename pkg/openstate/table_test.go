@@ -264,7 +264,7 @@ func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []
 		t.Fatal(err)
 	}
 	for _, s := range shards {
-		if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
+		if err := f.Recovery().ServeShard(ctx, fs.Share.ID, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
 	}

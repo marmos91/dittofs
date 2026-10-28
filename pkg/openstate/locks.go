@@ -472,17 +472,19 @@ func (t *Table) serve(e *entry, out *outbox) {
 	}
 }
 
-// serveFiles serves the waiters of files, for the timer: a recall past its
+// serveFiles serves the waiters of files, for the timer: an open whose
+// Timeout passed since its session ended is closed, a recall past its
 // deadline is ended, a poll waiter past its deadline is dropped and the
 // waiters behind it are considered, and a range the timer freed is granted.
 // Each file's step takes the file's admission lock first, since it may grant
 // or revoke, and holds no other table lock.
-func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
+func (t *Table) serveFiles(ctx context.Context, sink Sink, files []entity.FileID) {
 	for _, f := range files {
 		var out outbox
 		unlock := t.order(f)
 		_ = t.step(f, func(e *entry) error {
-			t.lapse(e, &out)
+			t.timeouts(ctx, e, &out)
+			t.lapse(ctx, e, &out)
 			t.serve(e, &out)
 			if !slices.ContainsFunc(e.waiters, func(w *LockWaiter) bool { return w.Wait == WaitPoll }) {
 				t.idx.Lock()
@@ -671,9 +673,15 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if err != nil {
 			return LockResult{}, err
 		}
+		next := *ls
+		next.locks = slices.Clone(ls.locks)
 		for _, rg := range r.Ranges {
-			ls.add(rg)
+			next.add(rg)
 		}
+		if err := t.keepLocks(ctx, ls, next.locks); err != nil {
+			return LockResult{}, err
+		}
+		ls.locks = next.locks
 		for _, rg := range r.Ranges {
 			if ls.owner.Stack {
 				break // a stacking owner's lock is another lock, answering no grant
@@ -846,7 +854,13 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 				}
 				return nil
 			}
-			err := ls.unlock(rs)
+			next := *ls
+			next.locks = slices.Clone(ls.locks)
+			err := next.unlock(rs)
+			if werr := t.keepLocks(ctx, ls, next.locks); werr != nil {
+				return werr
+			}
+			ls.locks = next.locks
 			if err == nil {
 				ls.ref.Seq, err = t.advance(e, ls.ref)
 				seq = ls.ref.Seq
@@ -923,7 +937,7 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 		t.smu.Unlock()
 	}
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	t.dropIdle(ctx, o.Client)
 	return err
 }

@@ -492,7 +492,7 @@ func (t *Table) recallEnded(e *entry, g *grant) {
 // new grants, and each grant it holds lapses on its own once it conflicts.
 // Recall the rest at the first lapse if a client is seen holding grants it no
 // longer answers for long past one.
-func (t *Table) lapse(e *entry, out *outbox) {
+func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 	now := t.d.Clock.Elapsed()
 	for _, g := range e.grants {
 		if g.fsm.Recall == nil || g.sent == 0 || now < g.sent {
@@ -505,6 +505,7 @@ func (t *Table) lapse(e *entry, out *outbox) {
 		if g.covers() {
 			g.fsm.Timeout()
 			t.recount(g)
+			_ = t.persistLease(ctx, e, g)
 			continue
 		}
 		t.idx.Lock()
@@ -594,10 +595,11 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		} else {
 			t.recount(g)
 		}
+		_ = t.persistLease(ctx, e, g)
 		t.serve(e, &out)
 		return err
 	})
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	return err
 }

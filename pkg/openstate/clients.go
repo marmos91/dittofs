@@ -132,6 +132,14 @@ type Clients interface {
 	// ChannelDown records that c's back channel is lost: it sets
 	// Reach.Down, and c is offered no grant until it rebinds.
 	ChannelDown(ctx context.Context, c entity.ClientID) error
+	// Disconnect ends session s of client c: each volatile open s made or
+	// last reconnected closes, and each durable or persistent one is kept,
+	// with every lock, deny mode and lease it holds, until its Timeout passes
+	// without a reconnect; the timer then closes it. Another session's opens
+	// are left alone. The waiters the closes free are served under each
+	// file's admission lock, which the table takes itself: the service must
+	// not hold one when calling.
+	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef) error
 }
 
 type clients struct{ t *Table }
@@ -254,7 +262,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
 	}
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	if err != nil {
 		return 0, err
 	}
@@ -533,7 +541,7 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 	t.forget(ctx, c, &out)
 	t.cstep.Unlock()
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	return nil
 }
 
@@ -619,7 +627,7 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 		sink.Revoked(Revocation{Client: c, Reason: RevokedByAdmin})
 	}
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	return err
 }
 
@@ -777,6 +785,11 @@ func (t *Table) sweep(ctx context.Context) {
 	t.cmu.Unlock()
 	t.idx.Lock()
 	serve := slices.Collect(maps.Keys(t.polls))
+	for f := range t.parked {
+		if !slices.Contains(serve, f) {
+			serve = append(serve, f)
+		}
+	}
 	for f := range t.recalling {
 		if !slices.Contains(serve, f) {
 			serve = append(serve, f)
@@ -799,7 +812,7 @@ func (t *Table) sweep(ctx context.Context) {
 	}
 	// On a goroutine of its own, so the sweep never waits on an admission
 	// lock.
-	t.timer.Go(func() { t.serveFiles(sink, serve) })
+	t.timer.Go(func() { t.serveFiles(ctx, sink, serve) })
 }
 
 // held is one piece of state a client holds.
