@@ -37,11 +37,11 @@ func openCodecCases() []codecCase {
 	f16 := func(b byte) string { return strings.Repeat("00", 15) + hex.EncodeToString([]byte{b}) }
 	return []codecCase{
 		{"client", cl, encodeClient(cl),
-			"01" + "01" + "04" + hex.EncodeToString([]byte("host")) + "0000000000000001" + ph + "01" + "02" +
+			"01" + "02" + "04" + hex.EncodeToString([]byte("host")) + "0000000000000001" + ph + "01" + "02" +
 				f16(1) + f16(2) + "01" + "02" + f16(1) + f16(2) + "01" + "0201ab",
 			func(b []byte) (any, error) { return decodeClient(7, b) }},
 		{"smb client", smb, encodeClient(smb),
-			"01" + "02" + "021122" + "0000000000000000" + "00" + strings.Repeat("00", 16) + "00" + "00" +
+			"01" + "04" + "021122" + "0000000000000000" + "00" + strings.Repeat("00", 16) + "00" + "00" +
 				f16(0) + f16(0) + "00" + "00" + "00" + "00",
 			func(b []byte) (any, error) { return decodeClient(8, b) }},
 		{"client id", entity.ClientID(7), encodeClientID(7), "01" + hexU64(7),
@@ -98,7 +98,7 @@ func TestOpenKeyGolden(t *testing.T) {
 		{"delete pending", deletePendingKey(sid, fid), "01" + s + f + "0f"},
 		{"client", clientKey(7), "35" + hexU64(7)},
 		{"client shard", clientShardKey(7, 2), "35" + hexU64(7) + "01" + hexU64(2)},
-		{"client name", clientNameKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "02" + "1100ff" + "0001"},
+		{"client name", clientNameKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "04" + "1100ff" + "0001"},
 		{"nsm", nsmKey(), "2a"},
 		{"ids", idKey(byte(IDOpen)), "3a02"},
 	} {

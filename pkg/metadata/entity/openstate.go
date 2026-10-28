@@ -13,13 +13,16 @@ import (
 // metadata layer both name it from here, so neither imports the other.
 type Protocol uint8
 
+// Its byte is part of the store format: it keys a client's name index and is
+// written in its record, so a value once given is never changed or reused.
 const (
-	ProtocolNFSv4 Protocol = iota + 1
-	ProtocolSMB
+	ProtocolNFSv3 Protocol = iota + 1 // holds no client record; reserves 0x01
+	ProtocolNFSv4
 	ProtocolNLM
+	ProtocolSMB
 )
 
-var protocols = []string{ProtocolNFSv4: "nfsv4", ProtocolSMB: "smb", ProtocolNLM: "nlm"}
+var protocols = []string{ProtocolNFSv3: "nfsv3", ProtocolNFSv4: "nfsv4", ProtocolNLM: "nlm", ProtocolSMB: "smb"}
 
 func (p Protocol) String() string                { return enumString(protocols, p) }
 func (p Protocol) MarshalText() ([]byte, error)  { return enumMarshal(protocols, p) }
