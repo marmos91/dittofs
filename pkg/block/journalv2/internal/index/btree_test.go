@@ -487,13 +487,14 @@ func TestReplaceKeepsTheShape(t *testing.T) {
 		t.Fatalf("setup: root holds %d keys, inner %v; want one full leaf", root.count, root.children != nil)
 	}
 
+	k := uint64(maxItems / 2 * 2)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	old, replaced := tr.set(maxItems, 1)
+	old, replaced := tr.set(k, 1)
 	runtime.ReadMemStats(&after)
 
 	if !replaced || old != 0 {
-		t.Fatalf("set(%d) = (%d, %v), want a replace of 0", maxItems, old, replaced)
+		t.Fatalf("set(%d) = (%d, %v), want a replace of 0", k, old, replaced)
 	}
 	if tr.root != root || root.children != nil || root.count != maxItems {
 		t.Errorf("replace restructured the tree: root %p was %p, holds %d keys", tr.root, root, tr.root.count)

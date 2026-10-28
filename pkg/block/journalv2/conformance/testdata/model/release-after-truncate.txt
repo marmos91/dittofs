@@ -1,0 +1,13 @@
+# A release after a truncate names bytes the truncate already removed, and
+# a fill under the truncate's settled marker is never made. A crash brings
+# the truncate's marker back, since settling is not persisted.
+write len=64 b=65
+sync
+offload
+truncate off=16
+release
+settle pick=255
+read len=64
+fill
+crash pick=1 off=5
+read len=64
