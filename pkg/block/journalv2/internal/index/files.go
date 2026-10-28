@@ -9,7 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// fileShards is the number of shards the file map is split into.
+// fileShards is the number of shards the file map is split into: 1<<6, the
+// top six bits of a FileID's hash.
 const fileShards = 64
 
 // files maps each FileID to its file entry: the outer level of the placement
@@ -69,6 +70,10 @@ type file struct {
 
 	tagged bool
 	tag    core.ShareTag
+	// rival is a second tag the file has a record under, when rivalled. A
+	// rivalled file refuses every call through either tag.
+	rivalled bool
+	rival    core.ShareTag
 
 	held heldSet
 	// retained is the superseded content the file still keeps. It is never
@@ -89,10 +94,14 @@ type file struct {
 	segs []core.SegmentID
 }
 
+// shard returns the shard holding id. Every byte of the FileID reaches the
+// top bits of the hash, which pick the shard, so identifiers that differ
+// only in a few bytes, such as time-ordered ones, still spread.
 func (fs *files) shard(id core.FileID) *fileShard {
 	b := id.Bytes()
-	h := binary.LittleEndian.Uint64(b[:8]) ^ binary.LittleEndian.Uint64(b[8:])
-	return &fs.shards[h%fileShards]
+	h := binary.LittleEndian.Uint64(b[:8])*0x9e3779b97f4a7c15 ^ binary.LittleEndian.Uint64(b[8:])
+	h *= 0xbf58476d1ce4e5b9
+	return &fs.shards[h>>(64-6)]
 }
 
 // len returns the number of files with an entry.
@@ -198,6 +207,7 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 		return
 	}
 	f.change = core.Version{}
+	f.held = heldSet{} // free the empty tree and its scratch for the tag-only life
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
@@ -207,24 +217,40 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 	s.mu.Unlock()
 }
 
-// claim checks the file's tag against tag and claims the file for it when it
-// has none. A file owned by another tag is refused, naming both, and keeps its
-// owner. The caller passes the FileID the refusal names.
+// check refuses a call on the file through tag, naming both tags, when
+// another tag owns the file, and refuses a call through either tag of a file
+// with records under two. It claims nothing, so a read uses it. The caller
+// passes the FileID the refusal names.
+func (f *file) check(tag core.ShareTag, id core.FileID) error {
+	switch {
+	case f.rivalled && tag == f.tag:
+		return &core.OtherShareError{File: id, Tag: tag, Owner: f.rival}
+	case f.tagged && tag != f.tag:
+		return &core.OtherShareError{File: id, Tag: tag, Owner: f.tag}
+	}
+	return nil
+}
+
+// claim checks the file's tag against tag, as check does, and claims the
+// file for tag when it has none.
 //
 // decision: a claim alone does not keep the entry; only a record on disk or
 // held content does. The check that refuses a call is this one, made before
 // the record's I/O, so a refused call appends nothing. It holds across the
 // I/O only because the caller keeps the file's appends serialised from the
 // claim until recorded notes the record, and recorded claims again, since a
-// claim left alone is dropped when its update returns. Revisit if a call must
-// hold a claim across I/O without that serialisation.
+// claim left alone is dropped when its update returns. So the lock that
+// serialises a file's appends is not this entry's and does not live in it:
+// an entry holding only a claim can be dropped and made again mid-append,
+// and a lock inside it would go with it, letting two shares claim one new
+// file. Revisit if a call must hold a claim across I/O without that
+// serialisation.
 func (f *file) claim(tag core.ShareTag, id core.FileID) error {
+	if err := f.check(tag, id); err != nil {
+		return err
+	}
 	if !f.tagged {
 		f.tagged, f.tag = true, tag
-		return nil
-	}
-	if f.tag != tag {
-		return &core.OtherShareError{File: id, Tag: tag, Owner: f.tag}
 	}
 	return nil
 }
@@ -256,14 +282,25 @@ func (f *file) changeVersion() (core.Version, bool) {
 // The record is on disk by the time it is noted, so the segment is noted
 // whatever the tag: a segment dropped here would end the file's tag while a
 // record of it remains. A tag that does not own the file is reported with
-// OtherShareError and leaves the owner in place. The claim made before the
-// I/O makes that unreachable, so reaching it means the file now has records
-// of two tags on disk, which only a fault leaves.
+// OtherShareError. The claim made before the I/O makes that unreachable, so
+// reaching it means the file now has records of two tags on disk, which only
+// a fault leaves: the file is marked rivalled, and from then on refuses every
+// call through either tag, as recovery from those records would.
+//
+// decision: a rivalled file stays rivalled while its entry lasts. Forgetting
+// one of the tags is what clears it, and the index cannot tell which tag's
+// records a segment holds, so the last record of one tag going does not.
+// Revisit if a fault is ever seen to leave a rivalled file whose second tag
+// is never forgotten.
 func (f *file) recorded(seg core.SegmentID, tag core.ShareTag, id core.FileID) error {
 	if !slices.Contains(f.segs, seg) {
 		f.segs = append(f.segs, seg)
 	}
-	return f.claim(tag, id)
+	err := f.claim(tag, id)
+	if err != nil && !f.rivalled {
+		f.rivalled, f.rival = true, tag
+	}
+	return err
 }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record

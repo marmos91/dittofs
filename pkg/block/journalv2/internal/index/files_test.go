@@ -10,8 +10,37 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// fid returns a test FileID. Every one of them falls in the same shard.
+// fid returns a test FileID.
 func fid(n byte) core.FileID { return core.NewFileID([16]byte{15: n}) }
+
+// sameShard returns a FileID other than id that falls in id's shard.
+func sameShard(fs *files, id core.FileID) core.FileID {
+	for n := 0; ; n++ {
+		other := core.NewFileID([16]byte{0: byte(n), 1: byte(n >> 8), 15: 0xff})
+		if other != id && fs.shard(other) == fs.shard(id) {
+			return other
+		}
+	}
+}
+
+// TestShardsSpreadOnEveryByte: identifiers that differ in one byte only,
+// wherever that byte is, must spread over the shards. A shard picked from a
+// few bytes puts time-ordered identifiers, which share their leading bytes,
+// behind one lock.
+func TestShardsSpreadOnEveryByte(t *testing.T) {
+	var fs files
+	for pos := range 16 {
+		seen := map[*fileShard]bool{}
+		for n := range 256 {
+			var b [16]byte
+			b[pos] = byte(n)
+			seen[fs.shard(core.NewFileID(b))] = true
+		}
+		if len(seen) < fileShards/2 {
+			t.Fatalf("256 FileIDs differing only in byte %d reach %d of %d shards", pos, len(seen), fileShards)
+		}
+	}
+}
 
 // present reports whether the map holds an entry for id.
 func present(fs *files, id core.FileID) bool {
@@ -165,7 +194,7 @@ func TestWriteNeverLowersChangeVersion(t *testing.T) {
 
 // TestRecordedReportsOtherTagAndKeepsTheRecord: a record is noted after its
 // I/O, so one noted through a tag that does not own the file is already on
-// disk. It is reported, the owner stays, and its segment still counts: one
+// disk. It is reported, and its segment still counts: one
 // left unnoted would let the owner's last segment end the tag while that
 // record remains, and a later claim by a third tag would succeed.
 func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
@@ -177,12 +206,31 @@ func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 		t.Fatalf("recorded through another tag = %v, want ErrOtherShare", err)
 	}
 	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
-	if !fs.view(id, func(f *file) {
-		if tag, ok := f.owner(); !ok || tag != 4 {
-			t.Fatalf("owner = %d, %v, want 4, true", tag, ok)
-		}
-	}) {
+	if !present(&fs, id) {
 		t.Fatal("entry dropped while segment 2 holds a record of the file")
+	}
+}
+
+// TestFileOfTwoTagsRefusesBoth: a file with records under two tags refuses
+// every call through either, naming the other, as recovery from those
+// records does. Going on serving the first owner would let the running
+// journal and the recovered one disagree.
+func TestFileOfTwoTagsRefusesBoth(t *testing.T) {
+	var fs files
+	id := fid(1)
+	_ = fs.update(id, func(f *file) error { return f.recorded(1, 4, id) })
+	_ = fs.update(id, func(f *file) error { return f.recorded(2, 5, id) })
+	for _, c := range []struct{ tag, other core.ShareTag }{{4, 5}, {5, 4}} {
+		fs.view(id, func(f *file) {
+			var refusal *core.OtherShareError
+			if err := f.check(c.tag, id); !errors.As(err, &refusal) || refusal.Owner != c.other {
+				t.Fatalf("check through tag %d = %v, want refused naming %d", c.tag, err, c.other)
+			}
+		})
+		err := fs.update(id, func(f *file) error { return f.claim(c.tag, id) })
+		if !errors.Is(err, core.ErrOtherShare) {
+			t.Fatalf("claim through tag %d = %v, want ErrOtherShare", c.tag, err)
+		}
 	}
 }
 
@@ -260,10 +308,8 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 // shard lock held across fn would block them too.
 func TestReadOtherFileWhileWriting(t *testing.T) {
 	var fs files
-	a, b := fid(1), fid(2)
-	if fs.shard(a) != fs.shard(b) {
-		t.Fatal("a and b must share a shard for this test to cover the shard lock")
-	}
+	a := fid(1)
+	b := sameShard(&fs, a)
 	_ = fs.update(a, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
 
 	inside, release := make(chan struct{}), make(chan struct{})
