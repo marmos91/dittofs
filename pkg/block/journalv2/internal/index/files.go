@@ -232,6 +232,11 @@ func (f *file) owner() (core.ShareTag, bool) { return f.tag, f.tagged }
 // write holds p as a client write and raises the change version to its
 // version. A file's writes take their versions in order, so the raise is a
 // plain maximum and never lowers the change version.
+//
+// decision: a write consults no removal marker. A write draws its version
+// inside the file's serialised append, so it is above every marker the file
+// has, and no marker excludes it. A rebuild, which meets records in any
+// order, must decide precedence before applying a write below a marker.
 func (f *file) write(p Placed) {
 	f.held.insert(p)
 	if p.Version.Compare(f.change) > 0 {

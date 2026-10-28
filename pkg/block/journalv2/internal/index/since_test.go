@@ -10,8 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// TestRemovalsSurviveToSince is RFC 1 §9.4's "removals survive to Since" row
-// at the index, without the crash: three files written and then truncated,
+// TestRemovalsSurviveToSince checks that a removal is reported until settled,
+// at the index and without a crash: three files written and then truncated,
 // deallocated and deleted. Since from 0 yields each held extent and each
 // marker at its version, in version order; Since from a removal's own version
 // does not yield it, since only versions strictly above are yielded. Settling
@@ -119,7 +119,7 @@ func TestSinceIsInVersionOrder(t *testing.T) {
 
 // TestSinceHidesTheOffloadedBit checks that one record's piece split by its
 // offloaded bit is yielded as one write: Since reports content, and nothing
-// it reports may depend on the bit (RFC 1 §2).
+// it reports may depend on the bit.
 func TestSinceHidesTheOffloadedBit(t *testing.T) {
 	var fs files
 	id := fid(1)
