@@ -247,9 +247,10 @@ func TestDropRangesAgainstExactOracle(t *testing.T) {
 		// Soundness is one direction: whenever the oracle has a lower
 		// overlapping record in another segment, the answer must be true. The
 		// answer may be true where the oracle has none — a merged range
-		// over-covers, keeping a removal longer, which is what R38 allows.
-		// Over-answering is bounded by (c): the range's low is never above
-		// any record inside it.
+		// over-covers, keeping a removal longer, the safe direction: a range
+		// may cover bytes no record holds, but under-covering would drop a
+		// removal it needs. Over-answering is bounded by (c): the range's low
+		// is never above any record inside it.
 		for range 32 {
 			fi := rng.IntN(filesN)
 			seg := core.SegmentID(1 + rng.IntN(segsN))
@@ -613,10 +614,11 @@ func TestDropRangeGaugeAcrossEntryDrop(t *testing.T) {
 	}
 }
 
-// TestDropRangesAfterMillionOverwrites is R45's bound under a random
-// overwrite workload: one file of 1 GiB, 10^6 overwrites of 4 KiB at 4
-// KiB-aligned offsets, spread over about sixteen segments. Whatever the order,
-// every (file, segment) keeps at most eight ranges.
+// TestDropRangesAfterMillionOverwrites checks the eight-range bound and the
+// cost it promises under a random overwrite workload: one file of 1 GiB, 10^6
+// overwrites of 4 KiB at 4 KiB-aligned offsets, spread over about sixteen
+// segments. Whatever the order, every (file, segment) keeps at most eight
+// ranges; a merge that only sometimes ran would let this count past eight.
 func TestDropRangesAfterMillionOverwrites(t *testing.T) {
 	if testing.Short() {
 		t.Skip("a million overwrites are skipped in short runs")
@@ -687,5 +689,107 @@ func TestConcurrentDropRanges(t *testing.T) {
 	wg.Wait()
 	if got, want := fs.dropRangeCount(), int64(totalRanges(&fs)); got != want {
 		t.Fatalf("gauge = %d, want %d", got, want)
+	}
+}
+
+// TestNoteKeepsRangeArrayAtMaxDropRanges pins the pair's memory cost: whatever
+// notes arrive, the backing array a (file, segment) holds has at most
+// maxDropRanges slots, not the sixteen a grow-then-shrink insert leaves behind.
+// Eight ranges is what the pair costs in memory, not only in length. The loop
+// passes through every path that could grow it: the ninth disjoint note, the
+// overlap of one range, a run of several collapsing, and further ninth notes
+// once the pair is full again.
+func TestNoteKeepsRangeArrayAtMaxDropRanges(t *testing.T) {
+	var fs files
+	id := fid(1)
+	k := 0
+	note := func(e core.Extent) {
+		t.Helper()
+		k++
+		noteRec(t, &fs, id, 1, e, nums(uint64(k), uint64(k)))
+		rs, ok := rangesOf(&fs, id, 1)
+		if !ok || len(rs) > maxDropRanges {
+			t.Fatalf("note %d: len(ranges) = %d (ok %v), want at most %d", k, len(rs), ok, maxDropRanges)
+		}
+		if cap(rs) > maxDropRanges {
+			t.Fatalf("note %d (%+v): cap(ranges) = %d, want at most %d", k, e, cap(rs), maxDropRanges)
+		}
+	}
+	for i := range int64(9) { // nine disjoint: the ninth forces a merge
+		note(ext(i*100, 1))
+	}
+	// An overlap of one range, then a note spanning a run of several.
+	note(ext(150, 60))
+	note(ext(0, 500))
+	// Disjoint notes until the pair is full again, then further ninth notes.
+	for i := range int64(6) {
+		note(ext(900+90*i, 4))
+	}
+}
+
+// TestNinthMergesIntoItsNeighbourWhenClosest pins that the ninth's own two
+// gaps count as merge candidates: when the space beside the arriving range is
+// the smallest of the nine, the range merges with that neighbour rather than
+// an old pair. The choice is made over all nine ranges, not the eight that
+// were there first.
+func TestNinthMergesIntoItsNeighbourWhenClosest(t *testing.T) {
+	var fs files
+	id := fid(1)
+	// Eight ranges ten long at 0, 100, …, 700: every gap is 90.
+	for i := range int64(8) {
+		noteRec(t, &fs, id, 1, ext(i*100, 10), nums(uint64(i+1), uint64(i+1)))
+	}
+	// The ninth, [112, 120): a gap of 2 to [100, 110) on its left and 80 on its
+	// right — the smallest of the nine — so it merges left.
+	noteRec(t, &fs, id, 1, ext(112, 8), nums(3, 99))
+	rs, _ := rangesOf(&fs, id, 1)
+	if len(rs) != 8 {
+		t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+	}
+	want := dropRange{start: 100, end: 120, low: nums(2, 2)} // min of (2, 2) and (3, 99)
+	if !slices.Contains(rs, want) {
+		t.Fatalf("the ninth did not merge with its closest neighbour: %+v not in %+v", want, rs)
+	}
+	if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 112 }) {
+		t.Fatalf("the ninth stayed its own range: %+v", rs)
+	}
+	for i := range int64(8) {
+		if i == 1 {
+			continue // the merged neighbour
+		}
+		if !slices.Contains(rs, dropRange{start: i * 100, end: i*100 + 10, low: nums(uint64(i+1), uint64(i+1))}) {
+			t.Fatalf("range at %d was changed by the merge: %+v", i*100, rs)
+		}
+	}
+}
+
+// TestNoteIntoFullPairAllocatesNothing pins the note's steady-state cost: once
+// a pair's eight ranges are kept, a note that overlaps them — shifting the run
+// it collapses — and one that falls in a gap — bringing its merge partner down
+// first — both work in the array the pair already holds. A per-note allocation
+// would churn garbage on a full pair's random overwrites, which is where the
+// drop ranges spend their life.
+func TestNoteIntoFullPairAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not meaningful under -race")
+	}
+	pairs := make([]segRecords, 8)
+	for p := range pairs {
+		for i := range int64(8) {
+			pairs[p].note(ext(i*8, 4), nums(uint64(i+1), uint64(i+1)))
+		}
+	}
+	k := 0
+	allocs := testing.AllocsPerRun(100, func() {
+		p := &pairs[k%len(pairs)]
+		// The bridge spans the pair's first two ranges on its first visit and
+		// the merged one after; the far note lands in a gap past the last
+		// range, so the pair stays full either way.
+		p.note(ext(0, 9), nums(9, 9))
+		p.note(ext(1000+8*int64(k), 4), nums(9, 10))
+		k++
+	})
+	if allocs != 0 {
+		t.Fatalf("a note into a full pair allocated %v times, want 0", allocs)
 	}
 }
