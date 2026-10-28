@@ -583,6 +583,12 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
   issue: '#3378'
+- test: TestDamage_BitFlip/write_body/header_checksum_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3378'
 - test: TestDamage_BitFlip/record_header_scanned/magic
   status: fail
   fix: planned
@@ -686,6 +692,12 @@
   reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
   issue: '#3378'
 - test: TestDamage_BitFlip/write_body_scanned/payload_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3378'
+- test: TestDamage_BitFlip/write_body_scanned/header_checksum_of_offloaded_record
   status: fail
   fix: planned
   category: feature
