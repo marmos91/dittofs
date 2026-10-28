@@ -5,6 +5,8 @@ package conformance
 import (
 	"bytes"
 	"errors"
+	"io/fs"
+	"os"
 	"slices"
 	"syscall"
 	"testing"
@@ -1891,4 +1893,96 @@ func TestRFC28C_VersionFloor(t *testing.T) {
 	}
 	wantBytes(t, f.Share(1), a.id, 0, a.p)
 	wantBytes(t, h, b.id, 0, b.p)
+}
+
+// TestRFC28C_JournalGone checks that a journal that has gone is not replaced
+// in silence: an open with the recorded identity fails on an emptied
+// directory, on a missing one and on one holding another journal, creating
+// nothing, and only Init then makes a new journal; and that an open with no
+// recorded identity fails naming the journal it found and its installation.
+//
+// decision: the missing directory is removed on the real filesystem, the one
+// edit this suite makes past the seam, because the seam has no call that
+// removes a directory; the open then sees the seam's listing fail as the
+// operating system's would. The leg with another journal in the directory's
+// place runs on a fixture of its own, since the seam keeps the names it has
+// seen and cannot create them again once the directory was removed under it.
+func TestRFC28C_JournalGone(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	writeSynced(t, f, 0, 0, 0, size)
+	writeSynced(t, f, 1, 1, 0, size)
+	old := f.ID()
+	f.Shutdown()
+	emptyDir(t, f)
+	before := dirNow(t, f)
+
+	err := f.TryReopen()
+	stub(t, "Open", err)
+	if !errors.Is(err, journalv2.ErrNoJournal) {
+		t.Fatalf("opening the emptied directory returned %v, want ErrNoJournal", err)
+	}
+	wantUntouched(t, f, before)
+
+	id, err := f.TryInit()
+	stub(t, "Init", err)
+	if err != nil {
+		t.Fatalf("init on the emptied directory: %v", err)
+	}
+	if id == old {
+		t.Fatalf("Init gave the new journal the gone journal's identity %x", id)
+	}
+	if err := f.TryReopen(); err != nil {
+		t.Fatalf("open the new journal: %v", err)
+	}
+	for id, entries := range f.J.Inspect().All() {
+		t.Fatalf("the new journal holds %+v of file %v", entries, id)
+	}
+	a := writeSynced(t, f, 0, 0, 0, size)
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+
+	// The directory itself gone.
+	g := journalv2test.NewUnwatched(t)
+	writeSynced(t, g, 0, 0, 0, size)
+	g.Shutdown()
+	if err := os.RemoveAll(g.Dir); err != nil {
+		t.Fatalf("remove the directory: %v", err)
+	}
+	err = g.TryReopen()
+	stub(t, "Open", err)
+	if !errors.Is(err, journalv2.ErrNoJournal) {
+		t.Fatalf("opening the missing directory returned %v, want ErrNoJournal", err)
+	}
+	if _, err := os.Stat(g.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the open created the missing directory: %v", err)
+	}
+
+	// Another journal in its place.
+	k := journalv2test.NewUnwatched(t)
+	writeSynced(t, k, 0, 0, 0, size)
+	other := journalv2test.NewUnwatched(t)
+	writeSynced(t, other, 0, 5, 0, size)
+	other.Shutdown()
+	k.Shutdown()
+	emptyDir(t, k)
+	for _, name := range list(t, other) {
+		plant(t, k, name, durable(t, other, name))
+	}
+	before = dirNow(t, k)
+	wantIdentityError(t, k.TryReopen(), other.ID(), journalv2test.FixtureInstall, true)
+	wantUntouched(t, k, before)
+
+	// No recorded identity: refused naming what is there, before and after a
+	// stream takes a segment.
+	m := journalv2test.NewUnwatched(t)
+	m.Shutdown()
+	before = dirNow(t, m)
+	wantIdentityError(t, m.TryReopenAs(journalv2.JournalID{}), m.ID(), journalv2test.FixtureInstall, false)
+	wantUntouched(t, m, before)
+	if err := m.TryReopen(); err != nil {
+		t.Fatalf("open with the recorded identity: %v", err)
+	}
+	writeSynced(t, m, 0, 0, 0, size)
+	m.Shutdown()
+	wantIdentityError(t, m.TryReopenAs(journalv2.JournalID{}), m.ID(), journalv2test.FixtureInstall, true)
 }
