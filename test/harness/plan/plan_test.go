@@ -84,21 +84,25 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 	}
 }
 
-// The dedicated host's nightly is the performance night, then the long
-// scenarios, on a host quiet for the first: those two cells, in that order,
-// and no tier before nightly sends a cell there. The night stops itself
-// before dt's limit, which kills it with no cleanup and no post.
-func TestDedicatedNight(t *testing.T) {
+// The dedicated host runs the system scenarios after each merge and, nightly,
+// the performance night on a host quiet for it, then every scenario, the long
+// ones in a cell of their own. No scenario runs anywhere else, and no pull
+// request sends a cell there. The night stops itself before dt's limit, which
+// kills it with no cleanup and no post.
+func TestDedicatedHost(t *testing.T) {
 	r := repo(t)
+	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "system", "system/dedicated"}}
 	for _, tier := range []string{"pr", "merge", "nightly"} {
 		cells, err := Plan("../../..", r, tier, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var got, want []string
+		var got []string
 		for _, c := range cells {
 			if c.Place == "dedicated" {
 				got = append(got, c.Name)
+			} else if c.Suite == "system" {
+				t.Errorf("%s: %s runs on %s", tier, c.Name, c.Place)
 			}
 			if c.Name == "perf-night" {
 				limit, _ := time.ParseDuration(c.TestTimeout)
@@ -108,11 +112,8 @@ func TestDedicatedNight(t *testing.T) {
 				}
 			}
 		}
-		if tier == "nightly" {
-			want = []string{"perf-night", "system/dedicated"}
-		}
-		if !slices.Equal(got, want) {
-			t.Errorf("%s: the dedicated host's cells %v, want %v", tier, got, want)
+		if !slices.Equal(got, want[tier]) {
+			t.Errorf("%s: the dedicated host's cells %v, want %v", tier, got, want[tier])
 		}
 	}
 }

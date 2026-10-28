@@ -3,6 +3,7 @@ package issues
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -450,5 +451,59 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("GITHUB_RUN_ID", "42")
 	if c, err := FromEnv(); err != nil || c.Run != "42" || c.Log != "https://github.com/marmos91/dittofs/actions/runs/42" {
 		t.Errorf("%+v, %v", c, err)
+	}
+}
+
+// A run's commit status is success, failure or error as dt's exit status
+// says, under the name asked for, on the commit's full hash, with the run's
+// test counts and its log; only develop's merge and nightly runs set one.
+func TestCheck(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "Bad credentials", http.StatusUnauthorized)
+			return
+		}
+		var in struct {
+			State, Context, Description string
+			TargetURL                   string `json:"target_url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		got = append(got, fmt.Sprintf("%s %s %s|%s|%s|%s", r.Method, r.URL.Path, in.State, in.Context, in.Description, in.TargetURL))
+		_, _ = io.WriteString(w, "{}")
+	}))
+	t.Cleanup(srv.Close)
+	c := Client{API: srv.URL, Repo: "o/r", Token: "tok", Log: "https://ci.example/runs/7"}
+	sha := strings.Repeat("ab", 20)
+	cells := []report.Cell{
+		{Name: "system/dedicated", Result: report.Failed, Tests: []report.Test{
+			{Name: "00-a.sh", Status: report.Passed},
+			{Name: "01-b.sh", Status: report.Passed},
+			newFailure("02-c.sh", "exit 1"),
+			{Name: "03-d.sh", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known},
+			{Name: "04-e.sh", Status: report.Failed, RawStatus: report.Passed, Grade: report.UnexpectedPass},
+			{Name: "05-f.sh", Status: report.Other, Grade: report.Incomplete},
+		}},
+		{Name: "system/other", Result: report.NotRun},
+	}
+	for exit, state := range map[int]string{0: "success", 1: "failure", 2: "error"} {
+		got = nil
+		r := run("20261028T100000Z-abababab", "merge", cells...)
+		r.Exit = exit
+		if err := c.Check(context.Background(), r, sha, "system (dedicated)", io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		want := "POST /repos/o/r/statuses/" + sha + " " + state + "|system (dedicated)|2 passed, 2 new failures, 1 known, 1 cells not run|https://ci.example/runs/7"
+		if !slices.Equal(got, []string{want}) {
+			t.Errorf("exit %d: %q, want %q", exit, got, want)
+		}
+	}
+	got = nil
+	branch := run("20261028T100000Z-abababab", "merge")
+	branch.Branch = "feat/x"
+	for _, r := range []report.Run{branch, run("20261028T100000Z-abababab", "pr")} {
+		if err := c.Check(context.Background(), r, sha, "system (dedicated)", io.Discard); err == nil || len(got) != 0 {
+			t.Errorf("%s's %s run: %v, %q", r.Branch, r.Tier, err, got)
+		}
 	}
 }

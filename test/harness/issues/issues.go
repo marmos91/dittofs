@@ -1,6 +1,7 @@
-// Package issues posts develop's runs to GitHub issues: the develop-status
-// issue, which holds develop's failing set and is open while an entry of it
-// alerts, and an issue for each test that fails 2 runs in a row
+// Package issues posts develop's runs to GitHub: the develop-status issue,
+// which holds develop's failing set and is open while an entry of it alerts,
+// an issue for each test that fails 2 runs in a row, and a commit status for
+// a run that doesn't run in a workflow, as the dedicated host's
 // (docs/internals/rfcs/rfc-29-test-harness.md).
 package issues
 
@@ -81,6 +82,54 @@ func FromEnv() (Client, error) {
 		c.Log = os.Getenv("GITHUB_SERVER_URL") + "/" + c.Repo + "/actions/runs/" + c.Run
 	}
 	return c, nil
+}
+
+// Check sets the commit status name on r's commit, whose full hash is sha, as
+// the API takes no shorter one: success when r passed, failure when a test or
+// a cell failed, and error when r couldn't run, as dt's exit statuses 0, 1
+// and any other say. Its description counts the tests that passed, those that
+// turned the run red, known failures, and the cells not run. Like Post, it
+// refuses any run but develop's merge and nightly runs.
+func (c Client) Check(ctx context.Context, r report.Run, sha, name string, out io.Writer) error {
+	if r.Branch != "develop" || r.Tier != "merge" && r.Tier != "nightly" {
+		return fmt.Errorf("run %s is %s's %s run: only develop's merge and nightly runs set a commit status", r.Name, cmp.Or(r.Branch, "a detached checkout"), r.Tier)
+	}
+	state := "error"
+	switch r.Exit {
+	case 0:
+		state = "success"
+	case 1:
+		state = "failure"
+	}
+	var passed, red, known, notRun int
+	for _, cell := range r.Cells {
+		tests, _ := cell.Red()
+		red += len(tests)
+		if cell.Result == report.NotRun {
+			notRun++
+		}
+		for _, t := range cell.Tests {
+			switch {
+			case t.Status == report.Passed:
+				passed++
+			case t.Grade == report.Known:
+				known++
+			}
+		}
+	}
+	description := fmt.Sprintf("%d passed, %d new failures, %d known", passed, red, known)
+	if notRun > 0 {
+		description += fmt.Sprintf(", %d cells not run", notRun)
+	}
+	body := map[string]string{"state": state, "context": name, "description": description}
+	if c.Log != "" {
+		body["target_url"] = c.Log
+	}
+	if err := c.call(ctx, http.MethodPost, "/statuses/"+sha, body, nil); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "%s on %s: %s, %s\n", name, r.Commit, state, description)
+	return nil
 }
 
 // entry is one member of develop's failing set: a test's new failure or
