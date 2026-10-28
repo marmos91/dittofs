@@ -325,3 +325,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
   issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'

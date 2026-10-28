@@ -5,6 +5,7 @@ package conformance
 import (
 	"errors"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -1091,5 +1092,123 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	}
 	wantReadopted(t, g, before)
 	rollTakesSpare(t, g, before.spares)
+	wantBytes(t, g.Share(1), other.id, 0, other.p)
+}
+
+// spareSteps are the seam calls that make a spare, in order, every one on the
+// spare's temporary name: create, allocate, zero-fill, sync, rename.
+var spareSteps = []string{journalv2test.OpCreate, journalv2test.OpAllocate, journalv2test.OpWrite, journalv2test.OpSync, journalv2test.OpRename}
+
+// wantWholeOrAbsent fails the test unless the directory holds no temporary
+// spare, every spare is at its cap, and the storage allocated covers every
+// segment file's size, so no segment was adopted short or sparse.
+func wantWholeOrAbsent(t *testing.T, f *journalv2test.Fixture) {
+	t.Helper()
+
+	if tmps := tmpNames(t, f); len(tmps) != 0 {
+		t.Fatalf("temporary spares %v survive the open; it unlinks every one it finds", tmps)
+	}
+
+	var total int64
+	for _, name := range segmentFiles(t, f) {
+		total += int64(len(durable(t, f, name)))
+	}
+	for _, name := range spareNames(t, f) {
+		if size := len(durable(t, f, name)); size != journalv2test.FixtureSegmentCap {
+			t.Fatalf("spare %s is %d bytes, want its cap %d", name, size, journalv2test.FixtureSegmentCap)
+		}
+	}
+	if got := f.Allocated(); got < total {
+		t.Fatalf("%d bytes allocated for %d bytes of segment files: a segment is not fully allocated", got, total)
+	}
+}
+
+// TestRFC28C_SpareIsWholeOrAbsent checks that a crash at any step of making a
+// spare leaves either no segment file for it or a whole one: nothing short,
+// nothing sparse, no temporary name, and the headroom still there for a
+// release when the filesystem is full. Then, with a temporary spare's
+// directory entry made durable by another operation's directory sync, that
+// the open unlinks it and the next spare's id is above its id.
+//
+// decision: the last leg follows the row as develop's RFC 28 gives it; an
+// older copy of the RFC in this repository ends the row before that leg.
+func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
+	const size = 64 << 10
+	for i, op := range spareSteps {
+		f := journalv2test.NewUnwatched(t)
+		if i == 0 {
+			f = journalv2test.New(t)
+		}
+		a := writeSynced(t, f, 1, 1, 0, size)
+		mark(t, f.Share(1), a.id, a.extent, a.version)
+		syncFiles(t, f.Share(1), a.id)
+
+		// The roll takes a spare and the journal makes its replacement,
+		// which parks at the step under test. File 0 is synced so nothing is
+		// torn at the crash and no segment is cut at recovery.
+		held := f.Seam.Hold(t, op, "*.spare.tmp")
+		recs, _ := fillSegment(t, f, 0, 0, size)
+		syncFiles(t, f.Share(0), recs[0].id)
+		<-held.Reached()
+		if n, want := len(tmpNames(t, f)), min(i, 1); n != want {
+			t.Fatalf("%d temporary spares at the held %s, want %d", n, op, want)
+		}
+		crashHeld(t, f, held)
+		wantWholeOrAbsent(t, f)
+
+		// A release at a full filesystem: the stream rolls into a re-adopted
+		// spare first, so the record lands in one.
+		fillSegment(t, f, 0, 0, size)
+		schedule(t, f, failing(journalv2test.OpCreate, "*", syscall.ENOSPC), failing(journalv2test.OpAllocate, "*", syscall.ENOSPC))
+		wantRelease(t, f.Share(1), a.id, a.extent, true)
+		f.Seam.SetFault(nil)
+	}
+
+	// The spare's rename is held after its sync; the retirement of the full
+	// segment, whichever way it goes, syncs the directory and so makes the
+	// temporary name's entry durable.
+	g := journalv2test.NewUnwatched(t)
+	held := g.Seam.Hold(t, journalv2test.OpRename, "*.spare.tmp")
+	recs, seg := fillSegment(t, g, 0, 0, size)
+	other := writeSynced(t, g, 1, 1, 0, size)
+	syncFiles(t, g.Share(0), recs[0].id)
+	<-held.Reached()
+	tmps := tmpNames(t, g)
+	if len(tmps) != 1 {
+		t.Fatalf("%d temporary spares at the held rename, want 1", len(tmps))
+	}
+	tmp := tmps[0]
+
+	releaseRecs(t, g, recs)
+	syncs := g.Seam.Calls(journalv2test.OpSyncDir)
+	r := retire(t, g, seg)
+	if g.Seam.Calls(journalv2test.OpSyncDir) == syncs {
+		t.Fatalf("the retirement synced the directory no time; the temporary spare's entry is not durable")
+	}
+	if !r.recycled {
+		t.Fatalf("the full segment was unlinked with the pool one short; its recycle is what fills the pool before the crash")
+	}
+	crashHeld(t, g, held)
+
+	if got := g.Seam.CallsFor(journalv2test.OpRemove, tmp); got != 1 {
+		t.Fatalf("the open removed %s %d times, want once", tmp, got)
+	}
+	if slices.Contains(list(t, g), tmp) {
+		t.Fatalf("%s is still in the directory after the open", tmp)
+	}
+
+	// The pool is whole, so the next spare is made for the next roll, and it
+	// is held at its rename while its name is read.
+	next := g.Seam.Hold(t, journalv2test.OpRename, "*.spare.tmp")
+	fillSegment(t, g, 0, 0, size)
+	<-next.Reached()
+	tmps = tmpNames(t, g)
+	if len(tmps) != 1 {
+		t.Fatalf("%d temporary spares at the held rename, want 1", len(tmps))
+	}
+	if idOf(t, tmps[0]) <= idOf(t, tmp) {
+		t.Fatalf("the next spare %s has an id at or below the removed %s", tmps[0], tmp)
+	}
+	next.Release()
 	wantBytes(t, g.Share(1), other.id, 0, other.p)
 }
