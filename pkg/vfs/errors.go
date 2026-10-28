@@ -56,13 +56,19 @@ const (
 	accessCauseEnd
 )
 
-func (e *AccessError) Error() string        { return ErrAccess.Error() + ": read-only" }
+var accessCauses = [...]string{AccessReadOnly: "read-only"}
+
+func (e *AccessError) Error() string {
+	return ErrAccess.Error() + ": " + kindName(accessCauses[:], e.Cause)
+}
 func (e *AccessError) Is(target error) bool { return target == ErrAccess }
 
 // QuotaError is an ErrQuota naming the first scope exceeded.
 type QuotaError struct{ Scope QuotaScope }
 
-func (e *QuotaError) Error() string        { return ErrQuota.Error() + ": " + quotaScopes[e.Scope] }
+func (e *QuotaError) Error() string {
+	return ErrQuota.Error() + ": " + kindName(quotaScopes[:], e.Scope)
+}
 func (e *QuotaError) Is(target error) bool { return target == ErrQuota }
 
 // Delay is an ErrDelay. Its Cause selects how long an adapter holds the
@@ -73,7 +79,8 @@ type Delay struct {
 	Moved bool      // DelayFrozen: the share's namespace moved away
 }
 
-// DelayCause is why a call is to be retried.
+// DelayCause is why a call is to be retried. Its values are not open
+// state's DelayCause values, so one is mapped to the other, never converted.
 type DelayCause uint8
 
 const (
@@ -93,7 +100,13 @@ var delayCauses = [...]string{
 	DelayCapacity: "capacity", DelayCommit: "commit", DelayResources: "resources",
 }
 
-func (e *Delay) Error() string        { return ErrDelay.Error() + ": " + delayCauses[e.Cause] }
+func (e *Delay) Error() string {
+	if e.Moved {
+		return ErrDelay.Error() + ": " + kindName(delayCauses[:], e.Cause) + ", moved away"
+	}
+	return ErrDelay.Error() + ": " + kindName(delayCauses[:], e.Cause)
+}
+
 func (e *Delay) Is(target error) bool { return target == ErrDelay }
 
 // StateError is an ErrState naming why: a client-held name of state cannot
@@ -137,9 +150,9 @@ var stateKinds = [...]string{
 
 func (e *StateError) Error() string {
 	if e.Admin {
-		return ErrState.Error() + ": " + stateKinds[e.Kind] + " by an administrator"
+		return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind) + " by an administrator"
 	}
-	return ErrState.Error() + ": " + stateKinds[e.Kind]
+	return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind)
 }
 
 func (e *StateError) Is(target error) bool { return target == ErrState }
@@ -163,7 +176,7 @@ const (
 
 var crossKinds = [...]string{CrossNamespace: "namespace", CrossShare: "share", CrossProject: "project", OtherShard: "other shard"}
 
-func (e *CrossError) Error() string        { return ErrCross.Error() + ": " + crossKinds[e.Kind] }
+func (e *CrossError) Error() string        { return ErrCross.Error() + ": " + kindName(crossKinds[:], e.Kind) }
 func (e *CrossError) Is(target error) bool { return target == ErrCross }
 
 // Errors is every sentinel, and one value of every kind of each typed error,
@@ -184,6 +197,7 @@ func Errors() []error {
 	for c := DelayCause(1); c < delayCauseEnd; c++ {
 		errs = append(errs, &Delay{Cause: c})
 	}
+	errs = append(errs, &Delay{Cause: DelayFrozen, Moved: true})
 	for k := StateKind(1); k < stateKindEnd; k++ {
 		errs = append(errs, &StateError{Kind: k})
 	}
@@ -192,4 +206,13 @@ func Errors() []error {
 		errs = append(errs, &CrossError{Kind: k})
 	}
 	return errs
+}
+
+// kindName is the name of kind k, or "unknown" for a kind no name is
+// declared for, the zero value of a kind numbered from one included.
+func kindName[K ~uint8](names []string, k K) string {
+	if int(k) < len(names) && names[k] != "" {
+		return names[k]
+	}
+	return "unknown"
 }

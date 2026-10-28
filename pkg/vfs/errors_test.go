@@ -3,6 +3,8 @@ package vfs_test
 import (
 	"errors"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/vfs"
@@ -10,14 +12,16 @@ import (
 
 // The service's error set, written out by hand: a sentinel or a kind added
 // to the package, or dropped from Errors, fails here until it is listed.
-var wantErrors = []error{
+var sentinels = []error{
 	vfs.ErrNotFound, vfs.ErrExist, vfs.ErrNotEmpty, vfs.ErrNotDir, vfs.ErrIsDir,
 	vfs.ErrAccess, vfs.ErrPerm, vfs.ErrStale, vfs.ErrReadOnly, vfs.ErrNameTooLong,
 	vfs.ErrInvalid, vfs.ErrNoSpace, vfs.ErrQuota, vfs.ErrLocked, vfs.ErrRangeNotLocked,
 	vfs.ErrShareViolation, vfs.ErrDeletePending, vfs.ErrGrace, vfs.ErrDelay, vfs.ErrBlocked,
 	vfs.ErrWrongSecurity, vfs.ErrState, vfs.ErrCross, vfs.ErrIncomplete, vfs.ErrInconsistent,
 	vfs.ErrLost, vfs.ErrUnavailable, vfs.ErrCorrupt,
+}
 
+var wantErrors = append(slices.Clone(sentinels),
 	&vfs.AccessError{Cause: vfs.AccessReadOnly},
 
 	&vfs.QuotaError{Scope: vfs.QuotaShare},
@@ -32,6 +36,7 @@ var wantErrors = []error{
 	&vfs.Delay{Cause: vfs.DelayCapacity},
 	&vfs.Delay{Cause: vfs.DelayCommit},
 	&vfs.Delay{Cause: vfs.DelayResources},
+	&vfs.Delay{Cause: vfs.DelayFrozen, Moved: true},
 
 	&vfs.StateError{Kind: vfs.StateClientInUse},
 	&vfs.StateError{Kind: vfs.StateClientBusy},
@@ -54,7 +59,7 @@ var wantErrors = []error{
 	&vfs.CrossError{Kind: vfs.CrossShare},
 	&vfs.CrossError{Kind: vfs.CrossProject},
 	&vfs.CrossError{Kind: vfs.OtherShard},
-}
+)
 
 func TestErrorsIsTheErrorSet(t *testing.T) {
 	if got := vfs.Errors(); !reflect.DeepEqual(got, wantErrors) {
@@ -62,8 +67,9 @@ func TestErrorsIsTheErrorSet(t *testing.T) {
 	}
 }
 
-// An adapter's table keys on each value, and its log names it: every typed
-// value matches its sentinel and no two read alike.
+// An adapter's table keys on each value, and its log names it: every value
+// matches its own sentinel and no other, a sentinel being its own, and no two
+// read alike.
 func TestErrorsMatchTheirSentinelAndReadApart(t *testing.T) {
 	seen := map[string]bool{}
 	for _, err := range vfs.Errors() {
@@ -86,10 +92,25 @@ func TestErrorsMatchTheirSentinelAndReadApart(t *testing.T) {
 		case *vfs.CrossError:
 			sentinel = vfs.ErrCross
 		default:
-			continue
+			sentinel = err
 		}
-		if !errors.Is(err, sentinel) {
-			t.Errorf("%v does not match %v", err, sentinel)
+		for _, other := range sentinels {
+			if got, want := errors.Is(err, other), other == sentinel; got != want {
+				t.Errorf("errors.Is(%v, %v) = %v", err, other, got)
+			}
+		}
+	}
+}
+
+// A kind no name is declared for still reads as its sentinel's text, rather
+// than panicking or ending in nothing.
+func TestErrorsOfAnUndeclaredKindRead(t *testing.T) {
+	for _, err := range []error{
+		&vfs.AccessError{}, &vfs.QuotaError{}, &vfs.Delay{}, &vfs.Delay{Cause: 200},
+		&vfs.StateError{}, &vfs.StateError{Kind: 200}, &vfs.CrossError{Kind: 200},
+	} {
+		if msg := err.Error(); !strings.HasSuffix(msg, ": unknown") {
+			t.Errorf("%#v reads %q, want its sentinel's text and \": unknown\"", err, msg)
 		}
 	}
 }
