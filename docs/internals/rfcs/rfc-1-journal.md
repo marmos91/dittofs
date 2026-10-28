@@ -500,8 +500,11 @@ once every call already in flight on it has returned; the handle's extents stay
 held. `Forget` needs it, and a share's removal and a move's drop call it first.
 
 **Only an explicit initialisation step creates a journal.** `Init` creates a new
-journal only in an empty directory, and **MUST** refuse one that holds any file:
-a `format` file, a segment or anything else ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). It writes into the new journal's `format` file
+journal only in an empty directory, and **MUST** refuse, with `ErrNotEmpty`, one
+that holds any entry but a `format.tmp` ([RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). A `format.tmp` is
+what an `Init` that crashed before its rename leaves, so it does not block the next
+one. The journal's directory is therefore a directory on the device, never the
+device's mount root, which may hold `lost+found`. It writes into the new journal's `format` file
 ([RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)) a fresh journal identity and the **installation ID** it is given — the
 one the same initialisation step writes into the metadata store's Installation
 record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) — and returns the identity for the caller to record. `Open` never

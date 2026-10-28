@@ -144,10 +144,11 @@ re-appends nothing.
 
 **N1 boots with the journal's disk not mounted.**
 
-1. The journal directory is empty: the mount point is there, the NVMe disk is
-   not.
+1. The journal directory is a directory on the NVMe disk, not its mount root
+   ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). With the disk not mounted, only the empty mount point is
+   there, and the journal directory does not exist.
 2. The caller opens the journal with the identity it recorded for this
-   directory. Since that is not zero, the empty directory fails the open
+   directory. Since that is not zero, the missing directory fails the open
    ([§3.4](#3.4%20Unattachable%20files)).
 3. Open never creates a fresh journal there. A fresh one would answer every
    unuploaded write as never written ([§3.4](#3.4%20Unattachable%20files)).
@@ -244,7 +245,8 @@ generation), writes the
 new content to `format.tmp`, syncs it, renames it over `format`, and syncs the
 directory before returning, so a crash leaves the old file or the new one
 whole, never a mix. Open ignores a `format.tmp`, the next rewrite overwrites
-it, and `Init`'s refusal of a directory holding a journal does not count it.
+it, and `Init` does not count it when it requires an empty directory
+([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 ### 2.2 Segments
 
@@ -1086,9 +1088,8 @@ implementation **MUST NOT** treat such a directory as an empty journal: that
 turns data it cannot read into data it silently no longer holds, and the first
 write then mixes its own segments into the unknown ones. A directory with neither
 holds no journal: `Open` fails on it and changes nothing in it. `Init` creates
-a journal only in an empty directory and refuses one that holds any file, a
-`format` file, a segment or anything else such as `lost+found`, so a journal is
-never laid over files it did not write ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
+one only in an empty directory, so a journal is never laid over files it did
+not write ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 **A journal that has gone is not replaced silently.** The journal is opened
 with the identity its caller has recorded for the directory (`expect`), as it
