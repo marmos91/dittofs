@@ -47,7 +47,8 @@
     "extra": {
       "run": "20261015T120000Z-abcdef12-a2",
       "dirty": true,
-      "tier": "merge",
+      "tier": "nightly",
+      "place": "dedicated",
       "in": "container",
       "exit": 1,
       "cells": [
