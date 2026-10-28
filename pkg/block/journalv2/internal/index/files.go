@@ -71,9 +71,8 @@ type files struct {
 	// that has an entry either. The cost is a needless refusal for a fill of
 	// such a file racing a delete of another file in its bucket.
 	//
-	// A bucket's top six bits are the shard its files fall in; the
-	// correlation is harmless, since a bucket holds many files of many
-	// shards.
+	// A file's bucket and its shard are independent: the shard is the hash's
+	// low six bits, the bucket its top twelve.
 	buckets [floorBuckets]atomic.Uint64
 	// opened is the bucket start set at open: the counter half of the higher
 	// of the highest content version on disk and the floor. Zero marks a
@@ -335,7 +334,9 @@ func (f *file) write(p Placed) {
 }
 
 // changeVersion returns the file's change version, and false when the file
-// has no change version of its own.
+// has no change version of its own. It tells only what the entry holds; a
+// check of a file goes through checkedAgainst or asOf, which fall to the
+// bucket.
 func (f *file) changeVersion() (core.Version, bool) {
 	return f.change, f.change != core.Version{}
 }

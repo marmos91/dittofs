@@ -10,18 +10,27 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// idInBucket returns a test FileID whose floor bucket is b and which shares no
-// bucket with any ID in not. The ID is built rather than scanned, since the
-// tests ask for thousands of them: bytes 14 and 15 carry the bucket — they
-// are the top sixteen bits of the hash's second half, of which the index takes
-// its twelve — and the counter in bytes 12 and 13 only makes the IDs distinct.
+// idInBucketN returns the n-th test FileID of bucket b: distinct for every n
+// and, every sixteenth one, in another shard. The ID is built rather than
+// scanned, since the tests ask for thousands of them: bytes 14 and 15 carry
+// the bucket — they are the top sixteen bits of the hash's second half, of
+// which the index takes its twelve — the counter in bytes 12 and 13 only
+// makes the IDs distinct, and byte 0 spreads them over shards, which the
+// bucket does not read.
+func idInBucketN(b, n int) core.FileID {
+	return core.NewFileID([16]byte{
+		0:  byte(n>>4) % fileShards,
+		12: byte(n), 13: byte(n >> 8),
+		14: byte(b&15) << 4, 15: byte(b >> 4),
+	})
+}
+
+// idInBucket returns a test FileID whose floor bucket is b and which is
+// distinct from every ID in not. Only the low sixteen counters of
+// idInBucketN vary before IDs repeat, so the walk gives up there.
 func idInBucket(b int, not ...core.FileID) core.FileID {
-	for n := uint32(0); n <= 1<<20; n++ {
-		id := core.NewFileID([16]byte{
-			12: byte(n), 13: byte(n >> 8),
-			14: byte(b&15) << 4, 15: byte(b >> 4),
-		})
-		if !slices.Contains(not, id) {
+	for n := range 1 << 16 {
+		if id := idInBucketN(b, n); !slices.Contains(not, id) {
 			return id
 		}
 	}
@@ -51,11 +60,13 @@ func TestFloorBuckets(t *testing.T) {
 	bx := bucketOf(x)
 	asOf := fs.asOf(x)
 	for i := range others {
+		// Every other file is distinct and outside X's bucket, whatever
+		// bucket X fell in.
 		tb := i % (floorBuckets - 1)
 		if tb >= bx {
 			tb++
 		}
-		id := idInBucket(tb)
+		id := idInBucketN(tb, i)
 		change(t, &fs, id, func(f *file) error {
 			f.write(write(0, 4, rec(core.SegmentID(i+1), 0), uint64(2*i+1)))
 			f.delete(ver(uint64(2*i + 2)))
@@ -73,24 +84,26 @@ func TestFloorBuckets(t *testing.T) {
 		t.Fatalf("held after the accepted fill = %+v, want one offloaded piece", ps)
 	}
 
-	// Y: deleted and recreated with new content below the first read's asOf.
+	// Y: deleted and recreated with new content below the first read's asOf,
+	// at versions above every other file's.
 	y := idInBucket(bx, x)
 	asOfY := fs.asOf(y)
+	const yw, yd = 2*others + 1, 2*others + 2
 	change(t, &fs, y, func(f *file) error {
-		f.write(write(0, 4, rec(1, 0), 20))
-		f.delete(ver(21))
+		f.write(write(0, 4, rec(1, 0), yw))
+		f.delete(ver(yd))
 		return nil
 	})
-	fs.settleRemovals(y, ver(21))
+	fs.settleRemovals(y, ver(yd))
 	if present(&fs, y) {
 		t.Fatal("Y's entry kept after its delete was settled")
 	}
-	recreated := write(0, 4, rec(2, 0), 22)
+	recreated := write(0, 4, rec(2, 0), yd+1)
 	change(t, &fs, y, func(f *file) error { f.write(recreated); return nil })
 	if err := fs.fill(y, write(0, 8, rec(3, 0), 0), asOfY); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("fill of Y after its delete and recreate = %v, want ErrStaleFill", err)
 	}
-	want := []Piece{{Extent: ext(0, 4), Record: rec(2, 0), Version: ver(22)}}
+	want := []Piece{{Extent: ext(0, 4), Record: rec(2, 0), Version: ver(yd + 1)}}
 	if got := heldPieces(&fs, y); !slices.Equal(got, want) {
 		t.Fatalf("held after the refused fill = %+v, want the recreated write only", got)
 	}
@@ -337,10 +350,11 @@ func TestWhatRaisesTheChangeVersion(t *testing.T) {
 
 // TestDropRaisesTheBucketToTheEntryVersion is R35: dropping an entry raises
 // the file's bucket to the entry's change version, before the entry can be
-// found missing, and never lowers it. A file in its tag-only life reports
-// its bucket, and so does one whose entry holds only filled content, whose
-// change version is the zero Version and would otherwise answer a read begun
-// before a delete.
+// found missing, and never lowers it. The drop raises the bucket also for a
+// file in its tag-only life, which keeps its entry while its change version
+// is zeroed, and one whose entry then holds only filled content, whose change
+// version is the zero Version and would otherwise answer a read begun before
+// a delete.
 func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	var fs files
 	a := idInBucket(0)
@@ -372,10 +386,13 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	}
 
 	// A file in its tag-only life — every extent released, a segment still
-	// holding a record of it — kept its entry through the drop of its change
-	// version, and reports its bucket, since its entry's change is the zero
-	// Version.
-	c := idInBucket(0, a, b)
+	// holding a record of it — keeps its entry while its change version is
+	// dropped, and the drop raises the bucket even though the entry never
+	// leaves. Its bucket starts at zero, unlike the shared bucket above, so
+	// the raise is visible; without it, the entry would answer every check
+	// with a zero Version and let a fill read before the release through.
+	cb := (bucketOf(a) + 1) % floorBuckets
+	c := idInBucket(cb, a, b)
 	change(t, &fs, c, func(f *file) error {
 		_ = f.recorded(9, 1, c)
 		f.write(write(0, 4, rec(9, 0), 2))
@@ -386,8 +403,14 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	if !present(&fs, c) {
 		t.Fatal("entry dropped while a segment holds a record of the file")
 	}
-	if got := fs.asOf(c); got != ver(7) {
-		t.Fatalf("asOf in the tag-only life = %v, want the bucket's 7", got)
+	if got := fs.buckets[cb].Load(); got != 2 {
+		t.Fatalf("bucket after the tag-only drop = %d, want 2", got)
+	}
+	if got := fs.asOf(c); got != ver(2) {
+		t.Fatalf("asOf in the tag-only life = %v, want the bucket's 2", got)
+	}
+	if err := fs.fill(c, write(0, 4, rec(9, 64), 0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("fill below the bucket in the tag-only life = %v, want ErrStaleFill", err)
 	}
 
 	// A file whose entry holds only filled content after its own delete and
