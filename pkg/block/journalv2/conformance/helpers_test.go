@@ -572,3 +572,89 @@ func idOf(t *testing.T, name string) journalv2.SegmentID {
 	}
 	return journalv2.SegmentID(id)
 }
+
+// emptyDir removes every file of the journal's directory through the seam
+// and syncs the directory, as an operator clearing it would. The journal is
+// shut first.
+func emptyDir(t *testing.T, f *journalv2test.Fixture) {
+	t.Helper()
+
+	for _, name := range list(t, f) {
+		if err := f.Seam.Remove(name); err != nil {
+			t.Fatalf("remove %s: %v", name, err)
+		}
+	}
+	if err := f.Seam.SyncDir(); err != nil {
+		t.Fatalf("sync the directory: %v", err)
+	}
+}
+
+// changingOps are the seam calls that change a directory or a file.
+var changingOps = []string{journalv2test.OpCreate, journalv2test.OpWrite, journalv2test.OpTruncate, journalv2test.OpRename, journalv2test.OpRemove}
+
+// dirImage is the journal's directory as it is: every name with its durable
+// bytes, and the seam's count of each call that changes a directory or a
+// file.
+type dirImage struct {
+	files map[string][]byte
+	calls map[string]int
+}
+
+// dirNow reads the directory's image.
+func dirNow(t *testing.T, f *journalv2test.Fixture) dirImage {
+	t.Helper()
+
+	img := dirImage{files: map[string][]byte{}, calls: map[string]int{}}
+	for _, name := range list(t, f) {
+		img.files[name] = durable(t, f, name)
+	}
+	for _, op := range changingOps {
+		img.calls[op] = f.Seam.Calls(op)
+	}
+	return img
+}
+
+// wantUntouched fails the test unless the directory holds the same names
+// with the same durable bytes as before, and no call that changes a
+// directory or a file was made since.
+func wantUntouched(t *testing.T, f *journalv2test.Fixture, before dirImage) {
+	t.Helper()
+
+	now := dirNow(t, f)
+	for name, b := range before.files {
+		if got, ok := now.files[name]; !ok || !bytes.Equal(got, b) {
+			t.Fatalf("%s was changed or removed; the directory was to be left alone", name)
+		}
+	}
+	for name := range now.files {
+		if _, ok := before.files[name]; !ok {
+			t.Fatalf("%s was created; the directory was to be left alone", name)
+		}
+	}
+	for _, op := range changingOps {
+		if now.calls[op] != before.calls[op] {
+			t.Fatalf("%d %s calls were made; the directory was to be left alone", now.calls[op]-before.calls[op], op)
+		}
+	}
+}
+
+// wantIdentityError fails the test unless err is an IdentityError naming
+// found as the journal's identity, install as its installation, and whether
+// a segment is present as segments.
+//
+// decision: Segments is read as whether a segment a stream has taken, one
+// holding a record, is present, spares excluded: Init makes spares, which
+// are segment files, and the field exists to tell an interrupted Init, which
+// leaves nothing acknowledged, from a journal in use.
+func wantIdentityError(t *testing.T, err error, found journalv2.JournalID, install journalv2.InstallationID, segments bool) {
+	t.Helper()
+
+	stub(t, "Open", err)
+	var ie *journalv2.IdentityError
+	if !errors.As(err, &ie) || !errors.Is(err, journalv2.ErrIdentityMismatch) {
+		t.Fatalf("the open returned %v, want an IdentityError matching ErrIdentityMismatch", err)
+	}
+	if ie.Found != found || ie.Installation != install || ie.Segments != segments {
+		t.Fatalf("the open named identity %x, installation %x, segments %t, want %x, %x, %t", ie.Found, ie.Installation, ie.Segments, found, install, segments)
+	}
+}
