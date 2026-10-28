@@ -43,7 +43,8 @@ type Watches interface {
 	// It never fails the change. A watch reports its first change at once
 	// and holds the changes after it until the timer hands them over, at
 	// most 64 or 64 KiB of them: past either they collapse to one
-	// ChangeEnumerate.
+	// ChangeEnumerate. So it hands the Sink at most 65 changes a sweep, and
+	// what the client has not read is the Sink's to bound.
 	Changed(ctx context.Context, dir FileKey, ch Change)
 }
 
