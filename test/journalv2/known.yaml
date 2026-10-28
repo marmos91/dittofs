@@ -325,7 +325,37 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
   issue: '#3379'
-- test: TestRFC28C_SpareIsWholeOrAbsent
+- test: TestRFC28C_SpareIsWholeOrAbsent/create
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent/allocate
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent/write
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent/sync
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent/rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+- test: TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry
   status: fail
   fix: planned
   category: feature
@@ -452,6 +482,24 @@
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
 - test: TestDamage_LostWrites/open_spare_zeroing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/recycle_rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_tmp_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
   category: feature

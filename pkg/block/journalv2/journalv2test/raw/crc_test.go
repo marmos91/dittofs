@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// TestCRC32CIsTheCastagnoliCRC pins that the checksum is the Castagnoli
+// CRC32C, not the IEEE one.
 func TestCRC32CIsTheCastagnoliCRC(t *testing.T) {
 	b := []byte("a journal's bytes")
 
@@ -13,6 +15,8 @@ func TestCRC32CIsTheCastagnoliCRC(t *testing.T) {
 	}
 }
 
+// TestSeededCRC32CCoversTheIdentityThenTheBytes pins that a seeded checksum
+// covers the journal identity and then the bytes, as one stream.
 func TestSeededCRC32CCoversTheIdentityThenTheBytes(t *testing.T) {
 	b := []byte("a journal's bytes")
 
@@ -21,6 +25,8 @@ func TestSeededCRC32CCoversTheIdentityThenTheBytes(t *testing.T) {
 	}
 }
 
+// TestCRC32CMatchesTheRFC3720Vectors pins the checksum against the published
+// CRC32C test vectors.
 func TestCRC32CMatchesTheRFC3720Vectors(t *testing.T) {
 	inc, dec := make([]byte, 32), make([]byte, 32)
 	for i := range 32 {

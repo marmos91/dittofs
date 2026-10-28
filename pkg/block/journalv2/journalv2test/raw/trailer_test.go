@@ -9,6 +9,7 @@ func testTrailer() []byte {
 	return Trailer(testLayoutVersion, testFooterOffset, testEntries...)
 }
 
+// TestTrailerLayout pins every field of a trailer at its offset and size.
 func TestTrailerLayout(t *testing.T) {
 	b := testTrailer()
 
@@ -41,6 +42,8 @@ func TestTrailerLayout(t *testing.T) {
 	}
 }
 
+// TestTrailerFooterChecksumIsUnseededOverTheEntries pins that a trailer's
+// footer checksum is the plain CRC32C of the entries it describes.
 func TestTrailerFooterChecksumIsUnseededOverTheEntries(t *testing.T) {
 	b := testTrailer()
 
@@ -54,6 +57,8 @@ func TestTrailerFooterChecksumIsUnseededOverTheEntries(t *testing.T) {
 	}
 }
 
+// TestTrailerChecksumIsUnseededOverItsFirst28Bytes pins that a trailer's
+// checksum is the plain CRC32C of its first 28 bytes.
 func TestTrailerChecksumIsUnseededOverItsFirst28Bytes(t *testing.T) {
 	b := testTrailer()
 

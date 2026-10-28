@@ -8,6 +8,8 @@ import (
 // Offsets and sizes below are the record header table's, written out here and
 // never taken from the package's constants.
 
+// TestRecordHeaderLayout pins every field of a record header at its offset and
+// size.
 func TestRecordHeaderLayout(t *testing.T) {
 	b := testRecord.Bytes()
 
@@ -64,6 +66,8 @@ func TestRecordHeaderLayout(t *testing.T) {
 	}
 }
 
+// TestRecordHeaderChecksumIsSeededOverItsFirst92Bytes pins that a record
+// header's checksum is the seeded CRC32C of its first 92 bytes.
 func TestRecordHeaderChecksumIsSeededOverItsFirst92Bytes(t *testing.T) {
 	b := testRecord.Bytes()
 
@@ -72,6 +76,9 @@ func TestRecordHeaderChecksumIsSeededOverItsFirst92Bytes(t *testing.T) {
 	}
 }
 
+// TestWritePayloadChecksumIsSeededOverTheTimeThenThePayload pins that a
+// write's payload checksum is the seeded CRC32C of its modification time and
+// then its payload.
 func TestWritePayloadChecksumIsSeededOverTheTimeThenThePayload(t *testing.T) {
 	r, p := testWrite(13)
 	b := r.Bytes()

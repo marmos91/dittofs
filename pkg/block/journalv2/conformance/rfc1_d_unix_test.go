@@ -83,7 +83,7 @@ func TestRFC1D_AccountingFollowsCap(t *testing.T) {
 	c.version = write(t, h, c.id, 0, make([]byte, c.extent.Len))
 	sealIdle(t, f, c)
 	if check("an idle seal") == 0 {
-		t.Fatal("no segment was sealed short of its cap after the idle-seal age")
+		t.Fatalf("no segment is sealed short of its cap %d after the idle seal of file %v's segment: %+v", journalv2test.FixtureSegmentCap, c.id, f.J.Inspect().Segments())
 	}
 }
 

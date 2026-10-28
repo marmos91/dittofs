@@ -197,18 +197,34 @@ func (f *Fixture) tryOpen(expect journalv2.JournalID) error {
 	}
 	f.J = j
 
-	// The journal issues no version until its first limit.
+	// The journal issues no version until its first limit. A limit or a
+	// share refused shuts the journal again, so an error leaves nothing
+	// open; the caller, on the test's goroutine, is what fails the test.
 	f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
-	if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
-		f.tb.Fatalf("stub: SetVersionLimit")
-	} else if err != nil {
-		f.tb.Fatalf("fixture: set version limit: %v", err)
+	if err := f.J.SetVersionLimit(f.limit); err != nil {
+		f.dropOpen()
+		return fmt.Errorf("set version limit %v: %w", f.limit, err)
 	}
 
 	for i := range f.handles {
-		f.handles[i] = f.attach(i)
+		h, err := f.attach(i)
+		if err != nil {
+			f.dropOpen()
+			return fmt.Errorf("attach share %d: %w", i, err)
+		}
+		f.handles[i] = h
 	}
 	return nil
+}
+
+// dropOpen closes a journal an open could not finish setting up, and
+// forgets it, so a failed open leaves J nil as its contract says.
+func (f *Fixture) dropOpen() {
+	if err := f.J.Close(); err != nil && !errors.Is(err, journalv2.ErrClosed) {
+		f.tb.Logf("fixture: closing a journal whose open failed: %v", err)
+	}
+
+	f.J = nil
 }
 
 // close closes every handle, then the journal, when the test ends. A handle
@@ -243,19 +259,20 @@ func (f *Fixture) Share(i int) *journalv2.Handle {
 	if h, ok := f.handles[i]; ok {
 		return h
 	}
-	h := f.attach(i)
+
+	h, err := f.attach(i)
+	if err != nil {
+		f.tb.Fatalf("fixture: attach share %d: %v", i, err)
+	}
 	f.handles[i] = h
 	return h
 }
 
-func (f *Fixture) attach(i int) *journalv2.Handle {
-	f.tb.Helper()
-
-	h, err := f.J.Share(Tag(i), 0, f.floor, journalv2.Bounded)
-	if err != nil {
-		f.tb.Fatalf("fixture: attach share %d: %v", i, err)
-	}
-	return h
+// attach attaches share i to the open journal and returns its handle, or
+// the journal's refusal; it fails nothing itself, since an open may run it
+// off the test's goroutine.
+func (f *Fixture) attach(i int) (*journalv2.Handle, error) {
+	return f.J.Share(Tag(i), 0, f.floor, journalv2.Bounded)
 }
 
 // Floor returns the floor the journal open now was opened with: every

@@ -4,6 +4,8 @@ package conformance
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,7 +84,12 @@ func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 		}
 	}
 	if synced == "" {
-		t.Fatal("the sync within the bound is on no segment whose live bytes hold the bounded write")
+		var counts []string
+		for _, name := range segmentFiles(t, f) {
+			counts = append(counts, fmt.Sprintf("%s synced %d times", name, f.Seam.CallsFor(journalv2test.OpSync, name)))
+		}
+
+		t.Fatalf("the sync within the bound is on no segment whose live bytes hold the bounded write: %s", strings.Join(counts, ", "))
 	}
 
 	syncs.Release()

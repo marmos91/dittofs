@@ -257,20 +257,33 @@ func readAt(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, n
 	return p, missing, err
 }
 
+// at prefixes a failure with where a sweep stands, when a label is given.
+func at(where []string) string {
+	if len(where) == 0 || where[0] == "" {
+		return ""
+	}
+	return where[0] + ": "
+}
+
 // wantBytes fails the test unless a read at off of file id returns want
-// exactly, with nothing missing.
-func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, want []byte) {
+// exactly, with nothing missing, naming the file, the first offset that
+// differs and both bytes there; a label says where a sweep stands.
+func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, want []byte, where ...string) {
 	t.Helper()
 
 	p, missing, err := readAt(t, h, id, off, len(want))
 	if err != nil {
-		t.Fatalf("read %d bytes at %d: %v", len(want), off, err)
+		t.Fatalf("%sfile %v: read %d bytes at %d: %v", at(where), id, len(want), off, err)
 	}
+
 	if len(missing) != 0 {
-		t.Fatalf("read %d bytes at %d: missing %+v, want none", len(want), off, missing)
+		t.Fatalf("%sfile %v: read %d bytes at %d: missing %+v, want none", at(where), id, len(want), off, missing)
 	}
-	if !bytes.Equal(p, want) {
-		t.Fatalf("read %d bytes at %d: got % x..., want % x...", len(want), off, p[:16], want[:16])
+
+	for i := range p {
+		if p[i] != want[i] {
+			t.Fatalf("%sfile %v: read %d bytes at %d differs first at offset %d: got %#x, want %#x", at(where), id, len(want), off, off+int64(i), p[i], want[i])
+		}
 	}
 }
 
@@ -300,14 +313,15 @@ func syncFiles(t *testing.T, h *journalv2.Handle, ids ...journalv2.FileID) {
 	}
 }
 
-// entryAt returns the held index entry of file id that covers offset off.
-func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off int64) journalv2.IndexEntry {
+// entryAt returns the held index entry of file id that covers offset off; a
+// label says where a sweep stands in the failure.
+func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off int64, where ...string) journalv2.IndexEntry {
 	t.Helper()
 
 	entries, err := f.J.Inspect().File(id)
 	stub(t, "Inspect.File", err)
 	if err != nil {
-		t.Fatalf("inspect a file: %v", err)
+		t.Fatalf("%sinspect file %v: %v", at(where), id, err)
 	}
 
 	for _, e := range entries {
@@ -316,13 +330,13 @@ func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off in
 		}
 	}
 
-	t.Fatalf("no held extent of the file covers offset %d; entries: %+v", off, entries)
+	t.Fatalf("%sno held extent of file %v covers offset %d; entries: %+v", at(where), id, off, entries)
 	return journalv2.IndexEntry{}
 }
 
 // segmentInfo returns the accounting of segment id, which the journal must
-// own.
-func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID) journalv2.SegmentInfo {
+// own; a label says where a sweep stands in the failure.
+func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, where ...string) journalv2.SegmentInfo {
 	t.Helper()
 
 	for _, s := range f.J.Inspect().Segments() {
@@ -331,7 +345,7 @@ func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID)
 		}
 	}
 
-	t.Fatalf("segment %d is not among the journal's", id)
+	t.Fatalf("%ssegment %d is not among the journal's", at(where), id)
 	return journalv2.SegmentInfo{}
 }
 
@@ -545,11 +559,14 @@ func segmentFiles(t *testing.T, f *journalv2test.Fixture) []string {
 	return withSuffix(list(t, f), ".seg")
 }
 
+// tmpNames returns the names of the temporary spares in the journal's
+// directory, in name order.
 func tmpNames(t *testing.T, f *journalv2test.Fixture) []string {
 	t.Helper()
 	return withSuffix(list(t, f), ".spare.tmp")
 }
 
+// withSuffix returns the names ending in suffix, sorted.
 func withSuffix(names []string, suffix string) []string {
 	var out []string
 	for _, name := range names {
