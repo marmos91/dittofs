@@ -47,7 +47,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the version limit, Draw and recovery of the version counter.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the version limit, Draw, the open floor and recovery of the version counter.'
   issue: '#3378'
 - test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
   status: fail
@@ -83,7 +83,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reserve, its writes and Close, and share limits.'
+  reason: 'No journal yet: the fixture fails at Init. Needs Reserve, its writes and Close, share limits, the index bound and the headroom half rule.'
   issue: '#3378'
 - test: TestRFC1B_SegmentAndRecordAccounting
   status: fail
