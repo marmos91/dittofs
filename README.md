@@ -58,7 +58,7 @@ Two binaries drive it:
 | **NFSv4.0** | Compound ops, ACLs, delegations, built-in byte-range locking |
 | **NFSv4.1** | Sessions, sequence slots, backchannel |
 | **NFSv4.2** | Extended attributes (RFC 8276); sparse files — ALLOCATE/DEALLOCATE/SEEK/READ_PLUS; CLONE/reflink (RFC 7862) |
-| **SMB 2.0.2 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |
+| **SMB 2.0.2 / 2.1 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |
 | **SMB3 encryption** | AES-128/256-GCM and AES-128/256-CCM |
 | **SMB3 signing** | AES-128-CMAC / AES-128-GMAC (HMAC-SHA256 for 2.x) |
 | **SMB leases & oplocks** | Leases V2 with directory leasing; oplocks; byte-range locks |
