@@ -6,8 +6,9 @@ who has the file open, who locked which bytes, what each client may cache, and w
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
-**Status:** draft for review. Piece 1 has merged (#3256); pieces 2–7 are in review as one stack
-(#3330, #3336, #3341, #3344, #3363, #3400), with the store's side in #3329, #3335, #3362 and #3399.
+**Status:** draft for review. Piece 1 has merged (#3256), and so has the store's first PR (#3329);
+pieces 2–8 are in review (#3330, #3336, #3341, #3344, #3363, #3400, #3417), with the store's side in
+#3335, #3362 and #3399.
 The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
 before these links resolve to them.
 
@@ -53,8 +54,12 @@ nothing switches over until stage 5.
   // limit can refuse before a per-client cap is reached.
   ```
 - Adapters never import it (RFC 20 §2.3). The service maps each `openstate` error once to RFC 17
-  §4.3's neutral errors, so every `ErrDelay` carries its cause (RFC 17 §4.3's `Delay…` values), or
-  the mapping is not total and an adapter answers it as a server fault (RFC 20 §7.3).
+  §4.3's neutral errors. For that mapping to be total, every `ErrDelay` the table returns is a
+  `DelayError` naming its cause, one the service maps to one of RFC 17 §4.3's `Delay…` values; a
+  bare `ErrDelay` would reach an adapter as a server fault (RFC 20 §7.3). Pieces 1–7 left some
+  paths bare; piece 8 names their causes, after RFC 17's: `DelayFrozen` for a shard not yet served
+  here, `DelayCommit` for a durable record still to be written again, and `DelayConflict` for an
+  owner's own numbered request in flight. A test fails on any bare `ErrDelay` return.
 
 **D2. Single node first, cluster rules behind seams.** Every rule RFC 14 marks "(cluster)" is out of
 stage 1: one lease owner per client (§4.1), handover and batch moves (§10) with
@@ -70,7 +75,8 @@ reference that names one. The refusal arrives with `ServeShard` in piece 6; piec
 shard under instance zero, which nothing can reach before stage 2.
 
 **D3. Port the pure logic, not the manager.** From `pkg/metadata/lock`:
-- range math (`RangesOverlap`, `SplitLock`, merge), which saturates rather than overflows;
+- range math (`RangesOverlap`, `SplitLock`, merge); today's merge wraps (`UnifiedLock.End` is
+  `Offset + Length`), so the port saturates instead, as `pkg/openstate/ranges` does;
 - the SMB conflict and mandatory-I/O rules (`IsLockConflicting`, `CheckIOConflict`: Samba's
   stacking and zero-byte rules, MS-FSA 2.1.4.10);
 - the SMB lease state machine (valid states, `ComputeLeaseBreakTo`, progressive breaks, upgrades,
@@ -129,8 +135,11 @@ table is their only caller, so they stay in `pkg/openstate`.
 - The `Sink` is an outbox with eight events, `RecallGrant`, `RecallAny`, `Notify`, `Revoked`,
   `LockWaitOver`, `Closed`, `ClientEnded` and `GraceEnded` (never dropped, like `Closed`). Each
   queues and returns, and a failed or late delivery counts as the client not answering.
-- The node hands the service to `Start` as the `Sink`, with its per-file admission lock as `order`
-  for the one timer step that adds state, since the table is built before the service:
+- The node hands the service to `Start` as the `Sink`, with its per-file admission lock as `order`,
+  since the table is built before the service. The table takes `order` itself wherever it may
+  grant or revoke on a file the call does not name: in the timer's steps, and in `AckRecall`,
+  `FreeState`, `Clients.Expire`, `Revoke` and `Disconnect`, which serve the waiters their releases
+  free. The service must not hold it when making those calls:
 
   ```go
   func New(d Deps) (*Table, error)                                       // starts nothing; open state takes no settings
@@ -159,8 +168,9 @@ last name.
 
 Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (plan §4), each after the
 one before it. A row may be split: its first piece lands the cases it can reach, and the piece that
-completes it is named beside it, e.g. L27 (→6). "Done when" means every listed row passes and each
-of its cases is revert-checked.
+completes it is named beside it, e.g. L27 (→6). The piece an arrow names lists the row again in its
+own "Done when", so the row's completion is gated there. "Done when" means every listed row passes
+and each of its cases is revert-checked.
 
 **Piece 0: Store reshape** (RFC 16 §4.2, RFC 14 §11.1; 4 PRs, and a follow-up after piece 7)
 Builds the store calls the table makes. Each open-state PR carries its store PR's commits (#3330
@@ -172,6 +182,7 @@ carries #3329's, and so on to #3400 and #3399), so piece 0 lands beside pieces 2
 | `OpenRecord`, `LockRecord`, `DeleteRecord`; a stream's open keeps its base file | `Open`, `Lock`, `DeletePending` | #3335 |
 | `Clients.ByShard` (L3: tell every named client to reclaim) | `Shards(id)` only | #3362 |
 | a durable open's name and lease version; a persistent open's lock change in one transaction | none; `PutLock`, `DeleteLock`, a range each | #3399 |
+| `RaiseIncarnations` in the node's start transaction; `GraceInstance` per shard, the instance `ServeShard` is given | none | the follow-up below |
 
 `ClientRecord` is `ID`, `Protocol`, `Name`, `Boot`, `Owner`, `Protect`, `Recovery`, `Lease`,
 `Reach`, `Ended` and `Adapter`, with each shard of `Shards` a `CL‖id‖sh‖shard` key holding its
@@ -185,6 +196,11 @@ RFC 14 §11.1 is edited to match:
   `LockSeq` and `Channel.Seq` with its locks (§8.1).
 
 Where the built calls still differ from §11.1, one store PR after piece 7 closes the gap:
+- `RaiseIncarnations(ctx)` and `GraceInstance(shard)` are built (RFC 16 §4.2): the node's start
+  transaction raises every shard's instance, and the service passes it to `ServeShard`. Without
+  them a restart serves a shard under the instance it had, and once grace ends an old stateid's
+  instance bits match, so the miss answers bad state rather than stale and the client never
+  reclaims. Nothing calls `ServeShard` before stage 2, so this lands before stage 2's open piece;
 - `NSMState` and `RaiseNSMState(ctx, n)` become `NoticeState` and `RaiseNoticeState(ctx)`, which
   picks the number, so `recovery.go`'s retry loop goes;
 - `Opens.Durable` returns index entries, so each install reads `Get`, `Locks` and `DeletePending`
@@ -198,7 +214,7 @@ Done when: `kvstoretest` covers each call above.
 
 **Piece 1: Skeleton and state references** (§2.11, §3, §11; 1 PR, ~1,500 lines)
 Builds: the errors, the per-file table and its step, the file map's 256 stripes; `StateRef`
-(`Type`, `Shard`, `Instance`, `Token`, `Seq`) and its per-shard index; a miss is bad state until
+(`Type`, `Shard`, `Instance`, `Token`, `Seq`) and an index keyed by shard and token; a miss is bad state until
 piece 6 adds stale; the stateid seqid check (`ErrOldState`); every random bit from `Deps.Rand`.
 The wire layout is `pkg/vfs`'s (RFC 17 §3.4). `GrantID` and `WatchID` arrive with the grants and
 watches that use them.
@@ -211,7 +227,7 @@ it, capped per node and per source address (§2.9), and `Connect` confirms it; a
 restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and reply are the
 adapter's, kept in the record's opaque `Adapter` field and written through `AddSession` as a
 compare-and-swap.
-Done when: L25 (→7), L38 (→4), L41, L60 (→7), L64, L65 pass: `ErrStopped` before `Start` and
+Done when: L25 (→7), L38 (→4), L41, L60 (→8), L64, L65 pass: `ErrStopped` before `Start` and
 after `Stop`, and no `Sink` call under a lock.
 
 **Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; 2 PRs, ~2,500 lines)
@@ -226,7 +242,7 @@ Builds: `Locks.Lock/CancelLock/WaitAnswered/TestLock/Unlock/ReleaseLockOwner`, `
 the `LockWaitOver` event. `Lock` takes every range of a request, each shared or exclusive, in one
 step, all or none, and only a single range may wait (§11.3, RFC 17 §5.11); FIFO waiters with no
 adapter timeout; NFSv4.0 owner sequences and their confirm; NLM.
-Done when: L17 (→6), L22 (→6), L39, L44 (→5), L58 (→6), L68 pass.
+Done when: L17 (→6), L22 (→6), L38, L39, L44 (→5), L58 (→6), L68 pass.
 
 **Piece 5: Caching grants and recalls** (§2.4, §5; 2 PRs, ~2,500 lines)
 Builds: `Grants.AckRecall(ctx, who, g, to)`, `Clients.Revoke/ChannelDown/Rebind`,
@@ -234,14 +250,14 @@ Builds: `Grants.AckRecall(ctx, who, g, to)`, `Clients.Revoke/ChannelDown/Rebind`
 at open; a return is `AckRecall` to `GrantNone`; recalls with deadlines; revocation into the
 revoked set; no grant for a lease period after a revoke, nor while the back channel is down
 (`ChannelDown` until `Rebind`); the per-client grant budget.
-Done when: L5, L5b, L16, L33, L40, L45, L50 (→6), L51, L62, L63 pass.
+Done when: L5, L5b, L16, L33, L40, L44, L45, L50 (→6), L51, L62, L63 pass.
 
 **Piece 6: Grace and reclaim** (§4.2, §4.4, §8, §9.2; 1–2 PRs, ~2,000 lines)
 Builds: `Recovery.ServeShard/ReclaimComplete`, `Opens.Renamed`. The refusal of a shard not begun
 (D2); grace per shard after a restart, reclaims only, early end; every client a shard's records
 name told to reclaim (`Clients.ByShard`); a rename keeps an open's name for its deferred unlink.
-Done when: L2, L3, L3b, L24 (the pool case waits for RFC 24's `Budget`), L29, L29b, L47 (→7) pass,
-L3b as a direct case of two reclaims rather than §12's model fuzzing.
+Done when: L2, L3, L3b, L17, L22, L24 (the pool case waits for RFC 24's `Budget`), L27, L29, L29b,
+L47 (→7), L49, L50, L58 pass, L3b as a direct case of two reclaims rather than §12's model fuzzing.
 
 **Piece 7: SMB durable and persistent opens** (§8.1, §9.2; 1 PR, ~2,000 lines)
 Builds: `Opens.Reconnect/Flushed`, `Clients.Disconnect`, the `GraceEnded` event. Timeouts,
@@ -249,18 +265,21 @@ disconnect and reconnect, `Flushed`'s loss; persistent opens installed from the 
 durable-open index (`S‖id‖do‖shard`) before the shard answers anything; grace's end closes every
 durable record nobody reclaimed, then raises `GraceEnded`, and a new primary releases nothing
 before.
-Done when: L15 (→8), L30, L30b (→8), L43, L48 (→8) pass.
+Done when: L7, L14, L15 (→8), L21, L25, L30, L30b (→8), L43, L47, L48 (→8) pass.
 
 **Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; 1 PR, ~1,500 lines)
 Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/CloneClose`, the
 `Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); channel sequence,
 create and lock replay and app instance. The store's clone already writes the source's hold in its
 first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
-through piece 7's install path and `CloneClose` drops it; §11.3's "written in its own transaction" is edited to
-match.
-Done when: L15, L30b, L48, L52, L54, L55 pass. L52's case is the SMB adapter's: the table has no
-logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (RFC 22 Appendix G), so
-it lands with the SMB adapter in stage 2.
+through piece 7's install path and `CloneClose` drops it. Three RFC 14 sentences are edited to
+match: §11.3's "written in its own transaction", §9.2's "the clone's first phase makes it with
+`Opens.CloneOpen`", and §11.1's statement that the table calls the store's methods, since the
+store's clone writes the hold itself. Also: every `ErrDelay` names its cause (D1), L60's fault
+case, and the fuzz targets (plan §4).
+Done when: L15, L30b, L48, L54, L55, L56, L57, L60 pass. L52 is not the table's: the table has no
+logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (MS-SMB2 3.3.5.6; RFC 22
+Appendix G says so once #3414 lands), so its case lands with the SMB adapter in stage 2.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
 `DropShare`'s part of it. Three rows are other layers': L1 and L20 are the service's, tested in
@@ -279,6 +298,17 @@ refuse or stay silent, to drive recalls to their deadlines. Pieces 1–7 build t
 
 L56 and L57 are "model layer" rows, but model fuzzing waits for slice 9, so both run as `-race`
 loops, as L3b runs as a direct case: L56's 10⁴ races and L57's watchdog land with piece 8.
+
+§13.1's other two layers:
+- **Fault injection.** A fault store under `kvstore` fails chosen reads and write transactions:
+  piece 7's `failing`, which every durable-open case that writes runs over. The recording sink can
+  refuse or stay silent, which is what a failing `Sink` amounts to, since a `Sink` returns nothing
+  and a lost delivery counts as the client not answering (D5). Piece 8 adds L60's case: a dropped
+  shard-list commit is refused, and never answered as granted.
+- **Fuzz.** A `testing.F` target for each client-chosen input that reaches arithmetic, with piece 8:
+  `ranges` (offsets and lengths up to 2⁶⁴−1, checked against an interval oracle) and `sequence`
+  (seqids across the 2³² wrap). The stateid and FileId codecs are `pkg/vfs`'s, fuzzed in stage 2's
+  first piece.
 
 Every case is revert-checked: break the rule it pins, watch it fail on its assertion. Tests that
 cannot fail are not written (the team's rule), so a row the compiler or another case already
