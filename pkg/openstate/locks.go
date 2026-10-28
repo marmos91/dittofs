@@ -525,8 +525,8 @@ func (t *Table) lockTarget(e *entry, who Caller, ref OpenRef) (op *open, ls *loc
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if op = e.opens[k.token]; op == nil {
-		return nil, nil, 0, ErrBadState
+	if op = e.opens[k.token]; op == nil || op.parked != 0 {
+		return nil, nil, 0, ErrBadState // a disconnected open is used again only once reconnected
 	}
 	return op, nil, op.Ref.Seq, nil
 }

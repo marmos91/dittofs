@@ -697,8 +697,8 @@ func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, req seqReq, fn func
 			return err
 		}
 		o := e.opens[k.token]
-		if o == nil {
-			return ErrBadState
+		if o == nil || o.parked != 0 {
+			return ErrBadState // a disconnected open is used again only once reconnected
 		}
 		return t.sequenced(opensOwner(o.Owner), q, req, func(bool) error {
 			if err := seqErr(o.Ref.Seq, presented); err != nil {

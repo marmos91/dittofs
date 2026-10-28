@@ -879,3 +879,41 @@ func TestLockRefusedAtItsStateWritesNothing(t *testing.T) {
 		t.Errorf("the refused lock left %d lock states", n)
 	}
 }
+
+// A disconnected open is used by nothing until it is reconnected: a lock, an
+// unlock, an update or a close naming it is ErrBadState and changes nothing.
+func TestParkedOpenIsNotUsedByItsID(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr | del
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
+	f.disconnect(t, a, s1)
+	d := true
+	for name, err := range map[string]error{
+		"a lock": func() error {
+			_, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(20, 10)}})
+			return err
+		}(),
+		"an unlock": func() error {
+			_, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{})
+			return err
+		}(),
+		"an update": f.Opens().Update(ctx, a, o.ID, OpenUpdate{Delete: &d, Suspend: entity.TimeModify}),
+		"a close":   func() error { _, err := f.Opens().Close(ctx, a, byID(o), Seqs{}); return err }(),
+	} {
+		if !errors.Is(err, ErrBadState) {
+			t.Errorf("%s through the disconnected open: %v, want ErrBadState", name, err)
+		}
+	}
+	if recs := f.stored(t, file); len(recs) != 1 || recs[0].Suspended != 0 {
+		t.Errorf("the open's record after the refusals: %+v", recs)
+	}
+	if got := f.storedLocks(t, file, o); len(got) != 1 {
+		t.Errorf("the open's locks after the refusals: %+v", got)
+	}
+	if _, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Errorf("the reconnect after the refusals: %v", err)
+	}
+}
