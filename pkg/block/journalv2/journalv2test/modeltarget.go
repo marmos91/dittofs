@@ -50,7 +50,7 @@ func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), reac
 		tb := &attemptTB{TB: t, parent: parent}
 		var tgt *fixtureTarget
 		err := tb.guard(func() {
-			f := newFixture(tb, nil, false, ModelSegmentCap)
+			f := newFixture(tb, nil, false, ModelSegmentCap, nil)
 			f.Share(0)
 			f.Share(1)
 			tgt = &fixtureTarget{f: f, tb: tb, reach: &reach}

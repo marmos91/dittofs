@@ -87,7 +87,14 @@ type Fixture struct {
 // profiler's checks run, when the test ends.
 func New(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, true, FixtureSegmentCap)
+	return newFixture(tb, nil, true, FixtureSegmentCap, nil)
+}
+
+// NewWith is New with set applied to the journal's settings before Init, for
+// a check that needs a bound the fixture's defaults put out of reach.
+func NewWith(tb testing.TB, set func(*journalv2.Settings)) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, FixtureSegmentCap, set)
 }
 
 // NewUnwatched is New without the profiler, for a second journal in a test
@@ -96,13 +103,13 @@ func New(tb testing.TB) *Fixture {
 // watch runs its checks, which then cover it too.
 func NewUnwatched(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, false, FixtureSegmentCap)
+	return newFixture(tb, nil, false, FixtureSegmentCap, nil)
 }
 
 // newFixture is New with fault set on the seam before the journal is
-// initialised, the profiler only when watch is set, and segments of segCap
-// bytes.
-func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixture {
+// initialised, the profiler only when watch is set, segments of segCap
+// bytes, and set, when not nil, applied to the settings.
+func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set func(*journalv2.Settings)) *Fixture {
 	tb.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -125,6 +132,9 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		IdleSealBytes:   segCap / 16,
 	}
 	core.SetSegmentCap(&settings, segCap)
+	if set != nil {
+		set(&settings)
+	}
 
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{
@@ -141,7 +151,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		tb.Fatalf("fixture: init: %v", err)
 	}
 
-	f.open()
+	f.open(true)
 	tb.Cleanup(f.close)
 	return f
 }
@@ -152,13 +162,13 @@ func (f *Fixture) options() []journalv2.Option {
 	return append(f.opts[:len(f.opts):len(f.opts)], journalv2.WithStorage(f.Seam.FS()))
 }
 
-// open opens the fixture's journal, raises its version limit, and attaches
-// every share attached before.
+// open opens the fixture's journal, raises its version limit when limit is
+// set, and attaches every share attached before.
 //
 // The floor of each open is the limit the last one set, as a caller that
 // records its limit durably before raising it would pass: no version issued
 // before a crash, whose record the crash lost, is then issued again.
-func (f *Fixture) open() {
+func (f *Fixture) open(limit bool) {
 	f.tb.Helper()
 
 	f.floor = f.limit
@@ -169,11 +179,13 @@ func (f *Fixture) open() {
 	f.J = j
 
 	// The journal issues no version until its first limit.
-	f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
-	if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
-		f.tb.Fatalf("stub: SetVersionLimit")
-	} else if err != nil {
-		f.tb.Fatalf("fixture: set version limit: %v", err)
+	if limit {
+		f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
+		if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
+			f.tb.Fatalf("stub: SetVersionLimit")
+		} else if err != nil {
+			f.tb.Fatalf("fixture: set version limit: %v", err)
+		}
 	}
 
 	for i := range f.handles {
@@ -266,11 +278,24 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 		f.tb.Logf("fixture: closing the crashed journal: %v", err)
 	}
 
-	f.open()
+	f.open(true)
 }
 
 // Reopen closes the journal cleanly and opens it again.
 func (f *Fixture) Reopen() {
+	f.tb.Helper()
+	f.reopen(true)
+}
+
+// ReopenWithoutLimit is Reopen without setting a version limit, so the
+// journal it opens has none until the test sets one. Its floor is the same as
+// Reopen's.
+func (f *Fixture) ReopenWithoutLimit() {
+	f.tb.Helper()
+	f.reopen(false)
+}
+
+func (f *Fixture) reopen(limit bool) {
 	f.tb.Helper()
 
 	for _, h := range f.handles {
@@ -282,7 +307,7 @@ func (f *Fixture) Reopen() {
 		f.tb.Fatalf("fixture: close: %v", err)
 	}
 
-	f.open()
+	f.open(limit)
 }
 
 // FailNext makes the next n calls of op on a file matching key fail with
