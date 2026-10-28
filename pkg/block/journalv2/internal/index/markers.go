@@ -114,6 +114,26 @@ func (f *file) firstAbove(v core.Version) int {
 	return i
 }
 
+// fill holds p for id as a Fill does, unless the fill is older than the file:
+// when the version id is checked against is above asOf — the change version a
+// read of id reported, before whatever change has happened since — it writes
+// nothing and returns ErrStaleFill, which the caller matches with errors.Is.
+// The comparison is on counter halves only: both sides of it come from this
+// journal, whose versions carry no epoch, so an asOf that carries one anyway
+// loses its epoch rather than winning the comparison. The check and the
+// insert run under the file's lock, in one update. A fill refused on a file
+// with no entry leaves no entry, since an update that leaves nothing behind
+// drops the empty entry it was given.
+func (fs *files) fill(id core.FileID, p Placed, asOf core.Version) error {
+	return fs.update(id, func(f *file) error {
+		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
+			return core.ErrStaleFill
+		}
+		f.fill(p)
+		return nil
+	})
+}
+
 // fill holds p as a fill does, where nothing is held, except inside a marker
 // above p's version: a removal newer than the fetched content excludes it,
 // so while the marker is unsettled a cold read resolved against a ref older
@@ -123,9 +143,9 @@ func (f *file) firstAbove(v core.Version) int {
 //
 // decision: only unsettled markers mask a fill. Once a removal is settled its
 // marker is gone, and a fill resolved before the removal is no longer masked
-// here: refusing it is the fill staleness check's job, against the file's
-// change version, which a removal raises. That check is not built yet, so
-// until it is, a stale fill landing after Settle is held.
+// here: files.fill's staleness check refuses it instead, against the change
+// version the removal raised or, once the entry has dropped, the bucket the
+// drop raised.
 func (f *file) fill(p Placed) {
 	above := f.markers[f.firstAbove(p.Version):]
 	if len(above) == 0 {
