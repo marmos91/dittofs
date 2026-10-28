@@ -526,8 +526,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
-| `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), and e2e (non-blocking on PRs) so far | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), the SMB clients of Linux, macOS and Windows, and e2e (non-blocking on PRs) so far | ~20 min |
 | `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
@@ -572,7 +571,6 @@ These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
 - **tests.yml** -- the `merge` tier, with smbtorture's Kerberos option
-- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 
 ### What Runs Weekly (Full Matrix)
 
@@ -590,7 +588,6 @@ All workflows support `workflow_dispatch` for manual triggering:
 gh workflow run tests.yml -f tier=merge
 gh workflow run tests.yml -f tier=nightly
 gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref my-branch   # one suite's cells
-gh workflow run smb-client-compat.yml
 ```
 
 Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.

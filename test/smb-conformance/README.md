@@ -12,7 +12,7 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
 | **smbclient E2E** | smbclient CLI | CLI-based protocol validation | ~2 min |
 | **Cross-protocol** | NFS + SMB mounts | Lease/delegation coordination | ~5 min |
 | **Kerberos** | go-smb2 + smbtorture | Kerberos auth + SMB3 features | ~10 min |
-| **Multi-OS CI** | mount.cifs/mount_smbfs | macOS/Linux clients | ~10 min |
+| **clients** | mount.cifs, mount_smbfs, the Windows client | Linux, macOS and Windows clients | ~10 min |
 
 ## Prerequisites
 
@@ -221,36 +221,21 @@ test/harness/bin/dt run smbtorture --kerberos
 
 ## Multi-OS Client Compatibility
 
-Validates DittoFS SMB adapter against native OS SMB clients on two platforms.
+The `clients` suite in `test/suites.yaml` mounts the fixture's share with each OS's own SMB client
+and runs the scripts in `test/clients/` over the mount, in `tests.yml`: Linux after each merge, the
+others nightly. Each client mounts at SMB 3.1.1, and one more Linux run mounts at SMB 2.1, for the
+older clients:
 
-### Workflow
+| Platform | Client | Profile | Checks |
+|----------|--------|---------|--------|
+| Linux | mount.cifs | `badger-s3` (Localstack) | file create and read, directory create, listing, delete, rename, a block reaching the bucket |
+| Linux, SMB 2.1 | mount.cifs, `vers=2.1` | `badger-s3` (Localstack) | the same checks as Linux |
+| macOS | mount_smbfs | `memory`: the runner has no Docker for Localstack | the same file checks, and xattrs surviving a remount |
+| Windows | the OS's own client | `memory`: the runner runs no Linux containers | the same file checks |
 
-`.github/workflows/smb-client-compat.yml`
-
-### Platforms
-
-| Platform | Client | Mount Command | Profile |
-|----------|--------|---------------|---------|
-| Ubuntu (latest) | mount.cifs + smbclient | `sudo mount -t cifs //localhost/share /mnt/test -o port=12445,...` | `badger-s3` (Localstack) |
-| macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` | `memory`: the runner has no Docker for Localstack |
-
-### When It Runs
-
-- **Push to develop** (SMB paths changed)
-- **Weekly** (Sunday 21:55 UTC)
-- **Manual dispatch** (`workflow_dispatch`)
-
-NOT on pull requests (too slow for PR checks).
-
-### What It Tests
-
-Each platform runs the same core operations:
-1. Build DittoFS from source
-2. Start server and bootstrap SMB adapter via dfsctl
-3. Mount SMB share
-4. Create file, read file, create directory, list directory, delete
-5. Verify dialect/connection info where available
-6. Cleanup
+```bash
+test/harness/bin/dt run clients            # on Linux; --smb21 for SMB 2.1, --macos and --windows on those OSes
+```
 
 ## CI Integration
 
@@ -258,20 +243,19 @@ Each platform runs the same core operations:
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly | ~15 min |
-| `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
+| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly; the `clients` suite on Linux after each merge, its SMB 2.1, macOS and Windows runs nightly | ~15 min |
 
 ### Speed Tiers
 
 - **PR checks**: WPTS BVT and smbtorture, on `badger-s3`
-- **Push to develop and nightly**: the same, plus Kerberos smbtorture and the e2e suite (in `tests.yml`)
-- **Push to develop (SMB paths) and weekly**: multi-OS client compat
+- **Push to develop and nightly**: the same, plus Kerberos smbtorture, the e2e suite and the `clients` suite on Linux (in `tests.yml`)
+- **Nightly**: also the `clients` suite's SMB 2.1, macOS and Windows runs
 
 ### Results
 
 - WPTS and smbtorture results: `dt`'s report in the job summary, each cell's results uploaded as artifacts
 - E2E results: the same, from the e2e cells in `tests.yml`
-- Weekly regression failures auto-create GitHub issues
+- Failures on develop, after a merge or in the nightly run, go to the "develop is red" issue, and a test that fails 2 runs in a row gets an issue of its own
 
 ## Architecture
 

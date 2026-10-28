@@ -289,32 +289,39 @@ suites:
     needs: [linux]
 
   # Each platform's own client mounts the fixture's share over SMB, and the workloads run over the
-  # mount: on each, the checks of smb-client-compat.yml's job there, which this replaces once its
-  # results match. The suite itself runs on linux, and also sees its blocks reach the bucket.
+  # mount. The suite itself runs on linux, and also sees its blocks reach the bucket.
   clients:
     tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
     cmd: "{test} {mount} {bucket}"   # s3.sh reads the bucket's listing; the others take the mount alone
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
-    tier: nightly
-    # decision: reported, never failing the gate, until the three cells' results match
-    # smb-client-compat.yml's; they become blocking in the change that removes that workflow.
-    blocking: false
+    # decision: Linux runs after each merge, as the SMB client workflow this replaces ran on SMB
+    # changes, and on feat/storage-v2 too, which has no nightly; macOS and Windows, on scarcer
+    # runners, run nightly on develop only.
+    tier: merge
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
+      # decision: SMB 2.1, the newest dialect of Windows 7 and Server 2008 R2, keeps a real client:
+      # the Linux one asked for it, against the server as it ships. Nightly, as WPTS already checks
+      # its negotiation on every pull request.
+      smb21:
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
         cmd: "{test} {mount}"
         env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
         needs: [macos]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
       windows:
         tests: [test/clients/files.ps1]
         cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
         needs: [windows]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported

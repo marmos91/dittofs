@@ -34,7 +34,7 @@ coordination, credit flow control, and code structure.
 
 ## SMB vs NFS: Conceptual Mapping
 
-| Aspect | NFS (v3/v4) | SMB2 (2.0.2) | SMB3 (3.0-3.1.1) |
+| Aspect | NFS (v3/v4) | SMB2 (2.0.2, 2.1) | SMB3 (3.0-3.1.1) |
 | -------- | ------------- | -------------- | ------------------- |
 | **Origin** | Unix (Sun Microsystems, 1984) | Windows (IBM/Microsoft, 1983) | Windows (Microsoft, 2012) |
 | **Design** | v3: Stateless / v4: Stateful | Stateful, session-based | Stateful, session-based |
@@ -447,7 +447,8 @@ selects the highest dialect both sides support:
 | 1 (highest) | SMB 3.1.1 | 0x0311 | Preauth integrity, negotiate contexts |
 | 2 | SMB 3.0.2 | 0x0302 | VALIDATE_NEGOTIATE_INFO |
 | 3 | SMB 3.0 | 0x0300 | Encryption (AES-CCM), CMAC signing |
-| 4 (lowest) | SMB 2.0.2 | 0x0202 | Basic SMB2 operations |
+| 4 | SMB 2.1 | 0x0210 | Leasing, large MTU |
+| 5 (lowest) | SMB 2.0.2 | 0x0202 | Basic SMB2 operations |
 
 ### Negotiate Contexts (SMB 3.1.1)
 
@@ -594,6 +595,7 @@ derivation.
 | Dialect | Algorithm | Key Derivation |
 | --------- | ----------- | ---------------- |
 | SMB 2.0.2 | HMAC-SHA256 | Direct from session key |
+| SMB 2.1 | HMAC-SHA256 | Direct from session key |
 | SMB 3.0 | AES-128-CMAC | SP800-108 KDF |
 | SMB 3.0.2 | AES-128-CMAC | SP800-108 KDF |
 | SMB 3.1.1 | AES-128-GMAC (preferred) or AES-128-CMAC | SP800-108 KDF with preauth hash |
@@ -606,7 +608,7 @@ SIGNING_CAPABILITIES negotiate context, the server defaults to AES-128-CMAC per 
 
 The signing algorithm is determined by the negotiated dialect and negotiate contexts:
 
-1. **SMB 2.0.2**: Always HMAC-SHA256 (no negotiation)
+1. **SMB 2.0.2 and 2.1**: Always HMAC-SHA256 (no negotiation)
 2. **SMB 3.0/3.0.2**: Always AES-128-CMAC (no negotiation)
 3. **SMB 3.1.1 with SIGNING_CAPABILITIES**: First mutually supported algorithm from server
    preference list
