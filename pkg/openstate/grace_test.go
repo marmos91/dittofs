@@ -3,6 +3,7 @@ package openstate
 import (
 	"errors"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -747,6 +748,7 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 				fs.mu.Lock()
 				u = fs.entries[file.ID].users
 				fs.mu.Unlock()
+				runtime.Gosched()
 			}
 		}
 		hold, release := make(chan struct{}), make(chan struct{})
