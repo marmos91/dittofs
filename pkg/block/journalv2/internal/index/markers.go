@@ -92,7 +92,8 @@ func (f *file) cloneTarget(spec core.CloneSpec, v core.Version) error {
 // outside that range would store a marker whose end wraps negative, and a
 // fill would then not be masked by it. Refusing such a range is the journal
 // API's job, at the call that takes it from the caller, as it is for writes.
-// A truncate to MaxInt64 removes nothing and keeps a marker of length 0.
+// A truncate to MaxInt64 removes nothing and keeps a marker of length 0,
+// which Since still yields so metadata learns the size.
 func (f *file) remove(m marker) {
 	f.held.cutBelow(m.extent, m.version)
 	f.markers = slices.Insert(f.markers, f.firstAbove(m.version), m)
