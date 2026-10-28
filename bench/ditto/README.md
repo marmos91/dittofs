@@ -66,7 +66,9 @@ mailbox's mail flow and full sync with 16 users stay in ms, as their 99th percen
 ## Calibration and flags
 
 `CALIBRATION=yes` in the cron file runs every point three times and posts nothing; under `dt`,
-the same goes in the `perf-night` suite's `env`. That is the first week. When it is set to `no`, the night runs every point once, and `score.py` first sets
+the same goes in the `perf-night` suite's `env`. Its three repeats take about 4 h 30 min, so a
+calibration week under `dt` also raises the suite's limit and stop: `timeout: { test: 5h }` and
+`STOP_AFTER: "17700"`, five minutes before it. That is the first week. When it is set to `no`, the night runs every point once, and `score.py` first sets
 the noise bands from the calibration nights' repeats (`band.json`): one per point, one per area
 and one for the figure, each repeat's areas and figure computed as a night's are. A point, an area
 or the figure is flagged when it falls below its own 7-day median by more than its band. After a

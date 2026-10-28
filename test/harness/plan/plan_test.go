@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,8 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 
 // The dedicated host's nightly is the performance night, then the long
 // scenarios, on a host quiet for the first: those two cells, in that order,
-// and no tier before nightly sends a cell there.
+// and no tier before nightly sends a cell there. The night stops itself
+// before dt's limit, which kills it with no cleanup and no post.
 func TestDedicatedNight(t *testing.T) {
 	r := repo(t)
 	for _, tier := range []string{"pr", "merge", "nightly"} {
@@ -97,6 +99,13 @@ func TestDedicatedNight(t *testing.T) {
 		for _, c := range cells {
 			if c.Place == "dedicated" {
 				got = append(got, c.Name)
+			}
+			if c.Name == "perf-night" {
+				limit, _ := time.ParseDuration(c.TestTimeout)
+				stop, _ := strconv.Atoi(r.Suite("perf-night").Env.All["STOP_AFTER"])
+				if stop == 0 || time.Duration(stop)*time.Second >= limit {
+					t.Errorf("perf-night stops after %ds, but dt's limit is %s", stop, c.TestTimeout)
+				}
 			}
 		}
 		if tier == "nightly" {

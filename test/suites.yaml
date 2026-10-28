@@ -330,10 +330,12 @@ suites:
   # the long scenarios after it.
   perf-night:
     cmd: bench/ditto/night.sh
-    env: { DT_OUT: "{out}", SLACK_DIR: /etc/dittofs-perf, SCENARIO_HOST: ditto }
+    env: { DT_OUT: "{out}", SLACK_DIR: /etc/dittofs-perf, SCENARIO_HOST: ditto, STOP_AFTER: "10500" }
     tier: nightly
     needs: [linux, root, host:dedicated]
-    timeout: { cell: 3h }   # a night of one repeat takes about 1 h 30 min, its build and lock wait included
+    # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
+    # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
+    timeout: { test: 3h }
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.

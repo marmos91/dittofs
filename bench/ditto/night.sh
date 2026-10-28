@@ -33,6 +33,8 @@
 #   SLACK_DIR        the bot's slack-token and slack-channel; without them nothing posts
 #   LOCK             the lock the scenario runs take (default /var/tmp/dittofs-scenarios)
 #   STOP_AT          the hard stop, HH:MM local time (default 05:45): steps are cut to end before it
+#   STOP_AFTER       the hard stop in seconds from the start instead: perf-night sets it under dt,
+#                    whose limit kills the night with no cleanup and no post
 #   HARNESS          set by hand: this tree runs as it is, with dfs from develop as last fetched (a
 #                    test of changes not pushed yet)
 #   DT_OUT           set by dt, its cell's {out}: dt's checkout is develop's latest commit, so the
@@ -333,6 +335,7 @@ fi
 test -d "$LOCK" || { echo "night.sh: no lock directory $LOCK" >&2; exit 2; }
 DEADLINE="$(date -d "${STOP_AT:-05:45}" +%s)"
 test "$DEADLINE" -gt "$(date +%s)" || DEADLINE="$(date -d "tomorrow ${STOP_AT:-05:45}" +%s)"
+test -z "${STOP_AFTER:-}" || DEADLINE=$(($(date +%s) + STOP_AFTER))
 RESERVE=600 # what the hard stop leaves for the cleanup and the summary
 # A night's results are in <date>/, the history score.py compares with; a smoke run or a second run
 # the same day goes elsewhere.
@@ -426,7 +429,9 @@ finish() {
     fi
     test "$CALIBRATION" = yes || test "$SMOKE" = yes || "$HERE/night.sh" post "$NIGHT"
     test -z "${DT_OUT:-}" || cp "$NIGHT/summary.json" "$NIGHT/slack.txt" "$DT_OUT/"
-    if test "$rc" -eq 0 && awk -F'\t' 'NR > 1 && ($4 == "fail" || $4 == "timeout") { f = 1 } END { exit !f }' "$NIGHT/steps.tsv"; then
+    # A failed or timed-out step fails the night, and so does a night with no figure.
+    if test "$rc" -eq 0 && { awk -F'\t' 'NR > 1 && ($4 == "fail" || $4 == "timeout") { f = 1 } END { exit !f }' "$NIGHT/steps.tsv" ||
+        ! python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["results"]["extra"]["score"] is None)' "$NIGHT/summary.json"; }; then
         rc=1
     fi
     log "end ($rc): $(head -1 "$NIGHT/slack.txt")"
