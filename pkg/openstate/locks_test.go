@@ -479,6 +479,53 @@ func TestExpiryGrantsWaitersUnderOrder(t *testing.T) {
 	}
 }
 
+// Connect, which names a client and no file, grants the waiters that ending
+// the name's old ID frees under each file's admission lock, whether the old ID
+// lapsed or was rebooted.
+func TestConnectGrantsWaitersUnderOrder(t *testing.T) {
+	for name, tc := range map[string]struct {
+		boot  byte
+		lapse bool
+	}{
+		"lapsed":   {1, true},
+		"rebooted": {2, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			alice := entity.NewUser()
+			a, h := f.caller(t, nfs("host-a", 1, alice)), f.host(t, "h", 1)
+			file := anyFile()
+			o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+			f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+			if res := f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+				t.Fatal("the host's lock was not left waiting")
+			}
+			if tc.lapse {
+				// The lease ends now, short of the timer's next sweep, so only
+				// Connect ends the old ID.
+				f.clock.advance(time.Second)
+				f.cmu.Lock()
+				f.leases[a.Client] = f.clock.Elapsed()
+				f.cmu.Unlock()
+			}
+			f.order.mu.Lock()
+			f.order.files = nil
+			f.order.mu.Unlock()
+			if _, err := f.Connect(ctx, nfs("host-a", tc.boot, alice), nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+				t.Fatalf("after the connect: granted %v, want h", got)
+			}
+			f.order.mu.Lock()
+			defer f.order.mu.Unlock()
+			if !slices.Contains(f.order.files, file.ID) {
+				t.Errorf("Connect granted the waiter without the file's admission lock: taken for %v", f.order.files)
+			}
+		})
+	}
+}
+
 // A range a lease expiry frees goes to the waiter on it, even when a request
 // for it arrives after the expiry and before the timer serves the file.
 func TestExpiryGrantIsNotJumped(t *testing.T) {

@@ -85,7 +85,10 @@ type Clients interface {
 	Propose(ctx context.Context, c Client, from netip.Addr) (Proposal, error)
 	// Connect makes a client current: a confirm of p, or with a nil p a
 	// client that confirms in one step. A new Boot under a known name is a
-	// reboot: the old ID ends as the new one appears.
+	// reboot: the old ID ends as the new one appears, and a known name whose
+	// lease has lapsed ends its old ID first. The waiters the ended ID's
+	// release frees are served under each file's admission lock, which the
+	// table takes itself: the service must not hold one when calling.
 	Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, error)
 	// Record is the record as written, Adapter included; it changes nothing.
 	Record(ctx context.Context, c entity.ClientID) (Client, error)
@@ -218,7 +221,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	if err != nil {
 		return 0, err
 	}
-	var out outbox
+	out := outbox{timer: true}
 	t.cstep.Lock()
 	ended, err := t.connect(ctx, &rec, p, &out)
 	t.cstep.Unlock()
@@ -226,6 +229,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
 	}
 	out.raise(sink)
+	t.serveFiles(sink, out.serve)
 	if err != nil {
 		return 0, err
 	}
