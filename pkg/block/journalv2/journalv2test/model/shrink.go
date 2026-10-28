@@ -11,7 +11,9 @@ import (
 )
 
 // shrinkAttempts and shrinkTime bound the sequences one shrink runs, and the
-// real time it spends running them.
+// real time it spends running them; the test's own deadline, less
+// shrinkMargin, bounds that time too, so a test that checks several sequences
+// shares one budget and never reaches its timeout mid-shrink.
 //
 // ponytail: shrinking removes ever smaller chunks of the sequence until no
 // removal keeps it failing, then halves each kept extent, running the whole
@@ -25,13 +27,18 @@ import (
 const (
 	shrinkAttempts = 2000
 	shrinkTime     = 5 * time.Minute
+
+	// shrinkMargin is how long before the test's deadline shrinking stops,
+	// leaving time to run the shrunk sequence again, write it, and run the
+	// test's other sequences.
+	shrinkMargin = 2 * time.Minute
 )
 
-// shrink returns a sequence that still fails, as short as the search finds:
-// steps removed, then each kept step's extent shortened, while fails holds.
-// steps must fail.
-func shrink(steps []Step, fails func([]Step) bool) []Step {
-	attempts, deadline := 0, time.Now().Add(shrinkTime)
+// shrink returns a sequence that still fails, as short as the search finds
+// by deadline: steps removed, then each kept step's extent shortened, while
+// fails holds. steps must fail.
+func shrink(steps []Step, fails func([]Step) bool, deadline time.Time) []Step {
+	attempts := 0
 	try := func(c []Step) bool {
 		if attempts >= shrinkAttempts || time.Now().After(deadline) {
 			return false
@@ -65,6 +72,18 @@ func shrink(steps []Step, fails func([]Step) bool) []Step {
 		}
 	}
 	return cur
+}
+
+// shrinkDeadline is when a shrink starting now must stop: shrinkTime from
+// now, or shrinkMargin before the test's deadline if that is sooner.
+func shrinkDeadline(tb testing.TB) time.Time {
+	deadline := time.Now().Add(shrinkTime)
+	if d, ok := tb.(interface{ Deadline() (time.Time, bool) }); ok {
+		if end, ok := d.Deadline(); ok && end.Add(-shrinkMargin).Before(deadline) {
+			deadline = end.Add(-shrinkMargin)
+		}
+	}
+	return deadline
 }
 
 // openError is a target that could not be opened, which says nothing about a
@@ -118,7 +137,7 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 		return
 	}
 
-	shrunk := shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) })
+	shrunk := shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) }, shrinkDeadline(tb))
 	again := run(shrunk)
 	if !errors.Is(again, ErrDiverged) {
 		// The failure did not come back on the shrunk sequence, so the
