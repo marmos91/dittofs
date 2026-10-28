@@ -209,3 +209,26 @@ func TestStepTouchesOnlyItsOwnFile(t *testing.T) {
 		t.Fatal("the file's entry outlived its last state")
 	}
 }
+
+// A presented reference sequence is judged against the state's as the doc
+// says: zero or the same is current, one behind it by less than half the
+// space is old, any other is bad, across the wrap.
+func FuzzSeqErr(f *testing.F) {
+	for _, s := range [][2]uint32{{1, 0}, {1, 1}, {2, 1}, {1, 2}, {1, ^uint32(0)}, {^uint32(0), 1}, {1 << 31, 0}, {1<<31 + 1, 1}, {1, 1<<31 + 1}} {
+		f.Add(s[0], s[1])
+	}
+	f.Fuzz(func(t *testing.T, cur, presented uint32) {
+		behind := (uint64(cur) + 1<<32 - uint64(presented)) % (1 << 32)
+		var want error
+		switch {
+		case presented == 0 || presented == cur:
+		case behind < 1<<31:
+			want = ErrOldState
+		default:
+			want = ErrBadState
+		}
+		if got := seqErr(cur, presented); got != want {
+			t.Fatalf("seqErr(%d, %d) = %v, want %v", cur, presented, got, want)
+		}
+	})
+}
