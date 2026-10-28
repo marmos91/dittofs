@@ -129,11 +129,10 @@ func (t *Table) endedLocked(c entity.ClientID, s entity.SessionRef) bool {
 // start installs the record and closes it at its Timeout. Delete it here if
 // a store is found failing one write and not the next.
 func (t *Table) persistOpen(ctx context.Context, e *entry, o *open) error {
-	err := error(nil)
+	var err error
 	if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
-		err = t.persistLease(ctx, e, g)
-	}
-	if err == nil && o.persistent() && (o.Grant == (GrantID{}) || e.grants[o.Grant.Token] == nil) {
+		err = t.persistLease(ctx, e, g) // writes o's record too
+	} else if o.persistent() {
 		err = t.persist(ctx, e, o)
 	}
 	if err != nil {
