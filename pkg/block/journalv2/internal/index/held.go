@@ -220,6 +220,10 @@ func (s *heldSet) insert(p Placed) {
 // of one record, whose bytes sit in p.Record from p.Skip on; the gaps take
 // the matching parts of it. A fill that packs several absent extents into one
 // record calls fill once for each of them, with each one's own skip.
+//
+// It knows nothing of removal markers, which live beside the set: a fill of
+// a file goes through file.fill, which keeps it out of every extent a newer
+// marker covers.
 func (s *heldSet) fill(p Placed) {
 	s.work = s.work[:0]
 	cursor, end := p.Extent.Off, p.Extent.Off+p.Extent.Len
