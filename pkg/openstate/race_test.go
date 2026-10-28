@@ -119,7 +119,7 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 	if res, err := f.lock(a, file, lockReq(2, WaitCallback)); err != nil || !res.Waiting {
 		t.Fatalf("callback waiter: %+v, %v", res, err)
 	}
-	if _, err := f.Locks().Unlock(ctx, a, file, byID(opens[0]), smbOwner(a, opens[0]), []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, byID(opens[0]), smbOwner(a, opens[0]), []ByteRange{br(0, 10)}, Seqs{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.clock.mu.Lock()

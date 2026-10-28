@@ -811,19 +811,34 @@ func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq ui
 	if err != nil || !counted {
 		return stale, func() {}, err
 	}
-	return false, func() { t.leaveChannel(who, id, seq) }, nil
+	return false, func() { t.leaveChannel(id, seq) }, nil
 }
 
 // leaveChannel uncounts a request of open id counted under seq, once it
 // leaves: under the open's sequence if it is still seq, else under the ones
-// before it.
-func (t *Table) leaveChannel(who Caller, id entity.OpenID, seq uint16) {
-	_ = t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(_ *entry, o *open) error {
+// before it. It finds the open by its ID alone, so a request leaving while
+// its open is disconnected is uncounted too, and never takes a count below
+// zero.
+func (t *Table) leaveChannel(id entity.OpenID, seq uint16) {
+	t.idx.Lock()
+	k, ok := t.byID[id]
+	f := t.refs[k].file
+	t.idx.Unlock()
+	if !ok {
+		return
+	}
+	_ = t.step(f, func(e *entry) error {
+		o := e.opens[k.token]
+		if o == nil || o.ID != id {
+			return nil
+		}
 		i := 0
 		if o.Channel.Seq != seq {
 			i = 1
 		}
-		o.Channel.Outstanding[i]--
+		if o.Channel.Outstanding[i] > 0 {
+			o.Channel.Outstanding[i]--
+		}
 		return nil
 	})
 }

@@ -75,7 +75,7 @@ func TestLockReplay(t *testing.T) {
 	if err := lockAs(f, 2, x(100, 10)); lockedBy(err) == "" {
 		t.Fatalf("a conflicting lock: %v", err)
 	}
-	if _, err := f.Locks().Unlock(ctx, b, file, byID(ob), smbOwner(b, ob), []ByteRange{br(100, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, b, file, byID(ob), smbOwner(b, ob), []ByteRange{br(100, 10)}, Seqs{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := lockAs(f, 2, x(100, 10)); err != nil {
@@ -100,6 +100,38 @@ func TestLockReplay(t *testing.T) {
 	}
 	if got := g.storedLocks(t, file, o); len(got) != 4 {
 		t.Errorf("stored %+v, want each lock once", got)
+	}
+
+	// An unlock under a lock sequence is answered on its replay, not refused
+	// for the range it already released, after a failover too.
+	unlockAs := func(g *fixture) error {
+		_, err := g.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{}, &LockSequence{Index: 4, Seq: 1})
+		return err
+	}
+	if err := unlockAs(g); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlockAs(g); err != nil {
+		t.Errorf("a replay of the unlock: %v, want it answered", err)
+	}
+	h := g.restart(t)
+	if _, err := h.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s3); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlockAs(h); err != nil {
+		t.Errorf("a replay of the unlock after a failover: %v, want it answered", err)
+	}
+	// One stopped at a range not held stores nothing: its retry is applied.
+	h.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(300, 5)}})
+	partial := func() error {
+		_, err := h.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(300, 5), br(500, 5)}, Seqs{}, &LockSequence{Index: 5, Seq: 1})
+		return err
+	}
+	if err := partial(); !errors.Is(err, ErrRangeNotLocked) {
+		t.Fatalf("an unlock of a range not held: %v", err)
+	}
+	if err := partial(); !errors.Is(err, ErrRangeNotLocked) {
+		t.Errorf("the retry of an unlock stopped at a range not held: %v, want it applied", err)
 	}
 }
 
@@ -196,5 +228,74 @@ func TestChannelSequence(t *testing.T) {
 	}
 	if stale, _ := ch(g, 5, false); !stale {
 		t.Error("after a failover, the sequence a request raised is lost")
+	}
+}
+
+// A blocking lock granted by callback stores its lock sequence, written
+// with the lock for a persistent open, so its replay after a lost reply is
+// answered rather than waiting on its own lock, after a failover too.
+func TestBlockingLockReplay(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	ob := f.mustOpen(t, b, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, b, file, LockReq{Owner: smbOwner(b, ob), Open: byID(ob), Ranges: []LockRange{x(0, 10)}})
+	req := LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback, Replay: &LockSequence{Index: 1, Seq: 1}}
+	if res, err := f.lock(a, file, req); err != nil || !res.Waiting {
+		t.Fatalf("the waiter: %+v, %v", res, err)
+	}
+	if _, err := f.Locks().Unlock(ctx, b, file, byID(ob), smbOwner(b, ob), []ByteRange{br(0, 10)}, Seqs{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.sink.takeWaits(); len(w) != 1 || !w[0].granted {
+		t.Fatalf("waits %+v, want the waiter granted", w)
+	}
+	if res, err := f.lock(a, file, req); err != nil || res.Waiting {
+		t.Errorf("a replay of a callback-granted lock: %+v, %v; want it answered", res, err)
+	}
+	g := f.restart(t)
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := g.lock(a, file, req); err != nil || res.Waiting {
+		t.Errorf("a replay of a callback-granted lock after a failover: %+v, %v; want it answered", res, err)
+	}
+}
+
+// A request that leaves while its open is disconnected is uncounted all the
+// same, and a count is never taken below zero, so once every request has
+// left a replay on a new channel runs.
+func TestChannelLeaveIsAlwaysCounted(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Channel = rd|wr, 5
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	channel := func(seq uint16, replay bool) (bool, func()) {
+		t.Helper()
+		stale, done, err := f.Opens().Channel(ctx, a, o.ID, seq, replay)
+		if err != nil {
+			t.Fatalf("Channel %d: %v", seq, err)
+		}
+		return stale, done
+	}
+	_, done := channel(5, false)
+	f.disconnect(t, a, s1)
+	done() // a write in flight finishes after its connection dropped
+	if _, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Fatal(err)
+	}
+	stale, done := channel(6, true)
+	if stale {
+		t.Error("a replay once a request that left while disconnected is gone: stale")
+	}
+	done()
+	_, done = channel(6, false)
+	done()
+	done() // told twice
+	if stale, _ := channel(7, true); stale {
+		t.Error("a replay after a request told it left twice: stale")
 	}
 }

@@ -535,7 +535,7 @@ func TestStartAndStop(t *testing.T) {
 			return g.Locks().WaitAnswered(ctx, Caller{Client: id}, LockWaiter{File: file.ID, Owner: LockOwner{Client: id}}, true)
 		},
 		"Unlock": func() error {
-			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
+			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file, OpenRef{}, LockOwner{Client: id}, nil, Seqs{}, nil)
 			return err
 		},
 		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },

@@ -130,7 +130,7 @@ func TestWaiterOfParkedOpenGoes(t *testing.T) {
 	if ws := f.sink.takeWaits(); len(ws) != 1 || ws[0].granted {
 		t.Errorf("the parked open's waiter: %+v, want it answered not granted", ws)
 	}
-	if _, err := f.Locks().Unlock(ctx, a, file, byID(o2), smbOwner(a, o2), []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, byID(o2), smbOwner(a, o2), []ByteRange{br(0, 10)}, Seqs{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if h := f.holder(t, file, br(0, 10)); h != nil {
@@ -344,7 +344,7 @@ func TestPersistentLockChangeIsOneWrite(t *testing.T) {
 	}{
 		{"a lock", func() { lock(5000) }},
 		{"an unlock among them", func() {
-			if _, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(200, 10)}, Seqs{}); err != nil {
+			if _, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(200, 10)}, Seqs{}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -383,7 +383,7 @@ func TestRefusedLockRequestChangesNothing(t *testing.T) {
 		t.Fatalf("a waits: %+v %v", res, err)
 	}
 	st.fail.Store(true)
-	_, uerr := f.Locks().Unlock(ctx, a, file, byID(oa), smbOwner(a, oa), []ByteRange{br(40, 1)}, Seqs{})
+	_, uerr := f.Locks().Unlock(ctx, a, file, byID(oa), smbOwner(a, oa), []ByteRange{br(40, 1)}, Seqs{}, nil)
 	_, lerr := f.lock(a, file, LockReq{Owner: smbOwner(a, oa), Open: byID(oa), Ranges: []LockRange{x(20, 10)}})
 	st.fail.Store(false)
 	if !errors.Is(uerr, ErrRangeNotLocked) {
@@ -882,7 +882,7 @@ func TestParkedOpenIsNotUsedByItsID(t *testing.T) {
 			return err
 		}(),
 		"an unlock": func() error {
-			_, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{})
+			_, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{}, nil)
 			return err
 		}(),
 		"an update": f.Opens().Update(ctx, a, o.ID, OpenUpdate{Delete: &d, Suspend: entity.TimeModify}),
@@ -973,7 +973,7 @@ func TestLockRenamedInPlaceIsRewritten(t *testing.T) {
 	so := smbOwner(a, o)
 	f.mustLock(t, a, file, LockReq{Owner: so, Open: byID(o), Ranges: []LockRange{sh(0, 10)}})
 	f.mustLock(t, a, file, LockReq{Owner: so, Open: byID(o), Ranges: []LockRange{sh(0, 20)}})
-	if _, err := f.Locks().Unlock(ctx, a, file, byID(o), so, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, byID(o), so, []ByteRange{br(0, 10)}, Seqs{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.storedLocks(t, file, o); len(got) != 1 || got[0].Length != 20 {

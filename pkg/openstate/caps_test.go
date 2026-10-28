@@ -51,7 +51,7 @@ func TestPerClientCaps(t *testing.T) {
 		if h := f.holder(t, file, br(40, 10)); h != nil {
 			t.Errorf("a refused lock is held: %+v", h)
 		}
-		if _, err := f.Locks().Unlock(ctx, a, file, none, lo, []ByteRange{br(4, 2)}, Seqs{}); delayedFor(err) != DelayResources {
+		if _, err := f.Locks().Unlock(ctx, a, file, none, lo, []ByteRange{br(4, 2)}, Seqs{}, nil); delayedFor(err) != DelayResources {
 			t.Fatalf("an unlock splitting a range at the cap: %v, want ErrDelay (DelayResources)", err)
 		}
 		if h := f.holder(t, file, br(4, 2)); h == nil {
