@@ -9,6 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
+func ver(n uint64) core.Version { return core.Version{Counter: n} }
+
 func ext(off, n int64) core.Extent { return core.Extent{Off: off, Len: n} }
 
 func rec(seg core.SegmentID, off uint32) RecordAt { return RecordAt{Segment: seg, Offset: off} }

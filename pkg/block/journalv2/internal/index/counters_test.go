@@ -12,8 +12,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-func ver(counter uint64) core.Version { return core.Version{Counter: counter} }
-
 // roomy is a version limit no test reaches, so a draw is refused only by the
 // counter's own top. A test that wants room says so with a finite number: the
 // greatest counter value is a limit a caller may pass for "no limit", and a
