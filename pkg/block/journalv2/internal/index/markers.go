@@ -103,6 +103,13 @@ func (f *file) cloneTarget(spec core.CloneSpec, v core.Version) error {
 // settles them, so m is small unless settling stalls. Upgrade to an interval
 // structure keyed on offset when a fill's scan shows in a profile, as a trim
 // pass of many punches left unsettled would make it.
+//
+// decision: removal offsets and lengths are trusted, as the held set's are:
+// an offset is not negative and an extent's end does not overflow. A removal
+// outside that range would store a marker whose end wraps negative, and a
+// fill would then not be masked by it. Refusing such a range is the journal
+// API's job, at the call that takes it from the caller, as it is for writes.
+// A truncate to MaxInt64 removes nothing and keeps a marker of length 0.
 func (f *file) remove(m marker) {
 	f.held.cutBelow(m.extent, m.version)
 	f.markers = slices.Insert(f.markers, f.firstAbove(m.version), m)

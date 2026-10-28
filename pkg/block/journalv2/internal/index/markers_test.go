@@ -105,8 +105,9 @@ func TestRemovalLeavesAMarker(t *testing.T) {
 	}
 }
 
-// TestRemovalKeepsContentAtOrAboveItsVersion is the marker's rule: inside its extent, content below its version is not held and
-// content at or above it is. At run time a removal's version is above every
+// TestRemovalKeepsContentAtOrAboveItsVersion is the marker's rule: inside its
+// extent, content below its version is not held and content at or above it
+// is. At run time a removal's version is above every
 // version held, but a rebuild applies records in any order, so a removal can
 // arrive after a fill at its own version or a write above it. A removal that
 // dropped everything in its extent would drop them, and the result would
@@ -348,10 +349,13 @@ func TestFillHoldsOutsideTheMarker(t *testing.T) {
 	id := fid(1)
 	r := rec(2, 0)
 	change(t, &fs, id, func(f *file) error {
-		if err := f.deallocate(ext(4, 4), ver(3)); err != nil {
+		// The newer marker lies at the lower offset, so the masks arrive out
+		// of offset order: a fill walking them in version order would hold
+		// [0, 10) at the first and bring back what the second removed.
+		if err := f.deallocate(ext(10, 2), ver(3)); err != nil {
 			return err
 		}
-		if err := f.deallocate(ext(10, 2), ver(5)); err != nil {
+		if err := f.deallocate(ext(4, 4), ver(5)); err != nil {
 			return err
 		}
 		// The v1 marker below the fill masks nothing.

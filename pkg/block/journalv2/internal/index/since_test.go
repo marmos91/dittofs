@@ -147,18 +147,19 @@ func TestSinceOfAnAbsentFile(t *testing.T) {
 	}
 }
 
-// TestSinceReadsAConsistentView is R49: Since sees no write half made. A
-// writer replaces the two halves of the file in one update, each time at a
-// new version, while Since runs beside it; every Since must see both halves
-// at one version. A Since that read the held set without the file's lock, or
-// in two steps, would see one half old and one new.
+// TestSinceReadsAConsistentView checks that Since sees no change half made. A
+// writer replaces the two halves of the file and removes a third extent in
+// one update, each time at new versions, while Since runs beside it; every
+// Since must see both halves at one version and the removal just above it. A
+// Since that read the held set without the file's lock, or read the held set
+// and the markers in two steps, would see parts of different updates.
 func TestSinceReadsAConsistentView(t *testing.T) {
 	var fs files
 	id := fid(1)
 	change(t, &fs, id, func(f *file) error {
 		f.write(write(0, 4, rec(1, 0), 1))
 		f.write(write(4, 4, rec(1, 4), 1))
-		return nil
+		return f.deallocate(ext(16, 4), ver(2))
 	})
 
 	done := make(chan struct{})
@@ -166,17 +167,19 @@ func TestSinceReadsAConsistentView(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for v := uint64(2); ; v++ {
+		for v := uint64(3); ; v++ {
 			select {
 			case <-done:
 				return
 			default:
 			}
 			_ = fs.update(id, func(f *file) error {
+				f.settleRemovals(ver(v))
 				f.write(write(0, 4, rec(core.SegmentID(v), 0), v))
 				f.write(write(4, 4, rec(core.SegmentID(v), 4), v))
-				return nil
+				return f.deallocate(ext(16, 4), ver(v+1))
 			})
+			v++
 		}
 	}()
 
@@ -184,10 +187,11 @@ func TestSinceReadsAConsistentView(t *testing.T) {
 	var out []Change
 	for time.Now().Before(deadline) {
 		out = fs.since(id, core.Version{}, out[:0])
-		if len(out) != 2 || out[0].Version != out[1].Version {
+		if len(out) != 3 || out[0].Version != out[1].Version || out[2].Removal == 0 ||
+			out[2].Version.Counter != out[0].Version.Counter+1 {
 			close(done)
 			wg.Wait()
-			t.Fatalf("since saw a write half made: %+v", out)
+			t.Fatalf("since saw a change half made: %+v", out)
 		}
 	}
 	close(done)
