@@ -43,6 +43,12 @@ const (
 	// seals it, if it is at least FixtureIdleSealBytes full.
 	IdleSealAge = core.IdleSealAge
 
+	// OfferPins is the most segments one offer pins. JournalPins is the count
+	// of segments all running offers pin together past which an offer takes
+	// no extent from an unpinned segment but its first.
+	OfferPins   = core.OfferPins
+	JournalPins = core.JournalPins
+
 	// versionWindow is how far each open raises the version limit past the
 	// floor: more versions than any one test draws.
 	versionWindow = 1 << 32
