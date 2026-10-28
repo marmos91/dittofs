@@ -195,6 +195,8 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 	type recall struct {
 		g       *grant
 		allowed GrantKind
+		next    grantfsm.Grant // g's state machine once broken
+		started bool           // the break starts a recall
 	}
 	for _, g := range e.grants {
 		if own(g) || grantfsm.Within(g.fsm.Kind, keeps(g)) == g.fsm.Kind {
@@ -228,7 +230,7 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 		case g.open != nil:
 			a &= GrantRead // an oplock break carries only Level II or none
 		}
-		hit = append(hit, recall{g, a})
+		hit = append(hit, recall{g: g, allowed: a})
 		if g.fsm.Recall == nil {
 			starts++
 		}
@@ -248,10 +250,12 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 		}
 	}
 	delay := false
-	for _, r := range hit {
-		f := cloneFSM(r.g.fsm)
-		if f.Break(r.allowed) && f.Epoch != r.g.fsm.Epoch {
-			if err := t.persistLeaseAs(ctx, e, r.g, f); err != nil {
+	for i := range hit {
+		r := &hit[i]
+		r.next = cloneFSM(r.g.fsm)
+		r.started = r.next.Break(r.allowed)
+		if r.started && r.next.Epoch != r.g.fsm.Epoch {
+			if err := t.persistLeaseAs(ctx, e, r.g, r.next); err != nil {
 				t.idx.Lock()
 				t.unsent -= starts
 				t.idx.Unlock()
@@ -260,7 +264,8 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 		}
 	}
 	for _, r := range hit {
-		if r.g.fsm.Break(r.allowed) {
+		r.g.fsm = r.next
+		if r.started {
 			t.queueRecall(e, r.g, out)
 		}
 		delay = delay || r.g.fsm.Recall != nil
@@ -622,22 +627,20 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		// Written as the answer leaves the grant before it is applied, so
 		// a refused write changes nothing and is answered.
 		f := cloneFSM(g.fsm)
-		if _, aerr := f.Ack(to); aerr != nil && inFlight && g.open != nil {
-			f.Timeout()
-		}
-		if f.Kind != g.fsm.Kind || f.Epoch != g.fsm.Epoch {
-			if err := t.persistLeaseAs(ctx, e, g, f); err != nil {
-				return err
-			}
-		}
-		next, err := g.fsm.Ack(to)
+		next, err := f.Ack(to)
 		if err != nil {
 			if !inFlight || g.open == nil {
 				return ErrInvalid
 			}
-			g.fsm.Timeout()
+			f.Timeout()
 			err = ErrInvalid
 		}
+		if f.Kind != g.fsm.Kind || f.Epoch != g.fsm.Epoch {
+			if perr := t.persistLeaseAs(ctx, e, g, f); perr != nil {
+				return perr
+			}
+		}
+		g.fsm = f
 		if next {
 			// decision: only a recall's first stage is held to maxUnsent; a
 			// later one is queued past it, since refusing it would leave the
