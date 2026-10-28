@@ -1,10 +1,12 @@
 package vfs_test
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/vfs"
 )
 
@@ -60,8 +62,8 @@ func TestStateIDGolden(t *testing.T) {
 			if got.Kind != c.ref.Kind || got.State != c.ref.State || got.Open != 0 || got.Handle != nil {
 				t.Fatalf("decode = %+v, want %+v", got, c.ref)
 			}
-			if enc := vfs.EncodeStateID(c.ref.State); enc != b {
-				t.Fatalf("encode = %x, want %x", enc, b)
+			if enc, err := vfs.EncodeStateID(c.ref.State); err != nil || enc != b {
+				t.Fatalf("encode = %x, %v; want %x", enc, err, b)
 			}
 		})
 	}
@@ -72,6 +74,8 @@ func TestStateIDMalformed(t *testing.T) {
 		"type zero, not all zeros": "00000000" + "28" + "000001" + "0000000000000001",
 		"current stateid":          "00000001" + "00" + "000000" + "0000000000000000",
 		"watch type":               "00000001" + "04" + "000001" + "0000000000000001",
+		"type 5":                   "00000001" + "05" + "000001" + "0000000000000001",
+		"type 6":                   "00000001" + "06" + "000001" + "0000000000000001",
 		"type 7":                   "00000001" + "07" + "000001" + "0000000000000001",
 		"all ones":                 "ffffffff" + "ff" + "ffffff" + "ffffffffffffffff",
 	} {
@@ -108,8 +112,8 @@ func TestFileIDGolden(t *testing.T) {
 			if got.Kind != want.Kind || got.State != want.State || got.Open != want.Open {
 				t.Fatalf("decode = %+v, want %+v", got, want)
 			}
-			if enc := vfs.EncodeFileID(want); enc != c.persistent {
-				t.Fatalf("encode = %#x, want %#x", enc, c.persistent)
+			if enc, err := vfs.EncodeFileID(want); err != nil || enc != c.persistent {
+				t.Fatalf("encode = %#x, %v; want %#x", enc, err, c.persistent)
 			}
 		})
 	}
@@ -125,9 +129,41 @@ func TestFileIDMalformed(t *testing.T) {
 	}
 }
 
+// A value whose fields do not fit is refused, never spelled as another.
+func TestEncodeRefusesWhatDoesNotFit(t *testing.T) {
+	for name, r := range map[string]vfs.StateRef{
+		"shard past 24 bits":   {Type: vfs.StateOpen, Shard: 0x1000001, Token: 1},
+		"shard at the limit":   {Type: vfs.StateOpen, Shard: entity.ShardLimit, Token: 1},
+		"instance past 5 bits": {Type: vfs.StateOpen, Instance: 32, Token: 1},
+		"watch, no stateid's":  {Type: vfs.StateWatch, Token: 1},
+		"type past the 3 bits": {Type: 9, Token: 1},
+	} {
+		if b, err := vfs.EncodeStateID(r); !errors.Is(err, vfs.ErrInvalid) {
+			t.Errorf("stateid, %s: %x, %v; want ErrInvalid", name, b, err)
+		}
+	}
+	for name, ref := range map[string]vfs.OpenRef{
+		"shard past 24 bits":  {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: 0x1000001}, Open: 1},
+		"shard at the limit":  {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: entity.ShardLimit}, Open: 1},
+		"OpenID past 40 bits": {Kind: vfs.RefOpened, Open: 1 << 40},
+		"OpenID zero":         {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: 1}},
+		"a lock state":        {Kind: vfs.RefLocked, State: vfs.StateRef{Type: vfs.StateLock, Shard: 1, Instance: 7, Token: 99}, Open: 5},
+		"an open's stateid":   {Kind: vfs.RefOpened, State: vfs.StateRef{Type: vfs.StateOpen, Shard: 1, Token: 99}, Open: 5},
+		"anonymous":           {Kind: vfs.RefAnonymous, Open: 5},
+	} {
+		if p, err := vfs.EncodeFileID(ref); !errors.Is(err, vfs.ErrInvalid) {
+			t.Errorf("FileId, %s: %#x, %v; want ErrInvalid", name, p, err)
+		}
+	}
+}
+
+// The fuzz targets take bytes: the fuzzer moves an integer argument only a
+// little at a time, so the type byte and the shard bits would never leave
+// their seeds.
 func FuzzDecodeStateID(f *testing.F) {
 	f.Add(make([]byte, 16))
-	f.Add([]byte("\x00\x00\x00\x07\x29\x0a\x0b\x0c\x01\x02\x03\x04\x05\x06\x07\x08"))
+	seed := stateID(f, "00000007"+"29"+"0a0b0c"+"0102030405060708")
+	f.Add(seed[:])
 	f.Fuzz(func(t *testing.T, in []byte) {
 		if len(in) != 16 {
 			return
@@ -137,22 +173,26 @@ func FuzzDecodeStateID(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if enc := vfs.EncodeStateID(ref.State); enc != b {
-			t.Fatalf("%x decoded and re-encoded as %x", b, enc)
+		if enc, err := vfs.EncodeStateID(ref.State); err != nil || enc != b {
+			t.Fatalf("%x decoded and re-encoded as %x, %v", b, enc, err)
 		}
 	})
 }
 
 func FuzzDecodeFileID(f *testing.F) {
-	f.Add(uint64(0x0a0b0c_0102030405))
-	f.Add(uint64(0))
-	f.Fuzz(func(t *testing.T, p uint64) {
+	f.Add(binary.BigEndian.AppendUint64(nil, 0x0a0b0c_0102030405))
+	f.Add(make([]byte, 8))
+	f.Fuzz(func(t *testing.T, in []byte) {
+		if len(in) != 8 {
+			return
+		}
+		p := binary.BigEndian.Uint64(in)
 		ref, err := vfs.DecodeFileID(p)
 		if err != nil {
 			return
 		}
-		if enc := vfs.EncodeFileID(ref); enc != p {
-			t.Fatalf("%#x decoded and re-encoded as %#x", p, enc)
+		if enc, err := vfs.EncodeFileID(ref); err != nil || enc != p {
+			t.Fatalf("%#x decoded and re-encoded as %#x, %v", p, enc, err)
 		}
 	})
 }

@@ -1,29 +1,51 @@
 package vfs
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+)
 
 // The codecs of every name of state a client presents back. Each is a pure
 // function shared by every adapter: decoding never touches the store, refuses
 // only malformed bytes, and leaves stale against bad to the service, when the
-// decoded value is used. A Handle needs none, being opaque, and a ClientID,
-// a Cursor and an SMB lease key are carried on the wire as they are.
+// decoded value is used. Encoding refuses, with ErrInvalid, a value whose
+// fields do not fit, rather than spell another one. A Handle needs none, being
+// opaque, and a ClientID, a Cursor and an SMB lease key are carried on the
+// wire as they are.
 
-// openIDBits is the width of an OpenID: with a 24-bit shard it fills the
-// persistent half of an SMB FileId.
+// openIDBits is the width of an OpenID: the store issues every one below
+// 2^40, so with a shard below entity.ShardLimit it fills the persistent half
+// of an SMB FileId.
 const openIDBits = 40
+
+// instanceBits is how many low bits of a grace instance a stateid carries.
+const instanceBits = 5
 
 // EncodeStateID spells r as an NFSv4 stateid: its seqid, big-endian, then
 // the 12 bytes of other: byte 0 holds the type in its low 3 bits and the
 // grace instance's low 5 bits in its high 5, bytes 1-3 the shard, big-endian,
 // and bytes 4-11 the token, big-endian. The zero StateRef is the anonymous
-// stateid, all zeros. r's shard is below ShardLimit, as every shard is.
-func EncodeStateID(r StateRef) [16]byte {
+// stateid, all zeros. A type no stateid names, a shard at or past
+// entity.ShardLimit or an instance past 5 bits is ErrInvalid.
+func EncodeStateID(r StateRef) ([16]byte, error) {
 	var b [16]byte
+	switch {
+	case r == StateRef{}:
+		return b, nil
+	case r.Type != StateOpen && r.Type != StateLock && r.Type != StateGrant:
+		return b, fmt.Errorf("vfs: no stateid names state of type %d: %w", r.Type, ErrInvalid)
+	case r.Shard >= entity.ShardLimit:
+		return b, fmt.Errorf("vfs: shard %d does not fit a stateid: %w", r.Shard, ErrInvalid)
+	case r.Instance >= 1<<instanceBits:
+		return b, fmt.Errorf("vfs: grace instance bits %d do not fit a stateid: %w", r.Instance, ErrInvalid)
+	}
 	binary.BigEndian.PutUint32(b[0:4], r.Seq)
-	b[4] = uint8(r.Type)&7 | r.Instance<<3
+	b[4] = uint8(r.Type) | r.Instance<<3
 	b[5], b[6], b[7] = byte(r.Shard>>16), byte(r.Shard>>8), byte(r.Shard)
 	binary.BigEndian.PutUint64(b[8:16], r.Token)
-	return b
+	return b, nil
 }
 
 // DecodeStateID reads a stateid as EncodeStateID spells it, its seqid as
@@ -54,10 +76,22 @@ func DecodeStateID(b [16]byte) (OpenRef, error) {
 }
 
 // EncodeFileID spells an SMB open as its FileId's persistent half: the
-// shard in the high 24 bits, the OpenID in the low 40. ref's shard is below
-// ShardLimit and its OpenID below 2^40, as every one is.
-func EncodeFileID(ref OpenRef) uint64 {
-	return uint64(ref.State.Shard)<<openIDBits | uint64(ref.Open)&(1<<openIDBits-1)
+// shard in the high 24 bits, the OpenID in the low 40. A ref that is not an
+// open with nothing in its State but the shard, OpenID zero, which names no
+// open, a shard at or past entity.ShardLimit or an OpenID past 40 bits is
+// ErrInvalid.
+func EncodeFileID(ref OpenRef) (uint64, error) {
+	switch {
+	case ref.Kind != RefOpened || ref.State != StateRef{Shard: ref.State.Shard}:
+		return 0, fmt.Errorf("vfs: only an SMB open has a FileId: %w", ErrInvalid)
+	case ref.Open == 0:
+		return 0, fmt.Errorf("vfs: OpenID zero names no open: %w", ErrInvalid)
+	case ref.State.Shard >= entity.ShardLimit:
+		return 0, fmt.Errorf("vfs: shard %d does not fit a FileId: %w", ref.State.Shard, ErrInvalid)
+	case ref.Open >= 1<<openIDBits:
+		return 0, fmt.Errorf("vfs: OpenID %d does not fit a FileId: %w", ref.Open, ErrInvalid)
+	}
+	return uint64(ref.State.Shard)<<openIDBits | uint64(ref.Open), nil
 }
 
 // DecodeFileID reads a FileId's persistent half as EncodeFileID spells it.
