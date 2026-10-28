@@ -18,8 +18,10 @@
 #
 #   night.sh              as root, from cron at 18:45 (setup.sh writes the cron file)
 #   SMOKE=yes night.sh    one short point of each kind, a few minutes; never posts
+#   dt run --tier nightly --place dedicated
+#                         on the dedicated host, as the perf-night suite (test/suites.yaml)
 #
-# The checkout's working tree is not what runs. night.sh fetches develop and the branch the checkout
+# Run from cron, the checkout's working tree is not what runs. night.sh fetches develop and the branch the checkout
 # is on, then hands over to the night.sh of that branch as fetched, extracted under
 # /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the scenarios' reporting
 # all come from there, and dfs is built from develop as fetched. Both commits are recorded. A fetch
@@ -33,6 +35,11 @@
 #   STOP_AT          the hard stop, HH:MM local time (default 05:45): steps are cut to end before it
 #   HARNESS          set by hand: this tree runs as it is, with dfs from develop as last fetched (a
 #                    test of changes not pushed yet)
+#   DT_OUT           set by dt, its cell's {out}: dt's checkout is develop's latest commit, so the
+#                    tree runs as it is and dfs is built from it, with no fetch; the summary and
+#                    slack.txt are copied there
+# A step that fails or times out, or a night that can't be scored, makes the exit status 1, so dt's
+# cell fails; a flag is no failure, Slack gets it.
 # Results: /var/tmp/dittofs-perf/<date>/ (a smoke run: smoke-<date>-<time>/), kept 30 days.
 set -euo pipefail
 
@@ -306,7 +313,10 @@ build | start | setup_boot | matrix | mailbox | files | post) "$@"; exit ;;
 esac
 
 test "$(id -u)" -eq 0 || { echo "night.sh: run it as root" >&2; exit 2; }
-if test -z "${HARNESS:-}"; then
+if test -n "${DT_OUT:-}"; then
+    HARNESS="$(git -C "$REPO" rev-parse HEAD)" DEVELOP=HEAD
+    export HARNESS DEVELOP
+elif test -z "${HARNESS:-}"; then
     branch="$(git -C "$REPO" symbolic-ref --short HEAD)" || { echo "night.sh: $REPO is on no branch" >&2; exit 2; }
     git -C "$REPO" fetch -q origin develop "$branch" || echo "night.sh: the fetch failed, running what was fetched last" >&2
     HARNESS="$(git -C "$REPO" rev-parse "origin/$branch")" DEVELOP="$(git -C "$REPO" rev-parse origin/develop)"
@@ -408,13 +418,19 @@ finish() {
     if ! python3 "$HERE/score.py" "$NIGHT" "$REPO" >"$NIGHT/slack.txt"; then
         echo ":x: Nightly performance: scoring failed, see $NIGHT/night.log" >"$NIGHT/slack.txt"
         echo new >"$NIGHT/alert"
+        test "$rc" -ne 0 || rc=1
     fi
     if test "$SMOKE" = no && test -s "$NIGHT/points.csv"; then
         test -s "$WORK/trend.csv" || head -1 "$NIGHT/points.csv" >"$WORK/trend.csv"
         tail -n +2 "$NIGHT/points.csv" >>"$WORK/trend.csv"
     fi
     test "$CALIBRATION" = yes || test "$SMOKE" = yes || "$HERE/night.sh" post "$NIGHT"
+    test -z "${DT_OUT:-}" || cp "$NIGHT/summary.json" "$NIGHT/slack.txt" "$DT_OUT/"
+    if test "$rc" -eq 0 && awk -F'\t' 'NR > 1 && ($4 == "fail" || $4 == "timeout") { f = 1 } END { exit !f }' "$NIGHT/steps.tsv"; then
+        rc=1
+    fi
     log "end ($rc): $(head -1 "$NIGHT/slack.txt")"
+    exit "$rc"
 }
 STARTED="" STATE=""
 trap finish EXIT

@@ -83,6 +83,31 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 	}
 }
 
+// The dedicated host's nightly is the performance night, then the long
+// scenarios, on a host quiet for the first: those two cells, in that order,
+// and no tier before nightly sends a cell there.
+func TestDedicatedNight(t *testing.T) {
+	r := repo(t)
+	for _, tier := range []string{"pr", "merge", "nightly"} {
+		cells, err := Plan("../../..", r, tier, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got, want []string
+		for _, c := range cells {
+			if c.Place == "dedicated" {
+				got = append(got, c.Name)
+			}
+		}
+		if tier == "nightly" {
+			want = []string{"perf-night", "system/dedicated"}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: the dedicated host's cells %v, want %v", tier, got, want)
+		}
+	}
+}
+
 // Each tier contains the ones before it, and manual runs only when asked.
 func TestTiersContainTheOnesBefore(t *testing.T) {
 	r := repo(t)

@@ -65,8 +65,8 @@ mailbox's mail flow and full sync with 16 users stay in ms, as their 99th percen
 
 ## Calibration and flags
 
-`CALIBRATION=yes` in the cron file runs every point three times and posts nothing. That is the
-first week. When it is set to `no`, the night runs every point once, and `score.py` first sets
+`CALIBRATION=yes` in the cron file runs every point three times and posts nothing; under `dt`,
+the same goes in the `perf-night` suite's `env`. That is the first week. When it is set to `no`, the night runs every point once, and `score.py` first sets
 the noise bands from the calibration nights' repeats (`band.json`): one per point, one per area
 and one for the figure, each repeat's areas and figure computed as a night's are. A point, an area
 or the figure is flagged when it falls below its own 7-day median by more than its band. After a
@@ -126,6 +126,13 @@ git clone https://github.com/marmos91/dittofs /srv/perf/dittofs
 SMOKE=yes /srv/perf/dittofs/bench/ditto/night.sh  # a few minutes, one point of each kind
 /srv/perf/dittofs/bench/ditto/setup.sh cron       # the cron file, in calibration mode
 ```
+
+On the dedicated host, `dt` runs the night as the `perf-night` suite
+(`dt run --tier nightly --place dedicated`, the long scenarios after it), from the host's own
+cron rather than `setup.sh cron`'s. There the checkout is `dt`'s, at develop's latest commit, so
+`night.sh` runs it as it is, with no fetch and no hand-over, and also leaves `summary.json` and
+`slack.txt` in the cell's results. A step that fails or times out, or a night that can't be
+scored, makes `night.sh` exit 1, which fails the cell; a flag doesn't.
 
 `setup.sh remove` takes it all away again, apart from the packages, unless a run holds the lock.
 `setup.sh split-drive DEV --yes`

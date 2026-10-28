@@ -1865,8 +1865,12 @@ a percentage.
   (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
-- **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
-  below its 7-day median for three nights in a row adds a note to the develop-status issue.
+- **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
+  `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
+  point, an area or the night's figure that falls below its 7-day median by more than its noise
+  band, which a calibration week's repeats set. Slack gets the night by the scenarios' rules. The
+  cell fails when a step fails or times out, or the night can't be scored, and so reaches the
+  develop-status issue (§4.5); a flag fails nothing.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
   only) and the journal simulation (many small files against large segments under heavy writes).
   They use the same result format, so runs compare over time.

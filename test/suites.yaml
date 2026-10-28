@@ -11,7 +11,7 @@ groups:              # `dt run GROUP` runs every suite in it
   lint: [lint-go, lint-repo, shellcheck]
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
-  perf: [fio-verify, bench-smoke]
+  perf: [fio-verify, bench-smoke, perf-night]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -323,6 +323,17 @@ suites:
         fixture: { profile: memory, smb: { mount: true } }
         tier: nightly
 
+  # The nightly performance run on the dedicated host: DittoFS against Samba over SMB, scored
+  # against the night's 7-day medians (bench/ditto). It posts to the scenarios' Slack channel by
+  # their rules; dt keeps its exit status, its summary and slack.txt.
+  # decision: before system, so the dedicated host's nightly runs it first, on a quiet host, and
+  # the long scenarios after it.
+  perf-night:
+    cmd: bench/ditto/night.sh
+    env: { DT_OUT: "{out}", SLACK_DIR: /etc/dittofs-perf, SCENARIO_HOST: ditto }
+    tier: nightly
+    needs: [linux, root, host:dedicated]
+    timeout: { cell: 3h }   # a night of one repeat takes about 1 h 30 min, its build and lock wait included
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.
