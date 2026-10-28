@@ -21,8 +21,16 @@ const roomy = 1 << 62
 // limited returns counters whose version limit is limit.
 func limited(limit uint64) *Counters {
 	c := &Counters{}
-	c.SetVersionLimit(ver(limit))
+	setLimit(c, limit)
 	return c
+}
+
+// setLimit sets the version limit of c; a limit with a zero epoch is never
+// refused.
+func setLimit(c *Counters, limit uint64) {
+	if err := c.SetVersionLimit(ver(limit)); err != nil {
+		panic(err)
+	}
 }
 
 // mustDraw draws a version and fails the test on a refusal.
@@ -122,7 +130,7 @@ func TestDrawJustBelowAndAtLimit(t *testing.T) {
 	_, err := c.Draw()
 	assertVersionRefusal(t, err)
 
-	c.SetVersionLimit(ver(6))
+	setLimit(c, 6)
 	if got := mustDraw(t, c); got != ver(4) {
 		t.Fatalf("after raising the limit: Draw = %v, want %v", got, ver(4))
 	}
@@ -141,7 +149,7 @@ func TestLoweredLimitRefuses(t *testing.T) {
 	for range 10 {
 		mustDraw(t, c)
 	}
-	c.SetVersionLimit(ver(5))
+	setLimit(c, 5)
 	_, err := c.Draw()
 	assertVersionRefusal(t, err)
 	if left := c.VersionsLeft(); left != 0 {
@@ -179,9 +187,10 @@ func TestShareFloorRaisesCounter(t *testing.T) {
 }
 
 // TestNonZeroEpochRefused checks that a floor or a record with a non-zero
-// epoch is refused as an unknown format and changes nothing, and that a limit
-// with one stands above every version this format issues. It catches the epoch
-// ignored, and a record's sequence number taken before its version is refused.
+// epoch is refused as an unknown format and changes nothing, and that a refused
+// limit leaves the limit as it was. It catches the epoch ignored, a limit
+// overwritten before the check, and a record's sequence number taken before
+// its version is refused.
 func TestNonZeroEpochRefused(t *testing.T) {
 	c := limited(100)
 	mustDraw(t, c)
@@ -206,12 +215,14 @@ func TestNonZeroEpochRefused(t *testing.T) {
 		t.Errorf("NextSeq = %d, %v; want 2: the refused record's seq was taken", got, err)
 	}
 
-	c.SetVersionLimit(core.Version{Epoch: 1})
-	if got := mustDraw(t, c); got != ver(2) {
-		t.Errorf("under an epoch-1 limit: Draw = %v, want %v", got, ver(2))
+	if err := c.SetVersionLimit(core.Version{Epoch: 1, Counter: 5}); !errors.Is(err, core.ErrUnknownFormat) {
+		t.Errorf("SetVersionLimit with epoch 1: got %v, want ErrUnknownFormat", err)
 	}
-	if got := c.VersionsLeft(); got != math.MaxUint64-3 {
-		t.Errorf("under an epoch-1 limit: VersionsLeft = %d, want %d", got, uint64(math.MaxUint64-3))
+	if got := c.VersionsLeft(); got != wantLeft {
+		t.Errorf("a refused limit moved VersionsLeft to %d, want %d", got, wantLeft)
+	}
+	if got := mustDraw(t, c); got != ver(2) {
+		t.Errorf("after a refused limit: Draw = %v, want %v", got, ver(2))
 	}
 }
 
@@ -249,7 +260,7 @@ func TestNoVersionRepeats(t *testing.T) {
 	// Reopened, recovered, and still no limit set: nothing is issued yet.
 	_, err := after.Draw()
 	assertVersionRefusal(t, err)
-	after.SetVersionLimit(ver(limit + 3))
+	setLimit(after, limit+3)
 	for range 2 {
 		if got := mustDraw(t, after); got.Compare(lost) <= 0 {
 			t.Fatalf("Draw after recovery = %v, not above the lost %v", got, lost)
@@ -257,7 +268,7 @@ func TestNoVersionRepeats(t *testing.T) {
 	}
 	_, err = after.Draw()
 	assertVersionRefusal(t, err)
-	after.SetVersionLimit(ver(2 * limit))
+	setLimit(after, 2*limit)
 	if got := mustDraw(t, after); got != ver(limit+3) {
 		t.Fatalf("after raising the limit: Draw = %v, want %v", got, ver(limit+3))
 	}
@@ -477,7 +488,7 @@ func TestConcurrentObserve(t *testing.T) {
 // records.
 func TestExhaustionNeverWraps(t *testing.T) {
 	c := &Counters{}
-	c.SetVersionLimit(core.Version{Epoch: 1})
+	setLimit(c, math.MaxUint64)
 	for _, err := range []error{
 		c.Observe(Numbers{ver(math.MaxUint64), 1}),
 		c.Observe(Numbers{ver(1), math.MaxUint64}),
@@ -522,7 +533,7 @@ func TestExhaustionNeverWraps(t *testing.T) {
 	// Reopened on the last numbers it issued, with its last version as the
 	// floor: the journal opens, and refuses as it did before.
 	reopened := &Counters{}
-	reopened.SetVersionLimit(core.Version{Epoch: 1})
+	setLimit(reopened, math.MaxUint64)
 	if err := reopened.Observe(Numbers{lastVersion, lastSeq}); err != nil {
 		t.Fatalf("Observe of the last numbers issued: %v", err)
 	}
