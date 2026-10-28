@@ -74,11 +74,11 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 			return err
 		}
 	}
-	hold, err := e.s.NextOpenID(ctx)
+	hold, err := e.s.NextID(ctx, IDOpen)
 	if err != nil {
 		return err
 	}
-	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k, hold) })
+	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k, entity.OpenID(hold)) })
 }
 
 // clonePhase1 applies the clone's first phase, holding its source with a

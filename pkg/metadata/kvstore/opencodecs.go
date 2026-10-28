@@ -7,41 +7,37 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
 )
 
-func encodeClient(c entity.Client) []byte {
-	w := codec.NewWriter(v1).Uint8(uint8(c.Protocol)).Bytes(c.Owner).Fixed(c.Verifier[:])
-	putPrincipal(w, c.Principal).Bool(c.MachCred != nil)
-	if m := c.MachCred; m != nil {
-		putPrincipal(w, m.Principal).Bytes(m.Ops)
+func encodeClient(c entity.ClientRecord) []byte {
+	w := codec.NewWriter(v1).Uint8(uint8(c.Protocol)).Bytes(c.Name).Fixed(c.Boot[:])
+	putPrincipal(w, c.Owner).Bool(c.Protect).Uint8(uint8(c.Recovery)).
+		Fixed(c.Lease.Node[:]).Fixed(c.Reach.Callback[:]).Bool(c.Reach.Down).Len(len(c.Reach.Sessions))
+	for _, n := range c.Reach.Sessions {
+		w.Fixed(n[:])
 	}
-	return w.Uint32(c.CSSeq).Bytes(c.CSReply).Bool(c.Revoked).Encode()
+	return w.Bool(c.Ended).Bytes(c.Adapter).Encode()
 }
 
-func decodeClient(id entity.ClientID, b []byte) (entity.Client, error) {
+// decodeClient reads a client record's value; its shard marks are keys of
+// their own, which the caller adds.
+func decodeClient(id entity.ClientID, b []byte) (entity.ClientRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Client{}, err
+		return entity.ClientRecord{}, err
 	}
-	c := entity.Client{ID: id, Protocol: entity.Protocol(r.Uint8()), Owner: r.Bytes()}
-	copy(c.Verifier[:], r.Fixed(8))
-	c.Principal = readPrincipal(r)
-	if r.Bool() {
-		c.MachCred = &entity.MachCred{Principal: readPrincipal(r), Ops: r.Bytes()}
+	c := entity.ClientRecord{ID: id, Protocol: entity.Protocol(r.Uint8()), Name: r.Bytes()}
+	copy(c.Boot[:], r.Fixed(8))
+	c.Owner, c.Protect, c.Recovery = readPrincipal(r), r.Bool(), entity.RecoveryKind(r.Uint8())
+	copy(c.Lease.Node[:], r.Fixed(16))
+	copy(c.Reach.Callback[:], r.Fixed(16))
+	c.Reach.Down = r.Bool()
+	if n := r.Len(); n > 0 {
+		c.Reach.Sessions = make([]entity.NodeID, n)
+		for i := range c.Reach.Sessions {
+			copy(c.Reach.Sessions[i][:], r.Fixed(16))
+		}
 	}
-	c.CSSeq, c.CSReply, c.Revoked = r.Uint32(), r.Bytes(), r.Bool()
+	c.Ended, c.Adapter = r.Bool(), r.Bytes()
 	return c, r.Done()
-}
-
-func encodeClientShard(s entity.ClientShard) []byte {
-	return codec.NewWriter(v1).Uint32(s.Reclaimed).Bool(s.LossPending).Bool(s.Revoked).Bytes(s.Notify).Encode()
-}
-
-func decodeClientShard(shard uint64, b []byte) (entity.ClientShard, error) {
-	r, err := open(b)
-	if err != nil {
-		return entity.ClientShard{}, err
-	}
-	s := entity.ClientShard{Shard: shard, Reclaimed: r.Uint32(), LossPending: r.Bool(), Revoked: r.Bool(), Notify: r.Bytes()}
-	return s, r.Done()
 }
 
 func encodeClientID(id entity.ClientID) []byte {

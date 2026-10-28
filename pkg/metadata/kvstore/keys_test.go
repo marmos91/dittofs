@@ -102,7 +102,7 @@ func TestKeyDescribe(t *testing.T) {
 		{lockKey(sh, f, 9, 100, 4), "F‖share=3fa2c1d0‖file=9b1e44a7‖op‖9‖l‖100‖4"},
 		{removalIndexKey(sh, 2, f, entity.VersionOf(7)), "S‖share=3fa2c1d0‖rr‖2‖file=9b1e44a7‖v7"},
 		{clientShardKey(7, 2), "CL‖7‖sh‖2"},
-		{clientOwnerKey(entity.ProtocolSMB, []byte("host")), `CLO‖2‖"host"`},
+		{clientNameKey(entity.ProtocolSMB, []byte("host")), `CLO‖4‖"host"`},
 		{[]byte{0xFE, 1}, "?fe01"},
 	} {
 		if got := keys.Describe(c.key); got != c.want {

@@ -12,22 +12,21 @@ import "sync/atomic"
 // ponytail: leaves are only as full as the insert order leaves them: about 94%
 // for ascending or nearly ascending keys, 69% for random ones, 59% after heavy
 // churn and 50% for descending ones. A held extent's entry is 48 bytes, its
-// 8-byte key beside a 40-byte value, so a node of 32 is 1,552 bytes, which the
-// allocator rounds up to 1,792: ascending keys cost about 60 bytes an entry
-// and random ones about 82, and the index's budget is 56, so no insert order
-// meets it. Upgrade before bytes per entry are checked against that budget.
-// 31 slots fit the 1,536-byte size class and bring ascending keys to about
-// 53; splitting into a sibling with room, as a B*-tree does, raises the fill
-// of the other orders.
+// 8-byte key beside a 40-byte value, so a leaf of 31 is 1,504 bytes, just
+// inside the allocator's 1,536-byte size class; a 32nd slot would round it up
+// to 1,792. Ascending keys cost about 53 bytes an entry, within the index's
+// budget of 56, and random ones about 65, outside it. Upgrade when a workload
+// that writes out of order holds enough extents for that to matter: splitting
+// into a sibling with room, as a B*-tree does, raises the fill of every order.
 const (
-	maxItems = 32
+	maxItems = 31
 	minItems = (maxItems - 1) / 2
 )
 
 // node is one packed B-tree node. Keys and values sit inline in fixed arrays,
 // so a split costs one allocation and a lookup touches one contiguous block
 // per level. Only inner nodes allocate the child array, so leaves, which are
-// nearly all nodes, carry one nil pointer in its place rather than 33 child
+// nearly all nodes, carry one nil pointer in its place rather than 32 child
 // pointers. A vacated value slot is cleared, so a removed value keeps nothing
 // reachable; a vacated key slot is left as it is.
 type node[V any] struct {

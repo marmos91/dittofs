@@ -15,41 +15,16 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 )
 
-// spareWait bounds, in real time, how long a call refused for want of a spare
-// segment is retried.
-//
-// decision: spares are made off the write path, and a roll that finds none
-// ready is refused at once, so with the fixture's small segments a correct
-// journal can refuse a write now and accept it a moment later. Retrying is
-// what its caller does. The wait is real time because spare making runs on
-// the journal's own goroutines; it is spent only when a spare is missing.
-const spareWait = 2 * time.Second
-
-// retrySpare calls op until it returns anything but a NoSpaceError naming
-// LimitSpare, or spareWait has passed, and returns op's last error.
-func retrySpare(op func() error) error {
-	deadline := time.Now().Add(spareWait)
-	for {
-		err := op()
-		var ns *journalv2.NoSpaceError
-		if !errors.As(err, &ns) || ns.Limit != journalv2.LimitSpare || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // tryWrite writes p at off of file id through h, retrying a refusal for want
 // of a spare, and returns its version.
 func tryWrite(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, p []byte) (journalv2.Version, error) {
 	var v journalv2.Version
-	err := retrySpare(func() (err error) {
+	err := journalv2test.RetrySpare(func() (err error) {
 		v, err = h.WriteAt(t.Context(), id, off, p, 0)
 		return err
 	})

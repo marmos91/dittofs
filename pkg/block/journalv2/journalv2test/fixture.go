@@ -35,7 +35,8 @@ const (
 
 	// FixtureIdleSealBytes is how full an idle segment must be for the
 	// fixture's journals to seal it: the default's sixteenth of a segment, at
-	// the fixture's cap, so idle sealing can happen at all.
+	// the fixture's cap, so idle sealing can happen at all. A journal with
+	// another cap, such as ModelTargets opens, takes the sixteenth of its own.
 	FixtureIdleSealBytes = FixtureSegmentCap / 16
 
 	// IdleSealAge is how long a segment takes no append before the journal
@@ -86,7 +87,7 @@ type Fixture struct {
 // profiler's checks run, when the test ends.
 func New(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, true)
+	return newFixture(tb, nil, true, FixtureSegmentCap)
 }
 
 // NewUnwatched is New without the profiler, for a second journal in a test
@@ -95,12 +96,13 @@ func New(tb testing.TB) *Fixture {
 // watch runs its checks, which then cover it too.
 func NewUnwatched(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, false)
+	return newFixture(tb, nil, false, FixtureSegmentCap)
 }
 
 // newFixture is New with fault set on the seam before the journal is
-// initialised, and the profiler only when watch is set.
-func newFixture(tb testing.TB, fault sim.Fault, watch bool) *Fixture {
+// initialised, the profiler only when watch is set, and segments of segCap
+// bytes.
+func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixture {
 	tb.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -120,9 +122,9 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool) *Fixture {
 		MaxBytes:        FixtureMaxBytes,
 		Streams:         fixtureStreams,
 		HeadroomRecords: fixtureHeadroomRecords,
-		IdleSealBytes:   FixtureIdleSealBytes,
+		IdleSealBytes:   segCap / 16,
 	}
-	core.SetSegmentCap(&settings, FixtureSegmentCap)
+	core.SetSegmentCap(&settings, segCap)
 
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{
@@ -168,7 +170,11 @@ func (f *Fixture) open() {
 
 	// The journal issues no version until its first limit.
 	f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
-	f.J.SetVersionLimit(f.limit)
+	if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
+		f.tb.Fatalf("stub: SetVersionLimit")
+	} else if err != nil {
+		f.tb.Fatalf("fixture: set version limit: %v", err)
+	}
 
 	for i := range f.handles {
 		f.handles[i] = f.attach(i)
@@ -221,6 +227,10 @@ func (f *Fixture) attach(i int) *journalv2.Handle {
 	}
 	return h
 }
+
+// Floor returns the floor the journal open now was opened with: every
+// version it issues exceeds it.
+func (f *Fixture) Floor() journalv2.Version { return f.floor }
 
 // Tag returns the tag of the fixture's share i.
 func Tag(i int) journalv2.ShareTag {

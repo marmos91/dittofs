@@ -84,14 +84,18 @@ func Run(t *testing.T, open Opener) {
 		{"FoldDirectory", testFoldDirectory},
 		{"DirectoryTimeSet", testDirectoryTimeSet},
 		{"Clients", testClients},
-		{"CreateSession", testCreateSession},
-		{"ClientOwnerRace", testClientOwnerRace},
+		{"ClientPut", testClientPut},
+		{"ClientAddSession", testClientAddSession},
+		{"ClientShards", testClientShards},
+		{"ClientReboot", testClientReboot},
+		{"ClientNameRace", testClientNameRace},
 		{"DurableOpens", testDurableOpens},
 		{"OpenRacesRelease", testOpenRacesRelease},
 		{"CloneHold", testCloneHold},
 		{"DurableLocks", testDurableLocks},
 		{"DeletePending", testDeletePending},
 		{"NSMState", testNSMState},
+		{"NextID", testNextID},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

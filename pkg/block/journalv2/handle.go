@@ -4,6 +4,8 @@ import (
 	"context"
 	"iter"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
 // Handle is one share's view of the journal. Every call through it that names
@@ -17,17 +19,6 @@ import (
 // methods are safe for concurrent use.
 type Handle struct{}
 
-// CloneSpec describes the range a clone copies into its destination: Len bytes
-// of Src, in share SrcShare, from SrcOff, as of Src's change version AsOf,
-// placed at DstOff of the destination.
-type CloneSpec struct {
-	SrcShare       ShareID
-	Src            FileID
-	SrcOff, DstOff int64
-	Len            int64
-	AsOf           Version
-}
-
 // Change is one thing Since reports about a file: a held extent, an unsettled
 // removal marker, or a synced loss.
 type Change struct {
@@ -39,24 +30,22 @@ type Change struct {
 	Clone *CloneSpec
 }
 
-// ChangeKind is what a Change reports. The zero ChangeKind names none.
-type ChangeKind uint8
-
+// What a Change reports; see ChangeKind.
 const (
 	// ChangeWrite is a held extent, written or filled.
-	ChangeWrite ChangeKind = iota + 1
+	ChangeWrite = core.ChangeWrite
 	// ChangeTruncate is the marker of a Truncate.
-	ChangeTruncate
+	ChangeTruncate = core.ChangeTruncate
 	// ChangeDeallocate is the marker of a Deallocate.
-	ChangeDeallocate
+	ChangeDeallocate = core.ChangeDeallocate
 	// ChangeDelete is the marker of a Delete.
-	ChangeDelete
+	ChangeDelete = core.ChangeDelete
 	// ChangeCloneTarget is the marker of a CloneTarget; Change.Clone is its
 	// spec.
-	ChangeCloneTarget
+	ChangeCloneTarget = core.ChangeCloneTarget
 	// ChangeLoss is a synced write the journal lost: the range reads as lost
 	// rather than as the file was before the write.
-	ChangeLoss
+	ChangeLoss = core.ChangeLoss
 )
 
 // Close ends the handle. New calls through it fail with ErrClosed, and Close

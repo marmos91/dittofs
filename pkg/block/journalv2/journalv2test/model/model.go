@@ -325,8 +325,18 @@ func report(kind error, op string, id fileID, format string, args []any) error {
 	if id != (fileID{}) {
 		where = fmt.Sprintf(" file %x", id.Bytes())
 	}
-	return fmt.Errorf("model: %s%s: %s: %w", op, where, fmt.Sprintf(format, args...), kind)
+	return checkError{op, fmt.Errorf("model: %s%s: %s: %w", op, where, fmt.Sprintf(format, args...), kind)}
 }
+
+// checkError is an error of the model, naming the operation whose check
+// found it.
+type checkError struct {
+	op  string
+	err error
+}
+
+func (e checkError) Error() string { return e.err.Error() }
+func (e checkError) Unwrap() error { return e.err }
 
 func fmtVersion(v version) string {
 	if v.Epoch != 0 {
