@@ -63,22 +63,24 @@ func (f *fixture) idle(d time.Duration) {
 }
 
 // A disconnect ends one session: its volatile opens close, serving the
-// waiters they held under the file's admission lock, and its durable opens
-// stay with their deny modes. Another session of the machine, and a session
-// of the same ID on another node, keep their opens.
+// waiters they held under the file's admission lock, and so does a durable
+// open under no handle caching, while one under it stays, to be reconnected.
+// Another session of the machine, and a session of the same ID on another
+// node, keep their opens attached.
 func TestDisconnectEndsOneSession(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
-	volatile, durable, other, elsewhere := anyFile(), anyFile(), anyFile(), anyFile()
+	volatile, durable, bare, other, elsewhere := anyFile(), anyFile(), anyFile(), anyFile(), anyFile()
 	deny := OpenRequest{Access: rd | wr, Deny: wr}
+	batch := OpenRequest{Access: rd | wr, Deny: wr, Want: rwh}
 	va := f.mustOpen(t, a, volatile, keep(deny, entity.DurabilityNone, s1, 0, 0))
-	va.Durable = nil
-	f.mustOpen(t, a, durable, keep(deny, entity.DurabilityDurable, s1, time.Minute, 1))
-	f.mustOpen(t, a, other, keep(deny, entity.DurabilityDurable, s2, time.Minute, 2))
-	f.mustOpen(t, a, elsewhere, keep(deny, entity.DurabilityDurable, entity.SessionRef{Node: 2, NodeEpoch: 1, ID: 1}, time.Minute, 3))
+	od := f.mustOpen(t, a, durable, keep(batch, entity.DurabilityDurable, s1, time.Minute, 1))
+	ob := f.mustOpen(t, a, bare, keep(deny, entity.DurabilityDurable, s1, time.Minute, 4))
+	oo := f.mustOpen(t, a, other, keep(batch, entity.DurabilityDurable, s2, time.Minute, 2))
+	oe := f.mustOpen(t, a, elsewhere, keep(batch, entity.DurabilityDurable, entity.SessionRef{Node: 2, NodeEpoch: 1, ID: 1}, time.Minute, 3))
 	f.mustLock(t, a, volatile, LockReq{Owner: smbOwner(a, va), Open: byID(va), Ranges: []LockRange{x(0, 10)}})
-	ob := f.mustOpen(t, b, volatile, OpenRequest{Access: rd})
-	if res, err := f.lock(b, volatile, LockReq{Owner: smbOwner(b, ob), Open: byID(ob), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+	bv := f.mustOpen(t, b, volatile, OpenRequest{Access: rd})
+	if res, err := f.lock(b, volatile, LockReq{Owner: smbOwner(b, bv), Open: byID(bv), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
 		t.Fatalf("b's lock behind a's: %+v, %v; want waiting", res, err)
 	}
 	f.ordered(volatile)
@@ -93,38 +95,43 @@ func TestDisconnectEndsOneSession(t *testing.T) {
 	if _, err := f.open(b, volatile, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open after the disconnect closed the volatile open: %v", err)
 	}
-	for name, file := range map[string]FileKey{"the durable open": durable, "another session's": other, "another node's session's": elsewhere} {
-		if _, err := f.open(b, file, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
-			t.Errorf("a write open against %s deny-write: %v, want ErrShareViolation", name, err)
+	m := func(o Open, c byte) ReconnectMatch { return ReconnectMatch{Create: [16]byte{c}} }
+	for name, try := range map[string]func() error{
+		"under no handle caching":  func() error { _, err := f.reconnect(a, ob, m(ob, 4), s3); return err },
+		"another session's":        func() error { _, err := f.reconnect(a, oo, m(oo, 2), s3); return err },
+		"another node's session's": func() error { _, err := f.reconnect(a, oe, m(oe, 3), s3); return err },
+	} {
+		if err := try(); !errors.Is(err, ErrNoReclaim) {
+			t.Errorf("a reconnect of the durable open %s: %v, want ErrNoReclaim", name, err)
 		}
+	}
+	if _, err := f.reconnect(a, od, m(od, 1), s3); err != nil {
+		t.Errorf("a reconnect of the durable open under a batch oplock: %v", err)
 	}
 }
 
 // A disconnected durable open is closed once its Timeout passes without a
 // reconnect, by the timer, under the file's admission lock, as a close: a
-// delete on close it carries is raised. Until then a reconnect finds it, and
-// after its Timeout none does, the timer not yet run.
+// delete on close it carries is raised. Until then it is held, and after
+// its Timeout a reconnect finds none, the timer not yet run.
 func TestDurableOpenTimesOut(t *testing.T) {
 	f := newFixture(t)
-	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	a := f.caller(t, smb("pc-a"))
 	file, r := f.fileIn(t, "doc")
-	r.Access, r.Deny, r.DeleteOnClose = rd|wr|del, wr, true
+	r.Access, r.Deny, r.DeleteOnClose, r.Want = rd|wr|del, wr, true, rwh
 	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityDurable, s1, time.Minute, 1))
 	f.disconnect(t, a, s1)
 	f.idle(30 * time.Second)
 	f.disconnect(t, a, s1) // the session's end, told again, restarts nothing
 
 	f.idle(30*time.Second - time.Second)
-	if _, err := f.open(b, file, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
-		t.Errorf("a write open inside the Timeout: %v, want ErrShareViolation", err)
-	}
-	if len(f.sink.closed) != 0 {
-		t.Errorf("closed inside its Timeout: %+v", f.sink.closed)
+	if _, held := f.byID[o.ID]; !held || len(f.sink.closed) != 0 {
+		t.Errorf("inside its Timeout: held %v, closed %+v; want it held", held, f.sink.closed)
 	}
 	f.clock.mu.Lock()
 	f.clock.now += 2 * time.Second
 	f.clock.mu.Unlock()
-	if _, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{1}}, s2); !errors.Is(err, ErrNoReclaim) {
+	if _, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reconnect past the Timeout: %v, want ErrNoReclaim", err)
 	}
 	f.ordered(file)
@@ -152,8 +159,9 @@ func TestReconnectMatches(t *testing.T) {
 	if g == nil {
 		t.Fatal("no lease offered")
 	}
-	exact := ReconnectMatch{Create: [16]byte{9}, Lease: k}
+	exact := ReconnectMatch{Share: file.Share, Create: [16]byte{9}, Lease: k}
 	*req.Durable = DurableKeys{} // the caller's keys are its own: the open keeps a copy
+	*o.Durable = DurableKeys{}   // and the keys answered are the caller's too
 	if _, err := f.reconnect(a, o, exact, s2); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reconnect of an open still attached: %v, want ErrNoReclaim", err)
 	}
@@ -168,15 +176,22 @@ func TestReconnectMatches(t *testing.T) {
 			return err
 		},
 		"another create ID": func() error {
-			_, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{8}, Lease: k}, s2)
+			_, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{8}, Lease: k}, s2)
 			return err
 		},
 		"another lease key": func() error {
-			_, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{9}, Lease: LeaseKey{6}}, s2)
+			_, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{9}, Lease: LeaseKey{6}}, s2)
 			return err
 		},
-		"no lease key": func() error { _, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{9}}, s2); return err },
-		"no open":      func() error { _, err := f.Opens().Reconnect(ctx, a, o.ID+1000, exact, s2); return err },
+		"another share": func() error {
+			_, err := f.reconnect(a, o, ReconnectMatch{Share: entity.ShareID{1}, Create: [16]byte{9}, Lease: k}, s2)
+			return err
+		},
+		"no lease key": func() error {
+			_, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{9}}, s2)
+			return err
+		},
+		"no open": func() error { _, err := f.Opens().Reconnect(ctx, a, o.ID+1000, exact, s2); return err },
 	} {
 		if err := try(); !errors.Is(err, ErrNoReclaim) {
 			t.Errorf("a reconnect with %s: %v, want ErrNoReclaim", name, err)
@@ -212,7 +227,7 @@ func TestDurableOpenDoesNotSurviveARestart(t *testing.T) {
 	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityDurable, s1, time.Minute, 1))
 	f.disconnect(t, a, s1)
 	g := f.restart(t)
-	if _, err := g.reconnect(a, o, ReconnectMatch{Create: [16]byte{1}}, s2); !errors.Is(err, ErrNoReclaim) {
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reconnect of a durable open after a restart: %v, want ErrNoReclaim", err)
 	}
 }
@@ -295,7 +310,7 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 	if err := anon(5); err != nil {
 		t.Errorf("an anonymous read across the unlocked range: %v", err)
 	}
-	back, err := g.reconnect(a, o, ReconnectMatch{Create: [16]byte{1}}, s2)
+	back, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2)
 	if err != nil {
 		t.Fatalf("reconnect after the restart: %v", err)
 	}
@@ -313,6 +328,9 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 	if _, err := g.open(b, file, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open after the Timeout: %v", err)
 	}
+	if _, known := g.known[a.Client]; !known {
+		t.Error("the client that reconnected is not known once its open timed out")
+	}
 }
 
 // A lease survives a restart inside the persistent open it covers, with its
@@ -327,7 +345,7 @@ func TestPersistentLeaseSurvivesARestart(t *testing.T) {
 	if err != nil || res.Grant == nil || res.Grant.Kind != rwh {
 		t.Fatalf("persistent open: %+v, %v; want a lease rwh", res, err)
 	}
-	m := ReconnectMatch{Create: [16]byte{1}, Lease: LeaseKey{5}}
+	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{5}}
 	f = f.restart(t)
 	f.renew(t, b)
 	back, err := f.reconnect(a, res.Open, m, s2)
@@ -369,7 +387,7 @@ func TestGraceWaitsForReconnects(t *testing.T) {
 	if _, err := g.open(b, other, OpenRequest{Access: rd}); !errors.Is(err, ErrGrace) {
 		t.Fatalf("an open before any reconnect: %v, want ErrGrace", err)
 	}
-	if _, err := g.reconnect(a, oa, ReconnectMatch{Create: [16]byte{1}}, s2); err != nil {
+	if _, err := g.reconnect(a, oa, ReconnectMatch{Share: fa.Share, Create: [16]byte{1}}, s2); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.open(b, other, OpenRequest{Access: rd}); !errors.Is(err, ErrGrace) {
@@ -387,11 +405,11 @@ func TestFlushedReportsALossOnce(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("pc-a"))
 	file := anyFile()
-	o1 := f.mustOpen(t, a, file, keep(OpenRequest{Access: rd, Loss: 4}, entity.DurabilityDurable, s1, time.Minute, 1))
+	o1 := f.mustOpen(t, a, file, keep(OpenRequest{Access: rd, Loss: 4, Lease: LeaseKey{1}, Want: rh}, entity.DurabilityDurable, s1, time.Minute, 1))
 	o2 := f.mustOpen(t, a, file, OpenRequest{Access: rd, Loss: 4})
 	late := f.mustOpen(t, a, file, OpenRequest{Access: rd, Loss: 5})
 	f.disconnect(t, a, s1)
-	if _, err := f.reconnect(a, o1, ReconnectMatch{Create: [16]byte{1}}, s2); err != nil {
+	if _, err := f.reconnect(a, o1, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{1}}, s2); err != nil {
 		t.Fatal(err)
 	}
 	flush := func(o Open, loss uint64) error { return f.Opens().Flushed(ctx, a, o.ID, loss) }
@@ -430,7 +448,7 @@ func TestPersistentLeaseKeepsItsTimeout(t *testing.T) {
 	}
 	f.pass(t, coversDeadline+time.Second)
 	g := f.restart(t)
-	back, err := g.reconnect(a, res.Open, ReconnectMatch{Create: [16]byte{1}, Lease: LeaseKey{5}}, s2)
+	back, err := g.reconnect(a, res.Open, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{5}}, s2)
 	if err != nil || back.Grant == nil || back.Grant.Kind != GrantNone {
 		t.Errorf("reconnected under %+v, %v; want the lease at none", back.Grant, err)
 	}
@@ -448,8 +466,8 @@ func TestPersistentOpensShareTheirLease(t *testing.T) {
 	o2 := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
 	f.unlink(t, file, "doc")
 	g := f.restart(t)
-	b1, err1 := g.reconnect(a, o1, ReconnectMatch{Create: [16]byte{1}, Lease: LeaseKey{5}}, s2)
-	b2, err2 := g.reconnect(a, o2, ReconnectMatch{Create: [16]byte{2}, Lease: LeaseKey{5}}, s2)
+	b1, err1 := g.reconnect(a, o1, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{5}}, s2)
+	b2, err2 := g.reconnect(a, o2, ReconnectMatch{Share: file.Share, Create: [16]byte{2}, Lease: LeaseKey{5}}, s2)
 	if err1 != nil || err2 != nil || b1.Grant == nil || b2.Grant == nil || b1.Grant.ID != b2.Grant.ID || b1.Grant.Kind != rh {
 		t.Fatalf("reconnected under %+v and %+v (%v, %v); want one lease at rh", b1.Grant, b2.Grant, err1, err2)
 	}
@@ -458,10 +476,10 @@ func TestPersistentOpensShareTheirLease(t *testing.T) {
 	}
 }
 
-// Only a persistent open of a client the shard's records name is installed:
-// the record an unlink wrote for a volatile open, and a persistent record of
-// a client with no record, stay in the store, for grace's end, and hold
-// nothing.
+// Only a persistent open is installed, and one of a client the shard's
+// records do not name only to its Timeout, which closes it: the record an
+// unlink wrote for a volatile open stays in the store, for grace's end, and
+// holds nothing.
 func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
@@ -471,12 +489,16 @@ func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 	f.unlink(t, file, "doc")
 	orphan, _ := f.fileIn(t, "orphan")
 	if err := f.fs.Store.Opens().Put(ctx, orphan.Share, entity.OpenRecord{ID: 1 << 30, Client: 999, File: orphan.ID, Access: rd, Deny: wr,
-		Durability: entity.DurabilityPersistent, Timeout: time.Minute}); err != nil {
+		Durability: entity.DurabilityPersistent, Timeout: 300 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	g := f.restart(t)
 	g.renew(t, b)
-	g.idle(2 * leasePeriod)
+	g.idle(leasePeriod)
+	if _, err := g.open(b, orphan, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("a write open against the unnamed client's deny-write record, inside its Timeout: %v, want ErrShareViolation", err)
+	}
+	g.idle(300 * time.Second)
 	if _, err := g.open(b, file, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open against the lost volatile open's deny-write: %v", err)
 	}
@@ -484,7 +506,13 @@ func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 		t.Errorf("stored after grace: %+v, want the unlink's record kept", got)
 	}
 	if _, err := g.open(b, orphan, OpenRequest{Access: wr}); err != nil {
-		t.Errorf("a write open against the unnamed client's deny-write record: %v", err)
+		t.Errorf("a write open past the unnamed client's record's Timeout: %v", err)
+	}
+	if got := g.stored(t, orphan); len(got) != 0 {
+		t.Errorf("stored past its Timeout: %+v, want the unnamed client's record closed", got)
+	}
+	if _, known := g.known[999]; known {
+		t.Error("the unnamed client is still known once its installed open closed")
 	}
 }
 
@@ -616,11 +644,11 @@ func TestRefusedWriteChangesNothing(t *testing.T) {
 
 	f.disconnect(t, a, s1)
 	st.fail.Store(true)
-	if _, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{1}}, s2); !errors.Is(err, errWrite) {
+	if _, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); !errors.Is(err, errWrite) {
 		t.Errorf("a reconnect over a refusing store: %v, want its error", err)
 	}
 	st.fail.Store(false)
-	back, err := f.reconnect(a, o, ReconnectMatch{Create: [16]byte{1}}, s3)
+	back, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s3)
 	if err != nil || back.Open.Suspended != 0 {
 		t.Errorf("the reconnect after: %+v, %v; want it, with no time suspended", back.Open, err)
 	}

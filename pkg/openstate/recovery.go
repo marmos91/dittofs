@@ -105,21 +105,20 @@ func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardI
 	// The client step is held from the scan to the install, so a revoke, an
 	// expiry or a reboot either lands before the scan, and the client is
 	// not listed, or after the install, and unreclaims it.
+	var out outbox
 	t.cstep.Lock()
-	told, err := t.beginShard(ctx, share, s, instance)
+	err = t.beginShard(ctx, share, s, instance, &out)
 	t.cstep.Unlock()
 	if err != nil {
 		return err
 	}
-	for _, r := range told {
-		sink.Revoked(r)
-	}
+	out.raise(t, sink)
 	return nil
 }
 
-// beginShard is ServeShard under the client step, and returns the clients to
-// tell.
-func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) ([]Revocation, error) {
+// beginShard is ServeShard under the client step; the clients to tell, and
+// what the installed leases raise, go to out.
+func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64, out *outbox) error {
 	t.cmu.Lock()
 	cur := t.shards[s]
 	if cur != nil && cur.instance != instance {
@@ -128,7 +127,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	t.cmu.Unlock()
 	switch {
 	case cur != nil && cur.instance == instance:
-		return nil, nil // a handover of the table: nothing was lost
+		return nil // a handover of the table: nothing was lost
 	case cur != nil:
 		t.lose(s)
 	}
@@ -138,7 +137,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	named := map[entity.ClientID]entity.ClientRecord{}
 	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if rec.Ended {
 			continue // its state is being released everywhere: nothing to reclaim
@@ -184,19 +183,20 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	}
 	if notice {
 		if err := t.raiseNotice(ctx); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if err := t.install(ctx, share, s, sh, named); err != nil {
+	if err := t.install(ctx, share, s, sh, named, out); err != nil {
 		t.lose(s) // what was installed goes, so a retry installs each open once
-		return nil, err
+		return err
 	}
 	t.cmu.Lock()
 	sh.ends = t.d.Clock.Elapsed() + leasePeriod
 	sh.settle()
 	t.shards[s] = sh
 	t.cmu.Unlock()
-	return told, nil
+	out.revoked = append(out.revoked, told...)
+	return nil
 }
 
 // lose drops every piece of state held in shard s, as a loss of its open
@@ -458,7 +458,7 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 			return ErrLocksHeld
 		}
 		t.dropLockState(e, ls)
-		t.serve(e, &out)
+		t.serve(ctx, e, &out)
 		return nil
 	})
 	out.raise(t, sink)

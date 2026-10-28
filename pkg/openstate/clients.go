@@ -132,13 +132,17 @@ type Clients interface {
 	// ChannelDown records that c's back channel is lost: it sets
 	// Reach.Down, and c is offered no grant until it rebinds.
 	ChannelDown(ctx context.Context, c entity.ClientID) error
-	// Disconnect ends session s of client c: each volatile open s made or
-	// last reconnected closes, and each durable or persistent one is kept,
-	// with every lock, deny mode and lease it holds, until its Timeout passes
-	// without a reconnect; the timer then closes it. Another session's opens
-	// are left alone. The waiters the closes free are served under each
-	// file's admission lock, which the table takes itself: the service must
-	// not hold one when calling.
+	// Disconnect is the loss of session s of client c's last connection:
+	// each volatile open s made or last reconnected closes, as does a
+	// durable one no longer under handle caching, and each other durable
+	// or persistent one is kept, with every lock, deny mode and lease it
+	// holds, until its Timeout passes without a reconnect; the timer then
+	// closes it. Its waiters go, answered not granted. Another session's
+	// opens are left alone, and no open is attached to s again. A logoff is
+	// not a disconnect: it closes every open of its session, durable ones
+	// included, which the service does by Close. The waiters the closes free
+	// are served under each file's admission lock, which the table takes
+	// itself: the service must not hold one when calling.
 	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef) error
 }
 
@@ -473,6 +477,7 @@ func (v clients) Renew(ctx context.Context, c entity.ClientID) (ClientStatus, er
 	case end != 0:
 		t.leases[c] = now + leasePeriod
 	}
+	delete(t.adopted, c) // it came back: its installed state is its own again
 	t.cmu.Unlock()
 	return t.status(c), nil
 }
@@ -522,6 +527,7 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) error {
 // know records what the table reads of rec while its client is current; the
 // caller holds cmu.
 func (t *Table) know(rec entity.ClientRecord) {
+	delete(t.adopted, rec.ID) // it came back: its state is its own again
 	k := known{recovery: rec.Recovery, down: rec.Reach.Down, shards: rec.Shards}
 	if rec.Protect {
 		k.owner = rec.Owner
@@ -796,6 +802,7 @@ func (t *Table) sweep(ctx context.Context) {
 		}
 	}
 	maps.DeleteFunc(t.recalled, func(_ entity.FileID, until time.Duration) bool { return now >= until })
+	maps.DeleteFunc(t.ended, func(_ sessionKey, at time.Duration) bool { return now >= at+leasePeriod })
 	t.idx.Unlock()
 	for _, c := range lapsed {
 		// A failed expiry is tried again at the next sweep: the lease stays
@@ -868,20 +875,21 @@ func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 //
 // decision: an open is released here even when its durable record's delete
 // fails. The record stays a holder of its file, and the file stays unreleased
-// until the next start's grace end closes the records nobody reclaimed; an
-// expiry that kept the open instead would hold its deny modes for a client
+// until the next start: a persistent record is installed there and closed
+// at its Timeout, and any other is closed by that start's grace end, once
+// grace's end closes the records nobody reclaimed; an expiry that kept the open instead would hold its deny modes for a client
 // that is gone. Keep the open if a store outage is shown to strand files.
 func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbox) {
 	for _, h := range t.heldBy(c) {
 		_ = t.step(h.file, func(e *entry) error {
 			if ls := e.lstates[h.ref.Token]; h.ref.Type == StateLock && ls != nil {
 				t.dropLockState(e, ls)
-				t.serve(e, out)
+				t.serve(ctx, e, out)
 				return nil
 			}
 			if g := e.grants[h.ref.Token]; h.ref.Type == StateGrant && g != nil {
 				t.dropGrant(e, g)
-				t.serve(e, out)
+				t.serve(ctx, e, out)
 				return nil
 			}
 			o := e.opens[h.ref.Token]

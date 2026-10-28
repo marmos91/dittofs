@@ -37,7 +37,8 @@ type Table struct {
 	recalling map[entity.FileID]struct{}      // the files holding a recall handed to the Sink, which the timer lapses
 	recalled  map[entity.FileID]time.Duration // the Elapsed reading until which a file is offered no grant, after a recall ended
 	unsent    int                             // recalls started and not yet handed to the Sink
-	parked    map[entity.FileID]struct{}      // the files holding a disconnected open, whose Timeout the timer runs
+	parked    map[entity.FileID]struct{}      // the files holding a disconnected open or an unsaved record, which the timer visits
+	ended     map[sessionKey]time.Duration    // the sessions each client ended here, from the Elapsed reading of their end, for a lease period
 
 	// smu guards the owner sequences. It is taken under a file's step or
 	// under nothing, and nothing is taken under it.
@@ -65,6 +66,7 @@ type Table struct {
 	pending map[nameKey]pending
 	sources map[netip.Prefix]int              // pending proposals per source
 	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
+	adopted map[entity.ClientID]struct{}      // the clients install made known here, until they come back or hold nothing
 	shards  map[ShardID]*served
 	sink    Sink // nil before Start and after Stop
 	stopped bool
@@ -111,8 +113,9 @@ func New(d Deps) (*Table, error) {
 	}
 	t := &Table{
 		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
-		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{}, parked: map[entity.FileID]struct{}{},
-		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
+		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{}, parked: map[entity.FileID]struct{}{}, ended: map[sessionKey]time.Duration{},
+		adopted: map[entity.ClientID]struct{}{},
+		seqs:    sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
 		shards: map[ShardID]*served{},
 	}
