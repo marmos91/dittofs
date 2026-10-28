@@ -888,3 +888,74 @@ func TestDamage_TornWrites(t *testing.T) {
 		}
 	})
 }
+
+// reorderScript settles the spare pool, parks spare-making for the rest of
+// the pass, then writes two synced records and four unsynced ones across
+// both streams, the third of them crossing the segment cap so it is split
+// into records of two segments. With spare-making parked, the roll's refill
+// writes nothing, so the unsynced writes are the script's own and the
+// roll's, the same on every pass.
+func reorderScript(t *testing.T, tb testing.TB, d *driven) {
+	t.Helper()
+
+	const size = 64 << 10
+	awaitSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journalv2test.FixtureSegmentCap) })
+	if err := d.f.TryReopen(); err != nil { // the pool is at its target as the open counts it
+		t.Fatalf("%s: reopen: %v", d.label, err)
+	}
+
+	d.f.Seam.Hold(tb, journalv2test.OpCreate, "*.spare.tmp")
+
+	d.writeSynced(0, 0, 0, size)
+	d.writeSynced(1, 1, 0, size)
+	d.write(0, 0, size, pattern(fmtTag("c", 0, 0, size), size))
+	d.write(1, 1, size, pattern(fmtTag("e", 1, 1, size), size))
+	d.write(0, 0, 2*size, pattern(fmtTag("g", 0, 0, 2*size), journalv2test.FixtureSegmentCap))
+	d.write(1, 1, 2*size, pattern(fmtTag("h", 1, 1, 2*size), size))
+}
+
+// maxReorderedWrites bounds the unsynced seam writes the reordered sweep
+// enumerates the subsets of: 2^10 crashes, each on a fresh journal.
+//
+// decision: the script syncs everything but its last four writes, so the
+// unsynced seam writes are those four, the pieces of the split one and what
+// the roll between them writes. A journal that leaves more than this many
+// unsynced fails the sweep naming the count, rather than running for hours
+// or skipping subsets; the upgrade is a smaller segment cap for this check.
+const maxReorderedWrites = 10
+
+// TestDamage_ReorderedWrites checks that a crash keeping any subset of the
+// unsynced writes, every subset in turn, leaves a journal the reference
+// model allows: a write split at the segment cap comes back only as a prefix
+// of its pieces, and no record in part.
+func TestDamage_ReorderedWrites(t *testing.T) {
+	var k int
+	for mask := uint64(0); ; mask++ {
+		iterate(t, func(tb testing.TB) {
+			d := newDriven(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask))
+			reorderScript(t, tb, d)
+
+			n := d.f.Seam.Unsynced()
+			switch {
+			case mask == 0 && n < 2:
+				t.Fatalf("precondition: the script left %d unsynced seam writes, want at least two, so a later one can survive without an earlier one", n)
+			case mask == 0 && n > maxReorderedWrites:
+				t.Fatalf("precondition: the script left %d unsynced seam writes, above the %d whose subsets this check enumerates", n, maxReorderedWrites)
+			case mask == 0:
+				k = n
+			case n != k:
+				t.Fatalf("precondition: the script left %d unsynced seam writes, %d on its first run: the subsets are not of one set", n, k)
+			}
+
+			if err := d.f.TryCrash(journalv2test.Keeping(mask)); err != nil {
+				stub(t, "Open", err)
+				t.Fatalf("%s: %v", d.label, err)
+			}
+
+			d.crashed()
+		})
+		if mask+1 >= 1<<k {
+			break
+		}
+	}
+}

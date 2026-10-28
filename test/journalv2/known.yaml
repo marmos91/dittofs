@@ -469,3 +469,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
   issue: '#3378'
+- test: TestDamage_ReorderedWrites
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
+  issue: '#3378'
