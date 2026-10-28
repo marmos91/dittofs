@@ -25,6 +25,7 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
         # Maintainers are the repo's collaborators with write access.
+        shell: bash
         run: |
           picks=$(gh api "repos/$REPO/collaborators" --paginate \
             --jq '.[] | select(.permissions.push) | .login' \
