@@ -231,6 +231,9 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 func TestReadOtherFileWhileWriting(t *testing.T) {
 	var fs files
 	a, b := fid(1), fid(2)
+	if fs.shard(a) != fs.shard(b) {
+		t.Fatal("a and b must share a shard for this test to cover the shard lock")
+	}
 	_ = fs.update(a, func(f *file) error { f.write(write(0, 4, rec(1, 0), 1)); return nil })
 
 	inside, release := make(chan struct{}), make(chan struct{})
@@ -255,6 +258,25 @@ func TestReadOtherFileWhileWriting(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a read and a write of one file waited on a write to another")
+	}
+}
+
+// TestWaiterHoldsNoShardLock: a writer waiting for a file's lock must not hold
+// the shard's lock, because the holder's drop takes that lock and deadlocks.
+func TestWaiterHoldsNoShardLock(t *testing.T) {
+	var fs files
+	id := fid(1)
+	inside, release := make(chan struct{}), make(chan struct{})
+	go func() { _ = fs.update(id, func(*file) error { close(inside); <-release; return nil }) }()
+	<-inside
+	waiter := make(chan struct{})
+	go func() { defer close(waiter); _ = fs.update(id, func(*file) error { return nil }) }()
+	time.Sleep(10 * time.Millisecond) // let the waiter reach the file's lock
+	close(release)
+	select {
+	case <-waiter:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a writer waiting for a file's lock held its shard lock across the holder's drop")
 	}
 }
 

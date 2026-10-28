@@ -27,8 +27,8 @@ const fileShards = 64
 // than kept behind one lock. One lock, even a read-write one held only for
 // the map access, is a store-wide lock taken by every read of every file, and
 // its shared counter is a cache line every reader writes. 64 shards spread
-// that over 64 locks spaced 64 bytes apart. Revisit if a profile shows shard locks contended
-// under many concurrent readers.
+// that over 64 locks spaced 64 bytes apart. Revisit if a profile shows shard
+// locks contended under many concurrent readers.
 //
 // decision: the file map and the file entry are unexported, like the rest of
 // this package. Their only consumer until the journal's operations are wired
@@ -194,7 +194,6 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 		return
 	}
 	f.gone = true
-	f.tagged, f.tag = false, 0
 	s.mu.Lock()
 	delete(s.m, id)
 	s.mu.Unlock()
