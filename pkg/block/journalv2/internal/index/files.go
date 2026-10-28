@@ -71,6 +71,9 @@ type file struct {
 	tag    core.ShareTag
 
 	held heldSet
+	// retained is the superseded content the file still keeps. It is never
+	// consulted to answer a read.
+	retained retainedSet
 	// change is the file's change version. The zero Version means the file
 	// has none of its own, which is also the case for a file holding only
 	// filled content, since a fill changes no version: either way a check
