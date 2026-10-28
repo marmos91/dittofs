@@ -14,8 +14,8 @@ import (
 // written or filled. The record lets the caller read a write's mtime from its
 // header, which the index does not keep.
 type Change struct {
-	Removal RemovalKind // zero for a held extent
-	Extent  core.Extent // a held extent, or the extent a marker covers
+	Kind    core.ChangeKind // ChangeWrite for a held extent, else the removal that left the marker
+	Extent  core.Extent     // a held extent, or the extent a marker covers
 	Version core.Version
 	Record  RecordAt        // a held extent's record; zero for a marker
 	Clone   *core.CloneSpec // a clone target's spec, a copy the caller may keep; nil otherwise
@@ -50,17 +50,17 @@ func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change
 			// extent. The version test, as in joins, only guards against a
 			// caller that names one record with two.
 			if n := len(out); n > first {
-				if last := &out[n-1]; end(last.Extent) == p.Extent.Off && last.Record == p.Record &&
+				if last := &out[n-1]; extentEnd(last.Extent) == p.Extent.Off && last.Record == p.Record &&
 					last.Version == p.Version {
 					last.Extent.Len += p.Extent.Len
 					return true
 				}
 			}
-			out = append(out, Change{Extent: p.Extent, Version: p.Version, Record: p.Record})
+			out = append(out, Change{Kind: core.ChangeWrite, Extent: p.Extent, Version: p.Version, Record: p.Record})
 			return true
 		})
 		for _, m := range f.markers[f.firstAbove(from):] {
-			c := Change{Removal: m.kind, Extent: m.extent, Version: m.version}
+			c := Change{Kind: m.kind, Extent: m.extent, Version: m.version}
 			if m.clone != nil {
 				spec := *m.clone
 				c.Clone = &spec
@@ -72,10 +72,10 @@ func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change
 		if c := a.Version.Compare(b.Version); c != 0 {
 			return c
 		}
-		if a.Removal != 0 && b.Removal == 0 {
-			return -1
-		}
-		if a.Removal == 0 && b.Removal != 0 {
+		if aw, bw := a.Kind == core.ChangeWrite, b.Kind == core.ChangeWrite; aw != bw {
+			if bw {
+				return -1
+			}
 			return 1
 		}
 		return cmp.Compare(a.Extent.Off, b.Extent.Off)
