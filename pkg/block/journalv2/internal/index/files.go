@@ -231,13 +231,13 @@ func (f *file) check(tag core.ShareTag, id core.FileID) error {
 // claim checks the file's tag against tag, as check does, and claims the
 // file for tag when it has none.
 //
-// decision: a claim alone does not keep the entry; only a record on disk or
-// held content does. The check that refuses a call is this one, made before
-// the record's I/O, so a refused call appends nothing. It holds across the
-// I/O only because the caller keeps the file's appends serialised from the
-// claim until recorded notes the record, and recorded claims again, since a
-// claim left alone is dropped when its update returns. So the lock that
-// serialises a file's appends is not this entry's and does not live in it:
+// decision: a claim alone does not keep the entry; only a record on disk,
+// held content or an unsettled marker does. The check that refuses a call is
+// this one, made before the record's I/O, so a refused call appends nothing.
+// It holds across the I/O only because the caller keeps the file's appends
+// serialised from the claim until recorded notes the record, and recorded
+// claims again, since a claim left alone is dropped when its update returns.
+// So the lock that serialises a file's appends is not this entry's and does not live in it:
 // an entry holding only a claim can be dropped and made again mid-append,
 // and a lock inside it would go with it, letting two shares claim one new
 // file. Revisit if a call must hold a claim across I/O without that
