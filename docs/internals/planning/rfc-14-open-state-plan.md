@@ -6,8 +6,8 @@ who has the file open, who locked which bytes, what each client may cache, and w
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
-**Status:** draft for review. Pieces 1–7 are in review (#3256, #3330, #3336, #3341, #3344, #3363,
-#3400), with the store's side in #3329, #3335, #3362 and #3399. The RFCs cited are `develop`'s,
+**Status:** draft for review. Piece 1 has merged (#3256); pieces 2–7 are in review as one stack
+(#3330, #3336, #3341, #3344, #3363, #3400), with the store's side in #3329, #3335, #3362 and #3399. The RFCs cited are `develop`'s,
 since #3142 merged; `feat/storage-v2` needs `develop` merged in before these links resolve to them.
 
 **Terms.** A bare §N is RFC 14's; this plan's own sections are "plan §N". Lnn is a row of RFC 14
@@ -39,9 +39,10 @@ nothing switches over until stage 5.
 - `*Table` exports `New`, `Start`, `Stop` and the seven view accessors, `Clients()`, `Opens()`,
   `Locks()`, `Grants()`, `Watches()`, `Recovery()` and `Checks()`, and nothing else, so each area
   of the service fakes only the calls it makes (§11.3).
-- `Deps` are `Records`, the `*kvstore.Store` whose `Clients()` and `Opens()` are RFC 16's
-  `OpenRecords` views, the `Clock` and `Rand` for every random bit. `Metrics` and `Logger` join
-  with the first metric and log line.
+- `Deps` are `Records`, the `*kvstore.Store`, reached through `Clients()` and `Opens()`:
+  §11.1's `OpenRecords` embeds both, whose `Put`, `Delete` and `ByShard` clash, so the RFC
+  takes the two accessors (piece 0); the `Clock`; and `Rand` for every random bit. `Metrics`
+  and `Logger` join with the first metric and log line.
 - RFC 24's `Budget` is not a dependency: its pool does not exist on `feat/storage-v2`, so
   `DelayResources` is answered at RFC 14's fixed caps alone (§5.5's per-client caps, §5.4's 4,096
   unsent recalls, §2.9's proposal caps):
@@ -105,24 +106,21 @@ Behaviours today's code has and RFC 14 does not state, to raise against RFC 14: 
 (RFC 7530 §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
 (RFC 8881 §18.51.3), and `RENEW`'s principal check.
 
-**D4. Concurrency: one entry per file, decided, persisted, applied.** The file map is split 256
-ways by `FileID`, each entry with its own mutex. Lock order:
+**D4. Concurrency: one entry per file.** The file map is 256 stripes by a `FileID`'s first byte
+("stripes", to keep them apart from `ShardID`), each entry with its own mutex. Lock order, as the
+code has it:
 
 1. admission lock (the service's, RFC 17 §5.0);
-2. entry mutex;
-3. files-map shard;
-4. client-index shard;
-5. outbox.
+2. client step `cstep`, never under a file's step;
+3. file stripe, only to find, add or free an entry;
+4. entry mutex;
+5. `idx`, then `cmu`; `smu` under a step or nothing. The outbox is per call and unlocked.
 
 Several files: their steps in `FileID` order, then fold admission, then accept locks, as RFC 17
 §5.0 orders every call.
 - No call waits on a recall or a client while holding a step: a conflict with a caching grant
   starts the recall and returns `ErrDelay` at once, except a callback lock request, which becomes a
   waiter answered `Waiting` (L44).
-- Each operation is a pure `decide(state, request) → (mutations, events, result)`; the entry
-  persists the mutations through `Records`, then applies them. `decide` is the seam model-based
-  fuzzing will call (§11.1), which RFC 14's rollout builds in slice 9 with the multi-node
-  simulation, not here.
 - Events go to the `Sink` after the entry mutex is released, so a break is queued ahead of the
   reply that triggered it (RFC 20 §6.2).
 
@@ -167,32 +165,45 @@ last name.
 
 Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (plan §4), each after the
 one before it. A row may be split: its first piece lands the cases it can reach, and the piece that
-completes it is named beside it, e.g. L27 (→4). "Done when" means every listed row passes and each
+completes it is named beside it, e.g. L27 (→6). "Done when" means every listed row passes and each
 of its cases is revert-checked; a piece adds only what it says beyond that.
 
-**Piece 0: Store reshape** (RFC 16 §4.2, RFC 14 §11.1; 4 PRs and one to come)
-Builds the store calls §11.1's `OpenRecords` names, before piece 2:
+**Piece 0: Store reshape** (RFC 16 §4.2, RFC 14 §11.1; 4 PRs, and a follow-up after piece 7)
+Builds the store calls the table makes. Each open-state PR carries its store PR's commits (#3330
+carries #3329's, and so on to #3400 and #3399), so piece 0 lands beside pieces 2–7, not before:
 
 | RFC 16 / 14 needs | `feat/storage-v2` has | Where |
 |---|---|---|
-| `ClientRecord`; `Clients`: `ByName`, `Put(prev, next)`, `MarkShard`, `DropShards`; `NextID(kind)` | `ByOwner`, `Put`, `PutShard`, `Shards`; `NextOpenID`, `NextLockID` | #3329 |
+| `ClientRecord`; `Clients`: `ByName`, `Put(prev, next)`, `MarkShard`, `DropShards`; `NextID(kind)`; `Protocol` bytes as RFC 16's `CLO` table (NFSv3 0x01, NFSv4 0x02, NLM 0x03, SMB 0x04) | `ByOwner`, `Put`, `PutShard`, `Shards`; `NextOpenID`, `NextLockID`; NFSv4 1, SMB 2, NLM 3 | #3329 |
 | `OpenRecord`, `LockRecord`, `DeleteRecord`; a stream's open keeps its base file | `Open`, `Lock`, `DeletePending` | #3335 |
 | `Clients.ByShard` (L3: tell every named client to reclaim) | `Shards(id)` only | #3362 |
-| a durable open's name and lease version | none | #3399 |
-| `RaiseNoticeState(ctx) (uint32, error)`: the store picks the number | `RaiseNSMState(ctx, n)`: the caller picks it | to do |
-| `Opens.ByShard`, `ByFile`, `SetDeletePending(nil)` | `Durable`, `Of`, `ClearDeletePending` | to do (renames) |
+| a durable open's name and lease version; a persistent open's lock change in one transaction | none | #3399 |
 
 `ClientRecord` is `ID`, `Protocol`, `Name`, `Boot`, `Owner`, `Protect`, `Recovery`, `Lease`,
 `Reach`, `Ended` and `Adapter`, with each shard of `Shards` a `CL‖id‖sh‖shard` key holding its
 `Done`. An `Owner` that maps to the anonymous principal is recorded as zero with `Protect` false
-(§2.1, L25), and uid and gid 0 and 65534 are root's and anonymous's by rule (RFC 16 §2.2). Two
-store calls are not in §11.1's view and go into the RFC: `Clients.AddSession` (#3329), a `Put`
-that also records the session's node, and `Opens.SetLocks` (#3399), which writes a persistent
-open's lock change in one transaction where `PutLock` and `DeleteLock` take one per range.
-Done when: `kvstoretest` covers each call above, the two "to do" rows included.
+(§2.1, L25), and uid and gid 0 and 65534 are root's and anonymous's by rule (RFC 16 §2.2).
+
+RFC 14 §11.1 is edited to match:
+- `Records` is reached through `Clients()` and `Opens()` (D1);
+- `Opens.SetLocks(ctx, f, o, rec *OpenRecord, put, del)` replaces `PutLock` and `DeleteLock`: one
+  transaction, only under a persistent open, never split, and `rec`, when set, writes the open's
+  `LockSeq` and `Channel.Seq` with its locks (§8.1).
+
+What the built calls still differ from §11.1 in is one store PR after piece 7:
+- `NSMState` and `RaiseNSMState(ctx, n)` become `NoticeState` and `RaiseNoticeState(ctx)`, which
+  picks the number, so `recovery.go`'s retry loop goes;
+- `Opens.Durable` returns index entries, so each install reads `Get`, `Locks` and `DeletePending`
+  per record; `ByShard` returning records drops `Get`, and §11.1 gains the two reads it has none
+  of, an open's locks and a file's delete pending;
+- `Of` becomes `ByFile`, and `ClearDeletePending` becomes `SetDeletePending(nil)`;
+- `Clients.AddSession` goes from the store: the table's `AddSession` is §11.1's compare-and-swap
+  `Put(prev, next)`.
+
+Done when: `kvstoretest` covers each call above.
 
 **Piece 1: Skeleton and state references** (§2.11, §3, §11; 1 PR, ~1,500 lines)
-Builds: the errors, the per-file table and its step, the file map split 256 ways; `StateRef`
+Builds: the errors, the per-file table and its step, the file map's 256 stripes; `StateRef`
 (`Type`, `Shard`, `Instance`, `Token`, `Seq`) and its per-shard index; a miss is bad state until
 piece 6 adds stale; the stateid seqid check (`ErrOldState`); every random bit from `Deps.Rand`.
 The wire layout is `pkg/vfs`'s (RFC 17 §3.4). `GrantID` and `WatchID` arrive with the grants and
@@ -295,6 +306,6 @@ the service can drive them.
 Writing a piece is not what takes the time; review is. Stage 1 lands as about twelve PRs beside
 piece 0's four, each read by its author and reviewed in two or three rounds, so it takes about as
 long as twelve review cycles. What blocks what: `develop`'s RFCs merged into `feat/storage-v2`;
-piece 0 before piece 2; then each piece after the one before it.
+then each piece after the one before it, carrying its store PR.
 
 For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
