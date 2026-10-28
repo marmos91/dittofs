@@ -197,8 +197,11 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 			switch o := e.opens[h.ref.Token]; {
 			case o == nil || o.Session != s || o.parked != 0:
 			case o.Durability == entity.DurabilityNone, !o.persistent() && !e.handleCached(o):
-				// A durable open is kept only under handle caching, which
-				// it was granted with and a break may have taken.
+				// decision: a durable open without handle caching, which it
+				// was granted with and a break may have taken, is closed at
+				// disconnect, not parked: MS-SMB2 3.3.5.9.7 refuses to
+				// reconnect it, so parking would only hold its deny mode
+				// against others. Park it if a client is seen reconnecting one.
 				t.closeByTable(ctx, e, o, &out)
 			default:
 				t.park(e, o, &out)

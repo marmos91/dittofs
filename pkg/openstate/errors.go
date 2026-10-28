@@ -39,8 +39,11 @@ var (
 
 	// ErrLost is a flush through an open across a loss of the file's
 	// acknowledged writes; the service maps it to the content error it
-	// shares with the engine, which this is to alias once the engine
-	// declares it.
+	// shares with the engine.
+	//
+	// ponytail: declared here, as the engine declares no such error yet.
+	// Alias it from the engine's, or move both to a shared leaf package, so
+	// errors.Is holds both ways, once the engine declares one.
 	ErrLost = errors.New("openstate: acknowledged writes lost since the open last flushed")
 )
 
