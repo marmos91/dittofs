@@ -167,7 +167,24 @@ func retainedOps(t *testing.T, data []byte) {
 			window := windows[wi]
 			win := slices.Clone(window)
 			rng.Shuffle(len(win), func(i, j int) { win[i], win[j] = win[j], win[i] })
-			got := f.failWindow(win, nil)
+			var bys []core.Version
+			for _, r := range f.retained.list(nil) {
+				bys = append(bys, r.By)
+			}
+			got, covers := f.failWindow(win, nil)
+			inWindow := func(v core.Version) bool {
+				return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
+			}
+			if !slices.IsSortedFunc(covers, core.Version.Compare) || len(slices.CompactFunc(slices.Clone(covers), func(a, b core.Version) bool { return a == b })) != len(covers) || slices.ContainsFunc(covers, inWindow) {
+				t.Fatalf("step %d: covering versions %+v are not sorted, distinct and outside the window %+v", step, covers, window)
+			}
+			// A superseder the call handed out, new to the retained set and
+			// not the window's own, is one the caller must be told about.
+			for _, r := range f.retained.list(nil) {
+				if !slices.Contains(bys, r.By) && !inWindow(r.By) && !slices.Contains(covers, r.By) {
+					t.Fatalf("step %d: %+v was handed to %v, which failWindow did not name in %+v", step, r, r.By, covers)
+				}
+			}
 			var want []rbyte
 			order := slices.Clone(window)
 			slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })

@@ -202,11 +202,18 @@ func (f *file) writeRetain(p Placed) {
 // held again either: it stays retained under the failed record's version and
 // is appended to out, for the caller to keep under a hold or drop.
 //
-// decision: re-attributing to the covering version assumes that version's
-// record has not synced yet, so its sync is still to come. If it already has,
-// nothing drops the part by superseder again: the caller drops by that version
-// after the window fails. Revisit when windows are resolved before any later
-// write can sync, which makes that case unreachable.
+// It also returns the covering versions it handed parts to, sorted and
+// distinct, leaving out the window's own. A returned version may name no part
+// by the time the call returns, since a later record's pass can drop what an
+// earlier one handed over.
+//
+// decision: a covering version's sync drops what it was handed only if that
+// sync is still to come. A covering write can sit in a later segment that
+// synced before this window's failure was handled, and then nothing would
+// drop the part by superseder again, so the caller drops by each returned
+// version it knows has synced, one check where it fails the window. Revisit
+// when windows are resolved before any later write can sync, which makes the
+// check always find nothing.
 //
 // The change version is left where the failed writes raised it, unless the
 // window held all the file's content, in which case the update's settle drops
@@ -218,11 +225,12 @@ func (f *file) writeRetain(p Placed) {
 // a copy of the window. A failed window is rare and short; pass each record's
 // extent with it, and index the window's versions, when a failed window over
 // files with many extents shows these in a profile.
-func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
+func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []core.Version) {
 	order := slices.Clone(window)
 	slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })
 	var was []core.Extent
 	var back, gaps []Retained
+	var covers []core.Version
 	for _, w := range order {
 		was = was[:0]
 		f.held.visit(whole, func(p Piece) bool {
@@ -249,7 +257,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
 		}
 		slices.SortStableFunc(back, func(a, b Retained) int { return b.Version.Compare(a.Version) })
 		for _, r := range back {
-			gaps = f.supersede(r, gaps[:0])
+			gaps, covers = f.supersede(r, gaps[:0], covers)
 			for _, g := range gaps {
 				f.held.put(g.Piece)
 			}
@@ -266,20 +274,27 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
 		return r, false
 	})
 	for _, r := range back {
-		gaps = f.supersede(r, gaps[:0])
+		gaps, covers = f.supersede(r, gaps[:0], covers)
 		for _, g := range gaps {
 			f.retained.add(g)
 		}
 		out = append(out, gaps...)
 	}
-	return out
+	// A record's pass can hand a part to an older record of the window, whose
+	// own pass then fails it: that version is the window's, not a cover.
+	covers = slices.DeleteFunc(covers, func(v core.Version) bool {
+		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
+	})
+	slices.SortFunc(covers, core.Version.Compare)
+	return out, slices.Compact(covers)
 }
 
 // supersede retains again the parts of r that held content newer than r
-// covers, each as superseded by that content's version, and appends to gaps
-// the parts under nothing held, or under older content, still carrying r's
-// By. Neighbouring parts that share a By are kept as one.
-func (f *file) supersede(r Retained, gaps []Retained) []Retained {
+// covers, each as superseded by that content's version, which it appends to
+// covers, and appends to gaps the parts under nothing held, or under older
+// content, still carrying r's By. Neighbouring parts that share a By are kept
+// as one.
+func (f *file) supersede(r Retained, gaps []Retained, covers []core.Version) ([]Retained, []core.Version) {
 	var part Retained
 	var gap bool
 	flush := func() {
@@ -289,6 +304,7 @@ func (f *file) supersede(r Retained, gaps []Retained) []Retained {
 			gaps = append(gaps, part)
 		default:
 			f.retained.add(part)
+			covers = append(covers, part.By)
 		}
 		part = Retained{}
 	}
@@ -318,5 +334,5 @@ func (f *file) supersede(r Retained, gaps []Retained) []Retained {
 	})
 	take(cursor, end, r.By, true)
 	flush()
-	return gaps
+	return gaps, covers
 }
