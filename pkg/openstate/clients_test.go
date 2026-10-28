@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
@@ -288,8 +289,12 @@ func TestProposalBounds(t *testing.T) {
 	if err := propose("v6-over", "2001:db8::ffff:1"); !delayed(err) {
 		t.Errorf("a proposal past the cap from one /64: %v, want ErrDelay(DelayResources)", err)
 	}
+	f.fs.Counts.Take()
 	if err := propose("v4-over", "192.0.2.1"); !delayed(err) {
 		t.Errorf("a proposal past the cap from one IPv4 address: %v, want ErrDelay(DelayResources)", err)
+	}
+	if n := f.fs.Counts.Take(); n != (kv.Counts{}) {
+		t.Errorf("a proposal refused at the cap touched the store: %+v, want nothing", n)
 	}
 	if err := propose("v6-0", "2001:db8::1"); err != nil {
 		t.Errorf("replacing a held proposal at its source's cap: %v", err)

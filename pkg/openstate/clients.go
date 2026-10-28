@@ -158,6 +158,13 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	if err != nil {
 		return Proposal{}, err
 	}
+	src, key := source(from), keyOf(rec)
+	t.cmu.Lock()
+	full := t.capped(key, src)
+	t.cmu.Unlock()
+	if full {
+		return Proposal{}, &DelayError{DelayResources}
+	}
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
 	known := false
 	cur, found, err := t.byName(ctx, rec)
@@ -178,12 +185,10 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 		return Proposal{}, fmt.Errorf("openstate: drawing a confirm: %w", err)
 	}
 
-	src, key := source(from), keyOf(rec)
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	old, replaces := t.pending[key]
-	if !replaces && len(t.pending) >= maxPending ||
-		(!replaces || old.source != src) && t.sources[src] >= maxPerSource {
+	if t.capped(key, src) {
 		return Proposal{}, &DelayError{DelayResources}
 	}
 	if replaces {
@@ -561,6 +566,15 @@ func (t *Table) lapsed(c entity.ClientID) bool {
 	defer t.cmu.Unlock()
 	end := t.leases[c]
 	return end != 0 && t.d.Clock.Elapsed() >= end
+}
+
+// capped reports whether a proposal for key from src is past a cap, a
+// replacement from the same source being charged nothing; the caller holds
+// cmu.
+func (t *Table) capped(key nameKey, src netip.Prefix) bool {
+	old, replaces := t.pending[key]
+	return !replaces && len(t.pending) >= maxPending ||
+		(!replaces || old.source != src) && t.sources[src] >= maxPerSource
 }
 
 // uncharge drops one proposal's charge to src; the caller holds cmu.
