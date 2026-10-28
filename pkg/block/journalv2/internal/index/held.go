@@ -95,9 +95,8 @@ func (h held) piece(k uint64) Piece {
 // offloaded, and a report marks exactly what it names, so a block's commit
 // can end inside a record, as an offer's artificial end does. Each mark adds
 // at most two entries, and the extent bound never refuses a mark, though a
-// mark can split entries. Revisit if marks are
-// found splitting files toward that bound, by keeping the bit as ranges inside
-// an entry instead.
+// mark can split entries. Revisit if marks are found splitting files toward
+// that bound, by keeping the bit as ranges inside an entry instead.
 func (h held) joins(r held) bool {
 	return h.segment == r.segment && h.recordOff == r.recordOff && h.version == r.version &&
 		h.offloaded == r.offloaded && uint64(h.skip)+uint64(h.len) == uint64(r.skip)
@@ -120,8 +119,9 @@ func clip(p Piece, e core.Extent) Piece {
 //
 // Reads (lookup, span, allOffloaded, pieces) change nothing, not even scratch
 // space, so they can run together. Writes are serialised by the caller,
-// against each other and against reads; the scratch slices are theirs, kept so that a write in steady
-// state allocates nothing beyond the nodes the tree splits.
+// against each other and against reads; the scratch slices are theirs, kept
+// so that a write in steady state allocates nothing beyond the nodes the tree
+// splits.
 //
 // The set decides overlaps by arrival: what is put last wins where it lands,
 // and entries carry no sequence number. Rebuilding from records in any order
@@ -170,10 +170,10 @@ func (s *heldSet) lookup(off int64) (Placed, bool) {
 	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version}, true
 }
 
-// span appends to placed the pieces held inside e, clipped to it, and to missing
-// the exact gaps between them, both in offset order. Neighbouring pieces of
-// one record that differ only in their offloaded bit are returned as one, so
-// nothing a read is told depends on the bit.
+// span appends to placed the pieces held inside e, clipped to it, and to
+// missing the exact gaps between them, both in offset order. Neighbouring
+// pieces of one record that differ only in their offloaded bit are returned as
+// one, so nothing a read is told depends on the bit.
 func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([]Placed, []core.Extent) {
 	if e.Len <= 0 {
 		return placed, missing
@@ -309,17 +309,20 @@ func (s *heldSet) markOffloaded(e core.Extent, oldest, newest core.Version) int 
 	return len(s.work)
 }
 
-// repoint moves the pieces inside e held from record from to record to,
-// keeping their extents, skips, versions and bits: a record re-appended after
-// a failed sync is the same record in a new place. Only pieces of from move,
-// so carrying forward a header-only record, which no piece is held from,
-// changes nothing. It returns the number of pieces moved.
-func (s *heldSet) repoint(e core.Extent, from, to RecordAt) int {
+// repoint moves the pieces inside e held from record from to record to, whose
+// payload holds e's bytes from skip on, keeping their extents, versions and
+// bits. A record re-appended after a failed sync is the same record in a new
+// place, so its skips do not change; a repack copy holds only the extents it
+// copies, so they do, and pieces of several records copied into one join as
+// one entry. Only pieces of from move, so carrying forward a header-only
+// record, which no piece is held from, changes nothing. It returns the number
+// of pieces moved.
+func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int {
 	s.work = s.work[:0]
 	s.visit(e, func(p Piece) bool {
 		if p.Record == from {
 			q := clip(p, e)
-			q.Record = to
+			q.Record, q.Skip = to, skip+uint32(q.Extent.Off-e.Off)
 			s.work = append(s.work, q)
 		}
 		return true

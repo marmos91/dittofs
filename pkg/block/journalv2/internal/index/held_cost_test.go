@@ -168,7 +168,7 @@ func TestHeldAllocations(t *testing.T) {
 	from, to := rec(1<<23, 0), rec(1<<23, 1)
 	s.insert(write(9*pieceLen, pieceLen, from, 1<<41))
 	if got := testing.AllocsPerRun(500, func() {
-		s.repoint(ext(9*pieceLen, pieceLen), from, to)
+		s.repoint(ext(9*pieceLen, pieceLen), from, to, 0)
 		from, to = to, from
 	}); got != 0 {
 		t.Errorf("repoint: %v allocations per call, want 0", got)
