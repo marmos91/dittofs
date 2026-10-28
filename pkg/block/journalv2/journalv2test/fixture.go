@@ -112,6 +112,15 @@ func NewWithSegmentCap(tb testing.TB, segmentCap int64) *Fixture {
 	return newFixture(tb, nil, true, segmentCap, nil)
 }
 
+// NewWithOptions is NewWith with opts added to the options the journal is
+// initialised and opened with, for a check that needs one the fixture does
+// not set, such as a descriptor budget of its own. The fixture's clock, its
+// settings and its storage are set after opts, so opts cannot replace them.
+func NewWithOptions(tb testing.TB, set func(*journalv2.Settings), opts ...journalv2.Option) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, FixtureSegmentCap, set, opts...)
+}
+
 // NewUnwatched is New without the profiler, for a second journal in a test
 // that already has one: two watches active at once both fail. Called after
 // New, as it must be, this journal is closed before the first fixture's
@@ -123,8 +132,9 @@ func NewUnwatched(tb testing.TB) *Fixture {
 
 // newFixture is New with fault set on the seam before the journal is
 // initialised, the profiler only when watch is set, segments of segCap
-// bytes, and set, when not nil, applied to the settings.
-func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set func(*journalv2.Settings)) *Fixture {
+// bytes, set, when not nil, applied to the settings, and opts added before
+// the fixture's own options.
+func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set func(*journalv2.Settings), opts ...journalv2.Option) *Fixture {
 	tb.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -157,7 +167,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set fu
 		Dir:     dir,
 		tb:      tb,
 		clock:   clock,
-		opts:    []journalv2.Option{journalv2.WithClock(clock), journalv2.WithSettings(settings)},
+		opts:    append(opts[:len(opts):len(opts)], journalv2.WithClock(clock), journalv2.WithSettings(settings)),
 		handles: map[int]*journalv2.Handle{},
 	}
 
@@ -228,6 +238,15 @@ func (f *Fixture) close() {
 			f.tb.Errorf("fixture: close: %v", err)
 		}
 	}
+}
+
+// Abandon leaves the journal open now, and its handles, unclosed when the test
+// ends, for a test that found a call blocked in it: closing would wait for
+// that call, and the test would hang rather than fail. The journal's
+// goroutines and descriptors are then leaked, and the profiler reports them.
+func (f *Fixture) Abandon() {
+	f.J = nil
+	clear(f.handles)
 }
 
 // Share returns the handle of share i, attaching it on first use with tag

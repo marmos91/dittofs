@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/sim"
 )
 
@@ -47,5 +48,31 @@ func TestFixtureReportsItsOwnFailures(t *testing.T) {
 
 	if !strings.HasPrefix(r.fatal, "fixture: ") {
 		t.Fatalf("a journal whose every storage call fails was reported as %q, want a message starting %q", r.fatal, "fixture: ")
+	}
+}
+
+// errorRecorder is a testing.TB that keeps what Errorf reports instead of
+// failing the test.
+type errorRecorder struct {
+	testing.TB
+	errors []string
+}
+
+func (r *errorRecorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+// TestAbandonLeavesTheJournalUnclosed pins that an abandoned fixture's
+// cleanup calls nothing on its journal or handles, so a call blocked in them
+// cannot hang it.
+func TestAbandonLeavesTheJournalUnclosed(t *testing.T) {
+	r := &errorRecorder{TB: t}
+	f := &Fixture{tb: r, J: &journalv2.Journal{}, handles: map[int]*journalv2.Handle{0: {}}}
+
+	f.Abandon()
+	f.close()
+
+	if len(r.errors) != 0 || len(f.handles) != 0 {
+		t.Fatalf("an abandoned fixture's cleanup reported %q and kept %d handles, want it to touch nothing", r.errors, len(f.handles))
 	}
 }
