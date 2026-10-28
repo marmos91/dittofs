@@ -1,0 +1,10 @@
+# A write lands while the offload callback runs, over part of what it was
+# offered: the report marks only the offered version, so the new bytes stay
+# dirty and a release of the reported extent is refused until they are
+# offloaded too.
+write s=1 f=3 len=32 b=48
+offload s=1 f=3 off=8 len=8 b=120 pick=1
+release s=1 f=3
+offload s=1 f=3
+release s=1 f=3
+reopen

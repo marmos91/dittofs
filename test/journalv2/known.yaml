@@ -7,6 +7,12 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the bounded sync timer and the data path.'
   issue: '#3378'
+- test: TestModel
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, offload, release, repack and recovery.'
+  issue: '#3379'
 - test: TestRFC1D_AccountingFollowsCap
   status: fail
   fix: planned
