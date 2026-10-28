@@ -48,7 +48,10 @@ type files struct {
 	//
 	// decision: refusals counts every refusal naming LimitIndex, splitting
 	// removals included, so index_refusals has one meaning: every NoSpaceError
-	// that names the index.
+	// that names the index. It counts refusals at admission only: a write the
+	// caller never admits is not counted, so it is the engine's count of
+	// refusals it was asked to make. Revisit if a refusal is found made
+	// outside admission.
 	count    atomic.Int64
 	limit    atomic.Int64
 	refusals atomic.Uint64
@@ -205,6 +208,11 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 // commit is update for an admitted op: admitted is the amount its admission
 // reserved in the count, which the commit's entry delta instead of adding
 // on top of. Everything else is as update.
+//
+// commit consumes the admission whether or not fn returns an error: the
+// admitted amount is already taken out of the delta. A caller whose I/O fails
+// before commit abandons the admission; one that commits must not abandon it
+// as well, or the count stands too low.
 func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) error {
 	s := fs.shard(id)
 	for {

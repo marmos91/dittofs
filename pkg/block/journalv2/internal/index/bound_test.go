@@ -94,7 +94,7 @@ func TestExtentCountCountsHeldRetainedAndMarkers(t *testing.T) {
 	}
 }
 
-// TestExtentCountMatchesWalk is R20 against every mutation path: random
+// TestExtentCountMatchesWalk checks the count against every mutation path: random
 // operations across files, after each of which the count equals the sum of
 // the entries the walk finds. A mutation that skips the delta leaves the
 // count ahead or behind the index, and the bound would then refuse the
@@ -296,8 +296,7 @@ func TestWriteAddsIsExact(t *testing.T) {
 // design: the second of two placements of one record, contiguous in the file
 // and the payload, which a put joins into one entry. Admission hands the
 // over-count to commit as the admitted amount, so the committed delta stays
-// exact; this check pins that the over-count is what the RFC allows rather
-// than hides.
+// exact; this check pins that the over-count is bounded and corrected, not hidden.
 func TestWriteAddsJoinsANeighbour(t *testing.T) {
 	b := Placed{Extent: ext(4, 4), Record: rec(1, 0), Skip: 4, Version: ver(1)}
 	var f file
@@ -353,7 +352,7 @@ func TestFillAddsIsExact(t *testing.T) {
 // TestSplits agrees with the pieces it names: only an extent with both ends
 // inside one piece splits, so an extent covering whole pieces, one end of
 // one, or nothing never does. A splits that answered by overlap would
-// refuse the removals the RFC lets through.
+// refuse removals that must never be refused.
 func TestSplits(t *testing.T) {
 	cases := []struct {
 		name string
@@ -473,7 +472,7 @@ func TestAdmissionAllocatesNothing(t *testing.T) {
 	fs.abandon(adm)
 }
 
-// TestBoundRefusesTheWritePastIt is the §9.4 check's first half, at the
+// TestBoundRefusesTheWritePastIt is the bound's first half, at the
 // index: scattered writes are admitted while they fit, the one that would
 // pass the bound is refused at once, naming the index in entries, the count
 // and the refusals are exact, and an overwrite that adds nothing is admitted
@@ -578,7 +577,7 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	}
 }
 
-// TestPunchesPastAllowanceRefused is the §9.4 check's second half: inside
+// TestPunchesPastAllowanceRefused is the bound's second half: inside
 // one held extent, punches that split it in two are refused once the count
 // stands an eighth of the bound above it, naming the index, while a punch at
 // the extent's edge, a truncate and a delete never are. A bound that also
@@ -693,7 +692,7 @@ func TestPunchesPastAllowanceRefused(t *testing.T) {
 }
 
 // TestSplittingRemovalsRefusedAtTheCeiling pins the exact start of the
-// allowance's refusals, which the RFC gives: once the count stands an eighth
+// allowance's refusals: once the count stands an eighth
 // of the limit above it — at the ceiling, not before it. A check that refused
 // when the reservation would not fit, while the count still stood below the
 // ceiling, would refuse a trim pass one punch early; the punches would stop
@@ -803,7 +802,7 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 	}
 }
 
-// TestOverBoundAtOpen is R23: an index the bound never refused, or one opened
+// TestOverBoundAtOpen: an index the bound never refused, or one opened
 // under a lowered limit, still opens and still reads, and refuses every
 // content write until the count falls below the bound. Refusing the open
 // would turn the bound into a crash of the journal once it is reached.
@@ -838,17 +837,6 @@ func TestOverBoundAtOpen(t *testing.T) {
 	}
 	if _, err := fs.admitFill(ids[0], Placed{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(1)}); err == nil {
 		t.Fatal("a fill over the bound at open was admitted")
-	} else {
-		assertIndexRefusal(t, err)
-	}
-	// A fill of a file with no entry holds a whole extent absent, so it adds
-	// one entry and is refused over the bound like any other content write.
-	// Nothing is held for the file, so n == 0 in the buggy shape: the refusal
-	// must be the over-the-bound one, not "adds nothing", and it holds either
-	// way, which is why the other check, at the bound, is the one that fails
-	// on this bug.
-	if _, err := fs.admitFill(fid(9), Placed{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(1)}); err == nil {
-		t.Fatal("a fill of a file with no entry was admitted over the bound")
 	} else {
 		assertIndexRefusal(t, err)
 	}
@@ -1076,5 +1064,31 @@ func TestCeilingSaturatesAtTheLargestLimit(t *testing.T) {
 	// above could not have come from it.
 	if a, err := fs.admitWrite(id, ext(100*4096, 4096), false); err != nil || a != 1 {
 		t.Fatalf("a write under the largest limit = (%d, %v), want (1, nil)", a, err)
+	}
+}
+
+// TestNetNegativeWriteRefusedOverBound pins the clamp on a write's admitted
+// amount: over the bound, a write covering three whole pieces nets minus two
+// entries, and reserving that would admit it. Nothing that adds no entry can
+// lower the count, so it is refused like any other content write.
+func TestNetNegativeWriteRefusedOverBound(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(2)
+	id := fid(1)
+	for i := range int64(3) {
+		if err := fs.update(id, func(f *file) error {
+			f.write(Placed{Extent: ext(i*10, 10), Record: rec(1, uint32(i)*4096), Version: ver(uint64(i) + 1)})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := fs.admitWrite(id, ext(0, 30), false)
+	if err == nil {
+		t.Fatalf("a net-negative write over the bound was admitted, reserving %d", a)
+	}
+	assertIndexRefusal(t, err)
+	if c := fs.extentCount(); c != 3 {
+		t.Fatalf("count = %d after a refused admission, want 3", c)
 	}
 }

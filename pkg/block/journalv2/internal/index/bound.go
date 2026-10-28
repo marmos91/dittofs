@@ -82,14 +82,19 @@ func (f *file) splits(e core.Extent) bool {
 // over the bound the count must come down and every content write is refused
 // until it has. A refused admission reserves nothing.
 //
+// It admits one extent. A write that crosses a segment boundary is two
+// records, so the caller admits each piece and abandons the earlier ones if a
+// later one is refused.
+//
 // decision: the admission runs under the file's read lock, and the engine
 // holds the file's append lock from a write's admission to its commit, so
 // the file's content cannot change between the two — except by a release or
 // an offload report on the same file, which can make the committed delta
 // differ from the admitted one. commit applies the true delta, so the count
-// never drifts, and it overshoots the bound only by such a race. Revisit if
-// the engine ever lets releases run between another file op's admission and
-// its commit and the count is seen above the bound.
+// never drifts. The overshoot is at most the entries a racing release or
+// report can split in, and a fill racing a splitting removal's admission can
+// add one more split that nothing reserved. Revisit if the count is seen
+// above the bound by more than a handful of entries.
 func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
 	// A file with no entry holds nothing: a write of bytes adds one entry
 	// and a zero-length one none.
@@ -134,10 +139,10 @@ func (fs *files) reserve(want int64) (int64, error) {
 	}
 }
 
-// admitRemoval reserves the entries a removal that would split a held extent
-// adds: one for a release, which splits a piece — a release leaves no
-// marker — and two for a deallocate or a clone target, which split a piece
-// and leave one. It is never refused when e splits nothing: a removal that
+// admitRemoval reserves adds, the entries a removal that would split a held
+// extent adds: one for a release, which splits a piece and leaves no marker,
+// and two for a deallocate or a clone target, which split a piece and leave
+// one. It is never refused when e splits nothing: a removal that
 // narrows or covers whole pieces only lowers the count, so refusing it would
 // wedge the very calls that bring the count down. A splitting one is
 // refused, with the same named refusal, once the count stands an eighth of
@@ -178,8 +183,8 @@ func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64,
 		}
 		ceiling := limit + eighth
 		// The refusal begins once the count stands at the ceiling, not when
-		// a reservation no longer fits: the RFC's words are "once the count
-		// stands an eighth of ExtentLimit above it." Reserving the adds
+		// a reservation no longer fits: it is the count standing an eighth of
+		// the limit above it that ends the allowance. Reserving the adds
 		// rather than testing them lets the count peak one removal above
 		// the ceiling — the two entries a deallocate or a clone target can
 		// add — before it stands there.
