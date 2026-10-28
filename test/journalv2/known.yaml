@@ -385,3 +385,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that fails the open on a kind the format does not define.'
   issue: '#3378'
+- test: TestRFC28C_FormatFile
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
+  issue: '#3378'
