@@ -2171,3 +2171,87 @@ func TestRFC28C_KindValuesRefused(t *testing.T) {
 	}
 	wantBytes(t, g.Share(0), a.id, 0, a.p)
 }
+
+// TestRFC28C_FormatFile checks that a format file of the wrong length, with
+// a checksum that does not verify, or of a version the journal does not know
+// fails the open, with nothing written to it; and that a crash inside a
+// restamp, before the rename of the new file or before the directory sync
+// after it, leaves the old file or the new one whole.
+//
+// decision: the golden 56 bytes of a version 1 format file live with the
+// encoder's tests; this is the row's refusal and crash halves.
+func TestRFC28C_FormatFile(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, size)
+	b := writeSynced(t, f, 1, 1, 0, size)
+	f.Shutdown()
+
+	format := durable(t, f, "format")
+	parsed, err := raw.ParseFormat(format)
+	if err != nil {
+		t.Fatalf("the journal's format file does not parse: %v", err)
+	}
+
+	legs := []struct {
+		name string
+		edit func()
+		want error
+	}{
+		{"55 bytes", func() { truncateSegment(t, f, "format", raw.FormatSize-1) }, journalv2.ErrCorrupt},
+		{"57 bytes", func() { overwrite(t, f, "format", raw.FormatSize, []byte{0}) }, journalv2.ErrCorrupt},
+		{"a bad checksum", func() { flipAt(t, f, "format", 52) }, journalv2.ErrCorrupt},
+		{"version 2", func() {
+			overwrite(t, f, "format", 0, raw.Format{Version: 2, Identity: parsed.Identity, Installation: parsed.Installation}.Bytes())
+		}, journalv2.ErrUnknownFormat},
+	}
+	for _, leg := range legs {
+		leg.edit()
+		before := callsFor(f, "format")
+		creates := f.Seam.CallsFor(journalv2test.OpCreate, "format.tmp")
+		err := f.TryReopen()
+		stub(t, "Open", err)
+		if !errors.Is(err, leg.want) {
+			t.Fatalf("opening with a format file of %s returned %v, want %v", leg.name, err, leg.want)
+		}
+		if got := callsFor(f, "format"); got[journalv2test.OpWrite] != before[journalv2test.OpWrite] || got[journalv2test.OpTruncate] != before[journalv2test.OpTruncate] || f.Seam.CallsFor(journalv2test.OpCreate, "format.tmp") != creates {
+			t.Fatalf("the open wrote to the format file of %s; it is never repaired or upgraded in silence", leg.name)
+		}
+
+		// The file put back as it was.
+		truncateSegment(t, f, "format", raw.FormatSize)
+		overwrite(t, f, "format", 0, format)
+	}
+
+	// A restamp crashed before the rename of the new file, then one crashed
+	// after the rename and before the directory sync.
+	other := journalv2.InstallationID{'o', 't', 'h', 'e', 'r'}
+	for _, step := range []struct{ op, key string }{{journalv2test.OpRename, "format.tmp"}, {journalv2test.OpSyncDir, ""}} {
+		f.Shutdown()
+		renames := f.Seam.CallsFor(journalv2test.OpRename, "format.tmp")
+		held := f.Seam.Hold(t, step.op, step.key)
+		done := make(chan error, 1)
+		go func() { done <- f.TryRestamp(other) }()
+		select {
+		case <-held.Reached():
+		case err := <-done:
+			stub(t, "Restamp", err)
+			t.Fatalf("restamp returned (%v) without reaching its %s", err, step.op)
+		}
+		if step.op == journalv2test.OpSyncDir && f.Seam.CallsFor(journalv2test.OpRename, "format.tmp") != renames+1 {
+			t.Fatalf("the held directory sync is not the one after the rename: format.tmp was renamed %d times by then", f.Seam.CallsFor(journalv2test.OpRename, "format.tmp")-renames)
+		}
+		crashHeld(t, f, held)
+		<-done // a call the crash took; what it returned means nothing
+
+		got, err := raw.ParseFormat(durable(t, f, "format"))
+		if err != nil {
+			t.Fatalf("after a crash inside a restamp at its %s, the format file is not whole: %v", step.op, err)
+		}
+		if got.Identity != parsed.Identity || (got.Installation != parsed.Installation && got.Installation != other) {
+			t.Fatalf("after a crash inside a restamp at its %s, the format file names identity %x and installation %x, want the journal's identity and the old or the new installation", step.op, got.Identity, got.Installation)
+		}
+		wantBytes(t, f.Share(0), a.id, 0, a.p)
+		wantBytes(t, f.Share(1), b.id, 0, b.p)
+	}
+}
