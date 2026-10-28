@@ -41,7 +41,7 @@ func TestFixtureReportsItsOwnFailures(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		newFixture(r, fault, true)
+		newFixture(r, fault, true, FixtureSegmentCap)
 	}()
 	<-done
 
