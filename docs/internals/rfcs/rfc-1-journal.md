@@ -2447,6 +2447,7 @@ which domain guards it. The domains are:
 | **file append** | one file's serialised append: assigning a version and appending a write, fill, removal, release or repack copy for the file, `Fill`'s absence check with its write, and checking and claiming the file's tag ([§3](#3.%20Interface)) | one `FileID` |
 | **capacity** | the reservation counters ([§6](#6.%20Capacity)) | store-wide |
 | **file index** | one file's placement index entries, and its tag for a call that reads it without appending | one `FileID` |
+| **file map** | which `FileID`s have an entry in the placement index's outer level ([§4.1](#4.1%20What%20it%20must%20answer)): finding, adding or removing an entry, and nothing inside it | a part of the map; never the whole store at once |
 | **segment append** | the write position of one active segment | one segment |
 | **storage guard** | a segment's bytes against being freed or moved | one segment |
 
@@ -2459,11 +2460,15 @@ held across one local record write and nothing remote, which is the bound
 
 The file index domain is deliberately per-file, not store-wide: a store-wide
 index lock makes every read of every file contend with every write to any file.
+The file map domain is held only to find, add or remove one entry, and released
+before anything else is done: a caller looking a file up releases it before
+taking that file's index, so it is held after the file index only to remove an
+entry left holding nothing, and nothing is acquired while it is held.
 
 ### 8.3 Lock ordering, and what may never be held
 
 Acquisition **MUST** follow one total order: **file append → capacity → file
-index → segment append → storage guard.** An implementation **MUST NOT**
+index → file map → segment append → storage guard.** An implementation **MUST NOT**
 acquire in any other order, and **MUST NOT** hold two locks of one domain at
 once, so no two files' append locks are ever held together: `OffloadMany` and a
 repack pass take each file's lock in turn.
