@@ -32,6 +32,9 @@ type Sink interface {
 	// Revoked: state ended without the client asking; the service tells the
 	// client and answers what it holds pending on it.
 	Revoked(r Revocation)
+	// Notify: changes c's watch w matched; the service delivers them to the
+	// client.
+	Notify(c entity.ClientID, w WatchID, ch []Change)
 	// GraceEnded: shard s of share ended its grace, and every durable open
 	// record nobody reclaimed is closed, each file it left raised Closed
 	// first; the service runs the shard's pending releases. Raised once per
@@ -82,6 +85,7 @@ type outbox struct {
 	revoked []Revocation
 	recalls []recallOut
 	full    []entity.ClientID // clients that reached their grant budget
+	notes   []noteOut
 }
 
 // recallOut is one RecallGrant, and the recall it hands over: gen names it
@@ -118,6 +122,9 @@ func (o *outbox) raise(t *Table, sink Sink) {
 	}
 	for _, w := range o.over {
 		sink.LockWaitOver(w.w, w.granted)
+	}
+	for _, n := range o.notes {
+		sink.Notify(n.c, n.w, n.ch)
 	}
 	for _, r := range o.revoked {
 		sink.Revoked(r)

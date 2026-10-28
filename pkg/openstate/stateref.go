@@ -19,6 +19,7 @@ const (
 	StateOpen StateType = iota + 1
 	StateLock
 	StateGrant
+	StateWatch
 )
 
 // StateRef names one piece of state without a file handle: its type, its

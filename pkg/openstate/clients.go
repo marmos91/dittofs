@@ -794,6 +794,7 @@ func (t *Table) sweep(ctx context.Context) {
 	maps.Copy(due, t.parked)
 	maps.Copy(due, t.recalling)
 	serve := slices.Collect(maps.Keys(due))
+	watched := slices.Collect(maps.Keys(t.watched))
 	maps.DeleteFunc(t.recalled, func(_ entity.FileID, until time.Duration) bool { return now >= until })
 	maps.DeleteFunc(t.ended, func(_ sessionKey, at time.Duration) bool { return now >= at+leasePeriod })
 	t.idx.Unlock()
@@ -814,6 +815,7 @@ func (t *Table) sweep(ctx context.Context) {
 	// lock.
 	t.timer.Go(func() {
 		t.serveFiles(ctx, sink, serve)
+		t.handWatched(sink, watched)
 		t.closeUnreclaimed(ctx, sink)
 	})
 }
@@ -888,6 +890,10 @@ func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbo
 			if g := e.grants[h.ref.Token]; h.ref.Type == StateGrant && g != nil {
 				t.dropGrant(e, g)
 				t.serve(ctx, e, out)
+				return nil
+			}
+			if w := e.watches[h.ref.Token]; h.ref.Type == StateWatch && w != nil {
+				t.dropWatch(e, w)
 				return nil
 			}
 			o := e.opens[h.ref.Token]

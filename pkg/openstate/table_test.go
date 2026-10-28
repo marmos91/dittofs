@@ -92,6 +92,7 @@ type recordingSink struct {
 	recalls  []recallCall
 	revoked  []Revocation
 	full     []recallAny
+	notes    []noteOut
 	graces   []graceEnded
 	onEnded  func(c entity.ClientID)
 	onWait   func(w LockWaiter)
@@ -131,6 +132,21 @@ func (s *recordingSink) GraceEnded(share entity.ShareID, sh ShardID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.graces = append(s.graces, graceEnded{share, sh, len(s.closed)})
+}
+
+func (s *recordingSink) Notify(c entity.ClientID, w WatchID, ch []Change) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notes = append(s.notes, noteOut{c, w, ch})
+}
+
+// takeNotes returns the Notify calls since the last take.
+func (s *recordingSink) takeNotes() []noteOut {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.notes
+	s.notes = nil
+	return n
 }
 
 type recallAny struct {

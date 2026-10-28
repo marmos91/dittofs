@@ -113,10 +113,14 @@ func (t *Table) rebuild() indexes {
 				x.granted[g.client]++
 			}
 		}
+		for tok, w := range e.watches {
+			x.refs[refKey{w.id.Shard, tok}] = holder{StateWatch, e.file, w.client, 1}
+			x.count(w.client, cappedWatches, 1)
+		}
 		for _, w := range e.waiters {
 			x.count(w.Owner.Client, cappedWaiters, 1)
 		}
-		if n := len(e.opens) + len(e.lstates) + len(e.grants); n > 0 {
+		if n := len(e.opens) + len(e.lstates) + len(e.grants) + len(e.watches); n > 0 {
 			x.states[e.file] = n
 		}
 	})

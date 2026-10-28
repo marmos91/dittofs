@@ -38,6 +38,7 @@ type Table struct {
 	recalled  map[entity.FileID]time.Duration // the Elapsed reading until which a file is offered no grant, after a recall ended
 	unsent    int                             // recalls started and not yet handed to the Sink
 	parked    map[entity.FileID]struct{}      // the files holding a disconnected open or an unsaved record, which the timer visits
+	watched   map[entity.FileID]struct{}      // the directories holding a watch that handed changes since the timer last looked, which the timer visits
 	ended     map[sessionKey]time.Duration    // the sessions each client ended here, from the Elapsed reading of their end, for a lease period
 	held      map[heldKey]int                 // what each client holds here of each capped kind
 	owners    map[ownerKey]int                // the lock states of each lock owner, which holds one per open or file it locks under
@@ -87,12 +88,13 @@ const (
 	cappedRanges
 	cappedOwners
 	cappedWaiters
+	cappedWatches
 )
 
 // perClient is the most of each capped kind one client holds here.
 //
-// decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners and 1,024
-// waiters per client. BenchmarkHeapPerState measures about
+// decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024
+// waiters and 1,024 watches per client. BenchmarkHeapPerState measures about
 // 865 B an open, 25 B a lock range and 166 B a client, so a client at its caps
 // holds about 14 MB of opens and 1.6 MB of ranges. A request past one is
 // refused ErrDelay before it changes anything, so one client cannot spend
@@ -106,7 +108,7 @@ const (
 // such opens, by the owner cap, before the open cap's 16,384 binds. Each
 // table starts from these in its caps field, which a case lowers. Make them
 // settings if a measured client is refused below them.
-var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024}
+var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024, cappedWatches: 1024}
 
 type heldKey struct {
 	client entity.ClientID
@@ -165,6 +167,7 @@ type entry struct {
 	lstates map[uint64]*lockState // by reference token
 	waiters []*LockWaiter         // in arrival order, which serves them
 	grants  map[uint64]*grant     // by reference token
+	watches map[uint64]*watch     // by reference token: the watches of the directory e is
 	pending *entity.DeleteRecord  // the file is delete pending; nil: not
 	// pendingUnsaved is set while pending differs from what is written for
 	// a persistent open, which the timer writes again.
@@ -188,7 +191,7 @@ func New(d Deps) (*Table, error) {
 	}
 	t := &Table{
 		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
-		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{}, parked: map[entity.FileID]struct{}{}, ended: map[sessionKey]time.Duration{},
+		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{}, parked: map[entity.FileID]struct{}{}, watched: map[entity.FileID]struct{}{}, ended: map[sessionKey]time.Duration{},
 		adopted: map[entity.ClientID]struct{}{}, held: map[heldKey]int{}, owners: map[ownerKey]int{},
 		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
