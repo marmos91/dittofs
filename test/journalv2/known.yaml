@@ -343,3 +343,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recycling, recovery by scan with the torn-tail rule on a recycled segment, failed appends, reservations and repack.'
   issue: '#3379'
+- test: TestRFC28C_StaleExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
+  issue: '#3379'
