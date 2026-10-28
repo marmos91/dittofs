@@ -335,7 +335,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the two refusals of a roll.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the refusal of a roll naming the pool.'
   issue: '#3379'
 - test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
   status: fail
