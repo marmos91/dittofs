@@ -566,7 +566,9 @@ func TestStartContextDoesNotStopTheTimer(t *testing.T) {
 // No Sink method runs under a table lock: a Sink that calls back into the
 // table from ClientEnded deadlocks nothing.
 func TestSinkMayCallBack(t *testing.T) {
-	f := newFixture(t)
+	f0 := newFixture(t)
+	f := unstarted(t, f0.fs, f0.clock)
+	f.Table.sink = f.sink // no lease timer: this test's own sweep is the only one
 	owner := entity.NewUser()
 	id := f.connect(t, nfs("host-a", 1, owner))
 	f.sink.onEnded = func(c entity.ClientID) {
