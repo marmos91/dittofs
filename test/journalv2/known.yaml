@@ -457,3 +457,15 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
+- test: TestDamage_TornWrites/final_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  issue: '#3378'
+- test: TestDamage_TornWrites/trailer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  issue: '#3378'

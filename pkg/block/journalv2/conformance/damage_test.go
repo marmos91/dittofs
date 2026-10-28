@@ -5,6 +5,7 @@ package conformance
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"slices"
 	"testing"
 
@@ -739,4 +740,151 @@ func TestDamage_LostWrites(t *testing.T) {
 			crashParked(t, d, p)
 		})
 	}
+}
+
+// iteration is the testing.TB of one pass of a loop inside a test: its
+// cleanups run when the pass ends rather than when the test does, so a loop
+// over many fixtures holds one at a time, and its temporary directories go
+// with it. Failures reach the test.
+type iteration struct {
+	*testing.T
+	cleanups []func()
+}
+
+// Cleanup registers f to run when the pass ends, after the functions
+// registered after it.
+func (it *iteration) Cleanup(f func()) { it.cleanups = append(it.cleanups, f) }
+
+// TempDir returns a new directory that is removed when the pass ends, where
+// the test's own would stay until the test does.
+func (it *iteration) TempDir() string {
+	it.Helper()
+
+	dir, err := os.MkdirTemp("", "journal-iteration-")
+	if err != nil {
+		it.Fatalf("make a temporary directory: %v", err)
+	}
+
+	it.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// iterate runs body as one pass of a loop, with the cleanups it registers
+// run when it returns.
+func iterate(t *testing.T, body func(tb testing.TB)) {
+	t.Helper()
+
+	it := &iteration{T: t}
+	defer func() {
+		for i := len(it.cleanups) - 1; i >= 0; i-- {
+			it.cleanups[i]()
+		}
+	}()
+	body(it)
+}
+
+// locate returns where record r is held, failing with where the sweep
+// stands if no held extent covers its start.
+func locate(t *testing.T, where string, f *journalv2test.Fixture, r rec) journalv2.RecordRef {
+	t.Helper()
+
+	entries, err := f.J.Inspect().File(r.id)
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("%s: inspect a file: %v", where, err)
+	}
+
+	for _, e := range entries {
+		if e.Kind == journalv2.EntryHeld && e.Extent.Off <= r.extent.Off && r.extent.Off < e.Extent.Off+e.Extent.Len {
+			return e.Location
+		}
+	}
+
+	t.Fatalf("%s: no held extent of the file covers offset %d; entries: %+v", where, r.extent.Off, entries)
+	return journalv2.RecordRef{}
+}
+
+// segmentOf returns the accounting of segment seg, failing with where the
+// sweep stands if the journal does not own it.
+func segmentOf(t *testing.T, where string, f *journalv2test.Fixture, seg journalv2.SegmentID) journalv2.SegmentInfo {
+	t.Helper()
+
+	for _, info := range f.J.Inspect().Segments() {
+		if info.ID == seg {
+			return info
+		}
+	}
+
+	t.Fatalf("%s: segment %d is not among the journal's", where, seg)
+	return journalv2.SegmentInfo{}
+}
+
+// TestDamage_TornWrites checks that a torn write, cut at every byte, leaves
+// a journal the reference model allows: a record cut anywhere is never held,
+// and a trailer cut anywhere is no footer. Two sweeps: the final record,
+// a 64-byte write on file 0 unsynced last, cut at each of its bytes by a
+// crash; and the trailer, the last write of a seal parked at its sync, cut
+// at each of its bytes from the end, the segment then read by scan where the
+// cut of nothing left it read by its catalog.
+//
+// decision: the record sweep counts its cuts over one write of the record's
+// header, time and payload, 168 bytes. A journal that writes a record in
+// more than one call is refused a cut past its last write by the seam, which
+// the sweep reports rather than silently cutting less.
+func TestDamage_TornWrites(t *testing.T) {
+	t.Run("final_record", func(t *testing.T) {
+		const size = 64
+		const recordBytes = raw.RecordHeaderSize + 8 + size
+		for n := 0; n <= recordBytes; n++ {
+			iterate(t, func(tb testing.TB) {
+				d := newDriven(tb, t, fmt.Sprintf("the final record cut at byte %d", n))
+				d.writeSynced(1, 1, 0, 64<<10)
+				a := d.writeSynced(0, 0, 0, 64<<10)
+				name := segmentName(locate(t, d.label, d.f, a).Segment)
+				d.write(0, 0, 64<<10, pattern(fmtTag("t", 0, 0, 64<<10), size))
+
+				if err := d.f.TryCrash(journalv2test.TornIn(name, n)); err != nil {
+					stub(t, "Open", err)
+					t.Fatalf("%s: %v", d.label, err)
+				}
+
+				d.crashed()
+			})
+		}
+	})
+
+	t.Run("trailer", func(t *testing.T) {
+		// How the open after the cut of nothing rebuilt the journal: the
+		// trailer whole, the segment read by its catalog.
+		var base journalv2.RecoveryStats
+		for n := 0; n <= raw.TrailerSize; n++ {
+			iterate(t, func(tb testing.TB) {
+				d := newDriven(tb, t, fmt.Sprintf("the trailer cut %d bytes short", n))
+				p, name := footerParked(t, d)
+				waitParked(t, p, "the roll")
+				if msg := p.check(); msg != "" {
+					t.Fatalf("precondition: the held call is not the footer's sync: %s", msg)
+				}
+
+				if err := d.f.Seam.Crash(journalv2test.TornEnd(name, n)); err != nil {
+					t.Fatalf("%s: %v", d.label, err)
+				}
+
+				p.held.Release()
+				<-p.done // the crash took the roll
+				d.reopened()
+				d.crashed()
+
+				r := d.f.J.Stats().Recovery
+				switch {
+				case n == 0 && r.CatalogSegments == 0:
+					t.Fatalf("precondition: with the trailer whole, recovery read no segment by its catalog: %+v", r)
+				case n == 0:
+					base = r
+				default:
+					wantScanned(t, d.f, base, 1)
+				}
+			})
+		}
+	})
 }
