@@ -455,9 +455,8 @@ through a kernel client, which only ever sends the subset of the protocol it nee
 - **Suite:** pynfs NFSv4.0 (689 tests) and NFSv4.1 (269 tests)
 - **Known failures and expected skips:**
   [`../../test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml)
-- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md):
-  the same suite against the Linux kernel server, which is what distinguishes an assertion
-  no server satisfies from one DittoFS fails alone
+- **Comparison:** `dt run pynfs --knfsd` runs the same suite against the Linux kernel server,
+  which is what distinguishes an assertion no server satisfies from one DittoFS fails alone
 - **Run locally:**
   ```bash
   test/harness/bin/dt run pynfs/badger-s3/0     # NFSv4.0; badger-s3 needs Localstack

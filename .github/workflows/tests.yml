@@ -187,6 +187,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nfs-common
 
+      # The package starts the system's own server on 2049, which the knfsd
+      # fixture starts itself, with its own export and settings.
+      - name: Install the kernel's NFS server
+        if: contains(matrix.needs, 'knfsd')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-kernel-server
+          sudo systemctl stop nfs-server
+
       # A namespaced client runs rpcbind and rpc.statd, and a second one sshd.
       # cthon04's general group compiles against libtirpc on the mount and
       # shells out to time(1); nfstest captures packets with tcpdump.
