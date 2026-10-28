@@ -44,7 +44,7 @@ var full = Run{
 	Name:   "20261015T120000Z-abcdef12-a2",
 	Start:  time.UnixMilli(1791460800000),
 	Stop:   time.UnixMilli(1791460912000),
-	Commit: "abcdef12", Branch: "develop", Dirty: true, OS: "linux", Kernel: "6.17.0-1022-azure", In: "container", Tier: "merge", Exit: 1,
+	Commit: "abcdef12", Branch: "develop", Dirty: true, OS: "linux", Kernel: "6.17.0-1022-azure", In: "container", Tier: "nightly", Place: "dedicated", Exit: 1,
 	Cells: []Cell{
 		{Name: "lint-repo", Result: "failed", Note: "`false` exited 1", Took: 3 * time.Second, Log: "logs/lint-repo.log", Tests: []Test{
 			{Name: "test/conformance/check-docs.sh", Status: Passed, Duration: 1500 * time.Millisecond},

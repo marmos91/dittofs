@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -156,6 +157,35 @@ func TestRunOptionFlagChoosesItsCells(t *testing.T) {
 		out, _ := dt(t, "run", "s", args, "--results", t.TempDir())
 		if !strings.Contains(out, want) || (args == "--o=false" && strings.Contains(out, "s/o")) {
 			t.Errorf("dt run s %s:\n%s", args, out)
+		}
+	}
+}
+
+// dt run --place P runs the cells of the tier that dt plan gives P, and on
+// the dedicated place the host:dedicated need is met, as no other run meets it.
+func TestRunPlace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the cells run sh")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "t", "01-a.sh"), "exit 0\n")
+	writeFile(t, filepath.Join(root, "t", "91-b.sh"), "exit 0\n")
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  long: { cmd: \"sh {test}\", tests: \"t/*.sh\", tier: nightly, needs_by_test: { \"9?-*.sh\": [\"host:dedicated\"] }, options: { k: { cmd: \"sh {test}\" } } }\n")
+	t.Chdir(root)
+	out, err := dt(t, "run", "--tier", "nightly", "--place", "dedicated", "--results", t.TempDir())
+	if err != nil || !regexp.MustCompile(`(?m)^long/dedicated\s+passed`).MatchString(out) || !regexp.MustCompile(`(?m)^long/k/dedicated\s+passed`).MatchString(out) || regexp.MustCompile(`(?m)^long(/k)?\s`).MatchString(out) {
+		t.Errorf("dt run --place dedicated: %v\n%s", err, out)
+	}
+	out, _ = dt(t, "run", "long", "--tier", "nightly", "--results", t.TempDir())
+	if regexp.MustCompile(`(?m)^long/dedicated\s+passed`).MatchString(out) {
+		t.Errorf("dt run long ran the dedicated cell elsewhere:\n%s", out)
+	}
+	for _, args := range [][]string{{"long"}, {"--only", "long"}, {"--skip", "long"}, {"--k"}} {
+		args = append(args, "--tier", "nightly", "--place", "dedicated", "--results", t.TempDir())
+		var status exitStatus
+		if _, err := dt(t, append([]string{"run"}, args...)...); err == nil || errors.As(err, &status) {
+			t.Errorf("dt run %s: %v, want a usage error", strings.Join(args, " "), err)
 		}
 	}
 }

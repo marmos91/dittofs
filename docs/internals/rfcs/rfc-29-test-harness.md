@@ -1193,7 +1193,8 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
-- **hosts:** `host:dedicated`, met only by the dedicated test host;
+- **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
+  `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
 
@@ -1318,7 +1319,9 @@ podman runs `setup.sh` keeps the logs in its own cache.
 ```
 
 The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
-kernel the run was on, as `uname -r` gives it. A cell's `result` is `passed`, `failed`, `skipped`
+kernel the run was on, as `uname -r` gives it. `place` is the place `--place` named, and is left
+out of a run without one, so the dedicated host's nightly run reads apart from one run by hand.
+A cell's `result` is `passed`, `failed`, `skipped`
 or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
 stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
 come from the interrupt itself.

@@ -66,6 +66,7 @@ type Options struct {
 	Out     io.Writer // where the commands' output passes through
 	Tier    string    // the tier the run was asked for, recorded in its results
 	Retry   int       // --retry: how many times a new failure's test runs again
+	Place   string    // --place: the place the run is on, which meets that place's host need, recorded in its results
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -92,7 +93,7 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	rep := Report{Dir: dir}
 	kernel, _ := exec.Command("uname", "-r").Output() // none where there is no uname
 	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS,
-		Kernel: strings.TrimSpace(string(kernel)), In: "host", Tier: o.Tier, Exit: rep.Status()}
+		Kernel: strings.TrimSpace(string(kernel)), In: "host", Tier: o.Tier, Place: o.Place, Exit: rep.Status()}
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		sum.In = "container"
 	}
@@ -193,6 +194,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	// commands then run in podman's image: the need's one check decides both.
 	podman := false
 	check := func(n string) (err error) {
+		if n == "host:"+o.Place {
+			return nil
+		}
 		if n != "podman" {
 			return needs.Check(o.Root, n)
 		}
