@@ -43,9 +43,9 @@ func (g GrantID) ref() StateRef {
 // that conflicts with its Kind, so its holder may cache. It covers every open
 // of its client under its Key, an oplock's one open, or, a delegation, none.
 //
-// decision: it carries nothing of the adapter's until a lease covering a
-// persistent open is written; what the adapter keeps with a lease lands with
-// that write.
+// decision: what the adapter keeps with a lease is its parent key, typed as
+// Parent, as the stored lease's ParentKey is, rather than opaque Adapter
+// bytes. Add Adapter if an adapter needs other bytes kept with a lease.
 type CachingGrant struct {
 	ID     GrantID
 	Client entity.ClientID
