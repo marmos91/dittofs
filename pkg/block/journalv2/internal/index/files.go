@@ -57,7 +57,10 @@ type files struct {
 	//
 	// decision: a bucket keeps only a version's counter half, as Counters
 	// does: in this format the epoch half is zero, and the counters refuse a
-	// record, floor or draw with any other, so none reaches a bucket.
+	// record, floor or draw with any other, so none reaches a bucket. That
+	// holds while the format's epoch half stays zero: a format version that
+	// raises the epoch must widen a bucket to a full version, or this table
+	// needs a second word beside it.
 	//
 	// decision: retained extents do not keep the change-version entry:
 	// retained content is no longer held, and the drop raises the bucket to
@@ -70,7 +73,9 @@ type files struct {
 	// bucket, not its own version — the top of the range openBuckets'
 	// contract allows — so a read begun before the open cannot fill a file
 	// that has an entry either. The cost is a needless refusal for a fill of
-	// such a file racing a delete of another file in its bucket.
+	// such a file racing a delete of another file in its bucket. Overturned
+	// by a measured needless-refusal rate for exactly those fills, ones that
+	// would otherwise be accepted.
 	//
 	// A bucket's top six bits are its shard, since both take the hash's top
 	// bits: a bucket's files all share one shard lock. That is harmless,
@@ -177,6 +182,11 @@ func (fs *files) len() int {
 // not changed since is checked against. It is called once, at open, before
 // any reader or writer runs. A start with a non-zero epoch never reaches it:
 // the counters refuse one first.
+//
+// This is the only thing that seeds the buckets. Attaching a share later
+// raises the counter above that share's floor but touches no bucket, so a
+// share attached after open must seed the buckets itself if an asOf stored
+// in one of its earlier incarnations is to stay refused here.
 func (fs *files) openBuckets(start core.Version) {
 	for i := range fs.buckets {
 		fs.buckets[i].Store(start.Counter)
@@ -200,6 +210,18 @@ func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
 // bucket's when it has none or has not changed since open. It claims nothing
 // and creates no entry, and it allocates nothing, so it may run on a read's
 // hot path.
+//
+// decision: a bucket-based asOf can name a version drawn but not yet applied
+// to the index. Two files share a bucket; the first's write draws its
+// version and while the append is in flight the second draws a higher one,
+// is deleted and settled, raising the bucket to it. A read of the first
+// file, missing now, reports the raised bucket, and a change landed after
+// that read at the lower version no longer refuses a fill of it, since the
+// lower version is not above the asOf the read reported. The index cannot
+// close this on its own: the caller must keep drawing a version and applying
+// it to the index atomic with respect to a read taking its asOf, for
+// example by taking the asOf under the append lock. Overturned if the index
+// gains a view of drawn-but-unapplied versions.
 func (fs *files) asOf(id core.FileID) core.Version {
 	var v core.Version
 	if !fs.view(id, func(f *file) { v = fs.checkedAgainst(f, id) }) {

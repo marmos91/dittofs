@@ -280,12 +280,42 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 			t.Fatalf("fill above the bucket's version = %v, want accepted", err)
 		}
 	})
+
+	// An asOf carrying a non-zero epoch is compared on its counter only:
+	// the versions the index checks against come from this journal, which
+	// issues none, so the epoch an outside asOf carries loses rather than
+	// outranking every counter. A full compare would accept this fill, whose
+	// epoch beats every version the journal ever drew.
+	t.Run("with an epoch in asOf", func(t *testing.T) {
+		epoch := core.Version{Epoch: 1, Counter: 1}
+
+		// Against the entry's own change version.
+		var fs files
+		id := fid(1)
+		change(t, &fs, id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 101)); return nil })
+		if err := fs.fill(id, write(4, 4, rec(1, 64), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
+			t.Fatalf("fill with an epoch asOf against change 101 = %v, want ErrStaleFill", err)
+		}
+
+		// Against the bucket a settled delete raised.
+		x, y := idInBucket(0), idInBucket(0, id)
+		change(t, &fs, y, func(f *file) error {
+			f.write(write(0, 4, rec(2, 0), 100))
+			f.delete(ver(101))
+			return nil
+		})
+		fs.settleRemovals(y, ver(101))
+		if err := fs.fill(x, write(0, 4, rec(3, 0), 0), epoch); !errors.Is(err, core.ErrStaleFill) {
+			t.Fatalf("fill with an epoch asOf against bucket 101 = %v, want ErrStaleFill", err)
+		}
+	})
 }
 
-// TestWhatRaisesTheChangeVersion is R33: a write and each of the four removals
-// raise the file's change version to their own; a release of part of the file
-// and a fill at a higher version do not. A change that did not raise the
-// version would let a fill resolve against a snapshot taken before it.
+// TestWhatRaisesTheChangeVersion is the change version's raise rules: a
+// write and each of the four removals raise the file's change version to
+// their own; a release of part of the file and a fill at a higher version
+// do not. A change that did not raise the version would let a fill resolve
+// against a snapshot taken before it.
 func TestWhatRaisesTheChangeVersion(t *testing.T) {
 	raises := []struct {
 		name  string
@@ -348,8 +378,9 @@ func TestWhatRaisesTheChangeVersion(t *testing.T) {
 	})
 }
 
-// TestDropRaisesTheBucketToTheEntryVersion is R35: dropping an entry raises
-// the file's bucket to the entry's change version, before the entry can be
+// TestDropRaisesTheBucketToTheEntryVersion is the bucket raise rule: dropping
+// an entry raises the file's bucket to the entry's change version, before
+// the entry can be
 // found missing, and never lowers it. The drop raises the bucket also for a
 // file in its tag-only life, which keeps its entry while its change version
 // is zeroed, for a file whose entry keeps only retained content — the
