@@ -1548,12 +1548,15 @@ the 128-bit version of [§4.3](#4.3%20Versions) makes it about 51 (estimated, no
 | 256 KiB extents | ~4.2 million | ~215 MB |
 | 64 KiB extents | ~16.8 million | **~820 MB** |
 
-**An entry is one contiguous piece of one record.** Two records never share an
-entry: each carries its own header between payloads, and its own content
-version, which reseed and the stale rule read per extent ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)). So an
-implementation **MUST** represent each contiguous held piece of a record as one
-entry, never as several, and the entry count of content is the count of record
-pieces holding it. A write is one record per segment it spans ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), so content
+**An entry is one contiguous piece of one record with one offloaded bit.** Two
+records never share an entry: each carries its own header between payloads, and
+its own content version, which reseed and the stale rule read per extent ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)). So an
+implementation **MUST** represent each contiguous held piece of a record whose
+offloaded bit is the same throughout as one entry, never as several, and the
+entry count of content is the count of such pieces holding it. A report marks
+exactly what it names ([§3.3](#3.3%20Offload)), so one that ends inside a piece splits it where
+the bit changes, and the parts are one entry again once the bit is the same on
+both. A write is one record per segment it spans ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), so content
 written in large writes is few entries, and content written in small writes is
 one entry per write. To coalesce, the producers write fewer records: a `Fill` of
 a fetched run is one record, and a repack **MUST** copy adjacent held extents of
@@ -1578,7 +1581,8 @@ count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in
 `index_refusals`. Records without bytes are never refused by it, though they can
 raise the count: a release or deallocate inside one held extent splits it in two,
-and a removal leaves a marker. Each adds at most two entries, and a refused one
+a report that ends inside a held extent splits it where the bit changes, and a
+removal leaves a marker. Each adds at most two entries, and a refused one
 would wedge the very calls that lower the count, so the bound caps what content
 writes may add and the count may stand above it by what removals and releases
 added since; content writes stay refused until it falls back below. That excess
@@ -1587,7 +1591,9 @@ release or deallocate that would split a held extent is refused with the same
 named refusal, which the engine answers retry-later while it offloads, releases
 and repacks ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
 `Forget` are never refused by it, since none splits a held extent: each adds at
-most its one removal marker, and drops the held extents it covers. Without that
+most its one removal marker, and drops the held extents it covers. A report is
+never refused by it either, though it can split a held extent: refusing it would
+stop the offload that lets the extent be released and the count fall. Without that
 cap, a guest's trim pass of millions of punches inside held extents adds an entry
 each, past any memory budget. **An index
 over its bound at open** — rebuilt from records the bound did not refuse, or
