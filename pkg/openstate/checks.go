@@ -26,7 +26,8 @@ const (
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
 	// CheckIO admits I/O to f through o, an open, a lock state or a
-	// delegation.
+	// delegation. A reference that is not anonymous is ErrBadState when its
+	// shard is not f's; an anonymous one with no f.ID is ErrBadState.
 	// A lock state is judged as the open it was taken under: a granted open
 	// is used only by its opener and only for the access it holds, ErrAccess
 	// otherwise, and its deny modes were judged once, at open. An anonymous
@@ -100,17 +101,19 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		}
 		return t.recallOthers(e, own, others, &out)
 	}
+	if o.Kind != RefAnonymous && o.State.Shard != f.Shard {
+		return ErrBadState
+	}
 	switch o.Kind {
 	case RefAnonymous:
-		var id entity.FileID
-		if id, err = o.file(); err == nil && id.IsZero() {
+		if f.ID.IsZero() {
 			err = ErrBadState
 		}
 		if err == nil && t.guarded(f.Shard) {
 			err = ErrGrace
 		}
 		if err == nil {
-			err = t.step(id, func(e *entry) error {
+			err = t.step(f.ID, func(e *entry) error {
 				return unopened(e, func(g *grant) bool { return g.heldBy(who.Client, LeaseKey{}, nil) })
 			})
 		}

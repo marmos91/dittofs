@@ -103,7 +103,7 @@ type OpenRef struct {
 	Kind   RefKind
 	State  StateRef      // NFS: the open, lock state or delegation; SMB: only the shard
 	Open   entity.OpenID // SMB: the open; zero for NFS
-	Handle entity.Handle // nil: none, which an anonymous open may not be
+	Handle entity.Handle // nil: none; an anonymous open's file is the FileKey's
 }
 
 // RefKind is what an OpenRef names.

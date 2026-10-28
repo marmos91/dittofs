@@ -203,7 +203,7 @@ func TestDowngrade(t *testing.T) {
 
 // A reference is judged with the handle the request carried: one naming
 // another file, or none at all, names no open; so does a reference of no
-// kind, and anonymous I/O needs a handle to find its file.
+// kind or of a shard other than the file's, and anonymous I/O needs a file.
 func TestOpenRefCarriesItsHandle(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("alice-pc"))
@@ -213,11 +213,18 @@ func TestOpenRefCarriesItsHandle(t *testing.T) {
 		"another file's handle":       {Kind: RefOpened, State: o.Ref, Handle: handle(entity.NewFileID())},
 		"a handle that names no file": {Kind: RefOpened, State: o.Ref, Handle: entity.Handle{9}},
 		"no kind":                     {State: o.Ref, Handle: handle(file.ID)},
-		"anonymous with no handle":    {Kind: RefAnonymous},
 	} {
 		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
 			t.Errorf("I/O through %s: %v, want ErrBadState", name, err)
 		}
+	}
+	if err := f.Checks().CheckIO(ctx, a, FileKey{}, OpenRef{Kind: RefAnonymous}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		t.Errorf("anonymous I/O naming no file: %v, want ErrBadState", err)
+	}
+	elsewhere := file
+	elsewhere.Shard = o.Ref.Shard + 1
+	if err := f.Checks().CheckIO(ctx, a, elsewhere, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		t.Errorf("I/O through the open with the file in another shard: %v, want ErrBadState", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open with its own handle: %v", err)
