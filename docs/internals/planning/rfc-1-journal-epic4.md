@@ -62,7 +62,7 @@ and tests can cite them.
 | --- | --- | --- | --- |
 | R20 | `ExtentCount` counts held entries, retained extents and removal markers | §4.2 | 8 |
 | R21 | A `WriteAt` or `Fill` that would raise the count above `ExtentLimit` is refused at once, before any I/O, as the named index refusal, and counted in `index_refusals` | §4.2 | 8 |
-| R22 | Records without bytes are not refused by the bound, except a release or deallocate that splits a held extent once the count is at or above limit + limit/8. Truncate, delete, a non-splitting removal and `Forget` are never refused | §4.2, §3.6 | 8 |
+| R22 | Records without bytes are not refused by the bound, except a release, deallocate or clone target that splits a held extent once the count is at or above limit + limit/8. Truncate, delete, a non-splitting removal and `Forget` are never refused | §4.2, §3.6 | 8 |
 | R23 | An index over its bound at open succeeds. Content inserts stay refused until the count drops below the bound | §4.2 | 8, 11 |
 
 **Versions and sequence numbers**

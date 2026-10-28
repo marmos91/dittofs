@@ -1098,9 +1098,9 @@ storage to be reclaimed first — reclamation is asynchronous ([§7](#7.%20Recla
 records draw on the reserved headroom of [§6](#6.%20Capacity), and are never refused by the
 journal's own limit. Three refusals can reach them: the exhausted headroom of
 [§6](#6.%20Capacity), which only removals of content the journal does not hold can reach, and
-the version limit ([§4.3](#4.3%20Versions)), since each draws a version; and a release or
-deallocate that would split a held extent can meet the index's cap on what
-removals add ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). A clone target record meets a fourth: it frees nothing, so below
+the version limit ([§4.3](#4.3%20Versions)), since each draws a version; and a release,
+deallocate or clone target that would split a held extent can meet the index's
+cap on what removals add ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). A clone target record meets a fourth: it frees nothing, so below
 half the headroom it is refused naming the headroom ([§6](#6.%20Capacity)). The engine answers
 each retry-later.
 
@@ -1321,7 +1321,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `stale_extents` | extents dropped as older than offloaded content ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) |
 | `torn_tails` | torn tails truncated at open; one per crashed stream is normal |
 | `scan_resyncs` | scans that found a record by resynchronising past a bad one ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
-| `index_refusals` | writes refused at the index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
+| `index_refusals` | calls refused at the index entry bound: content writes, and releases, deallocates and clone targets that split a held extent ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `spare_refusals` | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `segment_reopens` | reads that had to reopen a closed segment ([§7.4](#7.4%20Open%20descriptors)) |
 
@@ -1573,14 +1573,16 @@ all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in
 `index_refusals`. Records without bytes are never refused by it, though they can
-raise the count: a release or deallocate inside one held extent splits it in two,
+raise the count: a release, deallocate or clone target inside one held extent
+splits it in two,
 and a removal leaves a marker. Each adds at most two entries, and a refused one
 would wedge the very calls that lower the count, so the bound caps what content
 writes may add and the count may stand above it by what removals and releases
 added since; content writes stay refused until it falls back below. That excess
 is bounded too: once the count stands an eighth of `ExtentLimit` above it, a
-release or deallocate that would split a held extent is refused with the same
-named refusal, which the engine answers retry-later while it offloads, releases
+release, deallocate or clone target that would split a held extent is refused
+with the same named refusal, counted in `index_refusals`, which the engine
+answers retry-later while it offloads, releases
 and repacks ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)); a removal that splits nothing, a truncate, a delete and a
 `Forget` are never refused by it, since none splits a held extent: each adds at
 most its one removal marker, and drops the held extents it covers. Without that
@@ -2057,7 +2059,7 @@ since a segment cannot seal until its footer names every record in it.
 `ErrNoSpace` naming a share's limit, the journal's maximum or the spare pool is
 never returned for them; what can refuse them is the headroom, below, the
 version limit for a truncate, deallocate or delete, each of which draws a
-version ([§4.3](#4.3%20Versions)), and, for a release or
+version ([§4.3](#4.3%20Versions)), and, for a release, a clone target or a
 deallocate that splits a held extent, the index's cap ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) — the three
 refusals [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) names — and, for the hold, stamp and clone target records
 that free nothing, the half rule below.
@@ -2689,7 +2691,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§7.2](#7.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
 | [§7.4](#7.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. |
 | [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) coalescing | Offload and release 64 MiB written in 64 KiB writes, then `Fill` it back in one call per 4 MiB at one version; assert one entry per fill record piece, not per original write. Repack a segment holding adjacent held extents of one file at one version; assert the copy is one record and one entry. |
-| [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) index bound refuses | Set `ExtentLimit` to 10^4 and write scattered 4 KiB writes; assert the write that would pass the bound is refused naming the index, at once and with no I/O, `index_refusals` counts it, a truncate and a release still succeed, and after offload, release and repack a write succeeds again. Then punch 10^5 holes inside one held extent; assert the punches past an eighth of the bound above it are refused naming the index, while a truncate and a delete still succeed. |
+| [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) index bound refuses | Set `ExtentLimit` to 10^4 and write scattered 4 KiB writes; assert the write that would pass the bound is refused naming the index, at once and with no I/O, `index_refusals` counts it, a truncate and a release still succeed, and after offload, release and repack a write succeeds again. Then punch 10^5 holes inside one held extent; assert the punches past an eighth of the bound above it are refused naming the index, and so is a clone target inside that extent, while a truncate and a delete still succeed. |
 | [§6](#6.%20Capacity) repack beside a share at its limit | Fill share A to its limit with offloaded content and share B with released content interleaved in the same segments; repack; assert the copies of A's records are made, B's unreclaimed storage returns, and no copy is refused by A's limit. A design that reserves repack copies against the share's limit returns nothing. |
 | [§6](#6.%20Capacity) headroom is allocated | Open a journal, then make the filesystem return `ENOSPC` for every new allocation; assert content writes are refused, while releases, removals and `MarkOffloaded` up to the headroom succeed without allocating, and a repack still returns space. |
 | [§3.3](#3.3%20Offload) pinned segments bounded | Scatter 64 KiB dirty extents of one file one per segment across 1,000 segments; offload with a 64 MiB `limit` and stall `fn`; assert `PinnedSegments` never exceeds the bound, the offer ends at it, and repack can retire the unpinned segments meanwhile. |
