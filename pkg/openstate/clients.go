@@ -161,6 +161,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
 	known := false
 	cur, found, err := t.byName(ctx, rec)
+	found = found && !t.lapsed(cur.ID) // its confirm expires it first
 	switch {
 	case err != nil:
 		return Proposal{}, err
@@ -207,17 +208,17 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	t.cstep.Lock()
 	ended, err := t.connect(ctx, &rec, p)
 	t.cstep.Unlock()
-	if err != nil {
-		return 0, err
-	}
 	if ended != nil {
 		sink.ClientEnded(ended.ID, shardsOf(*ended), RevokedLeaseExpired)
+	}
+	if err != nil {
+		return 0, err
 	}
 	return rec.ID, nil
 }
 
 // connect makes rec current, under the client step, and returns the record a
-// reboot replaced.
+// reboot replaced or a lapsed lease ended, the latter on an error too.
 func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal) (*entity.ClientRecord, error) {
 	var id entity.ClientID
 	known := false
@@ -243,13 +244,21 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 
 	cur, found, err := t.byName(ctx, *rec)
 	var ended *entity.ClientRecord
+	if found {
+		// A lapsed lease is expired here as the timer would, so a confirm
+		// before the sweep never revives it: the name then has no record.
+		gone, expired, xerr := t.expireLocked(ctx, cur.ID)
+		if err = xerr; expired {
+			ended, found = &gone, false
+		}
+	}
 	switch {
 	case err != nil:
 		return nil, err
 	case found && refuses(cur, rec.Owner):
 		return nil, ErrClientInUse
 	case known && (!found || cur.ID != id):
-		return nil, ErrStaleClient // the proposed client ended since the proposal
+		return ended, ErrStaleClient // the proposed client ended since the proposal
 	case found && cur.Boot == rec.Boot:
 		if p != nil && cur.ID != id {
 			return nil, ErrStaleClient // the name was connected under another ID since the proposal
@@ -263,7 +272,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	default:
 		if id == 0 {
 			if id, err = t.nextClientID(ctx); err != nil {
-				return nil, err
+				return ended, err
 			}
 		}
 		rec.ID = id
@@ -273,7 +282,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 			ended = &cur
 		}
 		if err != nil {
-			return nil, err
+			return ended, err
 		}
 	}
 
@@ -426,10 +435,7 @@ func (t *Table) expireLapsed(ctx context.Context, sink Sink, c entity.ClientID) 
 }
 
 func (t *Table) expireLocked(ctx context.Context, c entity.ClientID) (entity.ClientRecord, bool, error) {
-	t.cmu.Lock()
-	end := t.leases[c]
-	t.cmu.Unlock()
-	if end == 0 || t.d.Clock.Elapsed() < end {
+	if !t.lapsed(c) {
 		return entity.ClientRecord{}, false, nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
@@ -547,6 +553,14 @@ func (t *Table) releaseClient(c entity.ClientID) {
 	for _, h := range t.heldBy(c) {
 		_ = t.step(h.file, func(e *entry) error { t.release(e, h.ref); return nil })
 	}
+}
+
+// lapsed reports whether c's lease has ended.
+func (t *Table) lapsed(c entity.ClientID) bool {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	end := t.leases[c]
+	return end != 0 && t.d.Clock.Elapsed() >= end
 }
 
 // uncharge drops one proposal's charge to src; the caller holds cmu.

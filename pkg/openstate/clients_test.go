@@ -205,6 +205,47 @@ func TestConfirmAfterExpiryIsStale(t *testing.T) {
 	}
 }
 
+// A client whose lease has lapsed is gone before the sweep too: proposing and
+// confirming its name again, as a client told it is stale does at once, gets
+// a new ID, and the old ID stays ended, its state released and ClientEnded
+// raised for it once. A proposal made before the lapse confirms nothing.
+func TestLapsedClientIsNotRevived(t *testing.T) {
+	f0 := newFixture(t)
+	f := unstarted(t, f0.fs, f0.clock)
+	f.Table.sink = f.sink // no lease timer: this test's own sweep is the only one
+	c, b := nfs("host-a", 1, entity.NewUser()), nfs("host-b", 1, entity.NewUser())
+	id, bid := f.connect(t, c), f.connect(t, b)
+	file := entity.NewFileID()
+	ref := mintIn(t, f.Table, file, id, 0)
+	f.clock.advance(leasePeriod - time.Second)
+	pb, err := f.Propose(ctx, b, addr)
+	if err != nil || pb.Client != bid {
+		t.Fatalf("a proposal under the same Boot: %d, %v; want %d", pb.Client, err, bid)
+	}
+	f.clock.advance(2 * time.Second)
+	if _, err := f.Connect(ctx, b, &pb); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("confirming a proposal for a client since lapsed: %v, want ErrStaleClient", err)
+	}
+	if _, err := f.Renew(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Fatalf("renewing a lapsed lease: %v, want ErrStaleClient", err)
+	}
+	if again := f.connect(t, c); again == id {
+		t.Errorf("connecting the lapsed client's name again kept ID %d", id)
+	}
+	if _, err := f.Renew(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("the old ID after the name connected again: %v, want ErrStaleClient", err)
+	}
+	if _, err := f.resolve(id, file, ref); !errors.Is(err, ErrBadState) {
+		t.Errorf("the old ID's state: %v, want released", err)
+	}
+	f.sweep(ctx)
+	for _, c := range []entity.ClientID{id, bid} {
+		if n := len(f.sink.endedOf(c)); n != 1 {
+			t.Errorf("ClientEnded raised %d times for lapsed client %d, want once", n, c)
+		}
+	}
+}
+
 // Every bit of a confirm is read from Deps.Rand: a failed read proposes
 // nothing.
 func TestConfirmReadsDepsRand(t *testing.T) {
