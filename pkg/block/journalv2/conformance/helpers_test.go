@@ -22,6 +22,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
+	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // tryWrite writes p at off of file id through h, retrying a refusal for want
@@ -503,4 +504,71 @@ func journalIdentity(t *testing.T, f *journalv2test.Fixture) [16]byte {
 		t.Fatalf("parse the format file: %v", err)
 	}
 	return format.Identity
+}
+
+// schedule sets rules as the seam's fault, replacing any set before. Each
+// rule names an op and a key pattern as sim.Match takes them. The fixture's
+// FailNext and Drop cover the common faults; this is for the rest, such as a
+// full filesystem, a short write or one dropped write.
+func schedule(t *testing.T, f *journalv2test.Fixture, rules ...sim.Rule) {
+	t.Helper()
+
+	fault, err := sim.NewSchedule(1, nil, rules...)
+	if err != nil {
+		t.Fatalf("schedule a fault: %v", err)
+	}
+	f.Seam.SetFault(fault)
+}
+
+// failing returns a rule failing every call of op on a file matching key
+// with err.
+func failing(op, key string, err error) sim.Rule {
+	return sim.Rule{Op: op, Key: key, Action: sim.FaultAction{Kind: sim.Fail, Err: err}}
+}
+
+// list returns the names in the journal's directory as it is now, unsynced
+// changes included.
+func list(t *testing.T, f *journalv2test.Fixture) []string {
+	t.Helper()
+
+	names, err := f.Seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's directory: %v", err)
+	}
+	return names
+}
+
+// segmentFiles returns the segment file names in the journal's directory,
+// in name order, and tmpNames the temporary spare names.
+func segmentFiles(t *testing.T, f *journalv2test.Fixture) []string {
+	t.Helper()
+	return withSuffix(list(t, f), ".seg")
+}
+
+func tmpNames(t *testing.T, f *journalv2test.Fixture) []string {
+	t.Helper()
+	return withSuffix(list(t, f), ".spare.tmp")
+}
+
+func withSuffix(names []string, suffix string) []string {
+	var out []string
+	for _, name := range names {
+		if strings.HasSuffix(name, suffix) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// idOf returns the segment id a segment or temporary spare file name
+// carries.
+func idOf(t *testing.T, name string) journalv2.SegmentID {
+	t.Helper()
+
+	id, err := strconv.ParseUint(name[:strings.IndexByte(name, '.')], 10, 64)
+	if err != nil {
+		t.Fatalf("%s is not a name the journal gives a segment: %v", name, err)
+	}
+	return journalv2.SegmentID(id)
 }

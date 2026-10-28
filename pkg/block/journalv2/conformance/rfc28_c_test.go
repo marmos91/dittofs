@@ -887,3 +887,99 @@ func TestRFC28C_SealMarkerCopiedIntoAPayload(t *testing.T) {
 	}
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
+
+// releaseRecs marks and releases every record of recs but the last, and
+// syncs their file, so the segment holding them is retired by repack alone,
+// which carries the last record forward.
+//
+// decision: one record is left held. A segment left with nothing live is
+// retired by the journal on its own once the releases are durable, at a
+// moment a check cannot order against its own repack call, so the two paths
+// would race for the segment and the check could read the directory between
+// them.
+func releaseRecs(t *testing.T, f *journalv2test.Fixture, recs []rec) {
+	t.Helper()
+
+	h := f.Share(recs[0].share)
+	for _, r := range recs[:len(recs)-1] {
+		mark(t, h, r.id, r.extent, r.version)
+		wantRelease(t, h, r.id, r.extent, true)
+	}
+	syncFiles(t, h, recs[0].id)
+}
+
+// retired is how a retirement left a segment: recycled under a new name, or
+// removed.
+type retired struct {
+	recycled bool
+	name     string // the new name, when recycled
+}
+
+// retirement reads how the segment file name was retired since the directory
+// held files: recycled, under the one segment file the directory gained,
+// whose id is above every id it named before, or removed. One of the two
+// must have happened exactly once.
+func retirement(t *testing.T, f *journalv2test.Fixture, name string, files []string) retired {
+	t.Helper()
+
+	removed, renamed := f.Seam.CallsFor(journalv2test.OpRemove, name), f.Seam.CallsFor(journalv2test.OpRename, name)
+	switch {
+	case removed == 1 && renamed == 0:
+		return retired{}
+	case renamed == 1 && removed == 0:
+		var added []string
+		for _, n := range segmentFiles(t, f) {
+			if !slices.Contains(files, n) {
+				added = append(added, n)
+			}
+		}
+		if len(added) != 1 {
+			t.Fatalf("the directory gained %v after %s was recycled, want one segment file", added, name)
+		}
+
+		var newest journalv2.SegmentID
+		for _, n := range files {
+			newest = max(newest, idOf(t, n))
+		}
+		if idOf(t, added[0]) <= newest {
+			t.Fatalf("the recycled segment %s has an id at or below %d, an id the directory already named", added[0], newest)
+		}
+		return retired{true, added[0]}
+	default:
+		t.Fatalf("segment %s was removed %d times and renamed %d times, want exactly one of the two", name, removed, renamed)
+		panic("unreachable")
+	}
+}
+
+// retire repacks segment seg, which must be retired by it, and returns how.
+func retire(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) retired {
+	t.Helper()
+
+	files := segmentFiles(t, f)
+	_, err := f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("repack segment %d: %v", seg, err)
+	}
+
+	return retirement(t, f, segmentName(seg), files)
+}
+
+// awaitSpare runs roll, a write whose roll takes a spare, and returns once
+// the journal has made the spare that replaces it: it waits at the directory
+// sync that follows the new spare's rename into place, the one directory
+// sync a take leads to, and checks that the directory gained a segment file
+// by then.
+func awaitSpare(t *testing.T, f *journalv2test.Fixture, roll func()) {
+	t.Helper()
+
+	before := segmentFiles(t, f)
+	held := f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+	roll()
+	<-held.Reached()
+
+	if after := segmentFiles(t, f); len(after) != len(before)+1 {
+		t.Fatalf("the directory sync was reached with %d segment files, want one more than %d: not the sync after a spare's rename", len(after), len(before))
+	}
+	held.Release()
+}

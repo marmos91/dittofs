@@ -5,7 +5,6 @@ package conformance
 import (
 	"errors"
 	"io/fs"
-	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -16,37 +15,31 @@ import (
 // The checks here fail by reaching a state the journal cannot leave, or by
 // consuming without bound.
 
-// spareCount returns how many segment files in the journal's directory hold
-// no segment header: spares no stream has taken.
-func spareCount(t *testing.T, f *journalv2test.Fixture) int {
+// spareNames returns the names of the segment files in the journal's
+// directory that hold no segment header: spares no stream has taken, in name
+// order.
+func spareNames(t *testing.T, f *journalv2test.Fixture) []string {
 	t.Helper()
 
-	names, err := f.Seam.List()
-	if err != nil {
-		t.Fatalf("list the journal's directory: %v", err)
-	}
-
-	n := 0
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".seg") {
-			continue
-		}
-
-		b, err := f.Seam.Durable(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-
+	var names []string
+	for _, name := range segmentFiles(t, f) {
+		b := durable(t, f, name)
 		if len(b) < raw.SegmentHeaderSize {
 			t.Fatalf("%s is %d bytes, shorter than a segment header", name, len(b))
 		}
 
 		if _, err := raw.ParseSegmentHeader(b[:raw.SegmentHeaderSize]); err != nil {
-			n++
+			names = append(names, name)
 		}
 	}
 
-	return n
+	return names
+}
+
+// spareCount returns how many spares the journal's directory holds.
+func spareCount(t *testing.T, f *journalv2test.Fixture) int {
+	t.Helper()
+	return len(spareNames(t, f))
 }
 
 // TestRFC28B_SegmentReclaimable checks that a segment whose only record was
