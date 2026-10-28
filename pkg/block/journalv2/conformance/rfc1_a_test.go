@@ -27,9 +27,10 @@ const sentinel = 0xa5
 // sentinels returns n sentinel bytes.
 func sentinels(n int64) []byte { return bytes.Repeat([]byte{sentinel}, int(n)) }
 
-// distinct returns n bytes that change from one byte to the next and from one
-// tag to another, none of them zero or the sentinel, so bytes served from the
-// wrong place, or zeroed, never compare equal to them.
+// distinct returns n bytes of one sequence that repeats every 164 bytes,
+// started at a point set by tag, none of them zero or the sentinel. Bytes
+// zeroed, or served from another tag's buffer or another offset not a
+// multiple of 164 away, never compare equal to them.
 func distinct(tag, n int) []byte {
 	p := make([]byte, n)
 	for i := range p {
@@ -44,6 +45,52 @@ func ext(off, n int64) journalv2.Extent { return journalv2.Extent{Off: off, Len:
 // overlap returns how many bytes a and b share.
 func overlap(a, b journalv2.Extent) int64 {
 	return max(0, min(a.Off+a.Len, b.Off+b.Len)-max(a.Off, b.Off))
+}
+
+// joined returns es sorted by offset with touching extents joined, so a
+// check compares the bytes named, whatever pieces a journal cut them into.
+func joined(es []journalv2.Extent) []journalv2.Extent {
+	out := slices.SortedFunc(slices.Values(es), func(a, b journalv2.Extent) int { return cmp.Compare(a.Off, b.Off) })
+	j := 0
+	for i, e := range out {
+		if i > 0 && out[j-1].Off+out[j-1].Len == e.Off {
+			out[j-1].Len += e.Len
+			continue
+		}
+		out[j] = e
+		j++
+	}
+	return out[:j]
+}
+
+// joinedHeld is joined for served extents, joining only those of one
+// version.
+func joinedHeld(hs []journalv2.Held) []journalv2.Held {
+	out := slices.SortedFunc(slices.Values(hs), func(a, b journalv2.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
+	j := 0
+	for i, h := range out {
+		if i > 0 && out[j-1].Extent.Off+out[j-1].Extent.Len == h.Extent.Off && out[j-1].Version == h.Version {
+			out[j-1].Extent.Len += h.Extent.Len
+			continue
+		}
+		out[j] = h
+		j++
+	}
+	return out[:j]
+}
+
+// covered returns how many bytes of e the extents in es cover, counting a
+// byte two of them cover once.
+func covered(es []journalv2.Extent, e journalv2.Extent) int64 {
+	var n, end int64
+	for _, x := range slices.SortedFunc(slices.Values(es), func(a, b journalv2.Extent) int { return cmp.Compare(a.Off, b.Off) }) {
+		// Only the part past what earlier extents reached is new.
+		if from := max(x.Off, end); from < x.Off+x.Len {
+			n += overlap(ext(from, x.Off+x.Len-from), e)
+		}
+		end = max(end, x.Off+x.Len)
+	}
+	return n
 }
 
 // readOut is what one ReadAt returned.
@@ -75,13 +122,22 @@ func read(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off, n int64) 
 func wantMissing(t *testing.T, r readOut, off int64, want []journalv2.Extent, what string) {
 	t.Helper()
 
-	if !slices.Equal(r.missing, want) {
+	if !slices.Equal(joined(r.missing), joined(want)) {
 		t.Fatalf("%s: missing = %+v, want exactly %+v", what, r.missing, want)
 	}
 	for _, e := range want {
 		if !bytes.Equal(r.p[e.Off-off:e.Off-off+e.Len], sentinels(e.Len)) {
 			t.Fatalf("%s: the bytes of missing %+v were written to", what, e)
 		}
+	}
+}
+
+// wantHeld fails the test unless r served exactly want.
+func wantHeld(t *testing.T, r readOut, want []journalv2.Held, what string) {
+	t.Helper()
+
+	if !slices.Equal(joinedHeld(r.held), joinedHeld(want)) {
+		t.Fatalf("%s: held = %+v, want %+v", what, r.held, want)
 	}
 }
 
@@ -200,7 +256,7 @@ func wantNotOffloaded(t *testing.T, err error, id journalv2.FileID, want []journ
 	if !errors.As(err, &no) {
 		t.Fatalf("%s returned %v, want a NotOffloadedError", what, err)
 	}
-	if no.File != id || !slices.Equal(no.Extents, want) {
+	if no.File != id || !slices.Equal(joined(no.Extents), joined(want)) {
 		t.Fatalf("%s was refused for %+v of file %x, want exactly %+v of file %x", what, no.Extents, no.File.Bytes(), want, id.Bytes())
 	}
 }
@@ -237,9 +293,22 @@ type offerFn func(o journalv2.Offer, report func([]journalv2.Extent) error) erro
 func offload(t *testing.T, h *journalv2.Handle, id journalv2.FileID, through journalv2.Version, limit, widen int64, fn offerFn) {
 	t.Helper()
 
-	err := h.Offload(t.Context(), id, through, limit, widen, func(_ context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
+	offloaded(t, offloadErr(t, h, id, through, limit, widen, fn))
+}
+
+// offloadErr is offload returning the call's error rather than failing the
+// test, for an offload made on another goroutine.
+func offloadErr(t *testing.T, h *journalv2.Handle, id journalv2.FileID, through journalv2.Version, limit, widen int64, fn offerFn) error {
+	return h.Offload(t.Context(), id, through, limit, widen, func(_ context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
 		return fn(o, report)
 	})
+}
+
+// offloaded fails the test on err, an offload's error, naming the journal
+// call that failed when fn's error wraps a callError.
+func offloaded(t *testing.T, err error) {
+	t.Helper()
+
 	var ce *callError
 	if errors.As(err, &ce) {
 		stub(t, ce.call, ce.err)
@@ -479,30 +548,54 @@ func TestRFC1A_LostStampIsOffered(t *testing.T) {
 	}
 
 	// Nothing is left holding the journal full: the marker of the draining
-	// removals is settled and what was released is repacked.
+	// removals is settled, the segments holding the removal and release
+	// records are sealed idle, and repack runs until it frees nothing more.
+	//
+	// decision: idle sealing runs on the journal's goroutines once the clock
+	// passes IdleSealAge, so between repack rounds the check waits up to 2 s
+	// of real time for the headroom to come back. Its ceiling: a journal that
+	// needs longer than that to seal and retire fails here. Overturned if a
+	// segment's sealing becomes visible from the public surface, when the
+	// check can wait for it rather than for the headroom.
 	h0.Settle(drain, drained)
 	for k := range 2 {
 		syncFile(t, f.Share(k), journalv2test.File(k))
 	}
-	_, err := f.J.Repack(t.Context(), 2*journalv2test.FixtureMaxBytes, journalv2.RepackScope{})
-	stub(t, "Repack", err)
-	if err != nil {
-		t.Fatalf("repack: %v", err)
-	}
-	if got := f.J.Stats().HeadroomBytes; got < full/2 {
-		t.Fatalf("HeadroomBytes = %d once every offered version was released and repacked, still below half of %d", got, full)
+	f.Advance(journalv2test.IdleSealAge)
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		for {
+			freed, err := f.J.Repack(t.Context(), 2*journalv2test.FixtureMaxBytes, journalv2.RepackScope{})
+			stub(t, "Repack", err)
+			if err != nil {
+				t.Fatalf("repack: %v", err)
+			}
+			if freed == 0 {
+				break
+			}
+		}
+		got := f.J.Stats().HeadroomBytes
+		if got >= full/2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("HeadroomBytes = %d once every offered version was released, its segments sealed and repacked, still below half of %d", got, full)
+		}
 	}
 }
 
 // TestRFC1A_FillSafety checks that a write to an extent a fill has found
 // absent, made while the fill is held at storage, survives the fill.
 //
-// decision: the write is given a bounded real-time moment to land before the
-// fill is let go. A journal that lets it run beside the fill either finishes
-// it or parks it at the same hold within that moment; one that orders it
-// after the fill blocks it on a lock nothing at the seam can see, so only a
-// real-time wait can tell it was attempted. The moment is spent in full by a
-// correct journal.
+// The hold stops only the fill's write, so a journal that lets the write run
+// beside the fill completes it while the fill waits.
+//
+// decision: the write is given 200 ms of real time to return before the fill
+// is let go. A journal that orders it after the fill blocks it on a lock
+// nothing at the seam can see, so only a real-time wait can tell it was
+// attempted, and a correct journal spends the 200 ms in full. Its ceiling: a
+// journal that lets the write past the fill but takes longer than that to
+// complete it passes. Overturned if the journal gains a seam point inside its
+// file append domain, which a hold could then catch instead.
 func TestRFC1A_FillSafety(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -512,7 +605,7 @@ func TestRFC1A_FillSafety(t *testing.T) {
 		r := read(t, h, id, 0, 64<<10)
 		wantMissing(t, r, 0, []journalv2.Extent{ext(0, 64<<10)}, "an extent never written")
 
-		held := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
+		held := f.Seam.HoldFirst(t, journalv2test.OpWrite, "*.seg")
 		filled := make(chan error, 1)
 		go func() { filled <- h.Fill(t.Context(), id, 0, distinct(k, 64<<10), r.asOf, v) }()
 		select {
@@ -532,12 +625,10 @@ func TestRFC1A_FillSafety(t *testing.T) {
 		}()
 		var werr error
 		returned := false
-		for deadline := time.Now().Add(100 * time.Millisecond); !returned && held.Waiting() < 2 && time.Now().Before(deadline); {
-			select {
-			case werr = <-wrote:
-				returned = true
-			case <-time.After(time.Millisecond):
-			}
+		select {
+		case werr = <-wrote:
+			returned = true
+		case <-time.After(200 * time.Millisecond):
 		}
 		held.Release()
 		if !returned {
@@ -555,9 +646,8 @@ func TestRFC1A_FillSafety(t *testing.T) {
 
 		r = read(t, h, id, 0, 64<<10)
 		wantServed(t, r, newer, "the extent written while the fill was held")
-		if want := []journalv2.Held{{Extent: ext(0, 64<<10), Version: wv}}; !slices.Equal(r.held, want) {
-			t.Fatalf("held = %+v, want the write's %+v", r.held, want)
-		}
+		wantHeld(t, r, []journalv2.Held{{Extent: ext(0, 64<<10), Version: wv}}, "the extent written while the fill was held")
+		wantBits(t, f, id, ext(0, 64<<10), false, "the extent written while the fill was held")
 		syncFile(t, h, id)
 	}
 
@@ -569,20 +659,20 @@ func TestRFC1A_FillSafety(t *testing.T) {
 }
 
 // TestRFC1A_FillSetsTheBit checks that filled content carries its offloaded
-// bit, so Release permits it, and that a write over it clears the bit, so
-// Release refuses it again.
+// bit, so Release permits it, and that a write over filled content still held
+// clears the bit there, so Release refuses exactly the part written.
 func TestRFC1A_FillSetsTheBit(t *testing.T) {
 	f := journalv2test.New(t)
+	head, tail := ext(0, 64<<10), ext(64<<10, 64<<10)
 
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
-		e := ext(0, 64<<10)
-		fill(t, h, id, 0, distinct(k, 64<<10), draw(t, f))
-		release(t, h, id, e)
+		fill(t, h, id, 0, distinct(k, 128<<10), draw(t, f))
+		release(t, h, id, head)
 
-		write(t, h, id, 0, distinct(10+k, 64<<10))
-		err := h.Release(t.Context(), id, []journalv2.Extent{e})
-		wantNotOffloaded(t, err, id, []journalv2.Extent{e}, "a release of a write over filled content")
+		write(t, h, id, tail.Off, distinct(10+k, int(tail.Len)))
+		err := h.Release(t.Context(), id, []journalv2.Extent{tail})
+		wantNotOffloaded(t, err, id, []journalv2.Extent{tail}, "a release of a write over filled content")
 	}
 }
 
@@ -640,13 +730,10 @@ func TestRFC1A_Refusal(t *testing.T) {
 // record leaves the other half readable, dirty and undamaged after a crash,
 // whether recovery reads the record's segment from its catalog or scans it.
 //
-// decision: the record is 256 KiB, not a whole MiB. The fixture's segments
-// are 1 MiB, and a write larger than what a segment has left is split into
-// records, so a 1 MiB write is never one record here. What the check needs is
-// one record released in part, which any size shows.
+// The record is 1 MiB, in segments of recordCap.
 func TestRFC1A_PartialReleaseKeepsRecordWhole(t *testing.T) {
-	f := journalv2test.New(t)
-	const size = 256 << 10
+	f := journalv2test.NewWithSegmentCap(t, recordCap)
+	const size = 1 << 20
 
 	// File 0's record is in a segment sealed before the crash, so recovery can
 	// read it from the segment's catalog; file 1's is in a segment still
@@ -654,12 +741,12 @@ func TestRFC1A_PartialReleaseKeepsRecordWhole(t *testing.T) {
 	h0, sealedID := f.Share(0), journalv2test.File(0)
 	v0 := write(t, h0, sealedID, 0, distinct(0, size))
 	seg := heldEntry(t, f, sealedID).Location.Segment
-	for off := int64(1 << 20); ; off += 64 << 10 {
+	for off := int64(2 << 20); ; off += 64 << 10 {
 		if s, _ := segment(f, seg); s.Sealed {
 			break
 		}
-		if off > 8<<20 {
-			t.Fatalf("segment %d is not sealed after %d bytes more of its file", seg, off-1<<20)
+		if off > 4*recordCap {
+			t.Fatalf("segment %d is not sealed after %d bytes more of its file", seg, off-2<<20)
 		}
 		write(t, h0, sealedID, off, pattern(fmt.Sprint("roll", off), 64<<10))
 	}
@@ -675,7 +762,7 @@ func TestRFC1A_PartialReleaseKeepsRecordWhole(t *testing.T) {
 		id journalv2.FileID
 		v  journalv2.Version
 	}{{h0, sealedID, v0}, {h1, activeID, v1}} {
-		offload(t, c.h, c.id, c.v, 1<<20, 0, func(_ journalv2.Offer, report func([]journalv2.Extent) error) error {
+		offload(t, c.h, c.id, c.v, size, 0, func(_ journalv2.Offer, report func([]journalv2.Extent) error) error {
 			if err := report([]journalv2.Extent{half}); err != nil {
 				return called("report", err)
 			}
@@ -710,16 +797,20 @@ func TestRFC1A_PartialReleaseKeepsRecordWhole(t *testing.T) {
 }
 
 // TestRFC1A_ReleaseFreesNothingInsideSegment checks that releases of every
-// shape leave the segments that stay held untouched: no call on them but
-// appends, their durable bytes kept as a prefix, and their allocation
-// unchanged.
+// shape leave the segments that stay held untouched: no call on them that
+// could free, zero or deallocate storage, and their durable bytes kept as a
+// prefix.
+//
+// The call counts and durable images are the check, since they are what the
+// filesystem saw. The segments' Allocated is compared too, but it is the
+// journal's own figure, so it catches only a journal that also tells.
 func TestRFC1A_ReleaseFreesNothingInsideSegment(t *testing.T) {
 	f := journalv2test.New(t)
 
 	// Four records per file; the releases take the middle of one, the head
-	// of another, a run across two, and one whole.
+	// of another, a run across two, the tail of a third, and one whole.
 	records := []journalv2.Extent{ext(0, 256<<10), ext(256<<10, 256<<10), ext(512<<10, 256<<10), ext(768<<10, 64<<10)}
-	shapes := []journalv2.Extent{ext(64<<10, 64<<10), ext(256<<10, 32<<10), ext(480<<10, 64<<10), ext(768<<10, 64<<10)}
+	shapes := []journalv2.Extent{ext(64<<10, 64<<10), ext(256<<10, 32<<10), ext(480<<10, 64<<10), ext(736<<10, 32<<10), ext(768<<10, 64<<10)}
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
 		for i, r := range records {
@@ -787,10 +878,18 @@ func TestRFC1A_ReleaseFreesNothingInsideSegment(t *testing.T) {
 	}
 }
 
-// TestRFC1A_UnlinkUnderRead checks that a read of an extent whose release
-// leaves its segment holding nothing, made while the read is at storage,
-// returns either the bytes written or the extent missing with the caller's
-// bytes untouched.
+// TestRFC1A_UnlinkUnderRead checks that a segment left holding nothing by a
+// release is neither unlinked nor renamed while a read of it is at storage,
+// is retired once the read is done, and that the read returns either the
+// bytes written or the extent missing with the caller's bytes untouched.
+//
+// decision: whether the retirement waits for the read is decided by waiting
+// 200 ms of real time with the read held and seeing no remove or rename of
+// the segment, since retirement runs on the journal's own goroutines. Its
+// ceiling: a journal that retires without waiting for readers, but later than
+// 200 ms after the release is durable, passes; the retirement after the read
+// is waited for up to 2 s. Overturned if retirement becomes part of the sync
+// that makes the release durable, when no wait is needed.
 func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -814,7 +913,10 @@ func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 			t.Fatalf("share %d: no sealed segment holds a piece of the 3 MiB write and nothing else", k)
 		}
 
-		held := f.Seam.Hold(t, "read*", segmentName(e.Location.Segment))
+		name := segmentName(e.Location.Segment)
+		held := f.Seam.Hold(t, "read*", name)
+		removed := f.Seam.Hold(t, journalv2test.OpRemove, name)
+		renamed := f.Seam.Hold(t, journalv2test.OpRename, name)
 		type result struct {
 			r   readOut
 			err error
@@ -834,6 +936,13 @@ func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 		}
 		release(t, h, id, e.Extent)
 		syncFile(t, h, id)
+		select {
+		case <-removed.Reached():
+			t.Fatalf("share %d: segment %d was removed while a read of it was at storage", k, e.Location.Segment)
+		case <-renamed.Reached():
+			t.Fatalf("share %d: segment %d was renamed while a read of it was at storage", k, e.Location.Segment)
+		case <-time.After(200 * time.Millisecond):
+		}
 		held.Release()
 
 		res := <-done
@@ -845,6 +954,14 @@ func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 			wantServed(t, res.r, p[e.Extent.Off:e.Extent.Off+e.Extent.Len], "a read under the release of its segment's last extent")
 		} else {
 			wantMissing(t, res.r, e.Extent.Off, []journalv2.Extent{e.Extent}, "a read under the release of its segment's last extent")
+		}
+
+		removed.Release()
+		renamed.Release()
+		for deadline := time.Now().Add(2 * time.Second); listed(t, f, name); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("share %d: segment %d, left holding nothing, is still in the directory after the read", k, e.Location.Segment)
+			}
 		}
 	}
 }
@@ -878,13 +995,32 @@ func since(t *testing.T, h *journalv2.Handle, id journalv2.FileID, from journalv
 	return out
 }
 
-// sameChanges reports whether got and want hold the same changes, whatever
-// the order of those of one version.
-func sameChanges(got, want []change) bool {
-	order := func(a, b change) int {
-		return cmp.Or(a.Version.Compare(b.Version), cmp.Compare(a.Extent.Off, b.Extent.Off), cmp.Compare(a.Kind, b.Kind))
+// joinedChanges returns cs sorted by version, kind and offset, with touching
+// extents of one kind and version joined, so a check compares what changed
+// whatever pieces a journal cut it into.
+func joinedChanges(cs []change) []change {
+	out := slices.SortedFunc(slices.Values(cs), func(a, b change) int {
+		return cmp.Or(a.Version.Compare(b.Version), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Extent.Off, b.Extent.Off))
+	})
+	j := 0
+	for i, c := range out {
+		if i > 0 {
+			last := &out[j-1]
+			if last.Kind == c.Kind && last.Version == c.Version && last.Extent.Off+last.Extent.Len == c.Extent.Off {
+				last.Extent.Len += c.Extent.Len
+				continue
+			}
+		}
+		out[j] = c
+		j++
 	}
-	return slices.Equal(slices.SortedFunc(slices.Values(got), order), slices.SortedFunc(slices.Values(want), order))
+	return out[:j]
+}
+
+// sameChanges reports whether got and want hold the same changes, whatever
+// their order within one version and the pieces they come in.
+func sameChanges(got, want []change) bool {
+	return slices.Equal(joinedChanges(got), joinedChanges(want))
 }
 
 // toEnd is the extent Since reports for a removal from off to the end of the
@@ -1009,9 +1145,7 @@ func TestRFC1A_NoResurrection(t *testing.T) {
 		for k := range 2 {
 			r := read(t, f.Share(k), journalv2test.File(k), 0, e.Len)
 			wantServed(t, r, distinct(10+k, 64<<10), when)
-			if want := []journalv2.Held{{Extent: e, Version: removed[k]}}; !slices.Equal(r.held, want) {
-				t.Fatalf("%s: held = %+v, want %+v", when, r.held, want)
-			}
+			wantHeld(t, r, []journalv2.Held{{Extent: e, Version: removed[k]}}, when)
 		}
 		if i == 0 {
 			f.Reopen()
@@ -1061,7 +1195,7 @@ func TestRFC1A_RemovalDuringOffload(t *testing.T) {
 			if r.n, r.missing, r.held, r.asOf, err = h.ReadAt(t.Context(), id, 0, r.p); err != nil {
 				return called("ReadAt", err)
 			}
-			if !slices.Equal(r.missing, []journalv2.Extent{e}) || !bytes.Equal(r.p, sentinels(e.Len)) {
+			if !slices.Equal(joined(r.missing), []journalv2.Extent{e}) || !bytes.Equal(r.p, sentinels(e.Len)) {
 				return fmt.Errorf("a read after the removal reported missing %+v, want exactly %+v and the caller's bytes untouched", r.missing, e)
 			}
 			if err := report([]journalv2.Extent{e}); err != nil {
@@ -1100,9 +1234,8 @@ func TestRFC1A_NeighboursAreFrozen(t *testing.T) {
 
 		offload(t, h, id, vm, 1<<20, 64<<10, func(o journalv2.Offer, report func([]journalv2.Extent) error) error {
 			want := []journalv2.Held{{Extent: left, Version: vl}, {Extent: right, Version: vr}}
-			got := slices.SortedFunc(slices.Values(o.Neighbours), func(a, b journalv2.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
-			if !slices.Equal(got, want) {
-				return fmt.Errorf("the offer carried neighbours %+v, want %+v", got, want)
+			if got := joinedHeld(o.Neighbours); !slices.Equal(got, want) {
+				return fmt.Errorf("the offer carried neighbours %+v, want %+v", o.Neighbours, want)
 			}
 			if o.Oldest != vl || o.Newest != vm {
 				return fmt.Errorf("the offer's versions run from %v to %v, want from the left neighbour's %v to the dirty extent's %v", o.Oldest, o.Newest, vl, vm)
@@ -1151,12 +1284,10 @@ func TestRFC1A_NeighboursAreFrozen(t *testing.T) {
 // past what the offer covers, and that the record is dropped as corrupt and
 // never marked.
 //
-// decision: the record is 256 KiB, not a whole MiB, for the reason the
-// partial release check gives; the offer covers its first 64 KiB, so the
-// damaged last byte is still far past it.
+// The record is 1 MiB, in segments of recordCap.
 func TestRFC1A_OfferedBytesVerified(t *testing.T) {
-	f := journalv2test.New(t)
-	const size = 256 << 10
+	f := journalv2test.NewWithSegmentCap(t, recordCap)
+	const size = 1 << 20
 
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
@@ -1205,15 +1336,28 @@ func TestRFC1A_OfferedBytesVerified(t *testing.T) {
 	}
 }
 
+// recordCap is the segment size of the checks that need a 1 MiB record whole
+// in one segment, beside another share's: a write larger than what its
+// segment has left is split into records, and the fixture's default segments
+// are 1 MiB.
+const recordCap = 4 << 20
+
 // TestRFC1A_NoPinOnSegmentUnderRepack checks that an offer made while a
 // repack pass is part-way through a segment takes nothing from that segment:
 // it takes an extent already copied from its new place and leaves the rest,
 // and the pass still completes and unlinks the segment.
 //
 // decision: the pass is taken to be past its first copy once it makes its
-// second write into a segment, the first being that copy. A pass that writes
-// anything else first is caught one copy earlier, which the check still
-// reads correctly: an extent not yet copied must not be offered either way.
+// second write into a segment, the first being that copy; a pass that writes
+// every copy in one call is checked only before it, where nothing of the
+// segment may be offered either. Overturned if repack reports its own points
+// to the seam, when a hold can stop it after a named copy instead.
+//
+// decision: each offer made against the parked pass is given 5 s of real
+// time, so a journal whose offer waits on the pass fails rather than hanging
+// to the suite's timeout. Its ceiling: an offer slower than that on a loaded
+// runner fails without being wrong. Overturned by a journal that documents
+// offers waiting on repack, which this check would then have to release.
 func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -1243,14 +1387,56 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 			fill(t, h, id, off, pattern(fmt.Sprint("fill", k, off), 64<<10), filled)
 		}
 		syncFile(t, h, id)
-		inSeg := map[journalv2.Extent]bool{}
+		var inSeg []journalv2.Extent
 		for _, en := range entries(t, f, id) {
 			if en.Kind == journalv2.EntryHeld && !en.Offloaded && en.Location.Segment == seg {
-				inSeg[en.Extent] = true
+				inSeg = append(inSeg, en.Extent)
 			}
 		}
 		if len(inSeg) == 0 {
 			t.Fatalf("share %d: segment %d holds none of the file's dirty extents", k, seg)
+		}
+
+		// againstPass offers the file while the pass is parked, and checks
+		// that nothing is taken from the segment under repack and, once a copy
+		// is made, that every dirty extent copied out of it is offered.
+		againstPass := func(copied bool) {
+			t.Helper()
+			done := make(chan error, 1)
+			go func() {
+				done <- offloadErr(t, h, id, through, journalv2test.FixtureMaxBytes, 0, func(o journalv2.Offer, _ func([]journalv2.Extent) error) error {
+					now, err := f.J.Inspect().File(id)
+					if err != nil {
+						return called("Inspect.File", err)
+					}
+					offered := extentsOf(o.Dirty)
+					for _, d := range offered {
+						for _, en := range now {
+							if en.Kind == journalv2.EntryHeld && overlap(en.Extent, d) != 0 && en.Location.Segment == seg {
+								return fmt.Errorf("the offer carried %+v from segment %d, under repack", d, seg)
+							}
+						}
+					}
+					if !copied {
+						return nil
+					}
+					for _, en := range now {
+						if en.Kind != journalv2.EntryHeld || en.Offloaded || en.Location.Segment == seg {
+							continue
+						}
+						if want := covered(inSeg, en.Extent); covered(offered, en.Extent) < want {
+							return fmt.Errorf("extent %+v, already copied out of the segment under repack, was not offered whole", en.Extent)
+						}
+					}
+					return nil
+				})
+			}()
+			select {
+			case err := <-done:
+				offloaded(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatalf("share %d: an offer made while a repack pass was parked did not return", k)
+			}
 		}
 
 		first := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
@@ -1259,87 +1445,46 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 			_, err := f.J.Repack(t.Context(), 2*journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
 			repacked <- err
 		}()
-		second := waitPass(t, f, first, repacked)
-		if second == nil {
-			t.Fatalf("share %d: the repack pass made fewer than two writes", k)
-		}
-
-		offered := map[journalv2.Extent]bool{}
-		offload(t, h, id, through, journalv2test.FixtureMaxBytes, 0, func(o journalv2.Offer, _ func([]journalv2.Extent) error) error {
-			now, err := f.J.Inspect().File(id)
+		passDone := func(err error) {
+			t.Helper()
+			stub(t, "Repack", err)
 			if err != nil {
-				return called("Inspect.File", err)
+				t.Fatalf("share %d: repack: %v", k, err)
 			}
-			for _, d := range o.Dirty {
-				for _, en := range now {
-					if en.Kind == journalv2.EntryHeld && overlap(en.Extent, d.Extent) != 0 && en.Location.Segment == seg {
-						return fmt.Errorf("the offer carried %+v from segment %d, under repack", d, seg)
-					}
-				}
-				offered[d.Extent] = true
-			}
-			for _, en := range now {
-				if en.Kind == journalv2.EntryHeld && !en.Offloaded && en.Location.Segment != seg && inSeg[en.Extent] && !offered[en.Extent] {
-					return fmt.Errorf("extent %+v, already copied out of the segment under repack, was not offered", en.Extent)
-				}
-			}
-			return nil
-		})
-		second.Release()
+		}
+		select {
+		case <-first.Reached():
+		case err := <-repacked:
+			passDone(err)
+			t.Fatalf("share %d: a repack of a segment holding dirty extents wrote nothing", k)
+		}
+		againstPass(false)
 
-		err := <-repacked
-		stub(t, "Repack", err)
-		if err != nil {
-			t.Fatalf("share %d: repack: %v", k, err)
+		second := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
+		first.Release()
+		select {
+		case <-second.Reached():
+			againstPass(true)
+			second.Release()
+			passDone(<-repacked)
+		case err := <-repacked:
+			second.Release()
+			passDone(err)
 		}
 		if listed(t, f, segmentName(seg)) {
 			t.Fatalf("share %d: segment %d is still in the directory after its repack completed", k, seg)
 		}
 
-		// A later call offers what the first left behind.
+		// A later call offers what the earlier ones left behind.
+		var offered []journalv2.Extent
 		offload(t, h, id, through, journalv2test.FixtureMaxBytes, 0, func(o journalv2.Offer, _ func([]journalv2.Extent) error) error {
-			for _, d := range o.Dirty {
-				offered[d.Extent] = true
-			}
+			offered = extentsOf(o.Dirty)
 			return nil
 		})
 		for _, e := range dirty {
-			var n int64
-			for o := range offered {
-				n += overlap(o, e)
-			}
-			if n != e.Len {
-				t.Fatalf("share %d: %d bytes of dirty extent %+v were offered across both calls, want all of it", k, n, e)
+			if n := covered(offered, e); n != e.Len {
+				t.Fatalf("share %d: an offer after the repack covers %d bytes of dirty extent %+v, want all of it", k, n, e)
 			}
 		}
-	}
-}
-
-// waitPass waits until the call held at first has gone past it and made a
-// second write into a segment, and returns the hold that write is parked at,
-// or nil if the pass returned first without an error.
-func waitPass(t *testing.T, f *journalv2test.Fixture, first *journalv2test.Hold, repacked chan error) *journalv2test.Hold {
-	t.Helper()
-
-	select {
-	case <-first.Reached():
-	case err := <-repacked:
-		stub(t, "Repack", err)
-		if err != nil {
-			t.Fatalf("repack: %v", err)
-		}
-		return nil
-	}
-	second := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
-	first.Release()
-	select {
-	case <-second.Reached():
-		return second
-	case err := <-repacked:
-		stub(t, "Repack", err)
-		if err != nil {
-			t.Fatalf("repack: %v", err)
-		}
-		return nil
 	}
 }
