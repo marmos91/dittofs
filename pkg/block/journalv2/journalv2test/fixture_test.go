@@ -121,3 +121,37 @@ func TestTryRestampLeavesTheJournalShut(t *testing.T) {
 		t.Fatalf("TryRestamp left a journal open: %v", f.J)
 	}
 }
+
+// TestTryCrashReturnsTheRefusalOrTheOpensError pins that a crash the seam
+// refuses, and an open that fails after one it made, come back as errors
+// with the journal shut.
+func TestTryCrashReturnsTheRefusalOrTheOpensError(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap)
+	file, err := f.Seam.Create("seg")
+	if err != nil {
+		t.Fatalf("create a file: %v", err)
+	}
+
+	// A crash keeping a write with none unsynced is refused by the seam, and
+	// a refused crash changes nothing: the file created is still open.
+	if err := f.TryCrash(Keeping(1)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("TryCrash of a crash the seam refuses returned %v, want the seam's refusal", err)
+	}
+
+	if _, err := file.WriteAt([]byte("a"), 0); err != nil {
+		t.Fatalf("a write after the refused crash: %v; the refusal crashed the storage", err)
+	}
+
+	if err := f.TryCrash(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory after a crash: error %v, journal %v", err, f.J)
+	}
+}
+
+// TestTryAbandonReturnsTheOpensError pins that an open that fails after the
+// process was abandoned comes back as an error with the journal shut.
+func TestTryAbandonReturnsTheOpensError(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap)
+	if err := f.TryAbandon(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory after an abandon: error %v, journal %v", err, f.J)
+	}
+}

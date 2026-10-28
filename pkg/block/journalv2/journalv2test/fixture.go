@@ -293,16 +293,7 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 		f.tb.Fatalf("fixture: crash: %v", err)
 	}
 
-	if f.J != nil {
-		for _, h := range f.handles {
-			_ = h.Close() // a crashed process's handles return nothing anyone reads
-		}
-		if err := f.J.Close(); err != nil && !errors.Is(err, fs.ErrClosed) && !errors.Is(err, journalv2.ErrClosed) {
-			f.tb.Logf("fixture: closing the crashed journal: %v", err)
-		}
-		f.J = nil
-	}
-
+	f.dropDead()
 	f.open()
 }
 
@@ -351,6 +342,49 @@ func (f *Fixture) Shutdown() {
 	if err := f.J.Close(); err != nil {
 		f.tb.Fatalf("fixture: close: %v", err)
 	}
+	f.J = nil
+}
+
+// TryCrash is Crash returning the seam's refusal, or Open's error, instead
+// of failing the test: after an error the journal is shut, J is nil, until a
+// later open succeeds. It is for a check that holds a call of the open after
+// a crash and crashes again there, so the open fails as a dead process's
+// would.
+func (f *Fixture) TryCrash(opts ...CrashOption) error {
+	f.tb.Helper()
+
+	if err := f.Seam.Crash(opts...); err != nil {
+		return err
+	}
+	f.dropDead()
+	return f.tryOpen(f.id)
+}
+
+// TryAbandon is Abandon returning Open's error instead of failing the test:
+// after an error the journal is shut, J is nil, until a later open succeeds.
+func (f *Fixture) TryAbandon() error {
+	f.tb.Helper()
+
+	f.Seam.Abandon()
+	f.J = nil // not closed: a dead process closes nothing
+	return f.tryOpen(f.id)
+}
+
+// dropDead closes the handles and the journal the seam's crash left dead,
+// through its dead view, so nothing reaches the directory, and forgets it.
+func (f *Fixture) dropDead() {
+	if f.J == nil {
+		return
+	}
+
+	for _, h := range f.handles {
+		_ = h.Close() // a crashed process's handles return nothing anyone reads
+	}
+
+	if err := f.J.Close(); err != nil && !errors.Is(err, fs.ErrClosed) && !errors.Is(err, journalv2.ErrClosed) {
+		f.tb.Logf("fixture: closing the crashed journal: %v", err)
+	}
+
 	f.J = nil
 }
 
