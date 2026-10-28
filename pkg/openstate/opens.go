@@ -38,6 +38,11 @@ type Open struct {
 }
 
 // DurableKeys is what a reconnect of a durable or persistent open matches.
+//
+// ponytail: no Instance, LockSeq or channel sequence yet, so an app-instance
+// takeover, a lock replay and a request on a stale channel are not
+// recognised, and a persistent open's record is written and installed
+// without them; all three arrive with create and lock replay.
 type DurableKeys struct {
 	Timeout time.Duration // how long it is kept once its session ends
 	Create  [16]byte      // the create's own ID, which a reconnect must name; zero: none
