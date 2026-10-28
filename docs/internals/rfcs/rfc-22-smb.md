@@ -1093,6 +1093,11 @@ failing; it is offered only on continuously available shares.
 | durable v2 (`DH2Q`), not persistent | as v1 | durable; the client's timeout, 60 s if zero, at most 300 s |
 | durable v2 with `PERSISTENT` | the share is continuously available | persistent, same timeout bound |
 
+A persistent request on a named stream is granted durable, as MS-SMB2
+3.3.5.9.10 lets a server grant durable without the persistent flag: open
+state refuses a persistent open of a stream
+([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
+
 **Reconnect** (`DHnC`, `DH2C`) is a `CREATE` that **MUST** be routed by the
 FileId's persistent half, which names the open and its shard (§6.1), to that
 shard's primary, and find the open there. The path in the request is not used
@@ -2717,7 +2722,7 @@ What each method then calls below is
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 | `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` | |
-| `LOGOFF` | `Disconnect` | |
+| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
 | `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |
