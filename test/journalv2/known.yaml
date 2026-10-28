@@ -361,3 +361,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
   issue: '#3378'
+- test: TestRFC28C_InterruptedInit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the identity error of an open with no recorded identity, and the data path.'
+  issue: '#3378'
