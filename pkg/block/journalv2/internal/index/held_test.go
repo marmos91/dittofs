@@ -401,7 +401,7 @@ func TestReappendMovesItsEntry(t *testing.T) {
 	s.insert(write(0, 12, a, 1))
 	s.insert(write(4, 4, b, 2))
 	s.markOffloaded(ext(8, 4), ver(1), ver(1))
-	if n := s.repoint(ext(0, 12), a, moved); n != 2 {
+	if n := s.repoint(ext(0, 12), a, moved, 0); n != 2 {
 		t.Fatalf("repoint moved %d pieces, want 2", n)
 	}
 	assertPieces(t, &s,
@@ -427,7 +427,7 @@ func TestCarriedHeaderOnlyRecordLeavesHeldUntouched(t *testing.T) {
 	}
 	s.fill(Placed{Extent: ext(0, 4), Record: fill, Version: ver(7)})
 	before := s.pieces(nil)
-	if n := s.repoint(ext(0, 4), release, rec(15, 0)); n != 0 {
+	if n := s.repoint(ext(0, 4), release, rec(15, 0), 0); n != 0 {
 		t.Fatalf("repoint of a header-only record moved %d pieces", n)
 	}
 	assertPieces(t, &s, before...)
@@ -502,4 +502,26 @@ func TestRecordFillingASegment(t *testing.T) {
 	)
 	s.markOffloaded(ext(0, core.SegmentCap), ver(1), ver(1))
 	assertPieces(t, &s, Piece{Extent: ext(0, core.SegmentCap), Record: a, Version: ver(1), Offloaded: true})
+}
+
+// TestRepackCopyCoalesces is a repack copy: adjacent held extents of one file
+// that share a version and a bit, from two records, are copied into one new
+// record at consecutive payload offsets, and become one entry. A repoint that
+// kept the old skips would point the second extent at the wrong bytes of the
+// copy, and the two would never merge.
+func TestRepackCopyCoalesces(t *testing.T) {
+	var s heldSet
+	a, b, c, copied := rec(1, 0), rec(1, 4096), rec(1, 8192), rec(9, 0)
+	s.insert(write(0, 8, a, 3))
+	s.insert(write(8, 8, b, 3))
+	s.insert(write(4, 2, c, 5)) // splits a; stays where it is
+	s.markOffloaded(ext(0, 16), ver(3), ver(3))
+	// The copy holds a's [6, 8) at 0 and b's [8, 16) at 2.
+	s.repoint(ext(6, 2), a, copied, 0)
+	s.repoint(ext(8, 8), b, copied, 2)
+	assertPieces(t, &s,
+		Piece{Extent: ext(0, 4), Record: a, Version: ver(3), Offloaded: true},
+		Piece{Extent: ext(4, 2), Record: c, Version: ver(5)},
+		Piece{Extent: ext(6, 10), Record: copied, Version: ver(3), Offloaded: true},
+	)
 }
