@@ -341,7 +341,15 @@ func (f *file) recorded(seg core.SegmentID, e core.Extent, n Numbers, tag core.S
 }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record
-// of the file. A segment the file does not know is a no-op.
+// of the file — and, with them, forgets the segment's drop ranges, so from
+// here on no drop query is answered against seg's records. A segment the file
+// does not know is a no-op.
+//
+// Call it only once the unlink or recycle is durable. A removal the drop
+// query keeps only by a record of seg may be dropped the moment seg's ranges
+// are gone, so a call made while the unlink could still be lost to a crash
+// lets the removal drop while the records it covered can still come back with
+// the segment, held again where zeros belong.
 func (f *file) segmentGone(seg core.SegmentID) {
 	for i := range f.segs {
 		if f.segs[i].seg == seg {
