@@ -1319,7 +1319,9 @@ podman runs `setup.sh` keeps the logs in its own cache.
 ```
 
 The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
-kernel the run was on, as `uname -r` gives it. A cell's `result` is `passed`, `failed`, `skipped`
+kernel the run was on, as `uname -r` gives it. `place` is the place `--place` named, and is left
+out of a run without one, so the dedicated host's nightly run reads apart from one run by hand.
+A cell's `result` is `passed`, `failed`, `skipped`
 or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
 stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
 come from the interrupt itself.
