@@ -331,3 +331,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
+- test: TestRFC28C_RetiredSegmentsAreRecycled
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the two refusals of a roll.'
+  issue: '#3379'

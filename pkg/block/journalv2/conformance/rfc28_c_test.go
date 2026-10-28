@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"bytes"
 	"errors"
 	"slices"
 	"syscall"
@@ -1211,4 +1212,277 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 	}
 	next.Release()
 	wantBytes(t, g.Share(1), other.id, 0, other.p)
+}
+
+// zero reports whether every byte of b is zero.
+func zero(b []byte) bool {
+	return bytes.IndexFunc(b, func(r rune) bool { return r != 0 }) < 0
+}
+
+// writeUntilRefused writes 64 KiB records on file 0 through share 0 from
+// offset from, through tryWrite so a refusal for want of a spare is not
+// retried, until one is refused, and returns the refusal.
+func writeUntilRefused(t *testing.T, f *journalv2test.Fixture, from int64) error {
+	t.Helper()
+
+	const size = 64 << 10
+	id := journalv2test.File(0)
+	for n := range 2 * journalv2test.FixtureMaxBytes / size {
+		off := from + int64(n)*size
+		_, err := tryWrite(t, f.Share(0), id, off, pattern(fmtTag("w", 0, 0, off), size))
+		stub(t, "WriteAt", err)
+		if err != nil {
+			return err
+		}
+	}
+	t.Fatalf("%d bytes written were never refused", 2*journalv2test.FixtureMaxBytes)
+	panic("unreachable")
+}
+
+// wantTakenClean fails the test unless nothing of segment seg's old life is
+// attached, the next roll of file 0's stream takes seg, the only spare the
+// pool holds, and the segment then carries a fresh header and a zeroed
+// trailer slot: both slots are zeroed before a stream may take it, which an
+// open may leave to the take.
+func wantTakenClean(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) {
+	t.Helper()
+
+	for id, entries := range f.J.Inspect().All() {
+		for _, e := range entries {
+			if e.Location.Segment == seg {
+				t.Fatalf("file %v holds %+v from the old life of the recycled segment %d", id, e, seg)
+			}
+		}
+	}
+
+	const size = 64 << 10
+	recs, _ := fillSegment(t, f, 0, 0, size)
+	if got := entryAt(t, f, journalv2test.File(0), int64(len(recs))*size).Location.Segment; got != seg {
+		t.Fatalf("the roll took segment %d, want the re-adopted %d, the only spare in the pool", got, seg)
+	}
+
+	b := liveBytes(t, f, segmentName(seg))
+	hdr, err := raw.ParseSegmentHeader(b[:raw.SegmentHeaderSize])
+	if err != nil || hdr.ID != uint64(seg) {
+		t.Fatalf("the taken segment %d has no fresh header: %+v, %v", seg, hdr, err)
+	}
+	if !zero(b[len(b)-raw.TrailerSize:]) {
+		t.Fatalf("the trailer slot of the taken segment %d is not zeros: the old life's trailer could be read as its catalog", seg)
+	}
+}
+
+// TestRFC28C_RetiredSegmentsAreRecycled checks the rules of retiring a
+// segment: one sealed full is recycled as a spare exactly when the pool is
+// below its target at the retirement, by a rename and then the zeroing of
+// its two slots, with no fill and an id above every id the directory named,
+// and is unlinked otherwise; one sealed early, or failed, is unlinked; a
+// crash on either side of the zeroing sync leaves a spare and nothing else;
+// a roll with no spare ready is refused at once naming the pool, and with
+// `ENOSPC` once the pool cannot be refilled. Eight legs, each on its own
+// journal, since each needs the pool at a level of its own.
+//
+// decision: the pool's target is not on the public surface, so a leg steers
+// the pool through the seam: a hold on the create of a temporary spare parks
+// spare-making, and one roll then leaves the pool one short, since a spare
+// counts only once renamed into place whole; releasing the hold and waiting
+// for that rename's directory sync, then reopening, puts the pool at its
+// target as the open counts it.
+func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
+	const size = 64 << 10
+	capBytes := int64(journalv2test.FixtureSegmentCap)
+
+	// Below target: recycled by a rename, then the slots zeroed and synced,
+	// the old records' bytes still between them. Both streams roll, so the
+	// pool is empty and the recycled segment is the next take.
+	f := journalv2test.New(t)
+	held := f.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	recs, seg := fillSegment(t, f, 0, 0, size)
+	others, _ := fillSegment(t, f, 1, 1, size)
+	syncFiles(t, f.Share(0), recs[0].id)
+	syncFiles(t, f.Share(1), others[0].id)
+	name := segmentName(seg)
+	if got := int64(len(durable(t, f, name))); got != capBytes {
+		t.Fatalf("segment %d, sealed full, is %d bytes, want its cap %d: it was truncated", seg, got, capBytes)
+	}
+
+	releaseRecs(t, f, recs)
+	allocated := f.Allocated()
+	r := retire(t, f, seg)
+	if !r.recycled {
+		t.Fatalf("segment %d was unlinked with the pool below its target, want it recycled", seg)
+	}
+
+	b := durable(t, f, r.name)
+	if int64(len(b)) != capBytes {
+		t.Fatalf("the recycled segment %s is %d bytes, want its cap %d", r.name, len(b), capBytes)
+	}
+	if !zero(b[:raw.SegmentHeaderSize]) || !zero(b[capBytes-raw.TrailerSize:]) {
+		t.Fatalf("the recycled segment %s has its header slot zeroed: %t, its trailer slot zeroed: %t, want both", r.name, zero(b[:raw.SegmentHeaderSize]), zero(b[capBytes-raw.TrailerSize:]))
+	}
+	if !bytes.Contains(b, recs[0].p[:64]) {
+		t.Fatalf("the recycled segment %s no longer holds the old records' bytes: it was zero-filled", r.name)
+	}
+	if got := f.Allocated(); got != allocated {
+		t.Fatalf("Allocated = %d after a recycle, want %d unchanged: a recycle allocates nothing", got, allocated)
+	}
+	if f.Seam.CallsFor(journalv2test.OpSync, r.name) == 0 {
+		t.Fatalf("the recycled segment %s was never synced after its slots were zeroed", r.name)
+	}
+
+	// After the zeroing sync, a crash: the spare is re-adopted and the next
+	// roll takes it clean.
+	f.Crash()
+	s := f.J.Stats()
+	if s.RejectedSegments != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("RejectedSegments = %d, DamagedSegments = %d after re-adopting a recycled segment, want 0 and 0", s.RejectedSegments, s.DamagedSegments)
+	}
+	wantTakenClean(t, f, idOf(t, r.name))
+	held.Release()
+
+	// At target: the roll's spare is replaced before the retirement, which
+	// then unlinks.
+	g := journalv2test.NewUnwatched(t)
+	awaitSpare(t, g, func() { recs, seg = fillSegment(t, g, 0, 0, size) })
+	syncFiles(t, g.Share(0), recs[0].id)
+	g.Reopen()
+	releaseRecs(t, g, recs)
+	used := g.J.Stats().UsedBytes
+	if r := retire(t, g, seg); r.recycled {
+		t.Fatalf("segment %d was recycled as %s with the pool at its target, want it unlinked", seg, r.name)
+	}
+	if got := g.J.Stats().UsedBytes; got != used-capBytes {
+		t.Fatalf("UsedBytes = %d after unlinking a segment of %d from %d", got, capBytes, used)
+	}
+
+	// Crossing: sealed with the pool one short, retired once it is whole
+	// again, so unlinked: the pool is read at the retirement, never at the
+	// seal.
+	k := journalv2test.NewUnwatched(t)
+	held = k.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	recs, seg = fillSegment(t, k, 0, 0, size)
+	syncFiles(t, k.Share(0), recs[0].id)
+	awaitSpare(t, k, held.Release)
+	k.Reopen()
+	releaseRecs(t, k, recs)
+	if r := retire(t, k, seg); r.recycled {
+		t.Fatalf("segment %d was recycled as %s: the pool was short at its seal and whole at its retirement", seg, r.name)
+	}
+
+	// Sealed early: truncated, and unlinked even with the pool short.
+	m := journalv2test.NewUnwatched(t)
+	a := writeSynced(t, m, 0, 0, 0, 128<<10)
+	m.Advance(journalv2test.IdleSealAge)
+	seg = entryAt(t, m, a.id, 0).Location.Segment
+	if !segmentInfo(t, m, seg).Sealed {
+		t.Fatalf("segment %d holding A is not sealed after %v idle", seg, journalv2test.IdleSealAge)
+	}
+	if got := int64(len(durable(t, m, segmentName(seg)))); got >= capBytes {
+		t.Fatalf("segment %d, sealed early, is %d bytes, want it truncated below its cap %d", seg, got, capBytes)
+	}
+	held = m.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	fillSegment(t, m, 1, 1, size)
+	if r := retire(t, m, seg); r.recycled {
+		t.Fatalf("segment %d, sealed early, was recycled as %s, want it unlinked", seg, r.name)
+	}
+	wantBytes(t, m.Share(0), a.id, 0, a.p)
+	held.Release()
+
+	// A crash between the rename and the zeroing sync: the renamed file
+	// still carries the old header, records and trailer under a name none
+	// of them verifies for, and is re-adopted as a spare.
+	e := journalv2test.NewUnwatched(t)
+	held = e.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	recs, seg = fillSegment(t, e, 0, 0, size)
+	others, _ = fillSegment(t, e, 1, 1, size)
+	syncFiles(t, e.Share(0), recs[0].id)
+	syncFiles(t, e.Share(1), others[0].id)
+	name = segmentName(seg)
+	releaseRecs(t, e, recs)
+	files := segmentFiles(t, e)
+	sync := e.Seam.Hold(t, journalv2test.OpSync, "*.seg")
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
+		done <- err
+	}()
+	select {
+	case <-sync.Reached():
+	case err := <-done:
+		stub(t, "Repack", err)
+		t.Fatalf("repack returned (%v) without syncing a segment", err)
+	}
+	if got := e.Seam.CallsFor(journalv2test.OpRename, name); got != 1 {
+		t.Fatalf("the held sync is not the recycle's: %s was renamed %d times by then", name, got)
+	}
+	r = retirement(t, e, name, files)
+	crashHeld(t, e, sync)
+	<-done // a call the crash took; what it returned means nothing
+
+	s = e.J.Stats()
+	if s.RejectedSegments != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("RejectedSegments = %d, DamagedSegments = %d after a crash inside a recycle, want 0 and 0", s.RejectedSegments, s.DamagedSegments)
+	}
+	wantTakenClean(t, e, idOf(t, r.name))
+	held.Release()
+
+	// A segment whose sync failed is unlinked, never recycled, even with
+	// the pool short.
+	n := journalv2test.NewUnwatched(t)
+	held = n.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	fillSegment(t, n, 1, 1, size)
+	a = writeSynced(t, n, 0, 0, 0, size)
+	seg = entryAt(t, n, a.id, 0).Location.Segment
+	n.FailNext(journalv2test.OpSync, segmentName(seg), 1)
+	err := n.Share(0).Sync(t.Context(), a.id)
+	stub(t, "Sync", err)
+	var se *journalv2.SyncError
+	if err != nil && !errors.As(err, &se) {
+		t.Fatalf("sync after a failed sync: %v", err)
+	}
+	if r := retire(t, n, seg); r.recycled {
+		t.Fatalf("segment %d, whose sync failed, was recycled as %s, want it unlinked", seg, r.name)
+	}
+	wantBytes(t, n.Share(0), a.id, 0, a.p)
+	held.Release()
+
+	// No spare ready: the roll is refused at once, naming the pool, while
+	// spare-making is still parked, and a header-only record still appends.
+	o := journalv2test.NewUnwatched(t)
+	held = o.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	err = writeUntilRefused(t, o, 0)
+	wantNoSpace(t, err, journalv2.LimitSpare, "a roll with no spare ready")
+	if held.Waiting() == 0 {
+		t.Fatalf("the roll was refused with no spare-making parked at the seam")
+	}
+	if got := o.J.Stats().Counters.SpareRefusals; got != 1 {
+		t.Fatalf("SpareRefusals = %d after one roll refused for want of a spare, want 1", got)
+	}
+	_, err = o.Share(0).Truncate(t.Context(), journalv2test.File(0), 4096)
+	stub(t, "Truncate", err)
+	if err != nil {
+		t.Fatalf("a header-only record with no spare ready: %v; it draws on the headroom", err)
+	}
+	held.Release()
+
+	// The pool cannot be refilled: once making a spare failed with ENOSPC
+	// and no full-size retired segment is to hand, the roll is refused with
+	// ENOSPC, not the pool's name.
+	//
+	// ponytail: the failed create returns ENOSPC into the journal's
+	// spare-making goroutine, which records the failure; the roll after it is
+	// issued once the held call was released and can overtake that record
+	// by a few instructions, in which case the roll is refused naming the
+	// pool and the check fails. Upgrade to a seam point the journal reports
+	// once the failure is recorded if that is ever seen.
+	q := journalv2test.NewUnwatched(t)
+	schedule(t, q, failing(journalv2test.OpCreate, "*.spare.tmp", syscall.ENOSPC), failing(journalv2test.OpAllocate, "*.spare.tmp", syscall.ENOSPC))
+	held = q.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	recs, _ = fillSegment(t, q, 0, 0, size)
+	<-held.Reached()
+	held.Release()
+	err = writeUntilRefused(t, q, int64(len(recs)+1)*size)
+	var ns *journalv2.NoSpaceError
+	if !errors.Is(err, syscall.ENOSPC) || errors.As(err, &ns) {
+		t.Fatalf("a roll with the pool unfillable returned %v, want the device's ENOSPC and not a NoSpaceError", err)
+	}
 }
