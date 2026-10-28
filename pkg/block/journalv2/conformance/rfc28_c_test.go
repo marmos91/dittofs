@@ -1400,8 +1400,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// Sealed early: truncated, and unlinked even with the pool short.
 	m := journalv2test.NewUnwatched(t)
 	a := writeSynced(t, m, 0, 0, 0, 128<<10)
-	m.Advance(journalv2test.IdleSealAge)
-	seg = entryAt(t, m, a.id, 0).Location.Segment
+	seg = sealIdle(t, m, a)
 	if !segmentInfo(t, m, seg).Sealed {
 		t.Fatalf("segment %d holding A is not sealed after %v idle", seg, journalv2test.IdleSealAge)
 	}

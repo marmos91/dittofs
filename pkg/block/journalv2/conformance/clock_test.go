@@ -69,6 +69,22 @@ func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 	if !reached {
 		t.Fatal("no sync within ten bounds of monotonic time, with the wall clock stepped back an hour")
 	}
+
+	// The sync the hold caught is the one that makes the bounded write
+	// durable, not a sync of some other segment: the segment it is on holds
+	// the write in its live bytes, which the seam makes durable when the held
+	// call runs, and the index places the write there. Both are read at the
+	// hold, since nothing at the seam marks a released call as done.
+	var synced string
+	for _, name := range segmentFiles(t, f) {
+		if f.Seam.CallsFor(journalv2test.OpSync, name) != 0 && bytes.Contains(liveBytes(t, f, name), before) {
+			synced = name
+		}
+	}
+	if synced == "" {
+		t.Fatal("the sync within the bound is on no segment whose live bytes hold the bounded write")
+	}
+
 	syncs.Release()
 	if !returned {
 		werr = <-wrote
@@ -78,17 +94,8 @@ func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 		t.Fatalf("the write: %v", werr)
 	}
 
-	// The sync the hold caught is the one that made the bounded write
-	// durable, not a sync of some other segment.
-	seg := segmentName(heldEntry(t, f, journalv2test.File(0)).Location.Segment)
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(time.Millisecond) {
-		durable, err := f.Seam.Durable(seg)
-		if err == nil && bytes.Contains(durable, before) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the bounded write is not durable after the sync")
-		}
+	if got := segmentName(heldEntry(t, f, journalv2test.File(0)).Location.Segment); got != synced {
+		t.Fatalf("the bounded write is held in %s, not in %s, the segment synced within the bound", got, synced)
 	}
 
 	after := f.Now()

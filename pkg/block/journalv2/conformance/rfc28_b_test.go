@@ -59,8 +59,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 
 	// A's segment is sealed while idle, so A is its only record and the
 	// segment carries nothing else repack would have to carry forward.
-	f.Advance(journalv2test.IdleSealAge)
-	seg := entryAt(t, f, a.id, 0).Location.Segment
+	seg := sealIdle(t, f, a)
 	name := segmentName(seg)
 	if !segmentInfo(t, f, seg).Sealed {
 		t.Fatalf("segment %d holding A is not sealed after %v idle", seg, journalv2test.IdleSealAge)

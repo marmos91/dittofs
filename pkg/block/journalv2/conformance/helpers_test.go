@@ -589,6 +589,46 @@ func emptyDir(t *testing.T, f *journalv2test.Fixture) {
 	}
 }
 
+// sealIdle seals the segment holding record r by idling it, and returns the
+// segment's id. The seal runs on the journal's goroutine once the clock
+// passes the idle age, so it is waited for through the seam: a hold on the
+// segment's sync parks the seal, the hold is advanced one sync at a time, at
+// most maxSealSyncs, until the segment has been truncated, and at that hold
+// the live file is short of its cap and ends with the trailer. The seal's
+// last sync returns on that goroutine, and nothing at the seam marks a
+// released call as done, so the journal is then reopened cleanly: the close
+// joins the seal, and the open reads the sealed, truncated segment. What a
+// caller asserts of the sealed segment is settled after that.
+func sealIdle(t *testing.T, f *journalv2test.Fixture, r rec) journalv2.SegmentID {
+	t.Helper()
+
+	seg := entryAt(t, f, r.id, r.extent.Off).Location.Segment
+	name := segmentName(seg)
+	truncates := f.Seam.CallsFor(journalv2test.OpTruncate, name)
+	held := f.Seam.Hold(t, journalv2test.OpSync, name)
+	f.Advance(journalv2test.IdleSealAge)
+	<-held.Reached()
+
+	for n := 0; f.Seam.CallsFor(journalv2test.OpTruncate, name) == truncates; n++ {
+		if n == maxSealSyncs {
+			t.Fatalf("precondition: segment %d was not truncated within %d syncs of its idle seal", seg, n)
+		}
+
+		next := f.Seam.Hold(t, journalv2test.OpSync, name)
+		held.Release()
+		held = next
+		<-held.Reached()
+	}
+
+	if b := liveBytes(t, f, name); int64(len(b)) >= journalv2test.FixtureSegmentCap || !magicAt(t, f, name, -1, "DJT1") {
+		t.Fatalf("segment %d, sealed idle, is %d bytes ending %q at the sync after its truncation, want it short of its cap %d and ending with its trailer", seg, len(b), b[max(0, len(b)-4):], journalv2test.FixtureSegmentCap)
+	}
+
+	held.Release()
+	f.Reopen()
+	return seg
+}
+
 // changingOps are the seam calls that change a directory or a file.
 var changingOps = []string{journalv2test.OpCreate, journalv2test.OpWrite, journalv2test.OpTruncate, journalv2test.OpRename, journalv2test.OpRemove}
 
