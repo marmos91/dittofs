@@ -64,11 +64,18 @@ const (
 
 // maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
 // SMB's 8-byte persistent FileId.
+//
+// ponytail: open IDs are never reused, so an installation issues at most
+// 2^40; only SMB, durable and clone-source opens draw on them. At a sustained
+// 1,000 a second that lasts 35 years. Widen it (fewer shard bits in the
+// persistent FileId, routing by lookup) if IDS‖open is seen past 2^39.
 const maxOpenID = 1 << 40
 
 // NextID issues a client, open or lock ID never issued before in this
-// installation, never zero, which names none: one for every client, open and
-// lock, volatile ones too. The IDs come from server-wide counters under
+// installation, never zero, which names none. Every client and lock takes
+// one, volatile ones too; of opens, only SMB, durable and clone-source opens
+// do, as an NFS open is named by its state token. The store does not check
+// which open asks. The IDs come from server-wide counters under
 // IDS‖kind, reserved in ranges as file numbers are, so issuing one does not
 // write the counter, and a range a process leaves unused is abandoned. A lock
 // ID needs to differ only from the other locks under its open and offset; the
