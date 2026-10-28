@@ -89,6 +89,8 @@ type file struct {
 	// the drop ranges of each, when the index tracks drop ranges or a
 	// profile shows the scan on the append path.
 	segs []core.SegmentID
+	// markers are the file's unsettled removal markers, in version order.
+	markers []marker
 }
 
 // shard returns the shard holding id. Every byte of the FileID reaches the
@@ -186,16 +188,19 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // before it is removed, so a caller that found it before the removal sees
 // the mark once it gets the lock.
 //
-// decision: only held extents keep the change-version entry for now. Removal
-// markers and retained extents keep it too once the index carries them; until
-// then a file holds nothing exactly when its held set is empty.
+// A held extent or an unsettled removal marker keeps the change-version
+// entry: a file whose content was all removed still has a removal Since must
+// yield until the caller settles it.
+//
+// decision: retained extents do not keep it yet, because the index does not
+// carry them; whether they should is decided where they are added.
 //
 // The dropped change version is not recorded anywhere yet, so nothing here
 // refuses a stale fill once the entry has gone: no check of a fill may be
 // built on changeVersion until dropping the version raises the file's floor
 // to it, which belongs at the line that zeroes it.
 func (f *file) settle(s *fileShard, id core.FileID) {
-	if f.held.len() > 0 {
+	if f.held.len() > 0 || len(f.markers) > 0 {
 		return
 	}
 	f.change = core.Version{}

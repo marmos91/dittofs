@@ -19,6 +19,7 @@ type (
 	JournalID      = core.JournalID
 	InstallationID = core.InstallationID
 	SegmentID      = core.SegmentID
+	CloneSpec      = core.CloneSpec
 )
 
 // The sync policies; see SyncPolicy.
