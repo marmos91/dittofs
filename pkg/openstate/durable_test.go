@@ -629,6 +629,9 @@ func TestRefusedWriteChangesNothing(t *testing.T) {
 		t.Errorf("a reconnect over a refusing store: %v, want its error", err)
 	}
 	st.fail.Store(false)
+	if held := f.entryOf(file.ID).opens[o.Ref.Token]; held == nil || held.Session != s1 {
+		t.Errorf("the refused reconnect left the open %+v, want it still of s1", held)
+	}
 	back, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s3)
 	if err != nil || back.Open.Suspended != 0 {
 		t.Errorf("the reconnect after: %+v, %v; want it, with no time suspended", back.Open, err)

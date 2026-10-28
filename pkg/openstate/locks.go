@@ -791,8 +791,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		o := ls.offers[i]
 		others := slices.Delete(slices.Clone(ls.offers), i, i+1)
 		if refused {
-			next := lockState{owner: ls.owner, locks: slices.Clone(ls.locks)}
-			_ = next.unlock(ls.unoffered(o.left, others))
+			next, _ := ls.removing(ls.unoffered(o.left, others))
 			if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); err != nil {
 				return err // the grant stays offered, for the client's answer again
 			}
@@ -873,8 +872,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 				}
 				return nil
 			}
-			next := lockState{owner: ls.owner, locks: slices.Clone(ls.locks), offers: slices.Clone(ls.offers)}
-			err := next.unlock(rs)
+			next, err := ls.removing(rs)
 			if werr := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); werr != nil {
 				return werr // an unlock releasing nothing writes nothing
 			}

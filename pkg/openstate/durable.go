@@ -273,9 +273,10 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 			return ErrDelay // its record is written again by the timer first
 		}
 		if o.persistent() {
-			rec := t.recordOf(e, o)
-			rec.Session = s
-			if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
+			was := o.Session
+			o.Session = s
+			if err := t.persist(ctx, e, o); err != nil {
+				o.Session = was
 				return err
 			}
 		}
@@ -578,6 +579,14 @@ func (ls *lockState) adding(rs ...LockRange) []LockRange {
 		n.add(r)
 	}
 	return n.locks
+}
+
+// removing is ls with rs unlocked, as unlock takes them, its locks and
+// offers its own and ls left as it is.
+func (ls *lockState) removing(rs []ByteRange) (lockState, error) {
+	n := lockState{owner: ls.owner, locks: slices.Clone(ls.locks), offers: slices.Clone(ls.offers)}
+	err := n.unlock(rs)
+	return n, err
 }
 
 // public is o as its caller sees it, with keys of its own.
