@@ -391,3 +391,69 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
   issue: '#3378'
+- test: TestDamage_LostWrites/write_at
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/seal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/footer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/repack_copy
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/repack_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/spare_entry
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_unproven_tail
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_torn_tail_truncation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_seal_after_truncation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_reappend
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+- test: TestDamage_LostWrites/open_spare_zeroing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
