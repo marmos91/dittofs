@@ -731,3 +731,110 @@ func TestLapsedRecallClosesAParkedDurableOpen(t *testing.T) {
 		t.Errorf("a write open once the parked open's recall lapsed: %v", err)
 	}
 }
+
+// pendingStored reports whether the store holds file delete pending.
+func (f *fixture) pendingStored(t *testing.T, file FileKey) bool {
+	t.Helper()
+	_, ok, err := f.fs.Store.Opens().DeletePending(ctx, f.fs.Share.ID, file.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// A close with delete on close beside another client's persistent open
+// writes the delete pending it leaves before it is answered; a refused write
+// refuses the close and changes nothing.
+func TestClosePendingIsWritten(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd
+	f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	ob := f.mustOpen(t, b, file, OpenRequest{Access: rd | del, DeleteOnClose: true})
+
+	st.fail.Store(true)
+	_, err := f.Opens().Close(ctx, b, refOf(ob), Seqs{})
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a delete-on-close close over a refusing store: %v, want its error", err)
+	}
+	if f.entryOf(file.ID).pending != nil || f.pendingStored(t, file) {
+		t.Error("the refused close left the file delete pending")
+	}
+	f.close(t, b, ob)
+	if !f.pendingStored(t, file) {
+		t.Error("the close left the file delete pending in memory only")
+	}
+}
+
+// A refused close whose delete pending was written before its record's
+// delete failed takes the delete pending back.
+func TestRefusedCloseTakesItsPendingBack(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd
+	f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	ob := f.mustOpen(t, b, file, OpenRequest{Access: rd | del, DeleteOnClose: true})
+	f.unlink(t, file, "doc")                 // b's open is written durable
+	st.updateAt.Store(st.updates.Load() + 2) // the pending's write passes, the record's delete fails
+	_, err := f.Opens().Close(ctx, b, refOf(ob), Seqs{})
+	st.updateAt.Store(0)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a close whose record's delete is refused: %v, want its error", err)
+	}
+	if f.pendingStored(t, file) {
+		t.Error("the refused close left its delete pending written")
+	}
+}
+
+// A close by the table with delete on close, whose delete pending's write
+// is refused, has it written again by the timer.
+func TestTimedOutClosePendingIsWrittenAgain(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd
+	f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	f.mustOpen(t, b, file, keep(OpenRequest{Access: rd | del, DeleteOnClose: true, Lease: LeaseKey{3}, Want: rh}, entity.DurabilityDurable, s2, time.Minute, 2))
+	f.disconnect(t, b, s2)
+	st.fail.Store(true)
+	f.idle(time.Minute) // b's Timeout passes
+	st.fail.Store(false)
+	if f.pendingStored(t, file) {
+		t.Fatal("the refused write stored the delete pending")
+	}
+	f.idle(0)
+	if !f.pendingStored(t, file) {
+		t.Error("the timer did not write the delete pending again")
+	}
+}
+
+// An update setting delete pending and a suspended time, whose delete
+// pending's write is refused after its record's write passed, puts the
+// record back.
+func TestRefusedUpdatePutsItsRecordBack(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd | del
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	d := true
+	st.updateAt.Store(st.updates.Load() + 2)
+	err := f.Opens().Update(ctx, a, o.ID, OpenUpdate{Delete: &d, Suspend: entity.TimeModify})
+	st.updateAt.Store(0)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("an update whose delete pending's write is refused: %v, want its error", err)
+	}
+	if f.pendingStored(t, file) {
+		t.Error("the refused update stored the delete pending")
+	}
+	if recs := f.stored(t, file); len(recs) != 1 || recs[0].Suspended != 0 {
+		t.Errorf("the refused update left its record %+v, want nothing suspended", recs)
+	}
+}

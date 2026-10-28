@@ -46,8 +46,12 @@ func (t *Table) save(ctx context.Context, e *entry, o *open) {
 	t.idx.Unlock()
 }
 
-// unsaved reports whether an open of e holds a change its record lacks.
+// unsaved reports whether an open of e holds a change its record lacks, or
+// e's delete pending is not as written.
 func (e *entry) unsaved() bool {
+	if e.pendingUnsaved {
+		return true
+	}
 	for _, o := range e.opens {
 		if o.unsaved {
 			return true
@@ -310,6 +314,9 @@ func (v opens) Flushed(ctx context.Context, who Caller, id entity.OpenID, loss u
 // grant a waiter; the file leaves the timer's set once it holds neither.
 func (t *Table) timeouts(ctx context.Context, e *entry, out *outbox) {
 	now, kept := t.d.Clock.Elapsed(), false
+	if e.pendingUnsaved {
+		t.savePending(ctx, e)
+	}
 	for _, o := range e.opens {
 		if o.unsaved {
 			t.save(ctx, e, o)
@@ -323,7 +330,7 @@ func (t *Table) timeouts(ctx context.Context, e *entry, out *outbox) {
 			kept = true
 		}
 	}
-	if !kept {
+	if !kept && !e.pendingUnsaved { // a close above may have left it unsaved
 		t.idx.Lock()
 		delete(t.parked, e.file)
 		t.idx.Unlock()
@@ -586,29 +593,56 @@ func (o *open) public() Open {
 // keepPending writes the delete pending set, through o, or cleared by
 // set, while a persistent open holds e's file, before it is applied, so a
 // refused write changes nothing; nil set changes nothing.
-//
-// ponytail: only Update writes it. The delete pending a closing open with
-// delete on close leaves its file, while a persistent open stays, is held
-// in memory only, so a failover loses it; the persistent open's own mark is
-// in its record. Write it in the close's step if such a close is seen
-// before a failover.
 func (t *Table) keepPending(ctx context.Context, e *entry, o *open, who Caller, set *bool) error {
 	if set == nil || *set == (e.pending != nil) {
 		return nil
 	}
+	var p *entity.DeleteRecord
+	if *set {
+		p = pendingFrom(o, who.Principal)
+	}
+	return t.writePending(ctx, e, p, nil)
+}
+
+// closePending is the delete pending o's close leaves e's file, written
+// while a persistent open other than o holds it, before the close applies
+// it; nil: the close leaves none it does not already have.
+func (t *Table) closePending(ctx context.Context, e *entry, o *open) (*entity.DeleteRecord, error) {
+	if !o.Delete.OnClose || e.pending != nil {
+		return nil, nil
+	}
+	p := pendingFrom(o, o.Delete.By)
+	return p, t.writePending(ctx, e, p, o)
+}
+
+// writePending writes p as e's delete pending, or clears it for nil, while
+// a persistent open of e other than skip holds the file.
+func (t *Table) writePending(ctx context.Context, e *entry, p *entity.DeleteRecord, skip *open) error {
 	var by *open
 	for _, h := range e.opens {
-		if h.persistent() {
+		if h.persistent() && h != skip {
 			by = h
 		}
 	}
 	switch {
 	case by == nil:
 		return nil
-	case *set:
-		return t.d.Records.Opens().SetDeletePending(ctx, o.share, e.file, by.ID, *pendingFrom(o, who.Principal))
+	case p != nil:
+		return t.d.Records.Opens().SetDeletePending(ctx, by.share, e.file, by.ID, *p)
 	}
-	return t.d.Records.Opens().ClearDeletePending(ctx, o.share, e.file)
+	return t.d.Records.Opens().ClearDeletePending(ctx, by.share, e.file)
+}
+
+// savePending is writePending of e's delete pending as it stands, for a
+// change already made: a failed write marks it unsaved, and the timer
+// writes it again on each sweep.
+func (t *Table) savePending(ctx context.Context, e *entry) {
+	e.pendingUnsaved = t.writePending(ctx, e, e.pending, nil) != nil
+	if e.pendingUnsaved {
+		t.idx.Lock()
+		t.parked[e.file] = struct{}{}
+		t.idx.Unlock()
+	}
 }
 
 // closeUnreclaimed closes, for each shard whose grace has ended since the

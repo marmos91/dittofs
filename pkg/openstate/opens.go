@@ -848,16 +848,20 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 		if u.Delete != nil && o.Mode.Access&entity.Delete == 0 {
 			return ErrAccess
 		}
-		if err := t.keepPending(ctx, e, o, who, u.Delete); err != nil {
-			return err
-		}
 		next := o.Suspended&^u.Resume | u.Suspend
-		if next != o.Suspended && o.persistent() {
+		wrote := next != o.Suspended && o.persistent()
+		if wrote {
 			rec := t.recordOf(e, o)
 			rec.Suspended = next
 			if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
 				return err
 			}
+		}
+		if err := t.keepPending(ctx, e, o, who, u.Delete); err != nil {
+			if wrote {
+				t.save(ctx, e, o) // the update is refused: the record goes back
+			}
+			return err
 		}
 		o.Suspended = next
 		if u.Delete != nil {
@@ -908,7 +912,14 @@ func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (Clos
 	var res CloseResult
 	var out outbox
 	err = t.withOpen(who, ref, q.Owner, seqOther, func(e *entry, o *open) (err error) {
+		p, err := t.closePending(ctx, e, o)
+		if err != nil {
+			return err
+		}
 		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
+			if p != nil {
+				t.savePending(ctx, e) // the close is refused: its delete pending goes back
+			}
 			return err
 		}
 		res.Unlink = t.closeOpen(ctx, e, o, &out)
@@ -1081,6 +1092,9 @@ func (t *Table) closeOpensOf(ctx context.Context, owner LockOwner, out *outbox) 
 func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) {
 	var r CloseResult
 	r.Orphan, _ = t.unrecord(ctx, o)
+	if _, err := t.closePending(ctx, e, o); err != nil {
+		defer t.savePending(ctx, e) // the close is the table's, with no caller to refuse
+	}
 	r.Unlink = t.closeOpen(ctx, e, o, out)
 	if o.unlinking {
 		o.late = r // the unlink's commit raises it, in its one Closed for the file

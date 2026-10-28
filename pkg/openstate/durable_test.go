@@ -518,11 +518,12 @@ func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 
 // failing is a store whose writes fail while fail is set, and whose reads
 // fail from the readAt'th one counted from zero while readAt is positive.
-// It counts the write transactions asked of it in updates.
+// It counts the write transactions asked of it in updates, and fails the
+// updateAt'th one counted from one.
 type failing struct {
 	kv.KV
-	fail                   atomic.Bool
-	readAt, reads, updates atomic.Int64
+	fail                             atomic.Bool
+	readAt, reads, updateAt, updates atomic.Int64
 }
 
 func (s *failing) View(ctx context.Context, fn func(kv.Reader) error) error {
@@ -535,8 +536,8 @@ func (s *failing) View(ctx context.Context, fn func(kv.Reader) error) error {
 var errWrite = errors.New("store write refused")
 
 func (s *failing) Update(ctx context.Context, fn func(kv.Txn) error) error {
-	s.updates.Add(1)
-	if s.fail.Load() {
+	n := s.updates.Add(1)
+	if s.fail.Load() || n == s.updateAt.Load() {
 		return errWrite
 	}
 	return s.KV.Update(ctx, fn)
