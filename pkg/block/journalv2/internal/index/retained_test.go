@@ -282,6 +282,26 @@ func TestFailWindowReturnsNoPieceOfTheWindow(t *testing.T) {
 	assertPieces(t, &f.held, piece(4, 4, rec(1, 0), 4, 1, false))
 }
 
+// TestRemovalLeavesRetainedAndFailedWindowStopsAtIt: a truncate removes held
+// content only; what a record superseded stays retained under it, for an
+// offload or a hold to keep. When the record's window then fails, it is held
+// again only where the record is still held, and the part the truncate took is
+// reported as a gap rather than brought back past the truncation.
+func TestRemovalLeavesRetainedAndFailedWindowStopsAtIt(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))
+	f.writeRetain(write(0, 8, rec(2, 0), 2))
+	f.truncate(4, ver(3))
+	assertRetained(t, &f, kept(piece(0, 8, rec(1, 0), 0, 1, false), 2))
+	out, covers := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	want := []Retained{kept(piece(4, 4, rec(1, 0), 4, 1, false), 2)}
+	if !slices.Equal(out, want) || len(covers) != 0 {
+		t.Fatalf("unrestored %+v covers %v, want %+v and none", out, covers, want)
+	}
+	assertRetained(t, &f, want...)
+	assertPieces(t, &f.held, piece(0, 4, rec(1, 0), 0, 1, false))
+}
+
 // TestFailedWindowThenSurvivorFails: a write surviving one failed window, in
 // the next segment, is itself failed later. What the first window could not
 // restore under it must be held again then, so the last synced write is
