@@ -315,7 +315,8 @@ func (r *runner) readRefusal(tag journalv2.ShareTag, id journalv2.FileID, err er
 	return nil
 }
 
-// offload offloads the file through every version seen. Inside the callback
+// offload offloads the file through every version seen, with the limit and
+// widen the step chooses. Inside the callback
 // it checks the offer, writes to the file when the step asks for a write
 // during the offer, and reports what the step's pick chooses; what was
 // reported goes to the remote tier.
@@ -323,6 +324,7 @@ func (r *runner) offload(s Step, h Handle) error {
 	ctx, m := r.ctx, r.m
 	tag, id := tagOf(s.Share), fileOf(s.File)
 	through := m.maxSeen
+	limit, widen := s.offer()
 
 	var stepErr error
 	fail := func(err error) error {
@@ -330,7 +332,7 @@ func (r *runner) offload(s Step, h Handle) error {
 		return errStop
 	}
 	callback := func(ctx context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
-		if err := m.Offer(tag, id, through, 0, 0, o); err != nil {
+		if err := m.Offer(tag, id, through, limit, widen, o); err != nil {
 			return fail(err)
 		}
 		if s.Pick&1 != 0 && s.Len > 0 {
@@ -380,7 +382,7 @@ func (r *runner) offload(s Step, h Handle) error {
 		return nil
 	}
 
-	err := h.Offload(ctx, id, through, 0, 0, callback)
+	err := h.Offload(ctx, id, through, limit, widen, callback)
 	if stepErr != nil {
 		return stepErr
 	}

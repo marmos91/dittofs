@@ -48,7 +48,7 @@ func TestModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the corpus: %v", err)
 	}
-	open, streams := journalv2test.ModelTargets(t)
+	open, reached := journalv2test.ModelTargets(t)
 	for _, seq := range corpus {
 		model.Check(t, seq.Name, seq.Steps, open, "kept as "+seq.Name)
 	}
@@ -57,10 +57,16 @@ func TestModel(t *testing.T) {
 	model.Check(t, fmt.Sprintf("seed-%d.txt", seed), model.Generate(seed, model.DefaultSteps), open,
 		fmt.Sprintf("drawn from seed %d, %d steps", seed, model.DefaultSteps))
 
-	// The journal chooses the stream each record goes to, so the sequences
-	// can only be shown to have reached two after they ran. This shows where
-	// the records landed, not that the streams were ever appended to at once.
-	if n := streams(); !t.Failed() && n < 2 {
-		t.Errorf("no sequence left its records on more than %d append stream(s); the test asks for two files on two streams", n)
+	// The journal chooses the stream each record goes to, when a segment
+	// rolls and what a repack frees, so the sequences can only be shown to
+	// have reached them after they ran. The streams show where the records
+	// landed, not that the streams were ever appended to at once.
+	if r := reached(); !t.Failed() {
+		if r.Streams < 2 {
+			t.Errorf("no sequence left its records on more than %d append stream(s); the test asks for two files on two streams", r.Streams)
+		}
+		if r.Sealed == 0 || r.Freed == 0 {
+			t.Errorf("the sequences sealed at most %d segment(s) and their repacks freed %d bytes; the test asks for segment rolls and repacks that move records", r.Sealed, r.Freed)
+		}
 	}
 }

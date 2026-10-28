@@ -20,12 +20,14 @@ func TestGenerateIsDecidedBySeed(t *testing.T) {
 	}
 }
 
-// Over a few seeds every operation, every crash, every share and every file is
+// Over a few seeds every operation, every crash, every offload limit and widen,
+// every share and every file is
 // drawn, along with a call through the share that does not have the file, a
 // write far out in the file, a truncate to zero and a torn crash that keeps
 // part of a payload, and every step drawn can be run.
 func TestGenerateReachesEveryStep(t *testing.T) {
 	ops, crashes := map[Op]bool{}, map[CrashKind]bool{}
+	limits, widens := map[int64]bool{}, map[int64]bool{}
 	shares, files := map[int]bool{}, map[int]bool{}
 	var otherShare, farOut, toZero, tornPayload bool
 	for seed := range uint64(20) {
@@ -37,6 +39,10 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 			if s.Op == OpCrash {
 				k, _ := s.crash()
 				crashes[k] = true
+			}
+			if s.Op == OpOffload {
+				l, w := s.offer()
+				limits[l], widens[w] = true, true
 			}
 			otherShare = otherShare || s.Share != s.File%numShares
 			toZero = toZero || s.Op == OpTruncate && s.Off == 0
@@ -58,6 +64,9 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 	}
 	if len(shares) != numShares || len(files) != numFiles || !otherShare || !farOut {
 		t.Errorf("shares %v, files %v, through another share %t, far out %t", shares, files, otherShare, farOut)
+	}
+	if len(limits) != 3 || len(widens) != 3 {
+		t.Errorf("offload limits %v, widens %v, want every one", limits, widens)
 	}
 	if !toZero || !tornPayload {
 		t.Errorf("truncate to zero %t, torn past a record header %t", toZero, tornPayload)

@@ -47,6 +47,32 @@ func offerAll(j *Model, id journalv2.FileID, through journalv2.Version) journalv
 	return o
 }
 
+// limitOffer cuts o to its first limit bytes, the last extent kept cut short,
+// as a journal keeping to a limit above zero does.
+func limitOffer(o journalv2.Offer, limit int64) journalv2.Offer {
+	if limit <= 0 || len(o.Dirty) == 0 {
+		return o
+	}
+	var kept []journalv2.OfferedExtent
+	for _, d := range o.Dirty {
+		if limit <= 0 {
+			break
+		}
+		d.Extent.Len = min(d.Extent.Len, limit)
+		limit -= d.Extent.Len
+		kept = append(kept, d)
+	}
+	o.Dirty = kept
+	o.Oldest, o.Newest = kept[0].Version, kept[0].Version
+	for _, d := range kept {
+		if d.Version.Compare(o.Oldest) < 0 {
+			o.Oldest = d.Version
+		}
+		o.Newest = maxVersion(o.Newest, d.Version)
+	}
+	return o
+}
+
 // loseUnsynced makes the state of a journal played by model j, just crashed
 // and reopened, a random one of those the crash allows: each uncertain write
 // or fill split at a random point, and each piece and uncertain record kept or
@@ -231,7 +257,7 @@ func (h playedHandle) Offload(ctx context.Context, id journalv2.FileID, through 
 		h.p.must(j.EndOffer(h.tag, id, through, nil, err))
 		return err
 	}
-	o := offerAll(j, id, through)
+	o := limitOffer(offerAll(j, id, through), limit)
 	if len(o.Dirty) == 0 {
 		h.p.must(j.EndOffer(h.tag, id, through, nil, nil))
 		return nil

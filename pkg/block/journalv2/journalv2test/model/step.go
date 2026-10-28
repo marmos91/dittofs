@@ -30,7 +30,8 @@ const (
 	// OpOffload offloads the file through every version issued. Pick chooses
 	// what the callback reports: everything offered, nothing, part of it, or
 	// an extent it was not offered. Its low bit set, the callback first
-	// writes Len bytes at Off, so a write lands during the offer.
+	// writes Len bytes at Off, so a write lands during the offer. Its higher
+	// bits choose the offer's limit and widen, each none, small or larger.
 	OpOffload
 	// OpRelease releases one extent an offload reported, or Off and Len
 	// when none did.
@@ -135,6 +136,20 @@ func (s Step) valid() string {
 		return "an extent past the largest offset"
 	}
 	return ""
+}
+
+// The limits and widens an offload step chooses from, by its pick: none half
+// the time, so most offers carry everything dirty, and otherwise a limit
+// that cuts an extent to one byte or a few, and a widen within or past the
+// short extents a sequence writes.
+var (
+	offerLimits = [...]int64{0, 0, 1, 16}
+	offerWidens = [...]int64{0, 0, 8, 64}
+)
+
+// offer returns the limit and widen of an offload step.
+func (s Step) offer() (limit, widen int64) {
+	return offerLimits[s.Pick>>3%4], offerWidens[s.Pick>>5%4]
 }
 
 // crash returns the crash a crash step simulates, and its argument: the bytes

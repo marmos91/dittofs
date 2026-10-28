@@ -12,40 +12,61 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/model"
 )
 
+// ModelSegmentCap is the segment size of the journals ModelTargets opens:
+// small enough that a sequence of a few hundred short writes rolls segments
+// and leaves repack sealed segments to work on, and large enough to hold the
+// largest record a sequence appends, a write of 1 KiB, with the segment's
+// header and footer.
+const ModelSegmentCap = 2 << 10
+
+// Reach is what the sequences a ModelTargets opened reached of the journal,
+// which the journal chooses and the test can only observe.
+type Reach struct {
+	// Streams is the most append streams the records of any one sequence
+	// were on when it ended.
+	Streams int
+	// Sealed is the most sealed segments one journal had, before a repack or
+	// when its sequence ended.
+	Sealed int
+	// Freed is the bytes every repack freed, over all the sequences.
+	Freed int64
+}
+
 // ModelTargets returns open, the function that opens a fresh fixture
-// journal, with shares 0 and 1 attached, for each sequence the model-based
-// test runs, shrinking attempts included. A failure of the fixture's ends
-// that sequence with an error rather than the test, and what the sequence
-// opened is closed and removed when it ends. The fixtures are unwatched: the
-// test watches itself once, before calling it.
+// journal, with segments of ModelSegmentCap bytes and shares 0 and 1
+// attached, for each sequence the model-based test runs, shrinking attempts
+// included. A failure of the fixture's ends that sequence with an error
+// rather than the test, and what the sequence opened is closed and removed
+// when it ends. The fixtures are unwatched: the test watches itself once,
+// before calling it.
 //
-// It also returns streams, the most append streams the records of any one
-// sequence were on when it ended, which the journal chooses and the test can
-// only observe.
-func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), streams func() int) {
+// It also returns reached, which reports what the sequences that ended
+// reached of the journal.
+func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), reached func() Reach) {
 	parent := t.TempDir()
-	most := 0
-	streams = func() int { return most }
+	var reach Reach
+	reached = func() Reach { return reach }
 	open = func() (model.Target, func(), error) {
 		tb := &attemptTB{TB: t, parent: parent}
 		var tgt *fixtureTarget
 		err := tb.guard(func() {
-			f := NewUnwatched(tb)
+			f := newFixture(tb, nil, false, ModelSegmentCap)
 			f.Share(0)
 			f.Share(1)
-			tgt = &fixtureTarget{f: f, tb: tb}
+			tgt = &fixtureTarget{f: f, tb: tb, reach: &reach}
 		})
 		if err != nil {
 			tb.finish()
 			return nil, nil, err
 		}
 		done := func() {
-			most = max(most, tgt.streams())
+			reach.Streams = max(reach.Streams, tgt.streams())
+			tgt.countSealed()
 			tb.finish()
 		}
 		return tgt, done, nil
 	}
-	return open, streams
+	return open, reached
 }
 
 // attemptFailed is the panic an attemptTB raises for a failure, so that one
@@ -132,8 +153,9 @@ func (a *attemptTB) finish() {
 
 // fixtureTarget runs model-based sequences against a fixture journal.
 type fixtureTarget struct {
-	f  *Fixture
-	tb *attemptTB
+	f     *Fixture
+	tb    *attemptTB
+	reach *Reach
 }
 
 func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i)} }
@@ -143,8 +165,24 @@ func (x *fixtureTarget) View(i int) model.View {
 }
 
 func (x *fixtureTarget) Repack(ctx context.Context) error {
-	_, err := x.f.J.Repack(ctx, 2*FixtureSegmentCap, journalv2.RepackScope{})
+	x.countSealed()
+	freed, err := x.f.J.Repack(ctx, 2*ModelSegmentCap, journalv2.RepackScope{})
+	x.reach.Freed += freed
 	return err
+}
+
+// countSealed records how many sealed segments the journal has now.
+func (x *fixtureTarget) countSealed() {
+	if x.f.J == nil {
+		return
+	}
+	n := 0
+	for _, s := range x.f.J.Inspect().Segments() {
+		if s.Sealed {
+			n++
+		}
+	}
+	x.reach.Sealed = max(x.reach.Sealed, n)
 }
 
 func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {

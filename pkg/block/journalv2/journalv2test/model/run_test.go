@@ -262,6 +262,27 @@ func TestAFillTakesWhatAnyFileOffloaded(t *testing.T) {
 	}
 }
 
+// unlimited is a journal that offers everything dirty whatever the limit.
+type unlimited struct{ *played }
+
+func (u unlimited) Share(i int) Handle { return unlimitedHandle{u.played.Share(i)} }
+
+type unlimitedHandle struct{ Handle }
+
+func (h unlimitedHandle) Offload(ctx context.Context, id journalv2.FileID, through journalv2.Version, _, widen int64, fn func(context.Context, journalv2.Offer, func([]journalv2.Extent) error) error) error {
+	return h.Handle.Offload(ctx, id, through, 0, widen, fn)
+}
+
+// An offload step gives the journal the limit its pick chooses, and the model
+// holds the offer to it: a journal offering past the limit diverges.
+func TestAnOffloadPastItsLimitDiverges(t *testing.T) {
+	text := "write len=32\noffload pick=24\n" // limit 16
+	ok(t, runText(t, newPlayed(t), text))
+	if err := runText(t, unlimited{newPlayed(t)}, text); !errors.Is(err, ErrDiverged) {
+		t.Fatalf("a journal ignoring the limit ran with %v, want a divergence", err)
+	}
+}
+
 // The played journal keeps a file's tag while its records are on disk, as a
 // journal must: a file whose content was released is still refused through
 // another share until a repack has run, and is claimed by it after.
