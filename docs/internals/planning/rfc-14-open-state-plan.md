@@ -7,8 +7,9 @@ all of it when a client, a server or a node goes away. Its only caller is the fi
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
 **Status:** draft for review. Piece 1 has merged (#3256); pieces 2–7 are in review as one stack
-(#3330, #3336, #3341, #3344, #3363, #3400), with the store's side in #3329, #3335, #3362 and #3399. The RFCs cited are `develop`'s,
-since #3142 merged; `feat/storage-v2` needs `develop` merged in before these links resolve to them.
+(#3330, #3336, #3341, #3344, #3363, #3400), with the store's side in #3329, #3335, #3362 and #3399.
+The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
+before these links resolve to them.
 
 **Terms.** A bare §N is RFC 14's; this plan's own sections are "plan §N". Lnn is a row of RFC 14
 §12. The stages are #3119's: 1 open state, 2 the filesystem service, 3 the engine, 4 the new store
@@ -19,8 +20,7 @@ nothing switches over until stage 5.
 
 - **The durable records** (step 9 of #3119, merged with #3120). `kvstore` stores what §8 makes
   durable: client records, durable opens and their locks, delete pending, ID allocation and the
-  restart-notice number, and `Namespace.Unlink` and `Rename` already write a file's opens durable
-  when its last entry goes. Their shape trails RFC 16; piece 0 reshapes them.
+  restart-notice number. Their shape trails RFC 16; piece 0 reshapes them.
 - **Today's `pkg/metadata/lock`** (about 9.9k lines plus tests) serves today's server and stays on
   that path untouched. Its design is not RFC 14's:
   - one manager and one mutex per share, state keyed by handle strings, two parallel lock tables;
@@ -38,7 +38,7 @@ nothing switches over until stage 5.
   grants go up through its `Sink` (D5). Its errors are named `openstate: …`.
 - `*Table` exports `New`, `Start`, `Stop` and the seven view accessors, `Clients()`, `Opens()`,
   `Locks()`, `Grants()`, `Watches()`, `Recovery()` and `Checks()`, and nothing else, so each area
-  of the service fakes only the calls it makes (§11.3).
+  of the service sees only the calls it makes (§11.3).
 - `Deps` are `Records`, the `*kvstore.Store`, reached through `Clients()` and `Opens()`:
   §11.1's `OpenRecords` embeds both, whose `Put`, `Delete` and `ByShard` clash, so the RFC
   takes the two accessors (piece 0); the `Clock`; and `Rand` for every random bit. `Metrics`
@@ -81,7 +81,7 @@ Not ported: the manager, its blocking waits, its grace manager, lock persistence
 detector (plan §5 Q2). Route B skips RFC 17 §9's slice 3 shim (its `decision:`): the filesystem
 service is built against the seven views from its first piece, and `pkg/metadata/lock` stays only
 under today's server until stage 5, then is deleted. Stage 4 carries none of its lock persistence
-over: RFC 14 keeps a lock volatile unless its open is persistent, and rebuilds the rest by reclaim.
+over.
 
 From today's NFSv4 state (`internal/adapter/nfs/v4/state`, 12.6k lines plus 20.8k of tests, one
 manager under one lock):
@@ -101,10 +101,6 @@ manager under one lock):
 - **Tests worth porting as scenarios:** the SETCLIENTID and EXCHANGE_ID cases, the seqid and stateid
   validity tests, grace (rewritten per shard), delegation conflicts, and lease expiry, whose
   released stateid becomes bad rather than expired.
-
-Behaviours today's code has and RFC 14 does not state, to raise against RFC 14: courtesy clients
-(RFC 7530 §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
-(RFC 8881 §18.51.3), and `RENEW`'s principal check.
 
 **D4. Concurrency: one entry per file.** The file map is 256 stripes by a `FileID`'s first byte
 ("stripes", to keep them apart from `ShardID`), each entry with its own mutex. Lock order, as the
@@ -129,9 +125,7 @@ The pure parts that port existing tests are leaf packages tested alone: `ranges`
 table is their only caller, so they stay in `pkg/openstate`.
 
 **D5. Open state reports to the service through RFC 14's `Sink`.**
-- Adapters implement RFC 17 §3.2's `Callbacks` and may not import `openstate` (RFC 20 §2.3), so the
-  service keeps the per-client registry: an adapter registers a client's `Callbacks` with RFC 17's
-  `Connect`, and calls `Connect` again to replace them.
+- Delivery to adapters is the service's (RFC 17 §3.2); the table sees only the `Sink`.
 - The `Sink` is an outbox with eight events, `RecallGrant`, `RecallAny`, `Notify`, `Revoked`,
   `LockWaitOver`, `Closed`, `ClientEnded` and `GraceEnded` (never dropped, like `Closed`). Each
   queues and returns, and a failed or late delivery counts as the client not answering.
@@ -145,15 +139,15 @@ table is their only caller, so they stay in `pkg/openstate`.
   ```
 - The service's own `Start` then calls `Recovery.ServeShard(ctx, share, s, instance)` for each
   shard this node serves (§11.2): it reads the shard's grace instance, which the node's start
-  transaction raised, installs the shard's persistent opens (and its clone-source opens from piece 8) before
-  anything there is answered, enters grace and arms the shard's timers.
+  transaction raised, installs the shard's persistent opens (its clone-source opens from piece
+  8) before anything there is answered, enters grace and arms the shard's timers.
 
 **D6. Time through the shared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
 break, one lease for NFS) and NFSv4 waiter polls are `Deps.Clock.Elapsed` readings, monotonic;
-`Now` is read only for a time a record stores, and a handover ships remaining durations. As RFC 8
-§2.1 has every component do, `openstate` declares in its own package the subset of the node's
-`Clock` it reads (`Elapsed`, `After`, and `Now` once a record stores a time); the node's one clock
-satisfies it as is. Tests drive a fake clock, so a 90 s lease runs in microseconds.
+`Now` is read only for a time a record stores. As RFC 8 §2.1 has every component do, `openstate`
+declares in its own package the subset of the node's `Clock` it reads (`Elapsed`, `After`, and
+`Now` once a record stores a time); the node's one clock satisfies it as is. Tests drive a fake
+clock, so a 90 s lease runs in microseconds.
 
 **D7. Durable writes only through `kvstore`'s views.** The service never writes keys itself. A
 volatile open is never written, beyond the client record's shard list on the client's first state
@@ -166,7 +160,7 @@ last name.
 Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (plan §4), each after the
 one before it. A row may be split: its first piece lands the cases it can reach, and the piece that
 completes it is named beside it, e.g. L27 (→6). "Done when" means every listed row passes and each
-of its cases is revert-checked; a piece adds only what it says beyond that.
+of its cases is revert-checked.
 
 **Piece 0: Store reshape** (RFC 16 §4.2, RFC 14 §11.1; 4 PRs, and a follow-up after piece 7)
 Builds the store calls the table makes. Each open-state PR carries its store PR's commits (#3330
@@ -177,7 +171,7 @@ carries #3329's, and so on to #3400 and #3399), so piece 0 lands beside pieces 2
 | `ClientRecord`; `Clients`: `ByName`, `Put(prev, next)`, `MarkShard`, `DropShards`; `NextID(kind)`; `Protocol` bytes as RFC 16's `CLO` table (NFSv3 0x01, NFSv4 0x02, NLM 0x03, SMB 0x04) | `ByOwner`, `Put`, `PutShard`, `Shards`; `NextOpenID`, `NextLockID`; NFSv4 1, SMB 2, NLM 3 | #3329 |
 | `OpenRecord`, `LockRecord`, `DeleteRecord`; a stream's open keeps its base file | `Open`, `Lock`, `DeletePending` | #3335 |
 | `Clients.ByShard` (L3: tell every named client to reclaim) | `Shards(id)` only | #3362 |
-| a durable open's name and lease version; a persistent open's lock change in one transaction | none | #3399 |
+| a durable open's name and lease version; a persistent open's lock change in one transaction | none; `PutLock`, `DeleteLock`, a range each | #3399 |
 
 `ClientRecord` is `ID`, `Protocol`, `Name`, `Boot`, `Owner`, `Protect`, `Recovery`, `Lease`,
 `Reach`, `Ended` and `Adapter`, with each shard of `Shards` a `CL‖id‖sh‖shard` key holding its
@@ -190,7 +184,7 @@ RFC 14 §11.1 is edited to match:
   transaction, only under a persistent open, never split, and `rec`, when set, writes the open's
   `LockSeq` and `Channel.Seq` with its locks (§8.1).
 
-What the built calls still differ from §11.1 in is one store PR after piece 7:
+Where the built calls still differ from §11.1, one store PR after piece 7 closes the gap:
 - `NSMState` and `RaiseNSMState(ctx, n)` become `NoticeState` and `RaiseNoticeState(ctx)`, which
   picks the number, so `recovery.go`'s retry loop goes;
 - `Opens.Durable` returns index entries, so each install reads `Get`, `Locks` and `DeletePending`
@@ -217,8 +211,8 @@ it, capped per node and per source address (§2.9), and `Connect` confirms it; a
 restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and reply are the
 adapter's, kept in the record's opaque `Adapter` field and written through `AddSession` as a
 compare-and-swap.
-Done when: L25 (→7), L38 (→4), L41, L60 (→7), L64, L65 pass: `ErrStopped` before `Start` and after `Stop`, and no
-`Sink` call under a lock.
+Done when: L25 (→7), L38 (→4), L41, L60 (→7), L64, L65 pass: `ErrStopped` before `Start` and
+after `Stop`, and no `Sink` call under a lock.
 
 **Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; 2 PRs, ~2,500 lines)
 Builds: `Opens.Open/Downgrade/Update/Close/Durable`, `Checks.CheckIO/CheckChange`, the `Closed`
@@ -263,7 +257,7 @@ Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/
 replay and app instance. The store's clone already writes the source's hold in its first phase
 (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record through piece
 7's install path and `CloneClose` drops it; §11.3's "written in its own transaction" is edited to
-match. Async copy is not offered (§2.7), so nothing is built for it.
+match.
 Done when: L15, L48, L54, L55 pass.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
@@ -300,6 +294,15 @@ the service can drive them.
 1. **D2:** is single node first, with the cluster rules behind seams, the right cut?
 2. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. §2.10 decides against
    detection, so it is recorded as a known failure unless that decision is overturned in the RFC.
+3. **Persistent handles in stage 1:** today's server refuses them, and §8.1 justifies them by
+   failover only. Kept, because piece 7 (#3400) already builds them, with `SetLocks` and the
+   persistent-open install: deferring them now deletes written code rather than skipping work.
+4. **Seven views, one implementation each:** kept as interfaces because §11.3 declares them.
+   Since stage 2 runs the real table (#3264's D6) and no area fakes a view, concrete types would
+   do; that is an RFC 14 edit, made with stage 2's first area if agreed.
+5. **Behaviours today's code has and RFC 14 does not state:** courtesy clients (RFC 7530
+   §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
+   (RFC 8881 §18.51.3), and `RENEW`'s principal check. Should RFC 14 state them?
 
 ## 6. What sets the pace
 
@@ -307,5 +310,3 @@ Writing a piece is not what takes the time; review is. Stage 1 lands as about tw
 piece 0's four, each read by its author and reviewed in two or three rounds, so it takes about as
 long as twelve review cycles. What blocks what: `develop`'s RFCs merged into `feat/storage-v2`;
 then each piece after the one before it, carrying its store PR.
-
-For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
