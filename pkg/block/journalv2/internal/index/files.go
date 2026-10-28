@@ -92,6 +92,8 @@ type file struct {
 	// the drop ranges of each, when the index tracks drop ranges or a
 	// profile shows the scan on the append path.
 	segs []core.SegmentID
+	// markers are the file's unsettled removal markers, in version order.
+	markers []marker
 }
 
 // shard returns the shard holding id. Every byte of the FileID reaches the
@@ -189,10 +191,13 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // before it is removed, so a caller that found it before the removal sees
 // the mark once it gets the lock.
 //
-// decision: only held extents keep the change-version entry for now; removal
-// markers keep it too once the index carries them. Whether retained extents
-// keep it is decided with the floor that dropping it raises, so for now they
-// do not: retained content is no longer held.
+// A held extent or an unsettled removal marker keeps the change-version
+// entry: a file whose content was all removed still has a removal Since must
+// yield until the caller settles it.
+//
+// decision: retained extents do not keep it. Whether they should is decided
+// with the floor that dropping it raises, so for now they do not: retained
+// content is no longer held.
 //
 // Retained extents also keep the entry itself in the map, with its tag. The
 // guard is defensive only: a retained piece's record keeps its segment
@@ -205,7 +210,7 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // built on changeVersion until dropping the version raises the file's floor
 // to it, which belongs at the line that zeroes it.
 func (f *file) settle(s *fileShard, id core.FileID) {
-	if f.held.len() > 0 {
+	if f.held.len() > 0 || len(f.markers) > 0 {
 		return
 	}
 	f.change = core.Version{}
@@ -236,13 +241,13 @@ func (f *file) check(tag core.ShareTag, id core.FileID) error {
 // claim checks the file's tag against tag, as check does, and claims the
 // file for tag when it has none.
 //
-// decision: a claim alone does not keep the entry; only a record on disk or
-// held content does. The check that refuses a call is this one, made before
-// the record's I/O, so a refused call appends nothing. It holds across the
-// I/O only because the caller keeps the file's appends serialised from the
-// claim until recorded notes the record, and recorded claims again, since a
-// claim left alone is dropped when its update returns. So the lock that
-// serialises a file's appends is not this entry's and does not live in it:
+// decision: a claim alone does not keep the entry; only a record on disk,
+// held content or an unsettled marker does. The check that refuses a call is
+// this one, made before the record's I/O, so a refused call appends nothing.
+// It holds across the I/O only because the caller keeps the file's appends
+// serialised from the claim until recorded notes the record, and recorded
+// claims again, since a claim left alone is dropped when its update returns.
+// So the lock that serialises a file's appends is not this entry's and does not live in it:
 // an entry holding only a claim can be dropped and made again mid-append,
 // and a lock inside it would go with it, letting two shares claim one new
 // file. Revisit if a call must hold a claim across I/O without that
@@ -263,6 +268,11 @@ func (f *file) owner() (core.ShareTag, bool) { return f.tag, f.tagged }
 // write holds p as a client write and raises the change version to its
 // version. A file's writes take their versions in order, so the raise is a
 // plain maximum and never lowers the change version.
+//
+// decision: a write consults no removal marker. A write draws its version
+// inside the file's serialised append, so it is above every marker the file
+// has, and no marker excludes it. A rebuild, which meets records in any
+// order, must decide precedence before applying a write below a marker.
 func (f *file) write(p Placed) {
 	f.held.insert(p)
 	if p.Version.Compare(f.change) > 0 {
