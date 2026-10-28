@@ -1,10 +1,8 @@
 package model
 
 import (
-	"cmp"
 	"math"
 	"math/rand/v2"
-	"slices"
 	"strings"
 	"testing"
 
@@ -73,12 +71,9 @@ func (d *driver) issue() journalv2.Version {
 }
 
 // other is the journal's answer to a call through tag on id when another
-// share has the file: refused while it holds anything, otherwise accepted.
+// share has the file.
 func (d *driver) other(id journalv2.FileID, tag journalv2.ShareTag) error {
-	if f := d.journal.files[id]; f != nil && f.tag != tag && f.holdsAnything() {
-		return journalv2.ErrOtherShare
-	}
-	return nil
+	return refuseOther(d.journal, id, tag)
 }
 
 func (d *driver) give(id journalv2.FileID, v journalv2.Version, off int64, p []byte) {
@@ -175,27 +170,7 @@ func (d *driver) step() {
 			return
 		}
 		through := d.journal.maxSeen
-		st := d.journal.current(id)
-		o := journalv2.Offer{ID: id}
-		bytes := offered{}
-		for _, r := range st.runs() {
-			if r.offloaded || r.ver.Compare(through) > 0 {
-				continue
-			}
-			if n := len(o.Dirty); n > 0 && o.Dirty[n-1].Version == r.ver && end(o.Dirty[n-1].Extent) == r.ext.Off {
-				o.Dirty[n-1].Extent.Len += r.ext.Len
-			} else {
-				o.Dirty = append(o.Dirty, journalv2.OfferedExtent{Extent: r.ext, Version: r.ver})
-			}
-			if len(o.Dirty) == 1 || r.ver.Compare(o.Oldest) < 0 {
-				o.Oldest = r.ver
-			}
-			o.Newest = maxVersion(o.Newest, r.ver)
-			for off := r.ext.Off; off < end(r.ext); off++ {
-				bytes[off] = st.held[off].b
-			}
-		}
-		o.Offered = bytes
+		o := offerAll(d.journal, id, through)
 		d.both(func(m *Model) error { return m.Offer(tag, id, through, 0, 0, o) })
 		if d.next()&1 == 0 && d.other(id, tag) == nil {
 			v := d.issue()
@@ -298,29 +273,7 @@ func (d *driver) crash() {
 	d.both(func(m *Model) error { return m.Crash() })
 	d.both(func(m *Model) error { return m.Reopen(floor) })
 
-	rng := rand.New(rand.NewPCG(uint64(d.next()), uint64(d.next())))
-	for _, f := range d.journal.files {
-		if !f.unresolved {
-			continue
-		}
-		var recs []*record
-		for _, r := range f.recs {
-			if r.uncertain && len(r.data) > 1 && rng.IntN(2) == 0 {
-				k := 1 + rng.IntN(len(r.data)-1)
-				recs = append(recs, r.piece(0, k), r.piece(k, len(r.data)))
-				continue
-			}
-			recs = append(recs, r)
-		}
-		f.recs = recs
-		before := slices.Clone(recs) // adopt filters f.recs, and so recs, in place
-		durable := map[*record]bool{}
-		for _, r := range recs {
-			durable[r] = !r.uncertain // adopt makes the pieces it keeps durable
-		}
-		candidate{items: f.items(), mask: rng.Uint32()}.adopt(f)
-		keepPrefixes(f, before, durable)
-	}
+	loseUnsynced(d.journal, rand.New(rand.NewPCG(uint64(d.next()), uint64(d.next()))))
 
 	// Issue a version before the model compares the files the crash left
 	// uncertain, on a file no crash touches, so the bound it sets on them is
@@ -331,47 +284,6 @@ func (d *driver) crash() {
 	d.t.Logf("write %s share %d [0,1) at %s", fmtFile(fid(5)), shareA, fmtVersion(v))
 	d.both(func(m *Model) error { return m.WriteAt(shareA, fid(5), 0, p, 0, v, nil) })
 	d.both(func(m *Model) error { return m.Sync(shareA, []journalv2.FileID{fid(5)}, nil) })
-}
-
-// keepPrefixes makes the journal's state one a crash can leave: a write comes
-// back as a prefix of itself, since a later piece's segment is taken only once
-// the earlier piece's was sealed and synced. Of the pieces in before, the
-// state f was resolved from, every piece after one that was lost goes too,
-// except one durable before the crash.
-func keepPrefixes(f *file, before []*record, durable map[*record]bool) {
-	have := map[*record]bool{}
-	for _, r := range f.recs {
-		have[r] = true
-	}
-	pieces := slices.Clone(before)
-	slices.SortFunc(pieces, func(a, b *record) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
-	cut := map[uint64]bool{}
-	for _, r := range pieces {
-		if r.data == nil {
-			continue
-		}
-		switch {
-		case durable[r]:
-			// Durable before the crash, and so is every piece before it.
-		case cut[r.seq]:
-			delete(have, r)
-		case !have[r]:
-			cut[r.seq] = true
-		}
-	}
-	f.recs = slices.DeleteFunc(f.recs, func(r *record) bool { return !have[r] })
-	f.countLive()
-}
-
-// uncertainAt counts what a crash now would leave uncertain in f.
-func uncertainAt(f *file) int {
-	n := 0
-	for _, r := range f.recs {
-		if !r.durable || crashMayDropMarker(r) {
-			n++
-		}
-	}
-	return n
 }
 
 // compare checks the model against the journal, share by share, and that it
