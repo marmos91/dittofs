@@ -147,8 +147,8 @@ table is their only caller, so they stay in `pkg/openstate`.
   ```
 - The service's own `Start` then calls `Recovery.ServeShard(ctx, share, s, instance)` for each
   shard this node serves (§11.2): it reads the shard's grace instance, which the node's start
-  transaction raised, installs the shard's persistent and clone-source opens before anything there
-  is answered, enters grace and arms the shard's timers.
+  transaction raised, installs the shard's persistent opens (and its clone-source opens from piece 8) before
+  anything there is answered, enters grace and arms the shard's timers.
 
 **D6. Time through the shared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
 break, one lease for NFS) and NFSv4 waiter polls are `Deps.Clock.Elapsed` readings, monotonic;
@@ -197,7 +197,7 @@ Builds: the errors, the per-file table and its step, the file map split 256 ways
 piece 6 adds stale; the stateid seqid check (`ErrOldState`); every random bit from `Deps.Rand`.
 The wire layout is `pkg/vfs`'s (RFC 17 §3.4). `GrantID` and `WatchID` arrive with the grants and
 watches that use them.
-Done when: L26, L27 (→4), L49 (→6), L56 (→3), L57 (→3) pass.
+Done when: L26, L27 (→6), L49 (→6), L56 (→8), L57 (→8) pass.
 
 **Piece 2: Clients and leases** (§2.1, §2.9, §4.1, §4.3; 1–2 PRs, ~2,000 lines)
 Builds: `Start`, `Stop` and the `Sink`; `Clients.Propose/Connect/Record/AddSession/Renew/Expire/Destroy`;
@@ -206,7 +206,7 @@ it, capped per node and per source address (§2.9), and `Connect` confirms it; a
 restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and reply are the
 adapter's, kept in the record's opaque `Adapter` field and written through `AddSession` as a
 compare-and-swap.
-Done when: L25, L38, L41, L60, L64, L65 pass: `ErrStopped` before `Start` and after `Stop`, and no
+Done when: L25 (→7), L38 (→4), L41, L60 (→7), L64, L65 pass: `ErrStopped` before `Start` and after `Stop`, and no
 `Sink` call under a lock.
 
 **Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; 2 PRs, ~2,500 lines)
@@ -214,14 +214,14 @@ Builds: `Opens.Open/Downgrade/Update/Close/Durable`, `Checks.CheckIO/CheckChange
 event, which every later piece that closes an open itself also raises. Deny modes at open;
 open-unlinked kept alive; delete on close; open children refuse an SMB rename or delete of their
 directory.
-Done when: L6, L7, L14, L21, L23, L34, L36, L66, L67 pass.
+Done when: L6, L7 (→7), L14 (→7), L21 (→7), L23, L34, L36, L66, L67 pass.
 
 **Piece 4: Byte-range locks and waiters** (§2.3, §2.8, §2.10, §4.5; 2 PRs, ~3,000 lines)
 Builds: `Locks.Lock/CancelLock/WaitAnswered/TestLock/Unlock/ReleaseLockOwner`, `Opens.ConfirmOpen`,
 the `LockWaitOver` event. `Lock` takes every range of a request, each shared or exclusive, in one
 step, all or none, and only a single range may wait (§11.3, RFC 17 §5.11); FIFO waiters with no
 adapter timeout; NFSv4.0 owner sequences and their confirm; NLM.
-Done when: L17 (→6), L22, L39, L44, L58, L68 pass.
+Done when: L17 (→6), L22 (→6), L39, L44 (→5), L58 (→6), L68 pass.
 
 **Piece 5: Caching grants and recalls** (§2.4, §5; 2 PRs, ~2,500 lines)
 Builds: `Grants.AckRecall(ctx, who, g, to)`, `Clients.Revoke/ChannelDown/Rebind`,
@@ -229,14 +229,14 @@ Builds: `Grants.AckRecall(ctx, who, g, to)`, `Clients.Revoke/ChannelDown/Rebind`
 at open; a return is `AckRecall` to `GrantNone`; recalls with deadlines; revocation into the
 revoked set; no grant for a lease period after a revoke, nor while the back channel is down
 (`ChannelDown` until `Rebind`); the per-client grant budget.
-Done when: L5, L5b, L16, L33, L40, L45, L50, L51, L62, L63 pass.
+Done when: L5, L5b, L16, L33, L40, L45, L50 (→6), L51, L62, L63 pass.
 
 **Piece 6: Grace and reclaim** (§4.2, §4.4, §8, §9.2; 1–2 PRs, ~2,000 lines)
 Builds: `Recovery.ServeShard/ReclaimComplete`, `Opens.Renamed`. The refusal of a shard not begun
 (D2); grace per shard after a restart, reclaims only, early end; every client a shard's records
 name told to reclaim (`Clients.ByShard`); a rename keeps an open's name for its deferred unlink.
-Done when: L2, L3, L3b, L24, L29, L29b, L47 pass, L3b as a direct case of two reclaims rather than
-§12's model fuzzing.
+Done when: L2, L3, L3b, L24 (the pool case waits for RFC 24's `Budget`), L29, L29b, L47 (→7) pass,
+L3b as a direct case of two reclaims rather than §12's model fuzzing.
 
 **Piece 7: SMB durable and persistent opens** (§8.1, §9.2; 1 PR, ~2,000 lines)
 Builds: `Opens.Reconnect/Flushed`, `Clients.Disconnect`, the `GraceEnded` event. Timeouts,
@@ -244,7 +244,7 @@ disconnect and reconnect, channel sequence, logoff, `Flushed`'s loss; persistent
 from the store's per-shard durable-open index (`S‖id‖do‖shard`) before the shard answers anything;
 grace's end closes every durable record nobody reclaimed, then raises `GraceEnded`, and a new
 primary releases nothing before.
-Done when: L15 (→8), L30, L30b, L43, L48 (→8), L52 pass.
+Done when: L15 (→8), L30, L30b (→8), L43, L48 (→8), L52 pass.
 
 **Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; 1 PR, ~1,500 lines)
 Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/CloneClose`, the
@@ -262,11 +262,16 @@ stage 2 (§13.1), and L9 is the engine's, in stage 3.
 ## 4. The conformance suite
 
 `pkg/openstate`'s own tests, in the layers §13.1 lists: the table suite runs `*Table` over the
-in-memory store, with:
-- a virtual clock the cases advance, and a seeded `Deps.Rand`;
-- a recording sink (D5) that can answer, refuse or stay silent, to drive recalls to their deadlines;
+in-memory store, with a virtual clock the cases advance and a recording sink (D5) that can answer,
+refuse or stay silent, to drive recalls to their deadlines. Pieces 1–7 build the table with
+`rand.Reader`; piece 8 adds the rest of the fixture:
+- a seeded `Deps.Rand`;
 - `Check`, run after every case: no state held against a file with no table, no lock under a
-  closed open, every durable open matching its record, every revoked stateid in its client's set.
+  closed open, every durable open matching its record, every revoked stateid in its client's set;
+- `export_test.go`'s rebuild of the indexes, which L54 compares against as a table-suite case.
+
+L56 and L57 are "model layer" rows, but model fuzzing waits for slice 9, so both run as `-race`
+loops, as L3b runs as a direct case: L56's 10⁴ races and L57's watchdog land with piece 8.
 
 Every case is revert-checked: break the rule it pins, watch it fail on its assertion. Tests that
 cannot fail are not written (the team's rule), so a row the compiler or another case already
