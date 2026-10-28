@@ -355,3 +355,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the version floor at open and MarkOffloaded.'
   issue: '#3378'
+- test: TestRFC28C_JournalGone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
+  issue: '#3378'
