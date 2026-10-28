@@ -278,6 +278,7 @@ func TestUnmount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := fakeMounts(t)
 			if tc.umount == "hang" {
+				// the fake sleeps 5 s; shorter waits make unmount give up on it
 				unmountWaits = [2]time.Duration{time.Second, time.Second}
 			}
 			t.Setenv("DT_FAKE_VERS", "4.1")
