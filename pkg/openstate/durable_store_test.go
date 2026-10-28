@@ -713,3 +713,21 @@ func TestGraceEndClosesUnreclaimedRecords(t *testing.T) {
 		}
 	}
 }
+
+// A disconnected durable open whose lease's recall times out holds handle
+// caching no longer, so it closes, and its deny mode with it.
+func TestLapsedRecallClosesAParkedDurableOpen(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	f.mustOpen(t, a, file, keep(OpenRequest{Access: rd, Deny: wr, Lease: LeaseKey{7}, Want: rwh}, entity.DurabilityDurable, s1, time.Hour, 1))
+	if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+		t.Fatalf("b's read open: %v, want the lease recalled", err)
+	}
+	f.disconnect(t, a, s1)
+	f.pass(t, coversDeadline+time.Second)
+	f.idle(0)
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open once the parked open's recall lapsed: %v", err)
+	}
+}

@@ -527,7 +527,8 @@ func (t *Table) recallEnded(e *entry, g *grant) {
 
 // lapse ends each recall on e past its deadline, under e's step and the
 // file's admission lock, since it adds to the revoked set: a grant that covers
-// opens is cut to none and its opens stay; one that covers none is revoked
+// opens is cut to none and its opens stay, but a disconnected durable one,
+// kept only under handle caching, closes; one that covers none is revoked
 // into its client's revoked set and reported. Either fences its client from
 // grants here for a lease period.
 //
@@ -550,8 +551,12 @@ func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 			g.fsm.Timeout()
 			t.recount(g)
 			for _, h := range e.opens {
-				if h.persistent() && h.Grant == g.id {
+				switch {
+				case h.Grant != g.id:
+				case h.persistent():
 					t.save(ctx, e, h) // the cut is the timer's, with no caller to refuse
+				case h.parked != 0:
+					t.closeByTable(ctx, e, h, out) // a durable open is kept only under handle caching
 				}
 			}
 			continue
