@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"errors"
+	"net/netip"
 	"reflect"
 	"runtime"
 	"slices"
@@ -966,6 +967,97 @@ func TestHeldReclaimOfMoreIsRefused(t *testing.T) {
 	}
 	if _, err := f.open(c, file, OpenRequest{Access: rd, Deny: wr, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reclaim of a wider deny than held: %v, want ErrNoReclaim", err)
+	}
+}
+
+// DropShare ends every piece of a share's state with no recall: a blocked
+// lock and a watch's held changes go, each holder is told RevokedShare with
+// the move's address, and a reference there is ErrBadState with no revoked
+// flag. Another share's state stays, and the share's durable records are
+// left to the store.
+func TestDropShare(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("a", 1, entity.NewUser())), f.caller(t, nfs("b", 1, entity.NewUser()))
+	c := f.caller(t, smbMachine("pc-c"))
+	if err := f.Recovery().ServeShard(ctx, entity.ShareID{9}, 9, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	other := f.mustOpen(t, b, in(9), OpenRequest{Access: rd})
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	f.mustOpen(t, c, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	held, dir := in(1), in(1)
+	oa := f.mustOpen(t, a, held, OpenRequest{Access: rd | wr})
+	f.mustLock(t, a, held, LockReq{Owner: owner(a, "lo"), Open: refOf(oa), Ranges: []LockRange{x(0, 10)}})
+	if res, err := f.lock(b, held, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+		t.Fatalf("the blocked lock: %+v, %v", res, err)
+	}
+	f.watch(t, b, dir, false, names)
+	f.changed(dir, ChangeAddEntry, "first", false)
+	f.changed(dir, ChangeAddEntry, "held", false)
+	f.sink.takeNotes()
+	d := f.caller(t, nfs("d", 1, entity.NewUser()))
+	od := f.mustOpen(t, d, in(1), OpenRequest{Access: rd})
+	if err := f.Revoke(ctx, d.Client); err != nil {
+		t.Fatal(err)
+	}
+	f.sink.takeRevoked()
+
+	moved := netip.MustParseAddr("192.0.2.9")
+	if err := f.Recovery().DropShare(ctx, f.fs.Share.ID, moved); err != nil {
+		t.Fatal(err)
+	}
+	told := map[entity.ClientID]bool{}
+	for _, rv := range f.sink.takeRevoked() {
+		if rv.Reason != RevokedShare || rv.Share != f.fs.Share.ID || rv.Addr != moved {
+			t.Errorf("told %+v, want RevokedShare naming the share and the address", rv)
+		}
+		told[rv.Client] = true
+	}
+	if !told[a.Client] || !told[b.Client] || !told[c.Client] || len(told) != 3 {
+		t.Errorf("told %v, want each holder once", told)
+	}
+	if errs := f.Recovery().TestState(ctx, a, []StateRef{oa.Ref}); !errors.Is(errs[0], ErrBadState) {
+		t.Errorf("a reference of the dropped share: %v, want ErrBadState", errs[0])
+	}
+	if errs := f.Recovery().TestState(ctx, d, []StateRef{od.Ref}); !errors.Is(errs[0], ErrBadState) {
+		t.Errorf("a revoked reference of the dropped share: %v, want ErrBadState", errs[0])
+	}
+	if st, err := f.Renew(ctx, d.Client); err != nil || st.AdminRevoked {
+		t.Errorf("status after the drop %+v, %v; want no flag left to clear", st, err)
+	}
+	f.handWatched()
+	if n, w := f.sink.takeNotes(), f.sink.takeWaits(); len(n) != 0 || len(w) != 0 {
+		t.Errorf("the dropped share's held changes %+v and waiter %+v were reported", n, w)
+	}
+	if f.entryOf(held.ID) != nil || f.entryOf(dir.ID) != nil || f.entryOf(file.ID) != nil {
+		t.Error("the dropped share's files still hold state")
+	}
+	if _, err := f.Opens().Close(ctx, b, refOf(other), Seqs{}); err != nil {
+		t.Errorf("another share's open after the drop: %v", err)
+	}
+	f.sweep(ctx)
+	f.Stop() // waits for the steps the sweep started
+	ended := slices.ContainsFunc(f.sink.graces, func(g graceEnded) bool { return g.share == f.fs.Share.ID })
+	if got := f.stored(t, file); len(got) != 1 || ended {
+		t.Errorf("stored after the drop %+v, graces ended %+v; want the persistent record left to the store", got, f.sink.graces)
+	}
+}
+
+// DropShare in grace ends the grace with the state: a reclaim there is
+// ErrNoReclaim, as nothing is left to reclaim.
+func TestDropShareInGrace(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	file := in(1)
+	f.mustOpen(t, a, file, OpenRequest{Access: rd, Owner: owner(a, "oo")})
+	g := f.restart(t)
+	g.renew(t, a)
+	if err := g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.open(a, file, OpenRequest{Access: rd, Owner: owner(a, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim in the dropped share: %v, want ErrNoReclaim", err)
 	}
 }
 

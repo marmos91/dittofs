@@ -3,6 +3,7 @@ package openstate
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -44,6 +45,13 @@ type Recovery interface {
 	// served under the file's admission lock, which the table takes itself:
 	// the service must not hold it when calling.
 	FreeState(ctx context.Context, who Caller, s StateRef) error
+	// DropShare ends every open, lock, waiter, grant and watch of share
+	// here, as its removal or move does, with no recall and no wait, in
+	// grace or not: each client that held any is told by Revoked
+	// (RevokedShare, naming moved for a move), and nothing enters a revoked
+	// set, so a reference to it is ErrBadState. The share's shards stay
+	// served with their grace ended, since nothing is left there to reclaim.
+	DropShare(ctx context.Context, share entity.ShareID, moved netip.Addr) error
 }
 
 type recovery struct{ t *Table }
@@ -130,7 +138,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	case cur != nil && cur.instance == instance:
 		return nil // a handover of the table: nothing was lost
 	case cur != nil:
-		t.lose(s)
+		t.lose(func(x ShardID) bool { return x == s })
 	}
 	sh := &served{instance: instance, share: share, unclosed: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
 	var told []Revocation
@@ -188,7 +196,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 		}
 	}
 	if err := t.install(ctx, share, s, sh, named, out); err != nil {
-		t.lose(s) // what was installed goes, so a retry installs each open once
+		t.lose(func(x ShardID) bool { return x == s }) // what was installed goes, so a retry installs each open once
 		return err
 	}
 	t.cmu.Lock()
@@ -200,9 +208,11 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	return nil
 }
 
-// lose drops every piece of state held in shard s, as a loss of its open
-// state does: nothing is told and nothing closed, since the state is gone
-// rather than ended, and its references then miss.
+// lose drops every piece of state held in the shards in names, as a loss of
+// their open state does: nothing is told and nothing closed, since the state
+// is gone rather than ended, and its references then miss. It returns the
+// clients that held any. A file's state is all of its shard, so no waiter is
+// left to serve.
 //
 // decision: a call admitted under the old instance, on a file holding no
 // state of s, that mints after the old state is dropped keeps its state,
@@ -210,39 +220,43 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 // it was admitted outside the new grace. Only a failover onto a node already
 // serving the shard opens that window, which a single node never does. Mark
 // a shard swapping and refuse its mints if shards are found to move.
-func (t *Table) lose(s ShardID) {
+func (t *Table) lose(in func(ShardID) bool) map[entity.ClientID]struct{} {
 	t.idx.Lock()
-	var files []entity.FileID
+	files := map[entity.FileID]struct{}{}
+	holders := map[entity.ClientID]struct{}{}
 	for k, h := range t.refs {
-		if k.shard == s && !slices.Contains(files, h.file) {
-			files = append(files, h.file)
+		if in(k.shard) {
+			files[h.file] = struct{}{}
+			if h.client != 0 {
+				holders[h.client] = struct{}{}
+			}
 		}
 	}
 	for k := range t.revoked {
-		if k.shard == s {
+		if in(k.shard) {
 			delete(t.revoked, k)
 		}
 	}
 	t.idx.Unlock()
-	for _, f := range files {
+	for f := range files {
 		_ = t.step(f, func(e *entry) error {
 			for _, ls := range e.lstates {
-				if ls.ref.Shard == s {
+				if in(ls.ref.Shard) {
 					t.dropLockState(e, ls)
 				}
 			}
 			for _, g := range e.grants {
-				if g.id.Shard == s {
+				if in(g.id.Shard) {
 					t.dropGrant(e, g)
 				}
 			}
 			for _, o := range e.opens {
-				if o.Ref.Shard == s {
+				if in(o.Ref.Shard) {
 					t.dropOpen(e, o)
 				}
 			}
 			for _, w := range e.watches {
-				if w.id.Shard == s {
+				if in(w.id.Shard) {
 					t.dropWatch(e, w)
 				}
 			}
@@ -252,6 +266,35 @@ func (t *Table) lose(s ShardID) {
 			return nil
 		})
 	}
+	return holders
+}
+
+// decision: DropShare writes nothing to the store: a removed share's
+// records go with its keys, a moved share's move carries them, and its
+// shards run no grace-end pass, which would close records the move still
+// carries, nor raise GraceEnded, as the share has no pending release here
+// left to run. Close them here if a share is found removed with its records
+// left behind.
+func (v recovery) DropShare(ctx context.Context, share entity.ShareID, moved netip.Addr) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	t.cmu.Lock()
+	dropped := map[ShardID]bool{}
+	for s, sh := range t.shards {
+		if sh.share == share {
+			dropped[s] = true
+			sh.reclaim, sh.owed, sh.unclosed = map[entity.ClientID]reclaimer{}, map[entity.ClientID]int{}, false
+			sh.settle()
+		}
+	}
+	t.cmu.Unlock()
+	for c := range t.lose(func(s ShardID) bool { return dropped[s] }) {
+		sink.Revoked(Revocation{Client: c, Share: share, Addr: moved, Reason: RevokedShare})
+	}
+	return nil
 }
 
 // raiseNotice raises the restart-notice number durably, so every NLM host

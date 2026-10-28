@@ -1,6 +1,10 @@
 package openstate
 
-import "github.com/marmos91/dittofs/pkg/metadata/entity"
+import (
+	"net/netip"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+)
 
 // Sink is how open state reaches clients and the service: every other call
 // goes into the table, and these come out of it. The service implements it.
@@ -35,9 +39,9 @@ type Sink interface {
 	// Notify: changes c's watch w matched; the service delivers them to the
 	// client, at most 65 a watch a sweep, so up to cappedWatches × 65 for a
 	// client the service must hold until it reads them. One raised by a step
-	// that ran beside the release of w, by Unwatch, an expiry or a revoke,
-	// may arrive after its Revoked or ClientEnded: the service drops a Notify
-	// of a watch it no longer holds.
+	// that ran beside the release of w, by Unwatch, an expiry, a revoke or
+	// DropShare, may arrive after its Revoked or ClientEnded: the service
+	// drops a Notify of a watch it no longer holds.
 	Notify(c entity.ClientID, w WatchID, ch []Change)
 	// GraceEnded: shard s of share ended its grace, and every durable open
 	// record nobody reclaimed is closed, each file it left raised Closed
@@ -64,16 +68,20 @@ const (
 	RevokedByAdmin                          // an administrator revoked the client
 	RevokedGrant                            // one caching grant whose recall missed its deadline
 	RevokedShardState                       // a shard's open state was lost: Shard names it
+	RevokedShare                            // a share was removed, or moved away to Addr: Share names it
 )
 
 // Revocation names state ended without the client asking: Grant for
-// RevokedGrant; Shard for RevokedShardState; every piece of the client's
-// state for RevokedByAdmin. Adapter is the client record's own bytes, so the
+// RevokedGrant; Shard for RevokedShardState; Share, and Addr for a move
+// naming one, for RevokedShare; every piece of the client's state for
+// RevokedByAdmin. Adapter is the client record's own bytes, so the
 // adapter acts with no read: an NLM host's notice address.
 type Revocation struct {
 	Client  entity.ClientID
 	Grant   GrantID
 	Shard   ShardID
+	Share   entity.ShareID
+	Addr    netip.Addr
 	Reason  RevokeReason
 	Adapter []byte
 }
