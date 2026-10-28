@@ -11,7 +11,9 @@ import (
 // A replayed create naming an open of its client by its create ID answers
 // that open, making none: Replayed, the same open and its lease. Another
 // client's replay under the same ID, or one with no ID, is a create of its
-// own, and another principal's replay is refused.
+// own, and another principal's replay is refused. A create that is no
+// replay, or a replay of a disconnected open, naming the ID is
+// ErrCreateInUse: one create ID never names two opens of a client.
 func TestCreateReplay(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
@@ -20,6 +22,9 @@ func TestCreateReplay(t *testing.T) {
 	first, err := f.Opens().Open(ctx, a, file, r)
 	if err != nil || first.Grant == nil {
 		t.Fatalf("Open %+v, %v; want it leased", first, err)
+	}
+	if _, err := f.Opens().Open(ctx, a, file, r); !errors.Is(err, ErrCreateInUse) {
+		t.Errorf("a second create under the ID: %v, want ErrCreateInUse", err)
 	}
 	r.Replay = true
 	again, err := f.Opens().Open(ctx, a, file, r)
@@ -37,7 +42,7 @@ func TestCreateReplay(t *testing.T) {
 		t.Errorf("%d opens, want the first and the other client's", n)
 	}
 
-	// An open named by no create ID, or disconnected, is no replay's.
+	// An open named by no create ID is no replay's.
 	v1 := keep(OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh}, entity.DurabilityDurable, s1, time.Minute, 0)
 	f.mustOpen(t, a, file, v1)
 	v1.Replay = true
@@ -46,8 +51,32 @@ func TestCreateReplay(t *testing.T) {
 	}
 	f.disconnect(t, a, s1)
 	r.Lease, r.Session = LeaseKey{1}, s2
-	if res, err := f.Opens().Open(ctx, a, file, r); err != nil || res.Replayed {
-		t.Errorf("a replay of a disconnected open: %+v, %v; want an open of its own", res, err)
+	if _, err := f.Opens().Open(ctx, a, file, r); !errors.Is(err, ErrCreateInUse) {
+		t.Errorf("a replay of a disconnected open: %v, want ErrCreateInUse", err)
+	}
+	if n := len(f.entryOf(file.ID).opens); n != 4 {
+		t.Errorf("%d opens, want no create to have made a second open under one ID", n)
+	}
+}
+
+// A replay creates no new state, so a replayed create is answered in grace
+// as a replayed lock is.
+func TestCreateReplayInGrace(t *testing.T) {
+	f := newFixture(t)
+	a, c := f.caller(t, smbMachine("pc-a")), f.caller(t, nfsAs("c", entity.RecoverStatus))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd
+	q := keep(r, entity.DurabilityPersistent, s1, time.Hour, 1)
+	o := f.mustOpen(t, a, file, q)
+	f.mustOpen(t, c, file, OpenRequest{Access: rd}) // c holds grace open after the restart
+	g := f.restart(t)
+	g.renew(t, c)
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Fatal(err)
+	}
+	q.Replay, q.Session = true, s2
+	if res, err := g.Opens().Open(ctx, a, file, q); err != nil || !res.Replayed || res.Open.ID != o.ID {
+		t.Errorf("a replayed create in grace: %+v, %v; want the reconnected open, Replayed", res, err)
 	}
 }
 
@@ -157,7 +186,7 @@ func TestAppInstanceReplacesItsPredecessor(t *testing.T) {
 		r   OpenRequest
 	}{
 		"a caller that may not read":   {b, as(b, 6, false)},
-		"the open's own client":        {a, as(a, 6, true)},
+		"the open's own client":        {a, func() OpenRequest { q := as(a, 6, true); q.Durable.Create[1] = 1; return q }()},
 		"a version not above the open": {b, as(b, 5, true)},
 	} {
 		if _, err := f.open(q.who, file, q.r); !errors.Is(err, ErrShareViolation) {

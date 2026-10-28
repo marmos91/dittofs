@@ -31,6 +31,7 @@ var (
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
 	ErrLocksHeld      = errors.New("openstate: the owner or lock state still holds locks")
+	ErrCreateInUse    = errors.New("openstate: create ID names another open of the client")                                          // an SMB create's CreateGuid, held by an open its create did not make
 	ErrRevoked        = errors.New("openstate: state revoked, by a recall past its deadline or an administrator, and not yet freed") // as *RevokedError, naming the cause
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on

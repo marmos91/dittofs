@@ -361,10 +361,14 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		return OpenResult{}, ErrInvalid
 	}
 	// Admitted before the open's ID is issued, so a refusal writes nothing,
-	// and again under the step, where grace is judged as it then stands.
-	grace, err := t.admit(who, f.Shard, r.Reclaim)
-	if err != nil {
-		return OpenResult{}, err
+	// and again under the step, where grace is judged as it then stands. A
+	// replay is judged only there, before grace: it creates no new state.
+	var grace bool
+	var err error
+	if !r.Replay {
+		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+			return OpenResult{}, err
+		}
 	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
@@ -384,13 +388,11 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	}
 	var res OpenResult
 	err = t.step(f.ID, func(e *entry) (err error) {
-		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+		if done, err := t.sameCreate(e, who, r, &res); done {
 			return err
 		}
-		if r.Replay {
-			if done, err := t.replayed(e, who, r, &res); done {
-				return err
-			}
+		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+			return err
 		}
 		if r.Reclaim && !grace {
 			return t.reclaimHeld(e, who, r, &res)
@@ -501,18 +503,28 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 	return nil
 }
 
-// replayed answers a replayed create on e, under its step, with the open of
-// who's client its create ID names, attached and usable by who; done is
-// false when no open matches, and the create is made as any other.
-func (t *Table) replayed(e *entry, who Caller, r OpenRequest, res *OpenResult) (done bool, err error) {
+// sameCreate answers, under e's step, a create naming by its create ID an
+// open of who's client on e: a replay of that open, attached and usable by
+// who, with the open, Replayed; any other, a create that is no replay or one
+// of an open disconnected, ErrCreateInUse. done is false when no open is
+// named, and the create is made as any other.
+//
+// decision: a create ID is matched among the opens of the file the create
+// names, not the client's every open, as the table finds opens by file;
+// an ID reused on another file is not refused. Index opens by create ID
+// if a client is seen reusing one across files.
+func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult) (done bool, err error) {
 	if r.Durable.Create == ([16]byte{}) {
 		return false, nil
 	}
 	for _, o := range e.opens {
-		if o.Client != who.Client || o.Durable.Create != r.Durable.Create || o.parked != 0 {
+		if o.Client != who.Client || o.Durable.Create != r.Durable.Create {
 			continue
 		}
-		if !t.mayUse(o, who) {
+		switch {
+		case !r.Replay || o.parked != 0:
+			return true, ErrCreateInUse
+		case !t.mayUse(o, who):
 			return true, ErrNotYours
 		}
 		*res = OpenResult{Open: o.Open, Grant: e.grantOf(o), Replayed: true}
