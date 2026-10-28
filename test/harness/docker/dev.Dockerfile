@@ -3,9 +3,9 @@
 # container of this image on the Docker host's Linux kernel: kernel NFS and CIFS
 # clients, root without sudo, GNU userland, bash 5.
 #
-# Pins follow the repo: Go 1.26, golangci-lint at the lint checks' version,
-# pjdfstest, pynfs, cthon04 and nfstest from flake.lock, the test tools the suites'
-# {tools} names.
+# Pins follow the repo: Go from go.mod's toolchain line, golangci-lint at the lint
+# checks' version, pjdfstest, pynfs, cthon04 and nfstest from flake.lock, the test
+# tools the suites' {tools} names.
 # The kernel is the Docker host's; Docker Desktop's has no NFS Kerberos
 # (rpcsec_gss_krb5) and no dm-flakey.
 

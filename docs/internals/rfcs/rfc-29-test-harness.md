@@ -463,7 +463,7 @@ suites:
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...   # tagged tests compile
       - go run ./test/spec-citations
       - test/required-tests.sh
-      - golangci-lint run --timeout=5m          # the version lint.yml pins
+      - golangci-lint run --timeout=5m          # the version tests.yml pins
   lint-repo:
     job: Repo Checks
     tier: pr
@@ -1249,9 +1249,11 @@ only: just the cells hosted runners can't take, so it doesn't repeat the hosted 
 publishes its summary to the develop-status issue (§4.8) with a token that can only write issues.
 
 **Versions come from one place.** Go is one pin, the `toolchain` line of `go.mod`: the workflows
-read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag, or the operator's
-module whose `toolchain` line, names another release. The `go` line stays the oldest release the
-module builds with. The test tools stay pinned in `flake.lock`: CI and laptops with Nix build them
+read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag (the root, operator
+and dtc Dockerfiles), or the operator's module whose `toolchain` line, names another release. The
+`go` line stays the oldest release the module builds with. golangci-lint is one version too:
+`lint-repo` fails a pin in `tests.yml` or the operator's Makefile other than the dtc image's.
+The test tools stay pinned in `flake.lock`: CI and laptops with Nix build them
 from it, and `lint-repo` fails a Dockerfile whose copied revision differs from it. Only Linux
 cells use the tools, so no macOS or Windows cell needs Nix.
 

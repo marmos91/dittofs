@@ -24,7 +24,7 @@ HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The checkout this harness lives in, unless DITTOFS_REPO points at another one.
 REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel 2>/dev/null || (cd "$HARNESS/../.." && pwd))}"
 REPO="$(cd "$REPO" && pwd)"
-IMAGE=dittofs-dtc:go1.26
+IMAGE=dittofs-dtc
 DOCKERFILE="$HARNESS/docker/dev.Dockerfile"
 
 die() { echo "[dtc] $*" >&2; exit 2; }
