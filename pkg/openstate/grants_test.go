@@ -236,20 +236,31 @@ func TestRecallDeadline(t *testing.T) {
 }
 
 // A client that let a recall time out is offered no grant at that primary
-// for a lease period after it, and one after.
+// for a lease period after it, and one after; each further missed recall
+// restarts the period.
 func TestFenceAfterAMissedRecall(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
-	file := anyFile()
+	file, second := anyFile(), anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
+	f.grantOpen(t, a, second, OpenRequest{Access: rd, Lease: LeaseKey{4}, Want: rwh})
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
-	f.pass(t, coversDeadline)
+	f.pass(t, coversDeadline, a.Client, b.Client)
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rwh}); g != nil {
 		t.Fatalf("a fenced client was offered %+v", g)
 	}
-	f.pass(t, leasePeriod)
+	f.pass(t, leasePeriod/2, a.Client, b.Client)
+	if _, err := f.open(b, second, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	f.pass(t, coversDeadline, a.Client, b.Client) // the second recall is missed too
+	f.pass(t, leasePeriod/2-coversDeadline, a.Client, b.Client)
+	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{5}, Want: rwh}); g != nil {
+		t.Fatalf("at the first fence's end, after a second missed recall: offered %+v", g)
+	}
+	f.pass(t, leasePeriod-(leasePeriod/2-coversDeadline), a.Client, b.Client) // to the second fence's end
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{3}, Want: rwh}); g == nil {
 		t.Fatal("no grant once the fence ended")
 	}
@@ -342,25 +353,21 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 
 // A primary holds at most 4,096 grants per client; reaching it, the client is
 // asked once to keep 2,048, and past it is offered none and keeps those it
-// holds, and is offered one again once one of them caches nothing.
+// holds, and is offered one again once one of them caches nothing. Each climb
+// back to the budget asks it once more.
 func TestGrantBudget(t *testing.T) {
 	f := newFixture(t)
-	a := f.caller(t, smb("pc-a"))
-	var first *CachingGrant
-	firstFile := anyFile()
+	a, w := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-w"))
+	gs := make([]*CachingGrant, maxGrants)
+	files := make([]FileKey, maxGrants)
 	for i := range maxGrants {
-		file := anyFile()
-		if i == 0 {
-			file = firstFile
-		}
-		_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{byte(i), byte(i >> 8), 1}, Want: rh})
-		if g == nil {
+		files[i] = anyFile()
+		_, gs[i] = f.grantOpen(t, a, files[i], OpenRequest{Access: rd, Lease: LeaseKey{byte(i), byte(i >> 8), 1}, Want: rh})
+		if gs[i] == nil {
 			t.Fatalf("grant %d not offered", i)
 		}
-		if i == 0 {
-			first = g
-		}
 	}
+	first, firstFile := gs[0], files[0]
 	if r := f.sink.takeRecallAny(); len(r) != 1 || r[0] != (recallAny{a.Client, 2048}) {
 		t.Fatalf("RecallAny at the budget: %+v, want one keeping 2048", r)
 	}
@@ -370,7 +377,7 @@ func TestGrantBudget(t *testing.T) {
 	if r := f.sink.takeRecallAny(); len(r) != 0 {
 		t.Fatalf("RecallAny past the budget: %+v, want none", r)
 	}
-	if _, err := f.open(f.caller(t, smb("pc-w")), firstFile, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+	if _, err := f.open(w, firstFile, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
 	if err := f.ack(a, first, GrantNone); err != nil {
@@ -378,6 +385,25 @@ func TestGrantBudget(t *testing.T) {
 	}
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{0xfe, 0xff}, Want: rh}); g == nil {
 		t.Fatal("no grant once a lease went to none")
+	}
+	if r := f.sink.takeRecallAny(); len(r) != 1 {
+		t.Fatalf("RecallAny on the climb back by one: %+v, want one", r)
+	}
+	for i := 1; i <= 100; i++ {
+		if _, err := f.open(w, files[i], OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
+			t.Fatal(err)
+		}
+		if err := f.ack(a, gs[i], GrantNone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 100 {
+		if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{byte(i), 0xfd}, Want: rh}); g == nil {
+			t.Fatalf("grant %d of the climb back not offered", i)
+		}
+	}
+	if r := f.sink.takeRecallAny(); len(r) != 1 || r[0] != (recallAny{a.Client, 2048}) {
+		t.Fatalf("RecallAny on the climb back by 100: %+v, want one keeping 2048", r)
 	}
 	f.pass(t, coversDeadline, a.Client)
 	if _, g := f.grantOpen(t, a, firstFile, OpenRequest{Access: rd, Lease: first.Key, Want: rh}); g == nil || g.Kind != GrantNone {
