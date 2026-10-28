@@ -170,7 +170,7 @@ func heldOps(t *testing.T, data []byte) {
 			if e.Len == 0 || !o[e.Off].held {
 				break
 			}
-			from, to, want := o[e.Off].record, fresh(), 0
+			from, to, skip, want := o[e.Off].record, fresh(), uint32(take()), 0
 			for _, p := range o.pieces() {
 				if lo, end := max(p.Extent.Off, e.Off), min(p.Extent.Off+p.Extent.Len, e.Off+e.Len); lo < end && p.Record == from {
 					want++
@@ -178,10 +178,10 @@ func heldOps(t *testing.T, data []byte) {
 			}
 			for i := e.Off; i < e.Off+e.Len; i++ {
 				if o[i].held && o[i].record == from {
-					o[i].record = to
+					o[i].record, o[i].at = to, skip+uint32(i-e.Off)
 				}
 			}
-			if got := s.repoint(e, from, to); got != want {
+			if got := s.repoint(e, from, to, skip); got != want {
 				t.Fatalf("step %d: repoint moved %d pieces, oracle %d", step, got, want)
 			}
 		case 5: // read
