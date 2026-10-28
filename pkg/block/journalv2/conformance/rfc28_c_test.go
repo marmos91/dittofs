@@ -1221,8 +1221,9 @@ func zero(b []byte) bool {
 }
 
 // writeUntilRefused writes 64 KiB records on file 0 through share 0 from
-// offset from, through tryWrite so a refusal for want of a spare is not
-// retried, until one is refused, and returns the refusal.
+// offset from, straight through WriteAt so a refusal for want of a spare is
+// returned rather than retried, until one is refused, and returns the
+// refusal.
 func writeUntilRefused(t *testing.T, f *journalv2test.Fixture, from int64) error {
 	t.Helper()
 
@@ -1230,7 +1231,7 @@ func writeUntilRefused(t *testing.T, f *journalv2test.Fixture, from int64) error
 	id := journalv2test.File(0)
 	for n := range 2 * journalv2test.FixtureMaxBytes / size {
 		off := from + int64(n)*size
-		_, err := tryWrite(t, f.Share(0), id, off, pattern(fmtTag("w", 0, 0, off), size))
+		_, err := f.Share(0).WriteAt(t.Context(), id, off, pattern(fmtTag("w", 0, 0, off), size), 0)
 		stub(t, "WriteAt", err)
 		if err != nil {
 			return err
@@ -1278,9 +1279,19 @@ func wantTakenClean(t *testing.T, f *journalv2test.Fixture, seg journalv2.Segmen
 // its two slots, with no fill and an id above every id the directory named,
 // and is unlinked otherwise; one sealed early, or failed, is unlinked; a
 // crash on either side of the zeroing sync leaves a spare and nothing else;
-// a roll with no spare ready is refused at once naming the pool, and with
-// `ENOSPC` once the pool cannot be refilled. Eight legs, each on its own
-// journal, since each needs the pool at a level of its own.
+// and a roll with no spare ready is refused at once naming the pool. Seven
+// legs, each on its own journal, since each needs the pool at a level of its
+// own.
+//
+// decision: the row's last sentence, a roll refused with ENOSPC once making a
+// spare has failed with ENOSPC and no full-size retired segment is to hand,
+// is not checked. The refusal depends on the journal having recorded that
+// failure, and the moment it records it is not observable from outside: the
+// failed call returns through the seam into the journal's own goroutine, no
+// seam call is bound to follow the record in every design, and no Stats
+// field reports it. A check could only wait in real time or race the record,
+// and either can fail a correct journal. It is checked once the journal
+// reports a pool it cannot refill, through Stats or a seam point of its own.
 //
 // decision: the pool's target is not on the public surface, so a leg steers
 // the pool through the seam: a hold on the create of a temporary spare parks
@@ -1464,28 +1475,6 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 		t.Fatalf("a header-only record with no spare ready: %v; it draws on the headroom", err)
 	}
 	held.Release()
-
-	// The pool cannot be refilled: once making a spare failed with ENOSPC
-	// and no full-size retired segment is to hand, the roll is refused with
-	// ENOSPC, not the pool's name.
-	//
-	// ponytail: the failed create returns ENOSPC into the journal's
-	// spare-making goroutine, which records the failure; the roll after it is
-	// issued once the held call was released and can overtake that record
-	// by a few instructions, in which case the roll is refused naming the
-	// pool and the check fails. Upgrade to a seam point the journal reports
-	// once the failure is recorded if that is ever seen.
-	q := journalv2test.NewUnwatched(t)
-	schedule(t, q, failing(journalv2test.OpCreate, "*.spare.tmp", syscall.ENOSPC), failing(journalv2test.OpAllocate, "*.spare.tmp", syscall.ENOSPC))
-	held = q.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
-	recs, _ = fillSegment(t, q, 0, 0, size)
-	<-held.Reached()
-	held.Release()
-	err = writeUntilRefused(t, q, int64(len(recs)+1)*size)
-	var ns *journalv2.NoSpaceError
-	if !errors.Is(err, syscall.ENOSPC) || errors.As(err, &ns) {
-		t.Fatalf("a roll with the pool unfillable returned %v, want the device's ENOSPC and not a NoSpaceError", err)
-	}
 }
 
 // recycled is a segment a stream took after its recycle, with the old
