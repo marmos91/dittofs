@@ -8,6 +8,10 @@ import (
 
 // Null is a Service that answers every call at once with zero values and no
 // error, and keeps nothing: what an adapter's own cost is measured against.
+// Where the zero value would break the call's contract it answers the
+// nearest thing to it: TestState one nil per reference, ReadDir and Read
+// the end of what they read, so a client paging through them stops, and
+// Write every byte written, so a client sees no short write to retry.
 type Null struct{}
 
 var _ vfs.Service = Null{}
@@ -49,7 +53,7 @@ func (Null) FreeState(ctx context.Context, id vfs.Identity, c vfs.ClientID, s vf
 }
 
 func (Null) TestState(ctx context.Context, id vfs.Identity, c vfs.ClientID, s []vfs.StateRef) []error {
-	return nil
+	return make([]error, len(s))
 }
 
 func (Null) ReleaseLockOwner(ctx context.Context, id vfs.Identity, c vfs.ClientID, o vfs.LockOwner) error {
@@ -65,7 +69,7 @@ func (Null) Lookup(ctx context.Context, id vfs.Identity, dir vfs.Handle, name []
 }
 
 func (Null) ReadDir(ctx context.Context, id vfs.Identity, dir vfs.Handle, after vfs.Cursor, max int, want vfs.EntryFields) (vfs.Page, error) {
-	return vfs.Page{}, nil
+	return vfs.Page{EOF: true}, nil
 }
 
 func (Null) Create(ctx context.Context, id vfs.Identity, dir vfs.Handle, name []byte, a vfs.CreateArgs) (vfs.CreateResult, error) {
@@ -141,11 +145,11 @@ func (Null) Close(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, q vfs.S
 }
 
 func (Null) Read(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
-	return 0, false, nil
+	return 0, true, nil
 }
 
 func (Null) Write(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, off int64, src []byte, s vfs.Stability) (vfs.WriteResult, error) {
-	return vfs.WriteResult{}, nil
+	return vfs.WriteResult{N: len(src)}, nil
 }
 
 func (Null) Commit(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, off int64, length int64) (vfs.Verifier, error) {

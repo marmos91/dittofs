@@ -79,6 +79,45 @@ func TestRecordReportsWhatTheHandlerGotWrong(t *testing.T) {
 	}
 }
 
+func TestRecordAnswersEachScriptedCallOnce(t *testing.T) {
+	ft := &fakeT{}
+	svc := vfstest.Record(ft)
+	ctx := context.Background()
+	svc.Expect(vfs.OpSeek).Return(int64(1), nil)
+	svc.Expect(vfs.OpSeek).Return(int64(2), nil)
+	for _, want := range []int64{1, 2} {
+		if got, _ := svc.Seek(ctx, vfs.Identity{}, vfs.Anonymous(nil), 0, vfs.SeekData); got != want {
+			t.Fatalf("Seek = %d, want %d", got, want)
+		}
+	}
+	svc.AssertDone()
+	if len(ft.errs) != 0 {
+		t.Fatalf("reported %q, want nothing", ft.errs)
+	}
+}
+
+// Null and an unscripted Record answer within each call's contract: one
+// answer per reference tested, an end to what a client pages through, and
+// no short write.
+func TestUnscriptedAnswersKeepTheContract(t *testing.T) {
+	ctx := context.Background()
+	refs := make([]vfs.StateRef, 3)
+	for name, svc := range map[string]vfs.Service{"Null": vfstest.Null{}, "Record": vfstest.Record(&fakeT{})} {
+		if got := svc.TestState(ctx, vfs.Identity{}, 1, refs); len(got) != len(refs) {
+			t.Errorf("%s: TestState answered %d, want %d", name, len(got), len(refs))
+		}
+		if p, _ := svc.ReadDir(ctx, vfs.Identity{}, nil, 0, 10, 0); !p.EOF {
+			t.Errorf("%s: ReadDir answered no end", name)
+		}
+		if _, eof, _ := svc.Read(ctx, vfs.Identity{}, vfs.Anonymous(nil), 0, nil); !eof {
+			t.Errorf("%s: Read answered no end", name)
+		}
+		if w, _ := svc.Write(ctx, vfs.Identity{}, vfs.Anonymous(nil), 0, make([]byte, 3), vfs.Unstable); w.N != 3 {
+			t.Errorf("%s: Write of 3 bytes answered N %d", name, w.N)
+		}
+	}
+}
+
 // A test that never calls AssertDone still fails on what it expected and
 // was never called, once it ends; one that did is not reported again.
 func TestRecordReportsUnmetExpectationsWhenTheTestEnds(t *testing.T) {

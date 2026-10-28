@@ -31,8 +31,9 @@ var _ vfs.Service = (*Recorder)(nil)
 
 // Record is a Service that records every call. A call answers the first unmet
 // Expectation of its method, and fails t if its arguments differ from those
-// the Expectation pinned. A call nothing expected answers zero values, and
-// fails t if it may change state, so a handler that calls where it should not
+// the Expectation pinned. A call nothing expected, or expected with no
+// Return, answers as Null does, and the former fails t if it may change
+// state, so a handler that calls where it should not
 // is caught as surely as one that answers from its own state.
 // An Expectation still unmet when t ends fails t, so a test that never calls
 // AssertDone does not pass for nothing.
@@ -199,6 +200,9 @@ func (rec *Recorder) FreeState(ctx context.Context, id vfs.Identity, c vfs.Clien
 
 func (rec *Recorder) TestState(ctx context.Context, id vfs.Identity, c vfs.ClientID, s []vfs.StateRef) []error {
 	ret := rec.call(vfs.OpTestState, ctx, id, c, s)
+	if ret == nil {
+		return Null{}.TestState(ctx, id, c, s)
+	}
 	return result[[]error](rec, ret, 0)
 }
 
@@ -219,6 +223,9 @@ func (rec *Recorder) Lookup(ctx context.Context, id vfs.Identity, dir vfs.Handle
 
 func (rec *Recorder) ReadDir(ctx context.Context, id vfs.Identity, dir vfs.Handle, after vfs.Cursor, max int, want vfs.EntryFields) (vfs.Page, error) {
 	ret := rec.call(vfs.OpReadDir, ctx, id, dir, after, max, want)
+	if ret == nil {
+		return Null{}.ReadDir(ctx, id, dir, after, max, want)
+	}
 	return result[vfs.Page](rec, ret, 0), result[error](rec, ret, 1)
 }
 
@@ -317,11 +324,17 @@ func (rec *Recorder) Close(ctx context.Context, id vfs.Identity, ref vfs.OpenRef
 // bytes of a read's reply.
 func (rec *Recorder) Read(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
 	ret := rec.call(vfs.OpRead, ctx, id, ref, off, dst)
+	if ret == nil {
+		return Null{}.Read(ctx, id, ref, off, dst)
+	}
 	return result[int](rec, ret, 0), result[bool](rec, ret, 1), result[error](rec, ret, 2)
 }
 
 func (rec *Recorder) Write(ctx context.Context, id vfs.Identity, ref vfs.OpenRef, off int64, src []byte, s vfs.Stability) (vfs.WriteResult, error) {
 	ret := rec.call(vfs.OpWrite, ctx, id, ref, off, src, s)
+	if ret == nil {
+		return Null{}.Write(ctx, id, ref, off, src, s)
+	}
 	return result[vfs.WriteResult](rec, ret, 0), result[error](rec, ret, 1)
 }
 
