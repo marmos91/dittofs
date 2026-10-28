@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
@@ -92,7 +93,8 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	s := sf.seam
 
 	s.mu.Lock()
-	s.count(op, sf.name)
+	key := sf.key()
+	s.count(op, key)
 	closed := sf.closed
 	s.mu.Unlock()
 
@@ -100,8 +102,8 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 		return sim.FaultAction{}, sf.closedErr(op)
 	}
 
-	s.hold(op, sf.name)
-	a := s.consult(op, sf.name)
+	s.hold(op, key)
+	a := s.consult(op, key)
 
 	s.mu.Lock()
 	if sf.closed {
@@ -119,6 +121,17 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	}
 
 	return a, nil
+}
+
+// key returns the name the file has in the directory now, which its calls are
+// counted, held and faulted under, so a file renamed while open, as a spare
+// becoming a segment is, answers to its new name. A file removed or replaced
+// since answers to the name it was opened under. The caller holds mu.
+func (sf *seamFile) key() string {
+	if filepath.Dir(sf.node.path) == sf.seam.dir {
+		return filepath.Base(sf.node.path)
+	}
+	return sf.name
 }
 
 func (sf *seamFile) closedErr(op string) error {
