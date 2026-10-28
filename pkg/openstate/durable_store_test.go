@@ -3,6 +3,7 @@ package openstate
 import (
 	"errors"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -836,5 +837,45 @@ func TestRefusedUpdatePutsItsRecordBack(t *testing.T) {
 	}
 	if recs := f.stored(t, file); len(recs) != 1 || recs[0].Suspended != 0 {
 		t.Errorf("the refused update left its record %+v, want nothing suspended", recs)
+	}
+}
+
+// storedLocks is the locks the store holds under persistent open o.
+func (f *fixture) storedLocks(t *testing.T, file FileKey, o Open) []entity.LockRecord {
+	t.Helper()
+	got, err := f.fs.Store.Opens().Locks(ctx, f.fs.Share.ID, file.ID, o.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A lock under a persistent open refused because its lock state cannot be
+// minted writes no lock, and one whose write is refused leaves no lock state.
+func TestLockRefusedAtItsStateWritesNothing(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	rnd := f.d.Rand
+	f.d.Rand = iotest.ErrReader(errWrite) // no reference can be minted
+	_, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
+	f.d.Rand = rnd
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a lock whose lock state cannot be minted: %v, want its error", err)
+	}
+	if got := f.storedLocks(t, file, o); len(got) != 0 {
+		t.Errorf("the refused lock was written: %+v", got)
+	}
+	st.fail.Store(true)
+	_, err = f.lock(a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a lock over a refusing store: %v, want its error", err)
+	}
+	if n := len(f.entryOf(file.ID).lstates); n != 0 {
+		t.Errorf("the refused lock left %d lock states", n)
 	}
 }

@@ -663,18 +663,24 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		}
 	}
 	free := held == nil && recall == nil
-	var next []LockRange
+	var ls *lockState
+	var minted bool
 	if free {
-		// Written before anything changes, so a refused write changes
-		// nothing: not the owner's earlier waiter, nor its lock state.
-		cur := e.lockState(r.Owner, id)
-		if cur == nil {
-			cur = &lockState{owner: r.Owner}
-		}
-		next = cur.adding(r.Ranges...)
-		if err := t.keepLocks(ctx, op, r.Owner, cur.locks, next); err != nil {
+		// The lock state is made, then the locks written, before anything
+		// else changes, so a refused write changes nothing: not the owner's
+		// earlier waiter, nor its lock state, a minted one dropped again.
+		var err error
+		if ls, minted, err = t.lockStateFor(ctx, e, r.Owner, op, s); err != nil {
 			return LockResult{}, err
 		}
+		next := ls.adding(r.Ranges...)
+		if err := t.keepLocks(ctx, op, r.Owner, ls.locks, next); err != nil {
+			if minted {
+				t.dropLockState(e, ls)
+			}
+			return LockResult{}, err
+		}
+		ls.locks = next // held before the earlier waiter goes, so its drop keeps ls
 	}
 	prev := e.waiterOf(r.Owner)
 	repeat := prev >= 0 && r.Wait == e.waiters[prev].Wait && r.Ranges[0] == e.waiters[prev].Range && id == e.waiters[prev].Open
@@ -688,11 +694,6 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	}
 	switch {
 	case free:
-		ls, minted, err := t.lockStateFor(ctx, e, r.Owner, op, s)
-		if err != nil {
-			return LockResult{}, err
-		}
-		ls.locks = next
 		for _, rg := range r.Ranges {
 			if ls.owner.Stack {
 				break // a stacking owner's lock is another lock, answering no grant
@@ -700,6 +701,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			ls.dropOffers(rg.ByteRange) // this answer supersedes the callback's: its refusal releases nothing
 		}
 		if !minted {
+			var err error
 			if ls.ref.Seq, err = t.advance(e, ls.ref); err != nil {
 				return LockResult{}, err
 			}
