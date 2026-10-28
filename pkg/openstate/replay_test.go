@@ -147,3 +147,54 @@ func TestAppInstanceReplacesItsPredecessor(t *testing.T) {
 		t.Errorf("a reconnect of the replaced open: %v, want ErrNoReclaim", err)
 	}
 }
+
+// A request through an open is judged by its channel sequence: an older one
+// is stale, a newer one raises the open's, written before it runs for a
+// persistent open so a failover keeps it, and a replay is stale while a
+// request under an earlier sequence is in flight.
+func TestChannelSequence(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Channel = rd|wr, 5
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	ch := func(g *fixture, seq uint16, replay bool) (bool, func()) {
+		t.Helper()
+		stale, done, err := g.Opens().Channel(ctx, a, o.ID, seq, replay)
+		if err != nil {
+			t.Fatalf("Channel %d: %v", seq, err)
+		}
+		return stale, done
+	}
+	if stale, _ := ch(f, 4, false); !stale {
+		t.Error("a request on a sequence older than the create's is not stale")
+	}
+	stale, first := ch(f, 5, false)
+	if stale {
+		t.Fatal("a request on the open's own sequence is stale")
+	}
+	if stale, _ := ch(f, 6, false); stale {
+		t.Error("a request on a newer sequence is stale")
+	}
+	if stale, _ := ch(f, 6, true); !stale {
+		t.Error("a replay while a request under an earlier sequence is in flight is not stale")
+	}
+	first()
+	if stale, _ := ch(f, 6, true); stale {
+		t.Error("a replay once the earlier request left is stale")
+	}
+	if stale, _ := ch(f, 6+0x8000, false); !stale {
+		t.Error("a sequence half the space away is not older")
+	}
+	if err := f.Opens().Update(ctx, a, o.ID, OpenUpdate{Suspend: entity.TimeModify}); err != nil {
+		t.Fatal(err) // a later write of the open's record keeps its sequence
+	}
+
+	g := f.restart(t)
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Fatal(err)
+	}
+	if stale, _ := ch(g, 5, false); !stale {
+		t.Error("after a failover, the sequence a request raised is lost")
+	}
+}

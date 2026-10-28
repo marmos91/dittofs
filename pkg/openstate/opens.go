@@ -35,14 +35,17 @@ type Open struct {
 	Durability entity.Durability // none, durable, persistent: what it survives
 	Session    entity.SessionRef // the session that opened or last reconnected it; zero: none
 	Durable    DurableKeys       // what a reconnect matches; zero unless durable or persistent
+	Channel    Channel           // the order of its requests across channels; Outstanding is volatile
+}
+
+// Channel orders an open's requests across the channels they arrive on.
+type Channel struct {
+	Seq         uint16    // the newest channel sequence a request through it carried; an older one is stale
+	Outstanding [2]uint32 // requests in flight under Seq, and under the sequences before it
 }
 
 // DurableKeys is what a reconnect or a replay of a durable or persistent
 // open matches.
-//
-// ponytail: no channel sequence yet, so a request on a stale channel is not
-// recognised, and a persistent open's record is written and installed
-// without one; it arrives with the channel's check.
 type DurableKeys struct {
 	Timeout  time.Duration // how long it is kept once its session ends
 	Create   [16]byte      // the create's own ID, which a reconnect or a replayed create must name; zero: none
@@ -116,6 +119,7 @@ type OpenRequest struct {
 	Session    entity.SessionRef // the opening session
 	Replay     bool              // a create marked as a replay: one naming the caller's client's open by Durable.Create answers that open
 	MaxRead    bool              // the caller's maximal access to the file includes read, so it may replace another client's open of its app instance
+	Channel    uint16            // the create's channel sequence, the open's first
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -237,6 +241,14 @@ type Opens interface {
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	// Channel admits a request through open o carrying channel sequence
+	// seq, flagged a replay or not, and counts it in flight until done is
+	// called as it leaves. A newer seq becomes the open's, written first for
+	// a persistent open. stale reports a request that is older than the
+	// open's sequence, or a replay while a request under an earlier one is
+	// in flight: it is not counted, and the caller refuses it if it
+	// changes the file, running it otherwise.
+	Channel(ctx context.Context, who Caller, o entity.OpenID, seq uint16, replay bool) (stale bool, done func(), err error)
 }
 
 type opens struct{ t *Table }
@@ -275,7 +287,7 @@ func (o *open) record() entity.OpenRecord {
 		ID: o.ID, Client: o.Client, Principal: o.Principal, File: o.opened(), Via: o.Via, Name: o.Name,
 		Access: o.Mode.Access, Deny: o.Mode.Deny, Privileged: o.Mode.Privileged,
 		DeleteOnClose: o.Delete.OnClose, DeleteBy: o.Delete.By, Suspended: o.Suspended,
-		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session,
+		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session, ChannelSeq: o.Channel.Seq,
 	}
 	k := o.Durable
 	r.Timeout, r.CreateGUID, r.AppInstance, r.AppVersion, r.LockSeq = k.Timeout, k.Create, k.Instance.ID, k.Instance.Version, k.LockSeq
@@ -365,7 +377,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	o := &open{share: f.Share, lease: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
-		Durability: r.Durability, Session: r.Session, Durable: r.Durable,
+		Durability: r.Durability, Session: r.Session, Durable: r.Durable, Channel: Channel{Seq: r.Channel},
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}

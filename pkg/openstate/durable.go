@@ -451,7 +451,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 		Mode:       OpenMode{Access: rec.Access, Deny: rec.Deny, Privileged: rec.Privileged},
 		Delete:     DeleteMark{OnClose: rec.DeleteOnClose, By: rec.DeleteBy},
 		Suspended:  rec.Suspended,
-		Durability: rec.Durability, Session: rec.Session,
+		Durability: rec.Durability, Session: rec.Session, Channel: Channel{Seq: rec.ChannelSeq},
 		Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID, Instance: AppInstance{rec.AppInstance, rec.AppVersion}, LockSeq: rec.LockSeq},
 	}}
 	if cl.Recovery == entity.RecoverReconnect {
@@ -774,4 +774,56 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 		}
 	}
 	return nil
+}
+
+func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq uint16, replay bool) (bool, func(), error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return false, nil, err
+	}
+	stale, counted := false, false
+	err := t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
+		c := &o.Channel
+		switch d := seq - c.Seq; {
+		case d == 0:
+		case d <= 0x7fff:
+			if o.persistent() {
+				rec := t.recordOf(e, o)
+				rec.ChannelSeq = seq
+				if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
+					return err
+				}
+			}
+			c.Outstanding[1] += c.Outstanding[0]
+			c.Outstanding[0], c.Seq = 0, seq
+		default:
+			stale = true
+			return nil
+		}
+		if replay && c.Outstanding[1] > 0 {
+			stale = true // the request it repeats may still be in flight
+			return nil
+		}
+		c.Outstanding[0]++
+		counted = true
+		return nil
+	})
+	if err != nil || !counted {
+		return stale, func() {}, err
+	}
+	return false, func() { t.leaveChannel(who, id, seq) }, nil
+}
+
+// leaveChannel uncounts a request of open id counted under seq, once it
+// leaves: under the open's sequence if it is still seq, else under the ones
+// before it.
+func (t *Table) leaveChannel(who Caller, id entity.OpenID, seq uint16) {
+	_ = t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(_ *entry, o *open) error {
+		i := 0
+		if o.Channel.Seq != seq {
+			i = 1
+		}
+		o.Channel.Outstanding[i]--
+		return nil
+	})
 }
