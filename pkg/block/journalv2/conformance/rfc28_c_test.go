@@ -103,6 +103,10 @@ func wantScanned(t *testing.T, f *journalv2test.Fixture, before journalv2.Recove
 // read by its catalog costs that record alone: the damage is found by the
 // read that would serve it, not at open, and every other record of the
 // segment still reads.
+//
+// decision: this is also the check of the edits table's row for the bytes
+// of a record changed from outside: noticed on the read that serves it, not
+// at open when a catalog is used, and the extent dropped and reported.
 func TestRFC28C_NeighboursSurvive(t *testing.T) {
 	f := journalv2test.New(t)
 	recs, seg := fillSegment(t, f, 0, 0, 32<<10)
@@ -488,6 +492,11 @@ func wantMissingFrom(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e j
 // predecessor was sealed before the later one existed, so a short one is
 // corruption and is reported; the newest segment of a stream cut the same way
 // is a torn tail.
+//
+// decision: this is also the check of the edits table's row for a sealed
+// segment truncated from outside: noticed at open when a later segment names
+// it as predecessor, reported as corruption, and the newest segment of a
+// stream treated as a crash.
 func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	f := journalv2test.New(t)
 	const size = 64 << 10
@@ -1793,6 +1802,10 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 // the reseed as stale: the extent reads missing, the event names it stale,
 // and the loss generation does not move, since the next read fetches the
 // current content.
+//
+// decision: this is also the check of the edits table's row for one old
+// segment of this journal restored: noticed at the reseed, by version, its
+// extents dropped as stale and refetched.
 func TestRFC28C_StaleExtent(t *testing.T) {
 	f := journalv2test.New(t)
 	h, id := f.Share(0), journalv2test.File(0)
@@ -1900,6 +1913,11 @@ func TestRFC28C_VersionFloor(t *testing.T) {
 // directory, on a missing one and on one holding another journal, creating
 // nothing, and only Init then makes a new journal; and that an open with no
 // recorded identity fails naming the journal it found and its installation.
+//
+// decision: this is also the check of the edits table's row for the whole
+// directory deleted, emptied or replaced: noticed at open by the identity
+// the caller expects, the open failing and no journal created until an
+// operator acknowledges the loss.
 //
 // decision: the missing directory is removed on the real filesystem, the one
 // edit this suite makes past the seam, because the seam has no call that
@@ -2043,6 +2061,10 @@ func callsFor(f *journalv2test.Fixture, name string) map[string]int {
 // TestRFC28C_ForeignSegment checks that a segment of another journal, copied
 // into the directory, is not attached: no read serves its bytes, it is
 // counted as rejected, and it is left on disk as it was.
+//
+// decision: this is also the check of the edits table's row for a valid
+// segment copied in from another journal: noticed at open by its journal
+// identity, not attached, reported and left alone.
 func TestRFC28C_ForeignSegment(t *testing.T) {
 	const size = 64 << 10
 	f := journalv2test.New(t)
@@ -2179,7 +2201,10 @@ func TestRFC28C_KindValuesRefused(t *testing.T) {
 // after it, leaves the old file or the new one whole.
 //
 // decision: the golden 56 bytes of a version 1 format file live with the
-// encoder's tests; this is the row's refusal and crash halves.
+// encoder's tests; this is the row's refusal and crash halves. It is also
+// the check of the edits table's row for the format file changed from
+// outside, noticed at open; the row's other half, the file removed, is not
+// covered yet.
 func TestRFC28C_FormatFile(t *testing.T) {
 	const size = 64 << 10
 	f := journalv2test.New(t)

@@ -937,3 +937,21 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
   issue: '#3378'
+- test: TestDamage_SegmentDeleted
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that opens without a segment a successor names, and the data path.'
+  issue: '#3378'
+- test: TestDamage_UnnamedFileLeftAlone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that leaves a file it did not name alone, and the data path.'
+  issue: '#3378'
+- test: TestDamage_DirectoryRestored
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
+  issue: '#3379'

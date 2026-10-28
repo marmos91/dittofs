@@ -1463,3 +1463,156 @@ func TestDamage_BitFlip(t *testing.T) {
 		}
 	})
 }
+
+// TestDamage_SegmentDeleted checks the edits table's row for a segment
+// deleted from outside: the journal opens, the extents the segment held are
+// no longer held, so a read of them reports them missing, and everything
+// else is still served. The deleted name is never made again, by a create or
+// by the rename a spare reaches its name through: a fresh id exceeds every
+// id the directory names, those found at open included (RFC 28 section 2.2,
+// lines 316 to 319).
+//
+// decision: the row says the deletion is not noticed by the journal, and
+// nothing here asserts that: a journal that counts the missing predecessor
+// its successor names as rejected or damaged passes, since the row's outcome
+// column is all it requires.
+func TestDamage_SegmentDeleted(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	recs, seg := fillSegment(t, f, 0, 0, size)
+	other := writeSynced(t, f, 1, 1, 0, size)
+	syncFiles(t, f.Share(0), recs[0].id)
+	mark(t, f.Share(0), recs[1].id, recs[1].extent, recs[1].version)
+	syncFiles(t, f.Share(0), recs[0].id)
+	roll := rec{0, recs[0].id, journalv2.Extent{Off: int64(len(recs)) * size, Len: size}, journalv2.Version{}, pattern(fmtTag("r", 0, 0, int64(len(recs))*size), size)}
+	name := segmentName(seg)
+
+	f.Shutdown()
+	before := callsFor(f, name)
+	if err := f.Seam.Remove(name); err != nil {
+		t.Fatalf("remove the segment: %v", err)
+	}
+
+	if err := f.Seam.SyncDir(); err != nil {
+		t.Fatalf("sync the directory: %v", err)
+	}
+
+	f.Reopen()
+
+	// The last record of the segment may be split at the cap, its second
+	// piece held in the successor.
+	for _, r := range recs[:len(recs)-1] {
+		wantMissing(t, f.Share(0), r.id, r.extent)
+	}
+
+	wantMissingFrom(t, f.Share(0), recs[len(recs)-1].id, recs[len(recs)-1].extent)
+	wantBytes(t, f.Share(0), roll.id, roll.extent.Off, roll.p)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	after := callsFor(f, name)
+	for _, op := range []string{journalv2test.OpCreate, journalv2test.OpWrite} {
+		if after[op] != before[op] {
+			t.Fatalf("the open made %d calls of %s on the deleted segment's name; a fresh id exceeds every id the directory names", after[op]-before[op], op)
+		}
+	}
+
+	// A spare is made under a temporary name, so a take and its refill show
+	// whether the deleted name is drawn again.
+	awaitSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journalv2test.FixtureSegmentCap) })
+	if slices.Contains(segmentFiles(t, f), name) {
+		t.Fatalf("the deleted segment's name %s was made again by a spare; a fresh id exceeds every id the directory names", name)
+	}
+}
+
+// TestDamage_UnnamedFileLeftAlone checks the edits table's row for a file
+// the journal did not name, added beside it: the journal opens, serves, and
+// leaves the file as it is. A file that is no segment is not a segment left
+// unattached, which is what RejectedSegments counts (RFC 1 section 3.7), so
+// the count stays at zero.
+func TestDamage_UnnamedFileLeftAlone(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, size)
+	b := writeSynced(t, f, 1, 1, 0, size)
+	notes := pattern("notes", 4096)
+	plant(t, f, "notes.txt", notes)
+	before := callsFor(f, "notes.txt")
+	f.Reopen()
+
+	if got := f.J.Stats().RejectedSegments; got != 0 {
+		t.Fatalf("RejectedSegments = %d with a file that is no segment in the directory, want 0", got)
+	}
+
+	wantLeftAlone(t, f, "notes.txt", notes, before)
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
+
+// TestDamage_DirectoryRestored checks the edits table's row for a whole
+// directory restored from an old copy: at the reseed, content older than
+// what the remote tier holds is dropped as stale and reads missing, and new
+// versions start above the floor, so a mark at the floor leaves a new write
+// unmarked.
+func TestDamage_DirectoryRestored(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	a := writeSynced(t, f, 0, 0, 0, size)
+	mark(t, h, a.id, a.extent, a.version)
+	syncFiles(t, h, a.id)
+	other := writeSynced(t, f, 1, 1, 0, size)
+
+	f.Shutdown()
+	copied := map[string][]byte{}
+	for _, name := range list(t, f) {
+		copied[name] = durable(t, f, name)
+	}
+
+	f.Reopen()
+	h = f.Share(0)
+	b := writeSynced(t, f, 0, 0, 0, size)
+	mark(t, h, b.id, b.extent, b.version)
+	syncFiles(t, h, b.id)
+
+	f.Shutdown()
+	emptyDir(t, f)
+	for name, data := range copied {
+		plant(t, f, name, data)
+	}
+
+	f.Reopen()
+	h = f.Share(0)
+
+	if e := entryAt(t, f, id, 0); e.Version != a.version || !e.Offloaded {
+		t.Fatalf("precondition: A is held as %+v after the restore, want its version %v and its offloaded bit", e, a.version)
+	}
+
+	before := f.J.Stats()
+	err := h.MarkOffloaded(t.Context(), id, []journalv2.Extent{a.extent}, b.version, b.version)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
+		t.Fatalf("mark at B's versions: %v", err)
+	}
+
+	ev := lastLoss(t, f, before)
+	if ev.File != id || ev.Extent != a.extent || ev.Reason != journalv2.LossStale {
+		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as stale", ev, id, a.extent)
+	}
+
+	wantMissing(t, h, id, a.extent)
+
+	floor := f.Floor()
+	c := writeSynced(t, f, 0, 0, size, size)
+	if c.version.Compare(floor) <= 0 {
+		t.Fatalf("a write after the restore has version %v, not above the floor %v", c.version, floor)
+	}
+
+	err = h.MarkOffloaded(t.Context(), id, []journalv2.Extent{c.extent}, floor, floor)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
+		t.Fatalf("mark at the floor: %v", err)
+	}
+
+	wantRelease(t, h, c.id, c.extent, false)
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
