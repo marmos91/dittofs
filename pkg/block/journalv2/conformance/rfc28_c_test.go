@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
+	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // The checks here fail by coming back up describing something other than
@@ -1485,4 +1486,313 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	if !errors.Is(err, syscall.ENOSPC) || errors.As(err, &ns) {
 		t.Fatalf("a roll with the pool unfillable returned %v, want the device's ENOSPC and not a NoSpaceError", err)
 	}
+}
+
+// recycled is a segment a stream took after its recycle, with the old
+// life's trailer still on the device because the zeroing writes were dropped
+// at the seam.
+type recycled struct {
+	id     journalv2.SegmentID
+	name   string
+	marker int64 // the old life's seal marker offset
+	first  rec   // the first record of the new life, synced
+	other  rec   // a record of file 1 on the other stream
+}
+
+// recycledSegment fills both streams' first segments with spare-making
+// parked, so the pool is empty, retires the first of them so it is recycled,
+// with the zeroing writes after its rename dropped, rolls file 0's stream
+// into it with a record of file 2, and then lets spare-making go on.
+func recycledSegment(t *testing.T, f *journalv2test.Fixture) recycled {
+	t.Helper()
+
+	const size = 64 << 10
+	held := f.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	recs, seg := fillSegment(t, f, 0, 0, size)
+	others, _ := fillSegment(t, f, 1, 1, size)
+	syncFiles(t, f.Share(0), recs[0].id)
+	syncFiles(t, f.Share(1), others[0].id)
+	name := segmentName(seg)
+	footerOffset, _ := trailerOf(t, durable(t, f, name))
+	releaseRecs(t, f, recs)
+
+	// The writes after the rename are the zeroing of the two slots, and
+	// are dropped, so the recycle's sync makes nothing of them durable.
+	files := segmentFiles(t, f)
+	rename := f.Seam.Hold(t, journalv2test.OpRename, name)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
+		done <- err
+	}()
+	select {
+	case <-rename.Reached():
+	case err := <-done:
+		stub(t, "Repack", err)
+		t.Fatalf("repack returned (%v) without renaming the segment", err)
+	}
+	schedule(t, f, sim.Rule{Op: journalv2test.OpWrite, Key: "*.seg", Action: sim.FaultAction{Kind: sim.Drop}})
+	writes := f.Seam.Calls(journalv2test.OpWrite)
+	rename.Release()
+	err := <-done
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("repack segment %d: %v", seg, err)
+	}
+	f.Seam.SetFault(nil)
+
+	r := retirement(t, f, name, files)
+	if !r.recycled {
+		t.Fatalf("segment %d was unlinked with the pool empty, want it recycled", seg)
+	}
+	if n := f.Seam.Calls(journalv2test.OpWrite) - writes; n < 2 || n != f.Seam.CallsFor(journalv2test.OpWrite, r.name) {
+		t.Fatalf("%d writes after the rename, %d of them to %s, want at least two and all of them there", n, f.Seam.CallsFor(journalv2test.OpWrite, r.name), r.name)
+	}
+	if b := durable(t, f, r.name); string(b[len(b)-raw.TrailerSize:][:4]) != "DJT1" {
+		t.Fatalf("the trailer slot of %s is not the old trailer on the device; the zeroing was not dropped", r.name)
+	}
+
+	// The recycled segment is the only spare in the pool, so the next roll
+	// takes it.
+	id := idOf(t, r.name)
+	fill, _ := fillSegment(t, f, 0, 2, size)
+	off := int64(len(fill)) * size
+	first := rec{0, journalv2test.File(2), journalv2.Extent{Off: off, Len: size}, journalv2.Version{}, pattern(fmtTag("r", 0, 2, off), size)}
+	e := entryAt(t, f, first.id, off)
+	if e.Location.Segment != id {
+		t.Fatalf("the roll took segment %d, want the recycled %d, the only spare in the pool", e.Location.Segment, id)
+	}
+	first.version = e.Version
+	syncFiles(t, f.Share(0), first.id)
+	held.Release()
+
+	return recycled{id, r.name, footerOffset - raw.SealMarkerSize, first, others[0]}
+}
+
+// wantNewLifeOnly fails the test unless, after an open, the recycled
+// segment serves its new life's records and nothing of its old one: every
+// record in recs reads, no entry of file 0, the old life's file, is located
+// in it, the unreclaimed bytes and the segment's held and retained bytes are
+// as before the open, which an old record attached as superseded would
+// raise, and nothing is reported as a loss or as damage.
+func wantNewLifeOnly(t *testing.T, f *journalv2test.Fixture, rc recycled, recs []rec, unreclaimed int64, info journalv2.SegmentInfo) {
+	t.Helper()
+
+	for _, r := range recs {
+		wantBytes(t, f.Share(r.share), r.id, r.extent.Off, r.p)
+	}
+	wantBytes(t, f.Share(1), rc.other.id, 0, rc.other.p)
+
+	for _, e := range heldEntries(t, f, journalv2test.File(0)) {
+		if e.Location.Segment == rc.id {
+			t.Fatalf("file 0 holds %+v from the old life of the recycled segment %d", e, rc.id)
+		}
+	}
+
+	s := f.J.Stats()
+	if s.UnreclaimedBytes != unreclaimed {
+		t.Fatalf("UnreclaimedBytes = %d after the open, want %d as before: the old life's records were attached as superseded", s.UnreclaimedBytes, unreclaimed)
+	}
+	if now := segmentInfo(t, f, rc.id); now.HeldBytes != info.HeldBytes || now.RetainedBytes != info.RetainedBytes {
+		t.Fatalf("the recycled segment holds %d and retains %d bytes after the open, want %d and %d as before", now.HeldBytes, now.RetainedBytes, info.HeldBytes, info.RetainedBytes)
+	}
+	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("the old life was reported: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
+	}
+}
+
+// heldEntries returns the index entries of file id.
+func heldEntries(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID) []journalv2.IndexEntry {
+	t.Helper()
+
+	entries, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("inspect a file: %v", err)
+	}
+	return entries
+}
+
+// wantLeftSegment fails the test unless the stream of file 2 left segment
+// seg for one naming no predecessor, seg is reported failed, a reopen
+// reports no damage, and seg is then unlinked by repack, never recycled,
+// with kept, a record synced into it before the failure, reading after the
+// retirement and after another reopen.
+func wantLeftSegment(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID, kept rec, off int64) {
+	t.Helper()
+
+	const size = 64 << 10
+	next := writeSynced(t, f, 0, 2, off, size)
+	nseg := entryAt(t, f, next.id, off).Location.Segment
+	if nseg == seg {
+		t.Fatalf("the stream appended into segment %d after a failed append there", seg)
+	}
+	hdr, err := raw.ParseSegmentHeader(durable(t, f, segmentName(nseg))[:raw.SegmentHeaderSize])
+	if err != nil {
+		t.Fatalf("parse the next segment's header: %v", err)
+	}
+	if hdr.Predecessor != 0 {
+		t.Fatalf("segment %d names predecessor %d after a failed append ended the stream's segment, want none", nseg, hdr.Predecessor)
+	}
+	if !segmentInfo(t, f, seg).Failed {
+		t.Fatalf("segment %d is not reported failed after a failed append", seg)
+	}
+
+	f.Reopen()
+	if got := f.J.Stats().DamagedSegments; got != 0 {
+		t.Fatalf("DamagedSegments = %d after a reopen with a failed append's slot on disk, want 0: that slot is torn, never corrupt", got)
+	}
+	wantBytes(t, f.Share(0), kept.id, kept.extent.Off, kept.p)
+	wantBytes(t, f.Share(0), next.id, off, next.p)
+
+	if r := retire(t, f, seg); r.recycled {
+		t.Fatalf("segment %d, ended by a failed append, was recycled as %s, want it unlinked", seg, r.name)
+	}
+	wantBytes(t, f.Share(0), kept.id, kept.extent.Off, kept.p)
+	f.Reopen()
+	wantBytes(t, f.Share(0), kept.id, kept.extent.Off, kept.p)
+}
+
+// TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead checks that a recycled
+// segment's old life stays dead whatever is left of it on the device: its
+// trailer, kept by a dropped zeroing, is never read as a catalog, its records
+// never attach, and the bytes past the new life's records are a torn tail;
+// that a failed append into it, or a short write into a fresh segment, ends
+// the segment without recycling it; and that a crash keeping a later append
+// and losing an earlier one attaches the later one, seals nothing, and moves
+// the stream on with no predecessor.
+func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
+	const size = 64 << 10
+
+	// A clean reopen, then, on a journal of its own, a crash: the clean
+	// close may seal the segment and truncate the old life away, so the
+	// crash leg starts from a fresh recycle.
+	f := journalv2test.New(t)
+	rc := recycledSegment(t, f)
+	recs := []rec{rc.first}
+	for n := range 3 {
+		recs = append(recs, writeSynced(t, f, 0, 2, rc.first.extent.Off+int64(n+1)*size, size))
+	}
+	unreclaimed, info := f.J.Stats().UnreclaimedBytes, segmentInfo(t, f, rc.id)
+	f.Reopen()
+	wantNewLifeOnly(t, f, rc, recs, unreclaimed, info)
+
+	g := journalv2test.NewUnwatched(t)
+	rc = recycledSegment(t, g)
+	recs = []rec{rc.first}
+	for n := range 3 {
+		recs = append(recs, writeSynced(t, g, 0, 2, rc.first.extent.Off+int64(n+1)*size, size))
+	}
+	unreclaimed, info = g.J.Stats().UnreclaimedBytes, segmentInfo(t, g, rc.id)
+	g.Crash()
+	wantNewLifeOnly(t, g, rc, recs, unreclaimed, info)
+	if got := g.J.Stats().Counters.TornTails; got != 1 {
+		t.Fatalf("TornTails = %d after a crash left the old life's bytes past the new records, want 1", got)
+	}
+	if got := int64(len(durable(t, g, rc.name))); got >= rc.marker {
+		t.Fatalf("the recycled segment is %d bytes after recovery, want it cut below the old seal marker at %d", got, rc.marker)
+	}
+
+	// A failed append into the recycled segment while a later one
+	// completes, after a record was synced there.
+	h := journalv2test.NewUnwatched(t)
+	rc = recycledSegment(t, h)
+	hh, id := h.Share(0), journalv2test.File(2)
+	off := rc.first.extent.Off + size
+	var rs [2]*journalv2.Reservation
+	for i := range rs {
+		r, err := hh.Reserve(size, 1)
+		stub(t, "Reserve", err)
+		if err != nil {
+			t.Fatalf("reserve a write: %v", err)
+		}
+		rs[i] = r
+	}
+	h.FailNext(journalv2test.OpWrite, rc.name, 1)
+	_, err := rs[0].WriteAt(t.Context(), id, off, pattern(fmtTag("x", 0, 2, off), size), 0)
+	stub(t, "WriteAt", err)
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the write whose storage call failed returned %v, want the device's error", err)
+	}
+	later := pattern(fmtTag("y", 0, 2, off+size), size)
+	_, err = rs[1].WriteAt(t.Context(), id, off+size, later, 0)
+	stub(t, "WriteAt", err)
+	if err != nil {
+		t.Fatalf("the later write: %v", err)
+	}
+	for _, r := range rs {
+		if err := r.Close(); err != nil {
+			t.Fatalf("close a reservation: %v", err)
+		}
+	}
+	err = hh.Sync(t.Context(), id)
+	stub(t, "Sync", err)
+	var se *journalv2.SyncError
+	switch {
+	case errors.As(err, &se):
+		wantMissing(t, hh, id, journalv2.Extent{Off: off + size, Len: size})
+	case err != nil:
+		t.Fatalf("sync after a failed append: %v", err)
+	default:
+		if got := h.J.Stats().Counters.SyncReappendedBytes; got < size {
+			t.Fatalf("SyncReappendedBytes = %d after a sync that neither failed nor re-appended the later write", got)
+		}
+		wantBytes(t, hh, id, off+size, later)
+	}
+	wantLeftSegment(t, h, rc.id, rc.first, off+2*size)
+
+	// A short write into a fresh segment: the one the stream moved to.
+	pre := writeSynced(t, h, 0, 2, off+3*size, size)
+	fresh := entryAt(t, h, pre.id, pre.extent.Off).Location.Segment
+	schedule(t, h, sim.Rule{Op: journalv2test.OpWrite, Key: segmentName(fresh), Count: 1, Action: sim.FaultAction{Kind: sim.Tear, N: 4096, Err: syscall.EIO}})
+	_, err = tryWrite(t, h.Share(0), id, off+4*size, pattern(fmtTag("z", 0, 2, off+4*size), size))
+	h.Seam.SetFault(nil)
+	stub(t, "WriteAt", err)
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the short write returned %v, want the device's error", err)
+	}
+	wantLeftSegment(t, h, fresh, pre, off+5*size)
+
+	// A crash keeping a later append and losing an earlier one: the earlier
+	// write is dropped at the seam, the later made durable by the device.
+	k := journalv2test.NewUnwatched(t)
+	rc = recycledSegment(t, k)
+	off = rc.first.extent.Off + size
+	schedule(t, k, sim.Rule{Op: journalv2test.OpWrite, Key: rc.name, Count: 1, Action: sim.FaultAction{Kind: sim.Drop}})
+	w1 := writeRec(t, k, 0, 2, off, size)
+	w2 := writeRec(t, k, 0, 2, off+size, size)
+	k.Seam.SetFault(nil)
+	w2Loc := entryAt(t, k, w2.id, w2.extent.Off).Location
+	if w1Seg := entryAt(t, k, w1.id, off).Location.Segment; w1Seg != rc.id || w2Loc.Segment != rc.id {
+		t.Fatalf("the two writes landed in segments %d and %d, want both in the recycled %d", w1Seg, w2Loc.Segment, rc.id)
+	}
+	deviceSync(t, k, rc.name)
+	k.Crash()
+
+	wantBytes(t, k.Share(0), w2.id, w2.extent.Off, w2.p)
+	wantMissing(t, k.Share(0), w1.id, w1.extent)
+	s := k.J.Stats()
+	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("the lost earlier write was reported: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
+	}
+	if segmentInfo(t, k, rc.id).Sealed {
+		t.Fatalf("the recycled segment %d was sealed by recovery behind a slot holding the old life's bytes", rc.id)
+	}
+	b := durable(t, k, rc.name)
+	if end := w2Loc.Offset + raw.RecordHeaderSize + 8 + size; int64(len(b)) >= end+4 && string(b[end:end+4]) == "DJS1" {
+		t.Fatalf("recovery wrote a seal marker after the later write in segment %d", rc.id)
+	}
+	next := writeSynced(t, k, 0, 2, off+2*size, size)
+	nseg := entryAt(t, k, next.id, next.extent.Off).Location.Segment
+	if nseg == rc.id {
+		t.Fatalf("the stream appended into segment %d after recovery ended it", rc.id)
+	}
+	hdr, err := raw.ParseSegmentHeader(durable(t, k, segmentName(nseg))[:raw.SegmentHeaderSize])
+	if err != nil {
+		t.Fatalf("parse the next segment's header: %v", err)
+	}
+	if hdr.Predecessor != 0 {
+		t.Fatalf("segment %d names predecessor %d after recovery ended the stream's segment without sealing it, want none", nseg, hdr.Predecessor)
+	}
+	wantBytes(t, k.Share(1), rc.other.id, 0, rc.other.p)
 }
