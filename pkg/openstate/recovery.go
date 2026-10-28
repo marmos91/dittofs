@@ -70,6 +70,9 @@ type served struct {
 	// guarded is set while one of them can reclaim a deny mode or a mandatory
 	// lock: anonymous I/O then waits for grace's end.
 	guarded bool
+	// dropped is set once DropShare ended its share's state: nothing is
+	// granted or reclaimed there again until it is served anew.
+	dropped bool
 	// owed is, per client that recovers by reconnecting, the persistent
 	// opens installed for it that it has not reconnected and that have not
 	// closed.
@@ -130,12 +133,13 @@ func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardI
 func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64, out *outbox) error {
 	t.cmu.Lock()
 	cur := t.shards[s]
-	if cur != nil && cur.instance != instance {
+	kept := cur != nil && cur.instance == instance && !cur.dropped
+	if cur != nil && !kept {
 		delete(t.shards, s) // admission refuses while the old state goes
 	}
 	t.cmu.Unlock()
 	switch {
-	case cur != nil && cur.instance == instance:
+	case kept:
 		return nil // a handover of the table: nothing was lost
 	case cur != nil:
 		t.lose(func(x ShardID) bool { return x == s })
@@ -208,7 +212,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	return nil
 }
 
-// lose drops every piece of state held in the shards in names, as a loss of
+// lose drops every piece of state held in the shards in reports, as a loss of
 // their open state does: nothing is told and nothing closed, since the state
 // is gone rather than ended, and its references then miss. It returns the
 // clients that held any. A file's state is all of its shard, so no waiter is
@@ -269,6 +273,12 @@ func (t *Table) lose(in func(ShardID) bool) map[entity.ClientID]struct{} {
 	return holders
 }
 
+// decision: a call naming a dropped share's shard is ErrBadState, a reclaim
+// ErrNoReclaim, as a reference there is: the service answers the share's
+// handles stale before it calls, so only a call racing the drop meets it,
+// and a retry would never be served. Name the moved-share error here if
+// shards are found to move with calls in flight.
+//
 // decision: DropShare writes nothing to the store: a removed share's
 // records go with its keys, a moved share's move carries them, and its
 // shards run no grace-end pass, which would close records the move still
@@ -281,13 +291,15 @@ func (v recovery) DropShare(ctx context.Context, share entity.ShareID, moved net
 	if err != nil {
 		return err
 	}
+	// Each shard is served anew, dropped, before its state goes: a grace-end
+	// pass already under way then finds it served again and stops, and a
+	// call minting there once the state is listed is refused.
 	t.cmu.Lock()
 	dropped := map[ShardID]bool{}
 	for s, sh := range t.shards {
 		if sh.share == share {
 			dropped[s] = true
-			sh.reclaim, sh.owed, sh.unclosed = map[entity.ClientID]reclaimer{}, map[entity.ClientID]int{}, false
-			sh.settle()
+			t.shards[s] = &served{instance: sh.instance, share: share, dropped: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
 		}
 	}
 	t.cmu.Unlock()
@@ -324,8 +336,13 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	sh := t.shards[s]
-	if sh == nil {
+	switch {
+	case sh == nil:
 		return false, &DelayError{DelayFrozen}
+	case sh.dropped && reclaim:
+		return false, ErrNoReclaim
+	case sh.dropped:
+		return false, ErrBadState
 	}
 	if t.mustConnectLocked(who.Client) {
 		return false, ErrStaleClient

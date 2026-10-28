@@ -1066,6 +1066,55 @@ func TestDropShareInGrace(t *testing.T) {
 	}
 }
 
+// A grace-end pass under way when DropShare runs stops at the dropped
+// share: it closes none of its records, though their opens went, and raises
+// no GraceEnded for it.
+func TestDropShareStopsAGraceEndPass(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, smbMachine("pc-c"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	f.mustOpen(t, c, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	f.Stop()
+
+	g := unstarted(t, f.fs, f.clock)
+	var armed atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	order := func(x entity.FileID) func() {
+		if x == file.ID && armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+		return func() {}
+	}
+	if err := g.Start(ctx, g.sink, order); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range testShards {
+		if err := g.Recovery().ServeShard(ctx, f.fs.Share.ID, s, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.clock.mu.Lock()
+	g.clock.now += leasePeriod + time.Second
+	g.clock.mu.Unlock()
+	armed.Store(true)
+	done := make(chan struct{})
+	go func() { defer close(done); g.closeUnreclaimed(ctx, g.sink) }()
+	<-entered
+	if err := g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+	if got := g.stored(t, file); len(got) != 1 {
+		t.Errorf("stored after DropShare %+v; want the persistent record left to the store", got)
+	}
+	if slices.ContainsFunc(g.sink.graces, func(x graceEnded) bool { return x.s == file.Shard }) {
+		t.Errorf("GraceEnded raised for the dropped shard: %+v", g.sink.graces)
+	}
+}
+
 // blockingRand is a Deps.Rand whose next read, once armed, waits until
 // released.
 type blockingRand struct {
@@ -1081,4 +1130,63 @@ func (b *blockingRand) Read(p []byte) (int, error) {
 		<-b.released
 	}
 	return b.r.Read(p)
+}
+
+// A lock admitted before DropShare whose state is minted after the drop
+// listed the share's state is refused, holding nothing; afterwards nothing
+// is granted on the share and a reclaim is ErrNoReclaim.
+func TestDropShareRefusesARacingLock(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("a", 1, entity.NewUser()))
+	held, file := in(1), in(1)
+	f.mustLock(t, a, held, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+	f.d.Rand = rnd
+	rnd.armed.Store(true)
+	locked := make(chan error)
+	go func() {
+		_, err := f.lock(a, file, LockReq{Owner: owner(a, "other"), Ranges: []LockRange{x(0, 10)}})
+		locked <- err
+	}()
+	<-rnd.entered // admitted, minting its lock state
+	dropped := make(chan error)
+	go func() { dropped <- f.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}) }()
+	for !f.droppedShard(file.Shard) {
+		runtime.Gosched()
+	}
+	close(rnd.released)
+	if err := <-locked; !errors.Is(err, ErrBadState) {
+		t.Errorf("a lock minting after the drop: %v, want ErrBadState", err)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	if f.entryOf(file.ID) != nil || f.entryOf(held.ID) != nil {
+		t.Error("the dropped share's files still hold state")
+	}
+	if _, err := f.lock(a, file, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}}); !errors.Is(err, ErrBadState) {
+		t.Errorf("a lock on the dropped share: %v, want ErrBadState", err)
+	}
+	if _, err := f.lock(a, held, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim on the dropped share: %v, want ErrNoReclaim", err)
+	}
+	if _, err := f.Locks().TestLock(ctx, a, file, owner(a, "lo"), br(0, 10), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a test of a lock on the dropped share: %v, want ErrBadState", err)
+	}
+	// Served anew under its instance, as a move back serves it, its grace
+	// takes reclaims again.
+	f.cmu.Lock()
+	inst := f.shards[file.Shard].instance
+	f.cmu.Unlock()
+	if err := f.Recovery().ServeShard(ctx, f.fs.Share.ID, file.Shard, inst); err != nil {
+		t.Fatal(err)
+	}
+	f.mustLock(t, a, held, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+}
+
+// droppedShard reports whether DropShare has marked shard s dropped.
+func (f *fixture) droppedShard(s ShardID) bool {
+	f.cmu.Lock()
+	defer f.cmu.Unlock()
+	return f.shards[s] != nil && f.shards[s].dropped
 }

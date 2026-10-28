@@ -84,7 +84,17 @@ func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType,
 			t.idx.Unlock()
 			continue
 		}
-		inst, _ := t.instance(s)
+		t.cmu.Lock()
+		sh := t.shards[s]
+		t.cmu.Unlock()
+		if sh != nil && sh.dropped {
+			t.idx.Unlock()
+			return StateRef{}, ErrBadState // its share's state was dropped
+		}
+		var inst uint64
+		if sh != nil {
+			inst = sh.instance
+		}
 		ref := StateRef{Type: typ, Shard: s, Instance: uint8(inst & 31), Token: k.token, Seq: 1}
 		if under != nil {
 			if err := under(ref); err != nil {
