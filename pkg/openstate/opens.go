@@ -223,11 +223,6 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		return err
 	})
 	out.raise(t, sink)
-	if err == nil && r.Seqs.Owner != nil {
-		t.smu.Lock()
-		res.Confirm = t.seqs.Unconfirmed(owner)
-		t.smu.Unlock()
-	}
 	return res, err
 }
 
@@ -300,7 +295,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		}
-		if t.ownerConfirmed(r) {
+		if res.Confirm = !t.ownerConfirmed(r); !res.Confirm {
 			res.Grant = t.offer(e, f, who, granted, r, out)
 		}
 		res.Open = granted.Open
