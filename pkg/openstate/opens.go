@@ -35,6 +35,7 @@ type Open struct {
 	Durability entity.Durability // none, durable, persistent: what it survives
 	Session    entity.SessionRef // the session that opened or last reconnected it; zero: none
 	Durable    DurableKeys       // what a reconnect matches; zero unless durable or persistent
+	Clone      *CloneSource      // a clone's hold on its source, an open of no client; nil for every other open
 	Channel    Channel           // the order of its requests across channels; Outstanding is volatile
 }
 
@@ -42,6 +43,13 @@ type Open struct {
 type Channel struct {
 	Seq         uint16    // the newest channel sequence a request through it carried; an older one is stale
 	Outstanding [2]uint32 // requests in flight under Seq, and under the sequences before it
+}
+
+// CloneSource is a clone's hold on its source: the clone's destination,
+// whose removal record holds the clone's spec, and the clone's version.
+type CloneSource struct {
+	Dst     entity.FileID
+	Version entity.JournalVersion
 }
 
 // DurableKeys is what a reconnect or a replay of a durable or persistent
@@ -241,6 +249,16 @@ type Opens interface {
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	// CloneOpen holds src for the clone c names in the table: the durable
+	// open of no client the clone's first phase wrote in its transaction,
+	// which keeps src from release, holds no access, denies nothing, and
+	// outlives grace's end. It is ErrBadState when no such hold is stored,
+	// and answers the hold's ID, the same for a hold already held.
+	CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entity.OpenID, error)
+	// CloneClose drops the hold o, once the clone's last batch deleted its
+	// record, and reports a source it left with no entry and no open as an
+	// orphan.
+	CloneClose(ctx context.Context, o entity.OpenID) (CloseResult, error)
 	// Channel admits a request through open o carrying channel sequence
 	// seq, flagged a replay or not, and counts it in flight until done is
 	// called as it leaves. A newer seq becomes the open's, written first for
@@ -291,6 +309,9 @@ func (o *open) record() entity.OpenRecord {
 	}
 	k := o.Durable
 	r.Timeout, r.CreateGUID, r.AppInstance, r.AppVersion, r.LockSeq = k.Timeout, k.Create, k.Instance.ID, k.Instance.Version, k.LockSeq
+	if c := o.Clone; c != nil {
+		r.Kind, r.CloneDst, r.CloneVersion = entity.OpenCloneSource, c.Dst, c.Version
+	}
 	return r
 }
 
@@ -699,7 +720,7 @@ func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, d
 // whose key is held on another file is ErrInvalid.
 func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 	ref, err := t.mintUnder(e, o.Client, s, StateOpen, func(ref StateRef) error {
-		if !t.current(o.Client) {
+		if o.Clone == nil && !t.current(o.Client) {
 			return ErrStaleClient
 		}
 		// decision: an open of a session that ended here is ErrStaleClient,
@@ -855,8 +876,8 @@ func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, req seqReq, fn func
 			return err
 		}
 		o := e.opens[k.token]
-		if o == nil || o.parked != 0 {
-			return ErrBadState // a disconnected open is used again only once reconnected
+		if o == nil || o.parked != 0 || o.Clone != nil {
+			return ErrBadState // a disconnected open is used again only once reconnected; a clone's hold, never
 		}
 		return t.sequenced(opensOwner(o.Owner), q, req, func(bool) error {
 			if err := seqErr(o.Ref.Seq, presented); err != nil {
@@ -1117,8 +1138,10 @@ func (t *Table) closeOpen(ctx context.Context, e *entry, o *open, out *outbox) *
 	if freed {
 		t.serve(ctx, e, out)
 	}
-	if len(e.opens) > 0 {
-		return nil
+	for _, h := range e.opens {
+		if h.Clone == nil {
+			return nil // a clone's hold is no client's: it defers no delete
+		}
 	}
 	p := e.pending
 	e.pending = nil

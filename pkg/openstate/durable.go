@@ -386,11 +386,12 @@ func (t *Table) unadopt(c entity.ClientID) {
 	}
 }
 
-// install puts every persistent open of shard s of share into the
-// table with its locks, its lease and its file's delete pending,
-// disconnected since now, before s answers anything: so its deny modes,
-// locks and lease conflict as they did until it is reconnected or its
-// Timeout passes, which closes it as a close does. Only a client the
+// install puts every persistent open and every clone's hold of shard s of
+// share into the table before s answers anything. A persistent open comes
+// with its locks, its lease and its file's delete pending, disconnected
+// since now, so its deny modes, locks and lease conflict as they did until
+// it is reconnected or its Timeout passes, which closes it as a close does;
+// a hold stays until the clone's last batch, and CloneClose. Only a client the
 // shard's records name and that recovers by reconnecting is waited for by
 // grace; an open of any other client, ended or with no record, is kept
 // only to its Timeout. sh is the shard's new serving, not yet installed;
@@ -409,6 +410,12 @@ func (t *Table) install(ctx context.Context, share entity.ShareID, s ShardID, sh
 		rec, err := ops.Get(ctx, share, d.File, d.Open)
 		if err != nil {
 			return err
+		}
+		if rec.Kind == entity.OpenCloneSource {
+			if _, err := t.holdClone(share, s, rec); err != nil {
+				return err
+			}
+			continue
 		}
 		if rec.Durability != entity.DurabilityPersistent {
 			continue
@@ -690,9 +697,6 @@ func (t *Table) savePending(ctx context.Context, e *entry) {
 // admission lock, not its base file's, since the record names only the
 // stream. Read the stream's base first if an unlink of a base is seen racing
 // the close of its stream's record.
-//
-// ponytail: a clone's source record is skipped, as nothing here makes one
-// yet. Close it at the clone's last batch once clones are built.
 func (t *Table) closeUnreclaimed(ctx context.Context, sink Sink) {
 	now := t.d.Clock.Elapsed()
 	due := map[ShardID]*served{}
@@ -744,7 +748,7 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 			return err
 		}
 		if rec.Kind == entity.OpenCloneSource {
-			continue
+			continue // held until the clone's last batch, even before CloneOpen holds it here
 		}
 		var orphan entity.FileID
 		unlock := t.order(d.File)
@@ -774,6 +778,77 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 		}
 	}
 	return nil
+}
+
+// holdClone holds rec, a clone's hold on its source, in shard s of share:
+// an open of no client, on its source's entry. One already held is left as
+// it is.
+func (t *Table) holdClone(share entity.ShareID, s ShardID, rec entity.OpenRecord) (entity.OpenID, error) {
+	return rec.ID, t.step(rec.File, func(e *entry) error {
+		t.idx.Lock()
+		_, held := t.byID[rec.ID]
+		t.idx.Unlock()
+		if held {
+			return nil
+		}
+		o := &open{share: share, durable: true, Open: Open{ID: rec.ID, File: rec.File, Clone: &CloneSource{rec.CloneDst, rec.CloneVersion}}}
+		return t.mintOpen(e, o, s)
+	})
+}
+
+// decision: a clone's hold is admitted in grace, as it holds no access and
+// denies nothing a reclaim could conflict with, and the store already wrote
+// it. Refuse it ErrGrace if a hold is found to carry anything a reclaim
+// meets.
+func (v opens) CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entity.OpenID, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return 0, err
+	}
+	if _, begun := t.instance(src.Shard); !begun {
+		return 0, &DelayError{DelayFrozen}
+	}
+	recs, err := t.d.Records.Opens().Of(ctx, src.Share, src.ID)
+	if err != nil {
+		return 0, err
+	}
+	for _, rec := range recs {
+		if rec.Kind == entity.OpenCloneSource && rec.CloneDst == c.Dst && rec.CloneVersion == c.Version {
+			return t.holdClone(src.Share, src.Shard, rec)
+		}
+	}
+	return 0, ErrBadState
+}
+
+// decision: the hold's source is reported an orphan when an unlink this
+// process saw took its last entry and no open is left, since its record
+// was deleted by the clone's last batch, not here. One unlinked before a
+// restart is not known so: its pending release, written with the unlink,
+// runs at the next start instead. Have the last batch report the orphan if
+// such releases are seen waiting for a start.
+func (v opens) CloneClose(ctx context.Context, id entity.OpenID) (CloseResult, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return CloseResult{}, err
+	}
+	t.idx.Lock()
+	k, ok := t.byID[id]
+	f := t.refs[k].file
+	t.idx.Unlock()
+	if !ok {
+		return CloseResult{}, ErrBadState
+	}
+	var res CloseResult
+	err := t.step(f, func(e *entry) error {
+		o := e.opens[k.token]
+		if o == nil || o.ID != id || o.Clone == nil {
+			return ErrBadState
+		}
+		t.dropOpen(e, o)
+		res.Orphan = e.unlinked && len(e.opens) == 0
+		return nil
+	})
+	return res, err
 }
 
 // decision: a sequence exactly 0x8000 from the open's is stale on either

@@ -986,6 +986,11 @@ func TestDropShare(t *testing.T) {
 	file, r := f.fileIn(t, "disk")
 	r.Access = rd | wr
 	f.mustOpen(t, c, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	src, _ := f.fileIn(t, "src")
+	dst, _ := f.fileIn(t, "dst")
+	if _, err := f.Opens().CloneOpen(ctx, src, f.cloned(t, src, dst)); err != nil {
+		t.Fatal(err)
+	}
 	held, dir := in(1), in(1)
 	oa := f.mustOpen(t, a, held, OpenRequest{Access: rd | wr})
 	f.mustLock(t, a, held, LockReq{Owner: owner(a, "lo"), Open: refOf(oa), Ranges: []LockRange{x(0, 10)}})
@@ -1030,7 +1035,7 @@ func TestDropShare(t *testing.T) {
 	if n, w := f.sink.takeNotes(), f.sink.takeWaits(); len(n) != 0 || len(w) != 0 {
 		t.Errorf("the dropped share's held changes %+v and waiter %+v were reported", n, w)
 	}
-	if f.entryOf(held.ID) != nil || f.entryOf(dir.ID) != nil || f.entryOf(file.ID) != nil {
+	if f.entryOf(held.ID) != nil || f.entryOf(dir.ID) != nil || f.entryOf(file.ID) != nil || f.entryOf(src.ID) != nil {
 		t.Error("the dropped share's files still hold state")
 	}
 	if _, err := f.Opens().Close(ctx, b, refOf(other), Seqs{}); err != nil {
@@ -1039,8 +1044,8 @@ func TestDropShare(t *testing.T) {
 	f.sweep(ctx)
 	f.Stop() // waits for the steps the sweep started
 	ended := slices.ContainsFunc(f.sink.graces, func(g graceEnded) bool { return g.share == f.fs.Share.ID })
-	if got := f.stored(t, file); len(got) != 1 || ended {
-		t.Errorf("stored after the drop %+v, graces ended %+v; want the persistent record left to the store", got, f.sink.graces)
+	if got := append(f.stored(t, file), f.stored(t, src)...); len(got) != 2 || ended {
+		t.Errorf("stored after the drop %+v, graces ended %+v; want the persistent record and the clone's hold left to the store", got, f.sink.graces)
 	}
 }
 
