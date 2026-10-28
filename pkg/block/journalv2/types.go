@@ -20,6 +20,7 @@ type (
 	InstallationID = core.InstallationID
 	SegmentID      = core.SegmentID
 	CloneSpec      = core.CloneSpec
+	ChangeKind     = core.ChangeKind
 )
 
 // The sync policies; see SyncPolicy.

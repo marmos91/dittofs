@@ -8,23 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// RemovalKind is the removal that left a marker. The zero RemovalKind names
-// none: a Change with it is held content.
-type RemovalKind uint8
-
-const (
-	// RemovalTruncate is a Truncate's marker, from the new size to the end of
-	// the file.
-	RemovalTruncate RemovalKind = iota + 1
-	// RemovalDeallocate is a Deallocate's marker, over the punched extent.
-	RemovalDeallocate
-	// RemovalDelete is a Delete's marker, over the whole file.
-	RemovalDelete
-	// RemovalCloneTarget is a CloneTarget's marker, over the destination
-	// extent; it keeps the clone's spec.
-	RemovalCloneTarget
-)
-
 // marker is a removal marker: the extent a removal covers and the removal's
 // version, holding no bytes and naming no record. Inside its extent, content
 // with a version below the marker's is not held, and content at or above it
@@ -37,21 +20,21 @@ const (
 type marker struct {
 	extent  core.Extent
 	version core.Version
-	kind    RemovalKind
+	kind    core.ChangeKind // the removal that left it
 	clone   *core.CloneSpec // a clone target's spec; nil for every other kind
 }
 
 // toEnd returns the extent from off to the end of the file.
 func toEnd(off int64) core.Extent { return core.Extent{Off: off, Len: math.MaxInt64 - off} }
 
-// end returns the offset just past e.
-func end(e core.Extent) int64 { return e.Off + e.Len }
+// extentEnd returns the offset just past e.
+func extentEnd(e core.Extent) int64 { return e.Off + e.Len }
 
 // truncate stops holding everything at or beyond size below v, narrowing a
 // piece that straddles it, and leaves a marker from size to the end of the
 // file.
 func (f *file) truncate(size int64, v core.Version) {
-	f.remove(marker{extent: toEnd(size), version: v, kind: RemovalTruncate})
+	f.remove(marker{extent: toEnd(size), version: v, kind: core.ChangeTruncate})
 }
 
 // deallocate stops holding e below v and leaves a marker over it. A
@@ -61,14 +44,14 @@ func (f *file) deallocate(e core.Extent, v core.Version) error {
 	if e.Len == 0 {
 		return core.ErrZeroLength
 	}
-	f.remove(marker{extent: e, version: v, kind: RemovalDeallocate})
+	f.remove(marker{extent: e, version: v, kind: core.ChangeDeallocate})
 	return nil
 }
 
 // delete stops holding every extent of the file below v and leaves a marker
 // over the whole file.
 func (f *file) delete(v core.Version) {
-	f.remove(marker{extent: toEnd(0), version: v, kind: RemovalDelete})
+	f.remove(marker{extent: toEnd(0), version: v, kind: core.ChangeDelete})
 }
 
 // cloneTarget stops holding (spec.DstOff, spec.Len) below v as deallocate
@@ -83,7 +66,7 @@ func (f *file) cloneTarget(spec core.CloneSpec, v core.Version) error {
 	f.remove(marker{
 		extent:  core.Extent{Off: spec.DstOff, Len: spec.Len},
 		version: v,
-		kind:    RemovalCloneTarget,
+		kind:    core.ChangeCloneTarget,
 		clone:   &spec,
 	})
 	return nil
@@ -132,9 +115,16 @@ func (f *file) firstAbove(v core.Version) int {
 
 // fill holds p as a fill does, where nothing is held, except inside a marker
 // above p's version: a removal newer than the fetched content excludes it,
-// so a cold read resolved against a ref older than the removal cannot bring
-// the removed bytes back. A marker at p's version masks nothing, since only
-// content below a marker's version is excluded.
+// so while the marker is unsettled a cold read resolved against a ref older
+// than the removal cannot bring the removed bytes back. A marker at p's
+// version masks nothing, since only content below a marker's version is
+// excluded.
+//
+// decision: only unsettled markers mask a fill. Once a removal is settled its
+// marker is gone, and a fill resolved before the removal is no longer masked
+// here: refusing it is the fill staleness check's job, against the file's
+// change version, which a removal raises. That check is not built yet, so
+// until it is, a stale fill landing after Settle is held.
 func (f *file) fill(p Placed) {
 	above := f.markers[f.firstAbove(p.Version):]
 	if len(above) == 0 {
@@ -143,7 +133,7 @@ func (f *file) fill(p Placed) {
 	}
 	var masks []core.Extent
 	for _, m := range above {
-		if lo, hi := max(m.extent.Off, p.Extent.Off), min(end(m.extent), end(p.Extent)); lo < hi {
+		if lo, hi := max(m.extent.Off, p.Extent.Off), min(extentEnd(m.extent), extentEnd(p.Extent)); lo < hi {
 			masks = append(masks, core.Extent{Off: lo, Len: hi - lo})
 		}
 	}
@@ -161,9 +151,9 @@ func (f *file) fill(p Placed) {
 		if e.Off > cursor {
 			part(cursor, e.Off)
 		}
-		cursor = max(cursor, end(e))
+		cursor = max(cursor, extentEnd(e))
 	}
-	if pend := end(p.Extent); pend > cursor {
+	if pend := extentEnd(p.Extent); pend > cursor {
 		part(cursor, pend)
 	}
 }
@@ -176,8 +166,13 @@ func (f *file) settleRemovals(v core.Version) {
 }
 
 // settleRemovals settles id's markers at or below v. It claims nothing, and
-// leaves no entry for a file that had none.
+// a file with no entry is left alone rather than given one to drop: Settle
+// follows every metadata commit of a removal. A file that gains an entry
+// between the two steps is settled under its lock like any other.
 func (fs *files) settleRemovals(id core.FileID, v core.Version) {
+	if !fs.view(id, func(*file) {}) {
+		return
+	}
 	_ = fs.update(id, func(f *file) error {
 		f.settleRemovals(v)
 		return nil

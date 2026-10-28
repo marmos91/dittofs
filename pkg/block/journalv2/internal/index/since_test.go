@@ -44,16 +44,16 @@ func TestRemovalsSurviveToSince(t *testing.T) {
 		want    []Change
 	}{
 		{a, ver(5), []Change{
-			{Extent: ext(0, 8), Version: ver(2), Record: ra},
-			{Removal: RemovalTruncate, Extent: ext(8, math.MaxInt64-8), Version: ver(5)},
+			{Kind: core.ChangeWrite, Extent: ext(0, 8), Version: ver(2), Record: ra},
+			{Kind: core.ChangeTruncate, Extent: ext(8, math.MaxInt64-8), Version: ver(5)},
 		}},
 		{b, ver(6), []Change{
-			{Extent: ext(0, 4), Version: ver(3), Record: rb},
-			{Extent: ext(8, 8), Version: ver(3), Record: rb},
-			{Removal: RemovalDeallocate, Extent: ext(4, 4), Version: ver(6)},
+			{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(3), Record: rb},
+			{Kind: core.ChangeWrite, Extent: ext(8, 8), Version: ver(3), Record: rb},
+			{Kind: core.ChangeDeallocate, Extent: ext(4, 4), Version: ver(6)},
 		}},
 		{c, ver(7), []Change{
-			{Removal: RemovalDelete, Extent: ext(0, math.MaxInt64-0), Version: ver(7)},
+			{Kind: core.ChangeDelete, Extent: ext(0, math.MaxInt64-0), Version: ver(7)},
 		}},
 	}
 	// Held content at from is not yielded either: a write metadata already
@@ -66,7 +66,7 @@ func TestRemovalsSurviveToSince(t *testing.T) {
 			t.Fatalf("since(%v, 0):\n got  %+v\n want %+v", tc.id, got, tc.want)
 		}
 		for _, ch := range fs.since(tc.id, tc.removal, nil) {
-			if ch.Removal != 0 {
+			if ch.Kind != core.ChangeWrite {
 				t.Fatalf("since(%v, %v) yielded the removal at its own version: %+v", tc.id, tc.removal, ch)
 			}
 		}
@@ -80,7 +80,7 @@ func TestRemovalsSurviveToSince(t *testing.T) {
 			t.Fatalf("markers of %v = %d after settling at its removal, want 0", tc.id, n)
 		}
 		for _, ch := range fs.since(tc.id, core.Version{}, nil) {
-			if ch.Removal != 0 {
+			if ch.Kind != core.ChangeWrite {
 				t.Fatalf("since(%v, 0) yielded a settled marker: %+v", tc.id, ch)
 			}
 		}
@@ -107,13 +107,40 @@ func TestSinceIsInVersionOrder(t *testing.T) {
 		return nil
 	})
 	want := []Change{
-		{Extent: ext(32, 4), Version: ver(2), Record: r1},
-		{Removal: RemovalDeallocate, Extent: ext(8, 4), Version: ver(3)},
-		{Extent: ext(8, 4), Version: ver(3), Record: r3},
-		{Extent: ext(0, 4), Version: ver(4), Record: r2},
+		{Kind: core.ChangeWrite, Extent: ext(32, 4), Version: ver(2), Record: r1},
+		{Kind: core.ChangeDeallocate, Extent: ext(8, 4), Version: ver(3)},
+		{Kind: core.ChangeWrite, Extent: ext(8, 4), Version: ver(3), Record: r3},
+		{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(4), Record: r2},
 	}
 	if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
 		t.Fatalf("since:\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// TestSinceOrdersOneVersionByOffset checks the offset tie-break among items of
+// one version. One record overwritten in every other slot leaves pieces of
+// two versions interleaved by offset, so the sort must move them, and a sort
+// that compared versions alone could hand back each version's pieces in any
+// order, applying the file's content out of place.
+func TestSinceOrdersOneVersionByOffset(t *testing.T) {
+	var fs files
+	id := fid(1)
+	const slots = 64
+	change(t, &fs, id, func(f *file) error {
+		f.write(write(0, 4*slots, rec(1, 0), 2))
+		for i := int64(1); i < slots; i += 2 {
+			f.write(write(4*i, 4, rec(2, uint32(4*i)), 4))
+		}
+		return nil
+	})
+	offs := map[core.Version][]int64{}
+	for _, c := range fs.since(id, core.Version{}, nil) {
+		offs[c.Version] = append(offs[c.Version], c.Extent.Off)
+	}
+	for v, o := range offs {
+		if len(o) != slots/2 || !slices.IsSorted(o) {
+			t.Fatalf("offsets at %v = %v, want %d in offset order", v, o, slots/2)
+		}
 	}
 }
 
@@ -129,7 +156,7 @@ func TestSinceHidesTheOffloadedBit(t *testing.T) {
 		f.held.markOffloaded(ext(4, 4), ver(2), ver(2))
 		return nil
 	})
-	want := []Change{{Extent: ext(0, 16), Version: ver(2), Record: r}}
+	want := []Change{{Kind: core.ChangeWrite, Extent: ext(0, 16), Version: ver(2), Record: r}}
 	if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
 		t.Fatalf("since:\n got  %+v\n want %+v", got, want)
 	}
@@ -187,7 +214,7 @@ func TestSinceReadsAConsistentView(t *testing.T) {
 	var out []Change
 	for time.Now().Before(deadline) {
 		out = fs.since(id, core.Version{}, out[:0])
-		if len(out) != 3 || out[0].Version != out[1].Version || out[2].Removal == 0 ||
+		if len(out) != 3 || out[0].Version != out[1].Version || out[2].Kind == core.ChangeWrite ||
 			out[2].Version.Counter != out[0].Version.Counter+1 {
 			close(done)
 			wg.Wait()

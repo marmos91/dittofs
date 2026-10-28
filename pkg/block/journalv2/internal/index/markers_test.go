@@ -37,14 +37,14 @@ func markerCount(fs *files, id core.FileID) int {
 // that run to the end, from 4 or from 0.
 var removals = []struct {
 	name   string
-	kind   RemovalKind
+	kind   core.ChangeKind
 	extent core.Extent
 	apply  func(f *file, v core.Version) error
 }{
-	{"truncate", RemovalTruncate, ext(4, math.MaxInt64-4), func(f *file, v core.Version) error { f.truncate(4, v); return nil }},
-	{"deallocate", RemovalDeallocate, ext(4, 8), func(f *file, v core.Version) error { return f.deallocate(ext(4, 8), v) }},
-	{"delete", RemovalDelete, ext(0, math.MaxInt64-0), func(f *file, v core.Version) error { f.delete(v); return nil }},
-	{"clone target", RemovalCloneTarget, ext(4, 8), func(f *file, v core.Version) error {
+	{"truncate", core.ChangeTruncate, ext(4, math.MaxInt64-4), func(f *file, v core.Version) error { f.truncate(4, v); return nil }},
+	{"deallocate", core.ChangeDeallocate, ext(4, 8), func(f *file, v core.Version) error { return f.deallocate(ext(4, 8), v) }},
+	{"delete", core.ChangeDelete, ext(0, math.MaxInt64-0), func(f *file, v core.Version) error { f.delete(v); return nil }},
+	{"clone target", core.ChangeCloneTarget, ext(4, 8), func(f *file, v core.Version) error {
 		return f.cloneTarget(core.CloneSpec{Src: fid(9), SrcOff: 100, DstOff: 4, Len: 8, AsOf: ver(1)}, v)
 	}},
 }
@@ -98,7 +98,7 @@ func TestRemovalLeavesAMarker(t *testing.T) {
 			if m.kind != r.kind || m.extent != r.extent || m.version != ver(5) {
 				t.Fatalf("marker = %+v, want kind %d, extent %+v, version 5", m, r.kind, r.extent)
 			}
-			if (m.clone != nil) != (r.kind == RemovalCloneTarget) {
+			if (m.clone != nil) != (r.kind == core.ChangeCloneTarget) {
 				t.Fatalf("marker clone spec = %+v for kind %d", m.clone, r.kind)
 			}
 		})
@@ -399,7 +399,7 @@ func TestCloneSpecIsKept(t *testing.T) {
 	cs := fs.since(id, core.Version{}, nil)
 	var got *core.CloneSpec
 	for _, c := range cs {
-		if c.Removal == RemovalCloneTarget {
+		if c.Kind == core.ChangeCloneTarget {
 			got = c.Clone
 			if c.Extent != ext(4, 8) || c.Version != ver(12) {
 				t.Fatalf("clone marker = %+v, want extent (4, 8) at v12", c)
@@ -412,7 +412,7 @@ func TestCloneSpecIsKept(t *testing.T) {
 	// What Since hands out is a copy: a caller changing it changes no marker.
 	got.Len = 1
 	for _, c := range fs.since(id, core.Version{}, nil) {
-		if c.Removal == RemovalCloneTarget && *c.Clone != want {
+		if c.Kind == core.ChangeCloneTarget && *c.Clone != want {
 			t.Fatalf("clone spec = %+v after the caller changed Since's copy, want %+v", *c.Clone, want)
 		}
 	}
