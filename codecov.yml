@@ -1,0 +1,8 @@
+# The project check fails only when total coverage drops by more than 0.5%:
+# the unit profile moves by up to about 0.1% between runs of the same code.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
