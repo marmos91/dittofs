@@ -373,3 +373,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs recovery that rejects a segment naming another journal and counts it.'
   issue: '#3378'
+- test: TestRFC28C_ForeignHeaderIsForeignNotDamaged
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that checks the identity a header names before anything else.'
+  issue: '#3378'

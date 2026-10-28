@@ -2069,3 +2069,48 @@ func TestRFC28C_ForeignSegment(t *testing.T) {
 	wantBytes(t, f.Share(0), a.id, 0, a.p)
 	wantBytes(t, f.Share(1), b.id, 0, b.p)
 }
+
+// TestRFC28C_ForeignHeaderIsForeignNotDamaged checks that a segment written
+// under another identity is told foreign by the identity its header names,
+// the header verifying on its own: it is counted as rejected, nothing as
+// damaged, and nothing of it is attached.
+//
+// decision: the golden bytes of a segment header and of a seal marker live
+// with the encoder's tests, and a seal marker copied into a payload is
+// checked by the scan check of this suite; this is the row's foreign half.
+func TestRFC28C_ForeignHeaderIsForeignNotDamaged(t *testing.T) {
+	const size = 64 << 10
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 0, 0, 0, size)
+	b := writeSynced(t, f, 1, 1, 0, size)
+
+	other := [16]byte{'o', 't', 'h', 'e', 'r', '-', 'j', 'o', 'u', 'r', 'n', 'a', 'l'}
+	id := newestID(t, f) + 1
+	extent := journalv2.Extent{Off: 0, Len: size}
+	record := raw.Record{
+		Kind: 1, FileID: journalv2test.File(5).Bytes(), Offset: 0, Length: size,
+		Seq: 1 << 40, Version: raw.Version{Counter: 1 << 40}, Tag: uint32(journalv2test.Tag(0)),
+		Write: &raw.WriteBody{Payload: pattern(fmtTag("f", 0, 5, 0), size)},
+	}
+	entry := raw.Entry{
+		FileID: journalv2test.File(5).Bytes(), Offset: 0, RecordOffset: raw.SegmentHeaderSize, Length: size,
+		Seq: 1 << 40, Version: raw.Version{Counter: 1 << 40}, Kind: 1, Tag: uint32(journalv2test.Tag(0)),
+	}
+	segment := sealedSegmentBytes(other, id, []raw.Record{record}, []raw.Entry{entry})
+	name := segmentName(id)
+	plant(t, f, name, segment)
+	before := callsFor(f, name)
+	f.Reopen()
+
+	s := f.J.Stats()
+	if s.RejectedSegments != 1 || s.DamagedSegments != 0 {
+		t.Fatalf("RejectedSegments = %d, DamagedSegments = %d with a segment of another identity, want 1 and 0", s.RejectedSegments, s.DamagedSegments)
+	}
+	if entries := heldEntries(t, f, journalv2test.File(5)); len(entries) != 0 {
+		t.Fatalf("the foreign segment's file is indexed as %+v", entries)
+	}
+	wantMissing(t, f.Share(0), journalv2test.File(5), extent)
+	wantLeftAlone(t, f, name, segment, before)
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}
