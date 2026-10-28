@@ -49,8 +49,8 @@ var removals = []struct {
 	}},
 }
 
-// TestRemovalIsNotGatedOnTheOffloadedBit is RFC 1 §3.6: no removal is gated
-// on the offloaded bit. Each removal runs over a dirty piece, an offloaded
+// TestRemovalIsNotGatedOnTheOffloadedBit checks that no removal is gated on
+// the offloaded bit. Each removal runs over a dirty piece, an offloaded
 // piece and a record split between the two, and must drop every byte of them
 // inside its extent. A removal that kept dirty content, as a release does,
 // would let an un-offloaded delete come back after a crash and resurrect a
@@ -79,8 +79,8 @@ func TestRemovalIsNotGatedOnTheOffloadedBit(t *testing.T) {
 	}
 }
 
-// TestRemovalLeavesAMarker is RFC 1 §3.6: each removal leaves a marker with
-// its extent and version and no location, until settled. A to-end removal's
+// TestRemovalLeavesAMarker checks that each removal leaves a marker with its
+// extent and version and no location, until settled. A to-end removal's
 // extent is kept as running to MaxInt64, never as its record's length 0,
 // which would read as a removal of nothing.
 func TestRemovalLeavesAMarker(t *testing.T) {
@@ -105,8 +105,7 @@ func TestRemovalLeavesAMarker(t *testing.T) {
 	}
 }
 
-// TestRemovalKeepsContentAtOrAboveItsVersion is the marker's rule (RFC 1
-// §3.6): inside its extent, content below its version is not held and
+// TestRemovalKeepsContentAtOrAboveItsVersion is the marker's rule: inside its extent, content below its version is not held and
 // content at or above it is. At run time a removal's version is above every
 // version held, but a rebuild applies records in any order, so a removal can
 // arrive after a fill at its own version or a write above it. A removal that
@@ -135,8 +134,8 @@ func TestRemovalKeepsContentAtOrAboveItsVersion(t *testing.T) {
 	}
 }
 
-// TestZeroLengthRemovalIsRefused is RFC 1 §3.6: a Deallocate or CloneTarget
-// of a zero-length extent is refused and changes nothing. Its record's
+// TestZeroLengthRemovalIsRefused checks that a Deallocate or CloneTarget of a
+// zero-length extent is refused and changes nothing. Its record's
 // length 0 would read as a removal to the end of the file, so accepting it
 // would, after a restart, remove everything from its offset on.
 func TestZeroLengthRemovalIsRefused(t *testing.T) {
@@ -167,7 +166,7 @@ func TestZeroLengthRemovalIsRefused(t *testing.T) {
 	}
 }
 
-// TestRemovalRaisesTheChangeVersion is RFC 1 §3.6: each removal is versioned
+// TestRemovalRaisesTheChangeVersion checks that each removal is versioned
 // like a write, so it raises the file's change version. One that did not
 // would let a fill resolved before the removal pass the staleness check.
 func TestRemovalRaisesTheChangeVersion(t *testing.T) {
@@ -188,7 +187,8 @@ func TestRemovalRaisesTheChangeVersion(t *testing.T) {
 	}
 }
 
-// TestTruncateEdgeCases are RFC 1 §9.2's truncate cases.
+// TestTruncateEdgeCases are the truncate edge cases: inside an extent, to
+// zero and written again, and down and back up.
 func TestTruncateEdgeCases(t *testing.T) {
 	// Inside an extent: the extent straddling the size is narrowed, keeping
 	// its head at the right place in its record, and nothing past it is held.
@@ -258,7 +258,8 @@ func TestTruncateEdgeCases(t *testing.T) {
 	})
 }
 
-// TestDeallocateEdgeCases are RFC 1 §9.2's deallocate cases.
+// TestDeallocateEdgeCases are the deallocate edge cases: inside one extent
+// and across several.
 func TestDeallocateEdgeCases(t *testing.T) {
 	// Inside one extent: it splits in three, the tail keeping its place in
 	// the record. A split that kept the head's skip for the tail would serve
@@ -303,8 +304,8 @@ func TestDeallocateEdgeCases(t *testing.T) {
 	})
 }
 
-// TestNoResurrection is RFC 1 §9.4's "no resurrection" row at the index, for
-// each removal: write at v2, remove at v3, then fill the extent at v2, as a
+// TestNoResurrection checks that a removal is never undone by an older fill,
+// for each removal: write at v2, remove at v3, then fill the extent at v2, as a
 // cold read resolving against a ref older than the removal would. The fill
 // must hold nothing inside the marker, since content below its version is not
 // held there. A fill at v3 is held, since only content below the marker's
@@ -372,7 +373,7 @@ func TestFillHoldsOutsideTheMarker(t *testing.T) {
 // keeps the spec it was given, unchanged by anything the caller does to its
 // copy afterwards, and the destination extent is not held. A marker that kept
 // only the extent would hand a restart a plain removal, and the destination
-// would read zeros (RFC 1 §3.6).
+// would read zeros.
 func TestCloneSpecIsKept(t *testing.T) {
 	var fs files
 	id := fid(1)
@@ -403,6 +404,13 @@ func TestCloneSpecIsKept(t *testing.T) {
 	}
 	if got == nil || *got != want {
 		t.Fatalf("clone spec = %+v, want %+v", got, want)
+	}
+	// What Since hands out is a copy: a caller changing it changes no marker.
+	got.Len = 1
+	for _, c := range fs.since(id, core.Version{}, nil) {
+		if c.Removal == RemovalCloneTarget && *c.Clone != want {
+			t.Fatalf("clone spec = %+v after the caller changed Since's copy, want %+v", *c.Clone, want)
+		}
 	}
 	fs.view(id, func(f *file) {
 		if _, ok := f.held.lookup(6); ok {
