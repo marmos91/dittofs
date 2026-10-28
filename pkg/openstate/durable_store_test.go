@@ -956,3 +956,23 @@ func TestGraceEndIsNotRaisedWhenServedAgain(t *testing.T) {
 		}
 	}
 }
+
+// A lock whose stored name another lock takes over is rewritten: of two
+// stacked locks at one offset, unlocking the first leaves the second named
+// as the first was.
+func TestLockRenamedInPlaceIsRewritten(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	so := smbOwner(a, o)
+	f.mustLock(t, a, file, LockReq{Owner: so, Open: byID(o), Ranges: []LockRange{sh(0, 10)}})
+	f.mustLock(t, a, file, LockReq{Owner: so, Open: byID(o), Ranges: []LockRange{sh(0, 20)}})
+	if _, err := f.Locks().Unlock(ctx, a, file, byID(o), so, []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.storedLocks(t, file, o); len(got) != 1 || got[0].Length != 20 {
+		t.Errorf("stored after the first of two stacked locks went: %+v, want the second alone", got)
+	}
+}
