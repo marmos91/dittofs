@@ -239,6 +239,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
 		return OpenResult{}, ErrInvalid
 	}
+	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
+		return OpenResult{}, ErrInvalid // a lease key is SMB's
+	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
 		// An SMB FileId names the open across a reconnect.
@@ -261,6 +264,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			return ErrDeletePending
 		}
 		if r.Lease != (LeaseKey{}) {
+			// Refused early, before breakHandles and recallOthers queue
+			// recalls; mintOpen is the rule.
 			t.idx.Lock()
 			u, held := t.keys[clientKey{who.Client, r.Lease}]
 			t.idx.Unlock()

@@ -296,16 +296,12 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	case mine != nil, k == GrantNone:
 		return nil
 	}
-	ck := clientKey{who.Client, r.Lease}
 	var epoch *uint16
 	if r.Lease != (LeaseKey{}) {
 		epoch = r.Epoch
 	}
 	ref, err := t.mintUnder(e, who.Client, f.Shard, StateGrant, func(StateRef) error {
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
-			return ErrDelay
-		}
-		if r.Lease != (LeaseKey{}) && t.keys[ck].file != e.file {
 			return ErrDelay
 		}
 		if t.granted[who.Client]++; t.granted[who.Client] == maxGrants {

@@ -235,6 +235,15 @@ func TestRecallDeadline(t *testing.T) {
 	}
 }
 
+// A lease key is SMB's: an open of another protocol naming one is invalid.
+func TestLeaseKeyIsSMBs(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	if _, err := f.open(a, anyFile(), OpenRequest{Owner: owner(a, "o"), Access: rd, Lease: LeaseKey{1}, Want: rw}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an NFS open naming a lease key: %v, want ErrInvalid", err)
+	}
+}
+
 // A client that let a recall time out is offered no grant at that primary
 // for a lease period after it, and one after; each further missed recall
 // restarts the period.
