@@ -191,8 +191,9 @@ func magicAt(t *testing.T, f *journalv2test.Fixture, name string, off int64, mag
 }
 
 // parked is an operation stopped at a hold: the hold, the channel its result
-// comes back on, a precondition that the parked call is the sync point meant,
-// and what to apply to the model from the calls that returned before it.
+// comes back on, nil for an operation of the journal's own with no caller to
+// return to, a precondition that the parked call is the sync point meant,
+// and what to apply to the model from what the operation did before it.
 type parked struct {
 	held   *journalv2test.Hold
 	done   <-chan error
@@ -217,7 +218,10 @@ func crashParked(t *testing.T, d *driven, p parked) {
 	}
 
 	p.held.Release()
-	<-p.done
+	if p.done != nil {
+		<-p.done
+	}
+
 	if p.mirror != nil {
 		p.mirror()
 	}
@@ -252,8 +256,15 @@ func waitParked(t *testing.T, p parked, what string) {
 // the write that rolls parks a sync of the first segment at the hold. It
 // returns the parked write and the first segment's id. A seal that runs
 // after the write returned is waited for by its sync too; the write is then
-// mirrored already, and a write still parked is not, since it never returns
-// to the process the crash ends.
+// mirrored already. A write still parked never returns to the process the
+// crash ends, but the seal's first sync, once released, proves its first
+// piece in the sealed segment, so the parked write's mirror tells the model
+// of it as unsynced, at the version the index shows for that piece.
+//
+// decision: the model would otherwise hold nothing where the journal serves
+// the piece after the crash. An index that does not show the piece before
+// the write returns fails the precondition, and the checks on this need
+// another construction then.
 func rollParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 	t.Helper()
 
@@ -293,7 +304,13 @@ func rollParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 
 		select {
 		case <-held.Reached():
-			return parked{held: held, done: done}, seg
+			v, ok := versionAt(t, d.f, id, off)
+			if !ok {
+				t.Fatalf("precondition: the rolling write at %d is not in the index while its seal is parked, so the model cannot be told its version", off)
+			}
+
+			mirror := func() { d.mirrorWrite(0, 0, off, p, wrote{v, nil}) }
+			return parked{held: held, done: done, mirror: mirror}, seg
 		case <-done:
 			if rolled() {
 				// The seal runs after the write returned: its sync is still
@@ -309,6 +326,45 @@ func rollParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 
 	t.Fatalf("records of %d bytes never rolled a segment of %d", size, journalv2test.FixtureSegmentCap)
 	return parked{}, 0
+}
+
+// versionAt returns the version of the held entry of file id covering off,
+// and whether the index holds one.
+func versionAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off int64) (journalv2.Version, bool) {
+	t.Helper()
+
+	entries, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("inspect a file: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.Kind == journalv2.EntryHeld && e.Extent.Off <= off && off < e.Extent.Off+e.Extent.Len {
+			return e.Version, true
+		}
+	}
+
+	return journalv2.Version{}, false
+}
+
+// idleSealParked writes two 64 KiB records on file 0 through share 0, each
+// synced, so the stream's segment is above the idle seal threshold, holds
+// that segment's sync, and moves the clock past the idle age, so the seal of
+// the idle segment parks at the hold: no write is in flight, and the seal has
+// no caller to return to. It returns the parked seal and the segment's id.
+func idleSealParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
+	t.Helper()
+
+	const size = 64 << 10
+	d.writeSynced(0, 0, 0, size)
+	d.writeSynced(0, 0, size, size)
+	seg := entryAt(t, d.f, journalv2test.File(0), 0).Location.Segment
+	held := d.f.Seam.Hold(t, journalv2test.OpSync, segmentName(seg))
+	d.f.Advance(journalv2test.IdleSealAge)
+	p := parked{held: held}
+	waitParked(t, p, "the idle seal")
+	return p, seg
 }
 
 // maxSealSyncs bounds the syncs of the sealed segment a seal is given to
@@ -329,7 +385,7 @@ func advanceUntil(t *testing.T, d *driven, p *parked, name string, cond func() b
 		}
 
 		p.held = holdNext(t, d.f, journalv2test.OpSync, name, p.held)
-		waitParked(t, *p, "the roll")
+		waitParked(t, *p, "the seal")
 	}
 }
 
@@ -354,16 +410,46 @@ func indexedEnd(t *testing.T, where string, f *journalv2test.Fixture, seg journa
 	return end
 }
 
-// sealMarkerAfter reports whether the live bytes of the segment file name
-// carry a seal marker of segment seg at an 8-byte boundary at or after from:
-// its magic, its segment id, and its offset field naming its own position.
-func sealMarkerAfter(t *testing.T, f *journalv2test.Fixture, name string, seg journalv2.SegmentID, from int64) bool {
+// sealMarkerAt returns the position in the live bytes of the segment file
+// name of a seal marker of segment seg at an 8-byte boundary at or after
+// from, and whether there is one: its magic, its segment id, and its offset
+// field naming its own position.
+func sealMarkerAt(t *testing.T, f *journalv2test.Fixture, name string, seg journalv2.SegmentID, from int64) (int64, bool) {
 	t.Helper()
 
 	b := liveBytes(t, f, name)
 	for off := (from + 7) &^ 7; off+raw.SealMarkerSize <= int64(len(b)); off += 8 {
 		m := b[off : off+raw.SealMarkerSize]
 		if string(m[:4]) == "DJS1" && binary.LittleEndian.Uint64(m[8:16]) == uint64(seg) && int64(binary.LittleEndian.Uint64(m[16:24])) == off {
+			return off, true
+		}
+	}
+
+	return 0, false
+}
+
+// trailerAfter reports whether the live bytes of the segment file name carry
+// a trailer behind a seal marker of segment seg found at or after from: one
+// whose footer offset names the entries just past that marker, and which
+// sits where its entry count ends, for a segment sealed early, or in the
+// file's last 32 bytes, for one sealed full.
+func trailerAfter(t *testing.T, f *journalv2test.Fixture, name string, seg journalv2.SegmentID, from int64) bool {
+	t.Helper()
+
+	marker, ok := sealMarkerAt(t, f, name, seg, from)
+	if !ok {
+		return false
+	}
+
+	b := liveBytes(t, f, name)
+	footer := marker + raw.SealMarkerSize
+	for off := footer; off+raw.TrailerSize <= int64(len(b)); off += 8 {
+		tr := b[off : off+raw.TrailerSize]
+		if string(tr[:4]) != "DJT1" || int64(binary.LittleEndian.Uint64(tr[8:16])) != footer {
+			continue
+		}
+
+		if entries := int64(binary.LittleEndian.Uint32(tr[16:20])); off == footer+entries*raw.CatalogEntrySize || off == int64(len(b))-raw.TrailerSize {
 			return true
 		}
 	}
@@ -371,21 +457,21 @@ func sealMarkerAfter(t *testing.T, f *journalv2test.Fixture, name string, seg jo
 	return false
 }
 
-// footerParked drives a fresh journal to the sync that makes a sealed
-// segment's footer durable and parks it, returning the parked write that
-// rolled and the sealed segment's name.
+// footerParked drives a fresh journal to a segment sealed full, by a write
+// that rolls, and parks the seal at the sync that makes its trailer durable,
+// returning the parked write and the sealed segment's name.
 func footerParked(t *testing.T, d *driven) (parked, string) {
 	t.Helper()
 
 	d.writeSynced(1, 1, 0, 64<<10)
 	p, seg := rollParked(t, d)
 	name := segmentName(seg)
-	trailed := func() bool { return magicAt(t, d.f, name, -1, "DJT1") }
-	advanceUntil(t, d, &p, name, trailed, "no trailer at the end of the live bytes")
+	trailed := func() bool { return trailerAfter(t, d.f, name, seg, indexedEnd(t, "footer", d.f, seg)) }
+	advanceUntil(t, d, &p, name, trailed, "no trailer behind the seal marker in the live bytes")
 
 	p.check = func() string {
 		if !trailed() {
-			return "the sealed segment does not end with a trailer"
+			return "the sealed segment carries no trailer behind its seal marker"
 		}
 		return ""
 	}
@@ -519,6 +605,12 @@ func takeParked(t *testing.T, d *driven, zero *journalv2test.Hold, name string) 
 // decision: the directory sync of a format replace is no point here. The
 // format file check crashes a restamp before the rename of the new file and
 // before the directory sync after it, which are that operation's sync points.
+//
+// decision: the seal and footer points seal the segment idle, through the
+// clock, so no write is split at the cap and parked inside the seal while
+// the crash takes it. The trailer sweep of the torn writes needs a segment
+// sealed full, whose trailer is the file's last bytes, so it alone rolls a
+// write and tells the model of it.
 var syncPoints = []struct {
 	name string
 	run  func(t *testing.T, d *driven) parked
@@ -535,12 +627,13 @@ var syncPoints = []struct {
 	}},
 	{"seal", func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
-		p, seg := rollParked(t, d)
+		p, seg := idleSealParked(t, d)
 		name := segmentName(seg)
-		// The rolling write is split at the cap and its first piece sits in
-		// the sealed segment after the last synced record, so the marker is
-		// looked for from the end of the last record the index places there.
-		sealed := func() bool { return sealMarkerAfter(t, d.f, name, seg, indexedEnd(t, "seal", d.f, seg)) }
+		sealed := func() bool {
+			_, ok := sealMarkerAt(t, d.f, name, seg, indexedEnd(t, "seal", d.f, seg))
+			return ok
+		}
+
 		advanceUntil(t, d, &p, name, sealed, "no seal marker in the live bytes")
 		p.check = func() string {
 			if !sealed() {
@@ -551,7 +644,17 @@ var syncPoints = []struct {
 		return p
 	}},
 	{"footer", func(t *testing.T, d *driven) parked {
-		p, _ := footerParked(t, d)
+		d.writeSynced(1, 1, 0, 64<<10)
+		p, seg := idleSealParked(t, d)
+		name := segmentName(seg)
+		trailed := func() bool { return trailerAfter(t, d.f, name, seg, indexedEnd(t, "footer", d.f, seg)) }
+		advanceUntil(t, d, &p, name, trailed, "no trailer behind the seal marker in the live bytes")
+		p.check = func() string {
+			if !trailed() {
+				return "the sealed segment carries no trailer behind its seal marker"
+			}
+			return ""
+		}
 		return p
 	}},
 	{"repack_copy", func(t *testing.T, d *driven) parked {
@@ -589,12 +692,25 @@ var syncPoints = []struct {
 			_, err := d.f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
 			done <- err
 		}()
-		return parked{held: held, done: done, check: func() string {
+		p := parked{held: held, done: done, check: func() string {
 			if d.f.Seam.CallsFor(journalv2test.OpRemove, name) != removes+1 {
 				return "the held directory sync does not follow the segment's unlink"
 			}
 			return ""
 		}}
+		// The copies may not fit the destination's active segment, so the
+		// repack can roll, and a refill's directory sync then reaches the
+		// hold before the unlink's.
+		waitParked(t, p, "the repack")
+		for n := 0; d.f.Seam.CallsFor(journalv2test.OpRemove, name) == removes; n++ {
+			if n == maxRefillSyncs {
+				t.Fatalf("precondition: the segment was not unlinked within %d directory syncs of the repack", n)
+			}
+
+			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "", p.held)
+			waitParked(t, p, "the repack")
+		}
+		return p
 	}},
 	{"spare_entry", func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
@@ -608,11 +724,9 @@ var syncPoints = []struct {
 		recs, _, _ := d.fill(0, 0, 64<<10)
 		d.sync(0, recs[0].id)
 		// The roll returned already; the spare's directory sync, off the
-		// write path, is what parks.
+		// write path, is what parks, with no caller to return to.
 		<-held.Reached()
-		done := make(chan error, 1)
-		done <- nil
-		return parked{held: held, done: done, check: func() string {
+		return parked{held: held, check: func() string {
 			if got := len(segmentFiles(t, d.f)); got != before+1 {
 				return "the directory did not gain the one segment file a spare's rename adds"
 			}
@@ -673,28 +787,43 @@ var syncPoints = []struct {
 		return p
 	}},
 	{"open_reappend", func(t *testing.T, d *driven) parked {
-		d.writeSynced(1, 1, 0, 64<<10)
+		other := d.writeSynced(1, 1, 0, 64<<10)
+		otherName := segmentName(entryAt(t, d.f, other.id, 0).Location.Segment)
 		a := d.write(0, 0, 0, pattern("a", 64<<10))
 		name := segmentName(entryAt(t, d.f, a.id, 0).Location.Segment)
 		deviceSync(t, d.f, name)
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
 		d.f.Drop(journalv2test.OpSync, name)
 		syncs := d.f.Seam.CallsFor(journalv2test.OpSync, name)
-		held := d.f.Seam.Hold(t, journalv2test.OpSync, "*.seg")
+		held := d.f.Seam.Hold(t, journalv2test.OpSync, name)
 		done := make(chan error, 1)
 		go func() { done <- d.f.TryAbandon() }()
 		p := parked{held: held, done: done}
 		waitParked(t, p, "the open after an abandon")
-		if d.f.Seam.CallsFor(journalv2test.OpSync, name) != syncs+1 {
-			t.Fatalf("precondition: the open's first segment sync is not the unproven segment's own")
-		}
-		// The first sync is the segment's own, which the fault drops; the
-		// next is the re-append's, on the segment it went to, and the failed
-		// segment is never synced again.
+		// The segment's own sync, which the fault drops, passes. The open
+		// verifies every newest segment's unproven tail by syncing it, file
+		// 1's included, so a sync of that segment is passed too, and the
+		// first sync of any other segment is the re-append's.
+		otherSyncs := d.f.Seam.CallsFor(journalv2test.OpSync, otherName)
 		p.held = holdNext(t, d.f, journalv2test.OpSync, "*.seg", p.held)
+		waitParked(t, p, "the open after an abandon")
+		for n := 0; d.f.Seam.CallsFor(journalv2test.OpSync, otherName) != otherSyncs; n++ {
+			if n == maxOpenSyncs {
+				t.Fatalf("precondition: no sync of a segment other than the unproven one's and file 1's within %d syncs of the open", n)
+			}
+
+			otherSyncs = d.f.Seam.CallsFor(journalv2test.OpSync, otherName)
+			p.held = holdNext(t, d.f, journalv2test.OpSync, "*.seg", p.held)
+			waitParked(t, p, "the open after an abandon")
+		}
+
 		p.check = func() string {
 			if d.f.Seam.CallsFor(journalv2test.OpSync, name) != syncs+1 {
 				return "the unproven segment was synced again after its own sync, so the held sync is not the re-append's"
+			}
+
+			if d.f.Seam.CallsFor(journalv2test.OpSync, otherName) != otherSyncs {
+				return "the held sync is file 1's segment's, not the re-append's"
 			}
 			return ""
 		}
@@ -722,6 +851,14 @@ var syncPoints = []struct {
 		return takeParked(t, d, zero, name)
 	}},
 }
+
+// maxRefillSyncs bounds the directory syncs a repack is given before the
+// unlink's: one per spare its copies take.
+const maxRefillSyncs = 4
+
+// maxOpenSyncs bounds the segment syncs an open is given before the
+// re-append's: the unproven segment's own, file 1's, and the re-append's.
+const maxOpenSyncs = 4
 
 // TestDamage_LostWrites checks that a crash dropping every write since the
 // last sync, at each sync point of each operation that syncs, the open's own
@@ -825,13 +962,16 @@ func segmentOf(t *testing.T, where string, f *journalv2test.Fixture, seg journal
 // and a trailer cut anywhere is no footer. Two sweeps: the final record,
 // a 64-byte write on file 0 unsynced last, cut at each of its bytes by a
 // crash; and the trailer, the last write of a seal parked at its sync, cut
-// at each of its bytes from the end, the segment then read by scan where the
-// cut of nothing left it read by its catalog.
+// at each of its bytes from the end, the segment then never read by its
+// catalog.
 //
 // decision: the record sweep counts its cuts over one write of the record's
-// header, time and payload, 168 bytes. A journal that writes a record in
-// more than one call is refused a cut past its last write by the seam, which
-// the sweep reports rather than silently cutting less.
+// header, time and payload, 168 bytes, and the trailer sweep over the last
+// write of the seal. A journal that writes a record, or the marker, the
+// footer and the trailer, in more than one call is cut at its last call
+// only: the seam keeps the last unsynced write cut and loses the others, and
+// refuses a cut past the last write, which the sweep reports rather than
+// silently cutting less.
 func TestDamage_TornWrites(t *testing.T) {
 	t.Run("final_record", func(t *testing.T) {
 		const size = 64
@@ -855,9 +995,6 @@ func TestDamage_TornWrites(t *testing.T) {
 	})
 
 	t.Run("trailer", func(t *testing.T) {
-		// How the open after the cut of nothing rebuilt the journal: the
-		// trailer whole, the segment read by its catalog.
-		var base journalv2.RecoveryStats
 		for n := 0; n <= raw.TrailerSize; n++ {
 			iterate(t, func(tb testing.TB) {
 				d := newDriven(tb, t, fmt.Sprintf("the trailer cut %d bytes short", n))
@@ -873,17 +1010,20 @@ func TestDamage_TornWrites(t *testing.T) {
 
 				p.held.Release()
 				<-p.done // the crash took the roll
+				if p.mirror != nil {
+					p.mirror()
+				}
+
 				d.reopened()
 				d.crashed()
 
-				r := d.f.J.Stats().Recovery
-				switch {
-				case n == 0 && r.CatalogSegments == 0:
-					t.Fatalf("precondition: with the trailer whole, recovery read no segment by its catalog: %+v", r)
-				case n == 0:
-					base = r
-				default:
-					wantScanned(t, d.label, d.f, base, 1)
+				// The sealed segment is the only one that can carry a
+				// catalog in this pass: the roll into a successor never
+				// completed, and file 1's segment is active. A cut of nothing
+				// is checked by the comparison alone, since a seal written in
+				// several calls loses all but its last.
+				if r := d.f.J.Stats().Recovery; n > 0 && r.CatalogSegments != 0 {
+					t.Fatalf("%s: recovery read %d segments by catalog, want none: a cut trailer is no footer", d.label, r.CatalogSegments)
 				}
 			})
 		}
@@ -1179,31 +1319,50 @@ func (s *flipSite) wantNoByteChanged(t *testing.T, where string) {
 	s.wantAllExact(t, where, nil)
 }
 
-// wantLossNamed fails the test unless one more extent than base counts was
-// dropped as corrupt since the open, with its offloaded bit as offloaded
-// says, and the newest loss event names r's extent so.
+// wantLossNamed fails the test unless exactly one loss event since the open
+// names r's extent as corrupt with its offloaded bit as offloaded says.
 //
-// decision: the newest event is read from the ring and the count from the
-// counters, rather than searching the ring, which is bounded without a size
-// given, or building a fresh site per byte, which costs a segment fill per
-// flip. The counters are since open, so base is what the open left.
-func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, offloaded bool, base journalv2.Counters) {
+// decision: at open the ring receives every loss record on disk, marked as
+// found at open, in no fixed order with a loss the open itself finds, so
+// the new loss is the one event not marked so, rather than the newest. The
+// ring is bounded without a size given and holds the most recent events,
+// which a loss just published is among; it is not searched for older ones.
+func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, offloaded bool) {
 	t.Helper()
 
-	st := f.J.Stats()
-	lost, repairable := st.Counters.CorruptExtentsDataLoss-base.CorruptExtentsDataLoss, st.Counters.CorruptExtentsRepairable-base.CorruptExtentsRepairable
-	if offloaded && (lost != 0 || repairable != 1) || !offloaded && (lost != 1 || repairable != 0) {
-		t.Fatalf("%s: %d extents dropped as data loss and %d as repairable since the open, want one as %s", where, lost, repairable, map[bool]string{true: "repairable", false: "data loss"}[offloaded])
+	losses := f.J.Stats().Losses
+	var since []journalv2.LossEvent
+	for _, ev := range losses {
+		if !ev.AtOpen {
+			since = append(since, ev)
+		}
 	}
 
-	if len(st.Losses) == 0 {
-		t.Fatalf("%s: the loss ring is empty after a loss was counted", where)
+	if len(since) != 1 {
+		t.Fatalf("%s: %d loss events since the open among the %d in the ring, want one: %+v", where, len(since), len(losses), losses)
 	}
 
-	ev := st.Losses[len(st.Losses)-1]
-	if ev.File != r.id || ev.Extent != r.extent || ev.Reason != journalv2.LossCorrupt || ev.Offloaded != offloaded {
-		t.Fatalf("%s: the newest loss event is %+v, want file %v, extent %+v, corrupt, offloaded %t", where, ev, r.id, r.extent, offloaded)
+	if ev := since[0]; ev.File != r.id || ev.Extent != r.extent || ev.Reason != journalv2.LossCorrupt || ev.Offloaded != offloaded {
+		t.Fatalf("%s: the loss event since the open is %+v, want file %v, extent %+v, corrupt, offloaded %t", where, ev, r.id, r.extent, offloaded)
 	}
+}
+
+// keepScanned flips the trailer's magic again and reopens when the last
+// open read S by its catalog, so the site stays scanned.
+//
+// decision: an open may write a footer for a segment sealed by an earlier
+// process once it has verified it by scan, so a journal doing that is not
+// failed; the trailer is broken again before the next flip instead.
+func (s *flipSite) keepScanned(t *testing.T, where string) {
+	t.Helper()
+
+	if s.f.J.Stats().Recovery.CatalogSegments == s.recovery.CatalogSegments {
+		return
+	}
+
+	flipBit(t, s.f, s.name, int64(len(durable(t, s.f, s.name)))-raw.TrailerSize, 0)
+	s.reopen(t, where)
+	wantScanned(t, "precondition: with its trailer's magic flipped again, before "+where, s.f, s.recovery, 0)
 }
 
 // recordRegion is a region of a record: the header, or a part of the body,
@@ -1212,6 +1371,7 @@ type recordRegion struct {
 	name      string
 	bytes     func(size int) []int
 	offloaded bool // the flips land on marked records
+	header    bool // the bytes are the header's
 }
 
 // flipRecordBytes flips every bit of each of the bytes of the region in
@@ -1219,11 +1379,14 @@ type recordRegion struct {
 // marked ones from its start, and checks the outcome: the record reads
 // missing with the caller's buffer untouched, and the records not flipped
 // still read their bytes. Where named says so, a loss event names the
-// record as corrupt with its bit, found at open where S is scanned and on
-// the read where it is catalogued, and the loss generation rises by one for
-// a record not offloaded and not at all for one that is. Neither the last
+// record as corrupt with its bit, and the loss generation rises by one for a
+// record not offloaded and not at all for one that is. Neither the last
 // record of S, which may be split at the cap, nor the last marked one, read
 // as a neighbour after every flip, is ever flipped.
+//
+// decision: the loss is looked for after the read whether S is scanned or
+// catalogued, so a scan that catches it at open and one that leaves it to
+// the read both pass, as the row allows either.
 func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bool) {
 	t.Helper()
 
@@ -1250,9 +1413,7 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 			loc := locate(t, "the site", s.f, r)
 			where := fmt.Sprintf("bit %d of byte %d of the record at %d of %s", b, off, loc.Offset, s.name)
 			if s.scanned {
-				// An open may write a footer for a segment sealed by an
-				// earlier process; the site holds only while it did not.
-				wantScanned(t, "precondition: before "+where, s.f, s.recovery, 0)
+				s.keepScanned(t, where)
 			}
 
 			generation := s.f.J.Stats().LossGeneration
@@ -1260,14 +1421,9 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 			s.reopen(t, where)
 			dropped[i] = true
 
-			base := s.f.J.Stats().Counters
-			if s.scanned && named {
-				wantLossNamed(t, where+", at open", s.f, r, offloaded, journalv2.Counters{})
-			}
-
 			wantRecordMissing(t, where, s.f.Share(0), r)
-			if !s.scanned && named {
-				wantLossNamed(t, where+", on the read", s.f, r, offloaded, base)
+			if named {
+				wantLossNamed(t, where, s.f, r, offloaded)
 			}
 
 			switch got := s.f.J.Stats().LossGeneration; {
@@ -1329,9 +1485,16 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 // has a scan refuse the record and resynchronise, and no field of a header
 // that fails to verify can name either. Assert the event once that is
 // settled.
+//
+// decision: a flipped segment header and a flipped seal marker are asserted
+// through Damaged, as the section 4.4 row asks for the segment reported as
+// damaged, while RFC 1 section 3.7 line 1159 defines DamagedSegments by
+// records that do not verify, and neither the header nor the marker is a
+// record. The RFC does not yet say which field reports damage outside a
+// record; move the assertion when it does.
 func TestDamage_BitFlip(t *testing.T) {
 	const small, large = 4096, 64 << 10
-	const marked = 32
+	const marked = 34
 
 	for _, site := range []struct {
 		suffix  string
@@ -1363,13 +1526,26 @@ func TestDamage_BitFlip(t *testing.T) {
 						bytes = append(bytes, raw.WriteMTimeOffset+i)
 					}
 					return bytes
-				}, false},
-				{"payload", payload, false},
-				{"payload_of_offloaded_record", payload, true},
+				}, false, false},
+				{"payload", payload, false, false},
+				{"payload_of_offloaded_record", payload, true, false},
+				{"header_checksum_of_offloaded_record", func(int) []int {
+					var bytes []int
+					for _, fd := range recordHeaderFields {
+						if fd.name == "header_checksum" {
+							for i := range fd.size {
+								bytes = append(bytes, fd.off+i)
+							}
+						}
+					}
+					return bytes
+				}, true, true},
 			} {
 				t.Run(rg.name, func(t *testing.T) {
 					s := newFlipSite(t, small, marked, site.scanned)
-					flipRecordBytes(t, s, rg.bytes(small), rg.offloaded, true)
+					// A header flipped in a scanned segment names no loss.
+					named := !site.scanned || !rg.header
+					flipRecordBytes(t, s, rg.bytes(small), rg.offloaded, named)
 				})
 			}
 		})
@@ -1497,7 +1673,10 @@ func TestDamage_SegmentDeleted(t *testing.T) {
 		t.Fatalf("sync the directory: %v", err)
 	}
 
-	f.Reopen()
+	if err := f.TryReopen(); err != nil {
+		stub(t, "Open", err)
+		t.Fatalf("the open after segment %s was deleted from outside: %v", name, err)
+	}
 
 	// The last record of the segment may be split at the cap, its second
 	// piece held in the successor.
@@ -1537,7 +1716,10 @@ func TestDamage_UnnamedFileLeftAlone(t *testing.T) {
 	notes := pattern("notes", 4096)
 	plant(t, f, "notes.txt", notes)
 	before := callsFor(f, "notes.txt")
-	f.Reopen()
+	if err := f.TryReopen(); err != nil {
+		stub(t, "Open", err)
+		t.Fatalf("the open with notes.txt added beside the journal: %v", err)
+	}
 
 	if got := f.J.Stats().RejectedSegments; got != 0 {
 		t.Fatalf("RejectedSegments = %d with a file that is no segment in the directory, want 0", got)
@@ -1580,7 +1762,11 @@ func TestDamage_DirectoryRestored(t *testing.T) {
 		plant(t, f, name, data)
 	}
 
-	f.Reopen()
+	if err := f.TryReopen(); err != nil {
+		stub(t, "Open", err)
+		t.Fatalf("the open after the directory was restored from its copy: %v", err)
+	}
+
 	h = f.Share(0)
 
 	if e := entryAt(t, f, id, 0); e.Version != a.version || !e.Offloaded {
