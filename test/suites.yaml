@@ -81,7 +81,7 @@ suites:
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
     format: go-json
-    cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/block/journalv2/conformance/...
+    cmd: go test -race -tags=journal_conformance -timeout=30m -artifacts -outputdir={out} ./pkg/block/journalv2/conformance/...
     known: test/journalv2/known.yaml
     tier: pr
   integration:
