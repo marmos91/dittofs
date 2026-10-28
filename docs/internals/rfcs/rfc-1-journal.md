@@ -2835,7 +2835,7 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   whole number of levels; the bound per descent is what catches a linear walk;
 - **allocations per operation**: `WriteAt`, `ReadAt` and `Stats` are measured
   in allocations per call, and an increase fails the check;
-- **index memory**: bytes per entry at 10^6 extents **MUST** stay at or below 56,
+- **index memory**: bytes per entry at 10^6 extents written sequentially **MUST** stay at or below 56,
   the estimate of [§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) plus a tenth, and the removal-drop ranges of [§7.2](#7.2%20Repack) after
   10^6 random 4 KiB overwrites of one file — spread over the sixteen or so
   segments they fill, about 6×10^4 records each — **MUST** number at most eight
