@@ -41,23 +41,22 @@ type Change struct {
 func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change {
 	first := len(out)
 	fs.view(id, func(f *file) {
-		var lastSkip uint32 // where the last held item starts in its record
 		f.held.visit(core.Extent{Off: 0, Len: math.MaxInt64}, func(p Piece) bool {
 			if p.Version.Compare(from) <= 0 {
 				return true
 			}
-			// A piece continuing the last one's record, split from it only by
-			// its offloaded bit, extends it. The version test, as in joins,
-			// only guards against a caller that names one record with two.
+			// A piece next to the last one, of the same record, extends it:
+			// pieces of one record split only by their offloaded bit are one
+			// extent. The version test, as in joins, only guards against a
+			// caller that names one record with two.
 			if n := len(out); n > first {
 				if last := &out[n-1]; end(last.Extent) == p.Extent.Off && last.Record == p.Record &&
-					last.Version == p.Version && uint64(lastSkip)+uint64(last.Extent.Len) == uint64(p.Skip) {
+					last.Version == p.Version {
 					last.Extent.Len += p.Extent.Len
 					return true
 				}
 			}
 			out = append(out, Change{Extent: p.Extent, Version: p.Version, Record: p.Record})
-			lastSkip = p.Skip
 			return true
 		})
 		for _, m := range f.markers[f.firstAbove(from):] {
