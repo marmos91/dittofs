@@ -55,12 +55,13 @@ func rbytes(rs []Retained) []rbyte {
 }
 
 // retainedOps drives a file and a per-byte oracle with the same operations,
-// decoded from data, and compares them after each. Writes that retain form
-// the open window, which either syncs, dropping what its records retained, or
-// fails as a unit, handed over shuffled. Plain writes, fills, marks, releases,
-// partial drops and repoints land between them, so a failed record is often
-// partly superseded by a surviving write or partly released. A window of
-// retaining writes alone must fail back to exactly the held set before it.
+// decoded from data, and compares them after each. Writes that retain join
+// one of two open windows, each of which either syncs, dropping what its
+// records retained, or fails as a unit, handed over shuffled. Plain writes,
+// fills, marks, releases, partial drops and repoints land between them, so a
+// failed record is often partly superseded by a surviving write, in the other
+// window or none, or partly released. A window of retaining writes alone must
+// fail back to exactly the held set before it.
 func retainedOps(t *testing.T, data []byte) {
 	var f file
 	var o byteOracle
@@ -86,27 +87,33 @@ func retainedOps(t *testing.T, data []byte) {
 		return ext(off, n)
 	}
 	inside := func(off int64, e core.Extent) bool { return off >= e.Off && off < e.Off+e.Len }
-	var window []WindowRecord
+	// Two windows are open at once, as a failed segment's window and the next
+	// segment's are, so a retaining write can survive one window's failure and
+	// then sync or fail in its own.
+	var windows [2][]WindowRecord
 	var before []Piece
-	pure := false
+	pure, pureWin := false, 0
 	rng := rand.New(rand.NewPCG(uint64(len(data)), 7))
 
 	for step := 0; len(data) > 0; step++ {
 		op, e := take()%10, span()
-		// Only retaining writes and reads keep the window pure; failing it is
-		// the op that checks it.
-		if op != 1 && op != 6 && op != 9 && len(window) > 0 {
+		// Only retaining writes to one window and reads keep that window
+		// pure; failing it is the op that checks it.
+		if op != 1 && op != 6 && op != 9 && len(windows[0])+len(windows[1]) > 0 {
 			pure = false
 		}
 		switch op {
-		case 0, 1: // write; a retaining write joins the window
+		case 0, 1: // write; a retaining write joins one of the windows
 			version++
 			p := Placed{Extent: e, Record: fresh(), Skip: uint32(take()), Version: ver(version)}
 			if op == 1 && e.Len > 0 {
-				if len(window) == 0 {
-					before, pure = f.held.pieces(nil), true
+				w := int(take() % 2)
+				if len(windows[0])+len(windows[1]) == 0 {
+					before, pure, pureWin = f.held.pieces(nil), true, w
+				} else if w != pureWin {
+					pure = false
 				}
-				window = append(window, WindowRecord{Record: p.Record, Version: p.Version})
+				windows[w] = append(windows[w], WindowRecord{Record: p.Record, Version: p.Version})
 				for i := e.Off; i < e.Off+e.Len; i++ {
 					if b := o[i]; b.held {
 						kept = append(kept, rbyte{i, b.record, b.at, b.version, b.offloaded, p.Version})
@@ -145,13 +152,19 @@ func retainedOps(t *testing.T, data []byte) {
 					o[e.Off+i].held = false
 				}
 			}
-		case 5: // the window syncs: what its records retained leaves
+		case 5: // a window syncs: what its records retained leaves
+			wi := int(take() % 2)
+			window := windows[wi]
 			for _, w := range window {
 				f.retained.drop(whole, bySuperseder(w.Version), nil)
 				kept = slices.DeleteFunc(kept, func(b rbyte) bool { return b.by == w.Version })
 			}
-			window, pure = window[:0], false
-		case 6: // the window fails, handed over in any order
+			if len(window) > 0 {
+				windows[wi], pure = window[:0], false
+			}
+		case 6: // a window fails, handed over in any order
+			wi := int(take() % 2)
+			window := windows[wi]
 			win := slices.Clone(window)
 			rng.Shuffle(len(win), func(i, j int) { win[i], win[j] = win[j], win[i] })
 			got := f.failWindow(win, nil)
@@ -166,30 +179,57 @@ func retainedOps(t *testing.T, data []byte) {
 					}
 				}
 				kept = slices.DeleteFunc(kept, func(b rbyte) bool { return b.record == w.Record })
-				kept = slices.DeleteFunc(kept, func(b rbyte) bool {
-					if b.by != w.Version || !was[b.off] {
-						return false
+				// Where the record was held, the newest byte it retained is
+				// held again, and any older one it retained there is now
+				// superseded by that one.
+				var newest [oracleSize]int
+				for i := range newest {
+					newest[i] = -1
+				}
+				for j, b := range kept {
+					if b.by == w.Version && was[b.off] && (newest[b.off] < 0 || b.version.Compare(kept[newest[b.off]].version) > 0) {
+						newest[b.off] = j
 					}
-					o.put(Piece{Extent: ext(b.off, 1), Record: b.record, Skip: b.at, Version: b.version, Offloaded: b.offloaded})
-					return true
-				})
+				}
+				for i, j := range newest {
+					if j >= 0 {
+						b := kept[j]
+						o.put(Piece{Extent: ext(int64(i), 1), Record: b.record, Skip: b.at, Version: b.version, Offloaded: b.offloaded})
+					}
+				}
+				for j := range kept {
+					if b := &kept[j]; b.by == w.Version && was[b.off] && newest[b.off] != j {
+						b.by = kept[newest[b.off]].version
+					}
+				}
+				kept = slices.DeleteFunc(kept, func(b rbyte) bool { return b.by == w.Version && was[b.off] })
 			}
-			// Reported is what stays retained once the whole window has failed.
-			for _, b := range kept {
-				if slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == b.by }) {
-					want = append(want, b)
+			// Once the whole window has failed, what it superseded and could
+			// not hold again is the newer content's over it, or, under no
+			// newer content, reported.
+			for j := range kept {
+				b := &kept[j]
+				if !slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == b.by }) {
+					continue
+				}
+				if h := o[b.off]; h.held && h.version.Compare(b.version) > 0 {
+					b.by = h.version
+				} else {
+					want = append(want, *b)
 				}
 			}
 			slices.SortFunc(want, compareRbyte)
 			if g := rbytes(got); !slices.Equal(g, want) {
 				t.Fatalf("step %d: failWindow returned\n got  %+v\n want %+v", step, g, want)
 			}
-			if pure {
+			if pure && wi == pureWin && len(window) > 0 {
 				if got := f.held.pieces(nil); !slices.Equal(got, before) {
 					t.Fatalf("step %d: a failed window did not restore the held set:\n got  %+v\n want %+v", step, got, before)
 				}
 			}
-			window, pure = window[:0], false
+			if len(window) > 0 {
+				windows[wi], pure = window[:0], false
+			}
 		case 7: // an offload commit drops what is retained inside e
 			f.retained.drop(e, func(Retained) bool { return true }, nil)
 			kept = slices.DeleteFunc(kept, func(b rbyte) bool { return inside(b.off, e) })

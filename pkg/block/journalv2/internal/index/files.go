@@ -194,9 +194,11 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // keep it is decided with the floor that dropping it raises, so for now they
 // do not: retained content is no longer held.
 //
-// Retained extents do keep the entry itself in the map, with its tag: a file
-// whose segments are gone has nothing else to keep superseded content an
-// offload has still to offer.
+// Retained extents also keep the entry itself in the map, with its tag. The
+// guard is defensive only: a retained piece's record keeps its segment
+// noted, so the segments alone already keep the entry, unless a caller notes
+// that segment gone too early. Then this guard keeps superseded content an
+// offload has still to offer from being dropped with the entry.
 //
 // The dropped change version is not recorded anywhere yet, so nothing here
 // refuses a stale fill once the entry has gone: no check of a fill may be

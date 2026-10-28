@@ -239,12 +239,13 @@ func TestFailWindowDropsItsOwnRetainedPieces(t *testing.T) {
 	}
 }
 
-// TestFailWindowReturnsUnrestorable: where a surviving newer write superseded
-// the failed record, what the failed record superseded is not held again over
-// the newer content. It stays retained and is returned, for the caller to keep
-// under a hold or drop. Re-holding it would serve older bytes in place of a
-// surviving write.
-func TestFailWindowReturnsUnrestorable(t *testing.T) {
+// TestFailWindowReattributesUnderASurvivor: where a surviving newer write
+// superseded the failed record, what the failed record superseded is not held
+// again over the newer content: as if the failed record had never been
+// written, the newer write supersedes it, and it stays retained as that
+// write's. Re-holding it would serve older bytes in place of a surviving
+// write.
+func TestFailWindowReattributesUnderASurvivor(t *testing.T) {
 	var f file
 	f.write(write(0, 8, rec(1, 0), 1))
 	f.writeRetain(write(0, 8, rec(2, 0), 2))
@@ -254,52 +255,126 @@ func TestFailWindowReturnsUnrestorable(t *testing.T) {
 		piece(0, 4, rec(1, 0), 0, 1, false),
 		piece(4, 4, rec(3, 0), 0, 3, false),
 	)
-	want := []Retained{kept(piece(4, 4, rec(1, 0), 4, 1, false), 2)}
-	if !slices.Equal(out, want) {
-		t.Fatalf("unrestored %+v, want %+v", out, want)
+	if len(out) != 0 {
+		t.Fatalf("reported %+v, want nothing", out)
 	}
-	assertRetained(t, &f, want...)
+	assertRetained(t, &f, kept(piece(4, 4, rec(1, 0), 4, 1, false), 3))
 }
 
 // TestFailWindowReturnsNoPieceOfTheWindow: two overlapping records of one
-// window, the newer superseded by a surviving write. The newer record's pass
-// finds the older record's piece it retained unrestorable, but the older
-// record fails in the same call, so that piece is dropped and must not be
-// reported as still retained. Reporting it would have a caller keep, under a
-// hold, bytes of a record the window just declared gone.
+// window, the newer since released. The newer record's pass finds the older
+// record's piece it retained unrestorable, but the older record fails in the
+// same call, so that piece is dropped and must not be reported as still
+// retained. Reporting it would have a caller keep, under a hold, bytes of a
+// record the window just declared gone.
 func TestFailWindowReturnsNoPieceOfTheWindow(t *testing.T) {
 	var f file
 	f.write(write(0, 8, rec(1, 0), 1))
 	f.writeRetain(write(0, 8, rec(3, 0), 3))
 	f.writeRetain(write(0, 4, rec(5, 0), 5))
-	f.write(write(0, 4, rec(7, 0), 7))
+	f.held.cut(ext(0, 4)) // released
 	out := f.failWindow([]WindowRecord{failed(rec(3, 0), 3), failed(rec(5, 0), 5)}, nil)
 	want := []Retained{kept(piece(0, 4, rec(1, 0), 0, 1, false), 3)}
 	if !slices.Equal(out, want) {
 		t.Fatalf("unrestored %+v, want %+v", out, want)
 	}
 	assertRetained(t, &f, want...)
+	assertPieces(t, &f.held, piece(4, 4, rec(1, 0), 4, 1, false))
+}
+
+// TestFailedWindowThenSurvivorFails: a write surviving one failed window, in
+// the next segment, is itself failed later. What the first window could not
+// restore under it must be held again then, so the last synced write is
+// served. Leaving that part retained by the first failed record, whose version
+// never comes round again, turns it into a gap.
+func TestFailedWindowThenSurvivorFails(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))       // synced
+	f.writeRetain(write(0, 8, rec(2, 0), 2)) // the window that fails
+	f.writeRetain(write(0, 4, rec(3, 0), 3)) // the next segment
+	f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	f.failWindow([]WindowRecord{failed(rec(3, 0), 3)}, nil)
+	assertPieces(t, &f.held, piece(0, 8, rec(1, 0), 0, 1, false))
+	assertRetained(t, &f)
+}
+
+// TestFailedWindowThenSurvivorSyncs: the same, but the surviving write syncs.
+// What it superseded must then leave by its version like anything else it
+// retains, or it stays retained for good and pins its segment.
+func TestFailedWindowThenSurvivorSyncs(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))
+	f.writeRetain(write(0, 8, rec(2, 0), 2))
+	f.writeRetain(write(0, 4, rec(3, 0), 3))
+	out := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	if len(out) != 0 {
+		t.Fatalf("reported %+v, want nothing: a surviving write covers the part", out)
+	}
+	assertRetained(t, &f, kept(piece(0, 4, rec(1, 0), 0, 1, false), 3))
+	f.retained.drop(whole, bySuperseder(ver(3)), nil)
+	assertRetained(t, &f)
+}
+
+// TestFailedWindowReportsOnlyAGap: where a failed record's superseded content
+// lies under neither the record nor a newer write, a removal or release took
+// it since, so it is not held again. It is reported, still retained, for the
+// caller to keep under a hold or drop. Content held there that is older than
+// the part, as a fill can be, does not supersede it and counts as a gap.
+func TestFailedWindowReportsOnlyAGap(t *testing.T) {
+	var f file
+	f.write(write(0, 12, rec(1, 0), 5))
+	f.writeRetain(write(0, 12, rec(2, 0), 6))
+	f.write(write(0, 4, rec(3, 0), 7))
+	f.held.cut(ext(0, 12)) // released, say
+	f.held.fill(Placed{Extent: ext(8, 4), Record: rec(4, 0), Version: ver(1)})
+	f.write(write(0, 4, rec(5, 0), 8))
+	out := f.failWindow([]WindowRecord{failed(rec(2, 0), 6)}, nil)
+	want := []Retained{kept(piece(4, 8, rec(1, 0), 4, 5, false), 6)}
+	if !slices.Equal(out, want) {
+		t.Fatalf("reported %+v, want %+v", out, want)
+	}
+	assertRetained(t, &f, kept(piece(0, 4, rec(1, 0), 0, 5, false), 8), want[0])
+}
+
+// TestFailedWindowReholdsNewestOfOverlapping: once an earlier failed window
+// gives a retained piece a surviving record as superseder, that record can
+// retain two pieces at one offset. When its own window fails, the newer is
+// held again and the older stays retained as superseded by it. Holding them
+// back in offset order would serve the older; consuming both would lose the
+// older, which the newer's own failure would need.
+func TestFailedWindowReholdsNewestOfOverlapping(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))       // Q, synced
+	f.writeRetain(write(0, 8, rec(2, 0), 2)) // B, window 1
+	f.write(write(4, 4, rec(3, 0), 3))       // Y, over B
+	f.writeRetain(write(0, 8, rec(4, 0), 4)) // X, window 2
+	f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	f.failWindow([]WindowRecord{failed(rec(4, 0), 4)}, nil)
 	assertPieces(t, &f.held,
-		piece(0, 4, rec(7, 0), 0, 7, false),
-		piece(4, 4, rec(1, 0), 4, 1, false),
+		piece(0, 4, rec(1, 0), 0, 1, false),
+		piece(4, 4, rec(3, 0), 0, 3, false),
 	)
+	assertRetained(t, &f, kept(piece(4, 4, rec(1, 0), 4, 1, false), 3))
 }
 
 // TestRepointRetainedKeepsVersionAndBit: repack carries a retained record
 // forward to a new place; its pieces inside the copied extent move, keeping
 // their version, bit and superseder, and those outside stay. A repoint that
 // dropped the superseder would orphan the retention from the write it waits on.
+// The copy starts before the piece, so the piece's bytes sit in it past skip
+// by their distance from the copy's start; a repoint that set skip alone would
+// offer the copy's first bytes for them.
 func TestRepointRetainedKeepsVersionAndBit(t *testing.T) {
 	var f file
-	f.write(write(0, 12, rec(1, 0), 1))
-	f.held.markOffloaded(ext(0, 12), ver(1), ver(1))
+	f.write(write(4, 8, rec(1, 0), 1))
+	f.held.markOffloaded(ext(4, 8), ver(1), ver(1))
 	f.writeRetain(write(0, 12, rec(2, 0), 2))
-	if n := f.retained.repoint(ext(4, 8), rec(1, 0), rec(9, 128), 0); n != 1 {
+	if n := f.retained.repoint(ext(0, 10), rec(1, 0), rec(9, 128), 100); n != 1 {
 		t.Fatalf("repoint moved %d pieces, want 1", n)
 	}
 	assertRetained(t, &f,
-		kept(piece(0, 4, rec(1, 0), 0, 1, true), 2),
-		kept(piece(4, 8, rec(9, 128), 0, 1, true), 2),
+		kept(piece(4, 6, rec(9, 128), 104, 1, true), 2),
+		kept(piece(10, 2, rec(1, 0), 6, 1, true), 2),
 	)
 	if n := f.retained.repoint(ext(0, 12), rec(7, 0), rec(9, 0), 0); n != 0 {
 		t.Fatalf("repoint of a record retaining nothing moved %d pieces", n)

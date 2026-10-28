@@ -12,8 +12,9 @@ import (
 // journal still keeps, for offload to offer or until the superseding record is
 // synced. It is the piece as it was held, with its extent, record, skip,
 // version and offloaded bit, and By, the version of the record that superseded
-// it. A part a failed window leaves retained keeps the failed record's version
-// (see failWindow).
+// it. When that record's window fails, a part it could not hold again takes
+// the version of the newer content over it, or, under none, keeps the failed
+// record's (see failWindow).
 //
 // The superseder is named by version, not by where its record sits: a record
 // re-appended after a failed sync, or copied by repack, moves but keeps its
@@ -188,32 +189,40 @@ func (f *file) writeRetain(p Placed) {
 //
 // For each record it stops holding the record's pieces, drops the pieces
 // retained from it, since the record is gone, and holds again the pieces it
-// superseded wherever it was held. A part it superseded that a surviving,
-// newer write has since superseded is not held again: as if the failed record
-// had never been written, that newer write supersedes it. Such parts stay
-// retained, and are appended to out for the caller, which knows whether
-// anything still keeps them.
+// superseded wherever it was held. Two of those can overlap, when an earlier
+// failed window made the record the superseder of a piece; the newer is held,
+// and the older stays retained as superseded by it.
 //
-// decision: a part left retained keeps the failed record's version as its By,
-// though that record will never sync, so selecting by superseder on a later
-// sync never drops it: the caller must drop what out names, or keep it under
-// a hold, by its own selection. The index does not re-attribute it to the
-// surviving write over it, because that write may cover it in several records,
-// or have been released, and only the caller knows which retention, if any,
-// still applies. Revisit if callers end up re-attributing every reported part
-// themselves.
+// A part a failed record superseded that newer content has since covered is
+// not held again: as if the failed record had never been written, the newer
+// content supersedes it, so it stays retained with that content's version as
+// its By, cut where the covering version changes. That write's sync then
+// drops it, and its failure holds it again. A part under no newer content,
+// where a removal or a release took it since, or a fill older than it, is not
+// held again either: it stays retained under the failed record's version and
+// is appended to out, for the caller to keep under a hold or drop.
 //
-// The change version is left where the failed writes raised it: it never
-// goes down.
+// decision: re-attributing to the covering version assumes that version's
+// record has not synced yet, so its sync is still to come. If it already has,
+// nothing drops the part by superseder again: the caller drops by that version
+// after the window fails. Revisit when windows are resolved before any later
+// write can sync, which makes that case unreachable.
+//
+// The change version is left where the failed writes raised it, unless the
+// window held all the file's content, in which case the update's settle drops
+// it with the rest of the change-version entry.
 //
 // ponytail: each failed record walks the file's held pieces to find its own,
-// O(n) per record, because the held set has no index by record. A window is
-// rare and short; pass each record's extent with it when a failed window over
-// files with many extents shows the walk in a profile.
+// O(n) per record, because the held set has no index by record, and the
+// report checks each retained piece against every window record, O(r·w), on
+// a copy of the window. A failed window is rare and short; pass each record's
+// extent with it, and index the window's versions, when a failed window over
+// files with many extents shows these in a profile.
 func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
 	order := slices.Clone(window)
 	slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })
 	var was []core.Extent
+	var back, gaps []Retained
 	for _, w := range order {
 		was = was[:0]
 		f.held.visit(whole, func(p Piece) bool {
@@ -228,21 +237,86 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) []Retained {
 		f.retained.edit(whole, func(r Retained) bool { return r.Record == w.Record }, func(r Retained) (Retained, bool) {
 			return r, false
 		})
-		by := bySuperseder(w.Version)
+		// Pieces retained by one record can overlap once an earlier failed
+		// window has given them that record as superseder, so they go back
+		// newest version first, each only where nothing newer went back.
+		back = back[:0]
 		for _, e := range was {
-			f.retained.edit(e, by, func(r Retained) (Retained, bool) {
-				f.held.put(r.Piece)
+			f.retained.edit(e, bySuperseder(w.Version), func(r Retained) (Retained, bool) {
+				back = append(back, r)
 				return r, false
 			})
 		}
-	}
-	// What is left superseded by a record of the window is reported once
-	// every record has failed: a part one record's pass leaves can be a piece
-	// of an older record of the window, which that record's own pass drops.
-	for _, r := range f.retained.pieces {
-		if slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == r.By }) {
-			out = append(out, r)
+		slices.SortStableFunc(back, func(a, b Retained) int { return b.Version.Compare(a.Version) })
+		for _, r := range back {
+			gaps = f.supersede(r, gaps[:0])
+			for _, g := range gaps {
+				f.held.put(g.Piece)
+			}
 		}
 	}
+	// What is left superseded by a record of the window is settled once every
+	// record has failed: a part one record's pass leaves can be a piece of an
+	// older record of the window, which that record's own pass drops.
+	back = back[:0]
+	f.retained.edit(whole, func(r Retained) bool {
+		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == r.By })
+	}, func(r Retained) (Retained, bool) {
+		back = append(back, r)
+		return r, false
+	})
+	for _, r := range back {
+		gaps = f.supersede(r, gaps[:0])
+		for _, g := range gaps {
+			f.retained.add(g)
+		}
+		out = append(out, gaps...)
+	}
 	return out
+}
+
+// supersede retains again the parts of r that held content newer than r
+// covers, each as superseded by that content's version, and appends to gaps
+// the parts under nothing held, or under older content, still carrying r's
+// By. Neighbouring parts that share a By are kept as one.
+func (f *file) supersede(r Retained, gaps []Retained) []Retained {
+	var part Retained
+	var gap bool
+	flush := func() {
+		switch {
+		case part.Extent.Len == 0:
+		case gap:
+			gaps = append(gaps, part)
+		default:
+			f.retained.add(part)
+		}
+		part = Retained{}
+	}
+	take := func(lo, hi int64, by core.Version, isGap bool) {
+		if lo >= hi {
+			return
+		}
+		if part.Extent.Len > 0 && part.Extent.Off+part.Extent.Len == lo && part.By == by && gap == isGap {
+			part.Extent.Len = hi - part.Extent.Off
+			return
+		}
+		flush()
+		part = Retained{Piece: clip(r.Piece, core.Extent{Off: lo, Len: hi - lo}), By: by}
+		gap = isGap
+	}
+	cursor, end := r.Extent.Off, r.Extent.Off+r.Extent.Len
+	f.held.visit(r.Extent, func(p Piece) bool {
+		lo, hi := max(p.Extent.Off, cursor), min(p.Extent.Off+p.Extent.Len, end)
+		take(cursor, lo, r.By, true)
+		if p.Version.Compare(r.Version) > 0 {
+			take(lo, hi, p.Version, false)
+		} else {
+			take(lo, hi, r.By, true)
+		}
+		cursor = hi
+		return true
+	})
+	take(cursor, end, r.By, true)
+	flush()
+	return gaps
 }
