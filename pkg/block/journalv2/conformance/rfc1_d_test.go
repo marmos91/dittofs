@@ -322,7 +322,7 @@ func TestRFC1D_CleanBytesCountAsOccupancy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read an absent file: %v", err)
 		}
-		err = retrySpare(func() error {
+		err = journalv2test.RetrySpare(func() error {
 			return h.Fill(t.Context(), id, 0, pattern(fmt.Sprint("clean", i), size), asOf, v)
 		})
 		stub(t, "Fill", err)
