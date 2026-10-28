@@ -252,12 +252,12 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 
 	cur, found, err := t.byName(ctx, *rec)
 	var ended *entity.ClientRecord
-	if found {
+	if found && t.lapsed(cur.ID) {
 		// A lapsed lease is expired here as the timer would, so a confirm
 		// before the sweep never revives it: the name then has no record.
 		gone, expired, xerr := t.expireLocked(ctx, cur.ID)
-		if err = xerr; expired {
-			ended, found = &gone, false
+		if err, found = xerr, false; expired {
+			ended = &gone
 		}
 	}
 	switch {
