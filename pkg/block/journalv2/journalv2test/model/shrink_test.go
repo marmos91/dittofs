@@ -101,6 +101,30 @@ func TestCheckShrinksAPlantedDivergence(t *testing.T) {
 	}
 }
 
+// failRepack is a journal whose every repack fails, a second bug beside the
+// wrong byte of flipTarget.
+type failRepack struct{ Target }
+
+func (failRepack) Repack(context.Context) error { return errors.New("planted repack failure") }
+
+// Shrinking keeps the divergence the sequence first showed. Without the
+// write, the repack fails instead, which a shrink taking any divergence would
+// keep, writing a corpus file for the other bug.
+func TestCheckShrinksToTheDivergenceItFound(t *testing.T) {
+	rec := &recorder{TB: t, dir: t.TempDir()}
+	steps := []Step{{Op: OpWrite, File: 1, Share: 1, Len: 4}, {Op: OpWrite, Len: 4}, {Op: OpRepack}}
+	Check(rec, "two.txt", steps, func() (Target, func(), error) {
+		return failRepack{flipTarget{newPlayed(t)}}, func() {}, nil
+	})
+	text, err := os.ReadFile(filepath.Join(rec.dir, "two.txt"))
+	ok(t, err)
+	shrunk, err := parseCorpus(text)
+	ok(t, err)
+	if len(shrunk) != 1 || shrunk[0].Op != OpWrite || shrunk[0].File != 1 {
+		t.Fatalf("shrunk to\n%s\nwant the write of file 1 alone", text)
+	}
+}
+
 // lowFloor reopens with a floor below the versions already issued, which the
 // model refuses as a call it cannot take.
 type lowFloor struct{ *played }

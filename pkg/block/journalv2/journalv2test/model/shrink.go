@@ -86,6 +86,33 @@ func shrinkDeadline(tb testing.TB) time.Time {
 	return deadline
 }
 
+// divergence is what tells one divergence from another: the operation of the
+// step it was found at, and the model check that found it.
+//
+// decision: two divergences the same check finds at steps of the same
+// operation are taken for the same, so shrinking may still trade one for
+// another that differs only in the bytes or versions it names. Comparing the
+// messages instead would refuse every candidate that shortens an extent or
+// moves a version. Tell them apart by more, such as the kind of mismatch the
+// check reports, if a shrunk sequence is found showing another bug.
+type divergence struct {
+	op    Op
+	check string
+}
+
+// divergenceOf returns the divergence err reports, found at step ran of steps.
+func divergenceOf(steps []Step, ran int, err error) divergence {
+	var d divergence
+	if ran < len(steps) {
+		d.op = steps[ran].Op
+	}
+	var c checkError
+	if errors.As(err, &c) {
+		d.check = c.op
+	}
+	return d
+}
+
 // openError is a target that could not be opened, which says nothing about a
 // sequence. It reads as the target's own error, so a fixture's failure keeps
 // the prefix that tells it from the check's.
@@ -95,7 +122,8 @@ func (e openError) Error() string { return e.err.Error() }
 func (e openError) Unwrap() error { return e.err }
 
 // Check runs steps against a journal newTarget opens, which holds nothing,
-// and reports to tb what goes wrong. A divergence is shrunk, each candidate
+// and reports to tb what goes wrong. A divergence is shrunk to a shorter
+// sequence showing the same divergence, each candidate
 // run on a journal of its own, and the shortest failing sequence is written
 // to tb.ArtifactDir() as the corpus file name, with notes and the failure as
 // its comments, ready to commit. A misuse of the model, or an error of the
@@ -106,20 +134,24 @@ func (e openError) Unwrap() error { return e.err }
 func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, func(), error), notes ...string) {
 	tb.Helper()
 
-	skipped := 0
+	var n idle
+	var ran int
 	run := func(c []Step) error {
 		tgt, done, err := newTarget()
 		if err != nil {
 			return openError{err}
 		}
 		defer done()
-		_, skipped, err = runCounting(tb.Context(), tgt, c)
+		ran, n, err = runCounting(tb.Context(), tgt, c)
 		return err
 	}
 
 	err := run(steps)
-	if skipped > 0 {
-		tb.Logf("%s: %d crash and reopen steps did nothing: a file held more settled markers than a crash may leave in doubt", name, skipped)
+	if n.restarts > 0 {
+		tb.Logf("%s: %d crash and reopen steps did nothing: a file held more settled markers than a crash may leave in doubt", name, n.restarts)
+	}
+	if n.fills > 0 {
+		tb.Logf("%s: %d fill steps did nothing: nothing offloaded from the file was left to fill", name, n.fills)
 	}
 	var open openError
 	var stub stubError
@@ -137,9 +169,14 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 		return
 	}
 
-	shrunk := shrink(steps, func(c []Step) bool { return errors.Is(run(c), ErrDiverged) }, shrinkDeadline(tb))
-	again := run(shrunk)
-	if !errors.Is(again, ErrDiverged) {
+	want := divergenceOf(steps, ran, err)
+	same := func(c []Step) (bool, error) {
+		err := run(c)
+		return errors.Is(err, ErrDiverged) && divergenceOf(c, ran, err) == want, err
+	}
+	shrunk := shrink(steps, func(c []Step) bool { ok, _ := same(c); return ok }, shrinkDeadline(tb))
+	ok, again := same(shrunk)
+	if !ok {
 		// The failure did not come back on the shrunk sequence, so the
 		// journal does not fail the same way every time: keep it all.
 		shrunk, again = steps, err

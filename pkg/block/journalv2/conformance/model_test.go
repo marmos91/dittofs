@@ -58,8 +58,9 @@ func TestModel(t *testing.T) {
 		fmt.Sprintf("drawn from seed %d, %d steps", seed, model.DefaultSteps))
 
 	// The journal chooses the stream each record goes to, so the sequences
-	// can only be shown to have reached two after they ran.
+	// can only be shown to have reached two after they ran. This shows where
+	// the records landed, not that the streams were ever appended to at once.
 	if n := streams(); !t.Failed() && n < 2 {
-		t.Errorf("no sequence left its records on more than %d append stream(s); two files on two streams are needed to reach the journal's concurrency", n)
+		t.Errorf("no sequence left its records on more than %d append stream(s); the test asks for two files on two streams", n)
 	}
 }

@@ -19,7 +19,10 @@ const (
 	// which the next fill of the file is made as of.
 	OpRead
 	// OpFill fills one extent an offload of the file reported, at the version
-	// it was offered at, as of the change version the last read reported.
+	// it was offered at, as of the change version the last read of the file
+	// reported. When nothing was offloaded from the file, it fills the next
+	// file something was, through that file's share, or through the other
+	// share when the step names the share that does not have its own file.
 	OpFill
 	// OpStaleFill is OpFill as of the change version of the read before the
 	// last, so a change between the two makes the fill stale.
@@ -100,10 +103,13 @@ func (k CrashKind) String() string {
 // settle reaches, is resolved when the step runs. A sequence with steps
 // removed therefore still runs, which is what lets a failing one be shrunk.
 //
-// decision: a step whose choice finds nothing to take, such as a fill of a
-// file nothing was offloaded from, does nothing. Shrinking removes the steps
-// a choice depended on, and a step that failed instead would turn every such
-// removal into a different failure.
+// decision: a step whose choice finds nothing to take, such as a fill before
+// anything was offloaded, does nothing. Shrinking removes the steps a choice
+// depended on, and a step that failed instead would turn every such removal
+// into a different failure. Check logs how many fill, crash and reopen steps
+// did nothing, so a sequence that reads as passing because its choices found
+// nothing shows it; draw offloads earlier or more often if fewer than ten
+// fills of the default sequence fill.
 type Step struct {
 	Op    Op
 	Share int // 0 or 1

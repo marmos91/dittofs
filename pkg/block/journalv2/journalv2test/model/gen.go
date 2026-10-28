@@ -13,10 +13,13 @@ var weights = [...]int{
 	OpTruncate: 3, OpDeallocate: 3, OpDelete: 1, OpSettle: 3, OpRepack: 2, OpCrash: 3, OpReopen: 1,
 }
 
-// recordHeader is the size of a record's header on disk (RFC 28 §2.3). A
-// torn crash cuts the last unsynced write anywhere in its header, its
-// write's 8-byte mtime or the first of its usually short payload, so the
-// tear lands in each.
+// recordHeader is the size of a record's header on disk. A torn crash cuts
+// the last unsynced write anywhere in its header, its write's 8-byte mtime or
+// the first of its usually short payload, so the tear lands in each.
+//
+// ponytail: the size is copied from the record format of RFC 28 §2.3, since
+// no journal code defines it yet. Take it from the journal's own constant
+// once the record format is written, so the two cannot drift apart.
 const recordHeader = 96
 
 // DefaultSeed and DefaultSteps are the sequence the model-based test draws

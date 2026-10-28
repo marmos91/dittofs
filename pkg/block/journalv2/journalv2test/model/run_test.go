@@ -33,6 +33,7 @@ type spy struct {
 	*played
 	reads    []journalv2.Version // the change version each read answered
 	fills    []journalv2.Version // the asOf each fill was made with
+	filled   []fillCall          // the file each fill named, and its answer
 	reported []error             // what each report answered
 	events   []string            // writes, reports, syncs, settles and crashes, in order
 	written  []error             // what each write answered
@@ -91,8 +92,17 @@ func (h spyHandle) Settle(id journalv2.FileID, v journalv2.Version) {
 
 func (h spyHandle) Fill(ctx context.Context, id journalv2.FileID, off int64, p []byte, asOf, v journalv2.Version) error {
 	h.s.fills = append(h.s.fills, asOf)
-	return h.Handle.Fill(ctx, id, off, p, asOf, v)
+	err := h.Handle.Fill(ctx, id, off, p, asOf, v)
+	h.s.filled = append(h.s.filled, fillCall{id, err})
+	return err
 }
+
+type fillCall struct {
+	id  journalv2.FileID
+	err error
+}
+
+func (c fillCall) String() string { return fmt.Sprintf("%x: %v", c.id.Bytes(), c.err) }
 
 func (h spyHandle) Offload(ctx context.Context, id journalv2.FileID, through journalv2.Version, limit, widen int64, fn func(context.Context, journalv2.Offer, func([]journalv2.Extent) error) error) error {
 	return h.Handle.Offload(ctx, id, through, limit, widen, func(ctx context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
@@ -227,10 +237,28 @@ func TestACrashTooLargeToSearchIsCounted(t *testing.T) {
 	}
 	steps, err := parseCorpus([]byte(text + "settle pick=255\ncrash\n"))
 	ok(t, err)
-	ran, skipped, err := runCounting(t.Context(), newPlayed(t), steps)
+	ran, n, err := runCounting(t.Context(), newPlayed(t), steps)
 	ok(t, err)
-	if ran != len(steps) || skipped != 1 {
-		t.Fatalf("ran %d of %d steps, skipped %d crashes, want all and 1", ran, len(steps), skipped)
+	if ran != len(steps) || n.restarts != 1 {
+		t.Fatalf("ran %d of %d steps, skipped %d crashes, want all and 1", ran, len(steps), n.restarts)
+	}
+}
+
+// A fill drawn before anything was offloaded does nothing, and is counted. One
+// of a file nothing was offloaded from fills another file, through the share
+// that has that file when the step names the share that has its own, so the
+// fill is not refused for the share alone.
+func TestAFillTakesWhatAnyFileOffloaded(t *testing.T) {
+	steps, err := parseCorpus([]byte("fill f=1 s=1\nwrite len=4\noffload\nread\nfill f=1 s=1\n"))
+	ok(t, err)
+	s := &spy{played: newPlayed(t)}
+	ran, n, err := runCounting(t.Context(), s, steps)
+	ok(t, err)
+	if ran != len(steps) || n.fills != 1 {
+		t.Fatalf("ran %d of %d steps, %d fills did nothing; want all, 1", ran, len(steps), n.fills)
+	}
+	if len(s.filled) != 1 || s.filled[0].id != fileOf(0) || s.filled[0].err != nil {
+		t.Fatalf("fills %v, want one of file 0, accepted", s.filled)
 	}
 }
 
@@ -247,18 +275,25 @@ func TestThePlayedJournalKeepsATagUntilRepack(t *testing.T) {
 
 // The sequence the model-based test runs by default runs every one of its
 // crashes and reopens: none is skipped for a file holding more settled
-// markers than a crash may leave in doubt.
-func TestTheDefaultSequenceSkipsNoCrash(t *testing.T) {
+// markers than a crash may leave in doubt. And its fills fill: a fill finds
+// something offloaded, from its own file or another.
+func TestTheDefaultSequenceRunsItsCrashesAndFills(t *testing.T) {
 	steps := Generate(DefaultSeed, DefaultSteps)
-	restarts := 0
+	restarts, fills := 0, 0
 	for _, s := range steps {
 		if s.Op == OpCrash || s.Op == OpReopen {
 			restarts++
 		}
+		if s.Op == OpFill || s.Op == OpStaleFill {
+			fills++
+		}
 	}
-	_, skipped, err := runCounting(t.Context(), newPlayed(t), steps)
+	_, n, err := runCounting(t.Context(), newPlayed(t), steps)
 	ok(t, err)
-	if restarts == 0 || skipped != 0 {
-		t.Fatalf("%d crash and reopen steps, %d skipped; want some, none skipped", restarts, skipped)
+	if restarts == 0 || n.restarts != 0 {
+		t.Fatalf("%d crash and reopen steps, %d skipped; want some, none skipped", restarts, n.restarts)
+	}
+	if fills-n.fills < 10 {
+		t.Fatalf("%d of %d fill steps filled, want at least 10", fills-n.fills, fills)
 	}
 }

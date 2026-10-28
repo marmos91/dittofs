@@ -98,8 +98,8 @@ type runner struct {
 	// asOf is, per file, the change versions of its last two reads, the last
 	// first: what a fill and a stale fill are made as of.
 	asOf [numFiles][2]journalv2.Version
-	// skipped counts the crash and reopen steps that did nothing.
-	skipped int
+	// idle counts the steps that did nothing.
+	idle idle
 
 	// remote is, per file, what offloads of it reported.
 	remote [numFiles][]remoteExtent
@@ -125,15 +125,24 @@ func runSteps(ctx context.Context, tgt Target, steps []Step) (int, error) {
 	return n, err
 }
 
-// runCounting is runSteps that also returns how many crash and reopen steps
-// did nothing, because a file's settled markers alone were more than a crash
-// may leave in doubt.
-func runCounting(ctx context.Context, tgt Target, steps []Step) (ran, skipped int, err error) {
+// idle counts the steps of a sequence that did nothing.
+type idle struct {
+	// restarts are the crash and reopen steps that did nothing, because a
+	// file's settled markers alone were more than a crash may leave in doubt.
+	restarts int
+	// fills are the fill steps that did nothing, because nothing was
+	// offloaded yet, or what the fill chose was released or its removal
+	// settled since.
+	fills int
+}
+
+// runCounting is runSteps that also counts the steps that did nothing.
+func runCounting(ctx context.Context, tgt Target, steps []Step) (ran int, n idle, err error) {
 	r := &runner{ctx: ctx, tgt: tgt, m: New()}
-	defer func() { skipped = r.skipped }()
+	defer func() { n = r.idle }()
 	for i, s := range steps {
 		if why := s.valid(); why != "" {
-			return i, 0, fmt.Errorf("model: step %d %+v: %s: %w", i, s, why, ErrMisuse)
+			return i, idle{}, fmt.Errorf("model: step %d %+v: %s: %w", i, s, why, ErrMisuse)
 		}
 		r.s = stubs{}
 		err := r.step(s)
@@ -144,10 +153,10 @@ func runCounting(ctx context.Context, tgt Target, steps []Step) (ran, skipped in
 			err = stubError{r.s.call}
 		}
 		if err != nil {
-			return i, 0, fmt.Errorf("step %d, %s: %w", i, fmtStep(s), err)
+			return i, idle{}, fmt.Errorf("step %d, %s: %w", i, fmtStep(s), err)
 		}
 	}
-	return len(steps), 0, nil
+	return len(steps), idle{}, nil
 }
 
 // share returns the handle of share i, reporting its stubs to the step.
@@ -201,14 +210,25 @@ func (r *runner) step(s Step) error {
 		return nil
 
 	case OpFill, OpStaleFill:
-		rs := r.remote[s.File]
-		if len(rs) == 0 {
+		file, ok := r.fillFile(s)
+		if !ok {
+			r.idle.fills++
 			return nil
 		}
+		if file != s.File {
+			other := s.Share != s.File%numShares
+			s.File, s.Share = file, file%numShares
+			if other {
+				s.Share = 1 - s.Share
+			}
+			h, tag, id = r.share(s.Share), tagOf(s.Share), fileOf(s.File)
+		}
+		rs := r.remote[s.File]
 		x := rs[int(s.Pick)%len(rs)]
 		if droppableAbove(m.files[id], x.ext, x.ver) != nil {
 			// A caller never fills content older than what it released or
 			// settled the removal of, so the model does not decide it.
+			r.idle.fills++
 			return nil
 		}
 		asOf := r.asOf[s.File][0]
@@ -260,6 +280,19 @@ func (r *runner) step(s Step) error {
 		return r.restart(s)
 	}
 	return fmt.Errorf("model: no operation %v: %w", s.Op, ErrMisuse)
+}
+
+// fillFile returns the file a fill step fills: its own, or, when nothing
+// was offloaded from it, the first file after it that something was
+// offloaded from. A fill drawn before its file's first offload therefore
+// still fills.
+func (r *runner) fillFile(s Step) (int, bool) {
+	for i := range numFiles {
+		if f := (s.File + i) % numFiles; len(r.remote[f]) > 0 {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 // readRefusal checks a read's error: a read through the share holding the
@@ -391,7 +424,7 @@ func (r *runner) restart(s Step) error {
 			return err
 		}
 		if uncertainAt(f) > crashSearchable {
-			r.skipped++
+			r.idle.restarts++
 			return nil
 		}
 	}
