@@ -1986,3 +1986,31 @@ func TestRFC28C_JournalGone(t *testing.T) {
 	m.Shutdown()
 	wantIdentityError(t, m.TryReopenAs(journalv2.JournalID{}), m.ID(), journalv2test.FixtureInstall, true)
 }
+
+// TestRFC28C_InterruptedInit checks that a journal whose identity its caller
+// never recorded is refused with the identity and installation to record, and
+// with no segment reported while nothing was ever acknowledged; that once
+// recorded it opens empty and serves; and that with a segment taken it is
+// still refused, the segment reported.
+//
+// decision: the row's crash is what leaves the identity unrecorded; the
+// fixture, which is that caller, closes cleanly instead, since the open finds
+// the format file either way and a crash would drop only unsynced records,
+// of which there are none.
+func TestRFC28C_InterruptedInit(t *testing.T) {
+	f := journalv2test.New(t)
+	wantIdentityError(t, f.TryReopenAs(journalv2.JournalID{}), f.ID(), journalv2test.FixtureInstall, false)
+
+	if err := f.TryReopenAs(f.ID()); err != nil {
+		t.Fatalf("open with the identity recorded: %v", err)
+	}
+	for id, entries := range f.J.Inspect().All() {
+		t.Fatalf("the journal holds %+v of file %v, want it empty", entries, id)
+	}
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+
+	wantIdentityError(t, f.TryReopenAs(journalv2.JournalID{}), f.ID(), journalv2test.FixtureInstall, true)
+}
