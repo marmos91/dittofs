@@ -983,3 +983,113 @@ func awaitSpare(t *testing.T, f *journalv2test.Fixture, roll func()) {
 	}
 	held.Release()
 }
+
+// pool is what the spare pool and the reserves look like from outside: the
+// spare names, the create and allocate calls the seam has seen, and what the
+// journal accounts to its storage and its reserves.
+type pool struct {
+	spares                  []string
+	creates, allocates      int
+	used, headroom, reserve int64
+}
+
+func poolNow(t *testing.T, f *journalv2test.Fixture) pool {
+	t.Helper()
+
+	s := f.J.Stats()
+	return pool{spareNames(t, f), f.Seam.Calls(journalv2test.OpCreate), f.Seam.Calls(journalv2test.OpAllocate), s.UsedBytes, s.HeadroomBytes, s.RepackReserveBytes}
+}
+
+// wantReadopted fails the test unless, after an open, every spare of before
+// is a spare again, no segment was created or allocated since, the storage
+// and the reserves are accounted as before, and nothing is reported as
+// rejected or damaged.
+func wantReadopted(t *testing.T, f *journalv2test.Fixture, before pool) {
+	t.Helper()
+
+	now := poolNow(t, f)
+	for _, name := range before.spares {
+		if !slices.Contains(now.spares, name) {
+			t.Fatalf("spare %s is not a spare after the open; spares now: %v", name, now.spares)
+		}
+	}
+	if now.creates != before.creates || now.allocates != before.allocates {
+		t.Fatalf("the open created %d and allocated %d segments; every spare was on disk", now.creates-before.creates, now.allocates-before.allocates)
+	}
+	if now.used != before.used || now.headroom != before.headroom || now.reserve != before.reserve {
+		t.Fatalf("after the open UsedBytes = %d, HeadroomBytes = %d, RepackReserveBytes = %d, want %d, %d, %d as before", now.used, now.headroom, now.reserve, before.used, before.headroom, before.reserve)
+	}
+
+	s := f.J.Stats()
+	if s.RejectedSegments != 0 || s.DamagedSegments != 0 {
+		t.Fatalf("RejectedSegments = %d, DamagedSegments = %d after re-adopting spares, want 0 and 0", s.RejectedSegments, s.DamagedSegments)
+	}
+}
+
+// rollTakesSpare writes 64 KiB records on file 0 until its stream rolls and
+// fails the test unless the segment the roll took is among spares.
+func rollTakesSpare(t *testing.T, f *journalv2test.Fixture, spares []string) {
+	t.Helper()
+
+	const size = 64 << 10
+	recs, _ := fillSegment(t, f, 0, 0, size)
+	seg := entryAt(t, f, journalv2test.File(0), int64(len(recs))*size).Location.Segment
+	if !slices.Contains(spares, segmentName(seg)) {
+		t.Fatalf("the roll took segment %d, not one of the spares %v", seg, spares)
+	}
+}
+
+// rollSynced writes 64 KiB records on file 0 through share 0, each synced,
+// until one lands in a new segment, and returns that segment; the write that
+// rolled is not synced.
+func rollSynced(t *testing.T, f *journalv2test.Fixture) journalv2.SegmentID {
+	t.Helper()
+
+	const size = 64 << 10
+	id := journalv2test.File(0)
+	var first journalv2.SegmentID
+	for n := 0; n <= 2*journalv2test.FixtureSegmentCap/size; n++ {
+		off := int64(n) * size
+		write(t, f.Share(0), id, off, pattern(fmtTag("q", 0, 0, off), size))
+		seg := entryAt(t, f, id, off).Location.Segment
+		if n == 0 {
+			first = seg
+		}
+		if seg != first {
+			return seg
+		}
+		syncFiles(t, f.Share(0), id)
+	}
+	t.Fatalf("%d bytes of records never rolled a segment of %d", 2*journalv2test.FixtureSegmentCap, journalv2test.FixtureSegmentCap)
+	panic("unreachable")
+}
+
+// TestRFC28C_SparesAreReAdopted checks that a crash costs no spare: every
+// record-less segment comes back as a spare, the reserves are whole without
+// a new allocation, nothing is reported as rejected or damaged, and a later
+// roll takes one of them. Once with every spare untaken, and once with a
+// spare a stream took but never synced, which the crash makes record-less
+// again.
+func TestRFC28C_SparesAreReAdopted(t *testing.T) {
+	f := journalv2test.New(t)
+	before := poolNow(t, f)
+	f.Crash()
+	wantReadopted(t, f, before)
+	rollTakesSpare(t, f, before.spares)
+
+	// Spare-making is parked, so no spare is made between the take and
+	// the crash, and the pool is as it was before the take.
+	g := journalv2test.NewUnwatched(t)
+	other := writeSynced(t, g, 1, 1, 0, 64<<10)
+	before = poolNow(t, g)
+	held := g.Seam.Hold(t, journalv2test.OpCreate, "*.spare.tmp")
+	taken := rollSynced(t, g)
+	crashHeld(t, g, held)
+
+	if !slices.Contains(spareNames(t, g), segmentName(taken)) {
+		t.Fatalf("segment %d, taken and never synced, is not a spare again after the crash", taken)
+	}
+	wantReadopted(t, g, before)
+	rollTakesSpare(t, g, before.spares)
+	wantBytes(t, g.Share(1), other.id, 0, other.p)
+}
