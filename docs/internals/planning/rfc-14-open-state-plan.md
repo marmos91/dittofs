@@ -245,20 +245,22 @@ L3b as a direct case of two reclaims rather than §12's model fuzzing.
 
 **Piece 7: SMB durable and persistent opens** (§8.1, §9.2; 1 PR, ~2,000 lines)
 Builds: `Opens.Reconnect/Flushed`, `Clients.Disconnect`, the `GraceEnded` event. Timeouts,
-disconnect and reconnect, channel sequence, logoff, `Flushed`'s loss; persistent opens installed
-from the store's per-shard durable-open index (`S‖id‖do‖shard`) before the shard answers anything;
-grace's end closes every durable record nobody reclaimed, then raises `GraceEnded`, and a new
-primary releases nothing before.
-Done when: L15 (→8), L30, L30b (→8), L43, L48 (→8), L52 pass.
+disconnect and reconnect, `Flushed`'s loss; persistent opens installed from the store's per-shard
+durable-open index (`S‖id‖do‖shard`) before the shard answers anything; grace's end closes every
+durable record nobody reclaimed, then raises `GraceEnded`, and a new primary releases nothing
+before.
+Done when: L15 (→8), L30, L30b (→8), L43, L48 (→8) pass.
 
 **Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; 1 PR, ~1,500 lines)
 Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/CloneClose`, the
-`Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); create and lock
-replay and app instance. The store's clone already writes the source's hold in its first phase
-(`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record through piece
-7's install path and `CloneClose` drops it; §11.3's "written in its own transaction" is edited to
+`Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); channel sequence,
+create and lock replay and app instance. The store's clone already writes the source's hold in its
+first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
+through piece 7's install path and `CloneClose` drops it; §11.3's "written in its own transaction" is edited to
 match.
-Done when: L15, L48, L54, L55 pass.
+Done when: L15, L30b, L48, L52, L54, L55 pass. L52's case is the SMB adapter's: the table has no
+logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (RFC 22 Appendix G), so
+it lands with the SMB adapter in stage 2.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
 `DropShare`'s part of it. Three rows are other layers': L1 and L20 are the service's, tested in
