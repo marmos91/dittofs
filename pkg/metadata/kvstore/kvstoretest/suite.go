@@ -93,7 +93,6 @@ func Run(t *testing.T, open Opener) {
 		{"OpenRacesRelease", testOpenRacesRelease},
 		{"LastClosesRace", testLastClosesRace},
 		{"CloneHold", testCloneHold},
-		{"DurableLocks", testDurableLocks},
 		{"DurableLockChanges", testDurableLockChanges},
 		{"DeletePending", testDeletePending},
 		{"NSMState", testNSMState},

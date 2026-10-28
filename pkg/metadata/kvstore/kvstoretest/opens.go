@@ -191,54 +191,12 @@ func testCloneHold(t *testing.T, kvo Opener) {
 	}
 }
 
-// RFC 14 §8: a lock is stored only beneath a persistent open, in offset
-// order, two at one offset being two keys; closing the open drops them.
-func testDurableLocks(t *testing.T, kvo Opener) {
-	f := newFS(t, kvo, entity.FoldIdentity)
-	opens := f.s.Opens()
-	_, file := f.create(f.admin, f.root, "a", regular(0o644))
-	p := f.newOpen(file.ID)
-	p.Durability = entity.DurabilityPersistent
-	must(t, opens.Put(ctx, f.share.ID, p))
-	plain := f.newOpen(file.ID)
-	must(t, opens.Put(ctx, f.share.ID, plain))
-	lock := func(open entity.OpenID, off uint64, owner string) entity.LockRecord {
-		id, err := f.s.NextID(ctx, kvstore.IDLock)
-		must(t, err)
-		return entity.LockRecord{ID: entity.LockID(id), Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
-	}
-	if err := opens.PutLock(ctx, f.share.ID, file.ID, lock(plain.ID, 0, "x")); err == nil {
-		t.Error("a lock stored under an open that is not persistent")
-	}
-	l1, l2, l3 := lock(p.ID, 100, "x"), lock(p.ID, 0, "x"), lock(p.ID, 100, "y")
-	// An SMB lock past 2^63, and a zero-length one, are stored as asked.
-	l4 := lock(p.ID, 1<<63, "z")
-	l4.Length = 0
-	for _, l := range []entity.LockRecord{l1, l2, l3, l4} {
-		must(t, opens.PutLock(ctx, f.share.ID, file.ID, l))
-	}
-	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
-	must(t, err)
-	if len(got) != 4 || got[0].ID != l2.ID || got[1].ID != l1.ID || got[2].ID != l3.ID || string(got[2].Owner.Owner) != "y" || got[3].ID != l4.ID || got[3].Offset != 1<<63 || got[3].Length != 0 {
-		t.Fatalf("locks %+v", got)
-	}
-	if ops, err := opens.Of(ctx, f.share.ID, file.ID); err != nil || len(ops) != 2 {
-		t.Errorf("the locks read as opens: %+v, %v", ops, err)
-	}
-	must(t, opens.DeleteLock(ctx, f.share.ID, file.ID, l1))
-	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 3 {
-		t.Errorf("locks after one unlock %+v, %v", got, err)
-	}
-	_, err = opens.Delete(ctx, f.share.ID, file.ID, p.ID)
-	must(t, err)
-	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 0 {
-		t.Errorf("locks after their open closed %+v, %v", got, err)
-	}
-}
-
-// A change to an open's locks lands whole in one transaction: its deletes
-// and its writes together, nothing for an open that is missing or not
-// persistent, and nothing for one past the backend's limits.
+// A change to an open's locks lands whole in one transaction: its deletes,
+// its writes and the open's new record together, nothing for an open that is
+// missing or not persistent, and nothing for one past the backend's limits.
+// Locks list in offset order, two at one offset being two keys, any 64-bit
+// offset and a zero length kept as asked; they never read as opens, and
+// closing the open drops them.
 func testDurableLockChanges(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	opens := f.s.Opens()
@@ -256,42 +214,85 @@ func testDurableLockChanges(t *testing.T, kvo Opener) {
 		must(t, err)
 		return got
 	}
-	a, b := lock(1, 0, 10), lock(1, 100, 10)
-	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, []entity.LockRecord{a, b}, nil))
-	b2, c := lock(1, 100, 20), lock(2, 100, 5)
-	f.c.Take()
-	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, []entity.LockRecord{b2, c}, []entity.LockRecord{a, b}))
-	if n := f.c.Take(); n.Sets != 2 || n.Deletes != 2 {
-		t.Errorf("the change wrote %+v, want its 2 writes and 2 deletes", n)
-	}
-	if got := locks(p.ID); len(got) != 2 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[0].Open != p.ID {
-		t.Fatalf("locks after the change %+v, want b rewritten and c added, a gone", got)
+	record := func() entity.OpenRecord {
+		ops, err := opens.Of(ctx, f.share.ID, file.ID)
+		must(t, err)
+		for _, op := range ops {
+			if op.ID == p.ID {
+				return op
+			}
+		}
+		t.Fatalf("p is not stored: %+v", ops)
+		return entity.OpenRecord{}
 	}
 
-	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID, []entity.LockRecord{a}, nil); err == nil {
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{lock(0, 0, 1)}, nil); err == nil {
+		t.Error("a lock with no ID was stored")
+	}
+	a, b := lock(1, 100, 10), lock(1, 0, 10)
+	a.Open = plain.ID // a record's Open is not read: it is stored under p
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{a, b}, nil))
+	b2, c := lock(1, 0, 20), lock(2, 0, 5)
+	far := lock(3, 1<<63, 0) // an SMB lock past 2^63, of zero length
+	rec := p
+	rec.LockSeq[0] = 0x13
+	f.c.Take()
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec, []entity.LockRecord{b2, c, far}, []entity.LockRecord{a, b}))
+	if n := f.c.Take(); n.Sets != 4 || n.Deletes != 2 {
+		t.Errorf("the change wrote %+v, want the record, 3 locks and 2 deletes", n)
+	}
+	got := locks(p.ID)
+	if len(got) != 3 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[2].ID != 3 || got[2].Offset != 1<<63 || got[2].Length != 0 {
+		t.Fatalf("locks after the change %+v, want b rewritten and c added in offset order, a gone, the far lock as asked", got)
+	}
+	if r := record(); r.LockSeq[0] != 0x13 {
+		t.Errorf("the open's record after the change: LockSeq[0] = %#x, want 0x13", r.LockSeq[0])
+	}
+	if ops, err := opens.Of(ctx, f.share.ID, file.ID); err != nil || len(ops) != 2 {
+		t.Errorf("the locks read as opens: %+v, %v", ops, err)
+	}
+
+	other := rec
+	other.ID = plain.ID
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &other, nil, []entity.LockRecord{c}); err == nil {
+		t.Error("another open's record written with p's locks")
+	}
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID, nil, []entity.LockRecord{b}, nil); err == nil {
 		t.Error("locks stored under an open that is not persistent")
 	}
-	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID+1000, []entity.LockRecord{a}, nil); !merrs.IsNotFoundError(err) {
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID+1000, nil, []entity.LockRecord{b}, nil); !merrs.IsNotFoundError(err) {
 		t.Errorf("locks under an open with no record: %v, want not found", err)
 	}
 	if got := locks(plain.ID); len(got) != 0 {
 		t.Errorf("a refused change stored %+v", got)
 	}
 
-	// Writes past the transaction's byte limit, with a delete: neither lands.
+	// Writes past the transaction's byte limit, with a delete and a new
+	// record: none of them lands.
 	l := f.c.Limits()
 	owner := min(l.Value/2, 1<<16)
 	var big []entity.LockRecord
 	for i := range l.TxnBytes/owner + 1 {
-		r := lock(entity.LockID(i+1), 1000, 1)
+		r := lock(entity.LockID(i+10), 1000, 1)
 		r.Owner.Owner = make([]byte, owner)
 		big = append(big, r)
 	}
-	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, big, []entity.LockRecord{c}); !errors.Is(err, kv.ErrTooLarge) {
+	rec2 := rec
+	rec2.LockSeq[0] = 0x14
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec2, big, []entity.LockRecord{c}); !errors.Is(err, kv.ErrTooLarge) {
 		t.Fatalf("a change past the limits: %v, want kv.ErrTooLarge", err)
 	}
-	if got := locks(p.ID); len(got) != 2 || got[1].ID != 2 {
+	if got := locks(p.ID); len(got) != 3 || got[1].ID != 2 {
 		t.Errorf("locks after a change past the limits %+v, want them as they were", got)
+	}
+	if r := record(); r.LockSeq[0] != 0x13 {
+		t.Errorf("the open's record after a change past the limits: LockSeq[0] = %#x, want 0x13", r.LockSeq[0])
+	}
+
+	_, err := opens.Delete(ctx, f.share.ID, file.ID, p.ID)
+	must(t, err)
+	if got := locks(p.ID); len(got) != 0 {
+		t.Errorf("locks after their open closed %+v", got)
 	}
 }
 
