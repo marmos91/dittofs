@@ -51,9 +51,9 @@ const (
 // fixtureStart is when the fixture's clock starts.
 var fixtureStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// fixtureInstall is the installation ID the fixture's journals are created
+// FixtureInstall is the installation ID the fixture's journals are created
 // under.
-var fixtureInstall = journalv2.InstallationID{'d', 'i', 't', 't', 'o', 'f', 's'}
+var FixtureInstall = journalv2.InstallationID{'d', 'i', 't', 't', 'o', 'f', 's'}
 
 // Fixture is one journal on a temporary directory of the real filesystem,
 // reached through a crash-simulating seam, on a test clock, under the
@@ -120,6 +120,23 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		prof.Watch(tb, prof.Options{})
 	}
 
+	f := bareFixture(tb, fault)
+	var err error
+	f.id, err = journalv2.Init(tb.Context(), f.Dir, FixtureInstall, f.options()...)
+	if err != nil {
+		tb.Fatalf("fixture: init: %v", err)
+	}
+
+	f.open()
+	return f
+}
+
+// bareFixture is a fixture on a new, empty directory with no journal in it:
+// the seam, the clock and the options are set and nothing is initialised or
+// opened. What it opens later is closed when the test ends.
+func bareFixture(tb testing.TB, fault sim.Fault) *Fixture {
+	tb.Helper()
+
 	dir := tb.TempDir()
 	seam, err := NewSeam(dir)
 	if err != nil {
@@ -144,13 +161,6 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		opts:    []journalv2.Option{journalv2.WithClock(clock), journalv2.WithSettings(settings)},
 		handles: map[int]*journalv2.Handle{},
 	}
-
-	f.id, err = journalv2.Init(tb.Context(), dir, fixtureInstall, f.options()...)
-	if err != nil {
-		tb.Fatalf("fixture: init: %v", err)
-	}
-
-	f.open()
 	tb.Cleanup(f.close)
 	return f
 }
@@ -163,17 +173,27 @@ func (f *Fixture) options() []journalv2.Option {
 
 // open opens the fixture's journal, raises its version limit, and attaches
 // every share attached before.
+func (f *Fixture) open() {
+	f.tb.Helper()
+
+	if err := f.tryOpen(f.id); err != nil {
+		f.tb.Fatalf("fixture: open: %v", err)
+	}
+}
+
+// tryOpen is open with expect as the identity the open expects, returning
+// Open's error instead of failing: on an error nothing is open and J is nil.
 //
 // The floor of each open is the limit the last one set, as a caller that
 // records its limit durably before raising it would pass: no version issued
 // before a crash, whose record the crash lost, is then issued again.
-func (f *Fixture) open() {
+func (f *Fixture) tryOpen(expect journalv2.JournalID) error {
 	f.tb.Helper()
 
 	f.floor = f.limit
-	j, err := journalv2.Open(f.tb.Context(), f.Dir, f.floor, f.id, f.options()...)
+	j, err := journalv2.Open(f.tb.Context(), f.Dir, f.floor, expect, f.options()...)
 	if err != nil {
-		f.tb.Fatalf("fixture: open: %v", err)
+		return err
 	}
 	f.J = j
 
@@ -188,6 +208,7 @@ func (f *Fixture) open() {
 	for i := range f.handles {
 		f.handles[i] = f.attach(i)
 	}
+	return nil
 }
 
 // close closes every handle, then the journal, when the test ends. A handle
@@ -215,7 +236,7 @@ func (f *Fixture) close() {
 // Share returns the handle of share i, attaching it on first use with tag
 // i+1, no limit below the journal's, the floor the journal was opened with,
 // and the Bounded policy. Crash and Reopen attach it again, so a test asks
-// for it again after either.
+// for it again after either. It is not called while the journal is shut.
 func (f *Fixture) Share(i int) *journalv2.Handle {
 	f.tb.Helper()
 
@@ -240,6 +261,10 @@ func (f *Fixture) attach(i int) *journalv2.Handle {
 // Floor returns the floor the journal open now was opened with: every
 // version it issues exceeds it.
 func (f *Fixture) Floor() journalv2.Version { return f.floor }
+
+// ID returns the identity the fixture's journal was initialised with, the one
+// every open of it expects.
+func (f *Fixture) ID() journalv2.JournalID { return f.id }
 
 // Tag returns the tag of the fixture's share i.
 func Tag(i int) journalv2.ShareTag {
@@ -268,11 +293,14 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 		f.tb.Fatalf("fixture: crash: %v", err)
 	}
 
-	for _, h := range f.handles {
-		_ = h.Close() // a crashed process's handles return nothing anyone reads
-	}
-	if err := f.J.Close(); err != nil && !errors.Is(err, fs.ErrClosed) && !errors.Is(err, journalv2.ErrClosed) {
-		f.tb.Logf("fixture: closing the crashed journal: %v", err)
+	if f.J != nil {
+		for _, h := range f.handles {
+			_ = h.Close() // a crashed process's handles return nothing anyone reads
+		}
+		if err := f.J.Close(); err != nil && !errors.Is(err, fs.ErrClosed) && !errors.Is(err, journalv2.ErrClosed) {
+			f.tb.Logf("fixture: closing the crashed journal: %v", err)
+		}
+		f.J = nil
 	}
 
 	f.open()
@@ -302,6 +330,19 @@ func (f *Fixture) Abandon() {
 func (f *Fixture) Reopen() {
 	f.tb.Helper()
 
+	f.Shutdown()
+	f.open()
+}
+
+// Shutdown closes every handle and the journal cleanly and leaves nothing
+// open, so a test can edit the directory with the journal shut; Reopen,
+// TryReopen and Crash open it again. A journal already shut is left as it is.
+func (f *Fixture) Shutdown() {
+	f.tb.Helper()
+
+	if f.J == nil {
+		return
+	}
 	for _, h := range f.handles {
 		if err := h.Close(); err != nil {
 			f.tb.Fatalf("fixture: close a handle: %v", err)
@@ -310,8 +351,47 @@ func (f *Fixture) Reopen() {
 	if err := f.J.Close(); err != nil {
 		f.tb.Fatalf("fixture: close: %v", err)
 	}
+	f.J = nil
+}
 
-	f.open()
+// TryReopen is Reopen returning Open's error instead of failing the test:
+// after an error the journal is shut, J is nil, until a later open succeeds.
+func (f *Fixture) TryReopen() error {
+	f.tb.Helper()
+	return f.TryReopenAs(f.id)
+}
+
+// TryReopenAs is TryReopen with expect as the identity the open expects, the
+// zero identity included. The fixture's own identity is unchanged, so a
+// later Reopen expects it again.
+func (f *Fixture) TryReopenAs(expect journalv2.JournalID) error {
+	f.tb.Helper()
+
+	f.Shutdown()
+	return f.tryOpen(expect)
+}
+
+// TryInit runs Init on the fixture's directory with its options and returns
+// what Init returns. On success the identity becomes the fixture's, the one a
+// later open expects; the journal open now, if any, is not replaced.
+func (f *Fixture) TryInit() (journalv2.JournalID, error) {
+	f.tb.Helper()
+
+	id, err := journalv2.Init(f.tb.Context(), f.Dir, FixtureInstall, f.options()...)
+	if err == nil {
+		f.id = id
+	}
+	return id, err
+}
+
+// TryRestamp shuts the journal down and runs Restamp on its directory with
+// the fixture's identity, install and options, and returns what Restamp
+// returns. The journal stays shut; Reopen or Crash opens it again.
+func (f *Fixture) TryRestamp(install journalv2.InstallationID) error {
+	f.tb.Helper()
+
+	f.Shutdown()
+	return journalv2.Restamp(f.tb.Context(), f.Dir, f.id, install, f.options()...)
 }
 
 // FailNext makes the next n calls of op on a file matching key fail with
