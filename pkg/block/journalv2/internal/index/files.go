@@ -84,6 +84,9 @@ type file struct {
 	// nranges is the number of drop ranges over all of the file's segments,
 	// maintained by recorded and segmentGone.
 	nranges int
+	// retained is the superseded content the file still keeps. It is never
+	// consulted to answer a read.
+	retained retainedSet
 	// change is the file's change version. The zero Version means the file
 	// has none of its own, which is also the case for a file holding only
 	// filled content, since a fill changes no version: either way a check
@@ -207,8 +210,15 @@ func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) err
 // entry: a file whose content was all removed still has a removal Since must
 // yield until the caller settles it.
 //
-// decision: retained extents do not keep it yet, because the index does not
-// carry them; whether they should is decided where they are added.
+// decision: retained extents do not keep it. Whether they should is decided
+// with the floor that dropping it raises, so for now they do not: retained
+// content is no longer held.
+//
+// Retained extents also keep the entry itself in the map, with its tag. The
+// guard is defensive only: a retained piece's record keeps its segment
+// noted, so the segments alone already keep the entry, unless a caller notes
+// that segment gone too early. Then this guard keeps superseded content an
+// offload has still to offer from being dropped with the entry.
 //
 // The dropped change version is not recorded anywhere yet, so nothing here
 // refuses a stale fill once the entry has gone: no check of a fill may be
@@ -220,7 +230,7 @@ func (f *file) settle(s *fileShard, id core.FileID) {
 	}
 	f.change = core.Version{}
 	f.held = heldSet{} // free the empty tree and its scratch for the tag-only life
-	if len(f.segs) > 0 {
+	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
 	f.gone = true
