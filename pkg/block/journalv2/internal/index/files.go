@@ -141,8 +141,10 @@ func (fs *files) len() int {
 
 // setExtentLimit sets the bound to n. A limit of 0 refuses every content
 // write that adds an entry, so the journal never reaches an index no bound
-// checks. A negative n leaves the bound unset: the journal's settings refuse
-// one before the index is built. Defaults are the settings' job, before the
+// checks. A negative n refuses every content write as well, by the checks
+// that compare against it: the journal's settings must reject one before
+// the index is built, since no caller of the index can tell it an unset
+// bound from a refusing one. Defaults are the settings' job, before the
 // index exists.
 //
 // decision: the bound has no getter yet. Reading it back is the journal

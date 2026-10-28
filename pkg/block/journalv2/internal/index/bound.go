@@ -1,6 +1,8 @@
 package index
 
 import (
+	"math"
+
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
@@ -21,8 +23,11 @@ import (
 // of e would add, and negative when it would drop more than it adds. It is
 // one for the new placement, less the held pieces e covers whole, plus one
 // where e splits a piece in three, plus, for a writeRetain, one retained
-// extent per held piece e covers in part. A zero-length e adds nothing. It
-// reads only, so it runs under the file's read lock.
+// extent per held piece e overlaps, whole or in part — retainCut retains
+// one piece per piece it supersedes, wherever the write's ends fall, so a
+// piece it covers whole trades its held entry for a retained one, not none.
+// A zero-length e adds nothing. It reads only, so it runs under the file's
+// read lock.
 //
 // A write never joins a neighbour at run time: its version is above every
 // piece it replaces, so joins' test never holds, and the count is exact.
@@ -39,9 +44,8 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 		if inside {
 			n--
 		}
-		if retain && !inside {
-			// A piece covered in part is kept, retained, beside the write.
-			n++
+		if retain {
+			n++ // the piece superseded stays, retained, beside the write
 		}
 		return true
 	})
@@ -73,10 +77,19 @@ func (f *file) splits(e core.Extent) bool {
 // admitWrite reserves the entries a write, or a writeRetain when retain, of e
 // on id would add, and reports them for the caller to hand to commit, or to
 // abandon once its I/O has failed. It is refused with a NoSpaceError naming
-// the index when the reservation would raise the count above the limit, or
-// when the count is above the limit and the write would add nothing: over
-// the bound, the count must come down, so every content write is refused
+// the index when the reservation would raise the count above the limit — a
+// write that adds nothing included, once the count is above the limit, since
+// over the bound the count must come down and every content write is refused
 // until it has. A refused admission reserves nothing.
+//
+// decision: the admission runs under the file's read lock, and the engine
+// holds the file's append lock from a write's admission to its commit, so
+// the file's content cannot change between the two — except by a release or
+// an offload report on the same file, which can make the committed delta
+// differ from the admitted one. commit applies the true delta, so the count
+// never drifts, and it overshoots the bound only by such a race. Revisit if
+// the engine ever lets releases run between another file op's admission and
+// its commit and the count is seen above the bound.
 func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
 	// A file with no entry holds nothing: a write of bytes adds one entry
 	// and a zero-length one none.
@@ -85,44 +98,35 @@ func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, 
 		n = 0
 	}
 	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
-	return fs.reserve(max(n, 0), n == 0)
+	return fs.reserve(max(n, 0))
 }
 
 // admitFill reserves the entries a fill of p on id would add. It is refused
-// as admitWrite is.
-//
-// decision: the admission runs under the file's read lock, and the engine
-// holds the file's append lock from a fill's admission to its commit, so the
-// file's content cannot change between the two — except by a release or an
-// offload report on the same file, which can make the committed delta differ
-// from the admitted one. commit applies the true delta, so the count never
-// drifts, and it overshoots the bound only by such a race. Revisit if the
-// engine ever lets releases run between another file op's admission and its
-// commit and the count is seen above the bound.
+// as admitWrite is, and races as admitWrite does.
 func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
-	n := int64(1)
+	// A file with no entry holds nothing, so a fill of bytes occupies a whole
+	// absent extent — one entry — and a zero-length one occupies none.
+	n := int64(0)
 	if p.Extent.Len > 0 {
-		n = 0
+		n = 1
 		fs.view(id, func(f *file) { n = f.fillAdds(p) })
 	}
-	return fs.reserve(max(n, 0), n == 0)
+	return fs.reserve(max(n, 0))
 }
 
 // reserve adds want to the count when the limit allows it, or refuses with a
-// NoSpaceError naming the index, counting the refusal. A reservation that
-// adds nothing is refused while the count stands above the limit: nothing
-// that adds nothing can lower it.
-func (fs *files) reserve(want int64, addsNothing bool) (int64, error) {
+// NoSpaceError naming the index, counting the refusal. A reservation of
+// nothing is refused while the count stands above the limit — the first
+// clause covers it, since want is 0 — because nothing that adds nothing can
+// lower the count. Missing counts what the reservation lacked, at least one
+// entry so a caller draining the bound is told a real shortfall.
+func (fs *files) reserve(want int64) (int64, error) {
 	for {
 		c := fs.count.Load()
 		limit := fs.limit.Load()
-		if c+want > limit || (addsNothing && c > limit) {
+		if c+want > limit {
 			fs.refusals.Add(1)
-			missing := c + max(want, 1) - limit
-			if addsNothing {
-				missing = c - limit
-			}
-			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries}
+			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(want, 1) - limit, Unit: core.UnitEntries}
 		}
 		if fs.count.CompareAndSwap(c, c+want) {
 			return want, nil
@@ -131,8 +135,9 @@ func (fs *files) reserve(want int64, addsNothing bool) (int64, error) {
 }
 
 // admitRemoval reserves the entries a removal that would split a held extent
-// adds: one for a release, which leaves a marker, two for a deallocate or a
-// clone target, which split a piece and leave a marker. It is never refused
+// adds: one for a release, which splits a piece — a release leaves no
+// marker — and two for a deallocate or a clone target, which split a piece
+// and leave one. It is never refused
 // when e splits nothing: a removal that narrows or covers whole pieces only
 // lowers the count, so refusing it would wedge the very calls that bring the
 // count down. A splitting one is refused, with the same named refusal, once
@@ -161,7 +166,17 @@ func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64,
 	for {
 		c := fs.count.Load()
 		limit := fs.limit.Load()
-		ceiling := limit + limit/8
+		// Saturate: a limit near MaxInt64 must not wrap the ceiling
+		// negative, or every splitting removal would be refused where
+		// nothing else is — content writes are still admitted against
+		// the limit. A negative one, which the settings must reject
+		// before the index, gives a negative ceiling and refuses the
+		// same way it refuses everything else.
+		eighth, room := limit/8, math.MaxInt64-limit
+		if limit >= 0 && eighth > room {
+			eighth = room
+		}
+		ceiling := limit + eighth
 		if c+adds > ceiling {
 			fs.refusals.Add(1)
 			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + adds - ceiling, Unit: core.UnitEntries}

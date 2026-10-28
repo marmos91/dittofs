@@ -2,6 +2,7 @@ package index
 
 import (
 	"errors"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -257,6 +258,14 @@ func TestWriteAddsIsExact(t *testing.T) {
 		{"a three-way split", func(f *file) {
 			f.write(write(0, 12, rec(1, 0), 1))
 		}, ext(4, 4), false},
+		{"writeRetain exactly over one whole piece", func(f *file) {
+			f.write(write(0, 8, rec(1, 0), 1))
+		}, ext(0, 8), true},
+		{"writeRetain covering three whole pieces", func(f *file) {
+			for i := range int64(3) {
+				f.write(write(i*4, 4, rec(1, uint32(i)*4), uint64(i+1)))
+			}
+		}, ext(0, 12), true},
 		{"writeRetain over two pieces and a gap", func(f *file) {
 			f.write(write(0, 8, rec(1, 0), 1))
 			f.write(write(12, 8, rec(1, 64), 2))
@@ -521,10 +530,22 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	if a, err := fs.admitWrite(id, ext(0, 4096), false); err != nil || a != 0 {
 		t.Fatalf("whole-piece overwrite at the bound = (%d, %v), want (0, nil)", a, err)
 	}
-	if r := fs.indexRefusals(); r != 1 {
-		t.Fatalf("refusals = %d after the admitted overwrite, want 1", r)
+	// A fill of a file with no entry holds a whole absent extent, so it adds
+	// one entry and is refused here, at the bound, like any write that adds
+	// one. One that read its file as empty and reserved nothing would pass,
+	// and its commit would raise the count past the bound on the most common
+	// fill of all, a cold read of a file nothing is held for.
+	if _, err := fs.admitFill(fid(9), Placed{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(1)}); err == nil {
+		t.Fatal("a fill of a file with no entry was admitted at the bound")
+	} else {
+		assertIndexRefusal(t, err)
 	}
-
+	if r := fs.indexRefusals(); r != 2 {
+		t.Fatalf("refusals = %d after the refused fill, want 2", r)
+	}
+	if c := fs.extentCount(); c != limit {
+		t.Fatalf("count = %d after the refused fill, want %d", c, limit)
+	}
 	// A truncate is never refused by the bound, and lowers the count: it is
 	// how the engine gets out of the refusal.
 	if err := fs.update(id, func(f *file) error {
@@ -538,7 +559,8 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	}
 
 	// An offload's mark and a release of one whole piece: never refused, and
-	// the count falls again.
+	// the count falls again. The released piece is the one at step, the
+	// highest the truncate kept — the whole of it, for allOffloaded.
 	if err := fs.update(id, func(f *file) error {
 		f.held.markOffloaded(ext(step, 4096), core.Version{}, newest)
 		_, err := f.held.release(ext(step, 4096), nil)
@@ -546,8 +568,8 @@ func TestBoundRefusesTheWritePastIt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if r := fs.indexRefusals(); r != 1 {
-		t.Fatalf("refusals = %d after a mark and a release, want 1", r)
+	if r := fs.indexRefusals(); r != 2 {
+		t.Fatalf("refusals = %d after a mark and a release, want 2", r)
 	}
 
 	// The count is below the bound, so a write is admitted again.
@@ -709,6 +731,17 @@ func TestOverBoundAtOpen(t *testing.T) {
 	} else {
 		assertIndexRefusal(t, err)
 	}
+	// A fill of a file with no entry holds a whole extent absent, so it adds
+	// one entry and is refused over the bound like any other content write.
+	// Nothing is held for the file, so n == 0 in the buggy shape: the refusal
+	// must be the over-the-bound one, not "adds nothing", and it holds either
+	// way, which is why the other check, at the bound, is the one that fails
+	// on this bug.
+	if _, err := fs.admitFill(fid(9), Placed{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(1)}); err == nil {
+		t.Fatal("a fill of a file with no entry was admitted over the bound")
+	} else {
+		assertIndexRefusal(t, err)
+	}
 	ps := heldPieces(&fs, ids[0])
 	if a, err := fs.admitWrite(ids[0], ps[0].Extent, false); err == nil || a != 0 {
 		t.Fatalf("a whole-piece overwrite over the bound = (%d, %v), want (0, refused)", a, err)
@@ -788,7 +821,9 @@ func borderID(*files, [4]core.FileID) core.FileID { return fid(9) }
 
 // TestAbandonReturnsAdmission: a content write whose I/O fails gives its
 // admission back, so one failed write cannot hold the bound's headroom for
-// good.
+// good. Each round admits and abandons without committing — the write never
+// happened — and the count must be what it was, and match the walk, after
+// every one.
 func TestAbandonReturnsAdmission(t *testing.T) {
 	var fs files
 	fs.setExtentLimit(100)
@@ -799,29 +834,31 @@ func TestAbandonReturnsAdmission(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	start, walk := fs.extentCount(), walkCount(&fs)
+	if start != walk {
+		t.Fatalf("count = %d, walk = %d before anything is admitted", start, walk)
+	}
 	for n := range int64(10) {
-		e := fillExtent(n + 1)
-		a, err := fs.admitWrite(id, e, false)
+		a, err := fs.admitWrite(id, fillExtent(n+1), false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := fs.commit(id, a, func(f *file) error {
-			f.write(Placed{Extent: e, Record: rec(2, 0), Version: ver(2)})
-			return nil
-		}); err != nil {
-			t.Fatal(err)
+		if c := fs.extentCount(); c != start+1 {
+			t.Fatalf("after admitting %d, count = %d, want %d", n, c, start+1)
 		}
-		// The write made no entry, so nothing but its admission would bring
-		// the count back down.
 		fs.abandon(a)
+		if c := fs.extentCount(); c != start {
+			t.Fatalf("round %d: count = %d after the abandon, want %d back", n, c, start)
+		}
+		if c, w := fs.extentCount(), walkCount(&fs); c != w {
+			t.Fatalf("round %d: count = %d, walk = %d", n, c, w)
+		}
 	}
-	if fs.extentCount() != 1 {
-		t.Fatalf("count = %d before the abandoned release, want 1", fs.extentCount())
-	}
-	// One admission never given back is all that separates the count from
-	// the truth, so a second lost write would take it to a spurious refusal.
+	// A limit just above the count proves nothing is still reserved: were one
+	// admission lost, this write, the last that fits, would be refused.
+	fs.setExtentLimit(start + 1)
 	if a, err := fs.admitWrite(id, fillExtent(100), false); err != nil || a != 1 {
-		t.Fatalf("a write after the abandoned admissions = (%d, %v)", a, err)
+		t.Fatalf("a write at the count after the abandons = (%d, %v), want (1, nil)", a, err)
 	}
 }
 
@@ -902,5 +939,32 @@ func TestNonSplittingRemovalsNeverRefused(t *testing.T) {
 				t.Fatal("a never-refused removal was counted as a refusal")
 			}
 		})
+	}
+}
+
+// TestCeilingSaturatesAtTheLargestLimit: the ceiling is the limit plus an
+// eighth of it, summed in 64 bits. A limit near MaxInt64 — an operator
+// writing effectively-unlimited — must not wrap the sum negative, or every
+// splitting release and deallocate would be refused, with a nonsensical
+// Missing, over a bound nothing else refuses at.
+func TestCeilingSaturatesAtTheLargestLimit(t *testing.T) {
+	var fs files
+	fs.setExtentLimit(math.MaxInt64)
+	id := fid(1)
+	if err := fs.update(id, func(f *file) error {
+		f.held.insert(Placed{Extent: ext(0, 3*4096), Record: rec(1, 0), Version: ver(1)})
+		f.held.markOffloaded(whole, ver(1), ver(1))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := fs.admitRemoval(id, ext(4096, 4096), 1)
+	if err != nil || a != 1 {
+		t.Fatalf("a splitting release under the largest limit = (%d, %v), want (1, nil): the ceiling must not wrap", a, err)
+	}
+	// Content writes are admitted against the same limit, so the refusal
+	// above could not have come from it.
+	if a, err := fs.admitWrite(id, ext(100*4096, 4096), false); err != nil || a != 1 {
+		t.Fatalf("a write under the largest limit = (%d, %v), want (1, nil)", a, err)
 	}
 }
