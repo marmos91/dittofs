@@ -48,7 +48,9 @@ func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change
 			// A piece next to the last one, of the same record, extends it:
 			// pieces of one record split only by their offloaded bit are one
 			// extent. The version test, as in joins, only guards against a
-			// caller that names one record with two.
+			// caller that names one record with two. Skip is not compared,
+			// because Change carries none: give Change a skip and the merge
+			// must also require the piece's skip to continue the last one's.
 			if n := len(out); n > first {
 				if last := &out[n-1]; extentEnd(last.Extent) == p.Extent.Off && last.Record == p.Record &&
 					last.Version == p.Version {

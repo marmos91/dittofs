@@ -257,6 +257,27 @@ func TestTruncateEdgeCases(t *testing.T) {
 			t.Fatalf("markers = %d, want both truncates'", n)
 		}
 	})
+
+	// To MaxInt64: nothing is removed, yet the truncate is still yielded, so
+	// metadata learns the size. Its length MaxInt64 - Off is 0 here, which
+	// cannot read as a removal to the end of the file, since none is left.
+	t.Run("to MaxInt64", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		a := rec(1, 0)
+		change(t, &fs, id, func(f *file) error {
+			f.write(write(0, 8, a, 2))
+			f.truncate(math.MaxInt64, ver(3))
+			return nil
+		})
+		want := []Change{
+			{Kind: core.ChangeWrite, Extent: ext(0, 8), Version: ver(2), Record: a},
+			{Kind: core.ChangeTruncate, Extent: ext(math.MaxInt64, 0), Version: ver(3)},
+		}
+		if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
+			t.Fatalf("since:\n got  %+v\n want %+v", got, want)
+		}
+	})
 }
 
 // TestDeallocateEdgeCases are the deallocate edge cases: inside one extent
@@ -370,6 +391,23 @@ func TestFillHoldsOutsideTheMarker(t *testing.T) {
 	}
 	if got := heldPieces(&fs, id); !slices.Equal(got, want) {
 		t.Fatalf("held:\n got  %+v\n want %+v", got, want)
+	}
+
+	// A mask nested inside an earlier one must not pull the fill's cursor
+	// back to its own end: [8, 16) lies under the outer marker still.
+	nested := fid(2)
+	change(t, &fs, nested, func(f *file) error {
+		if err := f.deallocate(ext(0, 16), ver(3)); err != nil {
+			return err
+		}
+		if err := f.deallocate(ext(4, 4), ver(4)); err != nil {
+			return err
+		}
+		f.fill(Placed{Extent: ext(0, 16), Record: r, Version: ver(2)})
+		return nil
+	})
+	if got := heldPieces(&fs, nested); len(got) != 0 {
+		t.Fatalf("held under nested markers: %+v", got)
 	}
 }
 
