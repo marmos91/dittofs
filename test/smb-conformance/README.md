@@ -12,7 +12,7 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
 | **smbclient E2E** | smbclient CLI | CLI-based protocol validation | ~2 min |
 | **Cross-protocol** | NFS + SMB mounts | Lease/delegation coordination | ~5 min |
 | **Kerberos** | go-smb2 + smbtorture | Kerberos auth + SMB3 features | ~10 min |
-| **Multi-OS CI** | mount.cifs/mount_smbfs | macOS/Linux clients | ~10 min |
+| **clients** | mount.cifs, mount_smbfs, the Windows client | Linux, macOS and Windows clients | ~10 min |
 
 ## Prerequisites
 
@@ -243,19 +243,19 @@ test/harness/bin/dt run clients            # on Linux; --smb21 for SMB 2.1, --ma
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly; the `clients` suite on Linux, macOS and Windows nightly | ~15 min |
+| `tests.yml` | PR, push, nightly | WPTS BVT and smbtorture, over two runners, on `badger-s3`, through `dt`, and smbtorture's Kerberos option after a merge and nightly; the `clients` suite on Linux after each merge, its SMB 2.1, macOS and Windows runs nightly | ~15 min |
 
 ### Speed Tiers
 
 - **PR checks**: WPTS BVT and smbtorture, on `badger-s3`
-- **Push to develop and nightly**: the same, plus Kerberos smbtorture and the e2e suite (in `tests.yml`)
-- **Push to develop (SMB paths) and weekly**: multi-OS client compat
+- **Push to develop and nightly**: the same, plus Kerberos smbtorture, the e2e suite and the `clients` suite on Linux (in `tests.yml`)
+- **Nightly**: also the `clients` suite's SMB 2.1, macOS and Windows runs
 
 ### Results
 
 - WPTS and smbtorture results: `dt`'s report in the job summary, each cell's results uploaded as artifacts
 - E2E results: the same, from the e2e cells in `tests.yml`
-- Weekly regression failures auto-create GitHub issues
+- Failures on develop, after a merge or in the nightly run, go to the "develop is red" issue, and a test that fails 2 runs in a row gets an issue of its own
 
 ## Architecture
 
