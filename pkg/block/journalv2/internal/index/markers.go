@@ -120,7 +120,7 @@ func (f *file) firstAbove(v core.Version) int {
 // nothing and returns ErrStaleFill, which the caller matches with errors.Is.
 // The check and the insert run under the file's lock, in one update. A fill
 // refused on a file with no entry leaves no entry, since an update that
-// leaves nothing behind drops the entry it was given.
+// leaves nothing behind drops the empty entry it was given.
 func (fs *files) fill(id core.FileID, p Placed, asOf core.Version) error {
 	return fs.update(id, func(f *file) error {
 		if fs.checkedAgainst(f, id).Compare(asOf) > 0 {

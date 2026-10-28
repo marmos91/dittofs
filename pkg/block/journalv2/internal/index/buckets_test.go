@@ -1,6 +1,7 @@
 package index
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,24 +11,23 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// idInBucketN returns the n-th test FileID of bucket b: distinct for every n
-// and, every sixteenth one, in another shard. The ID is built rather than
-// scanned, since the tests ask for thousands of them: bytes 14 and 15 carry
-// the bucket — they are the top sixteen bits of the hash's second half, of
-// which the index takes its twelve — the counter in bytes 12 and 13 only
-// makes the IDs distinct, and byte 0 spreads them over shards, which the
-// bucket does not read.
+// idInBucketN returns the n-th test FileID of bucket b, by inverting the
+// hash: y is chosen so the mixed hash is exactly b's twelve index bits above
+// n, which works because the hash's second multiply is odd, so it is
+// invertible over the 2^64 its low bits run on, and the first half's zero
+// contribution leaves the second free. Every n below 2^52 gives a distinct
+// ID in bucket b.
 func idInBucketN(b, n int) core.FileID {
-	return core.NewFileID([16]byte{
-		0:  byte(n>>4) % fileShards,
-		12: byte(n), 13: byte(n >> 8),
-		14: byte(b&15) << 4, 15: byte(b >> 4),
-	})
+	const binv = 0x96de1b173f119089 // the inverse of the hash's second multiply, mod 2^64
+	target := uint64(b)<<52 | uint64(n)&(1<<52-1)
+	var id [16]byte
+	binary.LittleEndian.PutUint64(id[8:], target*binv)
+	return core.NewFileID(id)
 }
 
 // idInBucket returns a test FileID whose floor bucket is b and which is
-// distinct from every ID in not. Only the low sixteen counters of
-// idInBucketN vary before IDs repeat, so the walk gives up there.
+// distinct from every ID in not. The walk past a taken counter is defensive:
+// every counter below 2^52 gives a distinct ID, so no test can exhaust them.
 func idInBucket(b int, not ...core.FileID) core.FileID {
 	for n := range 1 << 16 {
 		if id := idInBucketN(b, n); !slices.Contains(not, id) {
@@ -517,48 +517,56 @@ func TestRefusedFillLeavesNoEntry(t *testing.T) {
 	}
 }
 
-// TestBucketsSpreadIDs: the bucket index takes the top twelve bits of the
-// full-ID hash, an exclusive-or of the ID's two little-endian halves, so its
-// bits come from the top two bytes of each half — bytes 6 and 7, and 14 and
-// 15. Two families of 4,096 IDs, one varying only bytes 14 and 15 and one
-// varying only bytes 6 and 7, must each spread over the buckets, encoded so
-// the twelve index bits carry the whole counter. A bucket taken from bits
-// only one half reaches — or read at the wrong end of the bytes — clumps one
-// family.
+// TestBucketsSpreadIDs: the hash mixes every byte of the FileID into the
+// top bits the bucket index takes, so two identifiers that differ in one
+// byte position — the two ends of the identifier a real one varies in —
+// never share their bucket unless they share that byte, and a family filling
+// two adjacent bytes reaches every bucket. A bucket taken from bits some
+// bytes never reach, or hashed without mixing, breaks at least one of these.
 func TestBucketsSpreadIDs(t *testing.T) {
-	spread := func(makeID func(i int) core.FileID) bool {
-		var hit [floorBuckets]bool
-		for i := range floorBuckets {
-			hit[bucketOf(makeID(i))] = true
-		}
-		n := 0
-		for _, h := range hit {
-			if h {
-				n++
+	// Two IDs differing in one byte always disagree on their bucket.
+	for pos := range 16 {
+		var b [16]byte
+		b[pos] = 1
+		for q := range 16 {
+			if q == pos {
+				continue
+			}
+			var c [16]byte
+			c[q] = 1
+			if bucketOf(core.NewFileID(b)) == bucketOf(core.NewFileID(c)) {
+				t.Fatalf("IDs differing only in bytes %d and %d share a bucket", pos, q)
 			}
 		}
-		return n >= 2400 // random would reach about 2,590
 	}
-	if !spread(func(i int) core.FileID {
-		return core.NewFileID([16]byte{14: byte(i&15) << 4, 15: byte(i >> 4)})
-	}) {
-		t.Fatal("IDs differing only in the second half's top two bytes do not spread over the buckets")
-	}
-	if !spread(func(i int) core.FileID {
-		return core.NewFileID([16]byte{6: byte(i&15) << 4, 7: byte(i >> 4)})
-	}) {
-		t.Fatal("IDs differing only in the first half's top two bytes do not spread over the buckets")
+	// A family filling two adjacent bytes of the identifier — each position
+	// pairs with the next — reaches every bucket.
+	for pos := range 15 {
+		seen := map[int]bool{} // the top bits are random once both bytes vary
+		wantDistinct := min(1<<16, floorBuckets)
+		for i := range 1 << 16 {
+			var b [16]byte
+			b[pos] = byte(i)
+			b[pos+1] = byte(i >> 8)
+			seen[bucketOf(core.NewFileID(b))] = true
+		}
+		if len(seen) < wantDistinct {
+			t.Fatalf("IDs filling bytes %d and %d reach %d buckets, want %d", pos, pos+1, len(seen), wantDistinct)
+		}
 	}
 }
 
 // TestBucketRaiseRacesReads: drops of files sharing one bucket, at distinct
 // versions and from many goroutines, run beside readers calling asOf and
-// taking or refusing fills of a no-entry file in the bucket. Whatever
-// interleaving the readers see, the bucket ends at the highest dropped
-// version: a raise that could lose one would let a read begun after that
-// drop still fill. The mid-run interleaving is checked by the race detector
-// alone — an accepted fill might land just before a raise, by design — and
-// the end state, where the writers have finished, is asserted here.
+// taking or refusing fills of a no-entry file in the bucket. The bucket is
+// one shard's top bits, so every file of one bucket shares that shard's lock:
+// this is a one-shard race, narrower than the whole table but the one a
+// bucket's files actually run. Whatever interleaving the readers see, the
+// bucket ends at the highest dropped version: a raise that could lose one
+// would let a read begun after that drop still fill. The mid-run
+// interleaving is checked by the race detector alone — an accepted fill
+// might land just before a raise, by design — and the end state, where the
+// writers have finished, is asserted here.
 func TestBucketRaiseRacesReads(t *testing.T) {
 	var fs files
 	const bucket, drops = 17, 64
@@ -606,6 +614,30 @@ func TestBucketRaiseRacesReads(t *testing.T) {
 	}
 	if err := fs.fill(victim, write(0, 4, rec(3, 0), 3), ver(highest)); err != nil {
 		t.Fatalf("fill at the bucket after every drop = %v, want accepted", err)
+	}
+}
+
+// TestIDInBucketNSpansTheTable proves the inversion: every one of the 4,096
+// buckets has its ID built by idInBucketN landing in it, and every distinct
+// counter gives a distinct ID in its own bucket. An inversion that mistook
+// the hash's multipliers or the index bits fails the first loop; one whose
+// distinctness broke fails the second.
+func TestIDInBucketNSpansTheTable(t *testing.T) {
+	seen := make(map[core.FileID]struct{}, floorBuckets*4)
+	for b := range floorBuckets {
+		if got := bucketOf(idInBucketN(b, 0)); got != b {
+			t.Fatalf("idInBucketN(%d, 0) lands in bucket %d", b, got)
+		}
+		for n := range 4 {
+			id := idInBucketN(b, n)
+			if got := bucketOf(id); got != b {
+				t.Fatalf("idInBucketN(%d, %d) lands in bucket %d", b, n, got)
+			}
+			if _, dup := seen[id]; dup {
+				t.Fatalf("idInBucketN(%d, %d) repeats an earlier ID", b, n)
+			}
+			seen[id] = struct{}{}
+		}
 	}
 }
 
