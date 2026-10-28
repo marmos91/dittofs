@@ -305,10 +305,12 @@ failures on develop (RFC 29 §4.7).
 - *Source of the seed:* `DITTOFS_SEED` when set, otherwise a fixed seed per test. A retry
   inherits the same environment, so it replays the same seed and cannot pass by drawing
   another.
-- *Corpus:* the model-based test first replays every seed in
-  `conformance/testdata/model/`. A failing seed is shrunk to the shortest failing
-  sequence, written to `t.ArtifactDir()` as a ready-to-commit corpus file, and printed;
-  the fix that resolves it commits the file.
+- *Corpus:* `conformance/testdata/model/` holds sequences, not seeds: hand-written ones
+  for the interleavings and edge cases RFC 1 §9.1 and §9.2 name, and the shrunk sequence
+  of every seed that failed. The model-based test replays every one before any random
+  seed. A failing seed is shrunk to the shortest failing sequence, written to
+  `t.ArtifactDir()` as a ready-to-commit corpus file, and printed; the fix that resolves
+  it commits the file.
 - *Random seeds* run only where a tier sets `DITTOFS_SEED` from a fresh draw, which epic 12
   registers.
 
@@ -392,7 +394,7 @@ pkg/block/journalv2/
     rfc1_a_test.go  rfc1_b_test.go  rfc1_c_test.go  rfc1_d_test.go
     rfc28_a_test.go  rfc28_b_test.go  rfc28_c_test.go  damage_test.go
     edge_test.go  model_test.go  counted_test.go  clock_test.go
-    testdata/model/              committed failing seeds                         (2.6)
+    testdata/model/              hand-written and shrunk failing sequences       (2.6)
 test/journalv2/
   known.yaml                     one entry per conformance test                  (2.5a onwards)
   trace.yaml  trace_test.go      RFC row → test or owner                         (2.14)
