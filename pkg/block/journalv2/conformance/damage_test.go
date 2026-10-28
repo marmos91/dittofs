@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -958,4 +959,507 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 			break
 		}
 	}
+}
+
+// field is one field of an on-disk structure, as RFC 28's tables name it,
+// at off of the structure and size bytes long.
+type field struct {
+	name      string
+	off, size int
+}
+
+// The fields of each structure, in the order and with the names of RFC 28's
+// tables; a reserved field is named by its offset.
+var (
+	recordHeaderFields = []field{
+		{"magic", 0, 4}, {"kind", 4, 1}, {"reserved_5", 5, 3}, {"segment_id", 8, 8}, {"file_id", 16, 16},
+		{"file_offset", 32, 8}, {"length", 40, 8}, {"sequence_number", 48, 8}, {"version_epoch", 56, 8},
+		{"version_counter", 64, 8}, {"share_tag", 72, 4}, {"synced_through", 76, 8}, {"payload_checksum", 84, 4},
+		{"reserved_88", 88, 4}, {"header_checksum", 92, 4},
+	}
+
+	catalogEntryFields = []field{
+		{"file_id", 0, 16}, {"file_offset", 16, 8}, {"record_offset", 24, 4}, {"length", 28, 8}, {"sequence_number", 36, 8},
+		{"version_epoch", 44, 8}, {"version_counter", 52, 8}, {"kind", 60, 1}, {"reserved_61", 61, 3}, {"share_tag", 64, 4},
+		{"reserved_68", 68, 4},
+	}
+
+	trailerFields = []field{
+		{"magic", 0, 4}, {"layout_version", 4, 2}, {"flags", 6, 2}, {"footer_offset", 8, 8}, {"entry_count", 16, 4},
+		{"footer_checksum", 20, 4}, {"reserved_24", 24, 4}, {"crc", 28, 4},
+	}
+
+	segmentHeaderFields = []field{
+		{"magic", 0, 4}, {"format_version", 4, 2}, {"reserved_6", 6, 2}, {"journal_identity", 8, 16}, {"segment_id", 24, 8},
+		{"predecessor", 32, 8}, {"stream", 40, 4}, {"crc", 44, 4},
+	}
+
+	sealMarkerFields = []field{
+		{"magic", 0, 4}, {"reserved_4", 4, 4}, {"segment_id", 8, 8}, {"offset", 16, 8}, {"reserved_24", 24, 4}, {"crc", 28, 4},
+	}
+
+	formatFields = []field{
+		{"magic", 0, 4}, {"format_version", 4, 2}, {"reserved_6", 6, 2}, {"journal_identity", 8, 16}, {"installation_id", 24, 16},
+		{"generation", 40, 8}, {"reserved_48", 48, 4}, {"crc", 52, 4},
+	}
+)
+
+// flipBit inverts bit b of the byte at off of the file name, through the
+// seam, synced; flipping it again puts the byte back.
+func flipBit(t *testing.T, f *journalv2test.Fixture, name string, off int64, b uint) {
+	t.Helper()
+
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		t.Fatalf("flip a bit of %s: %v", name, err)
+	}
+
+	p := make([]byte, 1)
+	_, err = file.ReadAt(p, off)
+	if err = errors.Join(err, file.Close()); err != nil {
+		t.Fatalf("flip a bit of %s: read offset %d: %v", name, off, err)
+	}
+
+	overwrite(t, f, name, off, []byte{p[0] ^ (1 << b)})
+}
+
+// flipSite is a journal with one segment sealed full and catalogued, S,
+// holding file 0's records, the first marked of them offloaded with their
+// marks synced, a record of file 1 on the other stream, and how the last
+// open rebuilt the journal. S is read by its catalog, or by scan when scanned
+// says so, its trailer's magic then carrying a flipped bit for the whole
+// site.
+type flipSite struct {
+	f        *journalv2test.Fixture
+	recs     []rec
+	marked   int
+	scanned  bool
+	seg      journalv2.SegmentID
+	name     string
+	other    rec
+	footer   int64
+	entries  [][raw.CatalogEntrySize]byte
+	recovery journalv2.RecoveryStats
+}
+
+// newFlipSite builds a flipSite of records of size bytes, the first marked
+// of them offloaded, read by scan when scanned says so: the segment is
+// filled, file 1 written, the marks made and synced, and the journal
+// reopened cleanly so its catalog is what the open read; for a scanned site
+// the trailer's magic is then flipped and the journal reopened again.
+func newFlipSite(t *testing.T, size, marked int, scanned bool) *flipSite {
+	t.Helper()
+
+	f := journalv2test.New(t)
+	recs, seg := fillSegment(t, f, 0, 0, size)
+	other := writeSynced(t, f, 1, 1, 0, 64<<10)
+	syncFiles(t, f.Share(0), recs[0].id)
+	if marked > len(recs)/2 {
+		t.Fatalf("precondition: %d records to mark of %d in the segment", marked, len(recs))
+	}
+
+	for _, r := range recs[:marked] {
+		mark(t, f.Share(0), r.id, r.extent, r.version)
+	}
+
+	syncFiles(t, f.Share(0), recs[0].id)
+	f.Reopen()
+
+	s := &flipSite{f: f, recs: recs, marked: marked, scanned: scanned, seg: seg, name: segmentName(seg), other: other, recovery: f.J.Stats().Recovery}
+	if s.recovery.CatalogSegments == 0 {
+		t.Fatalf("precondition: recovery read no segment by its catalog: %+v", s.recovery)
+	}
+
+	s.footer, s.entries = trailerOf(t, durable(t, f, s.name))
+	if scanned {
+		flipBit(t, f, s.name, int64(len(durable(t, f, s.name)))-raw.TrailerSize, 0)
+		f.Reopen()
+		wantScanned(t, f, s.recovery, 1)
+		s.recovery = f.J.Stats().Recovery
+	}
+
+	return s
+}
+
+// reopen opens the journal again, failing with where the sweep stands.
+func (s *flipSite) reopen(t *testing.T, where string) {
+	t.Helper()
+
+	if err := s.f.TryReopen(); err != nil {
+		t.Fatalf("%s: reopen: %v", where, err)
+	}
+}
+
+// entryOf returns the offset in S of the catalog entry of record r.
+func (s *flipSite) entryOf(t *testing.T, r rec) int64 {
+	t.Helper()
+
+	loc := locate(t, "the site", s.f, r)
+	for i, e := range s.entries {
+		if int64(binary.LittleEndian.Uint32(e[24:28])) == loc.Offset {
+			return s.footer + int64(i)*raw.CatalogEntrySize
+		}
+	}
+
+	t.Fatalf("no catalog entry names the record at %d", loc.Offset)
+	return 0
+}
+
+// wantSuccessor fails the test unless the segment file 0's stream rolled
+// into names S as its predecessor, which the seal marker's outcome is
+// conditional on.
+func (s *flipSite) wantSuccessor(t *testing.T) {
+	t.Helper()
+
+	roll := rec{0, s.recs[0].id, journalv2.Extent{Off: int64(len(s.recs)) * s.recs[0].extent.Len, Len: s.recs[0].extent.Len}, journalv2.Version{}, nil}
+	succ := locate(t, "the site", s.f, roll).Segment
+	hdr, err := raw.ParseSegmentHeader(durable(t, s.f, segmentName(succ))[:raw.SegmentHeaderSize])
+	if err != nil || hdr.Predecessor != uint64(s.seg) {
+		t.Fatalf("precondition: segment %d does not name %d as its predecessor: %+v, %v", succ, s.seg, hdr, err)
+	}
+}
+
+// wantExact fails the test unless record r reads its exact bytes through
+// h, naming where the sweep stands in the failure.
+func wantExact(t *testing.T, where string, h *journalv2.Handle, r rec) {
+	t.Helper()
+
+	p, missing, err := readAt(t, h, r.id, r.extent.Off, len(r.p))
+	switch {
+	case err != nil:
+		t.Fatalf("%s: read of %+v: %v", where, r.extent, err)
+	case len(missing) != 0:
+		t.Fatalf("%s: read of %+v reports missing %+v, want none", where, r.extent, missing)
+	case string(p) != string(r.p):
+		t.Fatalf("%s: read of %+v returned bytes other than the ones written", where, r.extent)
+	}
+}
+
+// wantRecordMissing fails the test unless a read of record r reports exactly
+// its extent missing and leaves the caller's buffer untouched, naming where
+// the sweep stands in the failure.
+func wantRecordMissing(t *testing.T, where string, h *journalv2.Handle, r rec) {
+	t.Helper()
+
+	p, missing, err := readAt(t, h, r.id, r.extent.Off, len(r.p))
+	if err != nil || len(missing) != 1 || missing[0] != r.extent {
+		t.Fatalf("%s: read of the flipped record %+v reports missing %+v, err %v, want exactly it", where, r.extent, missing, err)
+	}
+
+	if i := slices.IndexFunc(p, func(b byte) bool { return b != sentinel }); i >= 0 {
+		t.Fatalf("%s: read of the flipped record %+v wrote byte %#x into the buffer at %d, want it untouched", where, r.extent, p[i], i)
+	}
+}
+
+// wantAllExact fails the test unless every record of S not in dropped, and
+// file 1's record, read their exact bytes.
+func (s *flipSite) wantAllExact(t *testing.T, where string, dropped map[int]bool) {
+	t.Helper()
+
+	for i, r := range s.recs {
+		if !dropped[i] {
+			wantExact(t, where, s.f.Share(0), r)
+		}
+	}
+
+	wantExact(t, where, s.f.Share(1), s.other)
+}
+
+// wantNoByteChanged fails the test unless the open after a flip read S by
+// scan in place of its catalog, reported no loss, and every record reads its
+// exact bytes.
+func (s *flipSite) wantNoByteChanged(t *testing.T, where string) {
+	t.Helper()
+
+	wantScanned(t, s.f, s.recovery, 1)
+	if losses := s.f.J.Stats().Losses; len(losses) != 0 {
+		t.Fatalf("%s: a flip outside any record was reported as a loss: %+v", where, losses)
+	}
+
+	s.wantAllExact(t, where, nil)
+}
+
+// wantLossNamed fails the test unless one more extent than base counts was
+// dropped as corrupt since the open, with its offloaded bit as offloaded
+// says, and the newest loss event names r's extent so.
+//
+// decision: the newest event is read from the ring and the count from the
+// counters, rather than searching the ring, which is bounded without a size
+// given, or building a fresh site per byte, which costs a segment fill per
+// flip. The counters are since open, so base is what the open left.
+func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, offloaded bool, base journalv2.Counters) {
+	t.Helper()
+
+	st := f.J.Stats()
+	lost, repairable := st.Counters.CorruptExtentsDataLoss-base.CorruptExtentsDataLoss, st.Counters.CorruptExtentsRepairable-base.CorruptExtentsRepairable
+	if offloaded && (lost != 0 || repairable != 1) || !offloaded && (lost != 1 || repairable != 0) {
+		t.Fatalf("%s: %d extents dropped as data loss and %d as repairable since the open, want one as %s", where, lost, repairable, map[bool]string{true: "repairable", false: "data loss"}[offloaded])
+	}
+
+	if len(st.Losses) == 0 {
+		t.Fatalf("%s: the loss ring is empty after a loss was counted", where)
+	}
+
+	ev := st.Losses[len(st.Losses)-1]
+	if ev.File != r.id || ev.Extent != r.extent || ev.Reason != journalv2.LossCorrupt || ev.Offloaded != offloaded {
+		t.Fatalf("%s: the newest loss event is %+v, want file %v, extent %+v, corrupt, offloaded %t", where, ev, r.id, r.extent, offloaded)
+	}
+}
+
+// recordRegion is a region of a record: the header, or a part of the body,
+// with the byte offsets within the record it flips.
+type recordRegion struct {
+	name      string
+	bytes     func(size int) []int
+	offloaded bool // the flips land on marked records
+}
+
+// flipRecordBytes flips every bit of each of the bytes of the region in
+// turn, each flip on a record of its own, free ones after the marked run or
+// marked ones from its start, and checks the outcome: the record reads
+// missing with the caller's buffer untouched, and the records not flipped
+// still read their bytes. Where named says so, a loss event names the
+// record as corrupt with its bit, found at open where S is scanned and on
+// the read where it is catalogued, and the loss generation rises by one for
+// a record not offloaded and not at all for one that is. Neither the last
+// record of S, which may be split at the cap, nor the last marked one, read
+// as a neighbour after every flip, is ever flipped.
+func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bool) {
+	t.Helper()
+
+	pool := len(s.recs) - s.marked - 1
+	if offloaded {
+		pool = s.marked - 1
+	}
+
+	if n := 8 * len(bytes); n > pool || s.marked < 2 {
+		t.Fatalf("precondition: %d flips, %d records to land them on, %d marked", n, pool, s.marked)
+	}
+
+	dropped := map[int]bool{}
+	k := 0
+	for _, off := range bytes {
+		for b := range uint(8) {
+			i := s.marked + k
+			if offloaded {
+				i = k
+			}
+
+			k++
+			r := s.recs[i]
+			loc := locate(t, "the site", s.f, r)
+			where := fmt.Sprintf("bit %d of byte %d of the record at %d of %s", b, off, loc.Offset, s.name)
+			if s.scanned {
+				// An open may write a footer for a segment sealed by an
+				// earlier process; the site holds only while it did not.
+				wantScanned(t, s.f, s.recovery, 0)
+			}
+
+			generation := s.f.J.Stats().LossGeneration
+			flipBit(t, s.f, s.name, loc.Offset+int64(off), b)
+			s.reopen(t, where)
+			dropped[i] = true
+
+			base := s.f.J.Stats().Counters
+			if s.scanned && named {
+				wantLossNamed(t, where+", at open", s.f, r, offloaded, journalv2.Counters{})
+			}
+
+			wantRecordMissing(t, where, s.f.Share(0), r)
+			if !s.scanned && named {
+				wantLossNamed(t, where+", on the read", s.f, r, offloaded, base)
+			}
+
+			switch got := s.f.J.Stats().LossGeneration; {
+			case !named:
+			case offloaded && got != generation:
+				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss the remote tier can repair", where, generation, got)
+			case !offloaded && got != generation+1:
+				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss of content not yet offloaded, want it raised by one", where, generation, got)
+			}
+
+			// A neighbour of each kind still reads after every flip.
+			wantExact(t, where, s.f.Share(0), s.recs[s.marked-1])
+			wantExact(t, where, s.f.Share(1), s.other)
+		}
+	}
+
+	s.wantAllExact(t, fmt.Sprintf("after every flip of %s", s.name), dropped)
+}
+
+// flipStructure flips every bit of the field fd of the structure starting at
+// base in the file name, checking the outcome after each with check, told
+// where the sweep stands, and puts each bit back before the next.
+func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field, check func(where string)) {
+	t.Helper()
+
+	for i := range fd.size {
+		for b := range uint(8) {
+			off := base + int64(fd.off+i)
+			where := fmt.Sprintf("bit %d of byte %d of %s, in its %s", b, off, name, fd.name)
+			flipBit(t, s.f, name, off, b)
+			check(where)
+			flipBit(t, s.f, name, off, b)
+		}
+	}
+}
+
+// TestDamage_BitFlip checks the required outcome of one bit flipped in each
+// field of each on-disk structure, every bit of the field in turn: a record's
+// header or body drops that record, reported with its offloaded bit, at open
+// where the segment is scanned and on the read where it is catalogued; a
+// catalog entry, the trailer or the seal marker turns the catalog into no
+// footer and the segment is scanned; a segment header reports the segment
+// damaged with its records still attached; a seal marker of a segment a
+// successor names reports it corrupt; the format file fails the open. After
+// every flip, every record not dropped reads its exact bytes.
+//
+// decision: the payload is flipped at its first, middle and last byte only,
+// one checksum covering it uniformly, where every other field is flipped
+// bit by bit. The record regions run on 4 KiB records, so each flip lands
+// on a record of its own, since a dropped record stays dropped by its loss
+// record once its byte is put back; the other regions run on 64 KiB records
+// and put each bit back before the next. A seal marker of a segment no
+// successor names is not flipped: the row gives no outcome for it.
+//
+// decision: a record header flipped in a scanned segment is checked only
+// for the record reading missing and no byte of any record changing, with
+// no loss event named. RFC 28 section 4.4 and RFC 1 section 3.8 want the
+// loss reported naming the file and the extent, while RFC 28 section 3.3
+// has a scan refuse the record and resynchronise, and no field of a header
+// that fails to verify can name either. Assert the event once that is
+// settled.
+func TestDamage_BitFlip(t *testing.T) {
+	const small, large = 4096, 64 << 10
+	const marked = 32
+
+	for _, site := range []struct {
+		suffix  string
+		scanned bool
+	}{{"", false}, {"_scanned", true}} {
+		t.Run("record_header"+site.suffix, func(t *testing.T) {
+			for _, fd := range recordHeaderFields {
+				t.Run(fd.name, func(t *testing.T) {
+					s := newFlipSite(t, small, marked, site.scanned)
+					var bytes []int
+					for i := range fd.size {
+						bytes = append(bytes, fd.off+i)
+					}
+
+					flipRecordBytes(t, s, bytes, false, !site.scanned)
+				})
+			}
+		})
+
+		t.Run("write_body"+site.suffix, func(t *testing.T) {
+			payload := func(size int) []int {
+				return []int{raw.WriteMTimeOffset + 8, raw.WriteMTimeOffset + 8 + size/2, raw.WriteMTimeOffset + 8 + size - 1}
+			}
+
+			for _, rg := range []recordRegion{
+				{"modification_time", func(int) []int {
+					var bytes []int
+					for i := range 8 {
+						bytes = append(bytes, raw.WriteMTimeOffset+i)
+					}
+					return bytes
+				}, false},
+				{"payload", payload, false},
+				{"payload_of_offloaded_record", payload, true},
+			} {
+				t.Run(rg.name, func(t *testing.T) {
+					s := newFlipSite(t, small, marked, site.scanned)
+					flipRecordBytes(t, s, rg.bytes(small), rg.offloaded, true)
+				})
+			}
+		})
+	}
+
+	t.Run("catalog_entry", func(t *testing.T) {
+		for _, fd := range catalogEntryFields {
+			t.Run(fd.name, func(t *testing.T) {
+				s := newFlipSite(t, large, 0, false)
+				base := s.entryOf(t, s.recs[3])
+				flipStructure(t, s, s.name, base, fd, func(where string) {
+					s.reopen(t, where)
+					s.wantNoByteChanged(t, where)
+				})
+			})
+		}
+	})
+
+	t.Run("trailer", func(t *testing.T) {
+		for _, fd := range trailerFields {
+			t.Run(fd.name, func(t *testing.T) {
+				s := newFlipSite(t, large, 0, false)
+				base := int64(len(durable(t, s.f, s.name))) - raw.TrailerSize
+				flipStructure(t, s, s.name, base, fd, func(where string) {
+					s.reopen(t, where)
+					s.wantNoByteChanged(t, where)
+				})
+			})
+		}
+	})
+
+	t.Run("segment_header", func(t *testing.T) {
+		for _, fd := range segmentHeaderFields {
+			t.Run(fd.name, func(t *testing.T) {
+				s := newFlipSite(t, large, 0, false)
+				flipStructure(t, s, s.name, 0, fd, func(where string) {
+					s.reopen(t, where)
+					if !segmentOf(t, where, s.f, s.seg).Damaged || s.f.J.Stats().DamagedSegments == 0 {
+						t.Fatalf("%s: segment %d is not reported damaged with its header changed", where, s.seg)
+					}
+
+					s.wantAllExact(t, where, nil)
+				})
+			})
+		}
+	})
+
+	t.Run("seal_marker", func(t *testing.T) {
+		for _, fd := range sealMarkerFields {
+			t.Run(fd.name, func(t *testing.T) {
+				s := newFlipSite(t, large, 0, false)
+				s.wantSuccessor(t)
+				flipStructure(t, s, s.name, s.footer-raw.SealMarkerSize, fd, func(where string) {
+					s.reopen(t, where)
+					if !segmentOf(t, where, s.f, s.seg).Damaged {
+						t.Fatalf("%s: segment %d, named by its successor, is not reported corrupt with its seal marker changed", where, s.seg)
+					}
+
+					wantScanned(t, s.f, s.recovery, 1)
+					s.wantAllExact(t, where, nil)
+				})
+			})
+		}
+	})
+
+	t.Run("format", func(t *testing.T) {
+		for _, fd := range formatFields {
+			t.Run(fd.name, func(t *testing.T) {
+				s := newFlipSite(t, large, 0, false)
+				flipStructure(t, s, "format", 0, fd, func(where string) {
+					writes := s.f.Seam.CallsFor(journalv2test.OpWrite, "format") + s.f.Seam.CallsFor(journalv2test.OpTruncate, "format") + s.f.Seam.CallsFor(journalv2test.OpCreate, "format.tmp")
+					err := s.f.TryReopen()
+					stub(t, "Open", err)
+					// decision: the magic and the version are read before the
+					// checksum, and the format says neither which check a bad
+					// magic fails first nor that a bad version is a checksum
+					// failure, so both fields may be refused as an unknown
+					// format instead.
+					refused := errors.Is(err, journalv2.ErrCorrupt) || ((fd.name == "magic" || fd.name == "format_version") && errors.Is(err, journalv2.ErrUnknownFormat))
+					if !refused {
+						t.Fatalf("%s: the open returned %v, want ErrCorrupt", where, err)
+					}
+
+					if got := s.f.Seam.CallsFor(journalv2test.OpWrite, "format") + s.f.Seam.CallsFor(journalv2test.OpTruncate, "format") + s.f.Seam.CallsFor(journalv2test.OpCreate, "format.tmp"); got != writes {
+						t.Fatalf("%s: the open wrote to the format file; it is never repaired in silence", where)
+					}
+				})
+				s.reopen(t, "with every bit put back")
+				s.wantAllExact(t, "with every bit put back", nil)
+			})
+		}
+	})
 }
