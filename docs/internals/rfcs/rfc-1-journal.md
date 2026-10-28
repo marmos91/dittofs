@@ -1619,7 +1619,10 @@ diverge.
 unsigned number. The journal takes the counter from one monotonically increasing
 counter per journal. **In this format version the epoch half MUST be zero**, on
 every record and in the floor; a record or a floor with a non-zero epoch fails
-the open like an unrecognised kind ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). The width is fixed now so that a
+the open like an unrecognised kind ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). So does a record whose version
+counter or sequence number is the largest 64-bit value: the journal never issues
+it, since its version limit is exclusive, so such a record comes from damage or
+from another writer. The width is fixed now so that a
 later format version can raise the epoch ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) without changing the
 record layout or the metadata that stores versions. Every version the journal
 assigns **MUST** exceed every version on disk and the floor supplied at open
@@ -1655,7 +1658,7 @@ own floor before it is served ([§3](#3.%20Interface)).
 
 ```go
 (*Journal) Draw() (Version, error)  // the next content version, with no record
-(*Journal) SetVersionLimit(mark Version) // versions are issued only below mark
+(*Journal) SetVersionLimit(mark Version) error // versions are issued only below mark
 ```
 
 **A version for a change stored elsewhere is drawn, not appended.** An attribute,
@@ -1678,7 +1681,10 @@ above its **version limit**: the smallest of the durable per-share limits the
 caller has written for every share the journal serves ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)), passed in
 with `SetVersionLimit`, and within `floor` at `Open` and `Share`, so the counter restarts
 above every version issued before a crash. The journal has no limit until the
-first `SetVersionLimit` and issues nothing before it. `Stats` reports the next
+first `SetVersionLimit` and issues nothing before it. A caller **MUST NOT** pass a
+mark with a non-zero epoch: the mark comes back as the floor at the next open,
+where a non-zero epoch fails the open. `SetVersionLimit` refuses one with
+`ErrUnknownFormat` and leaves the limit as it was. `Stats` reports the next
 version the counter will issue and the versions left below the limit, so a
 caller rebuilding its limits — after a lost store — sets them above the
 counter, never below it. The caller raises the limit, durably, by time rather
