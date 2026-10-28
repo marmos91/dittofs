@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -11,6 +12,18 @@ import (
 
 // fileShards is the number of shards the file map is split into.
 const fileShards = 64
+
+// floorBuckets is the number of floor buckets: the top twelve bits of a
+// FileID's hash, same hash as the shard.
+//
+// decision: floor buckets, not one journal-wide floor. With one floor, every
+// delete in the journal refuses every in-flight fill of every file that holds
+// nothing, so a delete-heavy share — a build tree's temporary files — keeps
+// every other share's cold reads from filling. A bucket confines that to
+// about one file in 4,096. Overturned by a measured refused-fill rate under
+// a delete-heavy load that 4,096 buckets do not bring below one refusal per
+// thousand fills.
+const floorBuckets = 4096
 
 // files maps each FileID to its file entry: the outer level of the placement
 // index. It needs no ordering, so it is a hash map, split into shards by a
@@ -36,6 +49,37 @@ const fileShards = 64
 // needs it.
 type files struct {
 	shards [fileShards]fileShard
+	// buckets are the floor buckets, the change-version floor a file with no
+	// entry of its own is checked against, one per 1/4096 of the FileIDs.
+	// They grow only, by openBuckets and by the drops below, both of which
+	// raise them.
+	//
+	// decision: a bucket keeps only a version's counter half, as Counters
+	// does: in this format the epoch half is zero, and the counters refuse a
+	// record, floor or draw with any other, so none reaches a bucket.
+	//
+	// decision: retained extents do not keep the change-version entry:
+	// retained content is no longer held, and the drop raises the bucket to
+	// the entry's version, so a stale fill is still refused; the cost is that
+	// the files sharing the bucket are checked against a higher version.
+	// Overturned if a measured needless-refusal rate traces to drops of
+	// files whose superseded content is still waiting for its offload.
+	//
+	// decision: an entry not changed since open is checked against its
+	// bucket, not its own version — the top of the range openBuckets'
+	// contract allows — so a read begun before the open cannot fill a file
+	// that has an entry either. The cost is a needless refusal for a fill of
+	// such a file racing a delete of another file in its bucket.
+	//
+	// A bucket's top six bits are the shard its files fall in; the
+	// correlation is harmless, since a bucket holds many files of many
+	// shards.
+	buckets [floorBuckets]atomic.Uint64
+	// opened is the bucket start set at open: the counter half of the higher
+	// of the highest content version on disk and the floor. Zero marks a
+	// fresh index, where no version has been opened above and the buckets
+	// also stand at zero.
+	opened uint64
 }
 
 type fileShard struct {
@@ -72,9 +116,9 @@ type file struct {
 
 	held heldSet
 	// change is the file's change version. The zero Version means the file
-	// has none of its own, which is also the case for a file holding only
-	// filled content, since a fill changes no version: either way a check
-	// against it must use the file's floor instead.
+	// has no change version of its own, which is also the case for a file
+	// holding only filled content, since a fill changes no version: either
+	// way a check against it uses the file's floor bucket.
 	change core.Version
 	// segs are the segments holding a record of the file, in no order.
 	//
@@ -88,11 +132,18 @@ type file struct {
 	markers []marker
 }
 
-func (fs *files) shard(id core.FileID) *fileShard {
+// hashID hashes a FileID, for the shard map and the bucket table.
+func hashID(id core.FileID) uint64 {
 	b := id.Bytes()
-	h := binary.LittleEndian.Uint64(b[:8]) ^ binary.LittleEndian.Uint64(b[8:])
-	return &fs.shards[h%fileShards]
+	return binary.LittleEndian.Uint64(b[:8]) ^ binary.LittleEndian.Uint64(b[8:])
 }
+
+func (fs *files) shard(id core.FileID) *fileShard {
+	return &fs.shards[hashID(id)%fileShards]
+}
+
+// bucketOf returns the index of id's floor bucket.
+func bucketOf(id core.FileID) int { return int(hashID(id) >> (64 - 12)) }
 
 // len returns the number of files with an entry.
 func (fs *files) len() int {
@@ -104,6 +155,42 @@ func (fs *files) len() int {
 		s.mu.Unlock()
 	}
 	return n
+}
+
+// openBuckets starts every bucket at start, the higher of the highest content
+// version on disk and the floor, and records it as the version every entry
+// not changed since is checked against. It is called once, at open, before
+// any reader or writer runs. A start with a non-zero epoch never reaches it:
+// the counters refuse one first.
+func (fs *files) openBuckets(start core.Version) {
+	for i := range fs.buckets {
+		fs.buckets[i].Store(start.Counter)
+	}
+	fs.opened = start.Counter
+}
+
+// checkedAgainst returns the version f, id's entry, is checked against: its
+// own change version when it has changed since open, and its floor bucket
+// otherwise — the top of the range the bucket-start rule allows, which keeps
+// a read that began before the open from filling a file that has an entry
+// too. The caller holds f's lock.
+func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
+	if c := f.change.Counter; c > fs.opened {
+		return f.change
+	}
+	return core.Version{Counter: fs.buckets[bucketOf(id)].Load()}
+}
+
+// asOf returns the change version a read of id reports: its entry's, or its
+// bucket's when it has none or has not changed since open. It claims nothing
+// and creates no entry, and it allocates nothing, so it may run on a read's
+// hot path.
+func (fs *files) asOf(id core.FileID) core.Version {
+	var v core.Version
+	if !fs.view(id, func(f *file) { v = fs.checkedAgainst(f, id) }) {
+		v = core.Version{Counter: fs.buckets[bucketOf(id)].Load()}
+	}
+	return v
 }
 
 // view runs fn on id's entry holding the file's lock for reading, so it runs
@@ -162,15 +249,15 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 			f.mu.Unlock()
 			continue
 		}
-		return f.apply(s, id, fn)
+		return f.apply(fs, s, id, fn)
 	}
 }
 
 // apply runs fn and settles the entry's lifetimes, then releases the file's
 // lock, which the caller took; both happen even if fn panics.
-func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
+func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) error) error {
 	defer f.mu.Unlock()
-	defer f.settle(s, id)
+	defer f.settle(fs, s, id)
 	return fn(f)
 }
 
@@ -183,17 +270,20 @@ func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
 // entry: a file whose content was all removed still has a removal Since must
 // yield until the caller settles it.
 //
-// decision: retained extents do not keep it yet, because the index does not
-// carry them; whether they should is decided where they are added.
+// decision: retained extents do not keep the change-version entry; see the
+// decision at the bucket table.
 //
-// The dropped change version is not recorded anywhere yet, so nothing here
-// refuses a stale fill once the entry has gone: no check of a fill may be
-// built on changeVersion until dropping the version raises the file's floor
-// to it, which belongs at the line that zeroes it.
-func (f *file) settle(s *fileShard, id core.FileID) {
+// When the change-version entry drops, the file's bucket is raised to the
+// entry's change version before the entry can be found missing, so a read
+// that began below that version is refused by the bucket rather than by the
+// entry. The change version is zeroed only after the raise, and a reader
+// that finds the entry gone — or was never given one — reads the raised
+// bucket.
+func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	if f.held.len() > 0 || len(f.markers) > 0 {
 		return
 	}
+	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
 	if len(f.segs) > 0 {
 		return
