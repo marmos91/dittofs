@@ -1719,7 +1719,9 @@ One workflow, `tests.yml`, runs every registered suite:
   `integration`'s Kerberos and portmap options as steps after the suite, each even when one
   before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
-  the unit job did, unless a retry rewrote it with the retried tests' alone. A fixed job's
+  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov's project
+  check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
+  profile moves by up to about 0.1% between runs of the same code. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
