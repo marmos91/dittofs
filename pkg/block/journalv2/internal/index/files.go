@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -37,6 +38,20 @@ const fileShards = 64
 // needs it.
 type files struct {
 	shards [fileShards]fileShard
+	// count is the journal's placement index entries: held pieces, retained
+	// extents and removal markers of every file, plus the entries admitted to
+	// content writes not yet applied. In-flight admissions count, so a gauge
+	// read mid-write includes them; abandon takes one back.
+	//
+	// limit is the configured bound on count, set before the index is first
+	// used from the journal's settings.
+	//
+	// decision: refusals counts every refusal naming LimitIndex, splitting
+	// removals included, so index_refusals has one meaning: every NoSpaceError
+	// that names the index.
+	count    atomic.Int64
+	limit    atomic.Int64
+	refusals atomic.Uint64
 }
 
 type fileShard struct {
@@ -96,6 +111,12 @@ type file struct {
 	markers []marker
 }
 
+// entries returns the number of entries of the file the count is of: held
+// pieces, retained extents and removal markers.
+func (f *file) entries() int64 {
+	return int64(f.held.len()) + int64(f.retained.len()) + int64(len(f.markers))
+}
+
 // shard returns the shard holding id. Every byte of the FileID reaches the
 // top bits of the hash, which pick the shard, so identifiers that differ
 // only in a few bytes, such as time-ordered ones, still spread.
@@ -117,6 +138,25 @@ func (fs *files) len() int {
 	}
 	return n
 }
+
+// setExtentLimit sets the bound to n. A limit of 0 refuses every content
+// write that adds an entry, so the journal never reaches an index no bound
+// checks. A negative n leaves the bound unset: the journal's settings refuse
+// one before the index is built. Defaults are the settings' job, before the
+// index exists.
+//
+// decision: the bound has no getter yet. Reading it back is the journal
+// stats' job, which reports it as ExtentLimit alongside the count and the
+// refusals; add the getter with the reader that needs it.
+func (fs *files) setExtentLimit(n int64) { fs.limit.Store(n) }
+
+// extentCount returns the number of entries of the journal's placement index
+// the count is of: held pieces, retained extents and removal markers of
+// every file, plus the entries admitted to content writes not yet applied.
+func (fs *files) extentCount() int64 { return fs.count.Load() }
+
+// indexRefusals returns the number of calls refused by the index's bound.
+func (fs *files) indexRefusals() uint64 { return fs.refusals.Load() }
 
 // view runs fn on id's entry holding the file's lock for reading, so it runs
 // beside other readers of the file and sees no write half made. It reports
@@ -157,6 +197,13 @@ func (f *file) read(fn func(*file)) {
 // nothing loses its change version, and one that also has no record on disk
 // leaves the map. So an update that leaves nothing behind leaves no entry.
 func (fs *files) update(id core.FileID, fn func(*file) error) error {
+	return fs.commit(id, 0, fn)
+}
+
+// commit is update for an admitted op: admitted is the amount its admission
+// reserved in the count, which the commit's entry delta instead of adding
+// on top of. Everything else is as update.
+func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) error {
 	s := fs.shard(id)
 	for {
 		s.mu.Lock()
@@ -174,16 +221,31 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 			f.mu.Unlock()
 			continue
 		}
-		return f.apply(s, id, fn)
+		before := f.entries()
+		return f.apply(fs, s, id, before, admitted, fn)
 	}
 }
 
-// apply runs fn and settles the entry's lifetimes, then releases the file's
-// lock, which the caller took; both happen even if fn panics.
-func (f *file) apply(s *fileShard, id core.FileID, fn func(*file) error) error {
+// apply runs fn, adds the entry change it made to the count and settles the
+// entry's lifetimes, then releases the file's lock, which the caller took;
+// all three happen even if fn panics.
+//
+// decision: the count is kept by the delta, not by a walk of the entry after
+// fn. A rebuild or an open builds a populated index through one update a
+// record, each about a walk of everything so far; the delta is O(1).
+func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) error {
 	defer f.mu.Unlock()
+	defer f.counted(fs, before, admitted)
 	defer f.settle(s, id)
 	return fn(f)
+}
+
+// counted adds to the count the change fn's entries made: the difference of
+// the entry's counts, taken after settle, which may drop the change-version
+// entry whole, minus the amount its admission had already reserved. The
+// result is the true delta whatever the pre-check predicted.
+func (f *file) counted(fs *files, before, admitted int64) {
+	fs.count.Add(f.entries() - admitted - before)
 }
 
 // settle applies the two lifetimes. The shard lock is taken after the file's,

@@ -114,6 +114,42 @@ func (f *file) firstAbove(v core.Version) int {
 	return i
 }
 
+// fillParts calls fn on each part of p a fill would hold: the sub-extents of
+// p's extent no marker above p's version masks, as a fill of p would hold
+// them, in offset order. One helper reads the parts for both the fill itself
+// and the fill's entry pre-check, so the two cannot diverge.
+func (f *file) fillParts(p Placed, fn func(Placed)) {
+	above := f.markers[f.firstAbove(p.Version):]
+	if len(above) == 0 {
+		fn(p)
+		return
+	}
+	var masks []core.Extent
+	for _, m := range above {
+		if lo, hi := max(m.extent.Off, p.Extent.Off), min(extentEnd(m.extent), extentEnd(p.Extent)); lo < hi {
+			masks = append(masks, core.Extent{Off: lo, Len: hi - lo})
+		}
+	}
+	slices.SortFunc(masks, func(a, b core.Extent) int { return cmp.Compare(a.Off, b.Off) })
+	cursor := p.Extent.Off
+	part := func(lo, hi int64) {
+		if lo >= hi {
+			return
+		}
+		fn(Placed{
+			Extent:  core.Extent{Off: lo, Len: hi - lo},
+			Record:  p.Record,
+			Skip:    p.Skip + uint32(lo-p.Extent.Off),
+			Version: p.Version,
+		})
+	}
+	for _, e := range masks {
+		part(cursor, e.Off)
+		cursor = max(cursor, extentEnd(e))
+	}
+	part(cursor, extentEnd(p.Extent))
+}
+
 // fill holds p as a fill does, where nothing is held, except inside a marker
 // above p's version: a removal newer than the fetched content excludes it,
 // so while the marker is unsettled a cold read resolved against a ref older
@@ -127,36 +163,7 @@ func (f *file) firstAbove(v core.Version) int {
 // change version, which a removal raises. That check is not built yet, so
 // until it is, a stale fill landing after Settle is held.
 func (f *file) fill(p Placed) {
-	above := f.markers[f.firstAbove(p.Version):]
-	if len(above) == 0 {
-		f.held.fill(p)
-		return
-	}
-	var masks []core.Extent
-	for _, m := range above {
-		if lo, hi := max(m.extent.Off, p.Extent.Off), min(extentEnd(m.extent), extentEnd(p.Extent)); lo < hi {
-			masks = append(masks, core.Extent{Off: lo, Len: hi - lo})
-		}
-	}
-	slices.SortFunc(masks, func(a, b core.Extent) int { return cmp.Compare(a.Off, b.Off) })
-	part := func(lo, hi int64) {
-		f.held.fill(Placed{
-			Extent:  core.Extent{Off: lo, Len: hi - lo},
-			Record:  p.Record,
-			Skip:    p.Skip + uint32(lo-p.Extent.Off),
-			Version: p.Version,
-		})
-	}
-	cursor := p.Extent.Off
-	for _, e := range masks {
-		if e.Off > cursor {
-			part(cursor, e.Off)
-		}
-		cursor = max(cursor, extentEnd(e))
-	}
-	if pend := extentEnd(p.Extent); pend > cursor {
-		part(cursor, pend)
-	}
+	f.fillParts(p, f.held.fill)
 }
 
 // settleRemovals drops the markers at or below v: the caller's statement that

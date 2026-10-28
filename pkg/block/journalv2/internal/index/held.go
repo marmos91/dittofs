@@ -204,6 +204,41 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 	return placed, missing
 }
 
+// gaps counts the absent sub-extents of e: the gaps a fill of e would hold.
+// Like the other reads it changes nothing, and it allocates nothing, so
+// admission can run it under the file's read lock; the count it returns is an
+// upper bound on the entries the fill's put calls would add, exact unless a
+// put joins a neighbour of the same record.
+func (s *heldSet) gaps(e core.Extent) int64 {
+	var n int64
+	cursor := e.Off
+	s.visit(e, func(p Piece) bool {
+		lo := max(p.Extent.Off, e.Off)
+		hi := min(p.Extent.Off+p.Extent.Len, e.Off+e.Len)
+		if lo > cursor {
+			n++
+		}
+		cursor = max(cursor, hi)
+		return true
+	})
+	if e.Len > 0 && e.Off+e.Len > cursor {
+		n++
+	}
+	return n
+}
+
+// straddle reports whether e covers the middle of one piece, ending inside it
+// at both ends: the shape whose removal splits the piece in two. It costs one
+// descent, O(log n), like lookup, and allocates nothing. A zero-length e
+// never straddles.
+func (s *heldSet) straddle(e core.Extent) bool {
+	if e.Len <= 0 {
+		return false
+	}
+	k, v, ok := s.tree.floor(uint64(e.Off))
+	return ok && k < uint64(e.Off) && k+uint64(v.len) > uint64(e.Off+e.Len)
+}
+
 // insert holds p as a client write: dirty, superseding whatever was held in
 // its extent. A piece it covers whole is dropped, and one it covers in part is
 // narrowed, or split in three when p lies inside it. It takes no offloaded
