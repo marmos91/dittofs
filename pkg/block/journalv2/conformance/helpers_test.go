@@ -111,7 +111,7 @@ func heldEntry(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID) jour
 		}
 	}
 	t.Fatalf("the file has no held extent; entries: %+v", entries)
-	panic("unreachable")
+	return journalv2.IndexEntry{}
 }
 
 // corrupt flips one byte of payload p of file id where the journal stored it,
@@ -317,7 +317,7 @@ func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off in
 	}
 
 	t.Fatalf("no held extent of the file covers offset %d; entries: %+v", off, entries)
-	panic("unreachable")
+	return journalv2.IndexEntry{}
 }
 
 // segmentInfo returns the accounting of segment id, which the journal must
@@ -332,7 +332,7 @@ func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID)
 	}
 
 	t.Fatalf("segment %d is not among the journal's", id)
-	panic("unreachable")
+	return journalv2.SegmentInfo{}
 }
 
 // unmark clears the offloaded bit of extent e of file id.

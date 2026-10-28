@@ -115,7 +115,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		o(&cfg)
 	}
 	if cfg.torn && cfg.reordered {
-		return errors.New("journalv2test: Torn and Reordered cannot be combined")
+		return fmt.Errorf("%w: Torn and Reordered cannot be combined", ErrCrashRefused)
 	}
 
 	if cfg.keeping && (cfg.torn || cfg.reordered) {
@@ -159,7 +159,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		}
 
 		if torn == nil {
-			return errors.New("journalv2test: Torn needs an unsynced write in a file it may pick from")
+			return fmt.Errorf("%w: Torn needs an unsynced write in a file it may pick from", ErrCrashRefused)
 		}
 
 		if cfg.tornBytes < 0 || cfg.tornBytes > len(torn.data) {

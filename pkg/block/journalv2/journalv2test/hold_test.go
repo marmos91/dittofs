@@ -20,7 +20,8 @@ func within[T any](t *testing.T, ch <-chan T, what string) T {
 		return v
 	case <-time.After(2 * time.Second):
 		t.Fatalf("%s did not happen", what)
-		panic("unreachable")
+		var zero T
+		return zero
 	}
 }
 

@@ -46,7 +46,7 @@ func fillSegment(t *testing.T, f *journalv2test.Fixture, s, i int, size int) ([]
 		recs = append(recs, rec{s, id, journalv2.Extent{Off: off, Len: int64(size)}, v, p})
 	}
 	t.Fatalf("%d records of %d bytes never rolled a segment of %d", len(recs), size, journalv2test.FixtureSegmentCap)
-	panic("unreachable")
+	return nil, 0
 }
 
 // sealed is a journal with one segment sealed full and catalogued, as the
@@ -86,16 +86,22 @@ func sealedSetup(t *testing.T, f *journalv2test.Fixture) sealed {
 
 // wantScanned fails the test unless the last open read n segments by scan
 // that the open before, which rebuilt the journal as before says, read by
-// catalog: n fewer by catalog, and at least n more by scan.
-func wantScanned(t *testing.T, f *journalv2test.Fixture, before journalv2.RecoveryStats, n int) {
+// catalog: n fewer by catalog, and at least n more by scan. A failure is
+// prefixed with where, when given, so a sweep names its pass.
+func wantScanned(t *testing.T, where string, f *journalv2test.Fixture, before journalv2.RecoveryStats, n int) {
 	t.Helper()
+
+	if where != "" {
+		where += ": "
+	}
 
 	r := f.J.Stats().Recovery
 	if r.CatalogSegments != before.CatalogSegments-n {
-		t.Fatalf("recovery read %d segments by catalog, want %d: %d before, %d without a footer now", r.CatalogSegments, before.CatalogSegments-n, before.CatalogSegments, n)
+		t.Fatalf("%srecovery read %d segments by catalog, want %d: %d before, %d without a footer now", where, r.CatalogSegments, before.CatalogSegments-n, before.CatalogSegments, n)
 	}
+
 	if r.ScannedSegments < before.ScannedSegments+n {
-		t.Fatalf("recovery read %d segments by scan, want at least %d: %d before, %d without a footer now", r.ScannedSegments, before.ScannedSegments+n, before.ScannedSegments, n)
+		t.Fatalf("%srecovery read %d segments by scan, want at least %d: %d before, %d without a footer now", where, r.ScannedSegments, before.ScannedSegments+n, before.ScannedSegments, n)
 	}
 }
 
@@ -734,7 +740,7 @@ func TestRFC28C_SourcesAgree(t *testing.T) {
 func wantNoFooter(t *testing.T, f *journalv2test.Fixture, s sealed) {
 	t.Helper()
 
-	wantScanned(t, f, s.recovery, 1)
+	wantScanned(t, "", f, s.recovery, 1)
 	wantSameIndex(t, f, s.index)
 
 	if losses := f.J.Stats().Losses; len(losses) != 0 {
@@ -822,7 +828,7 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	flipAt(t, f, s.name, loc.Offset+raw.RecordLengthOffset)
 	f.Reopen()
 
-	wantScanned(t, f, s.recovery, 1)
+	wantScanned(t, "", f, s.recovery, 1)
 	ev := lastLoss(t, f, before)
 	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
@@ -961,7 +967,7 @@ func retirement(t *testing.T, f *journalv2test.Fixture, name string, files []str
 		return retired{true, added[0]}
 	default:
 		t.Fatalf("segment %s was removed %d times and renamed %d times, want exactly one of the two", name, removed, renamed)
-		panic("unreachable")
+		return retired{}
 	}
 }
 
@@ -1075,7 +1081,7 @@ func rollSynced(t *testing.T, f *journalv2test.Fixture) journalv2.SegmentID {
 		syncFiles(t, f.Share(0), id)
 	}
 	t.Fatalf("%d bytes of records never rolled a segment of %d", 2*journalv2test.FixtureSegmentCap, journalv2test.FixtureSegmentCap)
-	panic("unreachable")
+	return 0
 }
 
 // TestRFC28C_SparesAreReAdopted checks that a crash costs no spare: every
@@ -1249,7 +1255,7 @@ func writeUntilRefused(t *testing.T, f *journalv2test.Fixture, from int64) error
 		}
 	}
 	t.Fatalf("%d bytes written were never refused", 2*journalv2test.FixtureMaxBytes)
-	panic("unreachable")
+	return nil
 }
 
 // wantTakenClean fails the test unless nothing of segment seg's old life is
