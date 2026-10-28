@@ -2828,8 +2828,11 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   writer appended within one sync's interval, never grow with its file size —
   the cost [§5.2](#5.2%20Syncing)'s ponytail names. J1 runs the same mix in real time;
 - **index cost**: the placement index counts comparisons per lookup and per
-  insertion; going from 10^3 to 10^6 extents **MUST** at most double them, the
-  ratio log(10^6) / log(10^3) an `O(log n)` structure gives;
+  insertion; going from 10^3 to 10^6 extents **MUST** raise them at most 2.5
+  times, and each **MUST** stay within a fixed multiple of log2(n) per descent
+  of the tree. The ratio log(10^6) / log(10^3) an `O(log n)` structure gives is
+  2, but a correct B-tree lands just above it, because a tree's height is a
+  whole number of levels; the bound per descent is what catches a linear walk;
 - **allocations per operation**: `WriteAt`, `ReadAt` and `Stats` are measured
   in allocations per call, and an increase fails the check;
 - **index memory**: bytes per entry at 10^6 extents **MUST** stay at or below 56,
@@ -2839,8 +2842,8 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   per (file, segment);
 - **report cost**: a pass that offloads a file of 10^3 and of 10^6 extents, written
   sequentially so none merge, reports block by block; comparisons per reported
-  extent **MUST** at most double between the two, the same logarithmic ratio
-  ([§3.3](#3.3%20Offload)).
+  extent **MUST** grow at most 2.5 times between the two, with the same bound
+  per descent as the index cost ([§3.3](#3.3%20Offload)).
 
 ## 10. Open questions
 
