@@ -1796,3 +1796,75 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	}
 	wantBytes(t, k.Share(1), rc.other.id, 0, rc.other.p)
 }
+
+// TestRFC28C_StaleExtent checks that content older than what the remote
+// tier holds, brought back by a segment restored from outside, is dropped at
+// the reseed as stale: the extent reads missing, the event names it stale,
+// and the loss generation does not move, since the next read fetches the
+// current content.
+func TestRFC28C_StaleExtent(t *testing.T) {
+	f := journalv2test.New(t)
+	h, id := f.Share(0), journalv2test.File(0)
+	const size = 64 << 10
+
+	// A and its offloaded record in segment 1, with file 2's records
+	// filling it to the roll; a copy of it taken once sealed.
+	a := writeSynced(t, f, 0, 0, 0, size)
+	mark(t, h, a.id, a.extent, a.version)
+	syncFiles(t, h, a.id)
+	seg1 := entryAt(t, f, id, 0).Location.Segment
+	fill1, first := fillSegment(t, f, 0, 2, size)
+	if first != seg1 {
+		t.Fatalf("file 2's records landed in segment %d, want A's segment %d filled to the roll", first, seg1)
+	}
+	other := writeSynced(t, f, 1, 1, 0, size)
+	syncFiles(t, h, journalv2test.File(2))
+	copied := durable(t, f, segmentName(seg1))
+
+	// B over A in segment 2, with its offloaded and release records, and
+	// file 3's records filling it to the roll, so everything that outranks
+	// A goes with that segment.
+	b := writeSynced(t, f, 0, 0, 0, size)
+	seg2 := entryAt(t, f, id, 0).Location.Segment
+	if seg2 == seg1 {
+		t.Fatalf("B landed in A's segment %d", seg1)
+	}
+	mark(t, h, b.id, b.extent, b.version)
+	wantRelease(t, h, b.id, b.extent, true)
+	fill2, _ := fillSegment(t, f, 0, 3, size)
+	syncFiles(t, h, id, journalv2test.File(3))
+
+	releaseRecs(t, f, fill2)
+	retire(t, f, seg2)
+	releaseRecs(t, f, fill1)
+	retire(t, f, seg1)
+	plant(t, f, segmentName(seg1), copied)
+	f.Reopen()
+	h = f.Share(0)
+
+	// The row's premise: A is back, held at its version and marked by its
+	// own offloaded record, with nothing on disk outranking it.
+	if e := entryAt(t, f, id, 0); e.Version != a.version || !e.Offloaded {
+		t.Fatalf("A is held as %+v after the restore, want its version %v and its offloaded bit", e, a.version)
+	}
+
+	before := f.J.Stats()
+	err := h.MarkOffloaded(t.Context(), id, []journalv2.Extent{a.extent}, b.version, b.version)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
+		t.Fatalf("mark at B's versions: %v", err)
+	}
+
+	ev := lastLoss(t, f, before)
+	if ev.File != id || ev.Extent != a.extent || ev.Reason != journalv2.LossStale {
+		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as stale", ev, id, a.extent)
+	}
+	if got := f.J.Stats().Counters.StaleExtents; got != 1 {
+		t.Fatalf("StaleExtents = %d after one extent dropped as stale, want 1", got)
+	}
+	wantMissing(t, h, id, a.extent)
+	if got := f.J.Stats().LossGeneration; got != before.LossGeneration {
+		t.Fatalf("LossGeneration = %d after a stale loss, want %d unchanged", got, before.LossGeneration)
+	}
+	wantBytes(t, f.Share(1), other.id, 0, other.p)
+}
