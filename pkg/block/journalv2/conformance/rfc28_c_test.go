@@ -1868,3 +1868,38 @@ func TestRFC28C_StaleExtent(t *testing.T) {
 	}
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
+
+// TestRFC28C_VersionFloor checks that a journal opened with a floor above
+// every version on disk issues its next version above the floor, and that a
+// mark whose newest version is the floor leaves that write unmarked: the
+// write is newer than what the mark vouches for.
+func TestRFC28C_VersionFloor(t *testing.T) {
+	f := journalv2test.New(t)
+	a := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	// The fixture opens with the last limit as floor, far above every
+	// version on disk.
+	f.Reopen()
+	floor := f.Floor()
+	if a.version.Compare(floor) >= 0 {
+		t.Fatalf("the floor %v is not above A's version %v, which the row needs", floor, a.version)
+	}
+
+	b := writeSynced(t, f, 0, 0, 0, 64<<10)
+	if b.version.Compare(floor) <= 0 {
+		t.Fatalf("B's version %v is not above the floor %v", b.version, floor)
+	}
+
+	h := f.Share(0)
+	err := h.MarkOffloaded(t.Context(), b.id, []journalv2.Extent{b.extent}, floor, floor)
+	stub(t, "MarkOffloaded", err)
+	if err != nil {
+		t.Fatalf("mark with the floor as newest: %v", err)
+	}
+	wantRelease(t, h, b.id, b.extent, false)
+	if entryAt(t, f, b.id, 0).Offloaded {
+		t.Fatalf("B's offloaded bit is set after a mark whose newest version is below B's")
+	}
+	wantBytes(t, f.Share(1), a.id, 0, a.p)
+	wantBytes(t, h, b.id, 0, b.p)
+}

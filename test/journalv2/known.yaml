@@ -349,3 +349,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
   issue: '#3379'
+- test: TestRFC28C_VersionFloor
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the version floor at open and MarkOffloaded.'
+  issue: '#3378'
