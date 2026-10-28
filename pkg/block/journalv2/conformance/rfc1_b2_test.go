@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
 	"github.com/marmos91/dittofs/pkg/sim"
 )
 
@@ -262,6 +265,11 @@ func joinOffers(t *testing.T, done <-chan error, n int) {
 // pinPeak samples PinnedSegments until the function it returns is called,
 // and that function returns the highest value seen. The sampling also stops
 // when the test ends.
+//
+// decision: the gauge is sampled every 100 µs of real time, beside the exact
+// reading the checks take while every callback is parked. Its ceiling: a
+// pin taken and dropped between two samples goes unseen. Overturned if Stats
+// reports the gauge's high mark, when the checks read that instead.
 func pinPeak(t *testing.T, f *journalv2test.Fixture) func() int {
 	j := f.J
 	stop, peak := make(chan struct{}), make(chan int, 1)
@@ -295,11 +303,11 @@ func pinPeak(t *testing.T, f *journalv2test.Fixture) func() int {
 // and that content filled back in large calls takes one index entry per
 // record piece, not one per write it replaced.
 //
-// 16 MiB is written in 64 KiB writes, released and filled back, not 64 MiB:
-// the fixture's journal holds 64 MiB, and the written and the filled copies
-// are both on disk until repack.
+// The segments are the fixture's 1 MiB cap, in a journal of 256 MiB rather
+// than the fixture's 64 MiB, since the 64 MiB written and the 64 MiB filled
+// back can both be on disk until the released segments are retired.
 func TestRFC1B_Coalescing(t *testing.T) {
-	f := journalv2test.New(t)
+	f := journalv2test.NewWith(t, func(s *journalv2.Settings) { s.MaxBytes = 4 * journalv2test.FixtureMaxBytes })
 
 	// Nine fills at one version, in a new journal's first segment of their
 	// stream, the last one released so the segment has something to recover.
@@ -336,9 +344,9 @@ func TestRFC1B_Coalescing(t *testing.T) {
 		}
 	}
 
-	// 16 MiB in 64 KiB writes, offloaded, released and filled back.
+	// 64 MiB in 64 KiB writes, offloaded, released and filled back.
 	h, id = f.Share(0), journalv2test.File(0)
-	const total, chunk, fetch = 16 << 20, 64 << 10, 4 << 20
+	const total, chunk, fetch = 64 << 20, 64 << 10, 4 << 20
 	var first, last journalv2.Version
 	for off := int64(0); off < total; off += chunk {
 		last = write(t, h, id, off, pattern(fmt.Sprint("small", off), chunk))
@@ -369,7 +377,7 @@ func TestRFC1B_Coalescing(t *testing.T) {
 		}
 	}
 	if entries >= total/chunk {
-		t.Fatalf("four fills of 4 MiB take %d entries, want fewer than the %d writes they replaced", entries, total/chunk)
+		t.Fatalf("fills of 4 MiB take %d entries, want fewer than the %d writes they replaced", entries, total/chunk)
 	}
 }
 
@@ -384,9 +392,9 @@ const indexBound = 10_000
 // the count stands an eighth of the bound above it, while a truncate and a
 // delete still succeed.
 //
-// The journal holds 128 MiB rather than the fixture's 64 MiB, so 10^4
-// scattered 4 KiB writes, twice over, fit beside what repack has not yet
-// returned.
+// The segments are the fixture's 1 MiB cap, in a journal of 128 MiB rather
+// than the fixture's 64 MiB, so 10^4 scattered 4 KiB writes, twice over, fit
+// beside what repack has not yet returned.
 func TestRFC1B_IndexBoundRefuses(t *testing.T) {
 	f := journalv2test.NewWith(t, func(s *journalv2.Settings) {
 		s.ExtentLimit = indexBound
@@ -397,8 +405,9 @@ func TestRFC1B_IndexBoundRefuses(t *testing.T) {
 		t.Fatalf("ExtentLimit = %d, want the %d it was set to", got, indexBound)
 	}
 
-	// The extent the punches go into, written first so its record sits whole
-	// at the start of a segment.
+	// The file the punches go into: one 512 KiB write, made first so it is
+	// likely one record, though a repack may cut it where its copy crosses a
+	// segment boundary.
 	holed := journalv2test.File(2)
 	write(t, f.Share(1), holed, 0, pattern("holed", 512<<10))
 
@@ -465,10 +474,16 @@ func TestRFC1B_IndexBoundRefuses(t *testing.T) {
 
 	// Back to the bound, then punches of one byte inside the one held extent.
 	scatter(4, 1<<41)
-	e := heldEntry(t, f, holed).Extent
+	// The largest held piece of the file, which must take every punch.
+	var e journalv2.Extent
+	for _, en := range indexEntries(t, f, holed) {
+		if en.Kind == journalv2.EntryHeld && en.Extent.Len > e.Len {
+			e = en.Extent
+		}
+	}
 	const punches = 100_000
 	if e.Len < 2*punches+2 {
-		t.Fatalf("the extent to punch is %+v, too short for %d punches", e, punches)
+		t.Fatalf("the largest held extent of the 512 KiB file is %+v, too short for %d punches", e, punches)
 	}
 	ceiling := int64(indexBound + indexBound/8)
 	accepted, refused := 0, 0
@@ -572,8 +587,9 @@ func TestRFC1B_PinnedSegmentsBounded(t *testing.T) {
 			free = append(free, s)
 		}
 	}
-	repackAll(t, f, journalv2.RepackScope{Segments: free})
-	st.wantParked(t, "a repack of the segments the offer did not pin")
+	// Every segment is in the scope, so a repack that took a pinned one is seen.
+	repackAll(t, f, journalv2.RepackScope{Segments: segs})
+	st.wantParked(t, "a repack beside the parked offer")
 	for _, s := range free {
 		if !retired(f, s) {
 			t.Fatalf("segment %d, which the offer did not pin, is still owned after its repack", s)
@@ -601,6 +617,9 @@ func TestRFC1B_PinnedSegmentsBounded(t *testing.T) {
 // one 4 KiB extent.
 func TestRFC1B_PinsBoundedAcrossOffers(t *testing.T) {
 	const offers, perFile, size = 8, 200, 4 << 10
+	if journalv2test.JournalPins+offers >= offers*min(journalv2test.OfferPins, perFile) {
+		t.Fatalf("%d offers capped at %d segments each cannot pin past the journal-wide bound of %d plus one each: the check cannot fail", offers, min(journalv2test.OfferPins, perFile), journalv2test.JournalPins)
+	}
 	f := journalv2test.NewWith(t, func(s *journalv2.Settings) { s.IdleSealBytes = size })
 
 	hs := make([]*journalv2.Handle, offers)
@@ -815,9 +834,56 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 	}
 }
 
+// relayWait bounds, in real time, how long relay keeps a read in the seam
+// when no other read arrives to take its place.
+//
+// decision: a guard that holds new readers back while reclamation waits stops
+// the relay, and only a real-time wait lets the last read in it go. The
+// ceiling: a guard that lets reclamation in only after a pause in reads this
+// long passes. Overturned once the journal reports its guard waits to the
+// seam, when the relay can end at the wait instead.
+const relayWait = 20 * time.Millisecond
+
+// relay is a fault that keeps each read of one file in the seam until the
+// next read of it arrives, or relayWait passes, so while readers keep coming
+// some read of the file is always in flight inside the journal.
+//
+// decision: holds cannot do this. A released hold frees every read parked at
+// it at once, and with every reader parked none can reach the next hold first,
+// so the reads in flight drop to none at each rotation, which is exactly the
+// gap a guard that waits for no readers needs.
+type relay struct {
+	key     string
+	mu      sync.Mutex
+	next    chan struct{} // closed when the next read arrives
+	relayed atomic.Int64  // reads let go by the arrival of another
+}
+
+func newRelay(key string) *relay { return &relay{key: key, next: make(chan struct{})} }
+
+func (r *relay) At(op string, key []byte) sim.FaultAction {
+	if (op != journalv2test.OpRead && op != journalv2test.OpReadDirect) || string(key) != r.key {
+		return sim.FaultAction{}
+	}
+	r.mu.Lock()
+	close(r.next)
+	r.next = make(chan struct{})
+	wait := r.next
+	r.mu.Unlock()
+	select {
+	case <-wait:
+		r.relayed.Add(1)
+	case <-time.After(relayWait):
+	}
+	return sim.FaultAction{}
+}
+
 // TestRFC1B_ReclaimNotStarved checks that a repack of a segment under a
 // sustained stream of reads of it still retires it within a bounded time,
-// with every read served the right bytes throughout.
+// with every read served the right bytes throughout. The reads are relayed at
+// the seam, so one is in flight inside the journal at every moment while they
+// keep coming: a guard that lets reclamation in only once no reader holds it
+// never does.
 func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 	f := journalv2test.New(t)
 	const readers = 4
@@ -892,6 +958,8 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 		eventually(t, "the readers did not get going", func() bool { return reads.Load() >= 64 || len(failed) > 0 })
 		readerFailed()
 
+		relayed := newRelay(segmentName(seg.ID))
+		f.Seam.SetFault(relayed)
 		repacked := make(chan error, 1)
 		var freed int64
 		go func() {
@@ -907,7 +975,11 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 			t.Fatalf("share %d: a repack of a segment under %d readers did not return within %v", k, readers, callWait)
 		}
 		join()
+		f.Seam.SetFault(nil)
 		readerFailed()
+		if relayed.relayed.Load() == 0 {
+			t.Fatalf("share %d: no read of segment %d was relayed at the seam: the reads did not reach it", k, seg.ID)
+		}
 		stub(t, "Repack", err)
 		if err != nil {
 			t.Fatalf("share %d: repack under readers: %v", k, err)
@@ -1018,6 +1090,10 @@ func TestRFC1B_RemovalsDoNotWaitOnOffload(t *testing.T) {
 	if _, missing := readBack(t, h, x, 0, 8*size); !slices.Equal(joinedExtents(missing), []journalv2.Extent{gone, {Off: 4 * size, Len: 4 * size}}) {
 		t.Fatalf("the offered file reads missing %+v after its truncate and deallocate, want %+v and from %d on", missing, gone, 4*size)
 	}
+	// A repack of the deleted file's segments beside the parked offer must
+	// leave those holding its offered bytes.
+	repackAll(t, f, journalv2.RepackScope{Segments: ySegs})
+	st.wantParked(t, "a repack beside the parked offer")
 	for _, s := range ySegs {
 		if xSegs[s] {
 			if _, ok := segmentInfo(f, s); !ok {
@@ -1078,16 +1154,52 @@ func (w *worker) do(call func() error) error {
 	return call()
 }
 
+// watchCalls returns true once finished is closed. If a worker's call has
+// been in flight for longer than bound first, it fails the test with every
+// goroutine's stack written to the test's artifact directory, calls abandon,
+// and returns false.
+func watchCalls(t *testing.T, workers []*worker, finished <-chan struct{}, bound time.Duration, abandon func()) bool {
+	t.Helper()
+
+	for {
+		select {
+		case <-finished:
+			return true
+		case <-time.After(10 * time.Millisecond):
+		}
+		for _, w := range workers {
+			if s := w.since.Load(); s != 0 && time.Since(time.Unix(0, s)) > bound {
+				buf := make([]byte, 1<<22)
+				buf = buf[:runtime.Stack(buf, true)]
+				where := filepath.Join(t.ArtifactDir(), "goroutines.txt")
+				if err := os.WriteFile(where, buf, 0o600); err != nil {
+					where = "nowhere: " + err.Error()
+				}
+				t.Errorf("a %s call blocked for more than %v with readers, writers, fills, releases and repack running at once; every goroutine's stack written to %s", w.name, bound, where)
+				abandon()
+				return false
+			}
+		}
+	}
+}
+
 // TestRFC1B_NoDeadlock checks that readers, writers, fills, releases and
 // repack running at once over the same files and segments all finish, with
 // no call blocked past a bound, and leave an index that verifies against the
 // segments.
 //
-// decision: a call blocked past callWait panics the test binary with every
-// goroutine's stack, rather than failing the test. The fixture's cleanup
-// closes the journal, which waits for the blocked call, so a failed test would
-// hang until the suite's timeout and say nothing. Overturned if the journal's
-// Close gains a bound of its own.
+// decision: a call blocked past callWait fails the test with every
+// goroutine's stack written to its artifact directory, and the journal is
+// abandoned unclosed. Its cleanup would close the journal, which waits for the
+// blocked call, so the test would hang until the suite's timeout took the
+// whole binary down, every later test's result with it. The abandoned
+// journal's goroutines and descriptors are then reported by the profiler too.
+// Overturned if the journal's Close gains a bound of its own.
+//
+// decision: the bound is callWait of real time, not of the journal's clock. A
+// call blocked on a lock waits on no timer, so moving the test clock neither
+// ends the wait nor shows it, and the run is left on a clock that never moves.
+// Overturned as callWait is.
 func TestRFC1B_NoDeadlock(t *testing.T) {
 	f := journalv2test.New(t)
 	hs := []*journalv2.Handle{f.Share(0), f.Share(1)}
@@ -1186,19 +1298,8 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 	}
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
-	for done := false; !done; {
-		select {
-		case <-finished:
-			done = true
-		case <-time.After(10 * time.Millisecond):
-		}
-		for _, w := range workers {
-			if s := w.since.Load(); s != 0 && time.Since(time.Unix(0, s)) > callWait {
-				buf := make([]byte, 1<<22)
-				buf = buf[:runtime.Stack(buf, true)]
-				panic(fmt.Sprintf("a %s call blocked for more than %v with readers, writers, fills, releases and repack running at once:\n\n%s", w.name, callWait, buf))
-			}
-		}
+	if !watchCalls(t, workers, finished, callWait, f.Abandon) {
+		return
 	}
 
 	for _, w := range workers {
@@ -1352,12 +1453,20 @@ const removalRecords = 100_000
 // the same file over their extent: beside another file's filled content at an
 // old version, kept for the whole run, and beside the same file's own old
 // content outside their extent. A share's records on disk then stay within a
-// bound across 10^5 such records, and the headroom stays above half.
+// bound across 10^5 such records.
 //
 // The segments are the fixture's 1 MiB cap.
+//
+// decision: the bound on each share's records on disk stands in for the
+// headroom staying above half. The headroom is drawn only at the journal's
+// limit, and holding the journal there across 10^5 records means refilling
+// it after every few hundred, as the releases retire the segments they
+// emptied; below the limit the headroom never moves, so a check of it could
+// not fail. Records a journal keeps take the share's usage past the bound well
+// before they would drain the headroom. Overturned if the headroom is drawn
+// below the limit too, when the check reads it again.
 func TestRFC1B_RemovalRecordsDroppedPerExtent(t *testing.T) {
 	f := journalv2test.New(t)
-	full := headroom(t, f)
 
 	// What a share's records may take on disk after a repack: the records in
 	// the segments still active, which repack cannot take, and those still
@@ -1367,9 +1476,6 @@ func TestRFC1B_RemovalRecordsDroppedPerExtent(t *testing.T) {
 		t.Helper()
 		repackAll(t, f, journalv2.RepackScope{})
 		s := f.J.Stats()
-		if s.HeadroomBytes < full/2 {
-			t.Fatalf("HeadroomBytes = %d of %d after %d removal records, want it above half", s.HeadroomBytes, full, issued)
-		}
 		if got := s.Shares[tag].UsedBytes - base; got > keptBound {
 			t.Fatalf("share %d's records take %d bytes more after %d removal records and a repack, want at most %d: they are kept", tag, got, issued, keptBound)
 		}
@@ -1433,6 +1539,13 @@ func TestRFC1B_RemovalRecordsDroppedPerExtent(t *testing.T) {
 // its limit frees storage from segments holding that share's records, not
 // from sparser segments of another share elsewhere, and lowers the share's
 // usage; and that a pass aimed at two segments repacks those two and no other.
+//
+// decision: A's writes are interleaved with twice as much of B, released, so
+// A's segments mostly hold B's unreclaimed bytes, but only where the journal
+// puts A's and B's files on one stream; that is its choice. The check holds
+// either way: B's other segments are released to one extent in twenty, sparser
+// than any of A's, so a pass that chose for itself takes them first. Overturned
+// if a file's stream becomes observable, so the check can put both on one.
 func TestRFC1B_RepackAimedAtShare(t *testing.T) {
 	f := journalv2test.New(t)
 	a, b := limitedShare(t, f, limitedA, 2<<20), f.Share(1)
@@ -1548,4 +1661,77 @@ func TestRFC1B_RepackAimedAtShare(t *testing.T) {
 		t.Fatalf("a pass aimed at two segments freed %d, want at least their %d", freed, cands[0].Allocated+cands[1].Allocated)
 	}
 	othersRepacked(before, func(s journalv2.SegmentID) bool { return slices.Contains(two, s) }, "a pass aimed at two segments")
+}
+
+// descriptorSlack is how many descriptors past the journal's bound the
+// process may hold open while a journal runs.
+//
+// decision: the process's count also holds what the journal opens besides
+// segment descriptors, its directory, its format file and the spares it is
+// making, so it is held to the bound plus this, not to the bound alone. The
+// ceiling: a journal holding up to this many segment descriptors past its
+// bound passes the process's half of the check, and only Stats catches it.
+// Overturned once Stats reports the descriptors it holds by kind.
+const descriptorSlack = 8
+
+// TestRFC1B_Descriptors checks that a journal with more segments than its
+// descriptor bound reads every one of them, reopening the descriptors it
+// closed, while the descriptors it holds stay within the bound by Stats and
+// by the process's own count.
+//
+// The journal is given a budget of 16 descriptors, against 40 segments at the
+// fixture's 1 MiB cap.
+func TestRFC1B_Descriptors(t *testing.T) {
+	const budget, size = 16, 256 << 10
+	f := journalv2test.NewWithOptions(t, nil, journalv2.WithDescriptorBudget(journalv2.NewDescriptorBudget(budget)))
+	bound := f.J.Stats().DescriptorLimit
+	if bound != budget {
+		t.Fatalf("DescriptorLimit = %d under a budget of %d, want the budget", bound, budget)
+	}
+	base, counted := prof.Descriptors()
+	if !counted {
+		t.Log("the process's descriptors cannot be listed here; only Stats bounds them")
+	}
+	bounded := func(what string) {
+		t.Helper()
+		s := f.J.Stats()
+		if s.OpenDescriptors > s.DescriptorLimit {
+			t.Fatalf("%s: OpenDescriptors = %d, past DescriptorLimit %d", what, s.OpenDescriptors, s.DescriptorLimit)
+		}
+		if n, ok := prof.Descriptors(); counted && ok && n-base > bound+descriptorSlack {
+			t.Fatalf("%s: the process holds %d descriptors more than once the journal opened, past its bound of %d and %d more", what, n-base, bound, descriptorSlack)
+		}
+	}
+
+	var ws []written
+	for i := int64(0); f.J.Stats().Segments <= 2*bound+8; i++ {
+		if i*size > journalv2test.FixtureMaxBytes {
+			t.Fatalf("%d segments after %d bytes written, want more than %d", f.J.Stats().Segments, i*size, 2*bound+8)
+		}
+		k := int(i % 2)
+		id, off := journalv2test.File(k), i/2*size
+		v := write(t, f.Share(k), id, off, pattern(fmt.Sprint("desc", i), size))
+		ws = append(ws, written{k, id, journalv2.Extent{Off: off, Len: size}, v})
+		bounded("while writing")
+	}
+	for _, k := range []int{0, 1} {
+		syncNow(t, f.Share(k), journalv2test.File(k))
+	}
+
+	reopens := f.J.Stats().Counters.SegmentReopens
+	for i, w := range ws {
+		buf := make([]byte, size)
+		_, missing, _, _, err := f.Share(w.share).ReadAt(t.Context(), w.id, w.extent.Off, buf)
+		stub(t, "ReadAt", err)
+		if err != nil {
+			t.Fatalf("read write %d back with more segments than descriptors: %v", i, err)
+		}
+		if len(missing) != 0 || !bytes.Equal(buf, pattern(fmt.Sprint("desc", i), size)) {
+			t.Fatalf("write %d reads back missing %+v or other bytes with more segments than descriptors", i, missing)
+		}
+		bounded("while reading")
+	}
+	if got := f.J.Stats().Counters.SegmentReopens; got <= reopens {
+		t.Fatalf("SegmentReopens moved by %d over reads of %d segments under a bound of %d, want reopens counted", got-reopens, f.J.Stats().Segments, bound)
+	}
 }
