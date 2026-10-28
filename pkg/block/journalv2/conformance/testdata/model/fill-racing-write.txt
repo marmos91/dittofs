@@ -10,4 +10,4 @@ fill s=1 f=1
 read s=1 f=1 len=32
 fill s=1 f=1
 stalefill s=1 f=1
-crash s=1 f=1
+crash

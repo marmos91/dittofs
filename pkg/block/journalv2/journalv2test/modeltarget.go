@@ -12,15 +12,21 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/model"
 )
 
-// ModelTargets returns the function that opens a fresh fixture journal, with
-// shares 0 and 1 attached, for each sequence the model-based test runs,
-// shrinking attempts included. A failure of the fixture's ends that sequence
-// with an error rather than the test, and what the sequence opened is closed
-// and removed when it ends. The fixtures are unwatched: the test watches
-// itself once, before calling it.
-func ModelTargets(t testing.TB) func() (model.Target, func(), error) {
+// ModelTargets returns open, the function that opens a fresh fixture
+// journal, with shares 0 and 1 attached, for each sequence the model-based
+// test runs, shrinking attempts included. A failure of the fixture's ends
+// that sequence with an error rather than the test, and what the sequence
+// opened is closed and removed when it ends. The fixtures are unwatched: the
+// test watches itself once, before calling it.
+//
+// It also returns streams, the most append streams the records of any one
+// sequence were on when it ended, which the journal chooses and the test can
+// only observe.
+func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), streams func() int) {
 	parent := t.TempDir()
-	return func() (model.Target, func(), error) {
+	most := 0
+	streams = func() int { return most }
+	open = func() (model.Target, func(), error) {
 		tb := &attemptTB{TB: t, parent: parent}
 		var tgt *fixtureTarget
 		err := tb.guard(func() {
@@ -33,8 +39,13 @@ func ModelTargets(t testing.TB) func() (model.Target, func(), error) {
 			tb.finish()
 			return nil, nil, err
 		}
-		return tgt, tb.finish, nil
+		done := func() {
+			most = max(most, tgt.streams())
+			tb.finish()
+		}
+		return tgt, done, nil
 	}
+	return open, streams
 }
 
 // attemptFailed is the panic an attemptTB raises for a failure, so that one
@@ -170,6 +181,31 @@ func reopened(err error) error {
 }
 
 func (x *fixtureTarget) Floor() journalv2.Version { return x.f.Floor() }
+
+// streams returns how many append streams hold the records the journal's
+// index points at now: none when no journal is open, as after a reopen that
+// failed.
+func (x *fixtureTarget) streams() int {
+	if x.f.J == nil {
+		return 0
+	}
+	in := x.f.J.Inspect()
+	of := map[journalv2.SegmentID]uint32{}
+	for _, s := range in.Segments() {
+		of[s.ID] = s.Stream
+	}
+	used := map[uint32]bool{}
+	for _, entries := range in.All() {
+		for _, e := range entries {
+			if e.Kind != journalv2.EntryMarker {
+				if stream, ok := of[e.Location.Segment]; ok {
+					used[stream] = true
+				}
+			}
+		}
+	}
+	return len(used)
+}
 
 // spareRetry retries every appending call refused for want of a spare
 // segment, as its caller would, so that refusal never reaches the model.

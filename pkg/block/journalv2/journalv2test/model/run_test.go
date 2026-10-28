@@ -244,3 +244,21 @@ func TestThePlayedJournalKeepsATagUntilRepack(t *testing.T) {
 		t.Fatalf("writes answered %v, want nil, ErrOtherShare, nil", s.written)
 	}
 }
+
+// The sequence the model-based test runs by default runs every one of its
+// crashes and reopens: none is skipped for a file holding more settled
+// markers than a crash may leave in doubt.
+func TestTheDefaultSequenceSkipsNoCrash(t *testing.T) {
+	steps := Generate(DefaultSeed, DefaultSteps)
+	restarts := 0
+	for _, s := range steps {
+		if s.Op == OpCrash || s.Op == OpReopen {
+			restarts++
+		}
+	}
+	_, skipped, err := runCounting(t.Context(), newPlayed(t), steps)
+	ok(t, err)
+	if restarts == 0 || skipped != 0 {
+		t.Fatalf("%d crash and reopen steps, %d skipped; want some, none skipped", restarts, skipped)
+	}
+}

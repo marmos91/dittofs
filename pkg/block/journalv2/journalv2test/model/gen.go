@@ -13,10 +13,23 @@ var weights = [...]int{
 	OpTruncate: 3, OpDeallocate: 3, OpDelete: 1, OpSettle: 3, OpRepack: 2, OpCrash: 3, OpReopen: 1,
 }
 
-// recordHeader is the size of a record's header on disk. A torn crash cuts
-// the last unsynced write anywhere in its header, its write's 8-byte mtime
-// or the first of its usually short payload, so the tear lands in each.
+// recordHeader is the size of a record's header on disk (RFC 28 §2.3). A
+// torn crash cuts the last unsynced write anywhere in its header, its
+// write's 8-byte mtime or the first of its usually short payload, so the
+// tear lands in each.
 const recordHeader = 96
+
+// DefaultSeed and DefaultSteps are the sequence the model-based test draws
+// when no seed is given.
+//
+// ponytail: one sequence of 200 steps per run, comparing every file after
+// every step, which keeps the run within a few seconds. Many seeds and longer
+// sequences belong in the tiers that run for longer; raise DefaultSteps only
+// if a failure needs a longer sequence to show and no corpus file holds it.
+const (
+	DefaultSeed  = 1
+	DefaultSteps = 200
+)
 
 // Generate draws n steps from seed. The same seed draws the same steps.
 //

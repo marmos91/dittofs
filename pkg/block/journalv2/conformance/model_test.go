@@ -13,14 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
 )
 
-// modelSteps is how many steps the seeded sequence of TestModel runs.
-//
-// ponytail: one sequence of 200 steps per run, comparing every file after
-// every step, which keeps the run within a few seconds. Many seeds and longer
-// sequences belong in the tiers that run for longer; raise this only if a
-// failure needs a longer sequence to show and no corpus file holds it.
-const modelSteps = 200
-
 // modelSeed is the seed of TestModel's sequence.
 //
 // decision: the seed is DITTOFS_SEED when it is set, and a fixed one
@@ -33,7 +25,7 @@ func modelSeed(t *testing.T) uint64 {
 
 	s, ok := os.LookupEnv("DITTOFS_SEED")
 	if !ok {
-		return 1
+		return model.DefaultSeed
 	}
 	seed, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
@@ -56,11 +48,18 @@ func TestModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the corpus: %v", err)
 	}
+	open, streams := journalv2test.ModelTargets(t)
 	for _, seq := range corpus {
-		model.Check(t, seq.Name, seq.Steps, journalv2test.ModelTargets(t), "kept as "+seq.Name)
+		model.Check(t, seq.Name, seq.Steps, open, "kept as "+seq.Name)
 	}
 
 	seed := modelSeed(t)
-	model.Check(t, fmt.Sprintf("seed-%d.txt", seed), model.Generate(seed, modelSteps), journalv2test.ModelTargets(t),
-		fmt.Sprintf("drawn from seed %d, %d steps", seed, modelSteps))
+	model.Check(t, fmt.Sprintf("seed-%d.txt", seed), model.Generate(seed, model.DefaultSteps), open,
+		fmt.Sprintf("drawn from seed %d, %d steps", seed, model.DefaultSteps))
+
+	// The journal chooses the stream each record goes to, so the sequences
+	// can only be shown to have reached two after they ran.
+	if n := streams(); !t.Failed() && n < 2 {
+		t.Errorf("no sequence left its records on more than %d append stream(s); two files on two streams are needed to reach the journal's concurrency", n)
+	}
 }

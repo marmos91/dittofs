@@ -63,18 +63,3 @@ func TestGenerateReachesEveryStep(t *testing.T) {
 		t.Errorf("truncate to zero %t, torn past a record header %t", toZero, tornPayload)
 	}
 }
-
-// The seed TestModel runs by default truncates a file to zero and writes it
-// again, the edge case a single fixed sequence must reach on its own.
-func TestTheDefaultSeedTruncatesToZeroAndWritesAgain(t *testing.T) {
-	steps := Generate(1, 200)
-	for i, s := range steps {
-		if s.Op != OpTruncate || s.Off != 0 {
-			continue
-		}
-		if slices.ContainsFunc(steps[i+1:], func(w Step) bool { return w.Op == OpWrite && w.File == s.File && w.Len > 0 }) {
-			return
-		}
-	}
-	t.Fatal("seed 1 never truncates a file to zero and writes it again")
-}
