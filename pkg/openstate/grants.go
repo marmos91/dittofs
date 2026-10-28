@@ -37,6 +37,10 @@ func (g GrantID) ref() StateRef { return StateRef{Type: StateGrant, Shard: g.Sha
 // CachingGrant is a promise that no other holder is using the file in a way
 // that conflicts with its Kind, so its holder may cache. It covers every open
 // of its client under its Key, an oplock's one open, or, a delegation, none.
+//
+// decision: it carries nothing of the adapter's until a lease covering a
+// persistent open is written; what the adapter keeps with a lease lands with
+// that write.
 type CachingGrant struct {
 	ID     GrantID
 	Client entity.ClientID
