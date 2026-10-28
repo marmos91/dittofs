@@ -234,7 +234,10 @@ func TestTimedOutLeaseIsWrittenAgain(t *testing.T) {
 	f.pass(t, coversDeadline+time.Second)
 	f.idle(0) // the timer's write is refused again
 	st.fail.Store(false)
-	f.clock.advance(f.recalledFor(file))
+	d := f.recalledFor(file)
+	f.clock.mu.Lock()
+	f.clock.now += d // firing no sweep, which would write the record again
+	f.clock.mu.Unlock()
 	if res, err := f.Opens().Open(ctx, b, file, OpenRequest{Access: rd, Want: GrantRead}); err != nil || res.Grant != nil {
 		t.Errorf("an open on the unsaved file: grant %+v, %v; want none offered", res.Grant, err)
 	}
