@@ -72,8 +72,7 @@ const (
 // sequence numbers from 1.
 //
 // In this format a version's epoch half is zero, so only counter halves are
-// kept: a floor or a record with a non-zero epoch is refused, and a limit with
-// one stands above every version the counter can issue.
+// kept: a limit, a floor or a record with a non-zero epoch is refused.
 //
 // decision: the counters are atomics with compare-and-swap, not one mutex.
 // Every lock the journal takes belongs to a named domain in one total order,
@@ -130,23 +129,16 @@ func (c *Counters) NextSeq() (core.Seq, error) {
 
 // SetVersionLimit sets the version limit: versions are issued only below
 // mark, and none at all until one is set. It sets rather than raises, so a
-// limit below the current one takes effect at once.
-//
-// decision: a mark with a non-zero epoch is accepted, unlike a floor or a
-// record, and kept as the top of the counter's range. A mark is the caller's
-// durable bound, not a version this format stores, and every version the
-// counter can issue lies below one with a non-zero epoch, so taking it as the
-// top leaves nothing issued that the mark forbids. The mark comes back as the
-// floor at the next open or attach: a counter half is clamped to the greatest
-// version issued, and a non-zero epoch is refused there as an unknown format.
-// Refuse such a mark here instead if a later format issues versions with a
-// non-zero epoch, where the mark's counter half would be its limit.
-func (c *Counters) SetVersionLimit(mark core.Version) {
-	limit := mark.Counter
+// limit below the current one takes effect at once. A mark with a non-zero
+// epoch is refused with ErrUnknownFormat and the limit stays as it was: the
+// mark comes back as the floor at the next open or attach, where a non-zero
+// epoch is refused, so accepting it here would fail that open instead.
+func (c *Counters) SetVersionLimit(mark core.Version) error {
 	if mark.Epoch != 0 {
-		limit = math.MaxUint64
+		return fmt.Errorf("%w: version limit %v has a non-zero epoch", core.ErrUnknownFormat, mark)
 	}
-	c.limit.Store(limit)
+	c.limit.Store(mark.Counter)
+	return nil
 }
 
 // RaiseFloor raises the version counter so that every version issued after it

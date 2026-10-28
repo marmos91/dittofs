@@ -63,5 +63,6 @@ func (j *Journal) Draw() (Version, error) {
 // SetVersionLimit sets the version limit: no version is issued at or above
 // mark. mark is the smallest of the durable per-share limits the caller has
 // recorded for every share the journal serves, raised by the caller ahead of
-// use so a write is not refused for want of versions.
-func (j *Journal) SetVersionLimit(mark Version) {}
+// use so a write is not refused for want of versions. A mark with a non-zero
+// epoch is refused with ErrUnknownFormat and the limit stays as it was.
+func (j *Journal) SetVersionLimit(mark Version) error { return ErrNotImplemented }
