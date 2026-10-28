@@ -564,7 +564,8 @@ func TestStartContextDoesNotStopTheTimer(t *testing.T) {
 }
 
 // No Sink method runs under a table lock: a Sink that calls back into the
-// table from ClientEnded deadlocks nothing.
+// table from ClientEnded deadlocks nothing, whether the sweep or a confirm
+// that expires a lapsed client raised it.
 func TestSinkMayCallBack(t *testing.T) {
 	f0 := newFixture(t)
 	f := unstarted(t, f0.fs, f0.clock)
@@ -591,6 +592,22 @@ func TestSinkMayCallBack(t *testing.T) {
 	}
 	if n := len(f.sink.endedOf(id)); n != 1 {
 		t.Fatalf("ClientEnded raised %d times, want once", n)
+	}
+
+	id = f.connect(t, nfs("host-a", 1, owner))
+	f.clock.advance(leasePeriod)
+	done = make(chan struct{})
+	go func() {
+		_, _ = f.Connect(ctx, nfs("host-a", 1, owner), nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the confirm did not return: a Sink calling back into the table deadlocked")
+	}
+	if n := len(f.sink.endedOf(id)); n != 1 {
+		t.Fatalf("ClientEnded raised %d times by the confirm, want once", n)
 	}
 }
 
