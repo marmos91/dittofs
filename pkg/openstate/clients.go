@@ -61,11 +61,13 @@ type Proposal struct {
 // ClientStatus is what a renewal reports beside the lease.
 type ClientStatus struct{}
 
-// Caller is the client a call acts for, as the adapter proved it, and the
-// principal it runs as, mapped and never squashed.
+// Caller is the client a call acts for, as the adapter proved it, the
+// principal it runs as, mapped and never squashed, and the request's
+// protocol, set on every call.
 type Caller struct {
 	Client    entity.ClientID
 	Principal entity.Principal
+	Protocol  entity.Protocol
 }
 
 // Clients is the view of client records and leases; it runs at the client's

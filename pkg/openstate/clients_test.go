@@ -176,7 +176,7 @@ func TestConfirmAfterExpiryIsStale(t *testing.T) {
 			f.sweep(ctx)
 		},
 		"destroyed": func(t *testing.T, f *fixture, c Client, id entity.ClientID) {
-			if err := f.Destroy(ctx, Caller{id, c.Owner}); err != nil {
+			if err := f.Destroy(ctx, Caller{Client: id, Principal: c.Owner}); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -473,7 +473,7 @@ func TestDestroy(t *testing.T) {
 	idle := f.connect(t, nfs("idle", 1, alice))
 
 	for _, c := range []entity.ClientID{withSession, withState} {
-		if err := f.Destroy(ctx, Caller{c, alice}); !errors.Is(err, ErrClientBusy) {
+		if err := f.Destroy(ctx, Caller{Client: c, Principal: alice}); !errors.Is(err, ErrClientBusy) {
 			t.Errorf("Destroy of client %d: %v, want ErrClientBusy", c, err)
 		}
 		if _, err := f.Record(ctx, c); err != nil {
@@ -483,10 +483,10 @@ func TestDestroy(t *testing.T) {
 	if _, err := f.resolve(withState, file, ref); err != nil {
 		t.Errorf("state after a refused Destroy: %v", err)
 	}
-	if err := f.Destroy(ctx, Caller{idle, entity.NewUser()}); !errors.Is(err, ErrNotYours) {
+	if err := f.Destroy(ctx, Caller{Client: idle, Principal: entity.NewUser()}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("Destroy of a protected client by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Destroy(ctx, Caller{idle, alice}); err != nil {
+	if err := f.Destroy(ctx, Caller{Client: idle, Principal: alice}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Renew(ctx, idle); !errors.Is(err, ErrStaleClient) {
