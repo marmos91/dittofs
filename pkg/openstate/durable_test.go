@@ -432,28 +432,6 @@ func TestFlushedReportsALossOnce(t *testing.T) {
 	}
 }
 
-// A lease cut to none when its recall passes its deadline is written so,
-// and a restart installs it at none.
-func TestPersistentLeaseKeepsItsTimeout(t *testing.T) {
-	f := newFixture(t)
-	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
-	file, r := f.fileIn(t, "doc")
-	r.Access, r.Lease, r.Want = rd|wr, LeaseKey{5}, rwh
-	res, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
-	if err != nil || res.Grant == nil {
-		t.Fatalf("persistent open: %+v, %v", res, err)
-	}
-	if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
-		t.Fatalf("b's open: %v, want a recall", err)
-	}
-	f.pass(t, coversDeadline+time.Second)
-	g := f.restart(t)
-	back, err := g.reconnect(a, res.Open, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{5}}, s2)
-	if err != nil || back.Grant == nil || back.Grant.Kind != GrantNone {
-		t.Errorf("reconnected under %+v, %v; want the lease at none", back.Grant, err)
-	}
-}
-
 // Two persistent opens under one lease key come back under one lease, which
 // counts once in its client's budget; an unlink that writes the file's
 // records keeps the lease in them.

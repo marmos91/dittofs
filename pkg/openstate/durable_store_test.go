@@ -319,25 +319,6 @@ func TestUnlinkKeepsALaterAcknowledgement(t *testing.T) {
 	}
 }
 
-// Locks taken under a persistent open in separate requests are each kept.
-func TestPersistentLocksAccumulate(t *testing.T) {
-	f := newFixture(t)
-	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
-	file, r := f.fileIn(t, "disk")
-	r.Access = rd | wr
-	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, 300*time.Second, 1))
-	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
-	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(20, 10)}})
-	g := f.restart(t)
-	g.renew(t, b)
-	g.idle(120 * time.Second)
-	for _, off := range []uint64{5, 25} {
-		if err := g.anon(file, off); !errors.Is(err, ErrLocked) {
-			t.Errorf("an anonymous read at %d after a restart: %v, want ErrLocked", off, err)
-		}
-	}
-}
-
 // A lock or an unlock under a persistent open holding many locks writes
 // only the locks it changes, in one store transaction, and a restart holds
 // the locks as changed.

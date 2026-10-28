@@ -875,10 +875,8 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			}
 			next := lockState{owner: ls.owner, locks: slices.Clone(ls.locks), offers: slices.Clone(ls.offers)}
 			err := next.unlock(rs)
-			if !slices.Equal(next.locks, ls.locks) {
-				if werr := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); werr != nil {
-					return werr
-				}
+			if werr := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); werr != nil {
+				return werr // an unlock releasing nothing writes nothing
 			}
 			ls.locks, ls.offers = next.locks, next.offers
 			if err == nil {
