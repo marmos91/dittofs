@@ -36,7 +36,8 @@ jobs:
           esac
 
           # Lucian does not review Radu's journal changes.
-          if [ "$AUTHOR" = rif ] && gh pr diff "$PR" --repo "$REPO" --name-only | grep -q '^pkg/block/journal/'; then
+          # The files API, unlike gh pr diff, lists PRs past 300 files.
+          if [ "$AUTHOR" = rif ] && gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' | grep -qE '^pkg/block/journal(v2)?/'; then
             pool="${pool/llucian-iws/}"
           fi
 
