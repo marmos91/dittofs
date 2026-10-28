@@ -883,7 +883,7 @@ func TestDamage_TornWrites(t *testing.T) {
 				case n == 0:
 					base = r
 				default:
-					wantScanned(t, d.f, base, 1)
+					wantScanned(t, d.label, d.f, base, 1)
 				}
 			})
 		}
@@ -1074,7 +1074,7 @@ func newFlipSite(t *testing.T, size, marked int, scanned bool) *flipSite {
 	if scanned {
 		flipBit(t, f, s.name, int64(len(durable(t, f, s.name)))-raw.TrailerSize, 0)
 		f.Reopen()
-		wantScanned(t, f, s.recovery, 1)
+		wantScanned(t, "precondition: with its trailer's magic flipped", f, s.recovery, 1)
 		s.recovery = f.J.Stats().Recovery
 	}
 
@@ -1171,7 +1171,7 @@ func (s *flipSite) wantAllExact(t *testing.T, where string, dropped map[int]bool
 func (s *flipSite) wantNoByteChanged(t *testing.T, where string) {
 	t.Helper()
 
-	wantScanned(t, s.f, s.recovery, 1)
+	wantScanned(t, where, s.f, s.recovery, 1)
 	if losses := s.f.J.Stats().Losses; len(losses) != 0 {
 		t.Fatalf("%s: a flip outside any record was reported as a loss: %+v", where, losses)
 	}
@@ -1252,7 +1252,7 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 			if s.scanned {
 				// An open may write a footer for a segment sealed by an
 				// earlier process; the site holds only while it did not.
-				wantScanned(t, s.f, s.recovery, 0)
+				wantScanned(t, "precondition: before "+where, s.f, s.recovery, 0)
 			}
 
 			generation := s.f.J.Stats().LossGeneration
@@ -1428,7 +1428,7 @@ func TestDamage_BitFlip(t *testing.T) {
 						t.Fatalf("%s: segment %d, named by its successor, is not reported corrupt with its seal marker changed", where, s.seg)
 					}
 
-					wantScanned(t, s.f, s.recovery, 1)
+					wantScanned(t, where, s.f, s.recovery, 1)
 					s.wantAllExact(t, where, nil)
 				})
 			})

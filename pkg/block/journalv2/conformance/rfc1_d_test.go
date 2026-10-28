@@ -44,7 +44,7 @@ func fillUntilRefused(t *testing.T, f *journalv2test.Fixture, shares []int, firs
 		offs[k] += size
 	}
 	t.Fatalf("%d bytes written into a journal of %d were never refused", 2*journalv2test.FixtureMaxBytes, journalv2test.FixtureMaxBytes)
-	panic("unreachable")
+	return nil
 }
 
 // atCapacity fails the test unless the journal's allocated occupancy is
