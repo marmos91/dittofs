@@ -501,42 +501,67 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 	return nil
 }
 
-// keepLocks writes locks as owner's stored locks under op where op is
-// persistent: each is written at its offset under its position, then each
-// stored lock of the owner not written over is deleted, so a write that
-// stops part way leaves more locks stored, never fewer. It runs before the
-// change is made, so a refused write changes nothing held.
+// keepLocks writes the change of owner's locks under o from was to now
+// where o is persistent: the locks added or changed and the ones gone, in
+// one store transaction, so the stored locks are was or now, never a mix,
+// and a change costs its own locks, not all the open holds. It runs before
+// the change is made, so a refused write changes nothing held.
 //
-// decision: a lock's position names it among its owner's under one open,
-// with no ID drawn, and one owner's positions may land on another's at the
-// same offset. SMB, the one protocol with persistent opens, names one owner
-// per open. Draw IDs from NextID if a protocol is served whose persistent
-// opens hold several owners' locks.
-func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, locks []LockRange) error {
+// decision: was is the table's own, not read back from the store. Every
+// change of a persistent open's locks is written here before it is made,
+// a refused write writes nothing, and an install builds the locks from the
+// store, so the two agree. Read the stored locks first if a write can land
+// and still be answered an error, as one whose outcome is unknown when its
+// context ends.
+//
+// decision: a lock is named by its offset and its place among the owner's
+// locks at that offset, with no ID drawn, so a lock keeps its key while
+// others come and go; one owner's names may land on another's at the same
+// offset. SMB, the one protocol with persistent opens, names one owner per
+// open. Draw IDs from NextID if a protocol is served whose persistent opens
+// hold several owners' locks.
+func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now []LockRange) error {
 	if o == nil || !o.persistent() {
 		return nil
 	}
-	ops, f := t.d.Records.Opens(), o.opened()
-	stored, err := ops.Locks(ctx, o.share, f, o.ID)
-	if err != nil {
-		return err
-	}
 	owner := entity.LockOwner{Client: lo.Client, Owner: lo.Name}
-	for i, l := range locks {
-		r := entity.LockRecord{ID: entity.LockID(i + 1), Open: o.ID, Owner: owner, Offset: l.Offset, Length: l.Length, Exclusive: l.Exclusive}
-		if err := ops.SetLocks(ctx, o.share, f, o.ID, nil, []entity.LockRecord{r}, nil); err != nil {
-			return err
+	record := func(k lockName, l LockRange) entity.LockRecord {
+		return entity.LockRecord{ID: entity.LockID(k.n), Open: o.ID, Owner: owner, Offset: k.offset, Length: l.Length, Exclusive: l.Exclusive}
+	}
+	before, after := lockNames(was), lockNames(now)
+	var put, del []entity.LockRecord
+	for k, l := range after {
+		if p, ok := before[k]; !ok || p != l {
+			put = append(put, record(k, l))
 		}
 	}
-	for _, r := range stored {
-		over := int(r.ID) <= len(locks) && locks[r.ID-1].Offset == r.Offset
-		if !over && sameOwner(LockOwner{Client: r.Owner.Client, Name: r.Owner.Owner}, lo) {
-			if err := ops.SetLocks(ctx, o.share, f, o.ID, nil, nil, []entity.LockRecord{r}); err != nil {
-				return err
-			}
+	for k, l := range before {
+		if _, ok := after[k]; !ok {
+			del = append(del, record(k, l))
 		}
 	}
-	return nil
+	if len(put)+len(del) == 0 {
+		return nil
+	}
+	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, nil, put, del)
+}
+
+// lockName is a stored lock's key under its owner: its offset and its place,
+// from one, among the owner's locks at that offset.
+type lockName struct {
+	offset uint64
+	n      uint64
+}
+
+// lockNames names each of locks as keepLocks stores it.
+func lockNames(locks []LockRange) map[lockName]LockRange {
+	out := make(map[lockName]LockRange, len(locks))
+	at := map[uint64]uint64{}
+	for _, l := range locks {
+		at[l.Offset]++
+		out[lockName{l.Offset, at[l.Offset]}] = l
+	}
+	return out
 }
 
 // adding is ls's locks with rs added, as add takes them, leaving ls as it is.

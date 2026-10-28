@@ -337,6 +337,50 @@ func TestPersistentLocksAccumulate(t *testing.T) {
 	}
 }
 
+// A lock or an unlock under a persistent open holding many locks writes
+// only the locks it changes, in one store transaction, and a restart holds
+// the locks as changed.
+func TestPersistentLockChangeIsOneWrite(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, 300*time.Second, 1))
+	lock := func(off uint64) {
+		f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(off, 10)}})
+	}
+	for i := range 64 {
+		lock(uint64(i) * 20)
+	}
+	for _, c := range []struct {
+		name string
+		do   func()
+	}{
+		{"a lock", func() { lock(5000) }},
+		{"an unlock among them", func() {
+			if _, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(200, 10)}, Seqs{}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		st.updates.Store(0)
+		fs.Counts.Take()
+		c.do()
+		if n, w := st.updates.Load(), fs.Counts.Take(); n != 1 || w.Sets+w.Deletes != 1 {
+			t.Errorf("%s under 64 locks: %d transactions writing %d keys, want 1 writing 1", c.name, n, w.Sets+w.Deletes)
+		}
+	}
+	g := f.restart(t)
+	g.renew(t, b)
+	g.idle(120 * time.Second)
+	for off, want := range map[uint64]error{5005: ErrLocked, 205: nil, 225: ErrLocked} {
+		if err := g.anon(file, off); !errors.Is(err, want) {
+			t.Errorf("an anonymous read at %d after a restart: %v, want %v", off, err, want)
+		}
+	}
+}
+
 // A refused lock or unlock under a persistent open changes nothing: an
 // unlock that releases nothing writes nothing, and a lock whose write fails
 // keeps the owner's earlier waiter.

@@ -465,7 +465,7 @@ func (t *Table) serve(ctx context.Context, e *entry, out *outbox) {
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				// A refused write is a lock not held, answered not granted.
 				next := ls.adding(w.Range)
-				if granted = t.keepLocks(ctx, ls.open, ls.owner, next) == nil; granted {
+				if granted = t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next) == nil; granted {
 					ls.locks = next
 					ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 				}
@@ -672,7 +672,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			cur = &lockState{owner: r.Owner}
 		}
 		next = cur.adding(r.Ranges...)
-		if err := t.keepLocks(ctx, op, r.Owner, next); err != nil {
+		if err := t.keepLocks(ctx, op, r.Owner, cur.locks, next); err != nil {
 			return LockResult{}, err
 		}
 	}
@@ -791,7 +791,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		if refused {
 			next := lockState{owner: ls.owner, locks: slices.Clone(ls.locks)}
 			_ = next.unlock(ls.unoffered(o.left, others))
-			if err := t.keepLocks(ctx, ls.open, ls.owner, next.locks); err != nil {
+			if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); err != nil {
 				return err // the grant stays offered, for the client's answer again
 			}
 			ls.locks = next.locks
@@ -874,7 +874,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			next := lockState{owner: ls.owner, locks: slices.Clone(ls.locks), offers: slices.Clone(ls.offers)}
 			err := next.unlock(rs)
 			if !slices.Equal(next.locks, ls.locks) {
-				if werr := t.keepLocks(ctx, ls.open, ls.owner, next.locks); werr != nil {
+				if werr := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next.locks); werr != nil {
 					return werr
 				}
 			}
