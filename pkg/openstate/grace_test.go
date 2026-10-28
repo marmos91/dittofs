@@ -798,3 +798,24 @@ func TestHostRecordOutlivesIdlenessInGrace(t *testing.T) {
 		t.Errorf("the reclaim on b after the host's last unlock in grace: %v", err)
 	}
 }
+
+// In a shard holding an SMB client's deny-write open and an NLM host's lock,
+// anonymous I/O after a restart waits for nothing of the SMB client's, while
+// the host's lock still holds grace for requests that are no reclaim.
+func TestReconnectingClientHoldsNoDenyInGrace(t *testing.T) {
+	f := newFixture(t)
+	sc := smb("pc")
+	sc.Recovery = entity.RecoverReconnect
+	s, h, z := f.caller(t, sc), f.host(t, "h", 1), f.caller(t, nfsAs("z", entity.RecoverStatus))
+	file := in(5)
+	f.mustOpen(t, s, file, OpenRequest{Access: rd | wr, Deny: wr})
+	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	g := f.restart(t)
+	g.renew(t, z)
+	if err := g.Checks().CheckIO(ctx, z, file, OpenRef{Kind: RefAnonymous}, br(0, 10), true); err != nil {
+		t.Errorf("an anonymous write on the SMB client's file in grace: %v", err)
+	}
+	if _, err := g.lock(z, in(5), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
+		t.Errorf("a lock that is no reclaim, while the host may reclaim: %v, want ErrGrace", err)
+	}
+}

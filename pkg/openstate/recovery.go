@@ -140,6 +140,11 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 		if rec.Ended {
 			continue // its state is being released everywhere: nothing to reclaim
 		}
+		// decision: a client that recovers by reconnecting holds no deny mode
+		// in grace, though an SMB client can hold one: its volatile opens are
+		// never reclaimed and nothing of it is installed yet. Set deny for it
+		// once ServeShard installs persistent opens that are not yet
+		// reconnected.
 		sh.reclaim[rec.ID] = reclaimer{
 			kind: rec.Recovery,
 			deny: rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
