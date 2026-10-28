@@ -1148,3 +1148,43 @@ func TestDisconnectOfNoSessionRefusesNoOpen(t *testing.T) {
 		t.Errorf("an open naming no session after a disconnect naming none: %v", err)
 	}
 }
+
+// A client's first state in a shard is answered only once its shard mark
+// commits: a refused mark refuses the first open and the first lock with no
+// open, with the store's error, leaving no state, and each is granted once
+// the store writes again.
+func TestFirstStateWaitsForItsShardMark(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	for what, first := range map[string]func(c Caller, file FileKey) error{
+		"open": func(c Caller, file FileKey) error {
+			_, err := f.open(c, file, OpenRequest{Access: rd, Want: GrantRead})
+			return err
+		},
+		"lock": func(c Caller, file FileKey) error {
+			_, err := f.lock(c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}})
+			return err
+		},
+	} {
+		c := f.caller(t, nfs(what, 1, entity.NewUser()))
+		file := in(1)
+		st.fail.Store(true)
+		err := first(c, file)
+		st.fail.Store(false)
+		if !errors.Is(err, errWrite) {
+			t.Errorf("the first %s over a refusing store: %v, want the store's error", what, err)
+		}
+		if f.entryOf(file.ID) != nil {
+			t.Errorf("the refused first %s left state", what)
+		}
+		if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 0 {
+			t.Errorf("the refused first %s left the shard listed: %+v", what, rec.Shards)
+		}
+		if err := first(c, file); err != nil {
+			t.Errorf("the first %s once the store writes again: %v", what, err)
+		}
+		if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 1 {
+			t.Errorf("after the first %s the shards listed are %+v, want its own", what, rec.Shards)
+		}
+	}
+}
