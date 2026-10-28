@@ -18,6 +18,7 @@ func rechecksumFormat(b []byte) {
 	binary.LittleEndian.PutUint32(b[52:56], wantCRC(b[0:52]))
 }
 
+// TestFormatLayout pins every field of the format file at its offset and size.
 func TestFormatLayout(t *testing.T) {
 	b := testFormat()
 
@@ -54,6 +55,8 @@ func TestFormatLayout(t *testing.T) {
 	}
 }
 
+// TestFormatChecksumIsUnseededOverItsFirst52Bytes pins that the format file's
+// checksum is the plain CRC32C of its first 52 bytes.
 func TestFormatChecksumIsUnseededOverItsFirst52Bytes(t *testing.T) {
 	b := testFormat()
 
@@ -86,6 +89,8 @@ func TestParseFormatReadsBackWhatWasBuilt(t *testing.T) {
 	}
 }
 
+// TestParseFormatRefusesAWrongMagic pins that a format file with another magic
+// does not parse.
 func TestParseFormatRefusesAWrongMagic(t *testing.T) {
 	b := testFormat()
 	if len(b) != 56 {
@@ -99,6 +104,8 @@ func TestParseFormatRefusesAWrongMagic(t *testing.T) {
 	}
 }
 
+// TestParseFormatRefusesAWrongLength pins that a format file of any length but
+// 56 bytes does not parse.
 func TestParseFormatRefusesAWrongLength(t *testing.T) {
 	b := testFormat()
 
@@ -111,6 +118,8 @@ func TestParseFormatRefusesAWrongLength(t *testing.T) {
 	}
 }
 
+// TestParseFormatRefusesAFlippedBit pins that a format file with one bit
+// flipped in any field does not parse.
 func TestParseFormatRefusesAFlippedBit(t *testing.T) {
 	for _, f := range []struct {
 		name string

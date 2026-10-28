@@ -5,6 +5,8 @@ import "testing"
 // Offsets below are the catalog entry table's, written out here and never
 // taken from the package's constants.
 
+// TestCatalogEntryLayout pins every field of a catalog entry at its offset and
+// size.
 func TestCatalogEntryLayout(t *testing.T) {
 	b := testCatalogEntry.Bytes()
 

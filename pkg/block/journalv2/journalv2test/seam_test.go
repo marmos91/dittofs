@@ -948,10 +948,11 @@ func TestFailedWriteLeavesNoUndo(t *testing.T) {
 	}
 }
 
-// An Abandon leaves a dead process's unsynced writes in the cache, readable
-// through a new handle, while the durable image holds only what was synced.
-// An Abandon that put the files back to their durable images, as Crash does,
-// would lose the write; one that synced them would put it in the image.
+// TestAbandonKeepsUnsyncedWritesReadable pins that an Abandon leaves a dead
+// process's unsynced writes in the cache, readable through a new handle,
+// while the durable image holds only what was synced. An Abandon that put
+// the files back to their durable images, as Crash does, would lose the
+// write; one that synced them would put it in the image.
 func TestAbandonKeepsUnsyncedWritesReadable(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
@@ -963,24 +964,26 @@ func TestAbandonKeepsUnsyncedWritesReadable(t *testing.T) {
 
 	g, err := s.Open("seg")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open seg after Abandon: %v", err)
 	}
+
 	if got := readAt(t, g, 6); got != "aaaabb" {
 		t.Fatalf("after Abandon a read serves %q, want the cache's %q", got, "aaaabb")
 	}
 
 	durable, err := s.Durable("seg")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read the durable image of seg after Abandon: %v", err)
 	}
 	if string(durable) != "aaaa" {
 		t.Fatalf("after Abandon the durable image holds %q, want the synced %q", durable, "aaaa")
 	}
 }
 
-// A Crash after an Abandon drops what no sync covered, as a crash with no
-// Abandon before it does. An Abandon that forgot the pending changes, by
-// clearing the undo log, would let the crash keep the write.
+// TestAbandonThenCrashDropsUnsyncedWrites pins that a Crash after an Abandon
+// drops what no sync covered, as a crash with no Abandon before it does. An
+// Abandon that forgot the pending changes, by clearing the undo log, would
+// let the crash keep the write.
 func TestAbandonThenCrashDropsUnsyncedWrites(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
@@ -996,10 +999,11 @@ func TestAbandonThenCrashDropsUnsyncedWrites(t *testing.T) {
 	}
 }
 
-// An Abandon issues no call on the seam: the dead process closes, seals and
-// syncs nothing. What it opened fails from then on as after a crash, and a
-// new view serves the directory. An Abandon that closed the files through
-// Close, or synced them, would count those calls.
+// TestAbandonIssuesNoCallOnTheSeam pins that an Abandon issues no call on
+// the seam: the dead process closes, seals and syncs nothing. What it opened
+// fails from then on as after a crash, and a new view serves the directory.
+// An Abandon that closed the files through Close, or synced them, would
+// count those calls.
 func TestAbandonIssuesNoCallOnTheSeam(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
@@ -1023,10 +1027,11 @@ func TestAbandonIssuesNoCallOnTheSeam(t *testing.T) {
 	}
 }
 
-// A synced write survives an Abandon and the crash after it, with the
-// durable image a failed sync left behind kept as it was. An Abandon that
-// reset the image kept from a failed sync would let the crash rebuild it
-// from the file, and bring the lost write back.
+// TestAbandonKeepsSyncedWritesThroughACrash pins that a synced write
+// survives an Abandon and the crash after it, with the durable image a
+// failed sync left behind kept as it was. An Abandon that reset the image
+// kept from a failed sync would let the crash rebuild it from the file, and
+// bring the lost write back.
 func TestAbandonKeepsSyncedWritesThroughACrash(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
@@ -1084,12 +1089,12 @@ func TestKeepingRefusesABitPastTheWrites(t *testing.T) {
 	syncDir(t, s)
 	write(t, f, "aaaa", 0)
 
-	if err := s.Crash(Keeping(0b10)); err == nil {
-		t.Fatalf("Keeping a second write with one unsynced was not refused")
+	if err := s.Crash(Keeping(0b10)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("Keeping a second write with one unsynced returned %v, want the refusal", err)
 	}
 
-	if err := s.Crash(Keeping(0b01), Torn(1)); err == nil {
-		t.Fatalf("Keeping with Torn was not refused")
+	if err := s.Crash(Keeping(0b01), Torn(1)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("Keeping with Torn returned %v, want the refusal", err)
 	}
 
 	// A refused crash changes nothing: the file is still open and the write
@@ -1154,8 +1159,8 @@ func TestTornEndRefusesACutPastTheWrite(t *testing.T) {
 	syncDir(t, s)
 	write(t, f, "bbbb", 0)
 
-	if err := s.Crash(TornEnd("seg", 5)); err == nil {
-		t.Fatalf("cutting five bytes off a four-byte write was not refused")
+	if err := s.Crash(TornEnd("seg", 5)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("cutting five bytes off a four-byte write returned %v, want the refusal", err)
 	}
 
 	crash(t, s, TornEnd("seg", 4))

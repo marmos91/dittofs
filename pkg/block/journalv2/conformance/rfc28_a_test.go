@@ -83,7 +83,8 @@ func TestRFC28A_CorruptDirty(t *testing.T) {
 		t.Fatalf("loss event %+v says the bit was set; A was never offloaded", ev)
 	}
 	// A loss of content not yet offloaded raises the generation by one, so
-	// every client resends the writes it has not seen confirmed stable.
+	// every client resends the writes it has not seen confirmed stable (RFC 1
+	// section 3.8, lines 1255 to 1258).
 	if got, want := f.J.Stats().LossGeneration, before.LossGeneration+1; got != want {
 		t.Fatalf("LossGeneration = %d after dropping dirty content, want %d", got, want)
 	}
@@ -110,6 +111,8 @@ func TestRFC28A_CorruptOffloaded(t *testing.T) {
 		t.Fatalf("loss event %+v says the bit was unset; A was marked offloaded", ev)
 	}
 
+	// A loss the remote tier repairs leaves the generation where it was (RFC
+	// 1 section 3.8, lines 1255 to 1258).
 	if got := f.J.Stats().LossGeneration; got != before.LossGeneration {
 		t.Fatalf("LossGeneration = %d after dropping offloaded content, want %d unchanged", got, before.LossGeneration)
 	}
@@ -197,7 +200,11 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		t.Fatalf("the third write: %v", err)
 	}
 	syncFiles(t, h, id)
-	third := entryAt(t, f, id, 2*size).Location
+	first, third := entryAt(t, f, id, 0).Location, entryAt(t, f, id, 2*size).Location
+	if slot := first.Offset + raw.RecordHeaderSize + 8 + size; third.Offset < slot+raw.RecordHeaderSize+8+size {
+		t.Fatalf("precondition: the third record at %d does not lie past the slot at %d the failed write took", third.Offset, slot)
+	}
+
 	for _, r := range rs {
 		if err := r.Close(); err != nil {
 			t.Fatalf("close a reservation: %v", err)
@@ -219,7 +226,8 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the segment: %v", err)
 	}
-	if end := third.Offset + 96 + 8 + size; int64(len(durable)) < end {
+
+	if end := third.Offset + raw.RecordHeaderSize + 8 + size; int64(len(durable)) < end {
 		t.Fatalf("the segment is %d bytes after recovery, cut below the third record's end at %d", len(durable), end)
 	}
 
@@ -246,16 +254,19 @@ func TestRFC28A_UnmarkClears(t *testing.T) {
 	h = f.Share(0)
 	wantRelease(t, h, a.id, a.extent, false)
 
-	// A mark over B's extent covers neither A nor C: A stays unmarked and C
-	// stays marked.
-	mark(t, f.Share(1), b.id, b.extent, b.version)
+	// A mark over D, an extent of file 0 outside A and C, covers neither: A
+	// stays unmarked and C stays marked.
+	d := writeSynced(t, f, 0, 0, 128<<10, 64<<10)
+	mark(t, h, d.id, d.extent, d.version)
 	if entryAt(t, f, a.id, 0).Offloaded {
 		t.Fatalf("A's offloaded bit is set after a mark that did not cover it")
 	}
 	if !entryAt(t, f, c.id, c.extent.Off).Offloaded {
 		t.Fatalf("C's offloaded bit is unset after a mark that did not cover it")
 	}
+
 	wantRelease(t, h, a.id, a.extent, false)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
 }
 
 // deviceSync makes the pending writes of the segment file name durable
@@ -351,10 +362,12 @@ func wantVerifiedThenReappended(t *testing.T, f *journalv2test.Fixture, u unprov
 // nothing a client was answered. Three legs: a journal with room, one at its
 // maximum, and one whose segment's sync failed before the process died.
 //
-// decision: in every leg the open's own sync of the segment is dropped at
-// the seam, so it reports success and puts nothing on the device: without
-// that, the open would make B durable before it re-read it, and the row's
-// case of a record that does not verify on the device could not be reached.
+// decision: in the first two legs the open's own sync of the segment is
+// dropped at the seam, so it reports success and puts nothing on the device:
+// without that, the open would make B durable before it re-read it, and the
+// row's case of a record that does not verify on the device could not be
+// reached. The third leg drops nothing: its segment's sync failed before the
+// process died, so the open re-appends B by the failed window's rule.
 func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	f := journalv2test.New(t)
 	other := writeSynced(t, f, 1, 1, 0, 64<<10)
@@ -444,8 +457,9 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 	f.Reopen()
 	wantNoFooter(t, f, s)
 
-	// A planted segment whose one entry says its record is 8 bytes longer
-	// than the record's header does.
+	// A planted segment whose one entry carries a sequence number the
+	// record's header does not, with the length right, so the extent the
+	// loss names is the record's own.
 	g := journalv2test.NewUnwatched(t)
 	x := writeSynced(t, g, 0, 0, 0, 64<<10)
 	other := writeSynced(t, g, 1, 1, 0, 64<<10)
@@ -464,8 +478,8 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 		Write: &raw.WriteBody{Payload: p},
 	}
 	entry := raw.Entry{
-		FileID: x.id.Bytes(), Offset: uint64(extent.Off), RecordOffset: raw.SegmentHeaderSize, Length: size + 8,
-		Seq: 1 << 40, Version: version, Kind: kindWrite, Tag: uint32(journalv2test.Tag(0)),
+		FileID: x.id.Bytes(), Offset: uint64(extent.Off), RecordOffset: raw.SegmentHeaderSize, Length: size,
+		Seq: 1<<40 + 1, Version: version, Kind: kindWrite, Tag: uint32(journalv2test.Tag(0)),
 	}
 	plant(t, g, segmentName(id), sealedSegmentBytes(journalIdentity(t, g), id, []raw.Record{record}, []raw.Entry{entry}))
 	g.Reopen()

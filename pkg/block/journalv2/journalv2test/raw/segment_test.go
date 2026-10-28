@@ -18,6 +18,8 @@ func rechecksum(b []byte) {
 	binary.LittleEndian.PutUint32(b[44:48], wantCRC(b[0:44]))
 }
 
+// TestSegmentHeaderLayout pins every field of a segment header at its offset
+// and size.
 func TestSegmentHeaderLayout(t *testing.T) {
 	b := testSegmentHeader()
 
@@ -54,6 +56,8 @@ func TestSegmentHeaderLayout(t *testing.T) {
 	}
 }
 
+// TestSegmentHeaderChecksumIsUnseededOverItsFirst44Bytes pins that a segment
+// header's checksum is the plain CRC32C of its first 44 bytes.
 func TestSegmentHeaderChecksumIsUnseededOverItsFirst44Bytes(t *testing.T) {
 	b := testSegmentHeader()
 
@@ -66,6 +70,8 @@ func TestSegmentHeaderChecksumIsUnseededOverItsFirst44Bytes(t *testing.T) {
 	}
 }
 
+// TestParseSegmentHeaderReadsBackWhatWasBuilt pins that parsing a built
+// segment header gives back every field it was built from.
 func TestParseSegmentHeaderReadsBackWhatWasBuilt(t *testing.T) {
 	h, err := ParseSegmentHeader(testSegmentHeader())
 	if err != nil {
@@ -106,6 +112,8 @@ func TestParseSegmentHeaderReadsAHeaderWithAStreamNumber(t *testing.T) {
 	}
 }
 
+// TestParseSegmentHeaderRefusesAWrongMagic pins that a segment header with
+// another magic does not parse.
 func TestParseSegmentHeaderRefusesAWrongMagic(t *testing.T) {
 	b := testSegmentHeader()
 	if len(b) != 48 {
@@ -120,6 +128,8 @@ func TestParseSegmentHeaderRefusesAWrongMagic(t *testing.T) {
 	}
 }
 
+// TestParseSegmentHeaderRefusesAWrongLength pins that a segment header of any
+// length but 48 bytes does not parse.
 func TestParseSegmentHeaderRefusesAWrongLength(t *testing.T) {
 	b := testSegmentHeader()
 

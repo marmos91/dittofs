@@ -9,6 +9,8 @@ func testSealMarker() []byte {
 	return SealMarker{Identity: testIdentity, Segment: testSegment, Offset: testOffset}.Bytes()
 }
 
+// TestSealMarkerLayout pins every field of a seal marker at its offset and
+// size.
 func TestSealMarkerLayout(t *testing.T) {
 	b := testSealMarker()
 
@@ -37,6 +39,8 @@ func TestSealMarkerLayout(t *testing.T) {
 	}
 }
 
+// TestSealMarkerChecksumIsSeededOverItsFirst28Bytes pins that a seal marker's
+// checksum is the seeded CRC32C of its first 28 bytes.
 func TestSealMarkerChecksumIsSeededOverItsFirst28Bytes(t *testing.T) {
 	b := testSealMarker()
 
