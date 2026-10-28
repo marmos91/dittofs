@@ -367,3 +367,9 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the identity error of an open with no recorded identity, and the data path.'
   issue: '#3378'
+- test: TestRFC28C_ForeignSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that rejects a segment naming another journal and counts it.'
+  issue: '#3378'
