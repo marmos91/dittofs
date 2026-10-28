@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
@@ -595,6 +596,34 @@ func TestRefusedStaleCallbackSparesALaterGrant(t *testing.T) {
 	}
 	if f.holder(t, file, br(0, 10)) == nil {
 		t.Errorf("h lost the grant it accepted to a late refusal of one it had unlocked")
+	}
+}
+
+// A callback grant the host leaves unanswered for ten minutes is still held,
+// and its refusal then releases it.
+func TestUnansweredGrantOutlivesSilence(t *testing.T) {
+	f := newFixture(t)
+	a, h := f.host(t, "a", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws := f.sink.takeWaits()
+	for range 10 {
+		f.clock.advance(time.Minute)
+		if _, err := f.Renew(ctx, h.Client); err != nil {
+			t.Fatal(err)
+		}
+		f.sweep(ctx)
+	}
+	if f.holder(t, file, br(0, 10)) == nil {
+		t.Fatal("an unanswered grant was released by silence")
+	}
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.holder(t, file, br(0, 10)) != nil {
+		t.Error("the refusal did not release it")
 	}
 }
 
