@@ -185,46 +185,38 @@ func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Op
 	return out, nil
 }
 
-// PutLock writes a durable lock beneath its open, which must be a
-// persistent open of the file: no other open's locks are stored, and
-// closing the open drops them with it.
-func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.LockRecord) error {
-	if l.ID == 0 {
-		return merrs.NewInvalidArgumentError("a lock needs an ID")
-	}
-	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
-		op, err := persistentOpen(tx, share, file, l.Open)
-		if err != nil {
-			return err
-		}
-		l.Open = op.ID
-		return tx.Set(lockKey(share, file, l.Open, l.Offset, l.ID), encodeLock(l))
-	})
-}
-
-// DeleteLock removes one durable lock.
-func (o Opens) DeleteLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.LockRecord) error {
-	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
-		return tx.Delete(lockKey(share, file, l.Open, l.Offset, l.ID))
-	})
-}
-
 // SetLocks changes the durable locks beneath open, which must be a
 // persistent open of the file, in one transaction: del are deleted, then
 // put written, so a change lands whole or not at all, and a lock in both is
-// written. Each record is stored under open whatever its Open names. A
-// change past the backend's limits fails with kv.ErrTooLarge and writes
-// nothing; it is never split, as a part written alone would store locks
-// held with others not.
-func (o Opens) SetLocks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID, put, del []entity.LockRecord) error {
+// written. Each is keyed by open, its offset and its ID; a record's Open is
+// not read. A delete must carry the stored offset; a missing one is ignored.
+// rec, when non-nil, is the open's new record, its LockSeq or ChannelSeq
+// changed, written in the same transaction. A change past the backend's
+// limits fails with kv.ErrTooLarge and writes nothing; it is never split, as
+// a part written alone would store locks held with others not.
+//
+// decision: the store does not check that a range ends below 2^64: it stores
+// what the table holds, and the table reads a range that carries past the
+// last byte as reaching it. Refuse one here if a caller is seen storing a
+// range its protocol forbids.
+func (o Opens) SetLocks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID, rec *entity.OpenRecord, put, del []entity.LockRecord) error {
 	for _, l := range put {
 		if l.ID == 0 {
 			return merrs.NewInvalidArgumentError("a lock needs an ID")
 		}
 	}
 	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, err := persistentOpen(tx, share, file, open); err != nil {
+		cur, err := persistentOpen(tx, share, file, open)
+		if err != nil {
 			return err
+		}
+		if rec != nil {
+			if rec.ID != open || rec.Durability != cur.Durability {
+				return merrs.NewInvalidArgumentError("rec is not this open")
+			}
+			if err := tx.Set(openKey(share, file, open), encodeOpen(*rec)); err != nil {
+				return err
+			}
 		}
 		for _, l := range del {
 			if err := tx.Delete(lockKey(share, file, open, l.Offset, l.ID)); err != nil {
@@ -232,7 +224,6 @@ func (o Opens) SetLocks(ctx context.Context, share entity.ShareID, file entity.F
 			}
 		}
 		for _, l := range put {
-			l.Open = open
 			if err := tx.Set(lockKey(share, file, open, l.Offset, l.ID), encodeLock(l)); err != nil {
 				return err
 			}
