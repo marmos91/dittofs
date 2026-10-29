@@ -1821,7 +1821,7 @@ Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 | A directory sync **MUST** follow the creation of a segment or the `format` file before any `Sync` covering its records returns. | Otherwise power loss can drop a synced segment's directory entry, and the segment with it ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 | A segment's unlink or recycle **MUST** be durable before a removal record whose retention counted that segment is dropped. | Otherwise a crash can bring the segment back without the removal that covered its records ([§7.2](#7.2%20Repack)). |
 | A sync that failed **MUST NOT** satisfy, by a later success, a `Sync` for writes made before the failure. | Those writes may be lost already ([§5.3](#5.3%20A%20failed%20sync)). |
-| A segment whose sync failed, or a recycled segment one of whose appends failed, **MUST NOT** be appended to again. | What the device holds past its last successful sync is unknown, and a recycled segment's failed slot holds its old life's bytes, not zeros; a record appended after either could follow bytes a scan cannot cross ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
+| A segment whose sync or one of whose appends failed **MUST NOT** be appended to again. | What the device holds past its last successful sync is unknown, and a failed slot holds bytes a scan cannot cross or zeros a later sync point would mark as damage; a record appended after either could follow them ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 
 ### 5.2 Syncing
 
@@ -1918,9 +1918,8 @@ the journal kept vouches for. Once resolved, every record it still backs was
 synced before the failure, its window's records having been re-appended
 elsewhere or failed, so repack carries those forward and unlinks the rest, as
 for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). It is unlinked, never recycled,
-and only once repack has carried those records forward. **A failed append that
-leaves a slot not all zeros — on a recycled segment, or a short write on a fresh
-one — ends its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and so does recovery's
+and only once repack has carried those records forward. **A failed append ends
+its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and so does recovery's
 ending of a segment without sealing it ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); this rule governs each
 whole: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack

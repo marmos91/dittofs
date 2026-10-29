@@ -164,8 +164,8 @@ stale bucket content where acknowledged writes were.
    order ([§2.2](#2.2%20Segments)).
 2. One write gets a device error. Its slot stays zeros, and its `WriteAt`
    returns the error, so it is never acknowledged ([§2.2](#2.2%20Segments)).
-3. The records after it were written, synced and acknowledged
-   ([§2.2](#2.2%20Segments)).
+3. The records after it were written, and may have been synced and
+   acknowledged ([§2.2](#2.2%20Segments)).
 4. At the next open, a scan meets the zero slot. It searches forward, at each
    8-byte boundary, for a header that verifies ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 5. It finds the next record, steps over the zeros, and attaches everything
@@ -334,15 +334,14 @@ read as the new life's catalog. While it is a stream's active segment, the old
 life's bytes past its newest record are a torn tail at recovery
 ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), cut off and never reported as damage. What a fresh segment
 guarantees and a recycled one does not is that the bytes past its newest record
-are zeros. So on a recycled segment **a failed append ends the segment, as a
-failed sync does** ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)): the slot it left holds the old life's
-bytes, which the zero-slot rule of [§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over. A short write
-on a fresh segment — one that wrote part of its slot before failing — leaves
-bytes that are not zeros too, and ends its segment the same way. The stream
+are zeros. **A failed append ends its segment, as a failed sync does**
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), fresh or recycled: its slot may hold bytes the zero-slot rule of
+[§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over, and ending it keeps zeros below a proven sync point
+damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The stream
 takes no further append there and continues in a new segment naming no
 predecessor; the records written to the segment since its last successful sync
 are re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync); a stream's synced-through offset
-never advances past a slot whose write failed, so no record proves that slot
+never advances past a slot whose write has not completed, so no record proves that slot
 synced and recovery finds it torn, never corrupt; and the segment is never
 sealed. What becomes of it after that is [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s rule for a failed
 segment, not an exception to it: a repack candidate once its window is
@@ -600,8 +599,8 @@ journal's identity, and its segment id is the segment it was read from. So bytes
 that merely look like a record — a client file that contains a copy of a journal
 segment, held in some record's payload, or a segment of another journal — never
 verify as one of this journal's records, which is what lets a scan resume past
-damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A header slot that is all zeros is not damage, and marks the end
-of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A header slot that is all zeros is not damage unless a proven sync point lies
+past it, and marks the end of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate, delete, clone target
@@ -1013,9 +1012,10 @@ resynchronises past a bad record (below), for a header that verifies, to the end
 of the segment. If one does, the zeros are the slot of a write that failed and was
 never acknowledged ([§2.2](#2.2%20Segments)): they are stepped over, reported as neither damage
 nor a torn tail, and the records after them are attached. Only zeros with no
-verifying header anywhere after them are the end of what was written. A failed
-append into a recycled segment leaves the old life's bytes, not zeros, which
-this rule cannot step over, so it ends the segment instead ([§2.2](#2.2%20Segments)).
+verifying header anywhere after them are the end of what was written. Zeros
+below the synced-through offset a later verifying record names are neither:
+the offset never passes a failed slot ([§2.2](#2.2%20Segments)), so they are synced content the
+device lost, corruption by the rule above.
 
 > [!note] ponytail
 > The forward search reads the whole unwritten remainder of each newest segment
@@ -1192,7 +1192,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.1](#3.1%20Rebuilding) unproven tail verified at open | Write A and B and sync neither; reopen with the seam keeping them readable as a dead process's cache would, and make the device-level read of B fail to verify; then drop every write the seam never saw synced and reopen again. Assert A and B read back both times with their original sequence numbers, A was verified in place and not re-appended, and B was re-appended. Repeat with the journal at its maximum: assert the open succeeds. Repeat with A and B on a segment whose sync failed, the process dying before the failed window is resolved; no later segment names it as predecessor ([§2.2](#2.2%20Segments)), so assert the same. A recovery that trusts what verified at the first open loses them at the second. |
 | [§2.2](#2.2%20Segments) failed directory sync is a failed window | Fill a segment so the stream creates the next; fail the directory sync at the seam; write A into the new segment and `Sync`. Assert the `Sync` either fails with A dropped as a loss or returns only after A is re-appended into a segment whose directory entry synced, and that after a crash dropping unsynced directory changes A reads back or its `Sync` failed. |
 | [Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile) directory flush on NTFS | On an NTFS volume, on real storage with a power cut, never at the seam alone ([RFC 1 §9.5](rfc-1-journal.md#9.5%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)): make a spare, recycle a segment by rename, and create the `format` file by its replace, each followed by the directory flush of Appendix A; cut power once each flush has returned. Assert every renamed or created name survives under its new name. A platform that does not honour the flush on a directory opened with backup semantics fails, and the journal then needs another way to make a rename durable there. |
-| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a zero slot is not the end | Start three concurrent appends to one stream; fail the middle one's write at the seam, leaving its slot zeros, and let the third complete and sync; crash and reopen. Assert the third reads back, nothing is reported as damage, the middle write's `WriteAt` returned an error, and no truncation fell below the third record. A scan that stops at the zero slot truncates the synced third write. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a zero slot is not the end | Start three concurrent appends to one stream; fail the middle one's write at the seam, leaving its slot zeros, and let the third complete and sync; crash and reopen. Assert the third reads back, nothing is reported as damage, the middle write's `WriteAt` returned an error, no append reserved after the failure landed in that segment and the stream's next append went to a new one, and no truncation fell below the third record. A scan that stops at the zero slot truncates the synced third write. Then zero a synced record's slot below a later record's synced-through offset and reopen; assert it is reported as corruption. |
 
 #### Group B — wedging and unbounded resource use
 
