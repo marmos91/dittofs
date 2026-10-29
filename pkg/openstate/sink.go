@@ -33,7 +33,10 @@ type Sink interface {
 	// client and answers what it holds pending on it.
 	Revoked(r Revocation)
 	// Notify: changes c's watch w matched; the service delivers them to the
-	// client.
+	// client. One raised by a step that ran beside the release of w, by
+	// Unwatch, an expiry or a revoke, may arrive after its Revoked or
+	// ClientEnded: the service drops a Notify of a watch it no longer
+	// holds.
 	Notify(c entity.ClientID, w WatchID, ch []Change)
 	// GraceEnded: shard s of share ended its grace, and every durable open
 	// record nobody reclaimed is closed, each file it left raised Closed
