@@ -510,14 +510,35 @@ func TestStartAndStop(t *testing.T) {
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
 		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
 		"Downgrade": func() error {
-			return g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, 0, 0)
+			_, err := g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{}, 0, 0)
+			return err
 		},
 		"Update": func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
 		"Close": func() error {
-			_, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1})
+			_, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
 			return err
 		},
 		"Durable": func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
+		"ConfirmOpen": func() error {
+			_, err := g.Opens().ConfirmOpen(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
+			return err
+		},
+		"Lock": func() error {
+			_, err := g.Locks().Lock(ctx, Caller{Client: id}, file, LockReq{Owner: LockOwner{Client: id}, Ranges: []LockRange{{}}})
+			return err
+		},
+		"CancelLock": func() error {
+			_, err := g.Locks().CancelLock(ctx, Caller{Client: id}, file, LockOwner{Client: id}, ByteRange{})
+			return err
+		},
+		"WaitAnswered": func() error {
+			return g.Locks().WaitAnswered(ctx, Caller{Client: id}, LockWaiter{File: file.ID, Owner: LockOwner{Client: id}}, true)
+		},
+		"Unlock": func() error {
+			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file, OpenRef{}, LockOwner{Client: id}, nil, Seqs{})
+			return err
+		},
+		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },
 	}
 	check := func(when string) {
 		for name, call := range calls {
@@ -527,10 +548,13 @@ func TestStartAndStop(t *testing.T) {
 		}
 	}
 	check("before Start")
-	if err := g.Start(ctx, g.sink, nil); err != nil {
+	if err := g.Start(ctx, g.sink, nil); err == nil {
+		t.Error("a Start with no Order was accepted")
+	}
+	if err := g.Start(ctx, g.sink, g.order.order); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(ctx, g.sink, nil); err == nil {
+	if err := g.Start(ctx, g.sink, g.order.order); err == nil {
 		t.Error("a second Start was accepted")
 	}
 	g.Stop()
@@ -557,7 +581,7 @@ func TestStartContextDoesNotStopTheTimer(t *testing.T) {
 	f0 := newFixture(t)
 	f := unstarted(t, f0.fs, f0.clock)
 	sctx, cancel := context.WithCancel(ctx)
-	if err := f.Start(sctx, f.sink, nil); err != nil {
+	if err := f.Start(sctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))

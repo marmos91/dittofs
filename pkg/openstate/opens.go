@@ -2,11 +2,13 @@ package openstate
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
+	"github.com/marmos91/dittofs/pkg/openstate/sequence"
 )
 
 // Open is one open of one file, used only by its opener. Its durable form,
@@ -20,6 +22,7 @@ type Open struct {
 	Stream    entity.FileID    // the named stream it opens; zero: File itself
 	Via       entity.FileID    // the directory it was opened through; zero: opened by handle
 	Name      []byte           // its entry in Via, the one a delete pending removes; nil: opened by handle
+	Owner     LockOwner        // the owner of opens, which holds this one open of the file; zero: the protocol has none
 	Mode      OpenMode
 	Ref       StateRef // the reference naming it; Seq is the sequence as of the answer
 	Delete    DeleteMark
@@ -58,12 +61,22 @@ type OpenRequest struct {
 	Privileged    bool
 	Access, Deny  entity.AccessMask
 	DeleteOnClose bool
-	Loss          uint64 // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
+	Loss          uint64    // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
+	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
+	Seqs          Seqs
+}
+
+// Seqs is the owner sequence numbers a request presents; zero where the
+// protocol has none. A reference's own sequence travels in OpenRef.
+type Seqs struct {
+	Owner    *uint32 // the owner's number: the owner of locks', or the owner of opens' for an open, a downgrade, a close or a lock introducing a new owner of locks
+	NewOwner uint32  // a lock introducing a new owner of locks: that owner's first number
 }
 
 // OpenResult is what an open answers.
 type OpenResult struct {
-	Open Open
+	Open    Open
+	Confirm bool // the open's owner is new: it must ConfirmOpen before any other request
 }
 
 // OpenUpdate is a change made through an open; nil or zero fields change
@@ -122,15 +135,21 @@ type CloseResult struct {
 type Opens interface {
 	// Open grants an open of f, or refuses it ErrShareViolation against a
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
-	// never grants less than was asked.
+	// never grants less than was asked. An owner of opens holds one open of
+	// a file: its second open of it upgrades the first.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
-	// Downgrade narrows an open's access and deny to masks within them.
-	Downgrade(ctx context.Context, who Caller, o OpenRef, access, deny entity.AccessMask) error
+	// Downgrade narrows an open's access and deny to masks within them, and
+	// returns the open's new reference sequence.
+	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
+	// ConfirmOpen confirms the new owner of the open o names, its request
+	// numbered in q, and returns the open's new reference sequence; until it,
+	// the owner's requests and I/O through its opens are refused.
+	ConfirmOpen(ctx context.Context, who Caller, o OpenRef, q Seqs) (seq uint32, err error)
 	// Update sets or clears the file's delete pending, through an open
 	// holding delete access, and suspends or resumes the open's times.
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
-	Close(ctx context.Context, who Caller, o OpenRef) (CloseResult, error)
+	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
 	// Durable is the records of f's opens, for the unlink that may take
 	// f's last entry to write in its transaction; an open with no ID is
 	// issued one for its record. The service calls commit once, true when
@@ -176,9 +195,37 @@ func pendingFrom(o *open, by entity.Principal) *entity.DeleteRecord {
 
 func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error) {
 	t := v.t
-	if _, err := t.running(); err != nil {
+	sink, err := t.running()
+	if err != nil {
 		return OpenResult{}, err
 	}
+	var res OpenResult
+	if len(r.Owner.Name) > maxName {
+		return OpenResult{}, ErrInvalid
+	}
+	if len(r.Owner.Name) > 0 && r.Owner.Client != who.Client {
+		return OpenResult{}, ErrNotYours
+	}
+	owner := opensOwner(r.Owner)
+	var out outbox
+	err = t.sequenced(owner, r.Seqs.Owner, seqOpen, func(replaces bool) (err error) {
+		if replaces {
+			t.closeOpensOf(ctx, r.Owner, &out)
+		}
+		res, err = t.grantOpen(ctx, who, f, r)
+		return err
+	})
+	out.raise(sink)
+	if err == nil && r.Seqs.Owner != nil {
+		t.smu.Lock()
+		res.Confirm = t.seqs.Unconfirmed(owner)
+		t.smu.Unlock()
+	}
+	return res, err
+}
+
+// grantOpen grants an open of f, or refuses it.
+func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error) {
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
 		return OpenResult{}, ErrInvalid
 	}
@@ -190,16 +237,22 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 			return OpenResult{}, err
 		}
 	}
+	r.Owner.Name = slices.Clone(r.Owner.Name)
 	o := &open{share: f.Share, Open: Open{
-		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name),
+		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
+	granted := o
 	err := t.step(f.ID, func(e *entry) error {
 		if e.pending != nil {
 			return ErrDeletePending
+		}
+		if up := e.openOf(r.Owner, r.Stream); up != nil {
+			granted = up
+			return t.upgrade(e, up, who, r)
 		}
 		for _, h := range e.opens {
 			if !conflict.Shares(r.Access, r.Deny, h.Mode.Access, h.Mode.Deny) {
@@ -235,7 +288,45 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 	if err != nil {
 		return OpenResult{}, err
 	}
-	return OpenResult{Open: o.Open}, nil
+	return OpenResult{Open: granted.Open}, nil
+}
+
+// openOf is owner's open of e's file, or of its stream s, on e; nil for none
+// or for a protocol with no owner of opens.
+func (e *entry) openOf(owner LockOwner, s entity.FileID) *open {
+	if len(owner.Name) == 0 {
+		return nil
+	}
+	for _, o := range e.opens {
+		if o.Stream == s && sameOwner(o.Owner, owner) {
+			return o
+		}
+	}
+	return nil
+}
+
+// upgrade widens up, its owner's open of e's file, to what r asks besides,
+// under e's step: judged against every other open, and raising its
+// reference's sequence.
+func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest) error {
+	if !t.mayUse(up, who) {
+		return ErrNotYours
+	}
+	access, deny := up.Mode.Access|r.Access, up.Mode.Deny|r.Deny
+	for _, h := range e.opens {
+		if h != up && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
+			return ErrShareViolation
+		}
+	}
+	seq, err := t.advance(e, up.Ref)
+	if err != nil {
+		return err
+	}
+	up.Mode.Access, up.Mode.Deny, up.Ref.Seq = access, deny, seq
+	if r.DeleteOnClose {
+		up.Delete = DeleteMark{OnClose: true, By: who.Principal}
+	}
+	return nil
 }
 
 // mintOpen mints o's reference and adds o to e, file o.File's entry, under
@@ -345,9 +436,13 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 }
 
 // withOpen runs fn under the step of the file of the open ref names, once
-// the open is found again there and who may use it: its opener, or its
-// client's owner where the client protects its state.
-func (t *Table) withOpen(who Caller, ref OpenRef, fn func(e *entry, o *open) error) error {
+// the open is found again there, as the request of the open's owner numbered
+// q (nil: unnumbered), of kind req. The reference's
+// sequence is judged in the owner's sequence, and who must be able to use the
+// open: its opener, or its client's owner where the client protects its state.
+func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, req seqReq, fn func(e *entry, o *open) error) error {
+	presented := ref.State.Seq
+	ref.State.Seq = 0
 	f, _, err := t.findOpen(who, ref)
 	if err != nil {
 		return err
@@ -363,11 +458,94 @@ func (t *Table) withOpen(who Caller, ref OpenRef, fn func(e *entry, o *open) err
 		if o == nil {
 			return ErrBadState
 		}
-		if !t.mayUse(o, who) {
-			return ErrNotYours
-		}
-		return fn(e, o)
+		return t.sequenced(opensOwner(o.Owner), q, req, func(bool) error {
+			if err := seqErr(o.Ref.Seq, presented); err != nil {
+				return err
+			}
+			if !t.mayUse(o, who) {
+				return ErrNotYours
+			}
+			return fn(e, o)
+		})
 	})
+}
+
+// seqReq is what a numbered request is to its owner's sequence.
+type seqReq uint8
+
+const (
+	seqOther   seqReq = iota // any request but these two
+	seqConfirm               // the owner's confirm
+	seqOpen                  // an open, which replaces an unconfirmed owner's
+)
+
+func opensOwner(o LockOwner) sequence.Owner {
+	return sequence.Owner{Client: o.Client, Kind: sequence.Opens, Name: string(o.Name)}
+}
+
+// sequenced runs fn as owner o's request numbered n, or as an unnumbered one
+// for a nil n: a number other than the one o's sequence expects is
+// ErrBadSeqID and runs nothing, and fn's answer then advances the sequence
+// unless it is exempt. The owner is marked in flight from its check to its
+// answer, so a second numbered request of the owner arriving between them is
+// ErrDelay, and its retry is judged once the first has advanced the
+// sequence: a check and the change it admits never separate.
+//
+// Until an owner of opens is confirmed, its open is usable by its confirm
+// alone: any other request naming its state is ErrBadState and advances
+// nothing, and a new open of the owner replaces it, taken as the owner's
+// first whatever its number; fn is told it replaces, and releases the
+// unconfirmed open first.
+func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(replaces bool) error) error {
+	if n == nil {
+		return fn(false)
+	}
+	t.smu.Lock()
+	if _, busy := t.inflight[o]; busy {
+		t.smu.Unlock()
+		return ErrDelay
+	}
+	replaces := false
+	if t.seqs.Unconfirmed(o) {
+		switch req {
+		case seqOpen:
+			delete(t.seqs, o)
+			replaces = true
+		case seqOther:
+			t.smu.Unlock()
+			return ErrBadState
+		}
+	}
+	if !t.seqs.Check(o, *n) {
+		t.smu.Unlock()
+		return ErrBadSeqID
+	}
+	t.inflight[o] = struct{}{}
+	t.smu.Unlock()
+	err := fn(replaces)
+	a := sequence.Granted
+	switch {
+	case errors.Is(err, ErrStaleClient), errors.Is(err, ErrStaleState), errors.Is(err, ErrBadState), errors.Is(err, ErrNotYours), errors.Is(err, ErrBadSeqID):
+		// The request named no record of the owner's, as the client counts
+		// it, or was another principal's, which may not move the owner's
+		// sequence.
+		a = sequence.Exempt
+	case err != nil:
+		a = sequence.Refused
+	}
+	t.smu.Lock()
+	t.seqs.Answer(o, *n, a)
+	delete(t.inflight, o)
+	t.smu.Unlock()
+	return err
+}
+
+// confirmed reports whether o's owner has confirmed itself, or numbers no
+// requests and has nothing to confirm.
+func (t *Table) confirmed(o *open) bool {
+	t.smu.Lock()
+	defer t.smu.Unlock()
+	return !t.seqs.Unconfirmed(opensOwner(o.Owner))
 }
 
 // mayUse reports whether who may act through o.
@@ -381,23 +559,24 @@ func (t *Table) mayUse(o *open, who Caller) bool {
 	return !owner.IsZero() && who.Principal == owner
 }
 
-func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, access, deny entity.AccessMask) error {
+func (v opens) Downgrade(ctx context.Context, who Caller, ref OpenRef, q Seqs, access, deny entity.AccessMask) (uint32, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
-		return err
+		return 0, err
 	}
-	return t.withOpen(who, ref, func(e *entry, o *open) error {
+	var seq uint32
+	err := t.withOpen(who, ref, q.Owner, seqOther, func(e *entry, o *open) (err error) {
 		if access&^o.Mode.Access != 0 || deny&^o.Mode.Deny != 0 {
 			return ErrInvalid
 		}
-		seq, err := t.advance(e, o.Ref)
-		if err != nil {
+		if seq, err = t.advance(e, o.Ref); err != nil {
 			return err
 		}
 		o.Mode.Access, o.Mode.Deny = access, deny
 		o.Ref.Seq = seq
 		return nil
 	})
+	return seq, err
 }
 
 func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenUpdate) error {
@@ -405,7 +584,7 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	if _, err := t.running(); err != nil {
 		return err
 	}
-	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, func(e *entry, o *open) error {
+	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
 		if u.Delete != nil {
 			if o.Mode.Access&entity.Delete == 0 {
 				return ErrAccess
@@ -422,19 +601,49 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	})
 }
 
-func (v opens) Close(ctx context.Context, who Caller, ref OpenRef) (CloseResult, error) {
+func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, q Seqs) (uint32, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
+		return 0, err
+	}
+	var seq uint32
+	err := t.withOpen(who, ref, q.Owner, seqConfirm, func(e *entry, o *open) error {
+		k := opensOwner(o.Owner)
+		t.smu.Lock()
+		unconfirmed := t.seqs.Unconfirmed(k)
+		t.smu.Unlock()
+		if !unconfirmed {
+			return ErrBadState // an owner with nothing to confirm
+		}
+		n, err := t.advance(e, o.Ref)
+		if err != nil {
+			return err
+		}
+		o.Ref.Seq, seq = n, n
+		t.smu.Lock()
+		t.seqs.Confirm(k)
+		t.smu.Unlock()
+		return nil
+	})
+	return seq, err
+}
+
+func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (CloseResult, error) {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
 		return CloseResult{}, err
 	}
 	var res CloseResult
-	err := t.withOpen(who, ref, func(e *entry, o *open) (err error) {
+	var out outbox
+	err = t.withOpen(who, ref, q.Owner, seqOther, func(e *entry, o *open) (err error) {
 		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
 			return err
 		}
-		res.Unlink = t.closeOpen(e, o)
+		res.Unlink = t.closeOpen(e, o, &out)
 		return nil
 	})
+	out.raise(sink)
 	return res, err
 }
 
@@ -448,14 +657,25 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 	return orphaned.File != entity.FileID{}, err
 }
 
-// closeOpen drops o from e, its file's entry, under its step. A close with
-// delete on close makes the file delete pending, and the last close of a
-// delete-pending file returns the pending unlink.
-func (t *Table) closeOpen(e *entry, o *open) *entity.DeleteRecord {
+// closeOpen drops o from e, its file's entry, under its step, with the lock
+// states under it, their locks and their waiters; the waiters that frees go to
+// out. A close with delete on close makes the file delete pending, and the
+// last close of a delete-pending file returns the pending unlink.
+func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
 		e.pending = pendingFrom(o, o.Delete.By)
 	}
+	freed := false
+	for _, ls := range e.lstates {
+		if ls.open == o {
+			t.dropLockState(e, ls)
+			freed = true
+		}
+	}
 	t.dropOpen(e, o)
+	if freed {
+		t.serve(e, out)
+	}
 	if len(e.opens) > 0 {
 		return nil
 	}
@@ -527,4 +747,29 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 func (t *Table) nextOpenID(ctx context.Context) (entity.OpenID, error) {
 	n, err := t.d.Records.NextID(ctx, kvstore.IDOpen)
 	return entity.OpenID(n), err
+}
+
+// closeOpensOf closes owner's opens here, as the table closes an open itself:
+// what each close leaves the service to run goes to out.
+func (t *Table) closeOpensOf(ctx context.Context, owner LockOwner, out *outbox) {
+	for _, h := range t.heldBy(owner.Client) {
+		if h.ref.Type != StateOpen {
+			continue
+		}
+		_ = t.step(h.file, func(e *entry) error {
+			if o := e.opens[h.ref.Token]; o != nil && sameOwner(o.Owner, owner) {
+				t.closeByTable(ctx, e, o, out)
+			}
+			return nil
+		})
+	}
+}
+
+// closeByTable closes o, of e's file, under its step, with no Close to
+// answer: what the close leaves the service to run goes to out.
+func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) {
+	var r CloseResult
+	r.Orphan, _ = t.unrecord(ctx, o)
+	r.Unlink = t.closeOpen(e, o, out)
+	out.close(e.file, r)
 }

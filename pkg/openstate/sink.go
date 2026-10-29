@@ -14,10 +14,16 @@ type Sink interface {
 	// left f an orphan or a pending unlink; the service runs r as it runs a
 	// Close's. One call per file carries everything the release left there.
 	Closed(f entity.FileID, r CloseResult)
+	// LockWaitOver: a callback waiter's wait ended, granted or not; the
+	// service forwards it to w.Owner.Client and reports the client's answer to a grant
+	// through WaitAnswered.
+	LockWaitOver(w LockWaiter, granted bool)
 }
 
-// Order takes a file's admission lock and returns its unlock. The table does
-// not take it yet.
+// Order takes a file's admission lock and returns its unlock. The table takes
+// it to grant a callback waiter on a range freed by a call that names no file:
+// the timer, Expire, Connect and ReleaseLockOwner. Their callers must hold no
+// admission lock.
 type Order func(f entity.FileID) (unlock func())
 
 // RevokeReason is why a client's state ended without the client asking.
@@ -26,3 +32,39 @@ type RevokeReason uint8
 const (
 	RevokedLeaseExpired RevokeReason = iota // its lease expired, or a reboot replaced it
 )
+
+// outbox is what a call's steps raised, handed to the Sink once the call holds
+// no table lock.
+type outbox struct {
+	closed map[entity.FileID]CloseResult // one per file: only a file's last close leaves anything
+	over   []waitOver
+	timer  bool            // raised by a call that names no file: waiters are served later, under the file's admission lock
+	serve  []entity.FileID // the files whose waiters are still to be served
+}
+
+// waitOver is one LockWaitOver.
+type waitOver struct {
+	w       LockWaiter
+	granted bool
+}
+
+// close records r, what a close the table made itself left f, if it left
+// anything.
+func (o *outbox) close(f entity.FileID, r CloseResult) {
+	if !r.Orphan && r.Unlink == nil {
+		return
+	}
+	if o.closed == nil {
+		o.closed = map[entity.FileID]CloseResult{}
+	}
+	o.closed[f] = r
+}
+
+func (o *outbox) raise(sink Sink) {
+	for f, r := range o.closed {
+		sink.Closed(f, r)
+	}
+	for _, w := range o.over {
+		sink.LockWaitOver(w.w, w.granted)
+	}
+}

@@ -70,13 +70,53 @@ type closed struct {
 	r CloseResult
 }
 
-// recordingSink records what the table raises; onEnded, if set, runs inside
-// ClientEnded.
+// waitOverCall is one LockWaitOver call.
+type waitOverCall struct {
+	w       LockWaiter
+	granted bool
+}
+
+// recordingSink records what the table raises; onEnded and onWait, if set,
+// run inside ClientEnded and LockWaitOver.
 type recordingSink struct {
 	mu      sync.Mutex
 	ended   []ended
 	closed  []closed
+	waits   []waitOverCall
 	onEnded func(c entity.ClientID)
+	onWait  func(w LockWaiter)
+}
+
+func (s *recordingSink) LockWaitOver(w LockWaiter, granted bool) {
+	s.mu.Lock()
+	s.waits = append(s.waits, waitOverCall{w, granted})
+	fn := s.onWait
+	s.mu.Unlock()
+	if fn != nil {
+		fn(w)
+	}
+}
+
+// takeWaits returns the LockWaitOver calls since the last take.
+func (s *recordingSink) takeWaits() []waitOverCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w := s.waits
+	s.waits = nil
+	return w
+}
+
+// orderLog is an Order that records each file it is taken for.
+type orderLog struct {
+	mu    sync.Mutex
+	files []entity.FileID
+}
+
+func (l *orderLog) order(f entity.FileID) func() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.files = append(l.files, f)
+	return func() {}
 }
 
 func (s *recordingSink) Closed(f entity.FileID, r CloseResult) {
@@ -109,6 +149,7 @@ type fixture struct {
 	fs    *kvstoretest.FS
 	clock *fakeClock
 	sink  *recordingSink
+	order *orderLog
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -129,7 +170,7 @@ func newFixture(t *testing.T) *fixture {
 func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()
 	f := unstarted(t, fs, clock)
-	if err := f.Start(ctx, f.sink, nil); err != nil {
+	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -142,5 +183,5 @@ func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Table: tab, Clients: tab.Clients(), fs: fs, clock: clock, sink: &recordingSink{}}
+	return &fixture{Table: tab, Clients: tab.Clients(), fs: fs, clock: clock, sink: &recordingSink{}, order: &orderLog{}}
 }

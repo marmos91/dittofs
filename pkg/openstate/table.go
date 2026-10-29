@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/openstate/sequence"
 )
 
 // Table is the open state of every file this node is the primary of. Each
@@ -21,13 +22,20 @@ type Table struct {
 	// is held only to find, add or free an entry, never while a step runs.
 	files [256]fileStripe
 
-	// idx guards the state references, the open IDs and the counts per Via.
-	// It is taken after a file's step, never before one, and only to add,
-	// remove or look up a reference.
-	idx  sync.Mutex
-	refs map[refKey]holder
-	byID map[entity.OpenID]refKey
-	via  map[entity.FileID]int // the opens made through each directory
+	// idx guards the state references, the open IDs, the counts per Via and
+	// the files holding a poll waiter. It is taken after a file's step, never
+	// before one, and only to add, remove or look up one of them.
+	idx   sync.Mutex
+	refs  map[refKey]holder
+	byID  map[entity.OpenID]refKey
+	via   map[entity.FileID]int      // the opens made through each directory
+	polls map[entity.FileID]struct{} // the files holding a poll waiter, which the timer lapses
+
+	// smu guards the owner sequences. It is taken under a file's step or
+	// under nothing, and nothing is taken under it.
+	smu      sync.Mutex
+	seqs     sequence.Book
+	inflight map[sequence.Owner]struct{} // owners with a numbered request between its check and its answer
 
 	// cstep is the client step: every change to a client record, and every
 	// lease armed from one, runs under it, so a confirm, an expiry and a
@@ -51,6 +59,9 @@ type Table struct {
 	sink    Sink                 // nil before Start and after Stop
 	stopped bool
 	stop    func()
+
+	order Order          // set by Start, before the timer runs
+	timer sync.WaitGroup // the timer and the steps it starts
 }
 
 type fileStripe struct {
@@ -66,16 +77,19 @@ type entry struct {
 	users  int // steps running or waiting on this entry, guarded by its file stripe's mutex
 	states int // pieces of state held, guarded by mu
 
-	opens    map[uint64]*open     // by reference token
-	pending  *entity.DeleteRecord // the file is delete pending; nil: not
-	unlinked bool                 // an unlink made the opens durable: the file has no entry, and every new open is written durable
+	opens    map[uint64]*open      // by reference token
+	lstates  map[uint64]*lockState // by reference token
+	waiters  []*LockWaiter         // in arrival order, which serves them
+	pending  *entity.DeleteRecord  // the file is delete pending; nil: not
+	unlinked bool                  // an unlink made the opens durable: the file has no entry, and every new open is written durable
 }
 
 // known is what the table holds of a client's record while it is current
 // here.
 type known struct {
-	owner  entity.Principal // the owner that may act on all its state; zero unless it protects it
-	shards []ShardID        // shards seen listed in its record
+	recovery entity.RecoveryKind
+	owner    entity.Principal // the owner that may act on all its state; zero unless it protects it
+	shards   []ShardID        // shards seen listed in its record
 }
 
 // New builds an empty table. It starts nothing: Start does.
@@ -84,7 +98,7 @@ func New(d Deps) (*Table, error) {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	t := &Table{
-		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{},
+		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{}, seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
 	}
 	for i := range t.files {
@@ -128,17 +142,19 @@ func (t *Table) step(f entity.FileID, fn func(e *entry) error) error {
 // Clients is the view of client records and leases.
 func (t *Table) Clients() Clients { return clients{t} }
 
-// sweepEvery is how often lapsed leases and proposals are looked for.
+// sweepEvery is how often lapsed leases, proposals and poll waiters are
+// looked for.
 //
-// ponytail: each sweep scans every lease and proposal, O(clients), and a
-// client is expired up to one interval after its lease ends. Replace it with
-// the deadline heap, one (kind, ref, generation) entry per deadline, when a
-// profile shows the sweep or a deadline must fire on the instant.
+// ponytail: each sweep scans every lease and proposal, O(clients), and every
+// file holding a poll waiter, and a client or a poll waiter is expired up to
+// one interval after its deadline. Replace it with the deadline heap, one
+// (kind, ref, generation) entry per deadline, when a profile shows the sweep
+// or a deadline must fire on the instant.
 const sweepEvery = 10 * time.Second
 
-// Start starts the lease timer and takes the service's Sink and admission
-// lock. Before Start and after Stop every mutating call is ErrStopped, and a
-// table starts once. The timer outlives ctx: only Stop ends it.
+// Start starts the timer and takes the service's Sink and admission lock.
+// Before Start and after Stop every mutating call is ErrStopped, and a table
+// starts once. The timer outlives ctx: only Stop ends it.
 //
 // ponytail: Start arms no lease, so after a restart an NFSv4 client that
 // never renews keeps its record, its name and its shard marks until it
@@ -146,9 +162,9 @@ const sweepEvery = 10 * time.Second
 // Arm a lease for every NFSv4 record this node owns here instead, which
 // needs a store call listing a node's clients, added as a store follow-up
 // before stage 2's service calls Start.
-func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
-	if sink == nil {
-		return errors.New("openstate: Start needs a Sink")
+func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
+	if sink == nil || order == nil {
+		return errors.New("openstate: Start needs a Sink and an Order")
 	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
@@ -156,8 +172,8 @@ func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
 		return errors.New("openstate: table already started")
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	var wg sync.WaitGroup
-	wg.Go(func() {
+	t.order = order
+	t.timer.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -167,11 +183,11 @@ func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
 			}
 		}
 	})
-	t.sink, t.stop = sink, func() { cancel(); wg.Wait() }
+	t.sink, t.stop = sink, func() { cancel(); t.timer.Wait() }
 	return nil
 }
 
-// Stop stops the lease timer. Open state is left as it is, for the next
+// Stop stops the timer, and waits for the steps it started. Open state is left as it is, for the next
 // start's grace.
 //
 // decision: Stop waits for the timer, not for calls already past running():
