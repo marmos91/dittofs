@@ -43,6 +43,15 @@ func spareNames(t *testing.T, f *journalv2test.Fixture) []string {
 // retirement is an unlink: a segment sealed early is never recycled (RFC 28
 // section 2.2, lines 299 to 301), and UsedBytes falls by its size after the
 // truncation (RFC 1 section 7.3).
+//
+// decision: a spare made while the repack runs is accounted too (RFC 1
+// sections 6 and 7.3), so the drop allows one cap for each file created
+// across the repack, rather than holding spare making there. The fixture
+// does not wait for its spare pool, so a hold could leave the repack's copy
+// refused for want of a spare on a correct journal. Each create is read as
+// the moment its cap is accounted; a journal accounting a spare before the
+// create it is for, with the create still to come at the last read, would
+// fail here, and the hold is the upgrade if one does.
 func TestRFC28B_SegmentReclaimable(t *testing.T) {
 	f := journalv2test.New(t)
 	a := writeSynced(t, f, 0, 0, 0, 128<<10)
@@ -61,6 +70,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 
 	corruptAndRead(t, f, a)
 
+	creates := f.Seam.Calls(journalv2test.OpCreate)
 	used := f.J.Stats().UsedBytes
 	_, err := f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
 	stub(t, "Repack", err)
@@ -76,8 +86,15 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 		t.Fatalf("%s was removed, and a crash would still leave it: %v", name, err)
 	}
 
-	if got := f.J.Stats().UsedBytes; got != used-size {
-		t.Fatalf("UsedBytes = %d after unlinking a segment accounted at %d from %d, want %d", got, size, used, used-size)
+	// The copy of the live record may take a spare and the journal make
+	// another, accounted at its cap from its creation, so UsedBytes falls by
+	// the segment's size less at most one cap per file created meanwhile.
+	// The segment is shorter than a cap, so a repack that frees nothing
+	// never lands on one of those values.
+	got := f.J.Stats().UsedBytes
+	made := int64(f.Seam.Calls(journalv2test.OpCreate) - creates)
+	if spares := got - (used - size); spares < 0 || spares%journalv2test.FixtureSegmentCap != 0 || spares/journalv2test.FixtureSegmentCap > made {
+		t.Fatalf("UsedBytes = %d after unlinking a segment accounted at %d from %d, with %d files created meanwhile, want %d plus at most one cap of %d for each", got, size, used, made, used-size, journalv2test.FixtureSegmentCap)
 	}
 
 	for _, s := range f.J.Inspect().Segments() {
