@@ -547,6 +547,8 @@ func TestStartAndStop(t *testing.T) {
 			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
 		},
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
+		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },
+		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
 	}
 	check := func(when string) {
 		for name, call := range calls {
@@ -704,5 +706,47 @@ func TestRebootEndsTheOldID(t *testing.T) {
 	}
 	if !unlinked {
 		t.Errorf("Closed after the reboot: %+v, want the marked file's unlink", f.sink.closed)
+	}
+}
+
+// After Expire the client is in none of the indexes: no reference, count,
+// lease key or grant budget names it, as the rebuild from the entries
+// agrees.
+func TestExpiredClientLeavesNoIndex(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("a", 1, entity.NewUser())), f.caller(t, nfs("b", 1, entity.NewUser()))
+	file, held := in(1), in(1)
+	o, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Via: entity.NewFileID(), Owner: owner(a, "oo"), Want: GrantRead})
+	if g == nil {
+		t.Fatal("no grant offered")
+	}
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{sh(0, 10)}})
+	f.mustLock(t, b, held, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(a, held, LockReq{Owner: owner(a, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); lockedBy(err) != "lo" {
+		t.Fatalf("waiter: %v", err)
+	}
+	f.watch(t, a, in(1), false, names)
+
+	if err := f.Expire(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	x := f.kept()
+	for k, h := range x.refs {
+		if h.client == a.Client {
+			t.Errorf("reference %+v still names the client", k)
+		}
+	}
+	for k := range x.held {
+		if k.client == a.Client {
+			t.Errorf("count %+v still names the client", k)
+		}
+	}
+	for k := range x.owners {
+		if k.client == a.Client {
+			t.Errorf("owner %+v still names the client", k)
+		}
+	}
+	if _, ok := x.granted[a.Client]; ok || len(x.keys) > 0 || len(x.via) > 0 {
+		t.Errorf("grant budget %v, lease keys %v, counts per Via %v after the expiry", x.granted, x.keys, x.via)
 	}
 }

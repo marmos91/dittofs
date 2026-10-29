@@ -241,6 +241,11 @@ func (t *Table) lose(s ShardID) {
 					t.dropOpen(e, o)
 				}
 			}
+			for _, w := range e.watches {
+				if w.id.Shard == s {
+					t.dropWatch(e, w)
+				}
+			}
 			if len(e.opens) == 0 {
 				e.pending = nil
 			}

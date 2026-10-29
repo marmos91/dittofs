@@ -13,15 +13,21 @@ import (
 // Length's included; a length of all ones reaches the last byte.
 type ByteRange = ranges.Range
 
-// ChangeMask names what a change does to a file or directory.
+// ChangeMask names what a change does to a file or directory: what
+// CheckChange judges, and what a watch filters on.
 type ChangeMask uint16
 
 const (
-	ChangeRemove   ChangeMask = 1 << iota // a name of the file goes
-	ChangeRename                          // the file is renamed, or a rename replaces it
-	ChangeAddEntry                        // a name is added to the directory
-	ChangeAttrs                           // the file's attributes are set
-	ChangeSetID                           // a mode change sets the setuid or setgid bit
+	ChangeRemove    ChangeMask = 1 << iota // a name of the file goes
+	ChangeRename                           // the file is renamed, or a rename replaces it
+	ChangeAddEntry                         // a name is added to the directory
+	ChangeAttrs                            // the file's attributes are set
+	ChangeSetID                            // a mode change sets the setuid or setgid bit
+	ChangeSize                             // the file's size changes
+	ChangeTimes                            // the file's times are set
+	ChangeSecurity                         // the file's owner, group or ACL changes
+	ChangeStreams                          // a named stream of the file is added, removed or written
+	ChangeEnumerate                        // a watch's changes were dropped: its client lists the directory again
 	// ChangeReplace: a rename replaces the file. An SMB adapter passes it,
 	// with ChangeRename, for the target of a rename asking ReplaceIfExists,
 	// which the renamer holds no open of; an NFS one need not, as ChangeRename
