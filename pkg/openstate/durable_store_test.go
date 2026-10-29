@@ -1113,3 +1113,34 @@ func TestParkedOpenGoesWithAnAckedHandle(t *testing.T) {
 		t.Errorf("a deny-read open once the live open closed: %v", err)
 	}
 }
+
+// A persistent open under an oplock is stored with no lease: its grant names
+// no lease key, so its record carries none.
+func TestOplockOfPersistentOpenIsStoredWithoutLease(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "doc")
+	r.Access, r.Want = rd|wr, rwh
+	res, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	if err != nil || res.Grant == nil {
+		t.Fatalf("a persistent open under a batch oplock: %+v, %v; want granted", res, err)
+	}
+	recs := f.stored(t, file)
+	if len(recs) != 1 {
+		t.Fatalf("stored %+v, want one record", recs)
+	}
+	if l := recs[0].Lease; l != nil {
+		t.Errorf("stored lease %+v under an oplock, want none", l)
+	}
+}
+
+// A disconnect naming no session ends none: an open its client makes after
+// it, naming no session either, is granted.
+func TestDisconnectOfNoSessionRefusesNoOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	f.disconnect(t, a, entity.SessionRef{})
+	if _, err := f.open(a, anyFile(), OpenRequest{Access: rd}); err != nil {
+		t.Errorf("an open naming no session after a disconnect naming none: %v", err)
+	}
+}
