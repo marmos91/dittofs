@@ -93,9 +93,13 @@ const (
 // perClient is the most of each capped kind one client holds here.
 //
 // decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024
-// waiters and 1,024 watches per client, none measured. A request past one
-// is refused ErrDelay before it changes anything, so one client cannot spend
-// what the node holds for every client. SMB names one lock owner per open,
+// waiters and 1,024 watches per client. BenchmarkHeapPerState measures about
+// 865 B an open, 25 B a lock range and 166 B a client, so a client at its caps
+// holds about 14 MB of opens and 1.6 MB of ranges. A request past one is
+// refused ErrDelay before it changes anything, so one client cannot spend
+// what the node holds for every client. The caps bound memory, not time: one
+// owner's lock on one file costs O(ranges it holds) under the file's step, as
+// adding's ponytail says. SMB names one lock owner per open,
 // so an SMB client locking through every open it holds is refused at 4,096
 // such opens, by the owner cap, before the open cap's 16,384 binds. Each
 // table starts from these in its caps field, which a case lowers. Make them
