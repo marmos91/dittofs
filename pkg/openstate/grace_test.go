@@ -910,3 +910,58 @@ func TestHeldLockReclaimThroughItsOpenAnswersTheLockOwner(t *testing.T) {
 		t.Errorf("the lock owner's next lock after the reclaim: %v, want granted", err)
 	}
 }
+
+// Grace ends once only clients that recover by reconnecting are left to
+// reclaim, as they reclaim nothing here.
+func TestGraceEndsWhenOnlyReconnectingClientsAreLeft(t *testing.T) {
+	f := newFixture(t)
+	sc := smb("pc")
+	sc.Recovery = entity.RecoverReconnect
+	s, c := f.caller(t, sc), f.caller(t, nfsAs("c", entity.RecoverStatus))
+	f.mustOpen(t, s, in(5), OpenRequest{Access: rd})
+	f.mustOpen(t, c, in(5), OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	g := f.restart(t)
+	st, err := g.Renew(ctx, c.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Recovery().ReclaimComplete(ctx, c, st.Reclaim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.open(c, in(5), OpenRequest{Access: rd, Owner: owner(c, "oo")}); err != nil {
+		t.Errorf("an open once only the reconnecting client is left: %v, want granted", err)
+	}
+}
+
+// An NLM host left idle when grace ends loses its record with its next
+// call that leaves it idle, as a host idle outside grace does.
+func TestIdleHostRecordGoesAfterGrace(t *testing.T) {
+	f := newFixture(t)
+	first := f.host(t, "h", 1)
+	f.mustLock(t, first, in(5), LockReq{Owner: owner(first, "p"), Ranges: []LockRange{x(0, 10)}})
+	g := f.restart(t)
+	g.pass(t, leasePeriod)
+	h := g.host(t, "h", 1)
+	file := in(5)
+	g.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	g.unlock(t, h, file, owner(h, "p"), br(0, 10))
+	if _, err := g.fs.Store.Clients().Get(ctx, h.Client); err == nil {
+		t.Error("the idle host's record outlived its last unlock after grace")
+	}
+}
+
+// A reclaim answered from held state asking more than is held, a wider
+// lock range or a wider deny, is ErrNoReclaim.
+func TestHeldReclaimOfMoreIsRefused(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	file := in(5)
+	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo")})
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 20)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim of a wider range than held: %v, want ErrNoReclaim", err)
+	}
+	if _, err := f.open(c, file, OpenRequest{Access: rd, Deny: wr, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim of a wider deny than held: %v, want ErrNoReclaim", err)
+	}
+}
