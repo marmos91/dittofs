@@ -1409,7 +1409,9 @@ nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as n
 doesn't take the lock itself, so `setup.sh` stays the lock's only owner. The suite's `env` sets
 `SLACK_DIR` to a directory that doesn't exist, so `setup.sh` posts nothing to the scenarios' Slack
 channel from a run through `dt`, which reports its results itself; its own runs, such as the
-dedicated host's schedule, keep their messages.
+scenario cron on the dedicated host, keep their messages. The dedicated host's nightly is a `dt`
+run too, and its `perf-night` cell posts the night's figure: its `env` gives `SLACK_DIR` the bot's
+directory (§4.10).
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
@@ -1865,8 +1867,14 @@ a percentage.
   (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
-- **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
-  below its 7-day median for three nights in a row adds a note to the develop-status issue.
+- **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
+  `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
+  point, an area or the night's figure that falls below its 7-day median by more than its noise
+  band, which a calibration week's repeats set. Slack gets the night by the scenarios' rules. The
+  night ends five minutes before `dt`'s limit (`STOP_AFTER`), so one that overruns still cleans
+  up and posts: `dt` kills at its limit with no cleanup. The
+  cell fails when a step fails or times out, or the night can't be scored, and so reaches the
+  develop-status issue (§4.5); a flag fails nothing.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
   only) and the journal simulation (many small files against large segments under heavy writes).
   They use the same result format, so runs compare over time.
