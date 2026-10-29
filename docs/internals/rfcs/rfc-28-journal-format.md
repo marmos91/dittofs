@@ -1305,23 +1305,21 @@ directory is trusted with its content.
 
 ## 5. Open questions
 
-1. ~~**Scrub.**~~ Declined on one node: no background pass reads the journal to
-   verify it. No dirty record reaches the remote tier unread: an offload reads
-   and verifies it whole before any byte of it is uploaded
-   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and so does repack before carrying it ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). That holds
-   through a remote outage too, which only delays the read to when offload
-   resumes. Damage to offloaded content is refetched ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A pass would only
-   find damage to dirty content sooner, and one node holds no second copy to
-   repair it from, so the [§3.3](#3.3%20Torn%20and%20corrupt%20records) outcome is the same loss either way. Nor could a
-   pass get there first: at the proposed 5 s offload age a dirty record lives
-   seconds, while a pass over 1 TiB takes about 12 days at a block scanner's
-   1 MB/s and 17 minutes at a full 1 GB/s. Weak sectors are the device's own background media
-   scan to find.
-   **(cluster)** A replica can repair: a dirty record dropped there raises its
-   journal's loss generation, which sets the replica's loss point, so the
-   primary removes it and it rejoins ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)). Whether a replica scrubs
-   its dirty content, so that decay is found while the primary still lives
-   rather than at a takeover, is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.
+1. **Scrub.** Declined for content records on one node: no background pass
+   reads them to verify them. No dirty record reaches the remote tier unread: an
+   offload reads and verifies it whole before any byte of it is uploaded
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and damage to offloaded content is refetched ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Content
+   held longer — through a remote outage, a store refusal, a stranded tag — is
+   no better served by a pass: one node holds no second copy to repair it from,
+   so a pass would only report the same loss sooner.
+   Still open: **header-only records.** Their content is also in the running
+   journal's index, so a pass could re-append a rotten one from it as repack
+   carries one ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)); without one, a rotten truncate or release in a
+   segment that the next open scans is dropped there, which brings back what it
+   removed. Whether that earns a pass over bytes this small is
+   unmeasured.
+   **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
+   dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.
 2. **Segment size** ([§2.2](#2.2%20Segments)). With descriptors bounded separately ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at

@@ -1575,9 +1575,9 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
 5. **Replica scrub.** A replica's dirty copy is read mostly at a takeover, when
    the primary that could repair it is gone; damage found while the primary
    lives costs only a rejoin ([§6](#6.%20Fencing), [§7.3](#7.3%20Joining)). One node does not scrub
-   ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)). A replica pass would cover only dirty records older than
-   some age, so it reads nothing while offload keeps up and only the backlog of a
-   remote outage otherwise. The exposure it removes needs a primary lost during
+   content records ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)). A replica pass would cover only dirty records older than
+   some age, so it reads little while offload keeps up and mostly the backlog
+   of a remote outage otherwise. The exposure it removes needs a primary lost during
    that outage as well as decay of the same record: about 2×10⁻⁹ per replica for
    a day's outage holding 100 GiB dirty on a 4 TB nearline disk, at a measured
    latent-error rate of about 3% of disks a year and a 10⁻³ chance of losing the
@@ -1607,7 +1607,7 @@ set and an epoch, and every message is fenced by it.
 | GFS (SOSP 2003), HDFS lease recovery | replica-set version bumped before a new writer writes; stale replicas detected by version |
 | Ceph peering | reconcile and record before serving; recover the most degraded first |
 | PostgreSQL streaming replication, with a cluster manager (Patroni) holding the leader key under a TTL in a consensus store | the whole design in miniature, one shard per database cluster: the write-ahead log is the journal, the leader key the node lease, the timeline raised at promotion the epoch, and a strict synchronous mode that refuses writes below its standby count the floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); rewinding a returning old primary is rejoin by delta ([§7.3](#7.3%20Joining)), and quorum synchronous commit (`ANY k`) the upgrade [§4](#4.%20The%20write%20path) sketches |
-| Mirrored disk arrays (RAID 1, Linux md) | every mirror holds a write before it completes, and a degraded array keeps writing — the count and floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); a write-intent bitmap resyncs only the regions dirtied while a member was absent — the rejoin upgrade of [§7.3](#7.3%20Joining); a paced patrol read finds decay in what is never read ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)) |
+| Mirrored disk arrays (RAID 1, Linux md) | every mirror holds a write before it completes, and a degraded array keeps writing — the count and floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); a write-intent bitmap resyncs only the regions dirtied while a member was absent — the rejoin upgrade of [§7.3](#7.3%20Joining); a paced patrol read finds decay in what is never read — declined on one node ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)), open for a replica ([§16](#16.%20Open%20questions)) |
 | Frangipani (SOSP 1997) | a lease checked only by the sender is not a fence |
 | Assise (OSDI 2020) | a local log replicated before acknowledgement, published asynchronously |
 | FoundationDB (SIGMOD 2021), TigerBeetle, Antithesis | deterministic simulation; swizzle-clogging; a storage fault model; "sometimes" assertions |
