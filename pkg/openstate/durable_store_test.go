@@ -1000,3 +1000,32 @@ func TestReadOnlyBreakIsWrittenAsItEnds(t *testing.T) {
 		}
 	}
 }
+
+// A delete pending cleared after the last persistent open closed is not
+// installed by a restart: the stored one went with that close, so a later
+// persistent open's close after a failover unlinks nothing.
+func TestClearedPendingIsNotInstalled(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd | del
+	p := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	n := f.mustOpen(t, b, file, OpenRequest{Access: rd | del})
+	set, clear := true, false
+	if err := f.Opens().Update(ctx, a, p.ID, OpenUpdate{Delete: &set}); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, a, p)
+	if err := f.Opens().Update(ctx, b, n.ID, OpenUpdate{Delete: &clear}); err != nil {
+		t.Fatal(err)
+	}
+	p2 := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
+	g := f.restart(t)
+	back, err := g.reconnect(a, p2, ReconnectMatch{Share: file.Share, Create: [16]byte{2}}, s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := g.close(t, a, back.Open); res.Unlink != nil {
+		t.Errorf("the close after the failover unlinks %q, whose delete pending was cleared", res.Unlink.Name)
+	}
+}

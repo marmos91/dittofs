@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -66,7 +67,8 @@ func (o Opens) Of(ctx context.Context, share entity.ShareID, file entity.FileID)
 }
 
 // Delete removes a durable open with its index entry and its durable locks,
-// and names the file it left orphaned: no entry and no durable open of it or
+// and the file's delete pending with the file's last persistent open, and
+// names the file it left orphaned: no entry and no durable open of it or
 // of its named streams, so the filesystem service runs its release. An open
 // of a named stream is judged on its base file, which holds the entries, and
 // the base is the file named. A share's root has no entry from its creation
@@ -84,6 +86,16 @@ func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.Fil
 		}
 		if err := dropOpen(tx, share, f.Shard, file, id); err != nil {
 			return err
+		}
+		rest, err := opensOf(tx, share, file)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(rest, func(r entity.OpenRecord) bool { return r.Durability == entity.DurabilityPersistent }) {
+			// delete pending is durable only while a persistent open holds the file
+			if err := tx.Delete(deletePendingKey(share, file)); err != nil {
+				return err
+			}
 		}
 		if f.IsStream() {
 			if f, err = fileIn(tx, share, f.StreamOf); err != nil {
