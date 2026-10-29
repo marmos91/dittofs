@@ -132,6 +132,10 @@ func clip(p Piece, e core.Extent) Piece {
 // does not overflow, and a piece is no longer than a segment. Refusing others
 // is the journal API's job, as for the tree.
 type heldSet struct {
+	// acct are the per-segment counters this set feeds: every piece put
+	// adds to its record's segment, and every piece cut subtracts. Nil keeps
+	// the set unaccounted, as the standalone sets of tests are.
+	acct    *segments
 	tree    btree[held]
 	scratch []Piece // the pieces cut is changing
 	work    []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
@@ -383,7 +387,16 @@ func (s *heldSet) pieces(out []Piece) []Piece {
 
 // put holds p over whatever is held in its extent, then merges it with a
 // neighbour it joins.
+//
+// decision: p is counted before what it supersedes is cut, not after. The
+// counters are read with no lock, and this is the shape of nearly every write:
+// counting the cut first would let a concurrent read — reclamation's candidacy,
+// which selects a segment on a zero — see a live segment count zero. The double
+// count is transient and the totals agree once the update ends.
 func (s *heldSet) put(p Piece) {
+	if s.acct != nil && p.Extent.Len > 0 {
+		s.acct.add(p.Record.Segment, p.Extent.Len, 0)
+	}
 	s.cut(p.Extent)
 	s.tree.set(uint64(p.Extent.Off), toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
@@ -419,6 +432,17 @@ func (s *heldSet) cut(e core.Extent) {
 	end := e.Off + e.Len
 	for _, p := range s.scratch {
 		pend := p.Extent.Off + p.Extent.Len
+		// Only the intersection of p and e stops being held: the head and
+		// tail the loop below writes back in place never leave the counters,
+		// since the writes below do not account, so there is nothing to add
+		// back for them. A hook that subtracted p whole here would count the
+		// head and tail twice over.
+		if s.acct != nil {
+			n := min(pend, end) - max(p.Extent.Off, e.Off)
+			if n > 0 {
+				s.acct.add(p.Record.Segment, -n, 0)
+			}
+		}
 		if p.Extent.Off < e.Off {
 			head := p
 			head.Extent.Len = e.Off - p.Extent.Off
@@ -434,7 +458,8 @@ func (s *heldSet) cut(e core.Extent) {
 }
 
 // coalesce merges the piece starting at off into the one ending there, when
-// it continues it as one piece of one record.
+// it continues it as one piece of one record. The two pieces are of one record,
+// so the merge moves no bytes between segments and needs no accounting.
 func (s *heldSet) coalesce(off int64) {
 	if off <= 0 {
 		return
