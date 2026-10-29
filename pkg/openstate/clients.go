@@ -216,6 +216,12 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
 	known := false
 	cur, found, err := t.byName(ctx, rec)
+	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 {
+		// a record no serve listed holds no lease here until now
+		if err = t.adopt(ctx, cur.ID); errors.Is(err, ErrStaleClient) {
+			found, err = false, nil // gone since it was read
+		}
+	}
 	found = found && !t.lapsed(cur.ID) // its confirm expires it first
 	switch {
 	case err != nil:
@@ -300,6 +306,9 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	}
 
 	cur, found, err := t.byName(ctx, *rec)
+	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 {
+		t.leaseIfUnleased(cur) // a record no serve listed holds no lease here until now
+	}
 	var ended *entity.ClientRecord
 	if found && t.lapsed(cur.ID) {
 		// A lapsed lease is expired here as the timer would, so a confirm
@@ -515,13 +524,20 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) error {
 	if err != nil {
 		return staleIfGone(err)
 	}
+	t.leaseIfUnleased(rec)
+	return nil
+}
+
+// leaseIfUnleased starts rec's client's lease a full period from now if this
+// node holds none for it, as after a restart whose serves listed it nowhere;
+// the caller holds the client step, so rec is current.
+func (t *Table) leaseIfUnleased(rec entity.ClientRecord) {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
-	if _, ok := t.leases[c]; !ok {
-		t.leases[c] = t.leaseEnd(rec.Protocol)
+	if _, ok := t.leases[rec.ID]; !ok {
+		t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
 		t.know(rec)
 	}
-	return nil
 }
 
 // know records what the table reads of rec while its client is current; the

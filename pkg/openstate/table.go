@@ -262,11 +262,13 @@ const sweepEvery = 10 * time.Second
 // starts once. The timer outlives ctx: only Stop ends it.
 //
 // ponytail: Start arms no lease: ServeShard leases each NFSv4 client a
-// shard's records name. One whose record holds no shard mark holds no state,
-// so no serve lists it, and after a restart it keeps its record and its name
-// until it renews, which may be never: a record leaked, never state. Arm a
-// lease here for every NFSv4 record this node owns, which needs a store call
-// listing a node's client records, if such records are seen to pile up.
+// shard's records name, and a proposal or connect naming a client leases it
+// there, so its name lapses a lease period after another principal asks for
+// it. One whose record holds no shard mark holds no state, so no serve lists
+// it, and after a restart it keeps its record until it renews or its name is
+// asked for, which may be never: a record leaked, never state or a name. Arm
+// a lease here for every NFSv4 record this node owns, which needs a store
+// call listing a node's client records, if such records are seen to pile up.
 func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 	if sink == nil || order == nil {
 		return errors.New("openstate: Start needs a Sink and an Order")

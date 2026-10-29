@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -1277,6 +1278,39 @@ func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
 	for _, c := range []Caller{h, s} {
 		if _, err := f.fs.Store.Clients().Get(ctx, c.Client); err != nil || len(g.sink.endedOf(c.Client)) != 0 {
 			t.Errorf("the NLM host or SMB client %d: record %v, ended %v; want it kept", c.Client, err, g.sink.endedOf(c.Client))
+		}
+	}
+}
+
+// A silent NFSv4 client that held nothing, so no serve listed it, frees its
+// name to another principal after a restart as it does without one: the
+// collision arms its lease, and the name lapses a lease period later.
+func TestSilentClientsNameLapsesAfterARestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		for name, take := range map[string]func(f *fixture, c Client) error{
+			"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
+			"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+		} {
+			t.Run(fmt.Sprintf("%s restart=%v", name, restart), func(t *testing.T) {
+				f := newFixture(t)
+				f.caller(t, nfs("host-a", 1, entity.NewUser()))
+				if restart {
+					f = f.restart(t)
+				}
+				f.pass(t, 4*leasePeriod)
+				other := nfs("host-a", 2, entity.NewUser())
+				err := take(f, other)
+				if restart {
+					if !errors.Is(err, ErrClientInUse) {
+						t.Fatalf("another principal, at the name's first collision since the restart: %v, want ErrClientInUse", err)
+					}
+					f.pass(t, leasePeriod+sweepEvery)
+					err = take(f, other)
+				}
+				if err != nil {
+					t.Errorf("another principal, a lease period after the name went silent: %v", err)
+				}
+			})
 		}
 	}
 }
