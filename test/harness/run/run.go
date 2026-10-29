@@ -177,6 +177,11 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 			}
 			sum.Cells = rep.Outcomes
 			sum.Stop, sum.Exit = time.Now(), rep.Status()
+			// The cells still to run count as not run, so a run killed partway
+			// never reads as passed.
+			if len(rep.Outcomes) < len(cells) && sum.Exit == 0 {
+				sum.Exit = 2
+			}
 			// ponytail: the whole summary is rewritten after each cell: about
 			// 25 ms for the unit suite's 12,500 results, 0.2 s for 200,000.
 			// Write each cell's results to a file of its own when a run's time

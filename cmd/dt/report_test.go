@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -208,5 +209,61 @@ func TestReportPost(t *testing.T) {
 		if !strings.Contains(opened, row) {
 			t.Errorf("no row %q in\n%s", row, opened)
 		}
+	}
+}
+
+// dt report --commit-status NAME RUN sets NAME on the run's commit, by the full
+// hash the checkout resolves from the 8 characters the run keeps, with the
+// token from the environment. It takes one run, and refuses a run with no
+// commit in the checkout.
+func TestReportCommitStatus(t *testing.T) {
+	checkout(t)
+	if out, err := exec.Command("git", "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// commit-tree, of the empty tree, runs no hook the machine's git config may name.
+	full, err := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "-m", "c", "4b825dc642cb6eb9a060e54bf8d69288fbee4904").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(full))
+	results := filepath.Join(t.TempDir(), "results")
+	var names []string
+	for _, commit := range []string{sha[:8], "deadbeef"} {
+		r := report.Run{Name: "20261028T100000Z-" + commit, Commit: commit, Branch: "develop", Tier: "merge", Exit: 1, Cells: []report.Cell{
+			{Name: "system/dedicated", Result: report.Failed, Tests: []report.Test{{Name: "02-c.sh", Status: report.Failed, Grade: report.New}}},
+		}}
+		if err := r.Write(filepath.Join(results, r.Name)); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, r.Name)
+	}
+	var posted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "Bad credentials", http.StatusUnauthorized)
+			return
+		}
+		var in struct{ State, Context string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		posted = append(posted, r.URL.Path+" "+in.State+" "+in.Context)
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("GITHUB_TOKEN", "tok")
+
+	if _, err := dt(t, append([]string{"report", "--commit-status", "system (dedicated)", "--results", results}, names...)...); err == nil || posted != nil {
+		t.Fatalf("two runs: %v, posted %q", err, posted)
+	}
+	if _, err := dt(t, "report", "--commit-status", "system (dedicated)", "--results", results, names[1]); err == nil || posted != nil {
+		t.Fatalf("a commit the checkout lacks: %v, posted %q", err, posted)
+	}
+	if _, err := dt(t, "report", "--commit-status", "system (dedicated)", "--results", results, names[0]); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/repos/o/r/statuses/" + sha + " failure system (dedicated)"}; !slices.Equal(posted, want) {
+		t.Errorf("posted %q, want %q", posted, want)
 	}
 }
