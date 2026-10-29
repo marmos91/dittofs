@@ -1107,3 +1107,26 @@ func TestReadOnlyBreakEndsAsSent(t *testing.T) {
 		})
 	}
 }
+
+// No grant is offered beside another holder's byte-range lock, as its holder
+// would take locks locally over it; the holder's own locks refuse nothing.
+func TestNoGrantBesideAnothersLock(t *testing.T) {
+	f := newFixture(t)
+	file := anyFile()
+	file.Shard = 1
+	h := f.host(t, "host-h", 1)
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	if _, g := f.grantOpen(t, n, file, OpenRequest{Access: rd, Want: rw}); g != nil {
+		t.Errorf("a delegation beside another holder's lock: %+v", g)
+	}
+	file = anyFile()
+	file.Shard = 1
+	a := f.caller(t, smb("pc-a"))
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}})
+	under := OpenRef{Kind: RefOpened, Open: o.ID, State: StateRef{Shard: file.Shard}, Handle: handle(file.ID)}
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: under, Ranges: []LockRange{x(0, 10)}})
+	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh}); g == nil {
+		t.Error("no lease beside the client's own lock")
+	}
+}

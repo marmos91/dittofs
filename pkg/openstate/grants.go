@@ -349,7 +349,8 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 // offerable is the most of want a grant to who, through o under key, may hold
 // on e: none to a client fenced, at its budget or with its back channel down,
 // on a file with a recall in flight, recalled within a recall deadline, with
-// a lock waiter, or under 16 grants already; and no caching another holder's
+// a lock waiter or another holder's byte-range lock, or under 16 grants
+// already; and no caching another holder's
 // open or grant refuses. The budget is checked where the grant is minted: a
 // client at it keeps the grants it holds, and was asked through RecallAny,
 // when it reached it, to return some.
@@ -382,6 +383,11 @@ func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want Gran
 		return GrantNone
 	}
 	smb := who.Protocol == entity.ProtocolSMB
+	for _, ls := range e.lstates {
+		if len(ls.locks) > 0 && (ls.open == nil && ls.owner.Client != who.Client || ls.open != nil && !ls.open.ownedBy(who.Client, key, o, smb)) {
+			return GrantNone // its holder taking locks locally could overlap these
+		}
+	}
 	for _, h := range e.opens {
 		if !h.ownedBy(who.Client, key, o, smb) {
 			want = grantfsm.Within(want, conflict.GrantKeeps(h.Mode.Access, h.Mode.Deny, key != (LeaseKey{})))
