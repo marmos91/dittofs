@@ -79,7 +79,7 @@ type entry struct {
 
 	opens    map[uint64]*open      // by reference token
 	lstates  map[uint64]*lockState // by reference token
-	waiters  []*LockWaiter         // in Arrived order
+	waiters  []*LockWaiter         // in arrival order, which serves them
 	pending  *entity.DeleteRecord  // the file is delete pending; nil: not
 	unlinked bool                  // an unlink made the opens durable: the file has no entry, and every new open is written durable
 }

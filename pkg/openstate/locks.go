@@ -80,7 +80,6 @@ type LockWaiter struct {
 	Open     uint64 // the open's token; zero: the lock names no open
 	Range    LockRange
 	Wait     WaitKind
-	Arrived  time.Duration // Deps.Clock.Elapsed when it arrived: orders the waiters
 	Deadline time.Duration // poll only: one lease period after the owner's last poll, or after its range freed
 	Reserved bool          // poll only: the range is free and held for this owner until Deadline
 }
@@ -378,7 +377,7 @@ func (t *Table) dropWaiter(e *entry, i int) *LockWaiter {
 }
 
 // serve considers e's waiters, under its step: a poll waiter past its
-// deadline is dropped, then each waiter in Arrived order whose request
+// deadline is dropped, then each waiter in arrival order whose request
 // nothing refuses now is served, a callback waiter granted its lock and
 // reported to out, a poll waiter its range reserved for a lease period.
 func (t *Table) serve(e *entry, out *outbox) {
@@ -575,7 +574,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if err != nil {
 			return LockResult{}, err
 		}
-		w := &LockWaiter{File: e.file, Owner: ls.owner, Open: id, Range: r.Ranges[0], Wait: r.Wait, Arrived: now}
+		w := &LockWaiter{File: e.file, Owner: ls.owner, Open: id, Range: r.Ranges[0], Wait: r.Wait}
 		if w.Wait == WaitPoll {
 			w.Deadline = now + leasePeriod
 			t.idx.Lock()
