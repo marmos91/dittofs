@@ -782,7 +782,8 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 
 // holdClone holds rec, a clone's hold on its source, in shard s of share:
 // an open of no client, on its source's entry. One already held is left as
-// it is.
+// it is. A hold is no client's: its drop charges client 0, which
+// chargeLocked skips.
 func (t *Table) holdClone(share entity.ShareID, s ShardID, rec entity.OpenRecord) (entity.OpenID, error) {
 	return rec.ID, t.step(rec.File, func(e *entry) error {
 		t.idx.Lock()
