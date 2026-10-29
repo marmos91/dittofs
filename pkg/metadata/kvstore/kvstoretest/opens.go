@@ -233,17 +233,19 @@ func testDurableLockChanges(t *testing.T, kvo Opener) {
 	a.Open = plain.ID // a record's Open is not read: it is stored under p
 	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{a, b}, nil))
 	b2, c := lock(1, 0, 20), lock(2, 0, 5)
-	far := lock(3, 1<<63, 0) // an SMB lock past 2^63, of zero length
+	far := lock(3, 1<<63, 0)      // an SMB lock past 2^63, of zero length
+	top := lock(4, ^uint64(0), 0) // at the last byte offset
 	rec := p
 	rec.LockSeq[0] = 0x13
 	f.c.Take()
-	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec, []entity.LockRecord{b2, c, far}, []entity.LockRecord{a, b}))
-	if n := f.c.Take(); n.Sets != 4 || n.Deletes != 2 {
-		t.Errorf("the change wrote %+v, want the record, 3 locks and 2 deletes", n)
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec, []entity.LockRecord{b2, c, far, top}, []entity.LockRecord{a, b}))
+	if n := f.c.Take(); n.Sets != 5 || n.Deletes != 2 {
+		t.Errorf("the change wrote %+v, want the record, 4 locks and 2 deletes", n)
 	}
 	got := locks(p.ID)
-	if len(got) != 3 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[2].ID != 3 || got[2].Offset != 1<<63 || got[2].Length != 0 {
-		t.Fatalf("locks after the change %+v, want b rewritten and c added in offset order, a gone, the far lock as asked", got)
+	if len(got) != 4 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[2].ID != 3 || got[2].Offset != 1<<63 || got[2].Length != 0 ||
+		got[3].ID != 4 || got[3].Offset != ^uint64(0) {
+		t.Fatalf("locks after the change %+v, want b rewritten and c added in offset order, a gone, the far locks as asked", got)
 	}
 	if r := record(); r.LockSeq[0] != 0x13 {
 		t.Errorf("the open's record after the change: LockSeq[0] = %#x, want 0x13", r.LockSeq[0])
@@ -287,7 +289,7 @@ func testDurableLockChanges(t *testing.T, kvo Opener) {
 	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec2, big, []entity.LockRecord{c}); !errors.Is(err, kv.ErrTooLarge) {
 		t.Fatalf("a change past the limits: %v, want kv.ErrTooLarge", err)
 	}
-	if got := locks(p.ID); len(got) != 3 || got[1].ID != 2 {
+	if got := locks(p.ID); len(got) != 4 || got[1].ID != 2 {
 		t.Errorf("locks after a change past the limits %+v, want them as they were", got)
 	}
 	if r := record(); r.LockSeq[0] != 0x13 {
