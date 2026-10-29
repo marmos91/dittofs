@@ -700,18 +700,24 @@ attached, and `Stats` names it and its device.
    the extent is offered again; `MarkOffloaded` only ever sets bits.
 
    **After an open that found corruption naming no record, the reseed also
-   reconciles** ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). For every held extent of every file the journal
-   holds, the engine reads two versions from metadata: the overwrite record over
-   the extent ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)) and the covering ref's `newest`. It needs both,
-   because the primary prunes an overwrite record once a ref covers it. It then
-   calls `DropOlder` with the larger of the two ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The dropped
-   content resolves as **Remote** where a ref holds the newer bytes, and as
-   **Lost** where only the overwrite record knows of them. Until the reconcile has
-   visited every file, every read of the journal's content is answered
-   retry-later (`DelayCommit`). It never serves content that may be stale, and
-   never reports **Lost** for content that is fine. The reconcile runs once per
-   such open, and raises the loss sequence of each file whose content it drops
-   ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+   reconciles** ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). It visits every held extent of every file of each
+   share, split at the boundaries of the metadata records below. For each piece it
+   takes the highest of these versions:
+   - the overwrite record over it ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes));
+   - the covering ref's `newest`;
+   - a committed hole or removal over it, or past the committed `size`.
+
+   It needs all of them, because the primary prunes an overwrite record once a ref
+   or a hole covers it. It then calls `DropOlder` with that version
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The dropped content resolves as **Remote** where a ref holds the
+   newer bytes, as a hole or past end of file where a removal does, and as **Lost**
+   where only an overwrite record knows of them. Only the last case raises the
+   file's loss sequence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+
+   Until the reconcile has visited a share's files, every read of that share's
+   content is answered retry-later (`DelayFrozen`), so nothing stale is served. A
+   share attached later by `Bind` is reconciled before it serves. The reconcile
+   runs once per such open.
 8. **Serve.** No file is served before step 3 has run for it.
 
 **`Bind` attaches a share above its floor.** Before a journal serves a share
@@ -1203,7 +1209,8 @@ after a loss, each client resends its recent unstable writes once.
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
   corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)) — and each time the reconcile
-  drops content of the file ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). `Commit` returns it,
+  drops content of the file that only an overwrite record knew was newer
+  ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). `Commit` returns it,
   read after its sync, and `LossSeq` returns it without one, which the service
   reads before it records an open; the filesystem service hands each to open
   state, which fails one SMB flush per open that was open across the loss

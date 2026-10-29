@@ -944,10 +944,10 @@ reseed the bits from its refs and to clear one no ref justifies
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). How the records are rebuilt, and what a version outside the range
 does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)'s.
 
-`DropOlder` drops the held content of `e` whose version is below `below`. It
-drops it as stale after its sync, so it appends the synced loss record of
-[§3.8](#3.8%20Loss%20events) for each record piece it drops before it publishes the loss event.
-That record outlives seals and repack, and the dropped content is not held again.
+`DropOlder` drops the held content of `e` whose version is below `below`, with
+reason `superseded`. Before it publishes each loss event, it appends the synced loss
+record of [§3.8](#3.8%20Loss%20events) for each record piece it drops. Content a snapshot hold keeps
+is not dropped. It becomes retained, as an overwrite would leave it ([§3.11](#3.11%20Snapshot%20holds)).
 The engine calls it only from the reconcile ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 ### 3.4 Fill
@@ -1216,7 +1216,8 @@ in-flight operation.
 ### 3.8 Loss events
 
 A **loss event** is an extent the journal stopped holding without being asked:
-dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), or because a failed sync window was
+dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), as superseded by the
+reconcile (`DropOlder`, [§3.3](#3.3%20Offload)), or because a failed sync window was
 failed ([§5.3](#5.3%20A%20failed%20sync)). Each names the share, the file, the extent, the content version,
 the reason, and whether its offloaded bit was set. `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
@@ -1300,9 +1301,8 @@ a loss that took that write, and the client would never learn of it.
 merges two journals' generations into one. A replica (cluster) that sees its
 journal's generation rise records its **loss point** from the loss events behind
 the rise, not from the rise itself — the lowest version among the records they
-name, for each shard the journal holds a replica of; a rise for a range that
-names no record sets one on every such shard
-([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
+name, for each shard the journal holds a replica of, including a range that names
+no record ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
 
 The journal calls out to nothing to report. Everything an operator needs to tell
 a wedged journal from a slow one — at capacity, nothing evictable, syncing
