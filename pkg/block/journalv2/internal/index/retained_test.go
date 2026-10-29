@@ -443,3 +443,128 @@ func TestRetainedInSegment(t *testing.T) {
 		t.Fatalf("in(2) = %+v, want %+v", got, want)
 	}
 }
+
+// TestRetainedMarkOffloaded: the retained offloaded-bit setter. A mark inside
+// e sets the bit of only the pieces whose version lies in the window and
+// whose bit is unset, splitting a piece at e's ends and keeping each part's
+// superseder, record and skip right. A mark that set a bit outside the window
+// would mark content a ref does not cover, which eviction would then drop;
+// one that re-set an already-set bit would miscount to the caller.
+func TestRetainedMarkOffloaded(t *testing.T) {
+	// The window excludes pieces outside it, sets only unset bits, and
+	// counts what it changed. Two retained pieces of different versions: the
+	// v1 piece came retained already bit-set — the held mark set the content
+	// before the write superseded it — and the v2 piece is unset. A window
+	// covering both changes the unset one only; a second one changes
+	// nothing, and a window between the pieces' versions, holding neither,
+	// changes nothing.
+	t.Run("window and count", func(t *testing.T) {
+		var f file
+		f.write(write(0, 8, rec(1, 0), 1))
+		f.held.markOffloaded(ext(0, 8), ver(1), ver(1))
+		f.writeRetain(write(0, 8, rec(2, 0), 2)) // retains v1, bit-set
+		f.writeRetain(write(0, 8, rec(3, 0), 3)) // retains v2, bit-unset
+		// Retained now: the v1 piece, bit-set, and the v2 piece, bit-unset.
+		assertRetained(t, &f,
+			kept(piece(0, 8, rec(1, 0), 0, 1, true), 2),
+			kept(piece(0, 8, rec(2, 0), 0, 2, false), 3),
+		)
+		if n := f.retained.markOffloaded(ext(0, 8), ver(1), ver(9)); n != 1 {
+			t.Fatalf("markOffloaded changed %d pieces, want the unset v2 one only", n)
+		}
+		assertRetained(t, &f,
+			kept(piece(0, 8, rec(1, 0), 0, 1, true), 2),
+			kept(piece(0, 8, rec(2, 0), 0, 2, true), 3),
+		)
+		if n := f.retained.markOffloaded(ext(0, 8), ver(1), ver(9)); n != 0 {
+			t.Fatalf("a second markOffloaded changed %d pieces, want 0: a set bit stays", n)
+		}
+		if n := f.retained.markOffloaded(ext(0, 8), ver(4), ver(5)); n != 0 {
+			t.Fatalf("markOffloaded in a window between the pieces' versions changed %d pieces, want 0", n)
+		}
+	})
+
+	// A piece straddling both ends of e is split in three: the middle part
+	// takes the bit, the head and tail keep their unset bits, and each part
+	// keeps its record and skip right. A mark over the middle that kept the
+	// head's skip for the middle would offer the wrong bytes when the
+	// offload reads the part back.
+	t.Run("split at the ends", func(t *testing.T) {
+		var f file
+		f.write(write(0, 12, rec(1, 64), 1))
+		f.writeRetain(write(0, 12, rec(2, 0), 3))
+		if n := f.retained.markOffloaded(ext(4, 4), ver(1), ver(3)); n != 1 {
+			t.Fatalf("markOffloaded changed %d pieces, want the split one", n)
+		}
+		assertRetained(t, &f,
+			kept(piece(0, 4, rec(1, 64), 0, 1, false), 3),
+			kept(piece(4, 4, rec(1, 64), 4, 1, true), 3),
+			kept(piece(8, 4, rec(1, 64), 8, 1, false), 3),
+		)
+		assertPieces(t, &f.held, piece(0, 12, rec(2, 0), 0, 3, false))
+	})
+
+	// Two overlapping retained pieces are both marked inside e: a mark that
+	// stopped at the first would leave the older version's bytes unmarked.
+	t.Run("overlapping pieces", func(t *testing.T) {
+		var f file
+		f.write(write(0, 8, rec(1, 0), 1))
+		f.writeRetain(write(0, 8, rec(2, 0), 2)) // retains v1 [0,8)
+		f.writeRetain(write(4, 8, rec(3, 0), 3)) // retains v2's [4,8) part
+		if n := f.retained.markOffloaded(ext(0, 12), ver(1), ver(3)); n != 2 {
+			t.Fatalf("markOffloaded changed %d pieces, want both overlapping ones", n)
+		}
+		assertRetained(t, &f,
+			kept(piece(0, 8, rec(1, 0), 0, 1, true), 2),
+			kept(piece(4, 4, rec(2, 0), 4, 2, true), 3),
+		)
+	})
+
+	// A mark of a gap changes nothing and reports zero.
+	t.Run("nothing inside", func(t *testing.T) {
+		var f file
+		f.writeRetain(write(0, 4, rec(1, 0), 1))
+		if n := f.retained.markOffloaded(ext(100, 4), ver(0), ver(9)); n != 0 {
+			t.Fatalf("markOffloaded over a gap changed %d pieces", n)
+		}
+		if n := f.retained.markOffloaded(ext(0, 0), ver(0), ver(9)); n != 0 {
+			t.Fatalf("markOffloaded of an empty extent changed %d pieces", n)
+		}
+	})
+}
+
+// TestRetainedUnmark: the retained unmark clears the bit of the parts inside
+// e of every piece at most newest with its bit set, keeping each part's
+// superseder, record and skip, and counts what it cleared. An unmark that
+// cleared a bit above its version would hide a commit the journal was told
+// of; one that cleared an already-clear bit would miscount to the caller.
+func TestRetainedUnmark(t *testing.T) {
+	t.Run("clears only set bits in the window", func(t *testing.T) {
+		var f file
+		f.write(write(0, 8, rec(1, 0), 2))
+		f.writeRetain(write(0, 8, rec(2, 0), 3))
+		f.retained.markOffloaded(ext(0, 8), ver(0), ver(2))
+		if n := f.retained.unmark(ext(0, 8), ver(1)); n != 0 {
+			t.Fatalf("unmark below the piece's version cleared %d parts, want 0", n)
+		}
+		if n := f.retained.unmark(ext(0, 8), ver(2)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want 1", n)
+		}
+		assertRetained(t, &f, kept(piece(0, 8, rec(1, 0), 0, 2, false), 3))
+	})
+
+	t.Run("splits and keeps", func(t *testing.T) {
+		var f file
+		f.write(write(0, 16, rec(1, 0), 1))
+		f.held.markOffloaded(whole, ver(1), ver(1))
+		f.writeRetain(write(0, 16, rec(2, 0), 2))
+		if n := f.retained.unmark(ext(4, 4), ver(1)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want the middle", n)
+		}
+		assertRetained(t, &f,
+			kept(piece(0, 4, rec(1, 0), 0, 1, true), 2),
+			kept(piece(4, 4, rec(1, 0), 4, 1, false), 2),
+			kept(piece(8, 8, rec(1, 0), 8, 1, true), 2),
+		)
+	})
+}

@@ -146,6 +146,57 @@ func (s *retainedSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int
 	return n
 }
 
+// markOffloaded sets the offloaded bit of the parts inside e of every
+// retained piece whose version is in [oldest, newest] and whose bit is
+// unset, splitting a piece at e's ends, and returns the number of parts it
+// changed, like heldSet.markOffloaded. By, record and skip stay: the mark is
+// about the bytes, not the retention.
+//
+// decision: at run time a retained extent leaves the index when its offload
+// commit is reported, so nothing marks one; this setter exists for the
+// rebuild, where an offloaded record can cover retained content — and an
+// unmark can undo it. The caller of the rebuild decides afterwards which
+// retained pieces stay. Overturn it when the recovery code needs marks
+// reaching retained pieces by a rule of its own.
+func (s *retainedSet) markOffloaded(e core.Extent, oldest, newest core.Version) int {
+	n := 0
+	s.edit(e, func(r Retained) bool {
+		// The window is a property of the piece whole: a part sticks to its
+		// piece's version, so the match must not flip between the parts a
+		// split makes. The bit is decided per part below, since e can end
+		// between two parts that differ in it.
+		return r.Version.Compare(oldest) >= 0 && r.Version.Compare(newest) <= 0
+	}, func(r Retained) (Retained, bool) {
+		if r.Offloaded {
+			return r, true
+		}
+		r.Offloaded = true
+		n++
+		return r, true
+	})
+	return n
+}
+
+// unmark clears the offloaded bit of the parts inside e of every retained
+// piece whose version is at most newest and whose bit is set, splitting a
+// piece at e's ends, and returns the number of parts it changed. By, record
+// and skip stay.
+func (s *retainedSet) unmark(e core.Extent, newest core.Version) int {
+	n := 0
+	s.edit(e, func(r Retained) bool {
+		// The window is a property of the piece whole, as in markOffloaded.
+		return r.Version.Compare(newest) <= 0
+	}, func(r Retained) (Retained, bool) {
+		if !r.Offloaded {
+			return r, true
+		}
+		r.Offloaded = false
+		n++
+		return r, true
+	})
+	return n
+}
+
 // edit calls fn on the part inside e of every piece match selects, and puts
 // back what fn returns when it reports true, along with the parts outside e.
 // fn is called in order, and may change anything but the part's extent.
