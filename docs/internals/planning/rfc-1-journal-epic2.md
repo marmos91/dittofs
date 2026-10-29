@@ -964,6 +964,11 @@ test/journalv2 ──► standard library (reads the RFCs and the conformance so
 - **Epic 3 and the planted record.** "A file is its share's" plants its second-tag record
   with `raw` here, so epic 3 does not write that check; it only adds the encoder halves of
   §6.
+- **Which version the "unknown version" row means.** RFC 28 §4.2, row "unknown version":
+  "Write a trailer with a future format version". The trailer's field is the "catalog
+  layout version, 1 for this layout; independent of the `format` file's" (RFC 28 §2.5),
+  while an unknown segment header version fails the open (RFC 28 §2.2). 2.13b's row test
+  plants different bytes under each reading. **Decides:** RFC 28 owner.
 - **Suite budget on PRs.** The suite runs on `pr` from S2. Against stubs it is fast; once
   checks at 10⁶ extents pass, its duration is measured with `dt history`, and epic 12
   moves the heavy checks to `merge` or `nightly` with expected-skip entries if the `pr`

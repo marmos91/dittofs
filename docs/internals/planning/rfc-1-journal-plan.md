@@ -759,6 +759,10 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   - foreign segments are reported and left alone.
 - **Rebuild:**
   - by catalog or by scan, giving **identical** indexes;
+  - a record wholly covered by a release, a removal or a synced loss that outranks it, or
+    of a forgotten tag, is not held, and recovery neither verifies nor reports its payload
+    (RFC 28 §2.3);
+  - no second durable index or log of the catalog (RFC 28 §2.1, §2.4);
   - in any segment order, concurrently;
   - markers start unsettled;
   - retained extents rebuilt from hold, unhold, stamp and offloaded records;
@@ -800,7 +804,9 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
 - **Core operations:**
   - `WriteAt`: the version is assigned inside the file append, and an extent is published
     only after its record is written;
-  - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`;
+  - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`; a
+    payload that fails its check is never served (RFC 28 §2.3), and the record header a
+    read finds is checked against the catalog entry that sent it there (RFC 28 §2.4);
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
@@ -850,6 +856,8 @@ Epic 9 implements RFC 1 §3.3, §3.5, §3.11, §7.1–§7.2, and the tag lifecyc
   - copies get a new sequence number, carried header-only records keep theirs;
   - drop decisions per extent by version, decided after the pass's copies;
   - ordering: copy, then sync, then repoint, then unlink;
+  - a removal record whose retention counted a segment is kept until that segment's
+    unlink is durable (RFC 28 §2.2);
   - copies draw on the reserve;
   - divisible and not starved;
   - `freed` reported only once durable.
