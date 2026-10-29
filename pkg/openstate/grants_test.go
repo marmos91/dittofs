@@ -777,7 +777,6 @@ func TestFreeStateOfALockState(t *testing.T) {
 // lock and the answer takes it again to serve the waiters it frees.
 func TestRecallAnsweredOutsideTheSink(t *testing.T) {
 	f := newFixture(t)
-	f.order.blocking = true
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
 	file := anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
