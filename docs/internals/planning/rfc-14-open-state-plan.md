@@ -275,8 +275,8 @@ Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/
 `Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); channel sequence,
 create and lock replay and app instance. It lands as five PRs, each after the one before:
 - #3456, the per-client caps, every `ErrDelay`'s cause, plan §4's fixture, fuzz targets and the
-  heap-per-state benchmark. Done when: L54, L56, L57, L60 pass.
-- #3457, watches. Done when: L55 passes.
+  heap-per-state benchmark. Done when: L54, L56, L57, L60 and L69 but its watch cap pass.
+- #3457, watches. Done when: L55 and L69's watch cap pass.
 - #3458, channel sequence, create and lock replay and app instance. Done when: L15 passes.
 - #3417, `DropShare` and the clone holds. Done when: L30b, L48 pass.
 - #3459, a restart's serve leasing each NFSv4 client it lists. Done when: L41's restart case
