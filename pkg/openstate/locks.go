@@ -949,18 +949,23 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
 	t.cmu.Lock()
 	notice := t.known[c].recovery == entity.RecoverNotice
-	now := t.d.Clock.Elapsed()
-	for _, sh := range t.shards {
-		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
-			notice = false // a grace still waits on its reclaim
-		}
-	}
 	t.cmu.Unlock()
 	if !notice {
 		return
 	}
+	// The grace is judged under the client step, the order ServeShard takes
+	// it in, so a grace begun meanwhile is seen waiting on the host.
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
+	t.cmu.Lock()
+	now := t.d.Clock.Elapsed()
+	for _, sh := range t.shards {
+		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
+			t.cmu.Unlock()
+			return // a grace still waits on its reclaim
+		}
+	}
+	t.cmu.Unlock()
 	t.idx.Lock()
 	idle := !t.holdsAnyLocked(c)
 	if idle {
