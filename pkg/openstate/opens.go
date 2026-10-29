@@ -504,9 +504,10 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 }
 
 // sameCreate answers, under e's step, a create naming by its create ID an
-// open of who's client on e: a replay of that open, attached and usable by
-// who, with the open, Replayed; any other, a create that is no replay or one
-// of an open disconnected, ErrCreateInUse. done is false when no open is
+// open of who's client on e: a replay of that open, on the session it is
+// attached to and usable by who, with the open, Replayed; any other, a create
+// that is no replay, one of an open disconnected or one on another session,
+// ErrCreateInUse. done is false when no open is
 // named, and the create is made as any other.
 //
 // decision: a create ID is matched among the opens of the file the create
@@ -522,7 +523,7 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 			continue
 		}
 		switch {
-		case !r.Replay || o.parked != 0:
+		case !r.Replay || o.parked != 0 || o.Session != r.Session:
 			return true, ErrCreateInUse
 		case !t.mayUse(o, who):
 			return true, ErrNotYours

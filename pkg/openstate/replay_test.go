@@ -12,8 +12,9 @@ import (
 // that open, making none: Replayed, the same open and its lease. Another
 // client's replay under the same ID, or one with no ID, is a create of its
 // own, and another principal's replay is refused. A create that is no
-// replay, or a replay of a disconnected open, naming the ID is
-// ErrCreateInUse: one create ID never names two opens of a client.
+// replay, a replay of a disconnected open, or one on another session than
+// the open's, naming the ID is ErrCreateInUse: one create ID never names two
+// opens of a client.
 func TestCreateReplay(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
@@ -34,6 +35,11 @@ func TestCreateReplay(t *testing.T) {
 	if _, err := f.Opens().Open(ctx, Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}, file, r); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another principal's replay: %v, want ErrNotYours", err)
 	}
+	r.Session = s2
+	if res, err := f.Opens().Open(ctx, a, file, r); !errors.Is(err, ErrCreateInUse) {
+		t.Errorf("a replay on another session than the open's: %+v, %v; want ErrCreateInUse", res, err)
+	}
+	r.Session = s1
 	r.Lease = LeaseKey{}
 	if res, err := f.Opens().Open(ctx, b, file, r); err != nil || res.Replayed {
 		t.Errorf("another client's replay under the ID: %+v, %v; want an open of its own", res, err)
