@@ -286,18 +286,20 @@ func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64
 	}
 }
 
-// wantMissing fails the test unless a read of extent e of file id reports
-// exactly e missing and leaves every byte of its buffer untouched.
-func wantMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent) {
+// wantMissing fails the test unless a read of extent e of file id returns
+// no error, reports exactly e missing and leaves every byte of its buffer
+// untouched; a label says where a sweep stands. The buffer is compared byte
+// by byte, since the sentinel is not valid UTF-8 on its own.
+func wantMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, where ...string) {
 	t.Helper()
 
-	p, missing, _ := readAt(t, h, id, e.Off, int(e.Len))
-	if len(missing) != 1 || missing[0] != e {
-		t.Fatalf("read of %+v reports missing %+v, want exactly it", e, missing)
+	p, missing, err := readAt(t, h, id, e.Off, int(e.Len))
+	if err != nil || len(missing) != 1 || missing[0] != e {
+		t.Fatalf("%sfile %v: read of %+v reports missing %+v, err %v, want exactly it and no error", at(where), id, e, missing, err)
 	}
 
-	if i := bytes.IndexFunc(p, func(r rune) bool { return r != rune(sentinel) }); i >= 0 {
-		t.Fatalf("read of %+v wrote byte %#x into p at %d, want p untouched", e, p[i], i)
+	if i := slices.IndexFunc(p, func(b byte) bool { return b != sentinel }); i >= 0 {
+		t.Fatalf("%sfile %v: read of %+v wrote byte %#x into the buffer at %d, want it untouched", at(where), id, e, p[i], i)
 	}
 }
 
