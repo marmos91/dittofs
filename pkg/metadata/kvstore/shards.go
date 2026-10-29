@@ -29,13 +29,16 @@ func (s *Store) Shard(ctx context.Context, id entity.ShardID) (sh entity.Shard, 
 //
 // decision: every raise also opens a new grace instance, GraceInstance =
 // Incarnation, because a single node's start always loses the shard's open
-// state: the table lives in the process that stopped. A handover that ships
-// the table to its new primary raises the incarnation and keeps the grace
-// instance; once a cluster can hand a shard over, that raise must not come
-// through here, or every client of the shard would reclaim for nothing.
+// state: the table lives in the process that stopped. Only a start calls it.
+// A journal attach and a handover that ships the table raise the incarnation
+// and keep the grace instance, so neither may come through here, or every
+// client of the shard would reclaim for nothing.
 //
 // ponytail: every shard goes in one transaction, with no split by the key
-// budget. Batch it once a node serves more shards than one transaction holds.
+// budget, and it raises nothing else. The start transaction also raises the
+// node epoch: move this raise into it when the node record lands. Splitting it
+// once a node serves more shards than one transaction holds needs the
+// one-transaction start rule changed first.
 func (s *Store) RaiseIncarnations(ctx context.Context, shards []entity.ShardID) error {
 	ids := slices.Clone(shards)
 	slices.Sort(ids)

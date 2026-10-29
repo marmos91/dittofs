@@ -34,11 +34,25 @@ func testRaiseIncarnations(t *testing.T, kvo Opener) {
 	if err := s.RaiseIncarnations(ctx, []entity.ShardID{2, entity.ShardLimit}); !invalid(err) {
 		t.Errorf("a shard past the shard space: %v", err)
 	}
+	must(t, s.RaiseIncarnations(ctx, nil))
+	must(t, s.RaiseIncarnations(ctx, []entity.ShardID{entity.ShardLimit - 1}))
 	again, err := kvstore.Open(ctx, c)
 	must(t, err)
 	wantShard(t, again, 1, 2, 2)
 	wantShard(t, again, 2, 1, 1)
 	wantShard(t, again, 3, 0, 0)
+	wantShard(t, again, entity.ShardLimit-1, 1, 1)
+}
+
+// RFC 14 §4.4: two raises of one shard that race each take their own
+// incarnation: the one committing second reads the first's and raises past it.
+func testRaiseIncarnationsRace(t *testing.T, kvo Opener) {
+	s, h := heldStore(t, kvo.backends()[0])
+	raise := func() error { return s.RaiseIncarnations(ctx, []entity.ShardID{1}) }
+	outer, inner := race(h, raise, raise)
+	must(t, inner)
+	must(t, outer)
+	wantShard(t, s, 1, 2, 2)
 }
 
 // failSets fails the nth Set from when n is set, counted across

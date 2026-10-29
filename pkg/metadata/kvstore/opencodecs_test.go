@@ -104,6 +104,7 @@ func TestOpenKeyGolden(t *testing.T) {
 		{"client name", clientNameKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "04" + "1100ff" + "0001"},
 		{"nsm", nsmKey(), "2a"},
 		{"ids", idKey(byte(IDOpen)), "3a02"},
+		{"shard", shardKey(3), "2d" + hexU64(3)},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
