@@ -732,9 +732,14 @@ func TestRebuildCountersAndBuckets(t *testing.T) {
 // sentinel it must, buffers nothing, and moves no counter.
 func TestRebuildRefusals(t *testing.T) {
 	spec := &core.CloneSpec{Src: fid(9), SrcOff: 100, DstOff: 4, Len: 8}
+	// Each case is built on a copy of the spec: a case that disagrees with
+	// its record's extent rewrites its own copy, not the one every later
+	// case is built from. With one shared spec, the length-disagreement
+	// case would leave every later case describing a length of 4.
 	cloneRecord := func(over func(*Record)) Record {
+		c := *spec
 		r := recd(RecCloneTarget, fid(1), 5, 5, 1, 0, 4, 8)
-		r.Clone = spec
+		r.Clone = &c
 		if over != nil {
 			over(&r)
 		}
@@ -762,6 +767,8 @@ func TestRebuildRefusals(t *testing.T) {
 		{"clone target of no bytes", cloneRecord(func(r *Record) { r.Len = 0; r.Clone.Len = 0 }), core.ErrZeroLength},
 		{"clone target without a spec", cloneRecord(func(r *Record) { r.Clone = nil }), core.ErrUnknownFormat},
 		{"clone target whose spec disagrees", cloneRecord(func(r *Record) { r.Clone.DstOff = 8 }), core.ErrUnknownFormat},
+		// The length alone disagrees: the spec keeps its offset and the
+		// record keeps its extent, so the refusal names the length check.
 		{"clone target whose spec length disagrees", cloneRecord(func(r *Record) { r.Clone.Len = 4 }), core.ErrUnknownFormat},
 		{"a spec on a write", func() Record {
 			r := recd(RecWrite, fid(1), 5, 5, 1, 0, 0, 8)
@@ -805,6 +812,11 @@ func TestRebuildRefusals(t *testing.T) {
 				t.Fatalf("a refused record left %d entries", n)
 			}
 		})
+	}
+	// The table is built on copies, so no case's disagreement reached the
+	// shared spec: it still describes the record every case started from.
+	if *spec != (core.CloneSpec{Src: fid(9), SrcOff: 100, DstOff: 4, Len: 8}) {
+		t.Fatalf("the shared spec was corrupted: %+v", *spec)
 	}
 }
 
