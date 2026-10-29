@@ -474,7 +474,8 @@ the engine, whose syncer GC's flows need, and before open state, identity and
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
 up to store time, and runs a first `Recheck`. No delete is issued until that
-`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so starting needs no other gate.
+`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so GC's start needs no gate of its own beyond the claim check
+the node runs first.
 
 **Namespaces come and go while GC runs.** The node adds and removes contexts
 ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)). A namespace whose drain deletes its `NS‖ns` records
