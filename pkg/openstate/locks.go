@@ -432,6 +432,32 @@ func (t *Table) dropLockState(e *entry, ls *lockState) {
 	}
 }
 
+// lockFull reports whether r, under op with lease key key, would take its
+// client past a cap on e: the ranges it adds, a new owner, or a waiter where
+// another holder's caching grant would make it wait. It is judged before r
+// starts a recall, so a refusal changes nothing; the charges are made, and
+// refused, where the state is added, as a waiter behind a lock is, since
+// nothing changes before it.
+func (t *Table) lockFull(e *entry, r LockReq, op *open, key LeaseKey) bool {
+	c := r.Owner.Client
+	ls := e.lockState(r.Owner, openToken(op))
+	cur := lockState{owner: r.Owner}
+	if ls != nil {
+		cur.locks = ls.locks
+	}
+	waits := false
+	if r.Wait != WaitNone && e.waiterOf(r.Owner) < 0 {
+		for _, g := range e.grants {
+			waits = waits || !g.heldBy(c, key, op) && g.fsm.Kind != GrantNone
+		}
+	}
+	t.idx.Lock()
+	newOwner := ls == nil && t.owners[ownerKey{c, string(r.Owner.Name)}] == 0
+	t.idx.Unlock()
+	return t.full(c, cappedRanges, len(cur.adding(r.Ranges...))-len(cur.locks)) ||
+		newOwner && t.full(c, cappedOwners, 1) || waits && t.full(c, cappedWaiters, 1)
+}
+
 // relock sets ls's locks to next, charging its client for the ranges next
 // adds, refused past the cap where capped, and writing them first where ls
 // is under a persistent open, so a refusal of either changes nothing.
@@ -687,6 +713,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	var key LeaseKey
 	if op != nil {
 		key = op.lease
+	}
+	if t.lockFull(e, r, op, key) {
+		return LockResult{}, &DelayError{DelayResources}
 	}
 	recall := t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(r.Owner.Client, key, op) }, func(*grant) GrantKind { return GrantNone }, out)
 	var de *DelayError

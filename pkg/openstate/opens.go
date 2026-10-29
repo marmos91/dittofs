@@ -372,6 +372,11 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
+		// A new open past its client's cap is refused here, before a
+		// recall is started.
+		if e.openOf(r.Owner, r.Stream) == nil && t.full(who.Client, cappedOpens, 1) {
+			return &DelayError{DelayResources}
+		}
 		granted, access, deny := o, r.Access, r.Deny
 		if up := e.openOf(r.Owner, r.Stream); up != nil {
 			if !t.mayUse(up, who) {

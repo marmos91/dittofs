@@ -126,6 +126,13 @@ func (t *Table) chargeLocked(c entity.ClientID, k capped, n int, refuse bool) er
 	return nil
 }
 
+// full reports whether n more of kind k would take client c past its cap.
+func (t *Table) full(c entity.ClientID, k capped, n int) bool {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > perClient[k]
+}
+
 // charge is chargeLocked, taking idx.
 func (t *Table) charge(c entity.ClientID, k capped, n int, refuse bool) error {
 	t.idx.Lock()

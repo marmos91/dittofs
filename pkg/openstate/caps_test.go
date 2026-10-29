@@ -33,7 +33,11 @@ func TestPerClientCaps(t *testing.T) {
 			t.Error("a refused open left state")
 		}
 		f.close(t, a, first)
-		f.mustOpen(t, a, third, OpenRequest{Access: rd})
+		up := f.mustOpen(t, a, third, OpenRequest{Access: rd, Owner: owner(a, "oo")})
+		if _, err := f.open(a, third, OpenRequest{Access: rd | wr, Owner: owner(a, "oo")}); err != nil {
+			t.Errorf("an upgrade at the cap: %v, want it granted", err)
+		}
+		f.close(t, a, up)
 	})
 	t.Run("ranges", func(t *testing.T) {
 		lower(t, cappedRanges, 2)
@@ -118,4 +122,34 @@ func TestPerClientCaps(t *testing.T) {
 			t.Errorf("a waiter once the first is cancelled: %v", err)
 		}
 	})
+}
+
+// A request refused for a cap changes nothing before the refusal: an open
+// or a lock starts no recall of another client's lease.
+func TestCappedRequestChangesNothing(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	f.mustOpen(t, b, in(1), OpenRequest{Access: rd | wr})
+	leased := anyFile()
+	f.grantOpen(t, a, leased, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+
+	lower(t, cappedOpens, 1)
+	if _, err := f.open(b, leased, OpenRequest{Access: rd | wr}); delayedFor(err) != DelayResources {
+		t.Fatalf("an open past the cap: %v", err)
+	}
+	if n := len(f.sink.takeRecalls()); n != 0 {
+		t.Errorf("an open its cap refuses sent %d recalls", n)
+	}
+
+	for k, what := range map[capped]string{cappedRanges: "ranges", cappedOwners: "owners", cappedWaiters: "waiters"} {
+		lower(t, k, 0)
+		lock := LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
+		if _, err := f.lock(b, leased, lock); delayedFor(err) != DelayResources {
+			t.Errorf("a lock past the %s cap: %v, want ErrDelay (DelayResources)", what, err)
+		}
+		lower(t, k, 10)
+	}
+	if n := len(f.sink.takeRecalls()); n != 0 {
+		t.Errorf("a lock its cap refuses sent %d recalls", n)
+	}
 }
