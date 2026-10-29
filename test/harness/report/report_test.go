@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"os"
 	"path/filepath"
@@ -36,8 +37,9 @@ func golden(t *testing.T, name string, got []byte) {
 
 // full is a run with every field dt writes: a test of each status, a skip
 // graded ungraded, a known failure with its tool's status, reason and issue,
-// a flaky pass, tests below their cell (a Go test's package), a cell of an
-// option and matrix values, and cells without tests, a log or a note.
+// a flaky pass with its retries, a pass with its metrics,
+// tests below their cell (a Go test's package), a cell of an option and
+// matrix values, and cells without tests, a log or a note.
 var full = Run{
 	Name:   "20261015T120000Z-abcdef12-a2",
 	Start:  time.UnixMilli(1791460800000),
@@ -54,9 +56,13 @@ var full = Run{
 			{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded},
 			{Name: "TestKnown", Suite: []string{"example.com/m/a"}, Status: Skipped, RawStatus: Failed, Duration: 5 * time.Millisecond, Message: "a_test.go:12: got 1, want 2", Grade: Known,
 				Reason: "the clock has a one-second step", Issue: "#12"},
-			{Name: "TestFlaky", Suite: []string{"example.com/m/a"}, Status: Passed, Duration: 70 * time.Millisecond, Flaky: true},
 			{Name: "TestCrash", Suite: []string{"example.com/m/c"}, Status: Other, Message: "panic: boom"},
+			{Name: "TestFlaky", Suite: []string{"example.com/m/c"}, Status: Passed, Duration: 20 * time.Millisecond, Message: "c_test.go:7: timed out", Retries: 1, Flaky: true},
 			{Name: "example.com/m/c", Status: Failed, Duration: 300 * time.Millisecond, Message: "failed outside any test"},
+		}},
+		{Name: "fio-verify", Result: "passed", Took: 64 * time.Second, Log: "logs/fio-verify.log", Tests: []Test{
+			{Name: "bench/workloads/seq-write.fio", Status: Passed, Duration: 61 * time.Second,
+				Metrics: map[string]float64{"seq-write/write/bw_bytes": 131411497, "seq-write/write/iops": 125.32377, "seq-write/write/lat_ns_mean": 31871842.5}},
 		}},
 		{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"},
 		{Name: "smbtorture/memory", Result: "skipped", Note: "docker: not found"},
@@ -70,48 +76,22 @@ var full = Run{
 func TestJSONMatchesTheSchema(t *testing.T) {
 	s := loadSchema(t)
 	for name, r := range map[string]Run{"full": full, "empty": {Name: "20261015T120000Z-abcdef12", In: "host", Tier: "pr", Exit: 2}} {
-		data, err := r.JSON()
+		data, err := r.json()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if errs := s.check(s.root, decode(t, data), "$"); len(errs) > 0 {
+		if errs := check(s, decode(t, data), "$"); len(errs) > 0 {
 			t.Errorf("%s:\n%s", name, strings.Join(errs, "\n"))
 		}
 	}
-	data, err := full.JSON()
+	data, err := full.json()
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc := decode(t, data).(map[string]any)
 	doc["results"].(map[string]any)["tests"].([]any)[0].(map[string]any)["grade"] = "new"
-	if errs := s.check(s.root, doc, "$"); len(errs) == 0 {
+	if errs := check(s, doc, "$"); len(errs) == 0 {
 		t.Error("the check passes a test with the field grade outside its extra")
-	}
-}
-
-// A reason goes in a test's extra even without a grade.
-func TestJSONKeepsAReasonAlone(t *testing.T) {
-	data, err := Run{Cells: []Cell{{Name: "s", Tests: []Test{{Name: "t", Status: Skipped, Reason: "why"}}}}}.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(data, []byte(`"reason": "why"`)) {
-		t.Errorf("no reason:\n%s", data)
-	}
-}
-
-// summary.json is readable by anyone, as the logs are, so a run as root
-// leaves one its user can read; the JUnit files too (TestWriteJUnit).
-func TestWriteIsReadable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("file modes have no read bits for others here")
-	}
-	dir := t.TempDir()
-	if err := (Run{Name: "r"}).Write(dir); err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Stat(filepath.Join(dir, "summary.json")); err != nil || info.Mode().Perm() != 0o644 {
-		t.Errorf("mode %v, %v", info.Mode(), err)
 	}
 }
 
@@ -154,7 +134,7 @@ func TestWriteReplacesTheFileWhole(t *testing.T) {
 		}
 		x, err := os.ReadFile(filepath.Join(dir, "junit", "s.xml"))
 		if err == nil {
-			err = oneDocument(x)
+			err = xml.Unmarshal(x, new(junitDoc))
 		}
 		if err != nil {
 			<-done

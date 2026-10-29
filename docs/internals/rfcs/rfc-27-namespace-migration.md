@@ -455,7 +455,8 @@ freeze carries only what changed since.
    `NFS3ERR_JUKEBOX` and retry. The delay carries its cause, `DelayFrozen`, and
    the freeze's bound ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so an adapter can tell it from a capacity
    or stall delay; a call still held when the freeze ends with the namespace
-   moved is answered with cause `DelayMoved`. An SMB request is kept pending with an interim
+   moved is answered `DelayFrozen` with `Moved` set, which no adapter holds
+   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). An SMB request is kept pending with an interim
    response instead, under the same hold an adapter keeps for a request refused
    `ErrGrace` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)), bounded by `migration.freeze_timeout` plus
    the 35 s SMB break deadline that hold adds ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), and never ended
@@ -470,7 +471,7 @@ freeze carries only what changed since.
    every call on a moved share then fails:
    - **SMB.** A's release (step 7) ends only the moved shares' trees: it calls
      [RFC 14](rfc-14-open-state.md)'s `DropShare` for each with reason `moved`, which revokes
-     their opens as `RevokedMoved`, answered `STATUS_NETWORK_NAME_DELETED` on
+     their opens as `RevokedShare` with the move's address, answered `STATUS_NETWORK_NAME_DELETED` on
      a moved tree reached through any address but a named one (below),
      answers every waiting lock and outstanding change notification on them, and
      drops A's in-memory opens and deny modes, as a share removal does with
@@ -511,9 +512,10 @@ freeze carries only what changed since.
      naming the share, if A serves any share outside the moved namespace
      through that address: clients of A's other namespaces would follow it and
      find every handle stale. From its release (step 7) A stops serving the
-     named address entirely: it drops every NFS call there and answers nothing,
-     never stale, closes every SMB connection on it, and accepts no new
-     connection there; `DropShare` with reason `moved` carries the address
+     named address entirely: the control-plane runtime's reconfigure removes
+     it, closing its listener and every NFS and SMB connection on it, so no call
+     there is answered, never stale, and no new connection is accepted there
+     ([RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver)); `DropShare` with reason `moved` carries the address
      ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A client's hard mount then keeps retrying instead
      of marking its files stale, which a client may keep doing after the
      address reaches B (from memory, Linux). B holds the moved shares in a
@@ -862,7 +864,7 @@ scans back by the larger of their chunk maxima, not the write namespace's
 ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)): refs at *g* keep N's lengths, which may exceed N′'s. A clone of a ref by reference
 within the re-homing share adopts in the namespace that ref names. A clone or
 server-side copy between two shares in different namespaces is refused with
-`ErrCrossNamespace` (NFS `NFS4ERR_XDEV`, SMB `STATUS_NOT_SUPPORTED`), as it is
+`ErrCross` (`CrossNamespace`) (NFS `NFS4ERR_XDEV`, SMB `STATUS_NOT_SUPPORTED`), as it is
 between any two namespaces ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), and the client falls back to reading
 and writing the bytes.
 
@@ -955,7 +957,7 @@ and writing the bytes.
    transaction marks the re-home `closing`. From then on nothing can raise
    `old_refs` from zero: a server-side copy or clone by reference from N into the
    share reads the re-home record with tracking and is refused with
-   `ErrCrossNamespace` while it is `closing`
+   `ErrCross` (`CrossNamespace`) while it is `closing`
    ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), as between any two namespaces, and the client copies
    the bytes; every other transaction that touches a
    ref at *g* moves it to history, which keeps its count, narrows it, whose
@@ -1169,7 +1171,7 @@ What other components gain:
   under the old namespace's own prefix.
 - **Open state** ([RFC 14](rfc-14-open-state.md)): `DropShare` takes a reason, `removed` or
   `moved`; A's release runs it with `moved` for each moved share, which revokes
-  as `RevokedMoved` ([§2.2](#2.2%20The%20move%2C%20step%20by%20step), step 4).
+  as `RevokedShare`, carrying the move's address ([§2.2](#2.2%20The%20move%2C%20step%20by%20step), step 4).
 - **The journal at a move** ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): the drop calls `Forget` on the moved
   shares' tags in every journal; before an imported share serves, the engine
   `Forget`s by name every tag no share record names ([§2.5](#2.5%20Versions%20and%20FileIDs%20on%20import)).
@@ -1257,7 +1259,7 @@ expired; a claim read that stopped a stale image before its put.
 | `S-snap-rehome-backup-expire` | a share whose catalog backups keep 7 days is re-homed over three weeks: the first batch that parks writes the parking record; every backup expires mid-re-home and the prune drops the parked refs before the finish; later batches drop rather than park; the finish finds nothing parked and N drains. Write the record only at the finish instead: no expiry is left to write, and the parked refs stay counted in N, pinning its claim and keys, for good |
 | `S-snap-rehome-backup-keys` | after a re-home finishes, the share's pre-re-home catalog backups keep their records under N and lose their use records: the snapshot's policy prunes the snapshot, and a recovery import of the backup still reads back through the parked refs. Rotate N's export key: each is re-sealed. Move the share to another installation: those backups still expire at N's holder, under N's key lock, and N drains after the last. Re-key the records under N′ at the finish instead: N's rotation skips them and, once the old key retires, their restore is refused |
 | `S-snap-rehome-backup` | copying backups run every day of a long re-home; each lists blocks of N′'s folder only, sealed in either namespace, and carries both namespaces' IDs and key records, a restore from one taken mid-way reads back, and N′'s sweep keeps every block it lists while N's sweep deletes none of N′'s; new catalog backups are refused and counted. A share with a 90-day catalog backup is re-homed at once: its refs are parked in N, a recovery import of that backup reads back after the re-home finished, and N empties only once the backup expires |
-| `S-snap-rehome-finish-load` | the finish runs while 64 writers write the share: it commits on each shard's folded counter and its guarded, empty delta range of the counter, without reading the usage deltas, and conflicts with none of the writers; a server-side copy by reference from N after `closing` is refused `ErrCrossNamespace` and the client copies the bytes, and the finish still sees zero. A clone admitted before `closing` writes k refs at *g* after the extra pass switched k − 1, with no fold since: the finish waits for the folds and does not commit while one ref names N; read the folded totals alone, and it commits and N's drain loses that chunk. Across three shards with deltas of +1, −2 and +1 folded at different moments: the finish commits only once every range is empty |
+| `S-snap-rehome-finish-load` | the finish runs while 64 writers write the share: it commits on each shard's folded counter and its guarded, empty delta range of the counter, without reading the usage deltas, and conflicts with none of the writers; a server-side copy by reference from N after `closing` is refused `ErrCross` (`CrossNamespace`) and the client copies the bytes, and the finish still sees zero. A clone admitted before `closing` writes k refs at *g* after the extra pass switched k − 1, with no fold since: the finish waits for the folds and does not commit while one ref names N; read the folded totals alone, and it commits and N's drain loses that chunk. Across three shards with deltas of +1, −2 and +1 folded at different moments: the finish commits only once every range is empty |
 | `S-snap-cloned-vm` | two copies of one installation start from one disk image |
 | `S-snap-move-freeze-reply` | calls during a move's freeze are answered retry-later after `hold_reply` over NFS, kept pending over SMB within `freeze_timeout` plus 35 s, never answered `STATUS_DISK_FULL`; at release A ends only the moved share's SMB trees, and a tree on another share over the same connection keeps working; for a continuously available moved share A closes the connection instead, and the other share's tree reconnects at A; a waiting byte-range lock and an outstanding CHANGE_NOTIFY on the moved share are each answered at release, and A holds no open or deny mode of the share afterwards; with the client's name pointed at B 30 minutes after B serves, persistent handles reconnect at B naming a client B holds and durable ones are refused, and starting the timeout when B serves closes them first; an NFS call on the moved share at A is answered stale, and the client remounted at B reads every file by its old handle |
 | `S-snap-move-abort-cut` | a base cut aborts at its gate during the pre-seed and a policy tick then takes an ordinary snapshot at the same cut number: it carries no move use record, and the move's end deletes only the base cuts its pause record lists |
@@ -1301,11 +1303,11 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| re-home progress per share: refs left at the old generation, bytes copied, passes | `rehome_old_refs`, `rehome_bytes_total`, `rehome_passes_total` | gauge, counter, counter |
+| re-home progress: refs left at the old generation, per share under RFC 25's worst-n rule; bytes copied and passes | `rehome_old_refs`, `rehome_bytes_total`, `rehome_passes_total` | gauge, counter, counter |
 | move phase per namespace (`preseed`, `freeze`, `released`, none), freeze duration, and whether the GC pause record is present | `move_phase`, `move_freeze_seconds`, `move_gc_paused` | gauge, histogram, gauge |
-| namespace claim state (1 when `owned` by this installation) | `namespace_owned` | gauge |
-| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `namespace_claim_copy_total` | counter |
-| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `gc_claim_refusals_total` | counter |
+| namespace claim state (1 when `owned` by this installation) | `claim_owned` | gauge |
+| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `claim_copy_total` | counter |
+| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `claim_gc_refusals_total` | counter |
 
 Logs: each move step and publish logs at `Info` with namespace and export digest,
 and each re-home pass with its counts. A move's freeze timeout and a claim

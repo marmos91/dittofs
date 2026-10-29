@@ -90,7 +90,6 @@ func TestNewFailure(t *testing.T) {
 		{Test{Status: Failed, Grade: "unexpected_pass"}, false},
 		{Test{Status: Skipped, Grade: "known"}, false},
 		{Test{Status: Other}, false},
-		{Test{Status: Passed, Flaky: true}, false},
 	} {
 		if got := c.test.NewFailure(); got != c.want {
 			t.Errorf("%+v: %v, want %v", c.test, got, c.want)
@@ -103,10 +102,10 @@ func TestNewFailure(t *testing.T) {
 // json is summary.json itself. With failures, only the new failures.
 //
 // In summary.json, each test's suite is its cell's name, split at /, then its
-// own suite; the counts follow the statuses, flaky passes counted too; a
-// grade and its reason go in the test's extra; durations are milliseconds;
-// and the run's own fields go in extra, each cell's suite apart from the rest
-// of its name, with its JUnit file.
+// own suite; the counts follow the statuses; a grade and its reason go in the
+// test's extra; durations are milliseconds; and the run's own fields go in
+// extra, each cell's suite apart from the rest of its name, with its JUnit
+// file.
 func TestShow(t *testing.T) {
 	for _, format := range []string{"text", "md", "json"} {
 		for failures, suffix := range map[bool]string{false: "", true: "-failures"} {
@@ -141,48 +140,23 @@ func TestShowNoNewFailures(t *testing.T) {
 	}
 }
 
-// A lint job's summary reads as it did when dt run wrote it: the same title
-// and table, a | in a note escaped. A run with new failures adds a table of
-// them after it, as code, where a | in a command can't break the table
-// either.
-func TestMarkdownAsTheLintJobsHadIt(t *testing.T) {
-	passed := Run{Cells: []Cell{{Name: "shellcheck", Result: "passed", Took: time.Second, Tests: []Test{{Name: "git ls-files", Status: Passed}}}}}
-	failed := Run{Cells: []Cell{{Name: "lint-go", Result: "failed", Note: "`a | b` exited 1", Took: 2 * time.Second, Tests: []Test{
-		{Name: "a | b", Status: Failed, Message: "`a | b` exited 1"},
-		{Name: "go vet ./...", Status: Passed},
-	}}}}
-	// What dt run's own job summary was, for each.
-	before := map[*Run]string{
-		&passed: "### dt run shellcheck\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n| `shellcheck` | passed | 1s |  |\n",
-		&failed: "### dt run lint-go\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n",
-	}
-	added := map[*Run]string{
-		&passed: "",
-		&failed: "\n#### New failures\n\n| Cell | Test | Message |\n|---|---|---|\n| `lint-go` | `a \\| b` | `` `a \\| b` exited 1 `` |\n",
-	}
-	for r, want := range before {
-		if got := r.markdown(false); got != want+added[r] {
-			t.Errorf("got\n%s\nwant\n%s", got, want+added[r])
-		}
-	}
-}
-
 // What a tool prints can't break the job summary's tables or turn into
-// markup: a note's line ends become spaces, names and messages are code,
-// fenced past any backquotes in them, a message shows its first line that
-// isn't blank, and an empty message an empty cell.
+// markup: a note's line ends become spaces, a | is escaped in a note and in
+// code, names and messages are code, fenced past any backquotes in them, a
+// message shows its first line that isn't blank, and an empty message an
+// empty cell.
 func TestMarkdownEscapes(t *testing.T) {
 	r := Run{Cells: []Cell{{Name: "unit", Result: "failed", Took: time.Second, Note: "go list:\r\nno Go files\nin x | y", Tests: []Test{
 		{Name: "TestNil", Status: Failed, Message: "\n  \n    a_test.go:5: got <nil>, want *err*\n    more"},
-		{Name: "it's `quoted`", Status: Failed, Message: "a ``double`` run"},
-		{Name: "TestSilent", Status: Failed},
+		{Name: "it's `quoted`", Status: Failed, Message: "a ``double`` | run"},
+		{Name: "a | b", Status: Failed},
 	}}}}
 	want := "### dt run unit\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n" +
 		"| `unit` | failed | 1s | go list: no Go files in x \\| y |\n\n" +
 		"#### New failures\n\n| Cell | Test | Message |\n|---|---|---|\n" +
 		"| `unit` | `TestNil` | `a_test.go:5: got <nil>, want *err*` |\n" +
-		"| `unit` | `` it's `quoted` `` | ``` a ``double`` run ``` |\n" +
-		"| `unit` | `TestSilent` |  |\n"
+		"| `unit` | `` it's `quoted` `` | ``` a ``double`` \\| run ``` |\n" +
+		"| `unit` | `a \\| b` |  |\n"
 	if got := r.markdown(false); got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}

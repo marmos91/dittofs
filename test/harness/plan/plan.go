@@ -4,6 +4,7 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,10 +17,10 @@ import (
 
 // Places a cell can run on.
 const (
-	Ubuntu    = "ubuntu"
-	Windows   = "windows"
-	MacOS     = "macos"
-	Dedicated = "dedicated"
+	ubuntu    = "ubuntu"
+	windows   = "windows"
+	macOS     = "macos"
+	dedicated = "dedicated"
 )
 
 // runnerDiskGB is the disk a shared place offers; a cell needing more goes to
@@ -38,6 +39,7 @@ type Cell struct {
 	Option   string            `json:"option,omitempty"`
 	Matrix   map[string]string `json:"matrix,omitempty"`
 	Tests    []string          `json:"tests,omitempty"` // when the cell runs part of the suite's tests
+	Tools    []string          `json:"tools,omitempty"` // the test tools it names under {tools}, which dt builds with nix
 	Place    string            `json:"place"`
 	Needs    []string          `json:"needs,omitempty"`
 	Blocking bool              `json:"blocking"`
@@ -89,8 +91,8 @@ func RunsIn(unit, want string) bool {
 	return slices.Index(registry.Tiers, unit) <= slices.Index(registry.Tiers, want)
 }
 
-// isDocs reports whether a changed path is documentation: the paths the
-// workflows ignore.
+// isDocs reports whether a changed path is documentation, which no suite
+// tests.
 func isDocs(p string) bool {
 	switch filepath.Ext(p) {
 	case ".md", ".png", ".jpg", ".svg":
@@ -134,30 +136,35 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	if allValues {
 		values = nil
 	}
-	groups, limits, err := testGroups(root, u, sel.Glob)
+	groups, lines, err := testGroups(root, u, sel.Glob)
 	if err != nil {
 		return nil, err
 	}
 	suite, option, _ := strings.Cut(u.Name, "/")
 	// A cell lists its tests only when it runs part of the suite's.
-	partial := len(groups) > 1 || sel.Glob != "" || u.Shards > 1
+	partial := len(groups) > 1 || sel.Glob != "" || u.Shards > 1 || slices.ContainsFunc(slices.Collect(maps.Values(lines)), func(l Line) bool { return l.Where != nil })
 	var cells []Cell
 	for _, p := range points(u.Matrix, values) {
 		for _, g := range groups {
-			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, p.asMap()))
+			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, u.Matrix.Fill(p.asMap())))
 			place := placeOf(needs)
 			shards := 1
-			if u.Shards > 1 && place != Dedicated {
+			if u.Shards > 1 && place != dedicated {
 				shards = u.Shards
+			}
+			// A test whose line names matrix values runs only in their cells.
+			ours := slices.DeleteFunc(slices.Clone(g.tests), func(t string) bool { return !lines[t].at(p.asMap()) })
+			if len(ours) == 0 && len(g.tests) > 0 {
+				continue
 			}
 			for i := 1; i <= shards; i++ {
 				segments := append([]string{u.Name}, p.values()...)
 				if g.label != "" {
 					segments = append(segments, g.label)
 				}
-				tests := g.tests
+				tests := ours
 				if shards > 1 {
-					tests = shard(g.tests, i, shards)
+					tests = shard(ours, i, shards)
 					// A cell with no tests listed runs the whole suite, so a
 					// shard left empty by fewer tests than shards is dropped.
 					if len(tests) == 0 {
@@ -167,13 +174,13 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 				}
 				c := Cell{
 					Name: strings.Join(segments, "/"), Suite: suite, Option: option,
-					Matrix: p.asMap(), Place: place, Needs: needs,
+					Matrix: p.asMap(), Tools: u.Tools(), Place: place, Needs: needs,
 					Blocking: blocking(u.Blocking, tier), Job: u.Job, TestTimeout: u.Timeout.Test,
 				}
 				if partial {
 					c.Tests = tests
 				}
-				if err := c.setTimeout(u.Timeout, tests, limits); err != nil {
+				if err := c.setTimeout(u.Timeout, tests, lines); err != nil {
 					return nil, err
 				}
 				cells = append(cells, c)
@@ -184,8 +191,9 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 }
 
 // fixtureNeeds are the needs fixture f implies at one point of its matrix,
-// for its own steps: a service for an S3 profile, and root and the client for
-// a mount.
+// for its own steps: a service for an S3 profile, root and the client for a
+// mount, root and the port for SMB on a set port, and docker for Kerberos's
+// KDC.
 func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	if f == nil {
 		return nil
@@ -199,14 +207,28 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 		})
 	}
 	var out []string
+	if f.Server == "knfsd" {
+		// The kernel's server, free on its port, so the one dt starts and
+		// stops is its own.
+		out = append(out, "root", "knfsd", "port:2049")
+	}
 	if fill(f.Profile) == "badger-s3" {
 		out = append(out, "service:localstack")
 	}
-	if v := fill(f.NFS.Version); v != "" && v != "export" {
+	if nfs := (registry.NFS{Version: fill(f.NFS.Version), FromOptions: f.NFS.FromOptions}); nfs.Mounts() || f.Client != "" {
 		out = append(out, "root", "nfs-client")
+	}
+	if f.RPCBind != "" {
+		out = append(out, "rpcbind")
 	}
 	if f.SMB.Mount {
 		out = union(out, []string{"root", "smb-client"})
+	}
+	if f.SMB.Port != 0 {
+		out = union(out, []string{"root", "port:" + strconv.Itoa(f.SMB.Port)})
+	}
+	if f.Kerberos {
+		out = append(out, "docker")
 	}
 	return out
 }
@@ -228,21 +250,27 @@ func NeedsByTest(root string, u *registry.Suite, tier string) (map[string][]stri
 }
 
 // testGroups splits the unit's tests into the ones its needs cover and, per
-// needs_by_test entry, the ones that need more, and returns the tests that
-// carry their own limit. Tests are listed only when something needs them: a
-// split, shards, a narrowing glob, size timeouts or a list with limits.
-func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[string]time.Duration, error) {
+// needs_by_test entry, the ones that need more, and returns what a .txt
+// list's lines give its tests. Tests are listed only when something needs
+// them: a split, shards, a narrowing glob, size timeouts or a list.
+func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[string]Line, error) {
 	if len(u.NeedsByTest) == 0 && u.Shards <= 1 && narrow == "" && u.Timeout.Test != "size" && u.Tests.File == "" {
 		return []group{{}}, nil, nil
 	}
-	tests, limits, err := ListTests(root, u, narrow)
+	tests, lines, err := ListTests(root, u, narrow)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Planning needs the list here, so an empty one is a registry mistake (a
-	// glob or a tier's select matching nothing) rather than a suite to drop.
+	// glob or a tier's select matching nothing, or a glob holding a
+	// placeholder, which only a running cell fills) rather than a suite to
+	// drop.
 	if len(tests) == 0 {
-		return nil, nil, fmt.Errorf("tests %s list no test to plan", testsSource(u, narrow))
+		src := u.Tests.Glob + u.Tests.File + strings.Join(u.Tests.Names, " ")
+		if narrow != "" {
+			src += " narrowed by " + narrow
+		}
+		return nil, nil, fmt.Errorf("tests %s list no test to plan", src)
 	}
 	globs := make([]string, 0, len(u.NeedsByTest))
 	for g := range u.NeedsByTest {
@@ -274,16 +302,38 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 			out = append(out, *g)
 		}
 	}
-	return out, limits, nil
+	return out, lines, nil
+}
+
+// Line is what a .txt list's line gives its test besides its name.
+type Line struct {
+	Limit  time.Duration       // its own limit; 0 when the line gives none
+	Share  string              // share=: the share it runs on, in place of the fixture's first
+	Prefix string              // prefix=: what the names the tool reports for it leave off
+	Where  map[string][]string // AXIS=V,...: the matrix values of the cells it runs in; all when nil
+	Args   []string            // the words after --, its {test-args}
+}
+
+// at reports whether the line's test runs in the cell with these matrix
+// values.
+func (l Line) at(values map[string]string) bool {
+	for axis, want := range l.Where {
+		if !slices.Contains(want, values[axis]) {
+			return false
+		}
+	}
+	return true
 }
 
 // ListTests expands the unit's tests: a glob relative to root, a list of
-// names, or a .txt file of names, each line a name and optionally its own
-// limit. A glob holding a placeholder is resolved only when the cell runs, so
-// it lists nothing here.
-func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]time.Duration, error) {
+// names, or a .txt file of names, each line a name and then, in any order, at
+// most one each of its own limit, share=, prefix= and, per matrix axis,
+// AXIS=V,... for the values it runs at, each with a value, and last, after
+// --, its {test-args}. A glob holding a placeholder is resolved only when the
+// cell runs, so it lists nothing here.
+func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]Line, error) {
 	var tests []string
-	limits := map[string]time.Duration{}
+	lines := map[string]Line{}
 	switch {
 	case u.Tests.Glob != "" && !u.Tests.Deferred():
 		var err error
@@ -297,25 +347,61 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		if err != nil {
 			return nil, nil, err
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
+		for i, text := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(text)
 			if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 				continue
 			}
-			tests = append(tests, fields[0])
-			if len(fields) > 1 {
-				limit, err := time.ParseDuration(fields[1])
-				if err != nil {
-					return nil, nil, fmt.Errorf("%s:%d: %q is not a duration", u.Tests.File, i+1, fields[1])
-				}
-				limits[fields[0]] = limit
+			l, err := parseLine(u, fields[1:])
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s:%d: %w", u.Tests.File, i+1, err)
 			}
+			tests = append(tests, fields[0])
+			lines[fields[0]] = l
 		}
 	}
 	if narrow != "" {
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
-	return tests, limits, nil
+	return tests, lines, nil
+}
+
+// parseLine reads what a .txt list's line gives its test after its name.
+func parseLine(u *registry.Suite, fields []string) (Line, error) {
+	var l Line
+	for i, f := range fields {
+		key, value, isKey := strings.Cut(f, "=")
+		limit, err := time.ParseDuration(f)
+		switch {
+		case f == "--":
+			l.Args = fields[i+1:]
+			for _, a := range l.Args {
+				if bad := u.Unknown(a); len(bad) > 0 {
+					return l, fmt.Errorf("unknown placeholder {%s}", bad[0])
+				}
+			}
+			return l, nil
+		case isKey && key == "share" && value != "" && l.Share == "":
+			l.Share = value
+		case isKey && key == "prefix" && value != "" && l.Prefix == "":
+			l.Prefix = value
+		case isKey && l.Where[key] == nil && slices.ContainsFunc(u.Matrix, func(a registry.Axis) bool { return a.Name == key }):
+			if l.Where == nil {
+				l.Where = map[string][]string{}
+			}
+			l.Where[key] = strings.Split(value, ",")
+			for _, v := range l.Where[key] {
+				if !slices.ContainsFunc(u.Matrix, func(a registry.Axis) bool { return a.Name == key && slices.Contains(a.Values, v) }) {
+					return l, fmt.Errorf("%s has no value %q", key, v)
+				}
+			}
+		case err == nil && limit > 0 && l.Limit == 0:
+			l.Limit = limit
+		default:
+			return l, fmt.Errorf("%q is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once", f)
+		}
+	}
+	return l, nil
 }
 
 // Glob returns the files pattern matches, each named by its path below dir
@@ -334,17 +420,6 @@ func Glob(dir, pattern string, exclude []string) ([]string, error) {
 		}
 	}
 	return tests, nil
-}
-
-func testsSource(u *registry.Suite, narrow string) string {
-	src := u.Tests.Glob + u.Tests.File
-	if len(u.Tests.Names) > 0 {
-		src = strings.Join(u.Tests.Names, " ")
-	}
-	if narrow != "" {
-		src += " narrowed by " + narrow
-	}
-	return src
 }
 
 // match reports whether glob matches the test's path or its file name.
@@ -415,18 +490,18 @@ func placeOf(needs []string) string {
 		kind, arg, _ := strings.Cut(n, ":")
 		switch {
 		case n == "windows":
-			return Windows
+			return windows
 		case n == "macos":
-			return MacOS
+			return macOS
 		case n == "host:dedicated":
-			return Dedicated
+			return dedicated
 		case kind == "disk":
 			if gb, _ := strconv.Atoi(arg); gb > runnerDiskGB {
-				return Dedicated
+				return dedicated
 			}
 		}
 	}
-	return Ubuntu
+	return ubuntu
 }
 
 func blocking(b registry.Blocking, tier string) bool {
@@ -444,23 +519,17 @@ func blocking(b registry.Blocking, tier string) bool {
 // fixture's setup time; when that raises it, a note says so. A test's limit is
 // its own from the list, else its size class's or the suite's, and a test
 // with no bound counts as the cell's own limit.
-func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]time.Duration) error {
+func (c *Cell) setTimeout(t registry.Timeout, tests []string, lines map[string]Line) error {
 	cell, err := time.ParseDuration(t.Cell)
 	if err != nil {
 		return err
 	}
 	// A suite whose tests aren't listed counts as one test.
-	total, err := TestLimit(t, "", nil)
-	if err != nil {
-		return err
-	}
+	total := TestLimit(t, "", nil)
 	if len(tests) > 0 {
 		total = 0
 		for _, name := range tests {
-			limit, err := TestLimit(t, name, limits)
-			if err != nil {
-				return err
-			}
+			limit := TestLimit(t, name, lines)
 			if limit == 0 {
 				limit = cell
 			}
@@ -468,8 +537,10 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 		}
 	}
 	if need := total + FixtureSetup; total > 0 && need > cell {
-		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: the sum of its tests' limits plus %s for the fixture", t.Cell, short(need), short(FixtureSetup)))
-		cell = need
+		// Rounded up to whole minutes, as TimeoutMinutes holds it, so the
+		// note gives the limit the cell gets.
+		cell = (need + time.Minute - 1).Truncate(time.Minute)
+		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: the sum of its tests' limits plus %dm for the fixture", t.Cell, strings.TrimSuffix(cell.String(), "0s"), FixtureSetup/time.Minute))
 	}
 	c.TimeoutMinutes = int((cell + time.Minute - 1) / time.Minute)
 	return nil
@@ -477,14 +548,15 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 
 // TestLimit is a test's limit: its own from a .txt list, else its size
 // class's or the suite's. Zero means no bound.
-func TestLimit(t registry.Timeout, name string, limits map[string]time.Duration) (time.Duration, error) {
-	if limit, own := limits[name]; own {
-		return limit, nil
+func TestLimit(t registry.Timeout, name string, lines map[string]Line) time.Duration {
+	if limit := lines[name].Limit; limit > 0 {
+		return limit
 	}
 	if t.Test == "size" {
-		return sizeLimit(name), nil
+		return sizeLimit(name)
 	}
-	return time.ParseDuration(t.Test)
+	limit, _ := time.ParseDuration(t.Test) // the registry checks it parses when it loads
+	return limit
 }
 
 // sizeLimit is a scenario's limit from the size class in its file name: twice
@@ -497,18 +569,6 @@ func sizeLimit(name string) time.Duration {
 		return 2*b + 2*time.Minute
 	}
 	return 0
-}
-
-// short formats a whole number of minutes without zero units: 2h7m, 2h, 10m.
-func short(d time.Duration) string {
-	h, m := d/time.Hour, (d%time.Hour)/time.Minute
-	switch {
-	case h > 0 && m > 0:
-		return fmt.Sprintf("%dh%dm", h, m)
-	case h > 0:
-		return fmt.Sprintf("%dh", h)
-	}
-	return fmt.Sprintf("%dm", m)
 }
 
 // union returns a followed by the items of b it lacks.

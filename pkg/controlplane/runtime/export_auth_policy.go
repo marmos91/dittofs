@@ -1,6 +1,133 @@
 package runtime
 
-import "strings"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"strings"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+// ErrExportAccessDenied is returned by CheckShareAccess when a request fails a
+// share's access policy. Every denial wraps it, with the rule that fired in the
+// message, so each protocol can map the one decision onto its own status and
+// log why.
+var ErrExportAccessDenied = errors.New("export access denied")
+
+// Proof is what authenticated a request, weakest first.
+type Proof uint8
+
+const (
+	// ProofNone is a request nothing verified: NFS AUTH_SYS and AUTH_NULL, an
+	// SMB guest or anonymous session.
+	ProofNone Proof = iota
+	// ProofNTLM is an SMB session that proved its password with NTLM.
+	ProofNTLM
+	// ProofKerberos is a request carrying a verified Kerberos context.
+	ProofKerberos
+)
+
+// KerberosProtection is the protection an authenticated request carries, on
+// the scale a share's min_kerberos_level names, in a form both protocols can
+// state: NFS derives it from the RPCSEC_GSS service a request negotiated, SMB
+// from whether a session's traffic on the tree is signed or encrypted, whatever
+// proof authenticated it. The values are ordered, so a floor is a >=
+// comparison.
+type KerberosProtection uint8
+
+const (
+	// NoKerberos is no protection at all: a request nothing verified.
+	NoKerberos KerberosProtection = iota
+	// KerberosAuthOnly is authentication with no per-message protection (krb5).
+	KerberosAuthOnly
+	// KerberosIntegrity adds per-message integrity (krb5i).
+	KerberosIntegrity
+	// KerberosPrivacy adds per-message confidentiality (krb5p).
+	KerberosPrivacy
+)
+
+// RequiredKerberosProtection maps a share's min_kerberos_level to the
+// protection an authenticated request must have. An empty or unrecognised
+// level sets no floor and maps to NoKerberos, which every request meets.
+func RequiredKerberosProtection(minLevel string) KerberosProtection {
+	switch minLevel {
+	case models.KerberosLevelKrb5:
+		return KerberosAuthOnly
+	case models.KerberosLevelKrb5i:
+		return KerberosIntegrity
+	case models.KerberosLevelKrb5p:
+		return KerberosPrivacy
+	default:
+		return NoKerberos
+	}
+}
+
+// NetgroupChecker reports whether a client address is allowed by a share's
+// netgroup allowlist. A nil clientIP is an address that is not an IP literal: it
+// must be allowed by a share with no allowlist and refused by one with any.
+// *Runtime.CheckNetgroupAccess satisfies it.
+type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
+
+// CheckShareAccess applies the protocol-neutral part of a share's access
+// policy to one request: whether the share admits the request's proof, whether
+// its protection meets the share's floor, and whether the client address is in
+// the share's netgroup allowlist. It returns nil when the request may proceed
+// and an error wrapping ErrExportAccessDenied otherwise. share must not be nil.
+//
+// require_kerberos admits only a Kerberos proof. allow_auth_sys=false refuses a
+// request nothing verified and admits NTLM, which is a real proof. On NFS the
+// two refuse the same requests, because only RPCSEC_GSS verifies anything
+// there; they differ over SMB.
+//
+// The netgroup allowlist gates the client address, and only when a lookup is
+// supplied: a nil netgroup means the caller applies no address gate here (an
+// empty allowlist already means "allow all"). When one is supplied, a failed
+// lookup denies, and a client address that is not an IP (a nil clientIP) is
+// passed to it, so it is refused only by a share that has an allowlist.
+func CheckShareAccess(
+	ctx context.Context,
+	share *Share,
+	proof Proof,
+	protection KerberosProtection,
+	clientIP net.IP,
+	netgroup NetgroupChecker,
+) error {
+	if proof == ProofNone && !share.AllowAuthSys {
+		return fmt.Errorf("%w: share %q accepts only authenticated requests",
+			ErrExportAccessDenied, share.Name)
+	}
+	if proof != ProofKerberos && share.RequireKerberos {
+		return fmt.Errorf("%w: share %q accepts only Kerberos authentication",
+			ErrExportAccessDenied, share.Name)
+	}
+	// decision: min_kerberos_level is the protection floor for any
+	// authenticated request, NTLM included, although it is named for Kerberos:
+	// a share that refuses a Kerberos session in clear must not admit the
+	// weaker proof in clear. A request nothing verified holds no key to protect
+	// a message with, so it answers to allow_auth_sys alone, as AUTH_SYS always
+	// has on NFS. Narrow the floor to Kerberos only if a client that cannot
+	// sign is shown to need such a share.
+	if proof != ProofNone && protection < RequiredKerberosProtection(share.MinKerberosLevel) {
+		return fmt.Errorf("%w: share %q requires min kerberos level %q (request has protection %d)",
+			ErrExportAccessDenied, share.Name, share.MinKerberosLevel, protection)
+	}
+
+	if netgroup == nil {
+		return nil
+	}
+	allowed, err := netgroup(ctx, share.Name, clientIP)
+	if err != nil {
+		return fmt.Errorf("%w: netgroup check for share %q failed: %w",
+			ErrExportAccessDenied, share.Name, err)
+	}
+	if !allowed {
+		return fmt.Errorf("%w: client %s is not in the netgroup allowed for share %q",
+			ErrExportAccessDenied, clientIP, share.Name)
+	}
+	return nil
+}
 
 // ExportAcceptsNoAuthFlavor reports whether a share's NFS export policy leaves
 // no auth flavor a client could ever use.

@@ -3041,11 +3041,10 @@ is a named set of IP addresses, CIDR ranges, or hostnames that can be referenced
 from share security policies to allow or restrict which network endpoints can
 access a share. All subcommands require admin privileges.
 
-Netgroups are part of a share's NFS export policy: they are attached with
-"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT)
-and on NFSv4 (on every operation that resolves the share). They do NOT apply to
-SMB — restrict SMB access with share permissions and user authentication
-instead.
+Netgroups are part of a share's access policy: they are attached with
+"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT),
+on NFSv4 (on every operation that resolves the share) and on SMB (at
+TREE_CONNECT and on every request on the tree).
 
 **Examples:**
 
@@ -3911,7 +3910,7 @@ Flags:
       --relaxed-metadata-commit         Let an operation that promised stable metadata return before the metadata fsync
       --retention string                Retention policy (pin|ttl|lru)
       --retention-ttl string            Retention TTL duration (e.g., 72h, 24h)
-      --squash string                   NFS export squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a root-mounted client is not squashed to guest.
+      --squash string                   Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.
       --streams-disabled                Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').
       --trash-exclude strings           Glob patterns whose deletions bypass the recycle bin (repeatable).
       --trash-max-size int              Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).
@@ -4273,10 +4272,12 @@ Manage per-share NFS adapter configuration
 
 View and update the NFS adapter configuration for a share.
 
-This controls protocol-specific NFS export settings such as the squash mode,
-auth flavor, and the netgroup that restricts which clients may access the
-export. Netgroup changes take effect immediately; other fields apply on the
-next adapter restart.
+This controls the share's export settings: the squash mode, the
+authentication flags and the netgroup that restricts which clients may reach
+the share. The authentication flags and the netgroup are the share's access
+policy, which applies over NFS and SMB alike; the squash mode maps the
+identities of SMB sessions too, guest sessions excepted. Changes take effect
+immediately.
 
 **Examples:**
 
@@ -4312,12 +4313,12 @@ Update a share's NFS adapter configuration
 Update the NFS adapter configuration for a share.
 
 Only the flags you supply are changed; omitted flags leave the existing values
-intact. Netgroup changes take effect immediately. Changes to squash mode and
-authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
-next NFS adapter restart.
+intact. Changes take effect immediately, without an adapter restart.
 
-The netgroup allowlist is NFS export policy: it is enforced on NFSv3 mounts and
-on NFSv4 operations, and has no effect on SMB access to the same share.
+The netgroup allowlist and the authentication flags are the share's access
+policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
+requests to the same share. The squash mode is not NFS-only either: it maps the
+identities of SMB sessions on the share as well, guest sessions excepted.
 
 ```
 dfsctl share nfs-config set <name> [flags]
@@ -4329,7 +4330,7 @@ dfsctl share nfs-config set <name> [flags]
 # Restrict access to a specific netgroup
 dfsctl share nfs-config set /export --netgroup office-network
 
-# Remove the netgroup restriction (allow all NFS clients)
+# Remove the netgroup restriction (allow all clients)
 dfsctl share nfs-config set /export --netgroup ""
 
 # Map root UID to guest on this export
@@ -4609,10 +4610,13 @@ Remove a share
 
 Permanently remove a share from the DittoFS server.
 
-Removing a share removes its configuration from the control plane. The
-underlying block and metadata stores are NOT deleted — only the share record
-that ties them together. This operation is irreversible: you will be prompted
-for confirmation unless --force is specified. Disable the share first
+Removing a share deletes its configuration, its records in its metadata store
+and its local journal, so a share created again under the same name starts
+empty. Blocks already synced to a remote block store are left to garbage
+collection, and the metadata and block stores themselves are kept. If the
+share's data cannot be deleted, the removal fails and keeps the share, so it
+can be repeated. This operation is irreversible: you will be prompted for
+confirmation unless --force is specified. Disable the share first
 ('dfsctl share disable') if you want to drain active clients before removing.
 
 ```

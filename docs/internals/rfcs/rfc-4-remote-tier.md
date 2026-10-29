@@ -1136,13 +1136,14 @@ and raising drift on it would answer a share at its journal limit with no space
 caller does two things before its next call to the store:
 
 - it issues no delete, puts nothing at a backup location, and prunes nothing for the store;
-- it raises the store's **drift condition**, through the syncer's `SetDrift`
+- it records drift in the namespace's `Recheck` record, from which each
+  process's GC raises the store's **drift condition** through its syncer's `SetDrift`
   ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), which the syncer reads as part of
   the store's health ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)): while the condition stands, the put
   direction is unhealthy and the syncer refuses puts to the store. Gets go on,
   since drift endangers what is written and deleted, not what is read.
 
-A later `Recheck` that passes clears the condition, by `SetDrift(store, nil)`. A folder store's holder that
+A later `Recheck` that passes is recorded, and each process's GC then clears the condition, by `SetDrift(store, nil)` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). A folder store's holder that
 finds drift fails the copy or sweep it was about to start, which then follows
 [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)'s failure path. The store itself keeps
 neither the result nor the condition ([§4.9](#4.9%20No%20state%20across%20calls)). Each profile names the settings
@@ -1183,7 +1184,7 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 | Answers | Metric | Type |
 | --- | --- | --- |
 | calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `remote_requests_total` | counter |
-| time per call, by `op` | `remote_request_seconds` | histogram |
+| time per call, by `op` folded to the five data calls (`put`, `get`, `delete`, `list`, `health`) and `other` for every other `op` | `remote_request_seconds` | histogram |
 | bytes moved, by `op` | `remote_bytes_total` | counter |
 | connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `remote_connections_opened_total` | counter |
 | entries under the block namespace that are not blocks ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `remote_list_foreign_total` | counter |
@@ -1195,7 +1196,9 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 
 `op` also takes `recheck` (each `RecheckSetting` and `VersionsPage` call), `put_control`, `get_control`, `put_version`,
 `get_version`, `retention`, `extend_retention`, `put_object`, `get_object`,
-`list_objects` and `delete_objects`, and an `ErrDenied` result is labelled with
+`list_objects` and `delete_objects` on the counter, where every `op` keeps its
+own value; the histogram counts them all as `other`, so a store's histogram
+stays at six `op` values times its buckets. An `ErrDenied` result is labelled with
 its cause; a drifted `Recheck`
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check

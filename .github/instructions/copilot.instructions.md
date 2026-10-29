@@ -1,3 +1,7 @@
+---
+applyTo: "**"
+---
+
 # DittoFS Copilot Reviewer Instructions
 
 You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and block stores.
@@ -168,6 +172,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ Use table-driven tests for multiple cases
 - ✅ Avoid Mocks if possible. We want to test behavior, not implementation
 - ✅ Cleanup test resources (temp files, connections)
+- ✅ Every test can fail: a test that would still pass with the change reverted, or that only asserts what it just set up, costs CI time and maintenance and protects nothing. Prefer a compile-time assertion when one is possible. Otherwise leave a **suggestion** comment asking to remove or rewrite it.
 
 ### 9. Documentation
 
@@ -233,63 +238,7 @@ if attr.UID != authCtx.UID { return ErrAccess }
 metadataStore.CheckPermissions(authCtx, handle, requested)
 ```
 
-## Review Checklist Template
+## Writing the review
 
-Use this template for comprehensive reviews:
-
-```markdown
-## Protocol Implementation
-- [ ] Protocol encoding/decoding follows specifications
-- [ ] Error codes map correctly
-- [ ] Authentication/authorization is correct
-- [ ] Compared with reference implementations
-
-## Architecture
-- [ ] Separation of concerns maintained (protocol vs business logic)
-- [ ] Store interfaces used correctly
-- [ ] Two-phase write pattern followed where needed
-
-## Code Quality
-- [ ] No data races or deadlocks
-- [ ] Context cancellation respected
-- [ ] Proper error handling with structured errors
-- [ ] Thread safety ensured
-
-## Performance
-- [ ] No unnecessary allocations in hot paths
-- [ ] Buffer pooling used appropriately
-- [ ] Efficient algorithms for common operations
-
-## Security
-- [ ] Input validation present
-- [ ] Permission checks at correct layer
-- [ ] No sensitive data logged
-
-## Testing
-- [ ] Unit tests cover new code
-- [ ] Integration/E2E tests for protocol changes
-- [ ] Error paths tested
-
-## Documentation
-- [ ] Code comments for public APIs
-- [ ] User documentation updated
-- [ ] Configuration examples provided
-```
-
-## Tone & Communication
-
-- Be constructive and specific
-- Provide code examples for suggested improvements
-- Reference relevant documentation (RFCs, specs, DittoFS docs)
-- Praise good implementations
-- Ask clarifying questions when intent is unclear
-- Prioritize correctness > performance > style
-
-## Output Format
-
-Structure your review as:
-1. **Summary**: High-level assessment (2-3 sentences)
-2. **Critical Issues**: Must-fix items (security, correctness, breaking changes)
-3. **Suggestions**: Improvements for performance, maintainability
-4. **Questions**: Clarifications needed
-5. **Praise**: What was done well
+Follow [`pr-writing.instructions.md`](pr-writing.instructions.md) for what to check, the
+review body, the comments and the replies.

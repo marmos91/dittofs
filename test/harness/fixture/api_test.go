@@ -1,12 +1,15 @@
 package fixture
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -26,7 +29,9 @@ type fakeAPI struct {
 	settings map[string]any
 	lease    int                       // what reading the settings back reports, when not 0
 	deleg    *bool                     // the same for delegations, when not nil
+	unbound  bool                      // reading back reports no registration with the host's rpcbind
 	stores   map[string]map[string]any // the config of each store, by its path
+	shares   []map[string]any          // each share created, as sent
 	sick     string                    // when set, the block store's health check fails with it
 }
 
@@ -47,10 +52,15 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			call += " off"
 		}
 		_ = json.NewEncoder(w).Encode(apiclient.Adapter{Type: adapter, Port: f.running[adapter], Enabled: f.running[adapter] > 0, Running: f.running[adapter] > 0})
-	case r.URL.Path == "/api/v1/adapters/nfs/settings" && r.Method == http.MethodPatch:
-		f.settings = body
+	case r.URL.Path == "/api/v1/adapters/smb/settings":
+		call += fmt.Sprintf(" %v", body)
+		_, _ = w.Write([]byte("{}"))
+	case r.URL.Path == "/api/v1/shares" && r.Method == http.MethodPost:
+		f.shares = append(f.shares, body)
+		call += fmt.Sprintf(" %v owner=%v", body["name"], body["owner"])
 		_, _ = w.Write([]byte("{}"))
 	case r.URL.Path == "/api/v1/adapters/nfs/settings":
+		f.settings = body
 		lease, _ := f.settings["lease_time"].(float64)
 		if f.lease != 0 {
 			lease = float64(f.lease)
@@ -59,7 +69,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.deleg != nil {
 			deleg = *f.deleg
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"lease_time": lease, "delegations_enabled": deleg})
+		register := f.settings["portmapper_register_with_system"] == true && !f.unbound
+		_ = json.NewEncoder(w).Encode(map[string]any{"lease_time": lease, "delegations_enabled": deleg,
+			"portmapper_register_with_system": register, "udp_enabled": f.settings["udp_enabled"] == true})
 	case r.URL.Path == "/api/v1/adapters":
 		var list []apiclient.Adapter
 		for _, a := range []string{"nfs", "smb"} {
@@ -81,6 +93,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("{}"))
 	case strings.Contains(r.URL.Path, "/permissions/users/"):
 		call += fmt.Sprintf(" %v", body["level"])
+	case r.URL.Path == "/api/v1/identity-mappings":
+		call += fmt.Sprintf(" %v %v to %v", body["provider_name"], body["principal"], body["username"])
+		_, _ = w.Write([]byte("{}"))
 	default:
 		_, _ = w.Write([]byte("{}"))
 	}
@@ -97,18 +112,25 @@ func newFakeAPI(t *testing.T) (*fakeAPI, *apiclient.Client, string) {
 	return f, c, srv.URL
 }
 
-// The server's own adapters go off first; the stores, the share, its squash
-// and the users with their grants go in; the NFS settings are set before NFS
-// is enabled on the fixture's port, and read back once it runs. The check
-// then finds NFS served there and nothing else.
+// testServer is a fixture f with its API at url and its data in /data, serving
+// NFS on nfsPort and SMB on smbPort when they aren't 0, with the default
+// share.
+func testServer(f registry.Fixture, url string, nfsPort, smbPort int) *Server {
+	return &Server{f: f, api: url, admin: "secret", data: "/data", shares: []apiclient.CreateShareRequest{{Name: Share}}, nfsPort: nfsPort, smbPort: smbPort, out: io.Discard}
+}
+
+// The server's own adapters go off first; the stores, the users, then the
+// share, its squash and the users' grants go in; the NFS settings are set
+// before NFS is enabled on the fixture's port, and read back once it runs.
+// The check then finds NFS served there and nothing else.
 func TestConfigureOrder(t *testing.T) {
 	f, c, url := newFakeAPI(t)
 	no := false
-	fx := registry.Fixture{Profile: "badger", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []int{65532, 1}, Delegations: &no, Lease: "30s"}
-	if err := configure(c, fx, nil, "/data", "pw", 40001); err != nil {
+	s := testServer(registry.Fixture{Profile: "badger", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []string{"65532", "1"}, Delegations: &no, Lease: "30s"}, url, 40001, 0)
+	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if err := check(context.Background(), c, url, nil, 40001); err != nil {
+	if err := s.check(c, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -116,17 +138,16 @@ func TestConfigureOrder(t *testing.T) {
 		"PUT /api/v1/adapters/smb off",
 		"POST /api/v1/store/metadata badger",
 		"POST /api/v1/store/block memory",
-		"POST /api/v1/shares",
-		"PATCH /api/v1/shares/export/adapters/nfs/config",
 		"POST /api/v1/users dt-65532 uid=65532 gid=65532",
-		"PUT /api/v1/shares/export/permissions/users/dt-65532 read-write",
 		"POST /api/v1/users dt-1 uid=1 gid=1",
-		"PUT /api/v1/shares/export/permissions/users/dt-1 read-write",
 		"POST /api/v1/users dt-user uid=65535 gid=65535",
+		"POST /api/v1/users dt-user2 uid=65536 gid=65536",
+		"POST /api/v1/shares /export owner=<nil>",
+		"PATCH /api/v1/shares/export/adapters/nfs/config",
+		"PUT /api/v1/shares/export/permissions/users/dt-65532 read-write",
+		"PUT /api/v1/shares/export/permissions/users/dt-1 read-write",
 		"PATCH /api/v1/adapters/nfs/settings",
 		"PUT /api/v1/adapters/nfs on",
-		"GET /api/v1/adapters/nfs/settings",
-		"GET /health/ready",
 		"GET /api/v1/adapters",
 	}
 	if !slices.Equal(f.calls, want) {
@@ -137,52 +158,215 @@ func TestConfigureOrder(t *testing.T) {
 	}
 }
 
+// A shares file's shares are each created with their own settings, owned by
+// {user}, who gets the admin grant on each; SMB encryption is set before SMB
+// is enabled on the fixture's port, and the check then finds SMB served
+// there and nothing else.
+func TestConfigureSMB(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred"}, Shares: "shares.yaml"}, url, 0, 40002)
+	on := true
+	s.shares = []apiclient.CreateShareRequest{{Name: "/a"}, {Name: "/b", AccessBasedEnumeration: &on}}
+	if err := s.configure(c, nil, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.check(c, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"PUT /api/v1/adapters/nfs off",
+		"PUT /api/v1/adapters/smb off",
+		"POST /api/v1/store/metadata badger",
+		"POST /api/v1/store/block memory",
+		"POST /api/v1/users dt-user uid=65535 gid=65535",
+		"POST /api/v1/users dt-user2 uid=65536 gid=65536",
+		"POST /api/v1/shares /a owner=dt-user",
+		"PUT /api/v1/shares/a/permissions/users/dt-user admin",
+		"POST /api/v1/shares /b owner=dt-user",
+		"PUT /api/v1/shares/b/permissions/users/dt-user admin",
+		"PATCH /api/v1/adapters/smb/settings map[enable_encryption:true]",
+		"PUT /api/v1/adapters/smb on",
+		"GET /api/v1/adapters",
+	}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if f.running["smb"] != 40002 || f.shares[1]["access_based_enumeration"] != true {
+		t.Errorf("SMB on %d, shares %v", f.running["smb"], f.shares)
+	}
+}
+
+// With Kerberos, {user}'s principal maps to {user} once the test users are
+// in, as the scripts' bootstrap maps it, and the check finds SMB at {server},
+// a name then, and fails when the name doesn't lead there.
+func TestConfigureKerberos(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	port := l.Addr().(*net.TCPAddr).Port
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, url, 0, port)
+	s.kdc = &kdc{host: "localhost"}
+	if err := s.configure(c, nil, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.check(c, nil); err != nil {
+		t.Errorf("SMB at {server}: %v", err)
+	}
+	want := []string{
+		"POST /api/v1/users dt-user uid=65535 gid=65535",
+		"POST /api/v1/users dt-user2 uid=65536 gid=65536",
+		"POST /api/v1/identity-mappings kerberos dt-user@DITTOFS.TEST to dt-user",
+		"POST /api/v1/shares /export owner=<nil>",
+	}
+	if i := slices.Index(f.calls, want[0]); i < 0 || i+len(want) > len(f.calls) || !slices.Equal(f.calls[i:i+len(want)], want) {
+		t.Errorf("calls:\n%s\nwant, in a row:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	// SMB moves to port 1, which nothing listens on, and unlike a port the
+	// test frees, nothing else gets it meanwhile: it's never handed out as a
+	// free port, and an ordinary user may not bind it.
+	f.running["smb"], s.smbPort = 1, 1
+	if err := s.check(c, nil); err == nil || !strings.Contains(err.Error(), "{server}, the name localhost, doesn't lead to SMB's port") {
+		t.Errorf("nothing at {server}: %v", err)
+	}
+}
+
+// Reset removes the share it's given, a test's {share}, and creates it again
+// as configure did, with its settings, owner and grant, and touches no other
+// share. A share the fixture doesn't have isn't reset.
+func TestReset(t *testing.T) {
+	f, _, url := newFakeAPI(t)
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Shares: "shares.yaml"}, url, 0, 40002)
+	on := true
+	s.shares = []apiclient.CreateShareRequest{{Name: "/a"}, {Name: "/b", EncryptData: true, StreamsDisabled: &on}}
+	if err := s.Reset("b"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"POST /api/v1/auth/login",
+		"DELETE /api/v1/shares/b",
+		"POST /api/v1/shares /b owner=dt-user",
+		"PUT /api/v1/shares/b/permissions/users/dt-user admin",
+	}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if sent := f.shares[0]; sent["encrypt_data"] != true || sent["streams_disabled"] != true {
+		t.Errorf("the share recreated as %v", sent)
+	}
+	if err := s.Reset("c"); err == nil || len(f.calls) != len(want) {
+		t.Errorf("a share the fixture lacks: %v, calls %q", err, f.calls)
+	}
+}
+
 // A fixture without NFS settings or an export sets none and enables no
 // adapter; one whose lease or delegations don't read back as set fails, as
 // does a lease that isn't whole seconds.
 func TestConfigureSettings(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	if err := configure(c, registry.Fixture{Profile: "memory"}, nil, "/data", "pw", 0); err != nil {
+	s := testServer(registry.Fixture{Profile: "memory"}, url, 0, 0)
+	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if err := check(context.Background(), c, url, nil, 0); err != nil {
+	if err := s.check(c, nil); err != nil {
 		t.Errorf("no adapter asked for: %v", err)
 	}
 	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.Contains(c, "settings") || strings.HasSuffix(c, " on") }) {
 		t.Errorf("calls %q", f.calls)
 	}
 
-	f, c, _ = newFakeAPI(t)
+	f, c, url = newFakeAPI(t)
 	f.lease = 90
-	err := configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, nil, "/data", "pw", 40001)
+	err := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, url, 40001, 0).configure(c, nil, "pw")
 	if err == nil || !strings.Contains(err.Error(), "lease of 90s, not the 30s") {
 		t.Errorf("a lease that reads back wrong: %v", err)
 	}
 
-	f, c, _ = newFakeAPI(t)
+	f, c, url = newFakeAPI(t)
 	yes, no := true, false
 	f.deleg = &yes
-	err = configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, nil, "/data", "pw", 40001)
+	err = testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, url, 40001, 0).configure(c, nil, "pw")
 	if err == nil || !strings.Contains(err.Error(), "delegations true, not the false") {
 		t.Errorf("delegations that read back wrong: %v", err)
 	}
 
-	_, c, _ = newFakeAPI(t)
-	if err := configure(c, registry.Fixture{Profile: "memory", Lease: "1.5s"}, nil, "/data", "pw", 0); err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
+	_, c, url = newFakeAPI(t)
+	if err := testServer(registry.Fixture{Profile: "memory", Lease: "1.5s"}, url, 0, 0).configure(c, nil, "pw"); err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
 		t.Errorf("a lease of 1.5s: %v", err)
 	}
 }
 
-// The check fails when NFS isn't served where the fixture asked, or when an
-// adapter it didn't ask for runs.
+// self is the user dt runs as, in its own group, with a read-write grant like
+// any user's. rpcbind: host has the server register with the host's rpcbind
+// and serve UDP, as the setting it reads back must say.
+func TestConfigureSelfAndRPCBind(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	s := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Users: []string{"self"}, RPCBind: "host"}, url, 40001, 0)
+	if err := s.configure(c, nil, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	// A Windows process has no uid (os.Getuid is -1), and users: self runs on Linux only.
+	if runtime.GOOS != "windows" {
+		self := fmt.Sprintf("dt-%d", os.Getuid())
+		for _, call := range []string{
+			fmt.Sprintf("POST /api/v1/users %s uid=%d gid=%d", self, os.Getuid(), os.Getgid()),
+			"PUT /api/v1/shares/export/permissions/users/" + self + " read-write",
+		} {
+			if !slices.Contains(f.calls, call) {
+				t.Errorf("no %q among the calls:\n%s", call, strings.Join(f.calls, "\n"))
+			}
+		}
+	}
+	if f.settings["portmapper_register_with_system"] != true || f.settings["udp_enabled"] != true {
+		t.Errorf("settings sent: %v", f.settings)
+	}
+
+	f, c, url = newFakeAPI(t)
+	f.unbound = true
+	err := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, RPCBind: "host"}, url, 40001, 0).configure(c, nil, "pw")
+	if err == nil || !strings.Contains(err.Error(), "doesn't register with the host's rpcbind") {
+		t.Errorf("a registration that reads back off: %v", err)
+	}
+}
+
+// The host's rpcbind must list the server's lock manager and MOUNT over TCP
+// on its NFS port: another lock manager's registration, or the server's own
+// on another port, doesn't count.
+func TestUnregistered(t *testing.T) {
+	const table = `   program vers proto   port  service
+    100000    4   tcp    111  portmapper
+    100021    4   udp  40001  nlockmgr
+    100021    4   tcp  33421  nlockmgr
+    100005    3   tcp  40001  mountd
+`
+	if got, nlm := unregistered(table, 40001); !slices.Equal(got, []string{"lock manager"}) || nlm != "33421" {
+		t.Errorf("another lock manager's registration: missing %q, NLM at %q", got, nlm)
+	}
+	if got, nlm := unregistered(strings.Replace(table, "tcp  33421", "tcp  40001", 1), 40001); len(got) != 0 || nlm != "" {
+		t.Errorf("both registered: missing %q, NLM at %q", got, nlm)
+	}
+	if got, _ := unregistered(table, 40002); !slices.Equal(got, []string{"MOUNT", "lock manager"}) {
+		t.Errorf("another port: missing %q", got)
+	}
+}
+
+// The check fails when NFS or SMB isn't served where the fixture asked, or
+// when an adapter it didn't ask for runs.
 func TestCheck(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	if err := check(context.Background(), c, url, nil, 40001); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
+	if err := testServer(registry.Fixture{}, url, 40001, 0).check(c, nil); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
 		t.Errorf("the server's own SMB adapter: %v", err)
 	}
 	delete(f.running, "smb")
-	if err := check(context.Background(), c, url, nil, 40001); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
+	if err := testServer(registry.Fixture{}, url, 40001, 0).check(c, nil); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
 		t.Errorf("NFS on 12049: %v", err)
+	}
+	f.running["smb"] = 12445
+	delete(f.running, "nfs")
+	if err := testServer(registry.Fixture{}, url, 0, 40002).check(c, nil); err == nil || !strings.Contains(err.Error(), "SMB isn't served on port 40002") {
+		t.Errorf("SMB on 12445: %v", err)
 	}
 }
 
@@ -192,7 +376,8 @@ func TestCheck(t *testing.T) {
 func TestConfigureS3(t *testing.T) {
 	f, c, url := newFakeAPI(t)
 	b := &bucket{endpoint: "http://10.0.0.5:4566", prefix: "dt-0123456789abcdef/"}
-	if err := configure(c, registry.Fixture{Profile: "badger-s3"}, b, "/data", "pw", 0); err != nil {
+	s := testServer(registry.Fixture{Profile: "badger-s3"}, url, 0, 0)
+	if err := s.configure(c, b, "pw"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(f.calls, "POST /api/v1/store/block s3") {
@@ -202,11 +387,11 @@ func TestConfigureS3(t *testing.T) {
 	if blocks["bucket"] != bucketName || blocks["prefix"] != b.prefix || blocks["endpoint"] != b.endpoint || meta["path"] != filepath.Join("/data", "metadata") {
 		t.Errorf("block store %v, metadata store %v", blocks, meta)
 	}
-	if err := check(context.Background(), c, url, b, 0); err != nil {
+	if err := s.check(c, b); err != nil {
 		t.Errorf("a healthy block store: %v", err)
 	}
 	f.sick = "S3 health check failed: NotFound"
-	if err := check(context.Background(), c, url, b, 0); err == nil || !strings.Contains(err.Error(), "can't reach the bucket dittofs-dt at http://10.0.0.5:4566: S3 health check failed: NotFound") {
+	if err := s.check(c, b); err == nil || !strings.Contains(err.Error(), "can't reach the bucket dittofs-dt at http://10.0.0.5:4566: S3 health check failed: NotFound") {
 		t.Errorf("an unhealthy block store: %v", err)
 	}
 }

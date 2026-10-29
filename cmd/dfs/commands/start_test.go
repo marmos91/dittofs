@@ -16,13 +16,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 
+	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestStart_FutureFormatExitCode asserts the boot-guard contract:
@@ -479,6 +480,10 @@ func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	}
 }
 
+// krbMetaStore names the metadata store persistKerberosShare writes, which the
+// tests register by the same name.
+const krbMetaStore = "krb-meta"
+
 // persistKerberosShare writes the share row, its metadata and block store, and
 // the NFS adapter config an operator leaves behind by setting require_kerberos
 // while Kerberos is configured.
@@ -486,7 +491,7 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	t.Helper()
 
 	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		Name: "krb-meta", Type: "badger", Config: `{"in_memory":true}`,
+		Name: krbMetaStore, Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -498,7 +503,7 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	}
 	shareID, err := s.CreateShare(ctx, &models.Share{
 		Name:            name,
-		MetadataStoreID: "krb-meta",
+		MetadataStoreID: krbMetaStore,
 		BlockStoreID:    blockStoreID,
 	})
 	if err != nil {
@@ -539,19 +544,13 @@ func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 	const shareName = "/krb-ordered"
 	persistKerberosShare(t, ctx, s, shareName)
 
-	// InitializeFromStore is what runStart uses: it registers the persisted
-	// metadata stores, without which every share is skipped and the assertion
-	// below would fail for a reason unrelated to the ordering.
-	rt, err := runtime.InitializeFromStore(ctx, s)
-	if err != nil {
-		t.Fatalf("InitializeFromStore: %v", err)
+	// The persisted metadata store is registered as runStart's
+	// InitializeFromStore would; without it every share is skipped and the
+	// assertion below would fail for a reason unrelated to the ordering.
+	rt := testruntime.New(t, s)
+	if err := rt.RegisterMetadataStore(krbMetaStore, badgertest.NewInMemory(t)); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	// The server has Kerberos, so the persisted policy is satisfiable and the
 	// share must load.

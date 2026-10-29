@@ -21,6 +21,9 @@ import (
 	"time"
 )
 
+// listen opens a listener; the tests replace it.
+var listen = net.Listen
+
 // platforms maps a platform need to Go's name for it.
 var platforms = map[string]string{"linux": "linux", "windows": "windows", "macos": "darwin"}
 
@@ -32,6 +35,7 @@ var tools = map[string]map[string]string{
 	"kerberos":       {"linux": "kinit", "darwin": "kinit"},
 	"dm-flakey":      {"linux": "dmsetup"},
 	"knfsd":          {"linux": "exportfs"},
+	"fio":            {"linux": "fio", "darwin": "fio"},
 }
 
 // debian names the Debian and Ubuntu package holding a tool's program, where
@@ -45,7 +49,7 @@ var debian = map[string]string{
 }
 
 // inDtc are the tools the dtc image installs.
-var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true}
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true, "fio": true}
 
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{
@@ -96,7 +100,8 @@ func Hint(n string) string {
 	return hint
 }
 
-// Check returns why the machine doesn't meet need n, or nil when it does.
+// Check returns why the machine doesn't meet need n, one the registry
+// accepts, or nil when it does.
 // root is the checkout, whose local services' values a service need falls
 // back to.
 func Check(root, n string) error {
@@ -127,7 +132,20 @@ func Check(root, n string) error {
 		// Every address and loopback alone: some systems let the first bind
 		// while something listens on the second.
 		for _, addr := range []string{":" + arg, "127.0.0.1:" + arg} {
-			l, err := net.Listen("tcp", addr)
+			l, err := listen("tcp", addr)
+			if errors.Is(err, os.ErrPermission) {
+				// decision: a port below those an ordinary user may bind is
+				// checked by connecting to it on loopback, so something that
+				// listens only on another address goes unseen, and the
+				// fixture that binds it then fails to start. A knfsd fixture
+				// starts instead, on the host's NFS server, and stops it.
+				conn, err := net.DialTimeout("tcp", "127.0.0.1:"+arg, time.Second)
+				if err != nil {
+					return nil
+				}
+				_ = conn.Close()
+				return errors.New("the port is in use")
+			}
 			if err != nil {
 				return errors.New("the port is in use")
 			}
@@ -208,10 +226,7 @@ func serviceVars(root, name string) ([]string, error) {
 // checkService meets a service need when its variables are there and its
 // address answers, so the tests can't skip it unseen.
 func checkService(root, name string) error {
-	s, ok := services[name]
-	if !ok {
-		return errors.New("no such service")
-	}
+	s := services[name]
 	vars, err := serviceVars(root, name)
 	if err != nil {
 		return err
