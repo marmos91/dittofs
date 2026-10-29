@@ -2,7 +2,6 @@ package index
 
 import (
 	"fmt"
-	"iter"
 	"math"
 	"reflect"
 	"slices"
@@ -253,8 +252,12 @@ func TestInspectOrderTieBreaks(t *testing.T) {
 		f.retained.add(Retained{Piece: Piece{Extent: ext(2, 4), Record: rec(1, 8192), Version: ver(1)}, By: ver(5)})
 		// Markers inserted as remove inserts them: applied v5 first, the slice
 		// keeps v3 before v5, version order.
-		f.deallocate(ext(2, 4), ver(5))
-		f.deallocate(ext(2, 4), ver(3))
+		if err := f.deallocate(ext(2, 4), ver(5)); err != nil {
+			return err
+		}
+		if err := f.deallocate(ext(2, 4), ver(3)); err != nil {
+			return err
+		}
 		f.write(write(2, 4, rec(1, 0), 8))
 		return nil
 	})
@@ -310,21 +313,25 @@ func TestInspectMissingFileCreatesNothing(t *testing.T) {
 }
 
 // inspectState is the index's whole state, captured as the does-not-mutate
-// check compares it. The scratch capacities are captured per file, since the
-// two sets' scratch is a file's own.
+// check compares it. Every per-file field — pieces, entries, change version,
+// tags, rival, segments, drop ranges, scratch — is keyed by FileID, so the
+// comparison sees every file's state and not only the one the shard map
+// iteration reached last; the per-file slices are captured under each file's
+// own view, in FileID order, so two captures of the same index list them the
+// same way.
 type inspectState struct {
 	files     int
-	entries   []Entry
-	held      []Piece
-	retained  []Retained
-	change    core.Version
-	hasChange bool
-	tag       core.ShareTag
-	tagged    bool
-	rival     core.ShareTag
-	rivalled  bool
-	segs      []core.SegmentID
-	ranges    map[core.SegmentID][]dropRange
+	entries   map[core.FileID][]Entry
+	held      map[core.FileID][]Piece
+	retained  map[core.FileID][]Retained
+	change    map[core.FileID]core.Version
+	hasChange map[core.FileID]bool
+	tag       map[core.FileID]core.ShareTag
+	tagged    map[core.FileID]bool
+	rival     map[core.FileID]core.ShareTag
+	rivalled  map[core.FileID]bool
+	segs      map[core.FileID][]core.SegmentID
+	ranges    map[core.FileID]map[core.SegmentID][]dropRange
 	count     int64
 	drops     int64
 	scratch   map[core.FileID][2]int
@@ -337,43 +344,70 @@ type inspectState struct {
 // capture copies the index's whole state out, no read-out involved.
 func capture(fs *files) inspectState {
 	var st inspectState
-	st.scratch, st.work, st.parts = map[core.FileID][2]int{}, map[core.FileID]int{}, map[core.FileID]int{}
-	st.ranges = map[core.SegmentID][]dropRange{}
+	clear := func() {
+		st.entries = map[core.FileID][]Entry{}
+		st.held = map[core.FileID][]Piece{}
+		st.retained = map[core.FileID][]Retained{}
+		st.change = map[core.FileID]core.Version{}
+		st.hasChange = map[core.FileID]bool{}
+		st.tag = map[core.FileID]core.ShareTag{}
+		st.tagged = map[core.FileID]bool{}
+		st.rival = map[core.FileID]core.ShareTag{}
+		st.rivalled = map[core.FileID]bool{}
+		st.segs = map[core.FileID][]core.SegmentID{}
+		st.ranges = map[core.FileID]map[core.SegmentID][]dropRange{}
+		st.scratch = map[core.FileID][2]int{}
+		st.work = map[core.FileID]int{}
+		st.parts = map[core.FileID]int{}
+	}
+	clear()
 	st.segments = map[core.SegmentID]SegmentBytes{}
+
+	var ids []core.FileID
 	for i := range fs.shards {
 		s := &fs.shards[i]
 		s.mu.Lock()
-		ids := make([]core.FileID, 0, len(s.m))
 		for id := range s.m {
 			ids = append(ids, id)
 		}
 		s.mu.Unlock()
-		st.files += len(ids)
-		for _, id := range ids {
-			fs.view(id, func(f *file) {
-				st.held = f.held.pieces(st.held)
-				st.retained = f.retained.list(st.retained)
-				st.entries = f.appendEntries(st.entries)
-				st.change, st.hasChange = f.changeVersion()
-				st.tag, st.tagged = f.owner()
-				st.rival, st.rivalled = f.rival, f.rivalled
-				for _, sr := range f.segs {
-					st.segs = append(st.segs, sr.seg)
-					st.ranges[sr.seg] = slices.Clone(sr.ranges)
-				}
-				st.scratch[id] = [2]int{cap(f.held.scratch), len(f.held.scratch)}
-				st.work[id] = cap(f.held.work)
-				st.parts[id] = cap(f.retained.parts)
-			})
-		}
 	}
-	slices.Sort(st.segs)
+	slices.SortFunc(ids, compareFileIDs)
+	st.files = len(ids)
+	for _, id := range ids {
+		fs.view(id, func(f *file) {
+			st.held[id] = f.held.pieces(nil)
+			st.retained[id] = f.retained.list(nil)
+			st.entries[id] = f.appendEntries(nil)
+			st.change[id], st.hasChange[id] = f.changeVersion()
+			st.tag[id], st.tagged[id] = f.owner()
+			st.rival[id], st.rivalled[id] = f.rival, f.rivalled
+			st.segs[id] = make([]core.SegmentID, 0, len(f.segs))
+			st.ranges[id] = map[core.SegmentID][]dropRange{}
+			for _, sr := range f.segs {
+				st.segs[id] = append(st.segs[id], sr.seg)
+				st.ranges[id][sr.seg] = slices.Clone(sr.ranges)
+			}
+			slices.Sort(st.segs[id])
+			st.scratch[id] = [2]int{cap(f.held.scratch), len(f.held.scratch)}
+			st.work[id] = cap(f.held.work)
+			st.parts[id] = cap(f.retained.parts)
+		})
+	}
 	for b := range fs.buckets {
 		st.buckets[b] = fs.buckets[b].Load()
 	}
 	st.count = fs.extentCount()
 	st.drops = fs.dropRangeCount()
-	for _, seg := range slices.Compact(slices.Clone(st.segs)) {
+
+	// Every segment any file names contributes its counters to the table compare.
+	segs := make(map[core.SegmentID]bool)
+	for _, ss := range st.segs {
+		for _, seg := range ss {
+			segs[seg] = true
+		}
+	}
+	for seg := range segs {
 		st.segments[seg] = fs.segmentBytes(seg)
 	}
 	return st
@@ -663,17 +697,3 @@ func TestInspectFileConsistentUnderWrites(t *testing.T) {
 		t.Fatalf("read-out after the writer stopped: %v", inspectFile(&fs, id))
 	}
 }
-
-// fmtEntry renders an entry as the failure messages read best.
-func fmtEntry(e Entry) string {
-	kind := map[EntryKind]string{EntryHeld: "held", EntryRetained: "retained", EntryMarker: "marker"}[e.Kind]
-	s := fmt.Sprintf("%s [%d,%d) @%v", kind, e.Extent.Off, e.Extent.Off+e.Extent.Len, e.Version)
-	if e.Clone != nil {
-		s += fmt.Sprintf(" clone %+v", *e.Clone)
-	}
-	return s
-}
-
-var _ = fmtEntry
-var _ = iter.Seq2[core.FileID, []Entry](nil)
-var _ = time.Second

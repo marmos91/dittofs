@@ -651,7 +651,7 @@ func TestModelFuzzFilesInDistinctBuckets(t *testing.T) {
 // to break. Add an operation when the model gains one.
 
 // decision: the four fuzz files sit in distinct floor buckets, because the
-// harness keeps no per-file change version once a file's entry has dropped —
+// index keeps no per-file change version once a file's entry has dropped —
 // a file holding only filled content answers its bucket's version. In a
 // shared bucket that version can stand above the file's own last change,
 // and the model's comparison then requires the exact change version where

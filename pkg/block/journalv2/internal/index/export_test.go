@@ -118,9 +118,16 @@ func (m *ModelIndex) Write(tag core.ShareTag, id core.FileID, off int64, data []
 // Fill holds p at version v, as the journal's Fill does, unless the file is
 // stale against asOf. The record's payload is stored with mtime 0, as a fill
 // carries no time. A fill the index accepted claims the file and notes its
-// record, as every append does; the note happens after the acceptance, since
-// files.fill commits through update and a second admission would
-// double-count.
+// record, as every append does; the note happens after the acceptance.
+//
+// decision: the harness skips the fill's admission on purpose. files.fill
+// commits through update, which applies the true entry delta of an
+// admission of zero, so a preceding admitFill — which reserves the entries
+// fillAdds predicts — would double-count them into the count the fuzz checks
+// with CheckAccounting. The skip leaves admitFill and fillAdds exercised by
+// nothing here; they stay covered by their own unit tests until the journal
+// wires the real Fill, whose claimed admission must then be brought over
+// with the count semantics settled the same way.
 func (m *ModelIndex) Fill(tag core.ShareTag, id core.FileID, off int64, data []byte, v, asOf core.Version) error {
 	if err := m.Check(tag, id); err != nil {
 		return err

@@ -121,29 +121,45 @@ func TestIndexBytesPerEntry(t *testing.T) {
 
 // TestBytesPerEntryFailsWithOneMoreField is the committed proof that the
 // memory check fails when one 8-byte field is added to the entry: an index
-// that grew an entry would pass nothing here. The proof measures the tree the
-// index holds through the honest measurement the RFC check itself uses —
-// same helper, same liveness rules, only the value type grown — so a bias in
-// one shows in the other. The held tree stays within the 56 the RFC holds
-// sequential order to; the fielded one leaves it on both bounds.
+// that grew an entry would pass nothing here. Both bounds are proved, in both
+// orders: the sequential leg holds the held tree within the 56 the RFC holds
+// sequential order to and the fielded one above it, and the random leg the
+// same against the 72. The proof measures the tree the index holds through
+// the honest measurement the RFC check itself uses — same helper, same
+// liveness rules, only the value type grown — so a bias in one shows in the
+// other.
 func TestBytesPerEntryFailsWithOneMoreField(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("builds a tree of 10^6 entries and measures its heap")
 	}
 	const n = 1_000_000
-	perm := rand.New(rand.NewPCG(6, 6)).Perm(n)
-	calibration := randomTreeBytesPerEntry(n, perm, func(i int) held {
+	heldVal := func(i int) held {
 		return held{version: ver(uint64(i + 1)), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}
-	})
-	t.Logf("tree of held entries, random order: %.1f bytes per entry", calibration)
-	if calibration > 72 {
-		t.Errorf("%.1f bytes per entry for the held tree in random order, above the 72 the RFC bounds it to: the calibration fails", calibration)
 	}
-	withField := randomTreeBytesPerEntry(n, perm, func(i int) heldPlusField {
-		return heldPlusField{held: held{version: ver(uint64(i + 1)), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}, extra: uint64(i)}
-	})
-	t.Logf("fielded tree of %d-byte entries, random order: %.1f bytes per entry", unsafe.Sizeof(heldPlusField{}), withField)
-	if withField <= 72 {
-		t.Errorf("%.1f bytes per entry for the fielded tree in random order, at or below 72: a grown entry passes the check", withField)
+	fieldedVal := func(i int) heldPlusField {
+		return heldPlusField{held: heldVal(i), extra: uint64(i)}
+	}
+
+	sequential := randomTreeBytesPerEntry(n, nil, heldVal)
+	t.Logf("tree of held entries, front to back: %.1f bytes per entry", sequential)
+	if sequential > 56 {
+		t.Errorf("%.1f bytes per entry for the held tree front to back, above the 56 the RFC bounds sequential order to: the calibration fails", sequential)
+	}
+	sequentialFielded := randomTreeBytesPerEntry(n, nil, fieldedVal)
+	t.Logf("fielded tree of %d-byte entries, front to back: %.1f bytes per entry", unsafe.Sizeof(heldPlusField{}), sequentialFielded)
+	if sequentialFielded <= 56 {
+		t.Errorf("%.1f bytes per entry for the fielded tree front to back, at or below 56: a grown entry passes the check", sequentialFielded)
+	}
+
+	perm := rand.New(rand.NewPCG(6, 6)).Perm(n)
+	randomCalibration := randomTreeBytesPerEntry(n, perm, heldVal)
+	t.Logf("tree of held entries, random order: %.1f bytes per entry", randomCalibration)
+	if randomCalibration > 72 {
+		t.Errorf("%.1f bytes per entry for the held tree in random order, above the 72 the RFC bounds it to: the calibration fails", randomCalibration)
+	}
+	randomFielded := randomTreeBytesPerEntry(n, perm, fieldedVal)
+	t.Logf("fielded tree of %d-byte entries, random order: %.1f bytes per entry", unsafe.Sizeof(heldPlusField{}), randomFielded)
+	if randomFielded <= 72 {
+		t.Errorf("%.1f bytes per entry for the fielded tree in random order, at or below 72: a grown entry passes the check", randomFielded)
 	}
 }

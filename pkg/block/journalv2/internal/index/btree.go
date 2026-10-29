@@ -11,13 +11,15 @@ import "sync/atomic"
 //
 // An insert that would split a full child first offers the child's last key
 // to a right sibling with room, as a B*-tree rotates, so leaves fill
-// whichever order keys arrive in: about 94% ascending, and about 2 in 3
-// random, which is owed to the sibling also filling before any split happens
-// between the two. A held extent's entry is 48 bytes, its 8-byte key beside
-// a 40-byte value, so a leaf of 31 is 1,504 bytes, just inside the
-// allocator's 1,536-byte size class; a 32nd slot would round it up to 1,792.
-// Ascending keys cost about 53 bytes an entry, within the index's budget of
-// 56, and random ones about 68, inside the 72 the RFC holds random order to.
+// whichever order keys arrive in: about 94% ascending, about 72% random and
+// nearly full descending — the fill the rotation owes to the sibling
+// filling before any split happens between the two, held by
+// TestRotatedInsertsFillLeaves. A held extent's entry is 48 bytes, its
+// 8-byte key beside a 40-byte value, so a leaf of 31 is 1,504 bytes, just
+// inside the allocator's 1,536-byte size class; a 32nd slot would round it
+// up to 1,792. Ascending keys cost about 53 bytes an entry, within the
+// index's budget of 56, and random ones about 68, inside the 72 the RFC
+// holds random order to.
 // The rightmost child has no right sibling and keeps its biased split, so
 // runs of ascending keys still fill the right edge first.
 const (

@@ -48,7 +48,7 @@ const _ = uint32(core.SegmentCap)
 //
 // ponytail: one entry per contiguous held piece of one record, which with the
 // tree around it costs about 53 bytes for extents written front to back and
-// about 69 for extents written in random order, so content written in small
+// about 68 for extents written in random order, so content written in small
 // writes costs an entry a write until it is offloaded and released or
 // repacked. Upgrade to entries that span consecutive records of one file with
 // a version range, splitting on demand, when the extent bound is reached in

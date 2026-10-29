@@ -13,10 +13,11 @@ import (
 // TestFuzzFindsPlantedSplit runs the model-based fuzz over every seed and
 // generated input on a build whose held set carries a known bug in its
 // three-way split, and requires the fuzz to find it: the first seed, the
-// three-way split itself, must diverge, and at least one input must overall.
-// A driver bug must not make the test pass vacuously, so any misuse the
-// model reports fails it here; every other test of the package is expected
-// to fail on this build, which is why CI runs this test alone.
+// three-way split itself, must diverge, and the other inputs that reach a
+// split are counted as found. A driver bug must not make the test pass
+// vacuously, so any misuse the model reports fails it here. The planted
+// build is expected to break other tests of the package, which is why only
+// this one runs on it.
 func TestFuzzFindsPlantedSplit(t *testing.T) {
 	inputs := plantInputs()
 	found := 0
@@ -40,8 +41,8 @@ func TestFuzzFindsPlantedSplit(t *testing.T) {
 		}
 		found++
 	}
-	if found == 0 {
-		t.Fatal("no input found the planted split bug")
+	if found < 2 {
+		t.Fatalf("the fuzz found the planted split bug in %d of %d inputs: every input reaching a split diverges, so a count of one means only the seed drove a bug", found, len(inputs))
 	}
 	t.Logf("the fuzz found the planted split bug in %d of %d inputs", found, len(inputs))
 }

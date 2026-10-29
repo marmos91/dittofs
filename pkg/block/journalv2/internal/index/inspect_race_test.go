@@ -15,8 +15,9 @@ import (
 // inside each update, while two readers loop the per-file read-out and drain
 // the bulk one, checking the order of each file's entries and that its held
 // extents are disjoint. The race detector catches a read-out that reads a
-// file's state without its lock, or a bulk read-out holding one file's lock
-// over another's.
+// file's state without its lock; it cannot see whether a lock is held across
+// a yield, which TestInspectAllYieldsHoldingNoLock pins on the non-race
+// build, where a held lock would deadlock the timed drain.
 func TestInspectRace(t *testing.T) {
 	var fs files
 	fs.setExtentLimit(1 << 24)
