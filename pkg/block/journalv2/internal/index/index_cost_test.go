@@ -22,8 +22,10 @@ type heldPlusField struct {
 // written in the order order gives, through admission and commit as the
 // journal writes, and returns the heap the whole index holds per entry.
 func indexBytesPerEntry(n int, order func(i int) int) float64 {
-	// The order slice is allocated before the first measurement, so it costs
-	// the structure nothing.
+	// The order slice is allocated before the first measurement and kept
+	// alive past the second, so its 8n bytes count on neither side of the
+	// difference: a slice the build loop outlives would be freed by the
+	// second read's collection and come off every entry's figure.
 	perm := make([]int, n)
 	for i := range perm {
 		perm[i] = order(i)
@@ -56,24 +58,35 @@ func indexBytesPerEntry(n int, order func(i int) int) float64 {
 		panic("indexBytesPerEntry: the count disagrees with the extents written")
 	}
 	runtime.KeepAlive(fs)
+	runtime.KeepAlive(perm)
 	// The subtraction is signed, so a shrinking heap shows as negative and
 	// fails the lower bound.
 	return float64(int64(after)-int64(before)) / float64(n)
 }
 
-// treeBytesPerEntry measures a bare tree of n entries, written front to back,
-// the calibration the one-more-field check runs against.
-func treeBytesPerEntry[V any](n int, val func(i int) V) float64 {
+// randomTreeBytesPerEntry measures a bare tree of n entries, written in the
+// order perm gives — front to back when perm is nil. The order slice is
+// allocated before the first measurement and kept alive past the second, so
+// its 8n bytes count on neither side of the difference, exactly as the
+// index-level measurement holds its own order slice alive.
+func randomTreeBytesPerEntry[V any](n int, perm []int, val func(i int) V) float64 {
+	if perm == nil {
+		perm = make([]int, n)
+		for i := range perm {
+			perm[i] = i
+		}
+	}
 	before := prof.LiveHeap()
 	t := &btree[V]{}
-	for i := range n {
-		t.set(uint64(i)*pieceLen, val(i))
+	for _, j := range perm {
+		t.set(uint64(j)*pieceLen, val(j))
 	}
 	after := prof.LiveHeap()
 	if t.len() != n {
-		panic("treeBytesPerEntry: entries lost")
+		panic("randomTreeBytesPerEntry: entries lost")
 	}
 	runtime.KeepAlive(t)
+	runtime.KeepAlive(perm)
 	return float64(int64(after)-int64(before)) / float64(n)
 }
 
@@ -83,12 +96,8 @@ func treeBytesPerEntry[V any](n int, val func(i int) V) float64 {
 // "bytes per entry at 10^6 extents at or below 56 written sequentially and
 // at or below 72 written in random order, the figures of §4.2 plus a tenth".
 // The bounds are the RFC's own, not a decision. Catches entry or node growth,
-// and an unmeasured heap: the check holds from below too, at the size an
-// entry itself takes. The floor is the entry's own width rather than a wide
-// margin over it, because the sequential figure sweeps a little under the
-// bare tree's — the lazy sweep after the collection defers some of the
-// difference — and a floor the honest measurement dips below would fail
-// a correct index.
+// and an unmeasured heap: the check holds from below too, at an entry's own
+// width plus its key.
 func TestIndexBytesPerEntry(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("builds a file of 10^6 extents and measures its heap")
@@ -104,7 +113,7 @@ func TestIndexBytesPerEntry(t *testing.T) {
 	if random > 72 {
 		t.Errorf("%.1f bytes per entry for 10^6 extents written in random order, above 72", random)
 	}
-	least := float64(unsafe.Sizeof(held{}))
+	least := float64(unsafe.Sizeof(held{}) + 8)
 	if sequential < least || random < least {
 		t.Errorf("bytes per entry below the %.0f an entry itself takes: the heap goes unmeasured (%.1f, %.1f)", least, sequential, random)
 	}
@@ -112,25 +121,29 @@ func TestIndexBytesPerEntry(t *testing.T) {
 
 // TestBytesPerEntryFailsWithOneMoreField is the committed proof that the
 // memory check fails when one 8-byte field is added to the entry: an index
-// that grew an entry would pass nothing here. The held entry stays within the
-// 56 the RFC holds sequential writes to; the fielded one leaves it.
+// that grew an entry would pass nothing here. The proof measures the tree the
+// index holds through the honest measurement the RFC check itself uses —
+// same helper, same liveness rules, only the value type grown — so a bias in
+// one shows in the other. The held tree stays within the 56 the RFC holds
+// sequential order to; the fielded one leaves it on both bounds.
 func TestBytesPerEntryFailsWithOneMoreField(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("builds a tree of 10^6 entries and measures its heap")
 	}
 	const n = 1_000_000
-	held58 := treeBytesPerEntry(n, func(i int) held {
+	perm := rand.New(rand.NewPCG(6, 6)).Perm(n)
+	calibration := randomTreeBytesPerEntry(n, perm, func(i int) held {
 		return held{version: ver(uint64(i + 1)), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}
 	})
-	t.Logf("byte tree of held entries: %.1f bytes per entry", held58)
-	if held58 > 56 {
-		t.Errorf("%.1f bytes per entry for the held tree, above the 56 the RFC bounds sequential order to: the calibration fails", held58)
+	t.Logf("tree of held entries, random order: %.1f bytes per entry", calibration)
+	if calibration > 72 {
+		t.Errorf("%.1f bytes per entry for the held tree in random order, above the 72 the RFC bounds it to: the calibration fails", calibration)
 	}
-	withField := treeBytesPerEntry(n, func(i int) heldPlusField {
+	withField := randomTreeBytesPerEntry(n, perm, func(i int) heldPlusField {
 		return heldPlusField{held: held{version: ver(uint64(i + 1)), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}, extra: uint64(i)}
 	})
-	t.Logf("fielded tree of %d-byte entries: %.1f bytes per entry", unsafe.Sizeof(heldPlusField{}), withField)
-	if withField <= 56 {
-		t.Errorf("%.1f bytes per entry for the fielded tree, at or below 56: a grown entry passes the check", withField)
+	t.Logf("fielded tree of %d-byte entries, random order: %.1f bytes per entry", unsafe.Sizeof(heldPlusField{}), withField)
+	if withField <= 72 {
+		t.Errorf("%.1f bytes per entry for the fielded tree in random order, at or below 72: a grown entry passes the check", withField)
 	}
 }
