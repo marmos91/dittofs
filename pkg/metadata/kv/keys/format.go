@@ -62,6 +62,8 @@ func Describe(key []byte) string {
 		}
 	case KindCLO:
 		take("b s")
+	case KindSH:
+		take("u")
 	case KindIDS:
 		take("b")
 	}

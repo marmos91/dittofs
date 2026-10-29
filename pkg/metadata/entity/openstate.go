@@ -43,6 +43,16 @@ type ShardID uint32
 
 const ShardLimit ShardID = 1 << 24
 
+// Shard is a shard's durable record. It holds only what open state reads:
+// the shard incarnation, raised each time a node begins serving the shard as
+// primary, and the grace instance, the incarnation at which the shard last
+// lost its open state. A stateid carries the grace instance's low 5 bits.
+type Shard struct {
+	ID            ShardID
+	Incarnation   uint64
+	GraceInstance uint64
+}
+
 // ClientRecord is a client's durable record: one per client instance, found
 // by ID and by its protocol and name. Each field is one open state decides
 // on; protocol detail it never interprets is the adapter's, in Adapter. The

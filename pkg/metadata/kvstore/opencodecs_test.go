@@ -55,6 +55,9 @@ func openCodecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeOpen(fid, 9, b) }},
 		{"lock", lk, encodeLock(lk), "01" + hexU64(7) + "016f" + hexU64(uint64(entity.EndOfFile)) + "01",
 			func(b []byte) (any, error) { return decodeLock(9, 100, 4, b) }},
+		{"shard", entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}, encodeShard(entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}),
+			"01" + hexU64(5) + hexU64(4),
+			func(b []byte) (any, error) { return decodeShard(3, b) }},
 		{"delete pending", dp, encodeDeletePending(dp), "01" + f16(1) + "0161" + ph + hexU32(0x10000) + "01",
 			func(b []byte) (any, error) { return decodeDeletePending(b) }},
 	}
