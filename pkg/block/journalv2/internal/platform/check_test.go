@@ -51,10 +51,17 @@ const (
 	btrfsNestedNoBarr   = "90 33 0:45 /journal /srv/journal rw,relatime shared:40 - btrfs /dev/sdb1 rw,nobarrier,ssd,space_cache=v2,subvolid=256,subvol=/journal\n"
 )
 
+// Magics of filesystems RFC 28 Appendix A does not list (TMPFS_MAGIC and
+// OVERLAYFS_SUPER_MAGIC in the kernel's include/uapi/linux/magic.h).
+const (
+	tmpfsMagic   = 0x01021994
+	overlayMagic = 0x794c7630
+)
+
 // probe returns a probe of dir under table whose attribute and inode answers
 // pass every Btrfs rule, so a case refuses only for what it changes. Its
 // mount ID is unknown.
-func probe(table, dir string, fsType int64) linuxProbe {
+func probe(table, dir string, fsType uint32) linuxProbe {
 	return linuxProbe{
 		dir:       dir,
 		mountinfo: table,
@@ -120,7 +127,7 @@ func TestCheckMountOptions(t *testing.T) {
 	refused := []struct {
 		name   string
 		line   string
-		fsType int64
+		fsType uint32
 		option string
 	}{
 		{"ext4 nobarrier", ext4NestedNoBarrier, magicExt, "nobarrier"},
@@ -138,7 +145,7 @@ func TestCheckMountOptions(t *testing.T) {
 	passed := []struct {
 		name   string
 		line   string
-		fsType int64
+		fsType uint32
 	}{
 		{"ext4", ext4Nested, magicExt},
 		{"ext4 barrier=1", ext4OldBarrierOn, magicExt},
@@ -262,7 +269,6 @@ func TestCheckMountOptions(t *testing.T) {
 
 	// A filesystem RFC 28 Appendix A does not list is not refused here.
 	t.Run("passes a tmpfs directory", func(t *testing.T) {
-		const tmpfsMagic = 0x01021994
 		wantPass(t, checkLinuxProbe(probe(hostLines, "/run/user/1000/j", tmpfsMagic)))
 	})
 }
@@ -371,7 +377,7 @@ func TestCheckMountTable(t *testing.T) {
 	cases := []struct {
 		name   string
 		table  string
-		fsType int64
+		fsType uint32
 		want   error
 	}{
 		{"btrfs directory on an ext4 mount", hostLines + ext4Nested, magicBtrfs, errMountTypeMismatch},
@@ -391,6 +397,36 @@ func TestCheckMountTable(t *testing.T) {
 			wantError(t, checkLinuxProbe(probe(tc.table, dir, tc.fsType)), tc.want)
 		})
 	}
+
+	// The reverse: a magic outside the list on a line whose type is listed.
+	// statfs and the table read one superblock (vfs_statfs in fs/statfs.c
+	// calls its statfs; show_type in fs/proc_namespace.c writes its type),
+	// so the two disagree only when the line is not the directory's mount.
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{"ext4 nobarrier", ext4NestedNoBarrier},
+		{"xfs", xfsNested},
+		{"btrfs", btrfsNested},
+	} {
+		t.Run("tmpfs directory on the "+tc.name+" mount", func(t *testing.T) {
+			wantError(t, checkLinuxProbe(probe(hostLines+tc.line, dir, tmpfsMagic)), errMountTypeMismatch)
+		})
+	}
+
+	// A magic outside the list on a line of its own type still passes.
+	t.Run("tmpfs directory on a tmpfs mount", func(t *testing.T) {
+		line := "90 33 0:60 / /srv/journal rw,nosuid,nodev,relatime shared:40 - tmpfs tmpfs rw,size=1048576k,inode64\n"
+		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, tmpfsMagic)))
+	})
+
+	// Copied from the same host: a container's overlay mount.
+	t.Run("overlay directory on an overlay mount", func(t *testing.T) {
+		const merged = "/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/merged"
+		line := "4480 33 0:72 / " + merged + " rw,relatime shared:1469 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/NWAOTQRDFCMJ6YX2WMD4JLIOJP:/var/lib/docker/overlay2/l/AVMRQWDDOLOMATSJST66PCNJQS:/var/lib/docker/overlay2/l/I264ISPSJ3XXBZZQ4HCN6VOJGH,upperdir=/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/diff,workdir=/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/work\n"
+		wantPass(t, checkLinuxProbe(probe(hostLines+line, merged+"/j", overlayMagic)))
+	})
 
 	// ext2, ext3 and ext4 all report magic 0xef53: none is a mismatch.
 	for _, fs := range []string{"ext2", "ext3", "ext4"} {
@@ -479,7 +515,7 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		line   string
-		fsType int64
+		fsType uint32
 	}{
 		{"ext4", ext4Nested, magicExt},
 		{"xfs", xfsNested, magicXFS},

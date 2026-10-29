@@ -18,12 +18,12 @@ func TestCheckConstantsAreLinux(t *testing.T) {
 
 	for _, c := range []struct {
 		name      string
-		got, want int64
+		got, want uint32
 	}{
-		{"ext2", magicExt, unix.EXT2_SUPER_MAGIC},
-		{"ext4", magicExt, unix.EXT4_SUPER_MAGIC},
-		{"xfs", magicXFS, unix.XFS_SUPER_MAGIC},
-		{"btrfs", magicBtrfs, unix.BTRFS_SUPER_MAGIC},
+		{"ext2", magicExt, uint32(unix.EXT2_SUPER_MAGIC)},
+		{"ext4", magicExt, uint32(unix.EXT4_SUPER_MAGIC)},
+		{"xfs", magicXFS, uint32(unix.XFS_SUPER_MAGIC)},
+		{"btrfs", magicBtrfs, uint32(unix.BTRFS_SUPER_MAGIC)},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s magic: got %#x, want %#x", c.name, c.got, c.want)

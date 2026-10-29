@@ -13,10 +13,10 @@ import (
 // verdict builds and is tested on every platform.
 const (
 	// magicExt is the type of ext2, ext3 and ext4, which share one magic.
-	magicExt int64 = 0xef53
-	magicXFS int64 = 0x58465342
+	magicExt uint32 = 0xef53
+	magicXFS uint32 = 0x58465342
 	// magicBtrfs is Btrfs, the copy-on-write filesystem of RFC 28 Appendix A.
-	magicBtrfs int64 = 0x9123683e
+	magicBtrfs uint32 = 0x9123683e
 )
 
 // fsNoCOW is the inode flag FS_IOC_GETFLAGS reports for a file or directory
@@ -35,8 +35,14 @@ type linuxProbe struct {
 	dir string
 	// mountinfo is the text of /proc/self/mountinfo.
 	mountinfo string
-	// fsType is statfs's filesystem type for dir.
-	fsType int64
+	// fsType is statfs's filesystem type for dir, read as 32 bits. The
+	// kernel's f_type is a __statfs_word, 32 bits on a 32-bit kernel
+	// (include/uapi/asm-generic/statfs.h), and golang.org/x/sys declares
+	// Statfs_t.Type as an int32 on 386, arm and mips, where Btrfs's magic
+	// arrives negative. Every magic fits in 32 bits, so the probe converts
+	// with uint32(st.Type) and the verdict sees the same value on every
+	// architecture.
+	fsType uint32
 	// dirFlags is FS_IOC_GETFLAGS's answer for dir.
 	dirFlags uint32
 	// dirIno is dir's inode number.
@@ -121,7 +127,7 @@ var (
 // listedFS is a filesystem RFC 28 Appendix A lists as suitable on Linux:
 // its statfs magic and the mount table types that report it.
 type listedFS struct {
-	magic int64
+	magic uint32
 	types []string
 }
 
@@ -147,7 +153,7 @@ var listedFilesystems = [...]listedFS{
 // names another option, and the Btrfs rules extend to another filesystem when
 // the RFC names it as copy-on-write.
 var barrierRows = [...]struct {
-	magic  int64
+	magic  uint32
 	option string
 }{
 	{magicExt, "nobarrier"},
@@ -161,7 +167,7 @@ var barrierRows = [...]struct {
 // that fails, in the order mount options, subvolume root, directory
 // attribute, files; one of the errMount errors when the inputs do not
 // describe the directory; and nil otherwise. A filesystem outside the listed
-// ones is not refused.
+// ones, on a mount line of a type outside them too, is not refused.
 func checkLinuxProbe(p linuxProbe) error {
 	mounts, err := parseMountinfo(p.mountinfo)
 	if err != nil {
@@ -182,8 +188,18 @@ func checkLinuxProbe(p linuxProbe) error {
 		}
 	}
 
+	// statfs and the mount table read one superblock: vfs_statfs
+	// (fs/statfs.c) asks the superblock of the directory's dentry, and
+	// show_type (fs/proc_namespace.c) writes the type of the mount's
+	// superblock. They disagree only when the selected line is not the
+	// directory's mount, so a disagreement either way fails: a listed magic
+	// on a line of another type, and a magic outside the list on a line of a
+	// listed type, whose options would then be read for the wrong mount.
 	fs, listed := listedByMagic(p.fsType)
 	if !listed {
+		if listedType(m.fsType) {
+			return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.fsType, m.point, m.fsType)
+		}
 		return nil
 	}
 	if !fs.reports(m.fsType) {
@@ -211,13 +227,24 @@ func checkLinuxProbe(p linuxProbe) error {
 	return nil
 }
 
-func listedByMagic(magic int64) (listedFS, bool) {
+func listedByMagic(magic uint32) (listedFS, bool) {
 	for _, fs := range listedFilesystems {
 		if fs.magic == magic {
 			return fs, true
 		}
 	}
 	return listedFS{}, false
+}
+
+// listedType says whether a mount table type is one a listed filesystem
+// reports.
+func listedType(fsType string) bool {
+	for _, fs := range listedFilesystems {
+		if fs.reports(fsType) {
+			return true
+		}
+	}
+	return false
 }
 
 // reports says whether a mount table type is one this filesystem reports.
@@ -234,7 +261,7 @@ func (fs listedFS) reports(fsType string) bool {
 // with seq_show_option, which escapes the comma too (include/linux/seq_file.h).
 // The options are cut at subvol= first, so on every release a subvolume's
 // name is not an option.
-func refusedOption(magic int64, superOptions string) (string, bool) {
+func refusedOption(magic uint32, superOptions string) (string, bool) {
 	if magic == magicBtrfs {
 		superOptions, _, _ = strings.Cut(superOptions, ",subvol=")
 	}
