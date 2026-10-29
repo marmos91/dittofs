@@ -545,13 +545,14 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 
 // takeOver closes, under e's step, the open of e's file another client holds
 // under the app instance r names, for a caller who may read the file, before
-// r's open is judged; a create whose version is not above every such open's,
-// each pair versioned, is refused and closes none. What the close leaves the
+// r's open is judged; a create whose version is not above that of every such
+// open carrying one, a create carrying none included, is refused and closes
+// none. What the close leaves the
 // service goes to out.
 //
 // decision: a create refused for its version is ErrInstanceVersion, which
 // errors.Is ErrShareViolation, so the service maps it as a deny conflict
-// unless it tells the two apart, as the SMB adapter does to answer
+// unless it tells the two apart, as the SMB adapter will to answer
 // STATUS_FILE_FORCED_CLOSED. Give it a neutral error of its own if another
 // protocol is served that names it.
 //
@@ -577,7 +578,7 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 		if ok.Instance.ID != k.Instance.ID || o.Client == who.Client || o.Stream != r.Stream {
 			continue
 		}
-		if v, was := k.Instance.Version, ok.Instance.Version; v != ([2]uint64{}) && was != ([2]uint64{}) && slices.Compare(v[:], was[:]) <= 0 {
+		if v, was := k.Instance.Version, ok.Instance.Version; was != ([2]uint64{}) && slices.Compare(v[:], was[:]) <= 0 {
 			return ErrInstanceVersion
 		}
 		olds = append(olds, o)

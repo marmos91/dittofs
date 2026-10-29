@@ -482,3 +482,24 @@ func TestLockOnAReusedIndexLeavesTheOpenSaved(t *testing.T) {
 		t.Errorf("reconnect after two granted locks, both written: %v; want it reconnected", err)
 	}
 }
+
+// An app-instance create carrying no version does not replace an open of the
+// instance that carries one: it is ErrInstanceVersion, the open kept.
+func TestUnversionedCreateKeepsAVersionedOpen(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd
+	as := func(who Caller, v [2]uint64) OpenRequest {
+		q := keep(r, entity.DurabilityDurable, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: v}, true
+		return q
+	}
+	f.mustOpen(t, a, file, as(a, [2]uint64{1, 5}))
+	if _, err := f.open(b, file, as(b, [2]uint64{})); !errors.Is(err, ErrInstanceVersion) {
+		t.Errorf("an unversioned create over a versioned open: %v; want ErrInstanceVersion", err)
+	}
+	if e := f.entryOf(file.ID); e == nil || len(e.opens) != 1 {
+		t.Error("the versioned open was closed")
+	}
+}
