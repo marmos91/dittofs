@@ -525,8 +525,13 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
 	var held *Lock
-	for _, rg := range r.Ranges {
+	for i, rg := range r.Ranges {
 		if held = e.blocker(r.Owner, rg, len(e.waiters)); held != nil {
+			break
+		}
+		// an earlier range of this same list is held by the time this one is judged
+		if j := slices.IndexFunc(r.Ranges[:i], func(p LockRange) bool { return conflicts(r.Owner, rg, r.Owner, p) }); j >= 0 {
+			held = &Lock{Owner: r.Owner, Open: id, Range: r.Ranges[j]}
 			break
 		}
 	}

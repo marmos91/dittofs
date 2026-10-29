@@ -205,6 +205,35 @@ func TestSMBLockLists(t *testing.T) {
 	}
 }
 
+// A lock list's ranges are judged against the ones before them in the list,
+// as if each were held by the time the next is judged: two overlapping
+// exclusive ranges, or a shared range then an exclusive one over it, conflict
+// and leave nothing held, while an exclusive range then a shared one over it
+// stack.
+func TestSMBLockListAgainstItself(t *testing.T) {
+	f := newFixture(t)
+	s := f.caller(t, smb("pc"))
+	for _, c := range []struct {
+		what string
+		rs   []LockRange
+		want error
+	}{
+		{"two overlapping exclusive ranges", []LockRange{x(0, 10), x(5, 5)}, ErrLocked},
+		{"shared then exclusive on one range", []LockRange{sh(0, 10), x(0, 10)}, ErrLocked},
+		{"exclusive then shared on one range", []LockRange{x(0, 10), sh(0, 10)}, nil},
+	} {
+		file := anyFile()
+		o := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+		_, err := f.lock(s, file, LockReq{Owner: smbOwner(s, o), Open: refOf(o), Ranges: c.rs})
+		if !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+			t.Errorf("%s: %v, want %v", c.what, err, c.want)
+		}
+		if h := f.holder(t, file, br(0, 10)); c.want != nil && h != nil {
+			t.Errorf("%s: the refused list left %v held", c.what, h.Range)
+		}
+	}
+}
+
 // A range's last byte is offset + length - 1, a zero-length one's included,
 // so a zero-length lock at X conflicts only with a range holding both X-1 and
 // X, and one at 0 with nothing; a range to the last byte never overflows.
