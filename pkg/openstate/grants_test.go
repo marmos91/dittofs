@@ -222,7 +222,7 @@ func TestRecallDeadline(t *testing.T) {
 	}
 	f.pass(t, time.Second)
 	f.mustOpen(t, other, sfile, OpenRequest{Access: rd})
-	if err := f.Checks().CheckIO(ctx, s, file, refOf(so), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, s, sfile, refOf(so), br(0, 1), true); err != nil {
 		t.Errorf("a write through the open of a lease cut to none: %v", err)
 	}
 	if r := f.sink.takeRevoked(); len(r) != 0 {

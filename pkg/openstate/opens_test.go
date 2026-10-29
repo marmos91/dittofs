@@ -609,3 +609,25 @@ func ids(recs []entity.OpenRecord) [][2]uint64 {
 	}
 	return out
 }
+
+// I/O through an open, a lock state or a delegation is refused for a file
+// the reference does not name: a write to y through an open of x would
+// otherwise pass y's deny-write.
+func TestIOThroughAnotherFilesRef(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	x, y := anyFile(), anyFile()
+	ox := f.mustOpen(t, a, x, OpenRequest{Access: rd | wr})
+	f.mustOpen(t, b, y, OpenRequest{Access: rd, Deny: wr})
+	if err := f.Checks().CheckIO(ctx, a, y, refOf(ox), br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write to y through an open of x: %v, want ErrBadState", err)
+	}
+	n, z := f.caller(t, nfs("host-n", 1, entity.NewUser())), anyFile()
+	_, g := f.grantOpen(t, n, z, OpenRequest{Access: rd, Want: GrantRead})
+	if g == nil {
+		t.Fatal("no read delegation")
+	}
+	if err := f.Checks().CheckIO(ctx, n, y, delegated(g, z), br(0, 1), false); !errors.Is(err, ErrBadState) {
+		t.Errorf("a read of y through a delegation of z: %v, want ErrBadState", err)
+	}
+}

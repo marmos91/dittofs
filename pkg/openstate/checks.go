@@ -28,7 +28,8 @@ const (
 type Checks interface {
 	// CheckIO admits I/O to f through o, an open, a lock state or a
 	// delegation. A reference that is not anonymous is ErrBadState when its
-	// shard is not f's; an anonymous one with no f.ID is ErrBadState.
+	// shard or its file is not f's; an anonymous one with no f.ID is
+	// ErrBadState.
 	// A lock state is judged as the open it was taken under: a granted open
 	// is used only by its opener and only for the access it holds, ErrAccess
 	// otherwise, and its deny modes were judged once, at open. An anonymous
@@ -72,7 +73,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 	others := func(*grant) GrantKind { return keeps }
 	var out outbox
 	through := func(e *entry, op *open) error {
-		if !t.confirmed(op) {
+		if e.file != f.ID || !t.confirmed(op) {
 			return ErrBadState
 		}
 		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
@@ -86,6 +87,9 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 	// unopened is I/O through no open: anonymous, or through a delegation
 	// own holds, which its holder's own deny modes do not refuse.
 	unopened := func(e *entry, own func(*grant) bool) error {
+		if e.file != f.ID {
+			return ErrBadState
+		}
 		var hs []*open
 		for _, h := range e.opens {
 			if o.Kind == RefDelegated && h.Client == who.Client {
