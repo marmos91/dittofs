@@ -7,6 +7,10 @@ CI grades nfstest with [`known.yaml`](known.yaml). This table is the knfsd basel
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | delegation/recall*: CB_RECALL should be sent to the client after a conflicting * is received from a second client | bug | no recall when a second client chmods, renames or removes the delegated file; a conflicting OPEN is recalled | [#3098](https://github.com/marmos91/dittofs/issues/3098) |
+| delegation/recall*: CB_RECALL should recall * delegation granted to client | env | a Linux 7.0 client (`7.0.0-1017-azure`) holds a delegation on the test's directory under `v4.1-noac`, and DittoFS recalls it when the second client removes or renames a file there; nfstest takes that CB_RECALL for the file's, whose own recall is the row above; 6.17 runners hold none and pass | - |
+| delegation/recall*: DELEGRETURN should be sent with the stateid of * delegation being recalled | env | as the CB_RECALL should recall row | - |
+| delegation/recall*: LOCK should be sent before returning the * delegation | env | as the CB_RECALL should recall row | - |
+| delegation/recall*: READs should be sent to the server with the OPEN stateid after returning the delegation | env | as the CB_RECALL should recall row | - |
 | posix/link: parent directory st_ctime should be updated | env | a Linux 7.0 or 7.1 client holding a directory delegation skips GETATTR after its own change; DittoFS keeps the holder's delegation, as RFC 8881 §10.9.2 says; fixed in Linux 7.2 (84800a8d1d22), and 6.17 runners pass | - |
 | posix/link: parent directory st_mtime should be updated | env | as the posix/link st_ctime row | - |
 | posix/rmdir: parent directory st_ctime should be updated | env | as the posix/link st_ctime row | - |
