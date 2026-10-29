@@ -1161,6 +1161,7 @@ walk can produce is omitted.
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
+| `SuspectSegments` | gauge | segments holding a record no read could read ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -2384,7 +2385,8 @@ limit, **MUST** still be able to run one.
 
 **Refusals.** A repack **MUST NOT** run on a segment while it backs a held or
 retained extent from a record that cannot be read ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), because it
-cannot carry forward what it cannot read. Once those extents are dropped, or a
+cannot carry forward what it cannot read. Once those extents are dropped or read
+([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)), or a
 failed sync's window is resolved ([§5.3](#5.3%20A%20failed%20sync)), the unreadable bytes back nothing,
 and repack carries the readable live records forward and retires the segment. Two passes
 **MUST NOT** select the same segment ([§8](#8.%20Concurrency)), and a segment **MUST NOT** be its own
@@ -2608,7 +2610,7 @@ section is the journal's plan.
 | --- | --- | --- |
 | Unit | pure logic with no storage: the placement index, coalescing, overlap splitting, the record and catalog codecs | table-driven, in memory; the only place an in-memory stand-in is allowed |
 | Conformance | every check in [§9.4](#9.4%20The%20checks) | real filesystem in a temporary directory, virtual time, on every supported platform ([§9.3](#9.3%20Environments%20a%20check%20set%20must%20cover)) |
-| Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and unlink | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
+| Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and unlink, and `EIO` from read | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
 | Model-based | sequences no hand-written case thinks of | random sequences of `WriteAt`, `Fill`, `Offload`, `Release`, `Truncate`, `Deallocate`, `Delete`, `Settle`, repack, crash and reopen, compared after every step against a reference model: each file's bytes, each extent's offloaded bit, and the removal markers `Since` yields. A failing sequence is shrunk to the shortest that still fails and kept as a regression case |
 | Fuzz | parsers of bytes the journal did not just write: records, segment headers and trailers, catalogs | coverage-guided fuzzing; the property is that any input is either accepted as valid or rejected, never panics and never yields an extent the bytes do not contain |
 | Concurrency | [§8](#8.%20Concurrency): lock order, readers against reclamation, progress | data-race detector, at least two files on two streams, virtual time for the waits |

@@ -1092,12 +1092,40 @@ loss, and no loss record is appended for it. Only when no copy verifies is the
 record lost. Otherwise a stale original left on a failed segment, rotting before
 that segment is unlinked, would append a loss naming the sequence number and so
 mask the good copy. A
-segment holding one or more unreadable records **MUST** be reported and
+segment holding one or more records that do not verify **MUST** be reported and
 **MUST NOT** be selected by a reclamation pass while it still backs held extents
-it cannot produce. Once the unreadable records' extents have been dropped as
+it cannot produce. Once those records' extents have been dropped as
 above, the segment holds only extents it can produce, and repack **MAY** proceed
 normally — carrying forward what is still live and unlinking the rest.
 
+#### A read that fails is not a record that does not verify
+
+A read of a segment that fails with an I/O error returns no bytes to check, so
+it is not evidence of damage: the error may pass, and a loss record does not.
+The journal retries a failed read a bounded number of times, and a record whose
+bytes no attempt read is **unread**. Wherever this RFC or [RFC 1](rfc-1-journal.md) drops a record
+that does not verify — at `ReadAt`, `Offered`, repack, or the check of an
+unproven tail at open ([§3.1](#3.1%20Rebuilding)) — an unread record is not dropped: the journal
+**MUST NOT** drop its extents, append a loss record for it or report it as
+corruption. It keeps them held, and the segment holding it is **suspect**,
+reported and counted ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), until a read of the record returns bytes,
+which are then checked as any record's are. The journal retries that read on
+each access and at a bounded interval, so the state ends once the device reads
+again. While a record is unread:
+
+- `ReadAt` of its extent **MUST** fail with the error, never report the
+  extent `missing` or serve an older record it supersedes;
+- it counts as a copy that verifies, so no loss record is appended for its
+  sequence number while another copy of it does not verify (above);
+- it is a record that verifies for the torn-tail rule, so no truncation cuts
+  it off, and repack does not carry it forward or select its segment while it
+  is live (above);
+- the scan at open does not fail on it: where the record's header or a catalog
+  that verifies names its extents, they are held as unread, and the scan
+  resumes past it as it does past a bad record. An unread range that nothing
+  names is torn where a bad record there would be torn; anywhere else the open
+  **MUST** fail, naming the segment and the range, since serving the rest could
+  serve content an unread record superseded.
 
 ### 3.4 Unattachable files
 
@@ -1194,6 +1222,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | Requirement | Check |
 | --- | --- |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) corrupt, dirty | After reseed, corrupt a record whose extent is dirty; assert the read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss. |
+| [§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify) a failed read is not damage | Fail every read of a dirty record's segment with `EIO` at the seam, at `ReadAt`, at offload, at repack and at open, the open twice: once with the record's header readable, once with its header and the segment's catalog unreadable and a later record's synced-through past it. Assert no loss record is appended, the extent is never reported `missing`, `ReadAt` fails with the error, the extent stays dirty, no truncation cuts it off and its segment is not unlinked, the first open succeeds and the second fails naming the segment; then let reads succeed and assert the record reads back with no reopen. A journal that drops what it could not read loses a dirty write to a passing error. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) corrupt, offloaded | After reseed, corrupt a record whose extent's offloaded bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
 | [§2.2](#2.2%20Segments) directory entry survives | Create a segment, write and `Sync`; crash at the seam dropping every directory change not synced; assert the segment and its record survive. |
 | [§2.4](#2.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a verifying footer whose entry disagrees with its record's header; assert the read through that entry is refused as corruption. |
