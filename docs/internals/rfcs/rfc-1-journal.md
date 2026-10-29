@@ -2530,6 +2530,7 @@ holding it converts disk latency into index contention.
 | repack's index repoint | readers of the affected files | a reader **MUST** see either the old location or the new one, never neither |
 | `Forget`'s record, then its drop | repack copies and fills of that tag | a copy of the tag appended after the forget record carries a higher sequence number, so a crash would bring it back as held; a copy whose held check ran before the forget is abandoned, never appended after it ([§3](#3.%20Interface)) |
 | a repack copy's held check, then its append | `WriteAt`, removals and `Release` on that file | a copy appended over newer state would reinstate superseded content ([§7.2](#7.2%20Repack)) |
+| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight; the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
 
 Publishing an extent **MUST** be the last step of a write, after its record is
 written, so a read never finds an index entry pointing at bytes not yet in the
@@ -2540,6 +2541,18 @@ crash, so everything that turns journal content into a durable claim elsewhere
 syncs first: an offer **MUST** sync the records it captures before handing them to
 `fn` ([§3.3](#3.3%20Offload)), and the engine **MUST** `Sync` a file before committing its
 existence ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+
+The version draw's row spans the record write, which comes between drawing the
+version and publishing it, and the file append domain is the only one held across
+that I/O ([§8.2](#8.2%20Lock%20domains)). So a write holds its file's append domain from drawing its
+version until the index has it, and a read takes its `asOf` under that domain,
+waiting out at most one record write of that file; [§8.1](#8.1%20What%20must%20not%20block%20what) does not rule this out,
+since it only keeps a read from waiting on another file's write. An
+implementation whose index learns a version when it is drawn, before the record
+is written, may take it under the file index instead. Either way, a read **MUST**
+take its `asOf` no later than it resolves its extents: a write the read did not
+find, published between the two, would be reported missing at its own version,
+and once its existence commits [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) resolves that as **Lost**.
 
 ### 8.5 Protecting readers from reclamation
 
@@ -2668,6 +2681,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.3](#3.3%20Offload) offer stops at `through`, per-extent stamps | Write `[0, 4)` MiB at v10 and stamp it at cut 3; write `[1, 2)` MiB at v12 and stamp it at cut 4; write `[8, 9)` MiB at v13; offload with `through` v12. Assert v13 is not offered and stays dirty, `[0, 1)` and `[2, 4)` are offered at v10 with cut 3, and `[1, 2)` at v12 with cut 4. |
 | [§3.11](#3.11%20Snapshot%20holds) lost stamp is offered | Draw the headroom below half, existence-commit a version, and have its `Stamp` refused. Assert the next offer carries the version with `Stamped` false rather than skipping it, and that once reported and released the headroom recovers. |
 | [§3.4](#3.4%20Fill) fill safety | Hold a `Fill` at the storage seam after it has found the extent absent, `WriteAt` the same extent, then let the fill continue; assert the written bytes survive. |
+| [§8.4](#8.4%20What%20must%20be%20atomic) a read's `asOf` against a change in flight | Find a file Z in the floor bucket of X, a file the journal holds nothing of, by writing, deleting and settling files and reading X after each. Hold a `WriteAt` of X at the storage seam once its version is drawn; write, delete and settle Z again; `ReadAt` X's range from another goroutine, then let the write finish. Assert the read served the write or reported an `asOf` below its version. Repeat from the start with a fresh X and Z, holding a `Truncate` of X to zero in place of the `WriteAt`, settled once it finishes: assert a `Fill` with the read's `asOf` is refused. The repeat needs a fresh X because X now has an entry, and a file changed since open reports its own version ([§3.4](#3.4%20Fill)). A read that reports the raised bucket fails both. |
 | [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
 | [§3.5](#3.5%20Release) refusal | Ask to release an extent with no offloaded bit; assert refusal and no partial progress. |
 | [§7.1](#7.1%20Releasing%20storage) partial release keeps the record whole | Write one 1 MiB record; report only its first half offloaded; release that half; crash and reopen, once by catalog and once by scan. Assert the second half reads its exact bytes, is still dirty, and no loss event or corruption is reported. A design that frees part of a record fails: the record no longer verifies, and the dirty half resolves as **Lost**. |
@@ -2718,7 +2732,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§6](#6.%20Capacity) headroom is allocated | Open a journal, then make the filesystem return `ENOSPC` for every new allocation; assert content writes are refused, while releases, removals and `MarkOffloaded` up to the headroom succeed without allocating, and a repack still returns space. |
 | [§3.3](#3.3%20Offload) pinned segments bounded | Scatter 64 KiB dirty extents of one file one per segment across 1,000 segments; offload with a 64 MiB `limit` and stall `fn`; assert `PinnedSegments` never exceeds the bound, the offer ends at it, and repack can retire the unpinned segments meanwhile. |
 | [§5.3](#5.3%20A%20failed%20sync) a failed window does not wedge | Write A, fail its sync, resolve by failing the window; write B to the same file and `Sync`; assert the first `Sync` failed, the second succeeds once B is synced in a new segment, A reads `missing` with a loss event, and an offload of the file proceeds. A design that leaves A pending fails every later `Sync` of the file. |
-| [§3.4](#3.4%20Fill) floor buckets | Read file X missing, then delete 10^4 other files; `Fill` X with the read's `asOf`; assert it is accepted. Read file Y missing, delete Y and recreate it with new content; `Fill` with the first read's `asOf`; assert it is refused. One journal-wide floor refuses the first. |
+| [§3.4](#3.4%20Fill) floor buckets | Write, delete and settle 10^4 files other than X, a file the journal holds nothing of, reading X after each; assert X's `asOf` rose after at most 15 of them (2.4 expected with 4,096 buckets; random files pass 15 less than once in 10^8 runs). Read X missing, then write, delete and settle the others again, leaving out those that raised it, since a delete in X's bucket correctly refuses the fill; `Fill` X with that read's `asOf`; assert it is accepted. Read file Y missing, delete Y and recreate it with new content; `Fill` Y with that read's `asOf`; assert it is refused. One journal-wide floor raises X's `asOf` on every delete, and a table of 64 buckets about 156 times. |
 | [§4.1](#4.1%20What%20it%20must%20answer) bounds | Build a file index of 10^6 extents; assert point lookup and span query cost does not grow linearly with extent count. |
 | [§5.3](#5.3%20A%20failed%20sync) sync failure | Fail a sync; assert the caller sees it and that subsequent writes to the same stream still attempt to sync. |
 | [§4.3](#4.3%20Versions) no version repeats | Set a version limit; `WriteAt` A and read its version, then crash before A syncs; reopen with the durable limit as part of the floor; assert the next `WriteAt` and the next `Draw` each return a version above A's. Exhaust the limit; assert `WriteAt` and `Draw` fail naming it and succeed after `SetVersionLimit` raises it. Open with no `SetVersionLimit`; assert `WriteAt` and `Draw` both fail. A journal that restarts from the maximum on disk issues A's version again. |
