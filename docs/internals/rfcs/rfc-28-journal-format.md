@@ -807,7 +807,7 @@ to the index; it is reported and left alone ([§3.4](#3.4%20Unattachable%20files
 never enters this format version's journal.
 
 A header that does not verify is damage, not evidence of a foreign segment: the
-segment is reported as damaged, its records are attached on their own checksums
+segment is reported as damaged ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)'s `DamagedSegments`), its records are attached on their own checksums
 ([§2.3](#2.3%20Records)), and with its predecessor unknown it is treated as one that could have
 been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
@@ -1011,7 +1011,8 @@ this rule cannot step over, so it ends the segment instead ([§2.2](#2.2%20Segme
 
 Everything else is corruption, including an unverifiable record or a missing
 seal marker in a segment named as another's predecessor ([§2.2](#2.2%20Segments)): it was sealed
-before its successor existed, so it has been truncated or damaged since. A torn
+before its successor existed, so it has been truncated or damaged since, and is
+reported as damaged. A torn
 footer after the seal marker is only "no footer" ([§2.4](#2.4%20The%20segment%20catalog)).
 
 #### The response is to stop holding the extent
@@ -1248,7 +1249,7 @@ each region has its own required outcome:
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header: the segment is reported as damaged and its records are still
   attached ([§3.1](#3.1%20Rebuilding));
-- a seal marker: the segment is corrupt if a successor names it ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+- a seal marker: the segment is reported as damaged if a successor names it ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - the `format` file: its checksum fails, and so does the open.
 
 No flip may produce a read that returns bytes other than the ones written.
