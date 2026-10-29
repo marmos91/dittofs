@@ -830,11 +830,12 @@ func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq ui
 func (t *Table) leaveChannel(id entity.OpenID, seq uint16) {
 	t.idx.Lock()
 	k, ok := t.byID[id]
-	f := t.refs[k].file
-	t.idx.Unlock()
 	if !ok {
+		t.idx.Unlock()
 		return
 	}
+	f := t.refs[k].file
+	t.idx.Unlock()
 	_ = t.step(f, func(e *entry) error {
 		o := e.opens[k.token]
 		if o == nil || o.ID != id {
