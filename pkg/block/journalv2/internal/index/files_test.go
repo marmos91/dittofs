@@ -57,7 +57,7 @@ func TestTagOutlivesChangeVersion(t *testing.T) {
 	var fs files
 	id, seg := fid(1), core.SegmentID(3)
 	err := fs.update(id, func(f *file) error {
-		if err := f.recorded(seg, 7, id); err != nil {
+		if err := f.recorded(seg, ext(0, 16), nums(1, 1), 7, id); err != nil {
 			return err
 		}
 		f.held.fill(write(0, 8, rec(seg, 0), 5))
@@ -110,7 +110,7 @@ func TestHeldContentKeepsEntryWithoutSegments(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		_ = f.recorded(2, 1, id)
+		_ = f.recorded(2, ext(0, 4), nums(1, 1), 1, id)
 		f.write(write(0, 4, rec(2, 0), 9))
 		f.segmentGone(2)
 		return nil
@@ -165,8 +165,8 @@ func TestSegmentNotedTwiceIsGoneOnce(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		_ = f.recorded(4, 1, id)
-		return f.recorded(4, 1, id)
+		_ = f.recorded(4, ext(0, 4), nums(1, 1), 1, id)
+		return f.recorded(4, ext(0, 4), nums(1, 1), 1, id)
 	})
 	_ = fs.update(id, func(f *file) error { f.segmentGone(4); return nil })
 	if present(&fs, id) {
@@ -200,8 +200,8 @@ func TestWriteNeverLowersChangeVersion(t *testing.T) {
 func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error { return f.recorded(1, 4, id) })
-	err := fs.update(id, func(f *file) error { return f.recorded(2, 5, id) })
+	_ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
+	err := fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
 	if !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("recorded through another tag = %v, want ErrOtherShare", err)
 	}
@@ -218,8 +218,8 @@ func TestRecordedReportsOtherTagAndKeepsTheRecord(t *testing.T) {
 func TestFileOfTwoTagsRefusesBoth(t *testing.T) {
 	var fs files
 	id := fid(1)
-	_ = fs.update(id, func(f *file) error { return f.recorded(1, 4, id) })
-	_ = fs.update(id, func(f *file) error { return f.recorded(2, 5, id) })
+	_ = fs.update(id, func(f *file) error { return f.recorded(1, ext(0, 4), nums(1, 1), 4, id) })
+	_ = fs.update(id, func(f *file) error { return f.recorded(2, ext(0, 4), nums(1, 1), 5, id) })
 	for _, c := range []struct{ tag, other core.ShareTag }{{4, 5}, {5, 4}} {
 		fs.view(id, func(f *file) {
 			var refusal *core.OtherShareError
@@ -282,7 +282,7 @@ func TestClaimRefusesOtherTag(t *testing.T) {
 	var fs files
 	id := fid(1)
 	_ = fs.update(id, func(f *file) error {
-		return f.recorded(1, 4, id)
+		return f.recorded(1, ext(0, 1), nums(1, 1), 4, id)
 	})
 	err := fs.update(id, func(f *file) error { return f.claim(5, id) })
 	var other *core.OtherShareError
@@ -434,7 +434,7 @@ func TestConcurrentFiles(t *testing.T) {
 			for r := range rounds {
 				seg := core.SegmentID(w*rounds + r + 1)
 				_ = fs.update(churn, func(f *file) error {
-					_ = f.recorded(seg, 1, churn)
+					_ = f.recorded(seg, ext(off, 1), nums(1, uint64(seg)), 1, churn)
 					f.held.fill(write(off, 1, rec(seg, 0), 1))
 					return nil
 				})

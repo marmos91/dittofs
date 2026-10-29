@@ -183,7 +183,9 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 				t.Fatal(err)
 			}
 		case 11: // claim under a tag, as an append does
-			if err := fs.update(id, func(f *file) error { return f.recorded(core.SegmentID(7), core.ShareTag(1), id) }); err != nil {
+			if err := fs.update(id, func(f *file) error {
+				return f.recorded(core.SegmentID(7), core.Extent{}, Numbers{}, core.ShareTag(1), id)
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}

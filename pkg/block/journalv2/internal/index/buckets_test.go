@@ -426,7 +426,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	cb := (bucketOf(a) + 1) % floorBuckets
 	c := idInBucket(cb, a, b)
 	change(t, &fs, c, func(f *file) error {
-		_ = f.recorded(9, 1, c)
+		_ = f.recorded(9, ext(0, 4), Numbers{Version: ver(2), Seq: 1}, 1, c)
 		f.write(write(0, 4, rec(9, 0), 2))
 		f.held.markOffloaded(ext(0, 4), ver(2), ver(2))
 		_, err := f.held.release(ext(0, 4), nil)

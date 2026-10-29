@@ -2,7 +2,6 @@ package index
 
 import (
 	"encoding/binary"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -104,6 +103,11 @@ type files struct {
 	// fresh index, where no version has been opened above and the buckets
 	// also stand at zero.
 	opened uint64
+
+	// dropRanges is the number of drop ranges over every file and segment.
+	// It is maintained by apply, under each file's lock, so it stays exact
+	// beside whatever an entry's ranges hold.
+	dropRanges atomic.Int64
 }
 
 type fileShard struct {
@@ -143,6 +147,9 @@ type file struct {
 	rival    core.ShareTag
 
 	held heldSet
+	// nranges is the number of drop ranges over all of the file's segments,
+	// maintained by recorded and segmentGone.
+	nranges int
 	// retained is the superseded content the file still keeps. It is never
 	// consulted to answer a read.
 	retained retainedSet
@@ -151,14 +158,13 @@ type file struct {
 	// holding only filled content, since a fill changes no version: either
 	// way a check against it uses the file's floor bucket.
 	change core.Version
-	// segs are the segments holding a record of the file, in no order.
+	// segs are the segments holding a record of the file, in no order, each
+	// with its drop ranges.
 	//
-	// ponytail: a slice scanned on every record appended, O(s) for the s
-	// segments holding the file, and nothing more than which segments those
-	// are. Upgrade to per-segment entries kept in a map or sorted, carrying
-	// the drop ranges of each, when the index tracks drop ranges or a
-	// profile shows the scan on the append path.
-	segs []core.SegmentID
+	// ponytail: a slice scanned on every record appended and on every drop
+	// query, O(s) for the s segments holding the file. Upgrade to a map keyed
+	// by segment when a profile shows the scan on the append path.
+	segs []segRecords
 	// markers are the file's unsettled removal markers, in version order.
 	markers []marker
 }
@@ -347,15 +353,19 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) er
 	}
 }
 
-// apply runs fn, adds the entry change it made to the count and settles the
-// entry's lifetimes, then releases the file's lock, which the caller took;
-// all three happen even if fn panics.
+// apply runs fn, adds the entry change it made to the count and the change
+// it made to the drop ranges to their gauge, and settles the entry's
+// lifetimes, then releases the file's lock, which the caller took; all of it
+// happens even if fn panics. The unlock is deferred first, so it runs last:
+// even a panic in settle cannot leave the file locked.
 //
-// decision: the count is kept by the delta, not by a walk of the entry after
+// decision: the counts are kept by the delta, not by a walk of the entry after
 // fn. A rebuild or an open builds a populated index through one update a
 // record, each about a walk of everything so far; the delta is O(1).
 func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) error {
+	rangesBefore := f.nranges
 	defer f.mu.Unlock()
+	defer func() { fs.dropRanges.Add(int64(f.nranges - rangesBefore)) }()
 	defer f.counted(fs, before, admitted)
 	defer f.settle(fs, s, id)
 	return fn(f)
@@ -473,10 +483,11 @@ func (f *file) changeVersion() (core.Version, bool) {
 	return f.change, f.change != core.Version{}
 }
 
-// recorded notes that seg holds a record of the file, appended through tag.
-// It is called for every record appended for the file, and once a segment is
-// noted again it changes nothing. It claims the file for tag, so no record is
-// noted without an owner.
+// recorded notes that seg holds a record of the file, covering e with pair n,
+// appended through tag. It is called for every record appended for the file,
+// and notes the record's extent and pair among the segment's drop ranges, so
+// a record can never be on disk unnoted. It claims the file for tag, so no
+// record is noted without an owner.
 //
 // The record is on disk by the time it is noted, so the segment is noted
 // whatever the tag: a segment dropped here would end the file's tag while a
@@ -491,10 +502,19 @@ func (f *file) changeVersion() (core.Version, bool) {
 // records a segment holds, so the last record of one tag going does not.
 // Revisit if a fault is ever seen to leave a rivalled file whose second tag
 // is never forgotten.
-func (f *file) recorded(seg core.SegmentID, tag core.ShareTag, id core.FileID) error {
-	if !slices.Contains(f.segs, seg) {
-		f.segs = append(f.segs, seg)
+func (f *file) recorded(seg core.SegmentID, e core.Extent, n Numbers, tag core.ShareTag, id core.FileID) error {
+	var s *segRecords
+	for i := range f.segs {
+		if f.segs[i].seg == seg {
+			s = &f.segs[i]
+			break
+		}
 	}
+	if s == nil {
+		f.segs = append(f.segs, segRecords{seg: seg})
+		s = &f.segs[len(f.segs)-1]
+	}
+	f.nranges += s.note(e, n)
 	err := f.claim(tag, id)
 	if err != nil && !f.rivalled {
 		f.rivalled, f.rival = true, tag
@@ -503,10 +523,68 @@ func (f *file) recorded(seg core.SegmentID, tag core.ShareTag, id core.FileID) e
 }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record
-// of the file.
+// of the file — and, with them, forgets the segment's drop ranges, so from
+// here on no drop query is answered against seg's records. A segment the file
+// does not know is a no-op.
+//
+// Call it only once the unlink or recycle is durable. A removal the drop
+// query keeps only by a record of seg may be dropped the moment seg's ranges
+// are gone, so a call made while the unlink could still be lost to a crash
+// lets the removal drop while the records it covered can still come back with
+// the segment, held again where zeros belong.
 func (f *file) segmentGone(seg core.SegmentID) {
-	if i := slices.Index(f.segs, seg); i >= 0 {
-		f.segs[i] = f.segs[len(f.segs)-1]
-		f.segs = f.segs[:len(f.segs)-1]
+	for i := range f.segs {
+		if f.segs[i].seg == seg {
+			f.nranges -= len(f.segs[i].ranges)
+			last := len(f.segs) - 1
+			f.segs[i] = f.segs[last]
+			// The vacated slot is cleared, not just cut off: the backing
+			// array keeps it reachable, and the tail entry it still holds
+			// would pin that segment's ranges array for the entry's life.
+			f.segs[last] = segRecords{}
+			f.segs = f.segs[:last]
+			return
+		}
 	}
 }
+
+// mayOutrank reports whether a removal, release or loss record of the file in
+// seg, covering e with pair n, may still outrank a record of the file in
+// another segment: whether a range of another segment overlaps e with a
+// lowest pair below n. False means the record outranks nothing on disk.
+// Whether its marker is settled, and whether the unlinks it counted on are
+// durable, are the caller's to check. O(s) for the s segments holding the
+// file, at most maxDropRanges ranges each.
+func (f *file) mayOutrank(seg core.SegmentID, e core.Extent, n Numbers) bool {
+	if e.Len == 0 {
+		// A zero-length extent covers no byte, so no record overlaps it.
+		return false
+	}
+	lo, hi := e.Off, e.Off+e.Len
+	for _, s := range f.segs {
+		if s.seg == seg {
+			continue
+		}
+		for _, r := range s.ranges {
+			// A strictly lower pair only: an equal one is the record itself
+			// or a carried copy of it, never a record it outranks.
+			if r.overlaps(lo, hi) && r.low.Compare(n) < 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mayOutrank answers the drop query for id on any entry it has. A file with
+// no entry has no record on disk, so nothing outranks it and the answer is
+// false. This is also how the query stays within one file.
+func (fs *files) mayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) bool {
+	keep := false
+	fs.view(id, func(f *file) { keep = f.mayOutrank(seg, e, n) })
+	return keep
+}
+
+// dropRangeCount returns the number of drop ranges over every file and
+// segment.
+func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
