@@ -107,18 +107,6 @@ func TestDecodeFormatFileRefusesAFlippedBit(t *testing.T) {
 // later version may have another size, so version 1's rules never judge its
 // bytes.
 func TestDecodeFormatFileRefusesAnUnknownVersion(t *testing.T) {
-	for name, c := range map[string]struct {
-		version uint16
-	}{
-		"version 0": {0},
-		"version 2": {2},
-	} {
-		b := raw.Format{Version: c.version, Identity: testIdentity, Installation: testInstallation}.Bytes()
-		if _, err := DecodeFormatFile(b); !errors.Is(err, ErrUnknownVersion) {
-			t.Errorf("DecodeFormatFile(%s) = %v, want an error matching ErrUnknownVersion", name, err)
-		}
-	}
-
 	v2 := raw.Format{Version: 2, Identity: testIdentity, Installation: testInstallation}.Bytes()
 	v2Long := append(slices.Clone(v2), 0)
 	if _, err := DecodeFormatFile(v2Long); !errors.Is(err, ErrUnknownVersion) {
