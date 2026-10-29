@@ -479,6 +479,12 @@ func (t *Table) recallEnded(e *entry, g *grant) {
 // opens is cut to none and its opens stay; one that covers none is revoked
 // into its client's revoked set and reported. Either fences its client from
 // grants here for a lease period.
+//
+// decision: a missed recall recalls none of the client's other grants, though
+// a client that misses one may be missing them all; the fence keeps it from
+// new grants, and each grant it holds lapses on its own once it conflicts.
+// Recall the rest at the first lapse if a client is seen holding grants it no
+// longer answers for long past one.
 func (t *Table) lapse(e *entry, out *outbox) {
 	now := t.d.Clock.Elapsed()
 	for _, g := range e.grants {

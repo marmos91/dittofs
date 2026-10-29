@@ -554,6 +554,9 @@ func (t *Table) forget(ctx context.Context, c entity.ClientID, out *outbox) {
 }
 
 // dropRevoked drops c's revoked set.
+//
+// ponytail: it scans every revoked reference of every client. Index the
+// revoked set by client when revoked sets are seen large at a client's end.
 func (t *Table) dropRevoked(c entity.ClientID) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
@@ -602,6 +605,8 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 		t.forget(ctx, c, out)
 		return nil
 	}
+	// ponytail: it scans every reference the table holds, of every client.
+	// Index references by client when a revoke is seen slow on a busy primary.
 	t.idx.Lock()
 	for k, h := range t.refs {
 		if h.client == c {
