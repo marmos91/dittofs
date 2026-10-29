@@ -434,7 +434,8 @@ crash from a truncation ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 | 28 | 4 | CRC32C over bytes `[0, 28)`, seeded with the journal identity |
 
 A scan tells a slot by its first four bytes: `DJR1` a record header ([§2.3](#2.3%20Records)),
-`DJS1` a seal marker, all zeros the zero-slot rule of [§3.3](#3.3%20Torn%20and%20corrupt%20records), anything else damage. A
+`DJS1` a seal marker, all zeros the zero-slot rule of [§3.3](#3.3%20Torn%20and%20corrupt%20records), anything else torn or corrupt by
+[§3.3](#3.3%20Torn%20and%20corrupt%20records). A
 seal marker verifies only if its checksum does under this journal's identity and
 its segment id and own offset are the segment and offset it was read at, so a
 copy of one inside a payload never ends a scan.
@@ -970,7 +971,9 @@ everything after the last record that verifies, and a bad record before it is a
 treated as never written and **MUST NOT** be reported as damage. Unsynced writes
 may survive out of order, so a record that verifies after a torn slot is whole and
 may have been answered: it is attached, never cut off with the slot, and a later sync
-may already have made it durable.
+may already have made it durable. A seal marker that does not verify, in a segment
+no successor names, is part of that segment's torn tail: a seal a crash cut short
+reads the same, and every record before it still verifies.
 
 **A torn tail is cut off and its segment sealed before anything is appended.**
 Recovery **MUST** truncate the segment at the start of the torn tail — never below
@@ -1253,7 +1256,8 @@ each region has its own required outcome:
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header proven synced: the segment is reported as damaged and its records are still
   attached ([§3.1](#3.1%20Rebuilding));
-- a seal marker: the segment is reported as damaged if a successor names it ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+- a seal marker: the segment is reported as damaged if a successor names it, and
+  otherwise the marker is a torn tail ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - the `format` file: its checksum fails, and so does the open.
 
 No flip may produce a read that returns bytes other than the ones written.
