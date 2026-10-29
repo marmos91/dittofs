@@ -1081,10 +1081,21 @@ func TestRebuildSegmentsAndTags(t *testing.T) {
 // shard was still open leaves a file reporting an asOf below the version it
 // serves, and a fill resolved against that asOf would be accepted.
 func TestRebuildBucketsCoverEveryAcceptedRecord(t *testing.T) {
-	const rounds = 20
+	// The racing file sits in the last shard drained: a start read before
+	// the drain loop leaves that shard open through the locking of every
+	// other one, so the window is as wide as it can be, and a feeder
+	// writing ascending versions hits it almost every round.
+	var racer core.FileID
+	for i := byte(1); ; i++ {
+		racer = fid(i)
+		if hashID(racer)>>(64-6) == fileShards-1 {
+			break
+		}
+	}
+	const rounds = 50
 	for range rounds {
 		var fs files
-		id := fid(1)
+		id := racer
 		b := newRebuilder(&fs, &Counters{})
 		// One record lands before the race, so the round always has
 		// something to hold even if the feeder wins nothing further.
@@ -1092,14 +1103,19 @@ func TestRebuildBucketsCoverEveryAcceptedRecord(t *testing.T) {
 			t.Fatal(err)
 		}
 		fed := make(chan int, 1)
+		hot := make(chan struct{})
 		go func() {
 			for v := 2; ; v++ {
 				if err := b.Feed(recd(RecWrite, id, uint64(v), uint64(v), core.SegmentID(1+v/100), uint32(v)*8, int64(v)*8, 8)); err != nil {
 					fed <- v - 2 // how many the race fed
 					return
 				}
+				if v == 2 {
+					close(hot) // the feeder is running: Finish races it mid-flight
+				}
 			}
 		}()
+		<-hot
 		if err := b.Finish(ver(0)); err != nil {
 			t.Fatal(err)
 		}
