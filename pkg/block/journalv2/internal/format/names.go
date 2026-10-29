@@ -17,12 +17,33 @@ const (
 // NameKind is what a file name in the journal's directory is.
 type NameKind int
 
+// String names the kinds, so a failing test reads which one it saw.
+func (k NameKind) String() string {
+	switch k {
+	case NameUnrecognised:
+		return "unrecognised"
+	case NameSegment:
+		return "segment"
+	case NameSpare:
+		return "spare"
+	case NameFormat:
+		return "format"
+	case NameFormatTmp:
+		return "format.tmp"
+	}
+	return "invalid"
+}
+
 const (
-	NameUnrecognised NameKind = iota // left alone, never deleted
-	NameSegment                      // <20 digits>.seg
-	NameSpare                        // <20 digits>.spare.tmp
-	NameFormat                       // format
-	NameFormatTmp                    // format.tmp
+	// NameUnrecognised means "leave alone, never delete", not that no
+	// segment-like file is there: a .seg name of the wrong width or an id
+	// of zero is unrecognised too, so a directory the journal must refuse
+	// for holding a segment cannot be told from this kind alone.
+	NameUnrecognised NameKind = iota
+	NameSegment               // <20 digits>.seg
+	NameSpare                 // <20 digits>.spare.tmp
+	NameFormat                // format
+	NameFormatTmp             // format.tmp
 )
 
 // SegmentName returns the name of segment id's file: its id in twenty
