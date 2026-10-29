@@ -636,3 +636,17 @@ func TestRefusedWriteChangesNothing(t *testing.T) {
 		t.Errorf("the reconnect after: %+v, %v; want it, with no time suspended", back.Open, err)
 	}
 }
+
+// Only an SMB open is kept durable: one asked by another protocol is invalid,
+// and opens nothing.
+func TestDurableOpenIsSMBs(t *testing.T) {
+	f := newFixture(t)
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	file := anyFile()
+	if _, err := f.open(n, file, keep(OpenRequest{Access: rd}, entity.DurabilityDurable, s1, time.Minute, 1)); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a durable NFS open: %v, want ErrInvalid", err)
+	}
+	if e := f.entryOf(file.ID); e != nil && len(e.opens) != 0 {
+		t.Errorf("the refused open left %d opens", len(e.opens))
+	}
+}
