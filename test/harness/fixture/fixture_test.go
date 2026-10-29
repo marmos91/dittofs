@@ -86,7 +86,7 @@ func TestUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos only for SMB"},
 		{registry.Fixture{Profile: "memory", Reset: "once"}, `reset shares "once"`},
 	} {
-		if got := Unsupported(&tc.f); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+		if got := Unsupported(&tc.f, runtime.GOOS); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)
 		}
 	}
