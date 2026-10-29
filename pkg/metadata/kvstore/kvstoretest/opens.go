@@ -390,6 +390,29 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	}
 }
 
+// Two last persistent closes of a file with delete pending, committing
+// concurrently: delete pending goes with whichever commits second.
+func testDeletePendingRace(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	_, rootID, err := f.root.Parse()
+	must(t, err)
+	a, b := f.newOpen(file.ID), f.newOpen(file.ID)
+	a.Durability, b.Durability = entity.DurabilityPersistent, entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, a))
+	must(t, opens.Put(ctx, f.share.ID, b))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, file.ID, a.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("a")}))
+	ea, eb := race(h,
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); return err },
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); return err })
+	must(t, ea)
+	must(t, eb)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, file.ID); err != nil || ok {
+		t.Fatalf("delete pending outlived both persistent opens: %v, %v", ok, err)
+	}
+}
+
 // RFC 14 §4.5: the NSM state number is one per installation, durable, and
 // never goes down.
 func testNSMState(t *testing.T, kvo Opener) {
