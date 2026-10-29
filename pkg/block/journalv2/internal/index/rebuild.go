@@ -417,9 +417,16 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// decision: records equal in kind, extent and numbers are one record,
 	// whatever its feed count — a header-only record carried forward by
 	// repack, a record re-appended after a failed sync whose original is
-	// still on disk. The replay keeps the one at the greatest
-	// (segment, offset): a copied record is read from its newer home. Every
-	// copy has been noted above, so the drop ranges lose nothing here.
+	// still on disk. Every copy has been noted above, so the drop ranges
+	// lose nothing here.
+	//
+	// decision: of two copies of one record, the one at the greater
+	// (segment, offset) is the newer home: a stream takes the lowest-id
+	// spare, so a segment taken later has a greater id than every segment
+	// taken before it. Both copies were verified and hold identical bytes,
+	// so either serves a read; the key makes the rebuild deterministic.
+	// Overturned if spares are ever taken out of id order, or a read ever
+	// distinguishes the copies.
 	kept := recs[:0]
 	for i := 0; i < len(recs); {
 		j := i + 1
