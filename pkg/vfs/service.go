@@ -10,7 +10,7 @@ import "context"
 // returns the attributes its reply needs, so no handler follows a mutation
 // with a GetAttr. Every open-state call is refused StateError NotYours for an
 // ID, or state reached through one, that the call's client or principal does
-// not hold.
+// not hold; a delegation is held by its client alone, and lends no access.
 type Service interface {
 	Clients
 	Names
