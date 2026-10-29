@@ -1058,6 +1058,18 @@ segment of a stream the torn-tail rule above still decides whether the bad one i
 torn or corrupt: a record found past it that names a synced-through offset beyond
 it proves it synced.
 
+**Corruption that names no record is reconciled against metadata.** Nothing in a
+header that does not verify can be trusted. So when the torn-tail rule makes a
+refused range of a segment with no verifying catalog corruption, the range names
+no file, extent or sequence number, and no loss record can name it. The lost
+record may have superseded an older one held elsewhere. If the journal served that
+older record, a stable overwrite would read as the content it replaced. So the
+journal reports the segment as damaged, raises the loss generation once for the
+range ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and says so in `Stats.Recovery`. The engine serves none of the
+journal's content until it has reconciled it against metadata ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The reconcile drops each held extent that metadata proves
+superseded, and records the drop with a loss record of its own. Recovery itself
+still reads nothing outside the journal ([§3.1](#3.1%20Rebuilding)).
+
 Each record dropped as corrupt is a loss event with a loss record ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)),
 **unless another copy of it verifies.** A re-append ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), [§3.1](#3.1%20Rebuilding)) or a carried
 header-only record ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) leaves copies with equal numbers; among them recovery
@@ -1243,7 +1255,9 @@ each region has its own required outcome:
 
 - a record header or payload: caught at open by a scan, otherwise on the read
   that would serve it; the extent is dropped and reported as data loss or as
-  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The exception is a header that §3.3's scan
+  finds corrupt. It names no record, so the engine's reconcile drops whatever it
+  had superseded;
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header: the segment is reported as damaged and its records are still

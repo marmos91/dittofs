@@ -402,7 +402,7 @@ this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20fil
 that append a record, read a segment, sync, or wait on another operation: `Init`,
 `Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
 `WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
-receives a context derived from it), `MarkOffloaded`, `Unmark`, `Release`, the removals of
+receives a context derived from it), `MarkOffloaded`, `Unmark`, `DropOlder`, `Release`, the removals of
 [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`, and the verification of [§4.4](#4.4%20Inspection), which
 reads every segment. A call that only reads or changes
 memory and never waits takes none: `Share`, `Strand`,
@@ -930,6 +930,7 @@ nothing is held there. The engine drops the removed refs at commit
 ```go
 MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error
 Unmark(ctx context.Context, id FileID, extents []Extent) error
+DropOlder(ctx context.Context, id FileID, e Extent, below Version) error
 ```
 
 `MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
@@ -942,6 +943,12 @@ call either on any file at any time. The engine uses them after a restart, to
 reseed the bits from its refs and to clear one no ref justifies
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). How the records are rebuilt, and what a version outside the range
 does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)'s.
+
+`DropOlder` drops the held content of `e` whose version is below `below`. It
+drops it as stale after its sync, so it appends the synced loss record of
+[§3.8](#3.8%20Loss%20events) for each record piece it drops before it publishes the loss event.
+That record outlives seals and repack, and the dropped content is not held again.
+The engine calls it only from the reconcile ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 ### 3.4 Fill
 
@@ -1168,9 +1175,9 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
-| `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
+| `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, and whether it found a corrupt range that names no record, which the engine must reconcile before serving ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
-| `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
+| `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded, every failed sync window and every corrupt range that names no record, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
 
@@ -1258,8 +1265,9 @@ report the same loss again.
 
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
-event of a corrupt extent whose offloaded bit was unset, and on every failed
-sync window ([§5.3](#5.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
+event of a corrupt extent whose offloaded bit was unset, on every failed
+sync window ([§5.3](#5.3%20A%20failed%20sync)), and once at open for each corrupt range that names no
+record, whose offloaded bit is unknown ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
 a loss of content the remote tier holds and the next read fetches: a corrupt
 extent whose offloaded bit was set, or a stale one whatever its bit. A stale
 extent is older than content the remote tier holds ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so dropping
@@ -1292,7 +1300,8 @@ a loss that took that write, and the client would never learn of it.
 merges two journals' generations into one. A replica (cluster) that sees its
 journal's generation rise records its **loss point** from the loss events behind
 the rise, not from the rise itself — the lowest version among the records they
-name, for each shard the journal holds a replica of
+name, for each shard the journal holds a replica of; a rise for a range that
+names no record sets one on every such shard
 ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
 
 The journal calls out to nothing to report. Everything an operator needs to tell
