@@ -847,22 +847,22 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 		if u.Delete != nil && o.Mode.Access&entity.Delete == 0 {
 			return ErrAccess
 		}
-		next := o.Suspended&^u.Resume | u.Suspend
-		wrote := next != o.Suspended && o.persistent()
+		was := o.Suspended
+		o.Suspended = was&^u.Resume | u.Suspend
+		wrote := o.Suspended != was && o.persistent()
 		if wrote {
-			rec := t.recordOf(e, o)
-			rec.Suspended = next
-			if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
+			if err := t.persist(ctx, e, o); err != nil {
+				o.Suspended = was
 				return err
 			}
 		}
 		if err := t.keepPending(ctx, e, o, who, u.Delete); err != nil {
+			o.Suspended = was
 			if wrote {
 				t.save(ctx, e, o) // the update is refused: the record goes back
 			}
 			return err
 		}
-		o.Suspended = next
 		if u.Delete != nil {
 			switch {
 			case !*u.Delete:
