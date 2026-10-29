@@ -402,7 +402,7 @@ func TestWaiterPlace(t *testing.T) {
 		}
 	}
 	f.clock.advance(leasePeriod/2 + 1)
-	f.serveFiles(f.sink, slices.Collect(maps.Keys(f.polls)))
+	f.serveFiles(ctx, f.sink, slices.Collect(maps.Keys(f.polls)))
 	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
 	if _, err := f.lock(p2, file, LockReq{Owner: owner(p2, "p"), Ranges: rg, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
 		t.Errorf("the later poller after the range freed: %v, want refused", err)

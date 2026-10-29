@@ -49,7 +49,7 @@ func (f *fixture) pass(t *testing.T, d time.Duration, keep ...entity.ClientID) {
 	f.idx.Lock()
 	files := slices.Collect(maps.Keys(f.recalling))
 	f.idx.Unlock()
-	f.serveFiles(f.sink, files)
+	f.serveFiles(ctx, f.sink, files)
 }
 
 // ordered reports whether the file's admission lock was taken, since the last

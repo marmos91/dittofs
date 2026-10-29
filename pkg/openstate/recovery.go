@@ -50,7 +50,11 @@ type recovery struct{ t *Table }
 
 // served is a shard this table serves.
 type served struct {
-	instance uint64        // the grace instance its references are minted under
+	instance uint64         // the grace instance its references are minted under
+	share    entity.ShareID // the share it belongs to, whose durable-open index holds its records
+	// unclosed is set from a grace's start until, once the grace has ended,
+	// the sweep has closed the durable records nobody reclaimed.
+	unclosed bool
 	ends     time.Duration // the Elapsed reading its grace ends at; zero: not in grace
 	// reclaim is the clients its records named when grace began: those that
 	// may reclaim here and have not finished.
@@ -58,6 +62,10 @@ type served struct {
 	// guarded is set while one of them can reclaim a deny mode or a mandatory
 	// lock: anonymous I/O then waits for grace's end.
 	guarded bool
+	// owed is, per client that recovers by reconnecting, the persistent
+	// opens installed for it that it has not reconnected and that have not
+	// closed.
+	owed map[entity.ClientID]int
 }
 
 // reclaimer is a client a grace waits for.
@@ -73,32 +81,22 @@ type reclaimer struct {
 func (sh *served) inGrace(now time.Duration) bool { return sh.ends != 0 && now < sh.ends }
 
 // settle ends sh's grace early once no client it waits for is left, and
-// lifts the wait of anonymous I/O once none left can reclaim a deny mode; the
-// caller holds cmu.
-//
-// decision: a client that recovers by reconnecting counts as finished at
-// once, because the table installs no persistent open for it to reconnect,
-// and its volatile state is never reclaimed. Count it until it has
-// reconnected each persistent open, or each Timeout has passed, once
-// persistent opens are installed at ServeShard.
+// lifts the wait of anonymous I/O once none left can reclaim a deny mode: a
+// client that recovers by reconnecting is finished once each persistent open
+// installed for it has reconnected or closed, its Timeout passed included,
+// as its volatile state is never reclaimed. The caller holds cmu.
 func (sh *served) settle() {
 	sh.guarded = false
 	done := true
-	for _, r := range sh.reclaim {
+	for c, r := range sh.reclaim {
 		sh.guarded = sh.guarded || r.deny
-		done = done && r.reconnect
+		done = done && r.reconnect && sh.owed[c] == 0
 	}
 	if done {
 		sh.ends = 0
 	}
 }
 
-// ponytail: share is taken but not read, since nothing is installed from the
-// durable-open index yet, whose range of a shard is keyed by its share; and
-// grace's end raises no Sink.GraceEnded, so the service is not told when a
-// shard leaves grace. Read share once ServeShard installs the shard's
-// persistent opens, and add GraceEnded once the service has something to run
-// at grace's end.
 func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error {
 	t := v.t
 	sink, err := t.running()
@@ -108,21 +106,20 @@ func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardI
 	// The client step is held from the scan to the install, so a revoke, an
 	// expiry or a reboot either lands before the scan, and the client is
 	// not listed, or after the install, and unreclaims it.
+	var out outbox
 	t.cstep.Lock()
-	told, err := t.beginShard(ctx, s, instance)
+	err = t.beginShard(ctx, share, s, instance, &out)
 	t.cstep.Unlock()
 	if err != nil {
 		return err
 	}
-	for _, r := range told {
-		sink.Revoked(r)
-	}
+	out.raise(t, sink)
 	return nil
 }
 
-// beginShard is ServeShard under the client step, and returns the clients to
-// tell.
-func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]Revocation, error) {
+// beginShard is ServeShard under the client step; the clients to tell, and
+// what the installed leases raise, go to out.
+func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64, out *outbox) error {
 	t.cmu.Lock()
 	cur := t.shards[s]
 	if cur != nil && cur.instance != instance {
@@ -131,25 +128,28 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 	t.cmu.Unlock()
 	switch {
 	case cur != nil && cur.instance == instance:
-		return nil, nil // a handover of the table: nothing was lost
+		return nil // a handover of the table: nothing was lost
 	case cur != nil:
 		t.lose(s)
 	}
-	sh := &served{instance: instance, reclaim: map[entity.ClientID]reclaimer{}}
+	sh := &served{instance: instance, share: share, unclosed: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
 	var told []Revocation
 	notice := false
+	named := map[entity.ClientID]entity.ClientRecord{}
 	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if rec.Ended {
 			continue // its state is being released everywhere: nothing to reclaim
 		}
+		named[rec.ID] = rec
 		// decision: a client that recovers by reconnecting holds no deny mode
-		// in grace, though an SMB client can hold one: its volatile opens are
-		// never reclaimed and nothing of it is installed yet. Set deny for it
-		// once ServeShard installs persistent opens that are not yet
-		// reconnected.
+		// grace waits for, though an SMB client can hold one: its volatile
+		// opens are never reclaimed, and its persistent ones are installed
+		// here with their deny modes, which anonymous I/O is judged against
+		// as against any open. Set deny for it if an open of it is ever
+		// reclaimed rather than installed.
 		sh.reclaim[rec.ID] = reclaimer{
 			reconnect: rec.Recovery == entity.RecoverReconnect,
 			deny:      rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
@@ -184,15 +184,20 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 	}
 	if notice {
 		if err := t.raiseNotice(ctx); err != nil {
-			return nil, err
+			return err
 		}
+	}
+	if err := t.install(ctx, share, s, sh, named, out); err != nil {
+		t.lose(s) // what was installed goes, so a retry installs each open once
+		return err
 	}
 	t.cmu.Lock()
 	sh.ends = t.d.Clock.Elapsed() + leasePeriod
 	sh.settle()
 	t.shards[s] = sh
 	t.cmu.Unlock()
-	return told, nil
+	out.revoked = append(out.revoked, told...)
+	return nil
 }
 
 // lose drops every piece of state held in shard s, as a loss of its open
@@ -454,10 +459,10 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 			return ErrLocksHeld
 		}
 		t.dropLockState(e, ls)
-		t.serve(e, &out)
+		t.serve(ctx, e, &out)
 		return nil
 	})
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	return err
 }

@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -42,9 +43,9 @@ func (g GrantID) ref() StateRef {
 // that conflicts with its Kind, so its holder may cache. It covers every open
 // of its client under its Key, an oplock's one open, or, a delegation, none.
 //
-// decision: it carries nothing of the adapter's until a lease covering a
-// persistent open is written; what the adapter keeps with a lease lands with
-// that write.
+// decision: what the adapter keeps with a lease is its parent key, typed as
+// Parent, as the stored lease's ParentKey is, rather than opaque Adapter
+// bytes. Add Adapter if an adapter needs other bytes kept with a lease.
 type CachingGrant struct {
 	ID     GrantID
 	Client entity.ClientID
@@ -53,6 +54,7 @@ type CachingGrant struct {
 	Key    LeaseKey // zero: it covers one open, or none
 	Epoch  uint16   // a v2 lease's: starts at its request's, raised by every change of Kind sent to the holder
 	V2     bool     // a v2 lease, whose Epoch is counted and sent; fixed when the lease is made
+	Parent LeaseKey // a v2 lease's parent key, as its first request named it; never read here
 	Recall *Recall  // a recall in flight; nil: none
 }
 
@@ -108,7 +110,8 @@ type grant struct {
 	id      GrantID
 	client  entity.ClientID
 	key     LeaseKey
-	open    *open // an oplock: the one open it covers; nil for a lease and a delegation
+	parent  LeaseKey // a v2 lease's parent key, kept for the adapter; zero: none
+	open    *open    // an oplock: the one open it covers; nil for a lease and a delegation
 	fsm     grantfsm.Grant
 	gen     uint32        // raised by each recall started, naming it to the arming of its deadline
 	sent    time.Duration // the deadline of the recall in flight, once handed to the Sink; zero: none, or not yet handed
@@ -155,7 +158,7 @@ func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
 
 // public is g as a caller sees it, on e's file.
 func (g *grant) public(f entity.FileID) CachingGrant {
-	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch, V2: g.fsm.V2}
+	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch, V2: g.fsm.V2, Parent: g.parent}
 	if r := g.fsm.Recall; r != nil {
 		p.Recall = &Recall{To: r.To}
 	}
@@ -180,12 +183,41 @@ func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool 
 // recallOthers recalls each grant on e that own does not claim, under e's
 // step, to what keeps leaves it, a grant that covers no open to none, and is
 // ErrDelay with DelayRecall while any of them holds more than that: its recall
-// started here or already in flight, and not ended as it was sent. A request that would start recalls past
-// maxUnsent is ErrDelay with DelayResources, and starts and narrows none.
-func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
+// started here or already in flight, and not ended as it was sent. A request
+// that would start recalls past maxUnsent is ErrDelay with DelayResources, and
+// starts and narrows none.
+//
+// A recall that changes a lease's epoch, or its kind as it is sent, is
+// written with the persistent opens it covers before it is started, and a
+// refused write starts none.
+func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
 	type recall struct {
 		g       *grant
 		allowed GrantKind
+		next    grantfsm.Grant // g's state machine once broken
+		started bool           // the break starts a recall
+	}
+	for _, g := range e.grants {
+		if own(g) || grantfsm.Within(g.fsm.Kind, keeps(g)) == g.fsm.Kind {
+			continue
+		}
+		var hs []*open
+		for _, h := range e.opens {
+			if h.Grant == g.id {
+				hs = append(hs, h)
+			}
+		}
+		// decision: a grant covering only disconnected durable opens that are
+		// not persistent closes them on any break, handle caching kept or not:
+		// MS-SMB2 3.3.4.7 completes an undeliverable break of a non-persistent
+		// open with NONE, after which 3.3.5.9.7 refuses its reconnect, so
+		// keeping it would only hold its deny mode. Recall instead if a client
+		// with another live session is seen reconnecting such an open.
+		if !slices.ContainsFunc(hs, func(h *open) bool { return h.parked == 0 || h.persistent() }) {
+			for _, h := range hs {
+				t.closeByTable(ctx, e, h, out)
+			}
+		}
 	}
 	var hit []recall
 	starts := 0
@@ -203,7 +235,7 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 		case g.open != nil:
 			a &= GrantRead // an oplock break carries only Level II or none
 		}
-		hit = append(hit, recall{g, a})
+		hit = append(hit, recall{g: g, allowed: a})
 		if g.fsm.Recall == nil {
 			starts++
 		}
@@ -223,8 +255,22 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 		}
 	}
 	delay := false
+	for i := range hit {
+		r := &hit[i]
+		r.next = cloneFSM(r.g.fsm)
+		r.started = r.next.Break(r.allowed)
+		if w := r.g.sentAs(r.next); r.started && (w.Epoch != r.g.fsm.Epoch || w.Kind != r.g.fsm.Kind) {
+			if err := t.persistLeaseAs(ctx, e, r.g, w); err != nil {
+				t.idx.Lock()
+				t.unsent -= starts
+				t.idx.Unlock()
+				return err
+			}
+		}
+	}
 	for _, r := range hit {
-		if r.g.fsm.Break(r.allowed) {
+		r.g.fsm = r.next
+		if r.started {
 			t.queueRecall(e, r.g, out)
 		}
 		delay = delay || r.g.fsm.Recall != nil
@@ -235,17 +281,27 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 	return &DelayError{DelayRecall}
 }
 
-// queueRecall adds g's recall in flight, already counted in unsent, to out.
-// An SMB break of read caching alone asks no acknowledgement (MS-SMB2
-// 3.3.4.6, 3.3.4.7): it ends as it is queued, and nothing waits on it.
+// queueRecall adds g's recall in flight, already counted in unsent, to out,
+// and ends it there if it ends as it is sent.
 func (t *Table) queueRecall(e *entry, g *grant, out *outbox) {
 	g.gen++
 	g.sent = 0
 	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), gen: g.gen})
-	if g.covers() && g.fsm.Kind&(GrantWrite|GrantHandle) == 0 {
-		_, _ = g.fsm.Ack(g.fsm.Recall.To)
-		t.recount(g)
+	g.fsm = g.sentAs(g.fsm)
+	t.recount(g)
+}
+
+// sentAs is f, g's state machine with a recall in flight, as it stands once
+// the recall is sent: an SMB break of read caching alone asks no
+// acknowledgement (MS-SMB2 3.3.4.6, 3.3.4.7), so it ends there and nothing
+// waits on it. What is written before a recall is sent is f as sentAs leaves
+// it.
+func (g *grant) sentAs(f grantfsm.Grant) grantfsm.Grant {
+	if g.covers() && f.Recall != nil && f.Kind&(GrantWrite|GrantHandle) == 0 {
+		f = cloneFSM(f)
+		_, _ = f.Ack(f.Recall.To)
 	}
+	return f
 }
 
 // arm starts the deadline of the recall r handed to the Sink, if it is still
@@ -268,7 +324,7 @@ func (t *Table) arm(r recallOut) {
 // with handle caching covers one of them and is not own's, that caching is
 // recalled and the answer is ErrDelay; only once none does is the conflict
 // ErrShareViolation.
-func (t *Table) breakHandles(e *entry, hs []*open, own func(*grant) bool, out *outbox) error {
+func (t *Table) breakHandles(ctx context.Context, e *entry, hs []*open, own func(*grant) bool, out *outbox) error {
 	if len(hs) == 0 {
 		return nil
 	}
@@ -280,11 +336,15 @@ func (t *Table) breakHandles(e *entry, hs []*open, own func(*grant) bool, out *o
 		}
 		return false
 	}
-	err := t.recallOthers(e, func(g *grant) bool { return own(g) || !covering(g) }, func(*grant) GrantKind { return ^GrantHandle }, out)
+	err := t.recallOthers(ctx, e, func(g *grant) bool { return own(g) || !covering(g) }, func(*grant) GrantKind { return ^GrantHandle }, out)
 	if err != nil {
 		return err
 	}
-	return ErrShareViolation
+	// The recall may have closed disconnected opens instead.
+	if slices.ContainsFunc(hs, func(h *open) bool { return e.opens[h.Ref.Token] == h }) {
+		return ErrShareViolation
+	}
+	return nil
 }
 
 // offer is the grant covering o, of e's file, after its open by who asking r:
@@ -339,7 +399,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, epoch), counted: true}
+	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
@@ -361,8 +421,8 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 // offerable is the most of want a grant to who, through o under key, may hold
 // on e: none to a client fenced, at its budget or with its back channel down,
 // on a file with a recall in flight, recalled within a recall deadline, with
-// a lock waiter or another holder's byte-range lock, or under 16 grants
-// already; and no caching another holder's
+// a lock waiter or another holder's byte-range lock, with a record not yet
+// written again, or under 16 grants already; and no caching another holder's
 // open or grant refuses. The budget is checked where the grant is minted: a
 // client at it keeps the grants it holds, and was asked through RecallAny,
 // when it reached it, to return some.
@@ -380,7 +440,7 @@ func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want Gran
 			caching++
 		}
 	}
-	if want == GrantNone || len(e.waiters) > 0 || caching >= maxShared {
+	if want == GrantNone || len(e.waiters) > 0 || caching >= maxShared || e.unsaved() {
 		return GrantNone
 	}
 	now := t.d.Clock.Elapsed()
@@ -483,7 +543,8 @@ func (t *Table) recallEnded(e *entry, g *grant) {
 
 // lapse ends each recall on e past its deadline, under e's step and the
 // file's admission lock, since it adds to the revoked set: a grant that covers
-// opens is cut to none and its opens stay; one that covers none is revoked
+// opens is cut to none and its opens stay, but a disconnected durable one,
+// kept only under handle caching, closes; one that covers none is revoked
 // into its client's revoked set and reported. Either fences its client from
 // grants here for a lease period.
 //
@@ -492,7 +553,7 @@ func (t *Table) recallEnded(e *entry, g *grant) {
 // new grants, and each grant it holds lapses on its own once it conflicts.
 // Recall the rest at the first lapse if a client is seen holding grants it no
 // longer answers for long past one.
-func (t *Table) lapse(e *entry, out *outbox) {
+func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 	now := t.d.Clock.Elapsed()
 	for _, g := range e.grants {
 		if g.fsm.Recall == nil || g.sent == 0 || now < g.sent {
@@ -505,6 +566,12 @@ func (t *Table) lapse(e *entry, out *outbox) {
 		if g.covers() {
 			g.fsm.Timeout()
 			t.recount(g)
+			for _, h := range e.opens {
+				if h.Grant == g.id && h.persistent() {
+					t.save(ctx, e, h) // the cut is the timer's, with no caller to refuse
+				}
+			}
+			t.closeUncached(ctx, e, g, out)
 			continue
 		}
 		t.idx.Lock()
@@ -521,6 +588,17 @@ func (t *Table) lapse(e *entry, out *outbox) {
 	t.idx.Lock()
 	delete(t.recalling, e.file)
 	t.idx.Unlock()
+}
+
+// closeUncached closes each disconnected durable open g covers that is not
+// persistent, once g holds no handle caching: such an open is kept only under
+// it, and a reconnect of it is refused without it.
+func (t *Table) closeUncached(ctx context.Context, e *entry, g *grant, out *outbox) {
+	for _, h := range e.opens {
+		if h.Grant == g.id && h.parked != 0 && !h.persistent() {
+			t.closeByTable(ctx, e, h, out)
+		}
+	}
 }
 
 // cachedByOther reports whether a grant with read or write caching that
@@ -565,14 +643,23 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		if !inFlight && g.covers() {
 			return ErrNoRecall
 		}
-		next, err := g.fsm.Ack(to)
+		// Written as the answer leaves the grant before it is applied, so
+		// a refused write changes nothing and is answered.
+		f := cloneFSM(g.fsm)
+		next, err := f.Ack(to)
 		if err != nil {
 			if !inFlight || g.open == nil {
 				return ErrInvalid
 			}
-			g.fsm.Timeout()
+			f.Timeout()
 			err = ErrInvalid
 		}
+		if w := g.sentAs(f); w.Kind != g.fsm.Kind || w.Epoch != g.fsm.Epoch {
+			if perr := t.persistLeaseAs(ctx, e, g, w); perr != nil {
+				return perr
+			}
+		}
+		g.fsm = f
 		if next {
 			// decision: only a recall's first stage is held to maxUnsent; a
 			// later one is queued past it, since refusing it would leave the
@@ -594,10 +681,13 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		} else {
 			t.recount(g)
 		}
-		t.serve(e, &out)
+		if g.fsm.Kind&GrantHandle == 0 {
+			t.closeUncached(ctx, e, g, &out)
+		}
+		t.serve(ctx, e, &out)
 		return err
 	})
 	out.raise(t, sink)
-	t.serveFiles(sink, out.serve)
+	t.serveFiles(ctx, sink, out.serve)
 	return err
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
@@ -30,6 +31,28 @@ type Open struct {
 	Delete    DeleteMark
 	Suspended entity.TimeMask // times I/O through it leaves alone
 	LossSeen  uint64          // the file's loss sequence it last reported; volatile
+
+	Durability entity.Durability // none, durable, persistent: what it survives
+	Session    entity.SessionRef // the session that opened or last reconnected it; zero: none
+	Durable    DurableKeys       // what a reconnect matches; zero unless durable or persistent
+}
+
+// DurableKeys is what a reconnect of a durable or persistent open matches.
+//
+// ponytail: no Instance, LockSeq or channel sequence yet, so an app-instance
+// takeover, a lock replay and a request on a stale channel are not
+// recognised, and a persistent open's record is written and installed
+// without them; all three arrive with create and lock replay.
+type DurableKeys struct {
+	Timeout time.Duration // how long it is kept once its session ends
+	Create  [16]byte      // the create's own ID, which a reconnect must name; zero: none
+}
+
+// ReconnectMatch is what a reconnect presents beside its Caller.
+type ReconnectMatch struct {
+	Share  entity.ShareID // the share of the tree the reconnect arrived on
+	Create [16]byte       // the create's ID; zero: none presented
+	Lease  LeaseKey       // zero: none presented
 }
 
 // OpenMode is what an open may do, and what it refuses other opens.
@@ -67,10 +90,15 @@ type OpenRequest struct {
 	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
 	Lease         LeaseKey  // the key of the lease to cover it; zero: none
+	Parent        LeaseKey  // a v2 lease request's parent key, kept with a new lease for the adapter; zero: none
 	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
 	Want          GrantKind // the grant kind asked for; none: no grant
 	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 	Reclaim       bool      // the open is one the client held before its shard lost its state
+
+	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
+	Durable    DurableKeys
+	Session    entity.SessionRef // the opening session
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -169,6 +197,21 @@ type Opens interface {
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
+	// Reconnect attaches a durable or persistent open, disconnected and
+	// within its Timeout, to session s, answering it with the lease covering
+	// it. It matches only the open's client and principal, its share, its
+	// create ID and its lease key; anything else is ErrNoReclaim, as for an
+	// open that does not exist, and changes nothing.
+	//
+	// decision: a lease reconnect's file-name check is not made here: the
+	// adapter compares the name the request carries with the open's before
+	// calling, as only it holds the request's path. Match Open.Name here if
+	// a second adapter reconnects leases.
+	Reconnect(ctx context.Context, who Caller, o entity.OpenID, m ReconnectMatch, s entity.SessionRef) (OpenResult, error)
+	// Flushed reports a flush through open o, at the file's loss sequence
+	// loss: ErrLost, once, when a loss happened since the open was made or
+	// last flushed.
+	Flushed(ctx context.Context, who Caller, o entity.OpenID, loss uint64) error
 	// Durable is the records of f's opens, for the unlink that may take
 	// f's last entry to write in its transaction; an open with no ID is
 	// issued one for its record. The service calls commit once, true when
@@ -193,6 +236,12 @@ type open struct {
 	// a close by the table meanwhile leaves late for the commit to raise.
 	unlinking bool
 	late      CloseResult
+	// parked is the Elapsed reading a disconnected durable or persistent
+	// open's Timeout ends at; zero: attached to a live session.
+	parked  time.Duration
+	owedTo  *served // the grace waiting for its reconnect, as it was installed when its shard was begun; nil: none
+	adopted bool    // installed when its shard was begun, its client made known here for it
+	unsaved bool    // a persistent open's change its record lacks, which the timer writes again
 }
 
 // opened is the file o opens: its named stream, or else its file.
@@ -204,12 +253,14 @@ func (o *open) opened() entity.FileID {
 }
 
 func (o *open) record() entity.OpenRecord {
-	return entity.OpenRecord{
-		ID: o.ID, Client: o.Client, Principal: o.Principal, File: o.opened(), Via: o.Via,
+	r := entity.OpenRecord{
+		ID: o.ID, Client: o.Client, Principal: o.Principal, File: o.opened(), Via: o.Via, Name: o.Name,
 		Access: o.Mode.Access, Deny: o.Mode.Deny, Privileged: o.Mode.Privileged,
 		DeleteOnClose: o.Delete.OnClose, DeleteBy: o.Delete.By, Suspended: o.Suspended,
-		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq,
+		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session,
 	}
+	r.Timeout, r.CreateGUID = o.Durable.Timeout, o.Durable.Create
+	return r
 }
 
 // pendingFrom is the delete pending o makes, as principal by.
@@ -266,6 +317,18 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
 		return OpenResult{}, ErrInvalid // a lease key is SMB's
 	}
+	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || who.Protocol != entity.ProtocolSMB) {
+		return OpenResult{}, ErrInvalid // only an SMB open, named by its ID, is reconnected
+	}
+	// decision: a persistent open of a named stream is refused, since its
+	// record names the stream and not the base file whose table it is
+	// installed into, and the store makes no stream to test one on; the
+	// adapter asks such an open durable instead, as MS-SMB2 grants one
+	// without the persistent flag. Record the base in the open record and
+	// install under it once the store creates streams.
+	if r.Durability == entity.DurabilityPersistent && !r.Stream.IsZero() {
+		return OpenResult{}, ErrInvalid
+	}
 	// Admitted before the open's ID is issued, so a refusal writes nothing,
 	// and again under the step, where grace is judged as it then stands.
 	grace, err := t.admit(who, f.Shard, r.Reclaim)
@@ -283,6 +346,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	o := &open{share: f.Share, lease: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
+		Durability: r.Durability, Session: r.Session, Durable: r.Durable,
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
@@ -322,10 +386,10 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				hs = append(hs, h)
 			}
 		}
-		if err := t.breakHandles(e, hs, own, out); err != nil {
+		if err := t.breakHandles(ctx, e, hs, own, out); err != nil {
 			return err
 		}
-		if err := t.recallOthers(e, own, func(g *grant) GrantKind { return conflict.GrantKeeps(access, deny, g.key != (LeaseKey{})) }, out); err != nil {
+		if err := t.recallOthers(ctx, e, own, func(g *grant) GrantKind { return conflict.GrantKeeps(access, deny, g.key != (LeaseKey{})) }, out); err != nil {
 			return err
 		}
 		if granted != o {
@@ -339,6 +403,11 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
 		if !grace && confirmed {
 			res.Grant = t.offer(e, f, who, granted, r, out)
+		}
+		if granted == o {
+			if err := t.persistOpen(ctx, e, o); err != nil {
+				return err
+			}
 		}
 		res.Open = granted.Open
 		return nil
@@ -378,10 +447,13 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 	return nil
 }
 
-// decision: a durable open's record is not rewritten: only an open of a file
-// with no entry is durable, and such a file has no name a rename could move.
-// Rewrite the record's Via once persistent opens, of named files, are
-// durable.
+// decision: a persistent open's record is rewritten with its new entry in
+// Renamed's step, once the rename has committed, so the step answers the
+// move whatever the write does: a failed write leaves the open unsaved, the
+// timer writes it again, and meanwhile the file is offered no grant and the
+// open is not reconnected. Write it in the rename's own transaction, as an
+// unlink writes its records, if a failover is seen in that window unlinking
+// a stale name.
 func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -393,16 +465,18 @@ func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fr
 				continue
 			}
 			o.Name = slices.Clone(toName)
-			if o.Via == toDir {
-				continue
+			if o.Via != toDir {
+				t.idx.Lock()
+				if t.via[o.Via]--; t.via[o.Via] <= 0 {
+					delete(t.via, o.Via)
+				}
+				t.via[toDir]++
+				t.idx.Unlock()
+				o.Via = toDir
 			}
-			t.idx.Lock()
-			if t.via[o.Via]--; t.via[o.Via] <= 0 {
-				delete(t.via, o.Via)
+			if o.persistent() {
+				t.save(ctx, e, o)
 			}
-			t.via[toDir]++
-			t.idx.Unlock()
-			o.Via = toDir
 		}
 		return nil
 	})
@@ -427,7 +501,9 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 	// NFS open takes now.
 	err := error(nil)
 	if o.ID == 0 {
-		o.ID, err = t.nextOpenID(ctx)
+		if o.ID, err = t.nextOpenID(ctx); err == nil {
+			t.nameByID(o)
+		}
 	}
 	if err == nil {
 		err = t.d.Records.Opens().Put(ctx, o.share, o.record())
@@ -479,6 +555,14 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		if !t.current(o.Client) {
 			return ErrStaleClient
 		}
+		// decision: an open of a session that ended here is ErrStaleClient,
+		// as no neutral error names a session; the adapter answers its
+		// session's own status. An installed open names the session it
+		// had, and is minted disconnected. Name a session error if a
+		// protocol is found answering this one any other way.
+		if o.parked == 0 && t.endedLocked(o.Client, o.Session) {
+			return ErrStaleClient
+		}
 		if o.lease != (LeaseKey{}) {
 			ck := clientKey{o.Client, o.lease}
 			u := t.keys[ck]
@@ -510,8 +594,12 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 // dropOpen removes o from e, its file's entry, under its step: its
 // reference, its ID, its count under Via and its hold on its lease key.
 func (t *Table) dropOpen(e *entry, o *open) {
+	t.unowe(o)
 	delete(e.opens, o.Ref.Token)
 	t.release(e, o.Ref)
+	if o.adopted {
+		defer t.unadopt(o.Client)
+	}
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	delete(t.byID, o.ID)
@@ -613,8 +701,8 @@ func (t *Table) withOpen(who Caller, ref OpenRef, q *uint32, req seqReq, fn func
 			return err
 		}
 		o := e.opens[k.token]
-		if o == nil {
-			return ErrBadState
+		if o == nil || o.parked != 0 {
+			return ErrBadState // a disconnected open is used again only once reconnected
 		}
 		return t.sequenced(opensOwner(o.Owner), q, req, func(bool) error {
 			if err := seqErr(o.Ref.Seq, presented); err != nil {
@@ -758,13 +846,29 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 		return err
 	}
 	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
+		if u.Delete != nil && !o.Stream.IsZero() {
+			return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
+		}
+		if u.Delete != nil && o.Mode.Access&entity.Delete == 0 {
+			return ErrAccess
+		}
+		was := o.Suspended
+		o.Suspended = was&^u.Resume | u.Suspend
+		wrote := o.Suspended != was && o.persistent()
+		if wrote {
+			if err := t.persist(ctx, e, o); err != nil {
+				o.Suspended = was
+				return err
+			}
+		}
+		if err := t.keepPending(ctx, e, o, who, u.Delete); err != nil {
+			o.Suspended = was
+			if wrote {
+				t.save(ctx, e, o) // the update is refused: the record goes back
+			}
+			return err
+		}
 		if u.Delete != nil {
-			if !o.Stream.IsZero() {
-				return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
-			}
-			if o.Mode.Access&entity.Delete == 0 {
-				return ErrAccess
-			}
 			switch {
 			case !*u.Delete:
 				e.pending = nil
@@ -772,7 +876,6 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 				e.pending = pendingFrom(o, who.Principal)
 			}
 		}
-		o.Suspended = o.Suspended&^u.Resume | u.Suspend
 		return nil
 	})
 }
@@ -813,10 +916,17 @@ func (v opens) Close(ctx context.Context, who Caller, ref OpenRef, q Seqs) (Clos
 	var res CloseResult
 	var out outbox
 	err = t.withOpen(who, ref, q.Owner, seqOther, func(e *entry, o *open) (err error) {
-		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
+		p, err := t.closePending(ctx, e, o)
+		if err != nil {
 			return err
 		}
-		res.Unlink = t.closeOpen(e, o, &out)
+		if res.Orphan, err = t.unrecord(ctx, o); err != nil {
+			if p != nil {
+				t.savePending(ctx, e) // the close is refused: its delete pending goes back
+			}
+			return err
+		}
+		res.Unlink = t.closeOpen(ctx, e, o, &out)
 		return nil
 	})
 	out.raise(t, sink)
@@ -837,7 +947,7 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 // states under it, their locks and their waiters, and the grant covering it
 // if it was the last open covered; the waiters either frees go to out. A close with delete on close makes the file delete pending, and the
 // last close of a delete-pending file returns the pending unlink.
-func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
+func (t *Table) closeOpen(ctx context.Context, e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	if o.Delete.OnClose && e.pending == nil {
 		e.pending = pendingFrom(o, o.Delete.By)
 	}
@@ -851,7 +961,7 @@ func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 	freed = t.uncover(e, o) || freed
 	t.dropOpen(e, o)
 	if freed {
-		t.serve(e, out)
+		t.serve(ctx, e, out)
 	}
 	if len(e.opens) > 0 {
 		return nil
@@ -877,7 +987,7 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 	var held []*open
 	err := t.step(f.ID, func(e *entry) error {
 		for _, o := range e.opens {
-			rec := o.record()
+			rec := t.recordOf(e, o)
 			if rec.ID == 0 {
 				// An NFS open's record is keyed by an ID it takes now; an
 				// aborted unlink leaves the ID unused.
@@ -924,7 +1034,17 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 					continue
 				}
 				if committed {
-					o.ID, o.durable = recs[i].ID, true
+					if o.ID == 0 {
+						o.ID = recs[i].ID
+						t.nameByID(o)
+					}
+					o.durable = true
+					if o.persistent() {
+						// The unlink wrote the snapshot, over any change a call
+						// with no admission lock made since, as an acknowledgement:
+						// it is written again as it now stands.
+						t.save(ctx, e, o)
+					}
 				}
 			}
 			if committed {
@@ -938,6 +1058,14 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 		}
 	}
 	return recs, commit, nil
+}
+
+// nameByID indexes o by the ID it took for its record, so the record is
+// known held: grace's end closes only records no open holds.
+func (t *Table) nameByID(o *open) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	t.byID[o.ID] = refKey{o.Ref.Shard, o.Ref.Token}
 }
 
 // nextOpenID issues an open's ID, unique across the installation and never
@@ -964,14 +1092,35 @@ func (t *Table) closeOpensOf(ctx context.Context, owner LockOwner, out *outbox) 
 }
 
 // closeByTable closes o, of e's file, under its step, with no Close to
-// answer: what the close leaves the service to run goes to out.
-func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) {
-	var r CloseResult
-	r.Orphan, _ = t.unrecord(ctx, o)
-	r.Unlink = t.closeOpen(e, o, out)
+// answer, and reports whether it did: what the close leaves the service to
+// run goes to out. Its delete pending is written before its record is
+// deleted, as Close writes them. A persistent open whose record's delete is
+// refused stays, its delete pending taken back, for the timer to close at the
+// next sweep: dropped here, it would be installed again at the next start,
+// with its deny modes and locks. A live one is parked as already timed out,
+// so no reconnect takes it back meanwhile.
+func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) bool {
+	p, perr := t.closePending(ctx, e, o)
+	orphan, err := t.unrecord(ctx, o)
+	if err != nil && o.persistent() {
+		if p != nil {
+			t.savePending(ctx, e)
+		}
+		if o.parked == 0 {
+			t.park(e, o, out)
+			o.parked = max(t.d.Clock.Elapsed(), 1)
+		}
+		return false
+	}
+	if perr != nil {
+		defer t.savePending(ctx, e) // the close is the table's, with no caller to refuse
+	}
+	r := CloseResult{Orphan: orphan}
+	r.Unlink = t.closeOpen(ctx, e, o, out)
 	if o.unlinking {
 		o.late = r // the unlink's commit raises it, in its one Closed for the file
-		return
+		return true
 	}
 	out.close(e.file, r)
+	return true
 }

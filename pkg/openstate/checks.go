@@ -87,7 +87,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if err := e.lockedOut(op.Ref.Token, r, write); err != nil {
 			return err
 		}
-		return t.recallOthers(e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) }, others, &out)
+		return t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) }, others, &out)
 	}
 	// unopened is I/O through no open: anonymous, or through a delegation
 	// own holds, which its holder's own deny modes do not refuse.
@@ -104,13 +104,13 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 				hs = append(hs, h)
 			}
 		}
-		if err := t.breakHandles(e, hs, own, &out); err != nil {
+		if err := t.breakHandles(ctx, e, hs, own, &out); err != nil {
 			return err
 		}
 		if err := e.lockedOut(0, r, write); err != nil {
 			return err
 		}
-		return t.recallOthers(e, own, others, &out)
+		return t.recallOthers(ctx, e, own, others, &out)
 	}
 	if o.Kind != RefAnonymous && o.State.Shard != f.Shard {
 		return ErrBadState
@@ -228,7 +228,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 					hs = append(hs, h)
 				}
 			}
-			if err := t.breakHandles(e, hs, own, &out); err != nil {
+			if err := t.breakHandles(ctx, e, hs, own, &out); err != nil {
 				return err
 			}
 		}
@@ -240,7 +240,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 				return ErrShareViolation
 			}
 		}
-		return t.recallOthers(e, func(*grant) bool { return false }, func(g *grant) GrantKind {
+		return t.recallOthers(ctx, e, func(*grant) bool { return false }, func(g *grant) GrantKind {
 			k := ^GrantNone
 			if what&ChangeSetID != 0 {
 				k &^= GrantWrite

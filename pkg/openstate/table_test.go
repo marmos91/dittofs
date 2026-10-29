@@ -93,6 +93,7 @@ type recordingSink struct {
 	recalls  []recallCall
 	revoked  []Revocation
 	full     []recallAny
+	graces   []graceEnded
 	onEnded  func(c entity.ClientID)
 	onWait   func(w LockWaiter)
 	onRecall func(g CachingGrant, to GrantKind)
@@ -118,6 +119,19 @@ func (s *recordingSink) Revoked(r Revocation) {
 	if fn != nil {
 		fn(r)
 	}
+}
+
+// graceEnded is one GraceEnded call, with how many Closed calls came before it.
+type graceEnded struct {
+	share  entity.ShareID
+	s      ShardID
+	closed int
+}
+
+func (s *recordingSink) GraceEnded(share entity.ShareID, sh ShardID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graces = append(s.graces, graceEnded{share, sh, len(s.closed)})
 }
 
 type recallAny struct {
@@ -264,7 +278,7 @@ func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []
 		t.Fatal(err)
 	}
 	for _, s := range shards {
-		if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
+		if err := f.Recovery().ServeShard(ctx, fs.Share.ID, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
 	}
