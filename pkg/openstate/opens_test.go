@@ -691,3 +691,45 @@ func TestSMBRenameOverAnOpenTargetIsRefused(t *testing.T) {
 		t.Errorf("an SMB rename over a target nobody holds open: %v", err)
 	}
 }
+
+// An expiry closing a file's last open, one with delete on close, between
+// an unlink's records and its commit raises one Closed for the file: the
+// orphan the commit leaves, as the unlink took the name the delete pending
+// would have removed. An aborted unlink raises the expiry's pending unlink.
+func TestExpiryDuringUnlinkRaisesOneClosed(t *testing.T) {
+	for _, committed := range []bool{true, false} {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		file, req := f.fileIn(t, "a")
+		req.Access, req.DeleteOnClose = rd|del, true
+		f.mustOpen(t, a, file, req)
+		recs, commit, err := f.Opens().Durable(ctx, file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Expire(ctx, a.Client); err != nil {
+			t.Fatal(err)
+		}
+		if committed {
+			u, err := f.fs.Store.Namespace().Unlink(ctx, f.fs.Admin, f.fs.Root, []byte("a"), recs...)
+			if err != nil || u.File != file.ID {
+				t.Fatalf("Unlink: %v", err)
+			}
+		}
+		commit(committed)
+		var got []CloseResult
+		for _, c := range f.sink.closed {
+			if c.f == file.ID {
+				got = append(got, c.r)
+			}
+		}
+		switch {
+		case len(got) != 1:
+			t.Errorf("committed %v: %d Closed for the file, want one: %+v", committed, len(got), got)
+		case committed && (!got[0].Orphan || got[0].Unlink != nil):
+			t.Errorf("committed: Closed %+v, want the orphan alone", got[0])
+		case !committed && (got[0].Orphan || got[0].Unlink == nil || string(got[0].Unlink.Name) != "a"):
+			t.Errorf("aborted: Closed %+v, want the pending unlink of a", got[0])
+		}
+	}
+}

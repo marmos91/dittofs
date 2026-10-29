@@ -189,6 +189,10 @@ type open struct {
 	share   entity.ShareID
 	lease   LeaseKey // the lease key it was opened under; zero: none
 	durable bool     // its record is in the store
+	// unlinking: an unlink's records list it, and its commit has yet to run;
+	// a close by the table meanwhile leaves late for the commit to raise.
+	unlinking bool
+	late      CloseResult
 }
 
 // opened is the file o opens: its named stream, or else its file.
@@ -860,7 +864,8 @@ func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 // decision: the step is released between the records' snapshot and the
 // commit. The service keeps the file's admission lock from Durable to
 // commit, so no call's open or close lands there; a timer step's close,
-// which takes no admission lock, can, and commit deletes that open's record.
+// which takes no admission lock, can, and commit deletes that open's record
+// and raises what the close left in the file's one Closed.
 // Run the unlink under the step, as a callback, if a caller is found that
 // unlinks without that lock.
 func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, func(bool), error) {
@@ -884,32 +889,52 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 			}
 			recs, held = append(recs, rec), append(held, o)
 		}
+		for _, o := range held {
+			o.unlinking = true
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	commit := func(committed bool) {
-		if !committed {
-			return
-		}
-		var orphan bool
+		// One Closed for the file: what a timer step's close since the
+		// snapshot left it, or, once the unlink took the last entry, the
+		// orphan alone, as the name a pending unlink would remove is gone.
+		var late CloseResult
 		_ = t.step(f.ID, func(e *entry) error {
 			for i, o := range held {
+				o.unlinking = false
 				if e.opens[o.Ref.Token] != o {
 					// Closed by a timer step since the snapshot, which takes
 					// no admission lock: its record is deleted here.
-					out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
-					orphan = orphan || !out.File.IsZero()
+					late.Orphan = late.Orphan || o.late.Orphan
+					if o.late.Unlink != nil {
+						late.Unlink = o.late.Unlink
+					}
+					if committed {
+						// decision: a failed delete is dropped, as releaseClient
+						// drops it: the record stays a holder of its file until
+						// the next start's grace end closes the records nobody
+						// reclaimed. Report it to the service if a store outage
+						// is shown to strand files.
+						out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
+						late.Orphan = late.Orphan || !out.File.IsZero()
+					}
 					continue
 				}
-				o.ID, o.durable = recs[i].ID, true
+				if committed {
+					o.ID, o.durable = recs[i].ID, true
+				}
 			}
-			e.unlinked = true
+			if committed {
+				e.unlinked = true
+				late.Unlink = nil
+			}
 			return nil
 		})
-		if sink, err := t.running(); orphan && err == nil {
-			sink.Closed(f.ID, CloseResult{Orphan: true})
+		if sink, err := t.running(); err == nil && (late.Orphan || late.Unlink != nil) {
+			sink.Closed(f.ID, late)
 		}
 	}
 	return recs, commit, nil
@@ -944,5 +969,9 @@ func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox
 	var r CloseResult
 	r.Orphan, _ = t.unrecord(ctx, o)
 	r.Unlink = t.closeOpen(e, o, out)
+	if o.unlinking {
+		o.late = r // the unlink's commit raises it, in its one Closed for the file
+		return
+	}
 	out.close(e.file, r)
 }
