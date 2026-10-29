@@ -324,7 +324,9 @@ func segmentNames(t *testing.T, f *journalv2test.Fixture) []string {
 }
 
 // segmentCalls returns, per op and segment file now in the journal's
-// directory, how many calls the seam has counted.
+// directory, how many calls the seam has counted, leaving out every count of
+// zero: a spare renamed into a segment's name between two snapshots then
+// changes neither.
 func segmentCalls(t *testing.T, f *journalv2test.Fixture) map[string]int {
 	t.Helper()
 
@@ -336,7 +338,9 @@ func segmentCalls(t *testing.T, f *journalv2test.Fixture) map[string]int {
 	out := map[string]int{}
 	for _, name := range segmentNames(t, f) {
 		for _, op := range ops {
-			out[op+" "+name] = f.Seam.CallsFor(op, name)
+			if n := f.Seam.CallsFor(op, name); n > 0 {
+				out[op+" "+name] = n
+			}
 		}
 	}
 	return out
@@ -530,6 +534,31 @@ func TestRFC1B_Reservation(t *testing.T) {
 // and for a writer to fill what is left.
 const reserveAheadExtents = 40_000
 
+// reserveAheadSpares is the spare pool the reserve-ahead check runs with: the
+// six spares a reservation of four 1 MiB writes takes, one per cap its bytes
+// can cross plus one, and two for the rolls of the writer beside it. The
+// fixture's pool of one per stream would refuse that reservation naming the
+// pool.
+const reserveAheadSpares = 8
+
+// reserve reserves n record bytes for writes writes through h, retrying a
+// refusal for want of a spare while the pool refills, and fails the test if
+// it is refused.
+func reserve(t *testing.T, h *journalv2.Handle, n int64, writes int) *journalv2.Reservation {
+	t.Helper()
+
+	var r *journalv2.Reservation
+	err := journalv2test.RetrySpare(func() (err error) {
+		r, err = h.Reserve(n, writes)
+		return err
+	})
+	stub(t, "Reserve", err)
+	if err != nil {
+		t.Fatalf("reserve %d bytes for %d writes: %v", n, writes, err)
+	}
+	return r
+}
+
 // TestRFC1B_ReserveAhead checks that a reservation holds what it took: its
 // writes succeed after another writer filled the share to its limit, while a
 // plain write and a further reservation are refused naming that limit, and
@@ -539,18 +568,18 @@ const reserveAheadExtents = 40_000
 // the index, while a plain one is refused naming it; and that a reserved
 // write succeeds with the headroom below half.
 //
-// The copy is 8 MiB in 1 MiB writes beside 32 MiB of other writes, not 1 GiB
-// beside 10 GiB: the fixture's journal holds 64 MiB.
+// The copy is 4 MiB in 1 MiB writes beside 32 MiB of other writes, not 1 GiB
+// beside 10 GiB: the fixture's journal holds 64 MiB, and the spare pool must
+// hold what the reservation takes.
 func TestRFC1B_ReserveAhead(t *testing.T) {
-	f := journalv2test.NewWith(t, func(s *journalv2.Settings) { s.ExtentLimit = reserveAheadExtents })
+	f := journalv2test.NewWith(t, func(s *journalv2.Settings) {
+		s.ExtentLimit = reserveAheadExtents
+		s.SpareTarget = reserveAheadSpares
+	})
 	a := limitedShare(t, f, limitedA, 4<<20)
 
 	const piece, chunk = 128 << 10, 256 << 10
-	r, err := a.Reserve(1<<20, 4)
-	stub(t, "Reserve", err)
-	if err != nil {
-		t.Fatalf("reserve 1 MiB for four writes: %v", err)
-	}
+	r := reserve(t, a, 1<<20, 4)
 	ws, _ := fillShare(t, a, 4, []journalv2.FileID{journalv2test.File(40), journalv2test.File(41)}, chunk)
 	for i := range 4 {
 		id := journalv2test.File(42 + i%2)
@@ -562,7 +591,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	}
 	// The fill was refused at this size, and the reserved writes took nothing
 	// from outside the reservation, so it does not fit.
-	_, err = a.WriteAt(t.Context(), journalv2test.File(40), 1<<30, pattern("plain", chunk), 0)
+	_, err := a.WriteAt(t.Context(), journalv2test.File(40), 1<<30, pattern("plain", chunk), 0)
 	refusal(t, err, "a plain write with the share at its limit", journalv2.LimitShare, journalv2.UnitBytes)
 	_, err = a.Reserve(1<<20, 1)
 	refusal(t, err, "a reservation past the share's limit", journalv2.LimitShare, journalv2.UnitBytes)
@@ -582,11 +611,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	// Reserved writes beside a writer rolling the other share's streams.
 	b, other := f.Share(1), f.Share(0)
 	const big = 1 << 20
-	rb, err := b.Reserve(8*(big+4096), 8)
-	stub(t, "Reserve", err)
-	if err != nil {
-		t.Fatalf("reserve 8 MiB for eight writes: %v", err)
-	}
+	rb := reserve(t, b, 4*(big+4096), 4)
 	others := make(chan error, 1)
 	go func() {
 		for i := range int64(32) {
@@ -597,7 +622,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 		}
 		others <- nil
 	}()
-	for i := range 8 {
+	for i := range 4 {
 		_, err := rb.WriteAt(t.Context(), journalv2test.File(60+i%2), int64(i/2)*big, pattern(fmt.Sprint("copy", i), big), 0)
 		stub(t, "Reservation.WriteAt", err)
 		if err != nil {
@@ -614,11 +639,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	stub(t, "Reservation.Close", rb.Close())
 
 	// A reservation left open across a restart.
-	_, err = b.Reserve(1<<20, 1)
-	stub(t, "Reserve", err)
-	if err != nil {
-		t.Fatalf("reserve before the restart: %v", err)
-	}
+	reserve(t, b, 1<<20, 1)
 	if got := f.J.Stats().ReservedBytes; got <= 0 {
 		t.Fatalf("ReservedBytes = %d with a reservation open, want it counted", got)
 	}
@@ -632,18 +653,14 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	// Reserved writes beside a writer that filled the index.
 	const reserved = 10_000
 	b, other = f.Share(1), f.Share(0)
-	ri, err := b.Reserve(reserved*writeRecordBytes(1), reserved)
-	stub(t, "Reserve", err)
-	if err != nil {
-		t.Fatalf("reserve for 10^4 writes: %v", err)
-	}
+	ri := reserve(t, b, reserved*writeRecordBytes(1), reserved)
 	filler, scattered := journalv2test.File(70), journalv2test.File(71)
 	// One-byte writes a byte apart never merge into one extent.
 	for i := int64(0); ; i++ {
 		if i == reserveAheadExtents {
 			t.Fatalf("%d one-byte writes under an index bound of %d were never refused", i, reserveAheadExtents)
 		}
-		_, err := other.WriteAt(t.Context(), filler, 2*i, []byte{byte(i)}, 0)
+		_, err := tryWrite(t, other, filler, 2*i, []byte{byte(i)})
 		stub(t, "WriteAt", err)
 		if err != nil {
 			refusal(t, err, "a write past the index's bound", journalv2.LimitIndex, journalv2.UnitEntries)
@@ -674,11 +691,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 
 	// A reserved write with the headroom below half.
 	full := headroom(t, f)
-	rh, err := b.Reserve(4*writeRecordBytes(4096), 4)
-	stub(t, "Reserve", err)
-	if err != nil {
-		t.Fatalf("reserve for four writes: %v", err)
-	}
+	rh := reserve(t, b, 4*writeRecordBytes(4096), 4)
 	fillUntilRefused(t, f, []int{0}, 80, chunk)
 	drainHeadroom(t, f, other, journalv2test.File(82), full)
 	for i := range int64(4) {
@@ -703,11 +716,9 @@ func TestRFC1B_HandleClose(t *testing.T) {
 		id, p := journalv2test.File(k), pattern(fmt.Sprint("inflight", k), 4096)
 
 		held := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
-		var returned atomic.Bool
 		wrote := make(chan error, 1)
 		go func() {
 			_, err := h.WriteAt(t.Context(), id, 0, p, 0)
-			returned.Store(true)
 			wrote <- err
 		}()
 		select {
@@ -717,11 +728,20 @@ func TestRFC1B_HandleClose(t *testing.T) {
 			t.Fatalf("share %d: the write returned (%v) without reaching storage", k, err)
 		}
 
-		var writeFirst atomic.Bool
+		// let is closed just before the hold is released. The write cannot
+		// return before then, so a Close that returns before it did not wait
+		// for the write. Close returning after the release is not ordered
+		// against the write's caller, so nothing is read from that.
+		let := make(chan struct{})
+		var early atomic.Bool
 		closed := make(chan error, 1)
 		go func() {
 			err := h.Close()
-			writeFirst.Store(returned.Load())
+			select {
+			case <-let:
+			default:
+				early.Store(true)
+			}
 			closed <- err
 		}()
 
@@ -744,6 +764,7 @@ func TestRFC1B_HandleClose(t *testing.T) {
 			stub(t, "Extents", err)
 			runtime.Gosched()
 		}
+		close(let)
 		held.Release()
 		var err error
 		select {
@@ -758,8 +779,8 @@ func TestRFC1B_HandleClose(t *testing.T) {
 		if !begun {
 			t.Fatalf("share %d: calls through the handle were not refused while Close waited for the write", k)
 		}
-		if !writeFirst.Load() {
-			t.Fatalf("share %d: Close returned before the write in flight did", k)
+		if early.Load() {
+			t.Fatalf("share %d: Close returned while the write in flight was still held at storage", k)
 		}
 		if err := <-wrote; err != nil {
 			stub(t, "WriteAt", err)
@@ -930,27 +951,65 @@ func TestRFC1B_RepackBesideShareAtLimit(t *testing.T) {
 
 	const size = 128 << 10
 	var aws, bws []written
+
+	// Which stream a file's records go to is the journal's choice, so the
+	// files are picked by where their first records landed: an A file and a B
+	// file whose first records share a segment go on sharing their stream.
+	const candidates = 4
+	var aIDs, bIDs []journalv2.FileID
+	first := map[journalv2.FileID]journalv2.SegmentID{}
+	for i := range 2 * candidates {
+		id, h, share, ws := journalv2test.File(i), a, -1, &aws
+		if i >= candidates {
+			h, share, ws = b, 1, &bws
+		}
+		*ws = append(*ws, written{share, id, journalv2.Extent{Off: 0, Len: size}, write(t, h, id, 0, pattern(fmt.Sprint("first", i), size))})
+		first[id] = heldEntry(t, f, id).Location.Segment
+	}
+	for i := range candidates {
+		for j := candidates; j < 2*candidates; j++ {
+			aid, bid := journalv2test.File(i), journalv2test.File(j)
+			if first[aid] != first[bid] {
+				continue
+			}
+			if !slices.Contains(aIDs, aid) {
+				aIDs = append(aIDs, aid)
+			}
+			if !slices.Contains(bIDs, bid) {
+				bIDs = append(bIDs, bid)
+			}
+		}
+	}
+	if len(aIDs) == 0 {
+		t.Fatalf("the first records of %d files of each share never shared a segment", candidates)
+	}
+
 	var ns *journalv2.NoSpaceError
-	for i := int64(0); ns == nil; i++ {
-		id, off := journalv2test.File(int(i%2)), i/2*size
+	offs := map[journalv2.FileID]int64{}
+	for i := 0; ns == nil; i++ {
+		id := aIDs[i%len(aIDs)]
+		off := size + offs[id]
 		v, err := tryWrite(t, a, id, off, pattern(fmt.Sprint("a", i), size))
 		stub(t, "WriteAt", err)
 		if err != nil {
 			ns = refusal(t, err, "a write past share A's limit", journalv2.LimitShare, journalv2.UnitBytes)
 			break
 		}
+		offs[id] += size
 		aws = append(aws, written{-1, id, journalv2.Extent{Off: off, Len: size}, v})
-		bid := journalv2test.File(2 + int(i%2))
-		bws = append(bws, written{1, bid, journalv2.Extent{Off: off, Len: size}, write(t, b, bid, off, pattern(fmt.Sprint("b", i), size))})
+		bid := bIDs[i%len(bIDs)]
+		boff := size + offs[bid]
+		offs[bid] += size
+		bws = append(bws, written{1, bid, journalv2.Extent{Off: boff, Len: size}, write(t, b, bid, boff, pattern(fmt.Sprint("b", i), size))})
 	}
 	// What the refused write lacked says what is left: a write whose record
 	// is exactly that fills the share to its limit.
 	if free := writeRecordBytes(size) - ns.Missing; free >= writeRecordBytes(1) {
-		id, off := journalv2test.File(0), int64(1<<30)
+		id, off := aIDs[0], int64(1<<30)
 		n := int(free - writeRecordBytes(0))
 		aws = append(aws, written{-1, id, journalv2.Extent{Off: off, Len: int64(n)}, write(t, a, id, off, pattern("exact", n))})
 	}
-	_, err := a.WriteAt(t.Context(), journalv2test.File(1), 1<<31, []byte{1}, 0)
+	_, err := a.WriteAt(t.Context(), aIDs[0], 1<<31, []byte{1}, 0)
 	refusal(t, err, "a write with share A filled to its limit", journalv2.LimitShare, journalv2.UnitBytes)
 	for _, w := range aws {
 		mark(t, a, w.id, w.extent, w.version)
@@ -976,8 +1035,10 @@ func TestRFC1B_RepackBesideShareAtLimit(t *testing.T) {
 	}
 
 	evict(t, b, bws)
-	syncNow(t, a, journalv2test.File(0), journalv2test.File(1))
-	syncNow(t, b, journalv2test.File(2), journalv2test.File(3))
+	for i := range candidates {
+		syncNow(t, a, journalv2test.File(i))
+		syncNow(t, b, journalv2test.File(candidates+i))
+	}
 	aHeld := f.J.Stats().Shares[limitedA].HeldBytes
 
 	repackAll(t, f, journalv2.RepackScope{})
@@ -1244,11 +1305,15 @@ func TestRFC1B_NoVersionRepeats(t *testing.T) {
 		}
 	}
 
-	// The write is never synced, so the crash loses it.
+	// The write is never synced, so the crash loses it. The drop stays until
+	// the crash has ended the old journal's view of the seam, so no sync of A
+	// still on its way lands between clearing it and the crash; the reopened
+	// journal's syncs are dropped until it is cleared, which only a second
+	// crash would see.
 	f.Drop(journalv2test.OpSync, "*.seg")
 	a := write(t, f.Share(0), journalv2test.File(0), 0, pattern("lost", 4096))
-	f.Seam.SetFault(nil)
 	f.Crash()
+	f.Seam.SetFault(nil)
 
 	_, missing, _, _, err := f.Share(0).ReadAt(t.Context(), journalv2test.File(0), 0, make([]byte, 4096))
 	stub(t, "ReadAt", err)
@@ -1410,9 +1475,11 @@ func TestRFC1B_SegmentAndRecordAccounting(t *testing.T) {
 			if !sameBut(before.UsedBytes, after.UsedBytes, 0) {
 				t.Fatalf("share %d write %d: the journal's UsedBytes moved from %d to %d for a record inside an allocated segment", k, i, before.UsedBytes, after.UsedBytes)
 			}
+			// The writes are small and the segment allocated, so no record is
+			// split at a cap and each is exactly one write record.
 			rose := after.Shares[journalv2test.Tag(k)].UsedBytes - before.Shares[journalv2test.Tag(k)].UsedBytes
-			if rose < int64(len(p)) || rose > writeRecordBytes(len(p)) {
-				t.Fatalf("share %d write %d: the share's UsedBytes rose by %d for a %d-byte write, want its record's bytes, at most %d", k, i, rose, len(p), writeRecordBytes(len(p)))
+			if rose != writeRecordBytes(len(p)) {
+				t.Fatalf("share %d write %d: the share's UsedBytes rose by %d for a %d-byte write, want its record's %d bytes", k, i, rose, len(p), writeRecordBytes(len(p)))
 			}
 			if after.ReservedBytes != 0 || after.Shares[journalv2test.Tag(k)].ReservedBytes != 0 {
 				t.Fatalf("share %d write %d: ReservedBytes = %d, the share's %d once the write returned, want 0", k, i, after.ReservedBytes, after.Shares[journalv2test.Tag(k)].ReservedBytes)
@@ -1427,16 +1494,30 @@ func TestRFC1B_SegmentAndRecordAccounting(t *testing.T) {
 	}
 	syncNow(t, h, id)
 	seg := heldEntry(t, f, id).Location.Segment
+	// Every open segment holding at least the idle-seal size is sealed by the
+	// advance, the other share's included; the tails are summed once all of
+	// them are, so none seals after the sum and moves UsedBytes again.
 	open := map[journalv2.SegmentID]bool{}
+	var due []journalv2.SegmentID
 	for _, s := range f.J.Inspect().Segments() {
 		open[s.ID] = !s.Sealed
+		if !s.Sealed && s.HeldBytes >= journalv2test.FixtureIdleSealBytes {
+			due = append(due, s.ID)
+		}
+	}
+	if !slices.Contains(due, seg) {
+		t.Fatalf("segment %d, written past the idle-seal size, is not an open segment holding that much", seg)
 	}
 	used := f.J.Stats().UsedBytes
 	f.Advance(2 * journalv2test.IdleSealAge)
-	eventually(t, "the idle segment was not sealed with the accounting settled", func() bool {
-		s, ok := segmentInfo(f, seg)
+	eventually(t, "the idle segments were not sealed with the accounting settled", func() bool {
+		for _, id := range due {
+			if s, ok := segmentInfo(f, id); !ok || !s.Sealed {
+				return false
+			}
+		}
 		_, settled := spareSlack(f)
-		return ok && s.Sealed && settled
+		return settled
 	})
 	var tails int64
 	for _, s := range f.J.Inspect().Segments() {
