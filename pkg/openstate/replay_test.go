@@ -418,3 +418,23 @@ func TestAppInstanceWaitsForItsShardMark(t *testing.T) {
 		t.Errorf("%d opens, want only the one that replaced its predecessor", n)
 	}
 }
+
+// A channel sequence exactly half the space from the open's is stale on
+// either side of it, a request wrapping round to it included: the
+// difference is taken unsigned in 16 bits, and only one up to 0x7FFF is a
+// step forward.
+func TestChannelSequenceHalfSpaceIsStale(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	for _, c := range []struct{ open, req uint16 }{{5, 0x8005}, {0x8005, 5}, {0xFFFF, 0x7FFF}} {
+		r := keep(OpenRequest{Access: rd, Channel: c.open}, entity.DurabilityDurable, s1, time.Hour, byte(c.open))
+		o := f.mustOpen(t, a, anyFile(), r)
+		stale, _, err := f.Opens().Channel(ctx, a, o.ID, c.req, false)
+		if err != nil || !stale {
+			t.Errorf("a request on %#x through an open on %#x: stale %v, %v; want stale", c.req, c.open, stale, err)
+		}
+		if stale, _, _ := f.Opens().Channel(ctx, a, o.ID, c.open+0x7FFF, false); stale {
+			t.Errorf("a request on %#x through an open on %#x: stale, want a step forward", c.open+0x7FFF, c.open)
+		}
+	}
+}

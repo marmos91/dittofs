@@ -776,6 +776,14 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 	return nil
 }
 
+// decision: a sequence exactly 0x8000 from the open's is stale on either
+// side, since MS-SMB2 takes the difference unsigned in 16 bits and steps
+// forward only up to 0x7FFF. This replaces the SMB adapter's
+// types.OpenFile.VerifyChannelSequence once the adapter moves onto the
+// table; until then that copy is the live one. It follows Samba and takes
+// a request wrapping round to 0x8000 behind as a step forward. Follow it
+// here too if a client is seen stepping its sequence by exactly half the
+// space.
 func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq uint16, replay bool) (bool, func(), error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
