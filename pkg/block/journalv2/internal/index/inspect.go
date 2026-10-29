@@ -67,13 +67,14 @@ func (f *file) appendEntries(out []Entry) []Entry {
 	})
 	for _, r := range f.retained.pieces {
 		out = append(out, Entry{
-			Kind:    EntryRetained,
-			Extent:  r.Extent,
-			Version: r.Version,
-			Tag:     tag,
-			Record:  r.Record,
-			Skip:    r.Skip,
-			By:      r.By,
+			Kind:      EntryRetained,
+			Extent:    r.Extent,
+			Version:   r.Version,
+			Tag:       tag,
+			Record:    r.Record,
+			Skip:      r.Skip,
+			Offloaded: r.Offloaded,
+			By:        r.By,
 		})
 	}
 	for _, m := range f.markers {

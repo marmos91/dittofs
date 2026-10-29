@@ -87,6 +87,13 @@ func retainedEntry(off, n int64, r RecordAt, skip uint32, v, by uint64) Entry {
 	}
 }
 
+// offloaded sets a built entry's offloaded bit, for the retained expectations
+// whose pieces were marked before they were superseded.
+func (e Entry) offloaded() Entry {
+	e.Offloaded = true
+	return e
+}
+
 func markerEntry(kind core.ChangeKind, off, n int64, v uint64) Entry {
 	return Entry{Kind: EntryMarker, Extent: ext(off, n), Version: ver(v), Tag: markerTag, Removal: kind}
 }
@@ -135,11 +142,14 @@ func TestInspectFileEntries(t *testing.T) {
 		// A mark over half of [0, 8) splits the piece where its bit changes.
 		f.held.markOffloaded(ext(0, 4), ver(0), ver(10))
 		// Retained pieces: the second retaining write supersedes part of the
-		// first's piece, which stays retained under the newer By.
+		// first's piece, which stays retained under the newer By. The [64, 80)
+		// piece is marked first, so what the write retains carries the bit —
+		// the read-out must report it.
 		if err := f.recorded(2, ext(64, 16), nums(12, 12), 7, id); err != nil {
 			return err
 		}
 		f.writeRetain(write(64, 16, rec(2, 4096), 12))
+		f.held.markOffloaded(ext(64, 16), ver(0), ver(12))
 		if err := f.recorded(2, ext(70, 4), nums(14, 14), 7, id); err != nil {
 			return err
 		}
@@ -156,10 +166,10 @@ func TestInspectFileEntries(t *testing.T) {
 		heldEntry(4, 4, rec(1, 0), 4, 10, false),
 		heldEntry(8, 8, rec(1, 4096), 0, 11, false),
 		heldEntry(16, 16, rec(1, 0), 16, 10, false),
-		heldEntry(64, 6, rec(2, 4096), 0, 12, false),
+		heldEntry(64, 6, rec(2, 4096), 0, 12, true),
 		heldEntry(70, 4, rec(2, 8192), 0, 14, false),
-		retainedEntry(70, 4, rec(2, 4096), 6, 12, 14),
-		heldEntry(74, 6, rec(2, 4096), 10, 12, false),
+		retainedEntry(70, 4, rec(2, 4096), 6, 12, 14).offloaded(),
+		heldEntry(74, 6, rec(2, 4096), 10, 12, true),
 		markerEntry(core.ChangeDeallocate, 100, 8, 6),
 		{Kind: EntryMarker, Extent: ext(160, 8), Version: ver(9), Tag: 7, Removal: core.ChangeCloneTarget, Clone: &spec},
 		markerEntry(core.ChangeTruncate, 200, math.MaxInt64-200, 7),
