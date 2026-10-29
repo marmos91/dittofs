@@ -1251,7 +1251,8 @@ func TestRestartLeasesListedClients(t *testing.T) {
 }
 
 // The serve of a shard leases no NLM host or SMB client it lists, and leaves
-// a lease already held where it ends.
+// a lease already held where it ends. The NLM and SMB half pins leaseEnd,
+// which gives either no end, rather than the serve's own protocol check.
 func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
 	f := newFixture(t)
 	h, s := f.host(t, "h", 1), f.caller(t, smb("pc"))
