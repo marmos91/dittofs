@@ -164,8 +164,8 @@ func TestRFC1D_GenerationNeverRepeats(t *testing.T) {
 	f := journalv2test.New(t)
 
 	// Every loss of content not yet offloaded raises the generation by one
-	// (RFC 1 section 3.8, lines 1255 to 1258), and it never falls below a
-	// value this process exposed (section 3.7, line 1169).
+	// (RFC 1 section 3.8), and it never falls below a value this process
+	// exposed (section 3.7).
 	start := f.J.Stats().LossGeneration
 	for i := range 3 {
 		loseDirty(t, f, i)
@@ -592,7 +592,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	writes, losses := segWrites(), f.J.Stats().Counters.CorruptExtentsDataLoss
 
 	// Verification reports the extents the index claims that the segments do
-	// not support, and repairs nothing (RFC 1 section 4.4, line 1713).
+	// not support, and repairs nothing (RFC 1 section 4.4).
 	report, err := f.J.Inspect().Verify(t.Context())
 	stub(t, "Inspect.Verify", err)
 	if err != nil {

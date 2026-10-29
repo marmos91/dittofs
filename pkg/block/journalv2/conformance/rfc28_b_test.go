@@ -41,8 +41,8 @@ func spareNames(t *testing.T, f *journalv2test.Fixture) []string {
 // flipped bit never pins a segment's storage for good. The segment was
 // sealed idle, so it is truncated and accounted at its size, and its
 // retirement is an unlink: a segment sealed early is never recycled (RFC 28
-// section 2.2, lines 299 to 301), and UsedBytes falls by its size after the
-// truncation (RFC 1 section 7.3).
+// section 2.2), and UsedBytes falls by its size after the truncation (RFC 1
+// section 7.3).
 //
 // decision: a spare made while the repack runs is accounted too (RFC 1
 // sections 6 and 7.3), so the drop allows one cap for each file created

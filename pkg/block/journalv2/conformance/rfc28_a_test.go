@@ -84,7 +84,7 @@ func TestRFC28A_CorruptDirty(t *testing.T) {
 	}
 	// A loss of content not yet offloaded raises the generation by one, so
 	// every client resends the writes it has not seen confirmed stable (RFC 1
-	// section 3.8, lines 1255 to 1258).
+	// section 3.8).
 	if got, want := f.J.Stats().LossGeneration, before.LossGeneration+1; got != want {
 		t.Fatalf("LossGeneration = %d after dropping dirty content, want %d", got, want)
 	}
@@ -112,7 +112,7 @@ func TestRFC28A_CorruptOffloaded(t *testing.T) {
 	}
 
 	// A loss the remote tier repairs leaves the generation where it was (RFC
-	// 1 section 3.8, lines 1255 to 1258).
+	// 1 section 3.8).
 	if got := f.J.Stats().LossGeneration; got != before.LossGeneration {
 		t.Fatalf("LossGeneration = %d after dropping offloaded content, want %d unchanged", got, before.LossGeneration)
 	}
