@@ -738,15 +738,19 @@ not an error**: the footer is an accelerator, so a reader that does not
 understand it loses speed and nothing else.
 
 **Writing.** At seal: make every record durable; then append the seal marker,
-the footer and the trailer and make them durable with one sync; then, for a
-segment sealed early, truncate the file past the trailer and make that durable.
-A full seal is two syncs and an early one three; an implementation **MAY** split
-a step into more. The second step needs no order among its writes: a crash that
-keeps only part of them is "no footer" above, and the segment, which no
-successor names yet ([§2.2](#2.2%20Segments)), is scanned as its stream's newest. A sync of
-the seal that fails is a failed sync ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)): the segment is never sealed
-and its successor names none. The first step comes first because the footer
-follows the records it describes ([§2.4](#2.4%20The%20segment%20catalog)).
+the footer and the trailer and make them durable; then, for a segment sealed
+early, truncate the file past the trailer and make that durable. A full seal
+needs as few as two syncs and an early one three; an implementation **MAY**
+split a step into more. The second step needs no order among its writes: a
+crash that keeps only part of them is "no footer" above, and the segment, which
+no successor names yet ([§2.2](#2.2%20Segments)), is scanned as its stream's newest. A failed
+sync in the first two steps is a failed sync ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)): the segment is never
+sealed and its successor names none. **The seal is complete after the second
+step**, and a successor may be taken then: a failed truncation sync does not
+end the segment, whose marker and catalog are durable already, and leaves it
+accounted at its cap ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)). The first step comes first because a
+catalog made durable over a record that never reached the device would report
+that torn record as corruption ([§2.4](#2.4%20The%20segment%20catalog)).
 
 ### 2.6 Segments or staging files, chosen by benchmark
 

@@ -848,18 +848,10 @@ Each open point says what is asked, who decides it, and what it blocks.
 
 ### Need an RFC change before epics 5 and 7 start
 
-- **P1. Is the seal one sync or two?** RFC 28 §2.5: "At seal: make every record durable;
-  append the seal marker, the footer and the trailer; make those durable" (one sync for all
-  three), and in the same paragraph: "The trailer **MUST NOT** be written before the entries
-  it describes are durable" (two syncs). Options: (a) entries and marker synced, then
-  trailer written and synced: two syncs per seal; (b) one sync, relying on the footer CRC
-  in the trailer to reject a trailer over unwritten entries, and the **MUST** is reworded.
-  The trailer carries a CRC32C over the footer entries (RFC 28 §2.5: "CRC32C over the
-  footer entries"), so a trailer made durable over entries that are not reads as no footer
-  and the segment is scanned. The claim that this is "the one failure this layout cannot
-  detect" (RFC 28 §2.5) looks contradicted by the layout itself, which favours option (b).
-  **Decides:** RFC 28 owner. **Blocks:** epic 5's seal, the counted syncs, and RFC 28
-  §4.4's lost-write points.
+- **P1. Is the seal one sync or two?** Resolved by #3450: RFC 28 §2.5 now gives two
+  syncs for a full seal (records, then marker, footer and trailer together) and three
+  for an early one; the seal is complete after the second, and a failed truncation sync
+  does not end the segment. **Blocks:** nothing.
 - **P2. How does Windows allocate without exposing old bytes?** RFC 28 Appendix A sets "its
   valid data length to the end" on Windows. RFC 28 §2.2 says "An allocated region no record
   has reached reads as zeros.", and the zero-slot rule depends on it (RFC 28 §3.3: "**A
