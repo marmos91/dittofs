@@ -92,6 +92,21 @@ func TestDecodeSegmentHeaderTellsAForeignSegment(t *testing.T) {
 	if _, err := DecodeSegmentHeader(b, testIdentity); !errors.Is(err, ErrForeign) {
 		t.Errorf("DecodeSegmentHeader(a foreign header with non-zero reserved bytes) = %v, want an error matching ErrForeign", err)
 	}
+
+	// So is a foreign header holding an id of zero: the id is judged after
+	// the identity too, and the header is returned with the id its bytes
+	// hold, so recovery reports whose segment it is whatever the header
+	// says of itself.
+	b = AppendSegmentHeader(nil, other)
+	clear(b[24:32])
+	rechecksumHeader(b)
+	h, err = DecodeSegmentHeader(b, testIdentity)
+	if !errors.Is(err, ErrForeign) {
+		t.Fatalf("DecodeSegmentHeader(a foreign header with a zero id) = %v, want an error matching ErrForeign", err)
+	}
+	if h.ID != 0 || h.Identity != otherIdentity {
+		t.Errorf("decoded id %d under identity % x, want id 0 under the other identity % x", h.ID, h.Identity, otherIdentity)
+	}
 }
 
 // TestDecodeSegmentHeaderRefusesAnUnknownVersion pins that a version this

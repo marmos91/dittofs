@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
@@ -62,9 +63,11 @@ func FuzzFormatFile(f *testing.F) {
 
 // FuzzSegmentHeader drives the decoder with any bytes. Whatever arrives, it
 // either decodes or matches exactly one outcome class, never a panic; and
-// whatever decodes is exactly what the bytes contain, so encoding it again
-// reproduces the input — even a foreign one, whose identity the decoder
-// returns so recovery can tell whose it is.
+// whatever decodes holds exactly the bytes' fields: on a clean decode
+// encoding it again reproduces the input, and on a foreign one the header is
+// returned filled — its identity, id, predecessor and stream match the
+// input's bytes, though its reserved bytes, which the header has no field
+// for, are never reproduced.
 func FuzzSegmentHeader(f *testing.F) {
 	pred := readGolden(f, "segheader_pred")
 	nopred := readGolden(f, "segheader_nopred")
@@ -81,6 +84,15 @@ func FuzzSegmentHeader(f *testing.F) {
 	other := testSegmentHeader
 	other.Identity = otherIdentity
 	f.Add(AppendSegmentHeader(nil, other))
+
+	// A foreign header whose reserved bytes are not zero: its checksum
+	// verifies, its identity is another journal's, and its reserved bytes
+	// are never judged here, so it must be told apart as foreign with the
+	// fields its bytes carry.
+	foreignReserved := AppendSegmentHeader(nil, other)
+	copy(foreignReserved[6:8], []byte{0xff, 0xff})
+	rechecksumHeader(foreignReserved)
+	f.Add(foreignReserved)
 
 	f.Add([]byte{})
 	f.Add(make([]byte, SegmentHeaderSize))
@@ -102,13 +114,21 @@ func FuzzSegmentHeader(f *testing.F) {
 		}
 
 		if errors.Is(err, ErrForeign) {
-			// A foreign header is returned whole, so recovery can report
-			// whose it is; its bytes still reproduce.
-			if h.Identity == testIdentity {
-				t.Fatalf("decoded a foreign header under the identity it was opened with")
+			// A foreign header is returned filled, so recovery can report
+			// whose it is: every field must say what the bytes hold. The
+			// reserved bytes are not reproduced — the header has no field
+			// for them, and another journal's are not this one's to read.
+			if h.Identity != core.JournalID(in[8:24]) {
+				t.Fatalf("a foreign header returned the identity % x, want the input's % x", h.Identity, in[8:24])
 			}
-			if got := AppendSegmentHeader(nil, h); !slices.Equal(got, in) {
-				t.Fatalf("AppendSegmentHeader of a foreign header =\n% x\nwant the input\n% x", got, in)
+			if h.ID != core.SegmentID(binary.LittleEndian.Uint64(in[24:32])) {
+				t.Fatalf("a foreign header returned segment id %d, want the input's %d", h.ID, core.SegmentID(binary.LittleEndian.Uint64(in[24:32])))
+			}
+			if h.Predecessor != core.SegmentID(binary.LittleEndian.Uint64(in[32:40])) {
+				t.Fatalf("a foreign header returned predecessor %d, want the input's %d", h.Predecessor, core.SegmentID(binary.LittleEndian.Uint64(in[32:40])))
+			}
+			if h.Stream != binary.LittleEndian.Uint32(in[40:44]) {
+				t.Fatalf("a foreign header returned stream %d, want the input's %d", h.Stream, binary.LittleEndian.Uint32(in[40:44]))
 			}
 		}
 

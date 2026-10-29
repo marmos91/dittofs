@@ -69,21 +69,10 @@ func ClassifyName(name string) (NameKind, core.SegmentID) {
 			continue
 		}
 
-		// The digits are checked one byte at a time first, so only
-		// ASCII '0'..'9' ever reaches the parse: a sign, an underscore
-		// or a non-ASCII digit is unrecognised here, never a parse
-		// error.
-		decimal := true
-		for i := range 20 {
-			if base[i] < '0' || base[i] > '9' {
-				decimal = false
-				break
-			}
-		}
-		if !decimal {
-			return NameUnrecognised, 0
-		}
-
+		// A base-10 ParseUint takes no sign, underscore or space, so
+		// the twenty bytes reach the parse unfiltered: anything else
+		// is refused here, as the width check refuses what is longer
+		// than a twenty-digit id.
 		id, err := strconv.ParseUint(base, 10, 64)
 		if err != nil || id == 0 {
 			return NameUnrecognised, 0
