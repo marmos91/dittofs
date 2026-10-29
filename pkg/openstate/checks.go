@@ -213,7 +213,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
 			var hs []*open
 			for _, h := range e.opens {
-				if conflict.Of(h.Mode.Deny)&conflict.Delete != 0 {
+				if !conflict.Shares(entity.Delete, 0, h.Mode.Access, h.Mode.Deny) {
 					hs = append(hs, h)
 				}
 			}

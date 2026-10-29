@@ -660,3 +660,17 @@ func TestStreamOpenDeletesNothing(t *testing.T) {
 		t.Errorf("the stream open's close: unlink %+v, want none", r.Unlink)
 	}
 }
+
+// An open asking no data access refuses nothing with its deny, an NFS
+// remove or rename of its file included, as it refuses no SMB delete open.
+func TestStatOpenDenyDeleteRefusesNoRemove(t *testing.T) {
+	f := newFixture(t)
+	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
+	file := anyFile()
+	f.mustOpen(t, s, file, OpenRequest{Access: entity.ReadAttributes, Deny: del})
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := f.Checks().CheckChange(ctx, n, file, nil, what); err != nil {
+			t.Errorf("an NFS change %d beside a stat open denying delete: %v", what, err)
+		}
+	}
+}
