@@ -70,12 +70,14 @@ func TestRunInContainer(t *testing.T) {
 // --in auto, the default, sends the run to dtc when a cell needs what this
 // machine lacks and the container gives; with --ci it stays here, and so does
 // a run whose needs are met or a machine without Docker, which dtc runs in.
+// Docker is checked only when the run would move.
 func TestRunInAuto(t *testing.T) {
 	root := inCheckout(t)
 	results := filepath.Join(root, "results")
-	linux, docker := false, true
+	linux, docker, askedDocker := false, true, false
 	was := need
 	need = func(_, n string) error {
+		askedDocker = askedDocker || n == "docker"
 		switch {
 		case n == "linux" && !linux:
 			return errors.New("not Linux")
@@ -95,10 +97,13 @@ func TestRunInAuto(t *testing.T) {
 		{true, true, nil, false},
 		{false, false, nil, false},
 	} {
-		linux, docker = c.linux, c.docker
+		linux, docker, askedDocker = c.linux, c.docker, false
 		_, _ = dt(t, append([]string{"run", "lin", "--results", results}, c.flags...)...)
 		if got := sent(root) != ""; got != c.sent {
 			t.Errorf("Linux here %v, Docker here %v, flags %v: sent to dtc %v, want %v", c.linux, c.docker, c.flags, got, c.sent)
+		}
+		if c.linux && askedDocker {
+			t.Errorf("Linux here, flags %v: Docker checked for a run that doesn't move", c.flags)
 		}
 	}
 }

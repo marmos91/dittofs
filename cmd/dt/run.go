@@ -112,9 +112,10 @@ func newRun() *cobra.Command {
 var need = needs.Check
 
 // inContainer reports whether the run goes to dtc: with --in container, or
-// with --in auto, the default without --ci, when Docker, which dtc runs in, is
-// here and a cell needs what only the container gives. A run inside dtc runs
-// there whatever --in says.
+// with --in auto, the default without --ci, when a cell needs what only the
+// container gives and Docker, which dtc runs in, is here; Docker is checked
+// only then, since its check can take a while. A run inside dtc runs there
+// whatever --in says.
 func inContainer(root string, cells []run.Cell, in string, ci bool, place string) bool {
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		return false
@@ -125,12 +126,12 @@ func inContainer(root string, cells []run.Cell, in string, ci bool, place string
 			in = "host"
 		}
 	}
-	return in == "container" || in == "auto" && need(root, "docker") == nil && run.Container(cells, func(n string) error {
+	return in == "container" || in == "auto" && run.Container(cells, func(n string) error {
 		if n == "host:"+place {
 			return nil
 		}
 		return need(root, n)
-	})
+	}) && need(root, "docker") == nil
 }
 
 // again is the dt run command line as given, with --in host, for dtc to run.
