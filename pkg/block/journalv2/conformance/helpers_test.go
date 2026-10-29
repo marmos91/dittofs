@@ -481,6 +481,17 @@ func wantSameIndex(t *testing.T, f *journalv2test.Fixture, want map[journalv2.Fi
 	}
 }
 
+// headerSlot returns the header slot of the segment file name, the first
+// bytes of b, failing the test when b is too short to hold one.
+func headerSlot(t *testing.T, name string, b []byte) []byte {
+	t.Helper()
+
+	if len(b) < raw.SegmentHeaderSize {
+		t.Fatalf("%s is %d bytes, too short for a segment header of %d", name, len(b), raw.SegmentHeaderSize)
+	}
+	return b[:raw.SegmentHeaderSize]
+}
+
 // endsInTrailer reports whether the segment bytes b are long enough to end
 // in a trailer and their last trailer-sized slot starts with its magic. It
 // checks no checksum.

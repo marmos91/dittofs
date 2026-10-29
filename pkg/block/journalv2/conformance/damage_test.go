@@ -1496,7 +1496,7 @@ func (s *flipSite) wantSuccessor(t *testing.T) {
 
 	roll := rec{0, s.recs[0].id, journalv2.Extent{Off: int64(len(s.recs)) * s.recs[0].extent.Len, Len: s.recs[0].extent.Len}, journalv2.Version{}, nil}
 	succ := entryAt(t, s.f, roll.id, roll.extent.Off, "the site").Location.Segment
-	hdr, err := raw.ParseSegmentHeader(durable(t, s.f, segmentName(succ))[:raw.SegmentHeaderSize])
+	hdr, err := raw.ParseSegmentHeader(headerSlot(t, segmentName(succ), durable(t, s.f, segmentName(succ))))
 	if err != nil || hdr.Predecessor != uint64(s.seg) {
 		t.Fatalf("precondition: segment %d does not name %d as its predecessor: %+v, %v", succ, s.seg, hdr, err)
 	}
