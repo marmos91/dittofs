@@ -864,41 +864,92 @@ func refusalSparesTheOther(t *testing.T, refuseOlder bool) {
 	for name, acceptFirst := range map[string]bool{"accepted, then other refused": true, "refused, then other accepted": false} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
-			a, b, h := f.host(t, "a", 1), f.host(t, "b", 1), f.host(t, "h", 1)
+			h := f.host(t, "h", 1)
 			file := anyFile()
-			grant := func(blocker Caller, held ByteRange, r LockRange) LockWaiter {
-				t.Helper()
-				f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
-				f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{r}, Wait: WaitCallback})
-				f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
-				ws := f.sink.takeWaits()
-				if g := granted(t, ws); len(g) != 1 {
-					t.Fatalf("granted %v, want h", g)
-				}
-				return ws[0].w
-			}
-			older, newer := grant(a, br(0, 15), x(0, 15)), grant(b, br(15, 5), x(10, 10))
+			older, newer := overlappingGrants(t, f, file, h, owner(h, "h"), x(0, 15), x(10, 10))
 			accepted, refused := newer, older
 			if !refuseOlder {
 				accepted, refused = older, newer
 			}
-			answers := []struct {
-				w       LockWaiter
-				refused bool
-			}{{accepted, false}, {refused, true}}
-			if !acceptFirst {
-				answers[0], answers[1] = answers[1], answers[0]
-			}
-			for _, an := range answers {
-				if err := f.Locks().WaitAnswered(ctx, h, an.w, an.refused); err != nil {
-					t.Fatal(err)
-				}
-			}
+			answerGrants(t, f, h, accepted, refused, acceptFirst)
 			o := f.host(t, "o", 1)
 			if _, err := f.lock(o, file, LockReq{Owner: owner(o, "o"), Ranges: []LockRange{x(10, 5)}}); err == nil {
 				t.Errorf("h accepted the grant of %v, yet o was granted [10,15)", accepted.Range.ByteRange)
 			}
 		})
+	}
+}
+
+// overlappingGrants has ho of h wait for older and then for newer, each
+// blocked by another host's exclusive lock that is then unlocked, and returns
+// the two callback grants: newer must start inside older and end past it.
+func overlappingGrants(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, older, newer LockRange) (LockWaiter, LockWaiter) {
+	t.Helper()
+	grant := func(name string, held ByteRange, r LockRange) LockWaiter {
+		t.Helper()
+		blocker := f.host(t, name, 1)
+		f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+		f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
+		f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
+		ws := f.sink.takeWaits()
+		if g := granted(t, ws); len(g) != 1 {
+			t.Fatalf("granted %v, want h", g)
+		}
+		return ws[0].w
+	}
+	end := older.Offset + older.Length
+	return grant("a", older.ByteRange, older), grant("b", br(end, newer.Offset+newer.Length-end), newer)
+}
+
+// answerGrants has h accept accepted and refuse refused, the acceptance first
+// or last.
+func answerGrants(t *testing.T, f *fixture, h Caller, accepted, refused LockWaiter, acceptFirst bool) {
+	t.Helper()
+	answers := []struct {
+		w       LockWaiter
+		refused bool
+	}{{accepted, false}, {refused, true}}
+	if !acceptFirst {
+		answers[0], answers[1] = answers[1], answers[0]
+	}
+	for _, an := range answers {
+		if err := f.Locks().WaitAnswered(ctx, h, an.w, an.refused); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A stacking owner's two overlapping callback grants are two locks: refusing
+// one releases that lock whole, whichever is refused and whether the other is
+// accepted before, accepted after or refused as well.
+func TestStackingRefusalReleasesItsOwnLock(t *testing.T) {
+	for _, refuseOlder := range []bool{false, true} {
+		for _, other := range []string{"accepted first", "accepted last", "refused last"} {
+			t.Run(fmt.Sprintf("refuse older %v, other %s", refuseOlder, other), func(t *testing.T) {
+				f := newFixture(t)
+				h := f.host(t, "h", 1)
+				ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
+				file := anyFile()
+				older, newer := overlappingGrants(t, f, file, h, ho, sh(0, 15), sh(10, 10))
+				kept, refused, free := older, newer, br(15, 5)
+				if refuseOlder {
+					kept, refused, free = newer, older, br(0, 10)
+				}
+				if other == "refused last" {
+					for _, w := range []LockWaiter{refused, kept} {
+						if err := f.Locks().WaitAnswered(ctx, h, w, true); err != nil {
+							t.Fatal(err)
+						}
+					}
+					free = br(0, 20)
+				} else {
+					answerGrants(t, f, h, kept, refused, other == "accepted first")
+				}
+				if l := f.holder(t, file, free); l != nil {
+					t.Errorf("refused %v, yet %v is still held: %+v", refused.Range.ByteRange, free, *l)
+				}
+			})
+		}
 	}
 }
 

@@ -153,8 +153,20 @@ func (ls *lockState) dropOffers(r ByteRange) {
 }
 
 // unoffered is what of rs none of offers covers: that part another offer's
-// own answer decides, so a refusal releases only the rest.
-func unoffered(rs []ByteRange, offers []offer) []ByteRange {
+// own answer decides, so a refusal releases only the rest. A stacking owner's
+// grants are separate locks, which unlock removes only whole, so for it rs is
+// left as it is.
+//
+// decision: a merging owner's refusal keeps what another grant to it covers in
+// the mode the later grant left it, as the grant merged it in and nothing
+// records the mode it replaced. This fails open when a shared grant over an
+// accepted exclusive one is refused: the overlap stays shared, so another
+// owner is granted it shared. Overturned by a client that refuses a downgrade
+// it raced against its own exclusive grant.
+func (ls *lockState) unoffered(rs []ByteRange, offers []offer) []ByteRange {
+	if ls.owner.Stack {
+		return rs
+	}
 	for _, o := range offers {
 		for _, ol := range o.left {
 			var rest []ByteRange
@@ -663,15 +675,17 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		}
 		o := ls.offers[i]
 		ls.offers = slices.Delete(ls.offers, i, i+1)
-		if !refused {
+		if refused {
+			others := ls.offers
+			ls.offers = nil // the release answers no other grant
+			_ = ls.unlock(ls.unoffered(o.left, others))
+			ls.offers = others
+			t.tidy(e, ls)
+			t.serve(e, &out)
+		} else if !ls.owner.Stack { // a stacking owner's grants are separate locks
 			for _, l := range o.left {
 				ls.dropOffers(l) // what the owner accepted, no other refusal releases
 			}
-		}
-		if refused {
-			_ = ls.unlock(unoffered(o.left, ls.offers))
-			t.tidy(e, ls)
-			t.serve(e, &out)
 		}
 		return nil
 	})
