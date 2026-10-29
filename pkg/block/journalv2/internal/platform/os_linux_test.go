@@ -10,8 +10,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
+	"golang.org/x/sys/unix"
 )
 
 // TestConcurrentWriteAt writes one file from many goroutines at once, each at
@@ -55,9 +57,10 @@ func TestConcurrentWriteAt(t *testing.T) {
 	}
 }
 
-// TestClosedFile checks every operation on a closed file fails with an
-// *fs.PathError matching fs.ErrClosed, rather than reaching whatever file has
-// since reused the descriptor's number, and Sync makes no system call. The
+// TestClosedFile checks Allocate on an open file is still not implemented,
+// then that every operation on a closed file fails with an *fs.PathError
+// matching fs.ErrClosed, rather than reaching whatever file has since reused
+// the descriptor's number, and Sync makes no system call. The
 // file is kept reachable until the profiler's check, so the *os.File
 // finalizer cannot close a leaked descriptor first and hide the leak.
 func TestClosedFile(t *testing.T) {
@@ -69,6 +72,10 @@ func TestClosedFile(t *testing.T) {
 	f, err := newOS(t.TempDir(), r.table()).Create("a")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	if err := f.Allocate(0, 1); !errors.Is(err, core.ErrNotImplemented) {
+		t.Fatalf("Allocate on an open file: %v, want core.ErrNotImplemented", err)
 	}
 
 	if err := f.Close(); err != nil {
@@ -83,6 +90,7 @@ func TestClosedFile(t *testing.T) {
 		{"WriteAt", func() error { _, err := f.WriteAt([]byte{1}, 0); return err }},
 		{"Truncate", func() error { return f.Truncate(1) }},
 		{"Size", func() error { _, err := f.Size(); return err }},
+		{"Allocate", func() error { return f.Allocate(0, 1) }},
 		{"Sync", f.Sync},
 	} {
 		err := op.call()
@@ -99,11 +107,17 @@ func TestClosedFile(t *testing.T) {
 }
 
 // TestCreatePermission checks Create makes a file only its owner can read or
-// write. The umask can only remove bits, so the mode is exactly 0o600.
+// write. The umask can remove any bit, the owner's included, so the test sets
+// one that keeps the owner's bits and removes the others' write bits, under
+// which 0o600 stays 0o600 and 0o644 stays 0o644. The umask is process wide:
+// no test in this package runs in parallel.
 func TestCreatePermission(t *testing.T) {
 	var f storage.File
 	t.Cleanup(func() { runtime.KeepAlive(f) })
 	prof.Watch(t, prof.Options{})
+
+	old := unix.Umask(0o022)
+	t.Cleanup(func() { unix.Umask(old) })
 
 	dir := t.TempDir()
 	f, err := NewOS(dir).Create("a")
