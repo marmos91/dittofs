@@ -35,6 +35,7 @@ func RetrySpare(op func() error) error {
 		if !errors.As(err, &ns) || ns.Limit != journalv2.LimitSpare {
 			return err
 		}
+
 		runtime.Gosched()
 	}
 
