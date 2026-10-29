@@ -52,6 +52,15 @@ var (
 type DelayError struct{ Cause DelayCause }
 
 // DelayCause is why a call is to be retried.
+//
+// decision: each cause is one RFC 17's service carries on, so the adapters
+// answer it as that one: DelayRecall as DelayRecall; DelayResources, a cap
+// reached, as DelayHoldBudget, answered at once (NFS4ERR_DELAY,
+// STATUS_INSUFFICIENT_RESOURCES); DelayFrozen as DelayFrozen; DelayCommit,
+// a record the store has not landed, as DelayStoreStall; and DelayConflict
+// as DelayConflict, which SMB holds and answers STATUS_FILE_NOT_AVAILABLE.
+// Split a cause here if an adapter is found needing to answer two of its
+// refusals apart.
 type DelayCause uint8
 
 const (
