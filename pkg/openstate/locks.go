@@ -97,8 +97,8 @@ type Locks interface {
 	// granted first.
 	CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange) (granted bool, err error)
 	// WaitAnswered takes the client's answer to a LockWaitOver grant: a
-	// refusal releases the lock as an unlock would, unless the owner's own
-	// lock or unlock of the range answered first, which then releases nothing.
+	// refusal releases the lock as an unlock would, but for the parts the
+	// owner's own lock or unlock of them answered first, which it leaves.
 	WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refused bool) error
 	// TestLock is the lock that would refuse o's lock of r, or nil; it
 	// changes nothing. o is the caller's client's owner.
@@ -127,13 +127,30 @@ type lockState struct {
 	open   *open       // nil: none
 	ref    StateRef    // Seq is its current sequence
 	locks  []LockRange // a merging owner's are disjoint, and none touches another of its type
-	offers []LockRange // callback grants whose answer is outstanding
+	offers []offer     // callback grants whose answer is outstanding
 }
 
-// dropOffers forgets every offer r overlaps: the owner's own lock or unlock of
-// it answered the host first, so a later refusal releases nothing.
+// offer is a callback grant whose answer is outstanding.
+type offer struct {
+	asked LockRange   // the grant, which WaitAnswered matches
+	left  []ByteRange // what of it the owner's own lock or unlock has not answered
+}
+
+// dropOffers takes r out of every offer, and forgets an offer once nothing of
+// it is left: the owner's own lock or unlock of r answered the host first, so
+// a later refusal releases nothing of r.
 func (ls *lockState) dropOffers(r ByteRange) {
-	ls.offers = slices.DeleteFunc(ls.offers, func(o LockRange) bool { return ranges.Overlap(o.ByteRange, r) })
+	kept := ls.offers[:0]
+	for _, o := range ls.offers {
+		var left []ByteRange
+		for _, l := range o.left {
+			left = append(left, ranges.Minus(l, r)...)
+		}
+		if o.left = left; len(left) > 0 {
+			kept = append(kept, o)
+		}
+	}
+	ls.offers = kept
 }
 
 func (ls *lockState) openToken() uint64 { return openToken(ls.open) }
@@ -389,7 +406,7 @@ func (t *Table) serve(e *entry, out *outbox) {
 			e.waiters = slices.Delete(e.waiters, i, i+1)
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				ls.add(w.Range)
-				ls.offers = append(ls.offers, w.Range) // only a callback waiter reaches here
+				ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 			}
 			out.over = append(out.over, waitOver{*w, true})
 			continue
@@ -611,8 +628,8 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 	}
 	var out outbox
 	_ = t.step(w.File, func(e *entry) error {
-		// decision: only a grant still offered is the callback's to give back:
-		// one the owner's own lock or unlock of the range answered first
+		// decision: only what of a grant is still offered is the callback's to
+		// give back: a part the owner's own lock or unlock answered first
 		// releases nothing, as Linux lockd ignores a GRANTED reply for a block
 		// it has already unlinked. Overturned by a client that refuses a grant
 		// it was also answered for synchronously and expects the refusal to
@@ -620,14 +637,15 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		ls := e.lockState(w.Owner, w.Open)
 		i := -1
 		if ls != nil {
-			i = slices.Index(ls.offers, w.Range)
+			i = slices.IndexFunc(ls.offers, func(o offer) bool { return o.asked == w.Range })
 		}
 		if i < 0 {
 			return nil
 		}
+		o := ls.offers[i]
 		ls.offers = slices.Delete(ls.offers, i, i+1)
 		if refused {
-			_ = ls.unlock([]ByteRange{w.Range.ByteRange})
+			_ = ls.unlock(o.left)
 			t.tidy(e, ls)
 			t.serve(e, &out)
 		}

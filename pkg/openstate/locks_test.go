@@ -712,6 +712,64 @@ func TestRefusedStaleCallbackSparesALaterGrant(t *testing.T) {
 	}
 }
 
+// A late refusal of a callback grant the owner unlocked part of releases
+// the rest of it.
+func TestRefusalReleasesWhatTheOwnerLeftOfAGrant(t *testing.T) {
+	f := newFixture(t)
+	b, h := f.host(t, "b", 1), f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{sh(0, 10)}})
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{sh(90, 10)}})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 100)}, Wait: WaitCallback})
+	f.unlock(t, b, file, owner(b, "b"), br(90, 10))
+	ws := f.sink.takeWaits()
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("after b unlocked: granted %v, want h", g)
+	}
+	f.unlock(t, h, file, owner(h, "h"), br(0, 10))
+	if err := f.Locks().WaitAnswered(ctx, h, ws[0].w, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.holder(t, file, br(0, 100)); l != nil {
+		t.Errorf("after the refusal: %v still held", l.Range)
+	}
+}
+
+// Two overlapping callback grants the host refuses, in either order, leave
+// nothing of either held.
+func TestRefusalsOfOverlappingGrants(t *testing.T) {
+	for name, second := range map[string]bool{"first refused first": false, "second refused first": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a, b, h := f.host(t, "a", 1), f.host(t, "b", 1), f.host(t, "h", 1)
+			file := anyFile()
+			grant := func(blocker Caller, held ByteRange, r LockRange) LockWaiter {
+				t.Helper()
+				f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+				f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{r}, Wait: WaitCallback})
+				f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
+				ws := f.sink.takeWaits()
+				if g := granted(t, ws); len(g) != 1 {
+					t.Fatalf("granted %v, want h", g)
+				}
+				return ws[0].w
+			}
+			ws := []LockWaiter{grant(a, br(0, 15), x(0, 15)), grant(b, br(15, 5), x(10, 10))}
+			if second {
+				ws[0], ws[1] = ws[1], ws[0]
+			}
+			for _, w := range ws {
+				if err := f.Locks().WaitAnswered(ctx, h, w, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if l := f.holder(t, file, br(0, 20)); l != nil {
+				t.Errorf("after both refusals: %v still held", l.Range)
+			}
+		})
+	}
+}
+
 // A callback grant the host leaves unanswered for ten minutes is still held,
 // and its refusal then releases it.
 func TestUnansweredGrantOutlivesSilence(t *testing.T) {
