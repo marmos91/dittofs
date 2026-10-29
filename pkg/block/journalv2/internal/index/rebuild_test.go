@@ -198,45 +198,49 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 		// The same removal re-appended after a failed sync, its original
 		// still on disk: one marker, not two, both copies noted for the
 		// drop ranges. The same write carried in two placements is one
-		// piece, read from the greater (segment, offset).
-		var fs files
-		b := newRebuilder(&fs, &Counters{})
-		id := fid(1)
-		for _, r := range []Record{
-			recd(RecDeallocate, id, 5, 9, 1, 0, 4, 8),
-			recd(RecDeallocate, id, 5, 9, 3, 96, 4, 8),
-			recd(RecWrite, id, 8, 7, 1, 0, 0, 4),
-			recd(RecWrite, id, 8, 7, 3, 200, 0, 4),
-		} {
-			if err := b.Feed(r); err != nil {
+		// piece, read from the greater (segment, offset) whichever order
+		// the copies were fed in — the sort breaks the tie, not the feed.
+		for _, order := range [][]int{{0, 1, 2, 3}, {3, 2, 1, 0}} {
+			var fs files
+			b := newRebuilder(&fs, &Counters{})
+			id := fid(1)
+			rs := []Record{
+				recd(RecDeallocate, id, 5, 9, 1, 0, 4, 8),
+				recd(RecDeallocate, id, 5, 9, 3, 96, 4, 8),
+				recd(RecWrite, id, 8, 7, 1, 0, 0, 4),
+				recd(RecWrite, id, 8, 7, 3, 200, 0, 4),
+			}
+			for _, i := range order {
+				if err := b.Feed(rs[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := b.Finish(ver(0)); err != nil {
 				t.Fatal(err)
 			}
-		}
-		if err := b.Finish(ver(0)); err != nil {
-			t.Fatal(err)
-		}
-		if n := markerCount(&fs, id); n != 1 {
-			t.Fatalf("markers = %d, want one for the carried removal", n)
-		}
-		if got := fs.since(id, core.Version{}, nil); len(got) != 2 {
-			t.Fatalf("since = %+v, want the marker and the one held piece", got)
-		}
-		var segs []core.SegmentID
-		fs.view(id, func(f *file) {
-			for _, s := range f.segs {
-				segs = append(segs, s.seg)
+			if n := markerCount(&fs, id); n != 1 {
+				t.Fatalf("order %v: markers = %d, want one for the carried removal", order, n)
 			}
-		})
-		if !slices.Contains(segs, core.SegmentID(1)) || !slices.Contains(segs, core.SegmentID(3)) {
-			t.Fatalf("segments noted = %v, want both copies' segments 1 and 3", segs)
-		}
-		// The surviving placement is the run's greater (segment, offset),
-		// so a copied record reads from its newer home — the failed
-		// segment's copy must not be the one the piece names.
-		if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
-			{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7)},
-		}) {
-			t.Fatalf("held = %+v, want the piece read from the copy at (3, 200)", got)
+			if got := fs.since(id, core.Version{}, nil); len(got) != 2 {
+				t.Fatalf("order %v: since = %+v, want the marker and the one held piece", order, got)
+			}
+			var segs []core.SegmentID
+			fs.view(id, func(f *file) {
+				for _, s := range f.segs {
+					segs = append(segs, s.seg)
+				}
+			})
+			if !slices.Contains(segs, core.SegmentID(1)) || !slices.Contains(segs, core.SegmentID(3)) {
+				t.Fatalf("order %v: segments noted = %v, want both copies' segments 1 and 3", order, segs)
+			}
+			// The surviving placement is the run's greater (segment, offset),
+			// so a copied record reads from its newer home — the failed
+			// segment's copy must not be the one the piece names.
+			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
+				{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7)},
+			}) {
+				t.Fatalf("order %v: held = %+v, want the piece read from the copy at (3, 200)", order, got)
+			}
 		}
 	})
 }
