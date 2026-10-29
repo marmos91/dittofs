@@ -438,6 +438,12 @@ func (t *Table) dropLockState(e *entry, ls *lockState) {
 // starts a recall, so a refusal changes nothing; the charges are made, and
 // refused, where the state is added, as a waiter behind a lock is, since
 // nothing changes before it.
+//
+// decision: unlike an open's, a lock's place is not taken at this check, so
+// a lock of the client on another file racing r past it can leave r refused
+// at its charge after r started a recall; the recall only ends a caching
+// grant early, which a client survives. Take the places here, as an open
+// does, if such recalls show up for clients held at a cap.
 func (t *Table) lockFull(e *entry, r LockReq, op *open, key LeaseKey) bool {
 	c := r.Owner.Client
 	ls := e.lockState(r.Owner, openToken(op))
