@@ -161,7 +161,8 @@ func lockSeq(op *open, r *LockSequence) (i int, v uint8, ok bool) {
 // lockSeqRecord is what a request under op naming q stores once it
 // succeeds: rec, the open's record with q's sequence set, for a persistent
 // open to write with its locks (nil otherwise), and stored, which sets it
-// in memory once the write is done.
+// in memory once the write is done and marks the open saved, as the record
+// written is the whole open.
 func (t *Table) lockSeqRecord(e *entry, op *open, q *LockSequence) (rec *entity.OpenRecord, stored func()) {
 	i, v, ok := lockSeq(op, q)
 	if !ok {
@@ -172,7 +173,12 @@ func (t *Table) lockSeqRecord(e *entry, op *open, q *LockSequence) (rec *entity.
 		x.LockSeq[i] = v
 		rec = &x
 	}
-	return rec, func() { op.Durable.LockSeq[i] = v }
+	return rec, func() {
+		op.Durable.LockSeq[i] = v
+		if rec != nil {
+			op.unsaved = false // the record just written carries every change
+		}
+	}
 }
 
 // resetLockSeq invalidates index i of op's lock replay, under e's step, for

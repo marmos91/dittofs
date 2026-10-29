@@ -463,3 +463,22 @@ func TestAppInstanceJudgesEveryVersionFirst(t *testing.T) {
 		}
 	}
 }
+
+// A lock granted on a reused index of a persistent open's lock replay writes
+// the whole record, so the open is not left unsaved: it reconnects at once.
+func TestLockOnAReusedIndexLeavesTheOpenSaved(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	for seq, rg := range []LockRange{x(0, 10), x(20, 10)} {
+		if _, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{rg}, Replay: &LockSequence{Index: 1, Seq: uint8(seq + 1)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.disconnect(t, a, s1)
+	if _, err := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err != nil {
+		t.Errorf("reconnect after two granted locks, both written: %v; want it reconnected", err)
+	}
+}
