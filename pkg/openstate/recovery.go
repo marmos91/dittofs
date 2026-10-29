@@ -162,8 +162,12 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 		// decision: an NLM host or an SMB client holds no lease, so it is
 		// neither made known nor expired for silence here: an NLM host's
 		// state goes with its restart notice, and an SMB client's with its
-		// opens' Timeouts. Give either a lease from the grace's start if one
-		// is seen reclaiming in a grace long after it went silent.
+		// opens' Timeouts. An NLM host silent through a whole grace therefore
+		// keeps its shard mark and reclaims in the next grace, even over a
+		// lock granted in between. That takes a partition through one grace
+		// plus a second restart. A lease is no fix, as NLM hosts never renew.
+		// Clear the mark of each host the grace listed that did not reclaim
+		// once the grace ends, if NLM is served where restarts are routine.
 		t.cmu.Lock()
 		if _, ok := t.leases[rec.ID]; !ok && rec.Protocol == entity.ProtocolNFSv4 {
 			t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
