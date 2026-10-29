@@ -175,8 +175,8 @@ func openKey(share entity.ShareID, file entity.FileID, id entity.OpenID) []byte 
 }
 
 // lockKey is a durable lock beneath its persistent open, in offset order.
-func lockKey(share entity.ShareID, file entity.FileID, open entity.OpenID, offset int64, id entity.LockID) []byte {
-	return keys.Uint64(keys.Uint64(append(openKey(share, file, open), keys.OpL), uint64(offset)), uint64(id))
+func lockKey(share entity.ShareID, file entity.FileID, open entity.OpenID, offset uint64, id entity.LockID) []byte {
+	return keys.Uint64(keys.Uint64(append(openKey(share, file, open), keys.OpL), offset), uint64(id))
 }
 
 func locksPrefix(share entity.ShareID, file entity.FileID, open entity.OpenID) []byte {

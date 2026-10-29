@@ -59,9 +59,9 @@ func encodeOpen(o entity.OpenRecord) []byte {
 		Uint8(uint8(o.Durability)).Bool(o.DeleteOnClose)
 	putPrincipal(w, o.DeleteBy).Bool(o.Lease != nil)
 	if l := o.Lease; l != nil {
-		w.Fixed(l.Key[:]).Fixed(l.ParentKey[:]).Uint8(l.State).Uint32(uint32(l.Epoch))
+		w.Fixed(l.Key[:]).Fixed(l.ParentKey[:]).Uint8(l.State).Uint32(uint32(l.Epoch)).Bool(l.V2)
 	}
-	w.Uint8(uint8(o.Suspended)).Fixed(o.Via[:]).Uint32(o.StateSeq).Uint64(o.Nonce).Uint64(o.LossSeen).
+	w.Uint8(uint8(o.Suspended)).Fixed(o.Via[:]).Bytes(o.Name).Uint32(o.StateSeq).Uint64(o.Nonce).Uint64(o.LossSeen).
 		Uint64(o.Session.Node).Uint64(o.Session.NodeEpoch).Uint64(o.Session.ID).
 		Uint8(uint8(o.Kind)).Fixed(o.CloneDst[:]).Fixed(o.CloneVersion[:]).
 		Fixed(o.CreateGUID[:]).Fixed(o.AppInstance[:]).Uint64(o.AppVersion[0]).Uint64(o.AppVersion[1]).
@@ -83,10 +83,13 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenReco
 		l := &entity.Lease{}
 		copy(l.Key[:], r.Fixed(16))
 		copy(l.ParentKey[:], r.Fixed(16))
-		l.State, l.Epoch = r.Uint8(), uint16(r.Uint32())
+		l.State, l.Epoch, l.V2 = r.Uint8(), uint16(r.Uint32()), r.Bool()
 		o.Lease = l
 	}
 	o.Suspended, o.Via = entity.TimeMask(r.Uint8()), readFileID(r)
+	if n := r.Bytes(); len(n) > 0 {
+		o.Name = n // nil: opened by handle
+	}
 	o.StateSeq, o.Nonce, o.LossSeen = r.Uint32(), r.Uint64(), r.Uint64()
 	o.Session = entity.SessionRef{Node: r.Uint64(), NodeEpoch: r.Uint64(), ID: r.Uint64()}
 	o.Kind, o.CloneDst, o.CloneVersion = entity.OpenKind(r.Uint8()), readFileID(r), readVersion(r)
@@ -100,17 +103,17 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenReco
 }
 
 func encodeLock(l entity.LockRecord) []byte {
-	return codec.NewWriter(v1).Uint64(uint64(l.Owner.Client)).Bytes(l.Owner.Owner).Uint64(uint64(l.Length)).Bool(l.Exclusive).Encode()
+	return codec.NewWriter(v1).Uint64(uint64(l.Owner.Client)).Bytes(l.Owner.Owner).Uint64(l.Length).Bool(l.Exclusive).Encode()
 }
 
-func decodeLock(o entity.OpenID, offset int64, id entity.LockID, b []byte) (entity.LockRecord, error) {
+func decodeLock(o entity.OpenID, offset uint64, id entity.LockID, b []byte) (entity.LockRecord, error) {
 	r, err := open(b)
 	if err != nil {
 		return entity.LockRecord{}, err
 	}
 	l := entity.LockRecord{ID: id, Open: o, Offset: offset}
 	l.Owner = entity.LockOwner{Client: entity.ClientID(r.Uint64()), Owner: r.Bytes()}
-	l.Length, l.Exclusive = int64(r.Uint64()), r.Bool()
+	l.Length, l.Exclusive = r.Uint64(), r.Bool()
 	return l, r.Done()
 }
 
