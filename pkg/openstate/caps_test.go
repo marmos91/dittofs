@@ -7,11 +7,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
 
-// lower sets the cap of kind k to n for one case.
-func lower(t *testing.T, k capped, n int) {
-	was := perClient[k]
-	perClient[k] = n
-	t.Cleanup(func() { perClient[k] = was })
+// lower sets tab's cap of kind k to n.
+func (tab *Table) lower(k capped, n int) {
+	tab.idx.Lock()
+	defer tab.idx.Unlock()
+	tab.caps[k] = n
 }
 
 // A client's opens, lock ranges, lock owners and waiters are each capped
@@ -20,8 +20,8 @@ func lower(t *testing.T, k capped, n int) {
 // splitting a range adds one, so at the cap it is refused as a lock is.
 func TestPerClientCaps(t *testing.T) {
 	t.Run("opens", func(t *testing.T) {
-		lower(t, cappedOpens, 2)
 		f := newFixture(t)
+		f.lower(cappedOpens, 2)
 		a := f.caller(t, nfs("a", 1, entity.NewUser()))
 		first := f.mustOpen(t, a, in(1), OpenRequest{Access: rd})
 		f.mustOpen(t, a, in(1), OpenRequest{Access: rd})
@@ -40,8 +40,8 @@ func TestPerClientCaps(t *testing.T) {
 		f.close(t, a, up)
 	})
 	t.Run("ranges", func(t *testing.T) {
-		lower(t, cappedRanges, 2)
 		f := newFixture(t)
+		f.lower(cappedRanges, 2)
 		a := f.caller(t, nfs("a", 1, entity.NewUser()))
 		file, lo := in(1), owner(a, "lo")
 		f.mustLock(t, a, file, LockReq{Owner: lo, Ranges: []LockRange{x(0, 10), x(20, 10)}})
@@ -61,8 +61,8 @@ func TestPerClientCaps(t *testing.T) {
 		f.mustLock(t, a, file, LockReq{Owner: lo, Ranges: []LockRange{x(40, 10)}})
 	})
 	t.Run("owners", func(t *testing.T) {
-		lower(t, cappedOwners, 1)
 		f := newFixture(t)
+		f.lower(cappedOwners, 1)
 		a := f.caller(t, nfs("a", 1, entity.NewUser()))
 		one, two := in(1), in(1)
 		f.mustLock(t, a, one, LockReq{Owner: owner(a, "first"), Ranges: []LockRange{x(0, 10)}})
@@ -85,10 +85,12 @@ func TestPerClientCaps(t *testing.T) {
 			o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
 			f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
 		}
-		lower(t, cappedOpens, 1)
-		lower(t, cappedOwners, 1)
-		lower(t, cappedRanges, 1)
-		g := f.restart(t)
+		f.Stop()
+		g := unstarted(t, f.fs, f.clock)
+		for _, k := range []capped{cappedOpens, cappedOwners, cappedRanges} {
+			g.lower(k, 1)
+		}
+		g.start(t, testShards)
 		for _, k := range []capped{cappedOpens, cappedOwners, cappedRanges} {
 			if n := g.held[heldKey{a.Client, k}]; n != 2 {
 				t.Errorf("installed %d of kind %d, want both", n, k)
@@ -96,8 +98,8 @@ func TestPerClientCaps(t *testing.T) {
 		}
 	})
 	t.Run("waiters", func(t *testing.T) {
-		lower(t, cappedWaiters, 1)
 		f := newFixture(t)
+		f.lower(cappedWaiters, 1)
 		a, h := f.caller(t, nfs("a", 1, entity.NewUser())), f.caller(t, nfs("h", 1, entity.NewUser()))
 		one, two := in(1), in(1)
 		for _, file := range []FileKey{one, two} {
@@ -133,7 +135,7 @@ func TestCappedRequestChangesNothing(t *testing.T) {
 	leased := anyFile()
 	f.grantOpen(t, a, leased, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 
-	lower(t, cappedOpens, 1)
+	f.lower(cappedOpens, 1)
 	if _, err := f.open(b, leased, OpenRequest{Access: rd | wr}); delayedFor(err) != DelayResources {
 		t.Fatalf("an open past the cap: %v", err)
 	}
@@ -142,12 +144,12 @@ func TestCappedRequestChangesNothing(t *testing.T) {
 	}
 
 	for k, what := range map[capped]string{cappedRanges: "ranges", cappedOwners: "owners", cappedWaiters: "waiters"} {
-		lower(t, k, 0)
+		f.lower(k, 0)
 		lock := LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}
 		if _, err := f.lock(b, leased, lock); delayedFor(err) != DelayResources {
 			t.Errorf("a lock past the %s cap: %v, want ErrDelay (DelayResources)", what, err)
 		}
-		lower(t, k, 10)
+		f.lower(k, 10)
 	}
 	if n := len(f.sink.takeRecalls()); n != 0 {
 		t.Errorf("a lock its cap refuses sent %d recalls", n)

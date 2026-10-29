@@ -41,6 +41,7 @@ type Table struct {
 	ended     map[sessionKey]time.Duration    // the sessions each client ended here, from the Elapsed reading of their end, for a lease period
 	held      map[heldKey]int                 // what each client holds here of each capped kind
 	owners    map[ownerKey]int                // the lock states of each lock owner, which holds one per open or file it locks under
+	caps      [len(perClient)]int             // the most of each capped kind one client holds here
 
 	// smu guards the owner sequences. It is taken under a file's step or
 	// under nothing, and nothing is taken under it.
@@ -94,9 +95,11 @@ const (
 // decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024
 // waiters and 1,024 watches per client, none measured. A request past one
 // is refused ErrDelay before it changes anything, so one client cannot spend
-// what the node holds for every client. Each is a variable only so a case
-// can reach it without building it whole. Make them settings if a measured
-// client is refused below them.
+// what the node holds for every client. SMB names one lock owner per open,
+// so an SMB client locking through every open it holds is refused at 4,096
+// such opens, by the owner cap, before the open cap's 16,384 binds. Each
+// table starts from these in its caps field, which a case lowers. Make them
+// settings if a measured client is refused below them.
 var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024, cappedWatches: 1024}
 
 type heldKey struct {
@@ -135,7 +138,7 @@ func (t *Table) full(c entity.ClientID, k capped, n int) bool {
 
 // overLocked is full, its caller holding idx.
 func (t *Table) overLocked(c entity.ClientID, k capped, n int) bool {
-	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > perClient[k]
+	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > t.caps[k]
 }
 
 // charge is chargeLocked, taking idx.
@@ -189,7 +192,7 @@ func New(d Deps) (*Table, error) {
 		adopted: map[entity.ClientID]struct{}{}, held: map[heldKey]int{}, owners: map[ownerKey]int{},
 		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
-		shards: map[ShardID]*served{},
+		shards: map[ShardID]*served{}, caps: perClient,
 	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}

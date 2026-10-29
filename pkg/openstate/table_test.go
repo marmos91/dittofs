@@ -273,15 +273,22 @@ func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []ShardID) *fixture {
 	t.Helper()
 	f := unstarted(t, fs, clock)
+	f.start(t, shards)
+	return f
+}
+
+// start starts f's table and begins shards, each under a grace instance
+// never used before.
+func (f *fixture) start(t *testing.T, shards []ShardID) {
+	t.Helper()
 	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range shards {
-		if err := f.Recovery().ServeShard(ctx, fs.Share.ID, s, instances.Add(1)); err != nil {
+		if err := f.Recovery().ServeShard(ctx, f.fs.Share.ID, s, instances.Add(1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return f
 }
 
 // testShards are the shards the tests hold state in, each begun at every
