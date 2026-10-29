@@ -460,6 +460,7 @@ unhold or stamp record the cut number it is for ([RFC 1 §3.11](rfc-1-journal.md
 - the record's kind: write, fill, release, truncate, deallocate, delete, clone
   target ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), offloaded, unmark ([§3.2](#3.2%20Offload%20state%20after%20recovery)), loss ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), hold, unhold, stamp
   ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)) or forget ([RFC 1 §3](rfc-1-journal.md#3.%20Interface))
+- the segment it was written into, and its own offset in that segment
 - the `FileID` it belongs to, and the tag of its share ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); a forget record names
   only the tag, with a zero `FileID`
 - the file offset it begins at, and its length, both 64-bit: a removal can cover
@@ -518,6 +519,7 @@ over a removal resurrects what it removed.
 | --- | --- | --- |
 | kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`) |
 | segment id | 42 | which segment the record was written into; a record found anywhere else is not this segment's |
+| record offset | 183 500 864 | where in its segment the record starts; a record read at any other offset is not this one, so a write the device put at the wrong place in the segment is caught |
 | `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
 | share tag | 7 (the `profiles` share's tag) | which share's limits the bytes count against ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) |
 | file offset | 1 073 741 824 | where in the file the bytes start |
@@ -552,7 +554,7 @@ padding; 96 bytes.
 | 72 | 4 | share tag |
 | 76 | 8 | synced-through offset |
 | 84 | 4 | payload checksum |
-| 88 | 4 | reserved, zero |
+| 88 | 4 | the record's own offset in its segment; 32 bits, as the catalog's `recordOffset` ([§2.5](#2.5%20Catalog%20layout)) |
 | 92 | 4 | header checksum, over bytes `[0, 92)` |
 
 **Record kinds.** Values are stable: a value is never reassigned, nor reused once
@@ -595,7 +597,8 @@ padding to the next multiple of 8, which no checksum covers and a reader ignores
 Both checksums are CRC32C **seeded with the journal identity**: each is the CRC32C
 of the 16-byte journal identity of [§2.1](#2.1%20Layout) followed by the bytes it covers. A
 header verifies only if its magic matches, its checksum verifies under this
-journal's identity, and its segment id is the segment it was read from. So bytes
+journal's identity, and its segment id and own offset are the segment and offset
+it was read at. So bytes
 that merely look like a record — a client file that contains a copy of a journal
 segment, held in some record's payload, or a segment of another journal — never
 verify as one of this journal's records, which is what lets a scan resume past
@@ -1071,8 +1074,7 @@ record says nothing about its neighbours.
 Where boundaries are not known independently — a scanned segment, where the next
 record is found by trusting the current one's length — a scan that meets a record
 that does not verify **MUST** refuse that record and **resynchronise**: search
-forward, at each 8-byte boundary ([§2.3](#2.3%20Records)), for the next header that verifies —
-magic, segment id and a checksum seeded with this journal's identity — and
+forward, at each 8-byte boundary, for the next header that verifies ([§2.3](#2.3%20Records)), and
 resume there. A record found so is attached on its own checksums like any other.
 Bytes from the damaged record to the next verifying header are refused; the
 records after it are not. Discarding the rest of the segment instead would turn
@@ -1235,7 +1237,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.4](#3.4%20Unattachable%20files) interrupted `Init` | Crash after `Init` writes `format` and before the caller records its identity; reopen with `expect` zero. Assert the open fails naming the identity and this installation's ID, and that no segment is present; record the identity and open with it; assert the journal opens empty and serves. Repeat with a segment in the directory; assert it stays refused. |
 | [§2.5](#2.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
-| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. Copy a verifying record to another offset of its own segment over the record there; reopen without a catalog; assert the copy is not attached there and the segment is reported as damaged. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) torn tail cut off | Tear the last record of the newest segment; reopen; write and `Sync` A; crash again and reopen. Assert A reads back, `torn_tails` counted one, and the torn segment is sealed. A design that appends after the torn bytes loses A to the second scan. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and the damage is reported against the failed segment. |
 | [§2.3](#2.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
