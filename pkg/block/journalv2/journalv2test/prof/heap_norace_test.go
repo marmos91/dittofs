@@ -5,6 +5,7 @@ package prof
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -70,5 +71,22 @@ func TestWatchHeapSlackAllowsGrowthWithinIt(t *testing.T) {
 
 	if rec.Failed() {
 		t.Fatalf("64 MiB retained under a 128 MiB slack failed the watch:\n%s", rec.failure())
+	}
+}
+
+// TestLiveHeapSeesARetainedAllocation: LiveHeap counts what a live buffer
+// holds, so a check measuring a structure's heap reads a real figure, not an
+// uncollected or a wrong one. It catches the wrong statistic, or a missing
+// collection: either leaves most of the 32 MiB outside the difference. The
+// bound leaves room for the collection's own movement around the buffer: a
+// pointer-holding live object dying between the two reads lowers the
+// difference a little below the buffer's size.
+func TestLiveHeapSeesARetainedAllocation(t *testing.T) {
+	before := LiveHeap()
+	buf := make([]byte, 32<<20)
+	after := LiveHeap()
+	runtime.KeepAlive(buf)
+	if after < before || after-before < 30<<20 {
+		t.Fatalf("LiveHeap saw %d bytes of a 32 MiB buffer kept alive", after-before)
 	}
 }

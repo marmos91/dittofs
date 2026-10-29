@@ -15,9 +15,10 @@ import "sync/atomic"
 // 8-byte key beside a 40-byte value, so a leaf of 31 is 1,504 bytes, just
 // inside the allocator's 1,536-byte size class; a 32nd slot would round it up
 // to 1,792. Ascending keys cost about 53 bytes an entry, within the index's
-// budget of 56, and random ones about 65, outside it. Upgrade when a workload
-// that writes out of order holds enough extents for that to matter: splitting
-// into a sibling with room, as a B*-tree does, raises the fill of every order.
+// budget of 56, and random ones about 65, outside 56 but inside the 72 the RFC
+// holds random order to. Upgrade when a workload that writes out of order
+// holds enough extents for that to matter: splitting into a sibling with
+// room, as a B*-tree does, raises the fill of every order.
 const (
 	maxItems = 31
 	minItems = (maxItems - 1) / 2
