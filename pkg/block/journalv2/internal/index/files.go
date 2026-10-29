@@ -49,6 +49,23 @@ const floorBuckets = 4096
 // needs it.
 type files struct {
 	shards [fileShards]fileShard
+	// count is the journal's placement index entries: held pieces, retained
+	// extents and removal markers of every file, plus the entries admitted to
+	// content writes not yet applied. In-flight admissions count, so a gauge
+	// read mid-write includes them; abandon takes one back.
+	//
+	// limit is the configured bound on count, set before the index is first
+	// used from the journal's settings.
+	//
+	// decision: refusals counts every refusal naming LimitIndex, splitting
+	// removals included, so index_refusals has one meaning: every NoSpaceError
+	// that names the index. It counts refusals at admission only: a write the
+	// caller never admits is not counted, so it is the engine's count of
+	// refusals it was asked to make. Revisit if a refusal is found made
+	// outside admission.
+	count    atomic.Int64
+	limit    atomic.Int64
+	refusals atomic.Uint64
 	// buckets are the floor buckets, the change-version floor a file with no
 	// entry of its own is checked against, one per 1/4096 of the FileIDs.
 	// They grow only, by openBuckets and by the drops below, both of which
@@ -152,6 +169,12 @@ type file struct {
 	markers []marker
 }
 
+// entries returns the number of entries of the file the count is of: held
+// pieces, retained extents and removal markers.
+func (f *file) entries() int64 {
+	return int64(f.held.len()) + int64(f.retained.len()) + int64(len(f.markers))
+}
+
 // hashID mixes a FileID into the hash the shard and the floor bucket are
 // both taken from. Every byte of the FileID reaches the hash's top bits, so
 // identifiers that differ only in a few bytes, such as time-ordered ones,
@@ -182,6 +205,27 @@ func (fs *files) len() int {
 	}
 	return n
 }
+
+// setExtentLimit sets the bound to n. A limit of 0 refuses every content
+// write that adds an entry, so the journal never reaches an index no bound
+// checks. A negative n refuses every content write as well, by the checks
+// that compare against it: the journal's settings must reject one before
+// the index is built, since no caller of the index can tell it an unset
+// bound from a refusing one. Defaults are the settings' job, before the
+// index exists.
+//
+// decision: the bound has no getter yet. Reading it back is the journal
+// stats' job, which reports it as ExtentLimit alongside the count and the
+// refusals; add the getter with the reader that needs it.
+func (fs *files) setExtentLimit(n int64) { fs.limit.Store(n) }
+
+// extentCount returns the number of entries of the journal's placement index
+// the count is of: held pieces, retained extents and removal markers of
+// every file, plus the entries admitted to content writes not yet applied.
+func (fs *files) extentCount() int64 { return fs.count.Load() }
+
+// indexRefusals returns the number of calls refused by the index's bound.
+func (fs *files) indexRefusals() uint64 { return fs.refusals.Load() }
 
 // openBuckets starts every bucket at start, the higher of the highest content
 // version on disk and the floor, and records it as the version every entry
@@ -275,6 +319,18 @@ func (f *file) read(fn func(*file)) {
 // nothing loses its change version, and one that also has no record on disk
 // leaves the map. So an update that leaves nothing behind leaves no entry.
 func (fs *files) update(id core.FileID, fn func(*file) error) error {
+	return fs.commit(id, 0, fn)
+}
+
+// commit is update for an admitted op: admitted is the amount its admission
+// reserved in the count, which the commit's entry delta instead of adding
+// on top of. Everything else is as update.
+//
+// commit consumes the admission whether or not fn returns an error: the
+// admitted amount is already taken out of the delta. A caller whose I/O fails
+// before commit abandons the admission; one that commits must not abandon it
+// as well, or the count stands too low.
+func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) error {
 	s := fs.shard(id)
 	for {
 		s.mu.Lock()
@@ -292,24 +348,35 @@ func (fs *files) update(id core.FileID, fn func(*file) error) error {
 			f.mu.Unlock()
 			continue
 		}
-		return f.apply(fs, s, id, fn)
+		before := f.entries()
+		return f.apply(fs, s, id, before, admitted, fn)
 	}
 }
 
-// apply runs fn and settles the entry's lifetimes, then releases the file's
-// lock, which the caller took; all happen even if fn panics. The drop-range
-// gauge is moved by what fn's ranges ended at, beside settle, so a command
-// that panics still counts what it noted or dropped. The unlock is deferred
-// first, so it runs last: even a panic in settle cannot leave the file
-// locked.
-func (f *file) apply(fs *files, s *fileShard, id core.FileID, fn func(*file) error) error {
-	before := f.nranges
+// apply runs fn, adds the entry change it made to the count and the change
+// it made to the drop ranges to their gauge, and settles the entry's
+// lifetimes, then releases the file's lock, which the caller took; all of it
+// happens even if fn panics. The unlock is deferred first, so it runs last:
+// even a panic in settle cannot leave the file locked.
+//
+// decision: the counts are kept by the delta, not by a walk of the entry after
+// fn. A rebuild or an open builds a populated index through one update a
+// record, each about a walk of everything so far; the delta is O(1).
+func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) error {
+	rangesBefore := f.nranges
 	defer f.mu.Unlock()
-	defer func() {
-		f.settle(fs, s, id)
-		fs.dropRanges.Add(int64(f.nranges - before))
-	}()
+	defer func() { fs.dropRanges.Add(int64(f.nranges - rangesBefore)) }()
+	defer f.counted(fs, before, admitted)
+	defer f.settle(fs, s, id)
 	return fn(f)
+}
+
+// counted adds to the count the change fn's entries made: the difference of
+// the entry's counts, taken after settle, which may drop the change-version
+// entry whole, minus the amount its admission had already reserved. The
+// result is the true delta whatever the pre-check predicted.
+func (f *file) counted(fs *files, before, admitted int64) {
+	fs.count.Add(f.entries() - admitted - before)
 }
 
 // settle applies the two lifetimes. The shard lock is taken after the file's,
