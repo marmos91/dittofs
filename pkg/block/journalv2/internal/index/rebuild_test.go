@@ -778,6 +778,11 @@ func TestRebuildRefusals(t *testing.T) {
 			r := recd(RecWrite, fid(1), math.MaxUint64, 5, 1, 0, 0, 8)
 			return r
 		}(), core.ErrUnknownFormat},
+		// A record longer than a segment cannot sit in one: its payload
+		// would run past the segment's end, and the piece's 32-bit record
+		// offset and length could not name it.
+		{"a write longer than a segment", recd(RecWrite, fid(1), 5, 5, 1, 0, 0, core.SegmentCap+8), core.ErrUnknownFormat},
+		{"a fill longer than a segment", recd(RecFill, fid(1), 5, 5, 1, 0, 0, core.SegmentCap+8), core.ErrUnknownFormat},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -186,6 +186,12 @@ func (b *rebuilder) Feed(r Record) error {
 	if r.Kind != RecCloneTarget && r.Clone != nil {
 		return fmt.Errorf("%w: a clone spec on a kind %d record", core.ErrUnknownFormat, r.Kind)
 	}
+	// A write or fill longer than a segment cannot sit in one: its payload
+	// would run past the segment's end, and the piece's placement could
+	// not name it.
+	if (r.Kind == RecWrite || r.Kind == RecFill) && r.Len > core.SegmentCap {
+		return fmt.Errorf("%w: a kind %d record longer than a segment", core.ErrUnknownFormat, r.Kind)
+	}
 	if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 		return fmt.Errorf("%w: record extent [%d, +%d)", core.ErrUnknownFormat, r.Off, r.Len)
 	}
