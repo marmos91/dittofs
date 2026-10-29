@@ -128,12 +128,13 @@ const (
 	StateStaleClient                          // a client that expired, or must propose and confirm again after a shard's loss
 	StateStaleState                           // state that may have been lost with its shard's open state
 	StateOldState                             // a stateid seqid older than the state's
-	StateBadState                             // a reference whose record is missing: released, freed, a removed share's, never issued
+	StateBadState                             // a reference whose record is missing: expired, freed, a removed or moved share's, never issued
 	StateNoReclaim                            // a reclaim in a shard the client's record does not list
 	StateReclaimConflict                      // a reclaim conflicting with one already reclaimed in this grace
 	StateLocksHeld                            // an owner released, or a lock state freed, still holding locks
 	StateBadSeqID                             // an owner sequence out of order
 	StateNoRecall                             // an acknowledgement of a grant with no recall in flight
+	StateCreateInUse                          // an SMB create naming a create ID another open of its client holds
 	StateNotYours                             // state another client or principal holds
 	StateRevoked                              // state in its client's revoked set, not yet freed
 
@@ -145,7 +146,7 @@ var stateKinds = [...]string{
 	StateAdapterVersion: "adapter version", StateStaleClient: "stale client", StateStaleState: "stale state",
 	StateOldState: "old state", StateBadState: "bad state", StateNoReclaim: "no reclaim",
 	StateReclaimConflict: "reclaim conflict", StateLocksHeld: "locks held", StateBadSeqID: "bad seqid",
-	StateNoRecall: "no recall", StateNotYours: "not yours", StateRevoked: "revoked",
+	StateNoRecall: "no recall", StateCreateInUse: "create in use", StateNotYours: "not yours", StateRevoked: "revoked",
 }
 
 func (e *StateError) Error() string {
