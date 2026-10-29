@@ -54,6 +54,15 @@ func (b Book) Unconfirmed(o Owner) bool {
 	return ok && !s.Confirmed
 }
 
+// Confirm marks o, an owner of opens, confirmed. An owner with no slot stays
+// new.
+func (b Book) Confirm(o Owner) {
+	if s, ok := b[o]; ok {
+		s.Confirmed = true
+		b[o] = s
+	}
+}
+
 // Answer records how o's request numbered n, which Check admitted, was
 // answered. Only a granted request gives a new owner its slot, one past n, and
 // a new owner of opens starts unconfirmed.

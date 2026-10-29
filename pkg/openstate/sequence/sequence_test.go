@@ -3,8 +3,9 @@ package sequence
 import "testing"
 
 // A new owner accepts any number, and only a granted request gives it a slot:
-// one refused leaves it new. A new owner of opens starts unconfirmed; a new
-// owner of locks has nothing to confirm.
+// one refused leaves it new. A new owner of opens starts unconfirmed until
+// its confirm, which leaves an owner with no slot new; a new owner of locks
+// has nothing to confirm.
 func TestNewOwner(t *testing.T) {
 	b := Book{}
 	opens, locks := Owner{Client: 1, Kind: Opens, Name: "o"}, Owner{Client: 1, Kind: Locks, Name: "l"}
@@ -15,6 +16,14 @@ func TestNewOwner(t *testing.T) {
 	b.Answer(opens, 3, Granted)
 	if b.Check(opens, 3) || !b.Check(opens, 4) || !b.Unconfirmed(opens) {
 		t.Error("a new owner of opens: want 4 next, unconfirmed")
+	}
+	b.Confirm(opens)
+	if !b.Check(opens, 4) || b.Unconfirmed(opens) {
+		t.Error("a confirmed owner of opens: want 4 next, confirmed")
+	}
+	b.Confirm(Owner{Client: 1, Kind: Opens, Name: "new"})
+	if _, ok := b[Owner{Client: 1, Kind: Opens, Name: "new"}]; ok {
+		t.Error("a confirm of a new owner gave it a slot")
 	}
 	b.Answer(locks, 9, Granted)
 	if !b.Check(locks, 10) || b.Unconfirmed(locks) {

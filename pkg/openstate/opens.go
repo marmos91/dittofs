@@ -545,8 +545,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(repla
 func (t *Table) confirmed(o *open) bool {
 	t.smu.Lock()
 	defer t.smu.Unlock()
-	s, ok := t.seqs[opensOwner(o.Owner)]
-	return !ok || s.Confirmed
+	return !t.seqs.Unconfirmed(opensOwner(o.Owner))
 }
 
 // mayUse reports whether who may act through o.
@@ -611,9 +610,9 @@ func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, q Seqs)
 	err := t.withOpen(who, ref, q.Owner, seqConfirm, func(e *entry, o *open) error {
 		k := opensOwner(o.Owner)
 		t.smu.Lock()
-		s, ok := t.seqs[k]
+		unconfirmed := t.seqs.Unconfirmed(k)
 		t.smu.Unlock()
-		if !ok || s.Confirmed {
+		if !unconfirmed {
 			return ErrBadState // an owner with nothing to confirm
 		}
 		n, err := t.advance(e, o.Ref)
@@ -622,9 +621,7 @@ func (v opens) ConfirmOpen(ctx context.Context, who Caller, ref OpenRef, q Seqs)
 		}
 		o.Ref.Seq, seq = n, n
 		t.smu.Lock()
-		s = t.seqs[k]
-		s.Confirmed = true
-		t.seqs[k] = s
+		t.seqs.Confirm(k)
 		t.smu.Unlock()
 		return nil
 	})
