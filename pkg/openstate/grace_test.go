@@ -1224,3 +1224,59 @@ func TestDropShareWaitsForAServe(t *testing.T) {
 		t.Errorf("an open in the shard once DropShare returned: %v, want ErrBadState", err)
 	}
 }
+
+// A restart's serve of a shard leases each NFSv4 client the shard's records
+// name: one silent for a lease period is expired, its record and its marks
+// gone and ClientEnded raised once, and one renewing within it is kept.
+func TestRestartLeasesListedClients(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfsAs("a", entity.RecoverStatus)), f.caller(t, nfsAs("b", entity.RecoverStatus))
+	f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, b, in(5), LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.pass(t, leasePeriod+sweepEvery, b.Client)
+	g.sweep(ctx)
+	g.sweep(ctx)
+	if _, err := f.fs.Store.Clients().Get(ctx, a.Client); err == nil {
+		t.Error("a client silent since the restart kept its record")
+	}
+	if got := g.sink.endedOf(a.Client); len(got) != 1 {
+		t.Errorf("ClientEnded for the silent client %v, want once", got)
+	}
+	if _, err := f.fs.Store.Clients().Get(ctx, b.Client); err != nil || len(g.sink.endedOf(b.Client)) != 0 {
+		t.Errorf("the renewing client: record %v, ended %v; want it kept", err, g.sink.endedOf(b.Client))
+	}
+}
+
+// The serve of a shard leases no NLM host or SMB client it lists, and leaves
+// a lease already held where it ends.
+func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
+	f := newFixture(t)
+	h, s := f.host(t, "h", 1), f.caller(t, smb("pc"))
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	f.mustOpen(t, s, in(5), OpenRequest{Access: rd})
+	f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.Stop()
+
+	g := unstarted(t, f.fs, f.clock)
+	g.start(t, nil)
+	g.renew(t, a)
+	g.clock.advance(leasePeriod / 2)
+	if err := g.Recovery().ServeShard(ctx, f.fs.Share.ID, 5, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	g.clock.advance(leasePeriod / 2)
+	g.sweep(ctx)
+	if got := g.sink.endedOf(a.Client); len(got) != 1 {
+		t.Errorf("a client leased before the serve, silent a period since: ended %v, want once", got)
+	}
+	g.pass(t, 3*leasePeriod)
+	g.sweep(ctx)
+	for _, c := range []Caller{h, s} {
+		if _, err := f.fs.Store.Clients().Get(ctx, c.Client); err != nil || len(g.sink.endedOf(c.Client)) != 0 {
+			t.Errorf("the NLM host or SMB client %d: record %v, ended %v; want it kept", c.Client, err, g.sink.endedOf(c.Client))
+		}
+	}
+}
