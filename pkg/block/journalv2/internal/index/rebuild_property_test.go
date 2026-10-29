@@ -639,3 +639,47 @@ func checkRebuildAccounting(t *testing.T, step int, fs *files, recs []Record) {
 
 // absLen is a fed record's length, the to-end removals excepted.
 func absLen(r Record) int64 { return max(r.Len, 1) }
+
+// TestRebuildDropRangesOrderFree: the ranges a rebuild keeps are a function
+// of the record set alone. Twenty disjoint records in one segment make the
+// ninth-range merge run — the path where the order records are noted in
+// decides which two ranges collapse — so fifty shuffles of the same records
+// must give identical ranges: a note pass in feed order picks a different
+// pair to merge and the ranges differ.
+func TestRebuildDropRangesOrderFree(t *testing.T) {
+	id := fid(1)
+	var recs []Record
+	off := int64(0)
+	for i := range 20 {
+		recs = append(recs, recd(RecWrite, id, uint64(i+1), uint64(i+1), 1, uint32(i)*64, off, 4096))
+		off += 4096 + int64(1+(i*7)%5)*4096
+	}
+	ranges := func(order []Record) []dropRange {
+		var out []dropRange
+		rebuild(t, order, ver(0)).view(id, func(f *file) {
+			var s *segRecords
+			for i := range f.segs {
+				if f.segs[i].seg == 1 {
+					s = &f.segs[i]
+				}
+			}
+			if s == nil {
+				t.Fatal("segment 1 never noted")
+			}
+			out = slices.Clone(s.ranges)
+		})
+		return out
+	}
+	want := ranges(recs)
+	if len(want) != maxDropRanges {
+		t.Fatalf("the scene keeps %d ranges, want the cap %d so the merge runs", len(want), maxDropRanges)
+	}
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := range 50 {
+		o := slices.Clone(recs)
+		rng.Shuffle(len(o), func(a, b int) { o[a], o[b] = o[b], o[a] })
+		if got := ranges(o); !slices.Equal(got, want) {
+			t.Fatalf("shuffle %d: ranges %v, want %v", i, got, want)
+		}
+	}
+}
