@@ -887,3 +887,26 @@ func TestShardNotBegunDelaysIOAndChanges(t *testing.T) {
 		}
 	}
 }
+
+// A reclaim of locks answered from what the owner holds, through the open
+// that introduces the lock owner, answers the new lock owner's number as a
+// lock granted through it does.
+func TestHeldLockReclaimThroughItsOpenAnswersTheLockOwner(t *testing.T) {
+	f := newFixture(t)
+	c := f.caller(t, nfsAs("c", entity.RecoverRefusal))
+	file := in(5)
+	oo, lo := owner(c, "oo"), owner(c, "lo")
+	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Seqs: num(1)})
+	if _, err := f.Opens().ConfirmOpen(ctx, c, refOf(o), num(2)); err != nil {
+		t.Fatal(err)
+	}
+	res := f.mustLock(t, c, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Seqs: Seqs{Owner: ptr(uint32(3)), NewOwner: 1}})
+	if _, err := f.lock(c, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Reclaim: true, Seqs: Seqs{Owner: ptr(uint32(4)), NewOwner: 2}}); err != nil {
+		t.Fatalf("a reclaim of a held lock through its open: %v", err)
+	}
+	ref := res.Ref
+	ref.Seq = 0
+	if _, err := f.lock(c, file, LockReq{Owner: lo, Open: OpenRef{Kind: RefLocked, State: ref}, Ranges: []LockRange{x(20, 10)}, Seqs: num(3)}); err != nil {
+		t.Errorf("the lock owner's next lock after the reclaim: %v, want granted", err)
+	}
+}

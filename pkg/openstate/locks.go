@@ -572,9 +572,11 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			case err != nil:
 				return err
 			case r.Reclaim && !grace:
-				return reclaimHeld(e, r, op, &res)
+				err = reclaimHeld(e, r, op, &res)
+			default:
+				res, err = t.lock(ctx, e, f.Shard, r, op, &out)
 			}
-			if res, err = t.lock(ctx, e, f.Shard, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
+			if err == nil && introduces && r.Seqs.Owner != nil {
 				t.smu.Lock()
 				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
 				t.smu.Unlock()
