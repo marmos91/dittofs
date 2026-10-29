@@ -423,7 +423,7 @@
           zsh
 
           # Go development (matches go.mod)
-          go_1_26
+          go_1_27
           gopls
           golangci-lint
           delve
@@ -558,7 +558,7 @@
         # from source rather than substituted, so entering it to run `go build`
         # compiles an NFS conformance suite first. This does not.
         devShells.build = pkgs.mkShell {
-          buildInputs = [ pkgs.go_1_26 ];
+          buildInputs = [ pkgs.go_1_27 ];
           shellHook = goEnv;
         };
 
@@ -593,7 +593,7 @@
           # GOTOOLCHAIN=local, so a lagging toolchain fails the fetch phase
           # outright instead of downloading the newer one.
           let
-            buildGo = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
+            buildGo = pkgs.buildGoModule.override { go = pkgs.go_1_27; };
           in
           {
             # Build both dfs and dfsctl
