@@ -9,6 +9,9 @@ import "testing"
 // size.
 func TestCatalogEntryLayout(t *testing.T) {
 	b := testCatalogEntry.Bytes()
+	if len(b) != 72 {
+		t.Fatalf("a catalog entry is %d bytes, want 72", len(b))
+	}
 
 	if got := [16]byte(b[0:16]); got != testCatalogEntry.FileID {
 		t.Errorf("FileID at [0,16) is % x, want % x", got, testCatalogEntry.FileID)

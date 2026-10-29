@@ -12,6 +12,9 @@ import (
 // size.
 func TestRecordHeaderLayout(t *testing.T) {
 	b := testRecord.Bytes()
+	if len(b) != 96 {
+		t.Fatalf("a record with no body is %d bytes, want its 96-byte header", len(b))
+	}
 
 	if got := string(b[0:4]); got != "DJR1" {
 		t.Errorf("magic at [0,4) is %q, want %q", got, "DJR1")
