@@ -971,9 +971,12 @@ everything after the last record that verifies, and a bad record before it is a
 treated as never written and **MUST NOT** be reported as damage. Unsynced writes
 may survive out of order, so a record that verifies after a torn slot is whole and
 may have been answered: it is attached, never cut off with the slot, and a later sync
-may already have made it durable. A seal marker that does not verify, in a segment
-no successor names, is part of that segment's torn tail: a seal a crash cut short
-reads the same, and every record before it still verifies.
+may already have made it durable. A seal marker that does not verify is part of the
+torn tail unless it is proven durable: a successor names its segment, or a trailer
+and footer that verify name the footer just past it, since the trailer is written
+only once the marker is durable ([§2.5](#2.5%20Catalog%20layout)). A proven one is damage, and its segment is
+reported as damaged, scanned and not sealed again; an unproven one cannot be told
+from a seal a crash cut short, and every record before it still verifies.
 
 **A torn tail is cut off and its segment sealed before anything is appended.**
 Recovery **MUST** truncate the segment at the start of the torn tail — never below
@@ -1256,8 +1259,8 @@ each region has its own required outcome:
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header proven synced: the segment is reported as damaged and its records are still
   attached ([§3.1](#3.1%20Rebuilding));
-- a seal marker: the segment is reported as damaged if a successor names it, and
-  otherwise the marker is a torn tail ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+- a seal marker: the segment is reported as damaged if a successor names it or its
+  trailer and footer verify, and otherwise the marker is a torn tail ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - the `format` file: its checksum fails, and so does the open.
 
 No flip may produce a read that returns bytes other than the ones written.
