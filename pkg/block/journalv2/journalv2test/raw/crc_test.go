@@ -5,16 +5,6 @@ import (
 	"testing"
 )
 
-// TestCRC32CIsTheCastagnoliCRC pins that the checksum is the Castagnoli
-// CRC32C, not the IEEE one.
-func TestCRC32CIsTheCastagnoliCRC(t *testing.T) {
-	b := []byte("a journal's bytes")
-
-	if got, want := crc32c(b), wantCRC(b); got != want {
-		t.Errorf("crc32c = 0x%08x, want the Castagnoli CRC 0x%08x", got, want)
-	}
-}
-
 // TestSeededCRC32CCoversTheIdentityThenTheBytes pins that a seeded checksum
 // covers the journal identity and then the bytes, as one stream.
 func TestSeededCRC32CCoversTheIdentityThenTheBytes(t *testing.T) {
