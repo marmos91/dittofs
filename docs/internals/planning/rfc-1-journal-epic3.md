@@ -8,8 +8,8 @@ epic 3; the [epic 1](rfc-1-journal-epic1.md) and [epic 2](rfc-1-journal-epic2.md
 it runs ahead (plan §3.4).
 **Estimate:** 12 subtasks, against the plan's `rfc-1-journal-plan.md` §5, epic 3: "≈12
 subtasks". The Windows cache-policy refusal and the XFS and ext4 barrier rows, missing from
-the plan's list, are added (P21); the `format` replace, the direct reads, the
-storage-agnostic leg and the device fixtures leave this epic (P21).
+the plan's list, are added; the `format` replace, the direct reads, the storage-agnostic
+leg and the device fixtures leave this epic (P21).
 **Depends on:** sync point **S2, red suite in CI**; epic 1's storage seam (`storage.FS`,
 `storage.File`) and `internal/core` types; epic 2's `journalv2test/raw` (2.13a, #3381).
 **Blocks:** epic 5 (segments are made of this epic's records) and epic 7 (recovery parses
@@ -552,7 +552,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     that does not fit, layout version 2 and non-zero flags each yield no footer, one case
     each; so do a seal marker at `footerOffset − 32` that verifies for the previous segment
     id (a recycled segment's old trailer), a last entry whose record ends, padded to 8,
-    before `footerOffset − 32` (P23), and an entry with a non-zero epoch (P11).
+    before `footerOffset − 32` (P23), and an entry with a non-zero epoch (P11); a footer
+    whose last entry is a `release` with a non-zero length is read, not refused.
 - **Rules:** none beyond §2.1.
 
 ### 3.6 Slot scanner with resynchronisation
@@ -581,8 +582,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Done when:**
   - a corrupted length field refuses that record as damage, attaches every record after it
     and counts one scan that resynchronised; two resyncs in one scan count one, and a
-    stepped-over zero slot counts none (P8); a zero slot followed by a verifying record is stepped over,
-    reported as neither damage nor a torn tail, and the later record is attached;
+    stepped-over zero slot counts none; a zero slot followed by a verifying record is
+    stepped over, reported as neither damage nor a torn tail, and the later record is
+    attached;
   - a seal marker copied into a payload does not stop the scan, and no record inside a
     payload holding a segment of this journal is attached; in a recycled segment no record
     or seal marker of the old life (it names another segment id) is attached or ends the
@@ -601,9 +603,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Deliverables:** `internal/platform` with `doc.go` (the `E1-D6` `decision:`), `OS`
   implementing `storage.FS` and `storage.File` (create, open, rename, remove, list, close,
   size, truncate, `WriteAt`, `ReadAt`), a contract test of `storage.FS` run on both
-  `platform.OS` and the seam, one case per sentence of `storage.go`'s contract, `Sync` as `fdatasync`, `SyncDir` as `fsync` on the
-  directory, the syscall table (D6). `ReadAtDirect`, which the seam declares, reads through
-  the page cache for now:
+  `platform.OS` and the seam, one case per sentence of `storage.go`'s contract, `Sync` as
+  `fdatasync`, `SyncDir` as `fsync` on the directory, the syscall table (D6).
+  `ReadAtDirect`, which the seam declares, reads through the page cache for now:
 
   ```go
   // ponytail: reads through the page cache; O_DIRECT, F_NOCACHE and
@@ -624,7 +626,7 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - the contract test of `storage.FS` passes on `platform.OS` in a real directory and on
     the seam;
   - the table records `fdatasync` per `Sync` and `fsync` on the directory per `SyncDir`, and
-    `TestSyscallTableIsReal` pins each production entry to the call the RFC names (D6);
+    `TestSyscallTableIsReal` pins each production entry to its `x/sys` function (D6);
   - an injected sync error is returned once and the next `Sync` issues a new call, never a
     hidden retry.
 - **Rules:** 2: does not apply, no parser. 5: `-race` with concurrent `WriteAt` on one file.
@@ -659,10 +661,10 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     directory's included";
   - RFC 28 Appendix A: "`fcntl(F_PREALLOCATE)` then setting the size on macOS".
 - **Done when:**
-  - where a Mac runs `go test` (P22), the table records `F_FULLFSYNC` for every `Sync` and
-    `SyncDir`, and the darwin case of `TestSyscallTableIsReal` fails if the production
-    full-sync entry is bound to a plain `fsync` (D6);
-  - the storage contract tests of 3.7 pass on APFS.
+  - where a Mac runs `go test` (P22), the recording table sees `fcntl(fd, F_FULLFSYNC, 0)`
+    for every `Sync` and `SyncDir`, and the darwin case of `TestSyscallTableIsReal` pins
+    `fcntl` to `unix.FcntlInt` (D6);
+  - the contract test of `storage.FS` (3.7) passes on APFS.
 - **Rules:** 2: does not apply, no parser. 8: real APFS only where a Mac runs the tests
   (P22); power-loss durability is not provable here (§8).
 
@@ -685,8 +687,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - on the Windows runner a file open for reading is renamed and removed;
   - the table records `FlushFileBuffers` on the file and on the directory handle opened
     with backup semantics, and the windows case of `TestSyscallTableIsReal` pins the
-    production entry to `FlushFileBuffers` (D6);
-  - the contract tests of 3.7 pass on NTFS.
+    production entry to `windows.FlushFileBuffers` (D6);
+  - the contract test of `storage.FS` (3.7) passes on NTFS.
 - **Rules:** 2: does not apply, no parser. 9: the `FILE_SHARE_DELETE` `decision:` as in
   `journalv2test/open_windows.go`.
 
@@ -889,12 +891,8 @@ Each open point says what is asked, who decides it, and what it blocks.
 - **P8. What does the scanner count?** `rfc-1-journal-plan.md` §5, epic 3: "the scanner
   returns the `torn_tails` and `scan_resyncs` contributions", but a torn tail is decided
   "In the newest segment of a stream" (RFC 28 §3.3), with synced-through proof only
-  recovery has. For `scan_resyncs` (RFC 1 §3.9: "scans that found a record by
-  resynchronising past a bad one"): does stepping over a zero slot count, and do two
-  resyncs in one scan count once or twice (RFC 28 §4.2, row "a scan resynchronises":
-  "`scan_resyncs` counts one")? **Decides:** RFC 1 owner. **Blocks:** nothing; 3.6 counts
-  whether the scan resynchronised (RFC 1 §3.9 counts scans), so two resyncs in one scan
-  count one, and a stepped-over zero slot counts none.
+  recovery has, so the scanner returns only `scan_resyncs` (counted per scan, RFC 1 §3.9)
+  and epic 7 owns `torn_tails`. **Decides:** plan owner. **Blocks:** nothing.
 - **P9. Are reserved bytes and zero fields refused on read?** RFC 28 §2.1: "Reserved bytes
   are written as zero and covered by their structure's checksum"; RFC 28 §2.3: "A field
   this table gives as 0 is written as zero."; only trailer flags have a reader rule (RFC 28
@@ -958,9 +956,10 @@ Each open point says what is asked, who decides it, and what it blocks.
 - **P23. Is a footer that ends before the segment's last record "no footer"?** RFC 28 §2.4:
   "**MUST** identify the extent of the segment it describes, so that a footer describing
   fewer records than the segment holds is detectable rather than silently truncating".
-  The trailer gives the extent: the last entry's record end, padded to 8, must equal
-  `footerOffset − 32`. RFC 28 §2.5's reading list does not name this check. **Decides:**
-  RFC 28 owner. **Blocks:** nothing; 3.5 treats anything else as "no footer".
+  The trailer gives the extent: the last entry's record end (its header, then its kind's
+  body from RFC 28 §2.3, padded to 8) must equal `footerOffset − 32`. RFC 28 §2.5's
+  reading list does not name this check. **Decides:** RFC 28 owner. **Blocks:** nothing;
+  3.5 treats anything else as "no footer".
 
 ### Checks that need hardware or a runner nobody provisions
 
