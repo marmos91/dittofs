@@ -26,8 +26,11 @@ func Init(ctx context.Context, dir string, install InstallationID, opts ...Optio
 // disk. It never creates one.
 //
 // expect is the identity the caller recorded for dir. With expect non-zero,
-// Open fails with ErrNoJournal when dir holds no journal, empty or missing,
-// and with an IdentityError when it holds another journal. With expect zero,
+// Open fails with ErrNoJournal when dir holds no journal, empty, missing, or
+// holding neither a format file nor a segment, and with an IdentityError
+// when it holds another journal. A directory holding a segment and no format
+// file is a journal Open cannot identify: it fails with ErrUnidentified and
+// is left as it is. With expect zero,
 // Open always fails: with an IdentityError naming the identity and
 // installation ID it found, and whether any segment is present, or with
 // ErrNoJournal. A format file of an unknown format version, or a record of an

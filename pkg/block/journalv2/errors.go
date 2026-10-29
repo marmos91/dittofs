@@ -9,7 +9,9 @@ var (
 	ErrClosed           = core.ErrClosed
 	ErrHandleOpen       = core.ErrHandleOpen
 	ErrJournalExists    = core.ErrJournalExists
+	ErrNotEmpty         = core.ErrNotEmpty
 	ErrNoJournal        = core.ErrNoJournal
+	ErrUnidentified     = core.ErrUnidentified
 	ErrIdentityMismatch = core.ErrIdentityMismatch
 	ErrUnknownFormat    = core.ErrUnknownFormat
 	ErrCorrupt          = core.ErrCorrupt
