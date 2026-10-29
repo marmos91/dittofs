@@ -3,6 +3,7 @@ package openstate
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -430,8 +431,9 @@ func (t *Table) dropWaiter(e *entry, i int) *LockWaiter {
 
 // serve considers e's waiters, under its step: a poll waiter past its
 // deadline is dropped, then each waiter in arrival order whose request
-// nothing refuses now is served, a callback waiter granted its lock and
-// reported to out, a poll waiter its range reserved for a lease period.
+// nothing refuses now, no lock and no caching grant another holder holds, is
+// served, a callback waiter granted its lock and reported to out, a poll
+// waiter its range reserved for a lease period.
 func (t *Table) serve(e *entry, out *outbox) {
 	if out.timer {
 		if !slices.Contains(out.serve, e.file) {
@@ -450,7 +452,7 @@ func (t *Table) serve(e *entry, out *outbox) {
 	for i := 0; i < len(e.waiters); {
 		w := e.waiters[i]
 		switch {
-		case w.Reserved || e.blocker(w.Owner, w.Range, i) != nil:
+		case w.Reserved || e.blocker(w.Owner, w.Range, i) != nil || e.cachedByOther(w):
 		case w.Wait == WaitPoll:
 			w.Reserved, w.Deadline = true, now+leasePeriod
 		default:
@@ -466,15 +468,17 @@ func (t *Table) serve(e *entry, out *outbox) {
 	}
 }
 
-// serveFiles serves the waiters of files, for the timer: a poll waiter past
-// its deadline is dropped and the waiters behind it are considered, and a
-// range the timer freed is granted. Each file's step takes the file's
-// admission lock first, since it may grant, and holds no other table lock.
+// serveFiles serves the waiters of files, for the timer: a recall past its
+// deadline is ended, a poll waiter past its deadline is dropped and the
+// waiters behind it are considered, and a range the timer freed is granted.
+// Each file's step takes the file's admission lock first, since it may grant
+// or revoke, and holds no other table lock.
 func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
 	for _, f := range files {
 		var out outbox
 		unlock := t.order(f)
 		_ = t.step(f, func(e *entry) error {
+			t.lapse(e, &out)
 			t.serve(e, &out)
 			if !slices.ContainsFunc(e.waiters, func(w *LockWaiter) bool { return w.Wait == WaitPoll }) {
 				t.idx.Lock()
@@ -484,7 +488,7 @@ func (t *Table) serveFiles(sink Sink, files []entity.FileID) {
 			return nil
 		})
 		unlock()
-		out.raise(sink)
+		out.raise(t, sink)
 	}
 }
 
@@ -565,7 +569,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			return err
 		})
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	return res, err
 }
 
@@ -574,10 +578,24 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // single range that waits. The owner's earlier waiter on the file is replaced,
 // a callback one reported not granted and the waiters it barred served, unless
 // r repeats its request and still waits, which keeps its place.
+//
+// Before any of that, every caching grant on the file another holder holds,
+// another client or the owner's client under another lease key, is recalled
+// to none; while one still caches, r is never refused for a
+// conflict: a callback request waits, and any other is ErrDelay.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
 	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
 	now := t.d.Clock.Elapsed()
 	id := openToken(op)
+	var key LeaseKey
+	if op != nil {
+		key = op.lease
+	}
+	recall := t.recallOthers(e, func(g *grant) bool { return g.heldBy(r.Owner.Client, key, op) }, func(*grant) GrantKind { return GrantNone }, out)
+	var de *DelayError
+	if errors.As(recall, &de) && (de.Cause != DelayRecall || r.Wait != WaitCallback) {
+		return LockResult{}, recall
+	}
 	var held *Lock
 	for i, rg := range r.Ranges {
 		if held = e.blocker(r.Owner, rg, len(e.waiters)); held != nil {
@@ -589,18 +607,19 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			break
 		}
 	}
+	free := held == nil && recall == nil
 	prev := e.waiterOf(r.Owner)
 	repeat := prev >= 0 && r.Wait == e.waiters[prev].Wait && r.Ranges[0] == e.waiters[prev].Range && id == e.waiters[prev].Open
-	if prev >= 0 && (held == nil || !repeat) {
+	if prev >= 0 && (free || !repeat) {
 		if w := t.dropWaiter(e, prev); w.Wait == WaitCallback {
 			out.over = append(out.over, waitOver{*w, false})
 		}
-		if held != nil { // a grant serves them after its ranges are added, below
+		if !free { // a grant serves them after its ranges are added, below
 			t.serve(e, out) // the waiter it replaced may have barred the ones behind it
 		}
 	}
 	switch {
-	case held == nil:
+	case free:
 		ls, minted, err := t.lockStateFor(ctx, e, r.Owner, op, s)
 		if err != nil {
 			return LockResult{}, err
@@ -671,7 +690,7 @@ func (v locks) CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwne
 		}
 		return nil
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, o.Client)
 	return granted, nil
 }
@@ -717,7 +736,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		}
 		return nil
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, who.Client)
 	return nil
 }
@@ -782,7 +801,7 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			return err
 		})
 	})
-	out.raise(sink)
+	out.raise(t, sink)
 	t.dropIdle(ctx, who.Client)
 	return seq, err
 }
@@ -845,7 +864,7 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 		delete(t.seqs, locksOwner(o))
 		t.smu.Unlock()
 	}
-	out.raise(sink)
+	out.raise(t, sink)
 	t.serveFiles(sink, out.serve)
 	t.dropIdle(ctx, o.Client)
 	return err

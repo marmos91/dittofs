@@ -641,6 +641,46 @@ func TestReleaseLockOwnerGrantsWaitersUnderOrder(t *testing.T) {
 	}
 }
 
+// FreeState names no file, so a callback waiter its release frees is granted
+// only under the file's admission lock: a poll waiter holding a reservation
+// is dropped with its freed lock state, and the host waiting behind it is
+// granted under Order.
+func TestFreeStateGrantsWaitersUnderOrder(t *testing.T) {
+	f := newFixture(t)
+	a, holder, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "holder", 1), f.host(t, "h", 1)
+	file := anyFile()
+	file.Shard = 1
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, holder, file, LockReq{Owner: owner(holder, "holder"), Ranges: []LockRange{x(0, 10)}})
+	lo := owner(a, "lo")
+	ls := f.mustLock(t, a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(20, 10)}})
+	if _, err := f.Locks().Unlock(ctx, a, file, refOf(o), lo, []ByteRange{br(20, 10)}, Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.lock(a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lo's poll: %v, want ErrLocked", err)
+	}
+	if res := f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+		t.Fatal("the host's lock was not left waiting")
+	}
+	f.unlock(t, holder, file, owner(holder, "holder"), br(0, 10))
+	if got := granted(t, f.sink.takeWaits()); len(got) != 0 {
+		t.Fatalf("with lo's poll reserved: granted %v, want none", got)
+	}
+	f.ordered(file)
+	ref := ls.Ref
+	ref.Seq = 0 // the unlock raised it
+	if err := f.Recovery().FreeState(ctx, a, ref); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after lo's lock state was freed: granted %v, want h", got)
+	}
+	if !f.ordered(file) {
+		t.Error("FreeState granted the host without the file's admission lock")
+	}
+}
+
 // Expire, which names a client and no file, grants the waiters its release
 // frees under each file's admission lock.
 func TestExpireGrantsWaitersUnderOrder(t *testing.T) {

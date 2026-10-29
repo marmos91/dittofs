@@ -22,14 +22,21 @@ type Table struct {
 	// is held only to find, add or free an entry, never while a step runs.
 	files [256]fileStripe
 
-	// idx guards the state references, the open IDs, the counts per Via and
-	// the files holding a poll waiter. It is taken after a file's step, never
-	// before one, and only to add, remove or look up one of them.
-	idx   sync.Mutex
-	refs  map[refKey]holder
-	byID  map[entity.OpenID]refKey
-	via   map[entity.FileID]int      // the opens made through each directory
-	polls map[entity.FileID]struct{} // the files holding a poll waiter, which the timer lapses
+	// idx guards the state references, the open IDs, the counts per Via,
+	// the files holding a poll waiter, the revoked set and what the grants
+	// count. It is taken after a file's step, never before one, and only to
+	// add, remove or look up one of them.
+	idx       sync.Mutex
+	refs      map[refKey]holder
+	byID      map[entity.OpenID]refKey
+	via       map[entity.FileID]int           // the opens made through each directory
+	polls     map[entity.FileID]struct{}      // the files holding a poll waiter, which the timer lapses
+	revoked   map[refKey]revokedRef           // every client's revoked set, until each reference is freed
+	granted   map[entity.ClientID]int         // the grants each client holds
+	keys      map[clientKey]keyUse            // each lease key held by an open, from its first open to its last close
+	recalling map[entity.FileID]struct{}      // the files holding a recall handed to the Sink, which the timer lapses
+	recalled  map[entity.FileID]time.Duration // the Elapsed reading until which a file is offered no grant, after a recall ended
+	unsent    int                             // recalls started and not yet handed to the Sink
 
 	// smu guards the owner sequences. It is taken under a file's step or
 	// under nothing, and nothing is taken under it.
@@ -55,8 +62,9 @@ type Table struct {
 	leases  map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
 	known   map[entity.ClientID]known         // what the table reads of each client's record, with its lease
 	pending map[nameKey]pending
-	sources map[netip.Prefix]int // pending proposals per source
-	sink    Sink                 // nil before Start and after Stop
+	sources map[netip.Prefix]int              // pending proposals per source
+	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
+	sink    Sink                              // nil before Start and after Stop
 	stopped bool
 	stop    func()
 
@@ -80,6 +88,7 @@ type entry struct {
 	opens    map[uint64]*open      // by reference token
 	lstates  map[uint64]*lockState // by reference token
 	waiters  []*LockWaiter         // in arrival order, which serves them
+	grants   map[uint64]*grant     // by reference token
 	pending  *entity.DeleteRecord  // the file is delete pending; nil: not
 	unlinked bool                  // an unlink made the opens durable: the file has no entry, and every new open is written durable
 }
@@ -89,6 +98,7 @@ type entry struct {
 type known struct {
 	recovery entity.RecoveryKind
 	owner    entity.Principal // the owner that may act on all its state; zero unless it protects it
+	down     bool             // its back channel is lost: it is offered no grant until it rebinds
 	shards   []ShardID        // shards seen listed in its record
 }
 
@@ -98,8 +108,10 @@ func New(d Deps) (*Table, error) {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	t := &Table{
-		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{}, seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
-		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
+		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
+		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{},
+		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
+		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
 	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}
@@ -142,12 +154,20 @@ func (t *Table) step(f entity.FileID, fn func(e *entry) error) error {
 // Clients is the view of client records and leases.
 func (t *Table) Clients() Clients { return clients{t} }
 
+// Grants is the view of caching grants.
+func (t *Table) Grants() Grants { return grants{t} }
+
+// Recovery is the view of recovery: references tested and freed.
+func (t *Table) Recovery() Recovery { return recovery{t} }
+
 // sweepEvery is how often lapsed leases, proposals and poll waiters are
 // looked for.
 //
 // ponytail: each sweep scans every lease and proposal, O(clients), and every
-// file holding a poll waiter, and a client or a poll waiter is expired up to
-// one interval after its deadline. Replace it with the deadline heap, one
+// file holding a poll waiter or a recall handed to the Sink, and a client, a
+// poll waiter or a recall is expired up to one interval after its deadline:
+// a 35 s recall up to 45 s, still within the 60 s an SMB adapter holds the
+// request it delays. Replace it with the deadline heap, one
 // (kind, ref, generation) entry per deadline, when a profile shows the sweep
 // or a deadline must fire on the instant.
 const sweepEvery = 10 * time.Second
