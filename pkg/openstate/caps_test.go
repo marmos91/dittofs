@@ -246,3 +246,54 @@ func TestLockCapHoldsItsPlaceAcrossARecall(t *testing.T) {
 		})
 	}
 }
+
+// A lock's own ranges are counted once by the time it serves the file's
+// waiters: a waiter of the same client that fits the range cap with the
+// lock's ranges added is granted, not refused as if they counted twice.
+func TestLockServesItsOwnClientsWaiterWithinTheCap(t *testing.T) {
+	f := newFixture(t)
+	h := f.host(t, "h", 1)
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "a"), Ranges: []LockRange{x(0, 30)}})
+	if res := f.mustLock(t, h, file, LockReq{Owner: owner(h, "b"), Ranges: []LockRange{sh(10, 10)}, Wait: WaitCallback}); !res.Waiting {
+		t.Fatalf("b's lock: want waiting")
+	}
+	f.lower(cappedRanges, 4)
+	// a's shared middle splits x(0,30) into three ranges, and b's grant is the fourth
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "a"), Ranges: []LockRange{sh(10, 10)}})
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "b" {
+		t.Errorf("granted %v, want b", got)
+	}
+}
+
+// A lock's owner keeps its place under the owner cap from the check on: the
+// owner's last lock state elsewhere dropping before the lock mints its own
+// frees no place another owner of the client can take, so the client never
+// holds more owners than its cap.
+func TestLockOwnerKeepsItsPlaceWhileItsLastStateDrops(t *testing.T) {
+	f := newFixture(t)
+	b := f.host(t, "b", 1)
+	file, other, keeper := anyFile(), anyFile(), anyFile()
+	f.mustLock(t, b, keeper, LockReq{Owner: owner(b, "k"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, b, other, LockReq{Owner: owner(b, "o"), Ranges: []LockRange{x(0, 10)}})
+	f.lower(cappedOwners, 2)
+	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+	f.d.Rand = rnd
+	rnd.armed.Store(true)
+	locked := make(chan error)
+	go func() {
+		_, err := f.lock(b, file, LockReq{Owner: owner(b, "o"), Ranges: []LockRange{x(0, 10)}})
+		locked <- err
+	}()
+	<-rnd.entered // past the cap check, minting o's lock state on file
+	f.unlock(t, b, other, owner(b, "o"), br(0, 10))
+	_, perr := f.lock(b, other, LockReq{Owner: owner(b, "p"), Ranges: []LockRange{x(0, 10)}})
+	close(rnd.released)
+	err := <-locked
+	f.idx.Lock()
+	n := f.held[heldKey{b.Client, cappedOwners}]
+	f.idx.Unlock()
+	if n > 2 {
+		t.Errorf("o's lock: %v, p's lock: %v; the client holds %d owners past its cap of 2", err, perr, n)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -439,10 +440,15 @@ func (t *Table) dropLockState(e *entry, ls *lockState) {
 // takes no place here: it starts no recall, so it is charged, and refused,
 // where it is added, as nothing changes before it. The places count beside
 // the charges made where the state is added, which take them with no
-// refusal, until release gives them back at the end of r's step: a request
-// of the client racing r near a cap is refused meanwhile, which fails
-// closed. waiter reports whether a waiter's place was taken.
-func (t *Table) reserveLock(e *entry, r LockReq, op *open, key LeaseKey) (release func(), waiter bool, err error) {
+// refusal: a request of the client racing r near a cap is refused meanwhile,
+// which fails closed. rangesBack gives the ranges' places back, which r's step
+// calls once its own ranges are charged, before it serves the file's
+// waiters, so a waiter of the same client is not judged against them twice;
+// release gives back the rest at the end of the step. The owner's place is
+// a reference to it, held until release, so a state of the owner dropping
+// elsewhere meanwhile neither frees its place nor lets the mint charge it
+// again past the cap. waiter reports whether a waiter's place was taken.
+func (t *Table) reserveLock(e *entry, r LockReq, op *open, key LeaseKey) (rangesBack, release func(), waiter bool, err error) {
 	c := r.Owner.Client
 	ls := e.lockState(r.Owner, openToken(op))
 	cur := lockState{owner: r.Owner}
@@ -461,20 +467,28 @@ func (t *Table) reserveLock(e *entry, r LockReq, op *open, key LeaseKey) (releas
 	}
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	if ls == nil && t.owners[ownerKey{c, string(r.Owner.Name)}] == 0 {
+	ok := ownerKey{c, string(r.Owner.Name)}
+	if t.owners[ok] == 0 {
 		n[cappedOwners] = 1
 	}
 	for k, m := range n {
 		if t.overLocked(c, capped(k), m) {
-			return nil, false, &DelayError{DelayResources}
+			return nil, nil, false, &DelayError{DelayResources}
 		}
 	}
 	for k, m := range n {
 		_ = t.chargeLocked(c, capped(k), m, false)
 	}
-	return func() {
-		for k, m := range n {
-			_ = t.charge(c, capped(k), -m, false)
+	t.owners[ok]++
+	rangesBack = sync.OnceFunc(func() { _ = t.charge(c, cappedRanges, -n[cappedRanges], false) })
+	return rangesBack, func() {
+		rangesBack()
+		_ = t.charge(c, cappedWaiters, -n[cappedWaiters], false)
+		t.idx.Lock()
+		defer t.idx.Unlock()
+		if t.owners[ok]--; t.owners[ok] <= 0 {
+			delete(t.owners, ok)
+			_ = t.chargeLocked(c, cappedOwners, -1, false)
 		}
 	}, waiter, nil
 }
@@ -735,7 +749,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	if op != nil {
 		key = op.lease
 	}
-	release, reserved, err := t.reserveLock(e, r, op, key)
+	rangesBack, release, reserved, err := t.reserveLock(e, r, op, key)
 	if err != nil {
 		return LockResult{}, err
 	}
@@ -775,6 +789,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			return LockResult{}, err
 		}
 	}
+	rangesBack() // charged by relock, or never added: serve must not count them twice
 	prev := e.waiterOf(r.Owner)
 	repeat := prev >= 0 && r.Wait == e.waiters[prev].Wait && r.Ranges[0] == e.waiters[prev].Range && id == e.waiters[prev].Open
 	if prev >= 0 && (free || !repeat) {
