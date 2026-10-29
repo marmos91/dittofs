@@ -521,7 +521,10 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    `*vfs.Server`, the engine and GC their first settings through `Apply`, so
    every component holds the records' values before any of them starts.
 5. **The content side and the state the server reads**, in build order:
-   **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the engine, in
+   **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the remote
+   stores, each served namespace's opened with
+   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim check, which completes before the engine
+   serves a binding of that namespace or GC starts on it; the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of shares this node serves in
    one call; GC, with each served share's namespace; open state for the shards
    this node acquires, handed the built server as its `Sink`

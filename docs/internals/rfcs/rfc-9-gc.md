@@ -949,7 +949,7 @@ that finds another installation's nonce fences itself as
 The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
 claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
 store never recorded. That check runs before any storage binding serves or GC
-starts ([RFC 23](rfc-index.md) §2.2 step 4).
+starts ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5).
 
 **An object is deleted only after a claim rewrite later than its `deleted`
 mark** ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 4). The nonce changes once per `Recheck`, so detection is
