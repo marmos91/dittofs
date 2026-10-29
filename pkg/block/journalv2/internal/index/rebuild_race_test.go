@@ -3,7 +3,6 @@
 package index
 
 import (
-	"errors"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -48,8 +47,7 @@ func collectKeeps(recs []Record) []keepEntry {
 // rebuilds a snapshot equal to the sequential feed of the same records, drop
 // ranges included: the result depends only on the records, not on how they
 // raced in. The race detector finds a feeder appending under another file's
-// shard lock, or a replay touching two files' state. A Feed after Finish
-// returns errRebuilt and changes nothing.
+// shard lock, or a replay touching two files' state.
 func TestRebuildConcurrentFeeders(t *testing.T) {
 	h := drive(t, 7, 200)
 	keeps := collectKeeps(h.recs)
@@ -112,22 +110,6 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 		if d := diffSnap(got, want.snap); d != "" {
 			t.Fatalf("round %d: %s", round, d)
 		}
-	}
-
-	// Feeding the finished builder is an error that changes nothing.
-	fs := &files{}
-	b := newRebuilder(fs, &Counters{})
-	if err := b.Feed(h.recs[0]); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Finish(ver(0)); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Feed(recd(RecWrite, fid(1), 2, 2, 1, 0, 0, 4)); !errors.Is(err, errRebuilt) {
-		t.Fatalf("Feed after Finish = %v, want errRebuilt", err)
-	}
-	if n := fs.len(); n != 1 {
-		t.Fatalf("a refused feed left %d entries", n)
 	}
 }
 

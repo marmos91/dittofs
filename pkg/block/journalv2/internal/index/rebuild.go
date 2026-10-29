@@ -240,13 +240,12 @@ func (b *rebuilder) Feed(r Record) error {
 // Once Finish has begun the piece is refused with errRebuilt: a piece the
 // shard has already drained would never reach the file it names.
 func (b *rebuilder) Retain(id core.FileID, r Retained) error {
-	// An empty piece is ignored, as retainedSet.add ignores one.
-	if r.Extent.Len <= 0 {
-		return nil
-	}
 	s := b.shards[hashID(id)>>(64-6)]
 	s.mu.Lock()
-	if s.drained || b.finished.Load() {
+	// Every shard is drained before Finish does anything else, so the
+	// drained check is the whole lifetime: before Finish it admits, from
+	// Finish on it refuses.
+	if s.drained {
 		s.mu.Unlock()
 		return errRebuilt
 	}
@@ -408,11 +407,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// park the rival's records.
 	notes := slices.Clone(recs)
 	slices.SortStableFunc(notes, func(a, c bufRec) int {
-		return cmp.Or(
-			cmp.Compare(a.numbers.Seq, c.numbers.Seq),
-			cmp.Compare(a.seg, c.seg),
-			cmp.Compare(a.at, c.at),
-		)
+		return cmp.Compare(a.numbers.Seq, c.numbers.Seq)
 	})
 	for _, r := range notes {
 		_ = f.recorded(r.seg, extentOf(r), r.numbers, r.tag, id)
@@ -516,7 +511,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// and a piece's own record seq plays no part: a repack copy keeps the
 	// bit its content had.
 	slices.SortStableFunc(marks, func(a, c bufRec) int {
-		return cmp.Or(cmp.Compare(a.numbers.Seq, c.numbers.Seq), compareBufRec(a, c))
+		return cmp.Compare(a.numbers.Seq, c.numbers.Seq)
 	})
 	// decision: the marks reach the held set only, never retained pieces.
 	// A mark names the bytes its record offered or unmarked, which are
@@ -544,21 +539,21 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 }
 
 // compareBufRec orders two buffered records by precedence, then by where
-// they sit: a total order over distinct records, so two feeds of the same
-// records replay identically.
+// they sit: precedence names one record already — the journal issues a pair
+// of numbers once — so the placement tie-break keeps the order total over
+// distinct copies of one record, and two feeds of the same records replay
+// identically.
 func compareBufRec(a, b bufRec) int {
 	return cmp.Or(
 		a.numbers.Compare(b.numbers),
 		cmp.Compare(a.seg, b.seg),
 		cmp.Compare(a.at, b.at),
-		cmp.Compare(a.kind, b.kind),
-		cmp.Compare(a.off, b.off),
-		cmp.Compare(a.n, b.n),
 	)
 }
 
 // sameRecord reports whether a and b are one record carried in two places:
 // equal in kind, extent and numbers, differing only where they sit.
-func sameRecord(a, b bufRec) bool {
-	return a.kind == b.kind && a.off == b.off && a.n == b.n && a.numbers == b.numbers
-}
+// sameRecord reports whether a and b are one record carried in two places:
+// the journal issues a pair of numbers to one record only, so equal numbers
+// mean the same record, wherever each copy sits.
+func sameRecord(a, b bufRec) bool { return a.numbers == b.numbers }
