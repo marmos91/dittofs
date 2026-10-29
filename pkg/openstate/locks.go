@@ -389,13 +389,12 @@ func (t *Table) lockStateFor(ctx context.Context, e *entry, o LockOwner, op *ope
 		if !t.current(o.Client) {
 			return ErrStaleClient
 		}
-		// An owner is counted once, by its first lock state; an installed
-		// open's owner is never refused.
+		// An owner is counted once, by its first lock state, never refused
+		// here: a lock took its place at reserveLock, and an installed open's
+		// owner is never refused.
 		k := ownerKey{o.Client, string(o.Name)}
 		if t.owners[k] == 0 {
-			if err := t.chargeLocked(o.Client, cappedOwners, 1, op == nil || op.parked == 0); err != nil {
-				return err
-			}
+			_ = t.chargeLocked(o.Client, cappedOwners, 1, false)
 		}
 		t.owners[k]++
 		return nil
@@ -432,36 +431,52 @@ func (t *Table) dropLockState(e *entry, ls *lockState) {
 	}
 }
 
-// lockFull reports whether r, under op with lease key key, would take its
-// client past a cap on e: the ranges it adds, a new owner, or a waiter where
-// another holder's caching grant would make it wait. It is judged before r
-// starts a recall, so a refusal changes nothing; the charges are made, and
-// refused, where the state is added, as a waiter behind a lock is, since
-// nothing changes before it.
-//
-// decision: unlike an open's, a lock's place is not taken at this check, so
-// a lock of the client on another file racing r past it can leave r refused
-// at its charge after r started a recall; the recall only ends a caching
-// grant early, which a client survives. Take the places here, as an open
-// does, if such recalls show up for clients held at a cap.
-func (t *Table) lockFull(e *entry, r LockReq, op *open, key LeaseKey) bool {
+// reserveLock takes r's places, under op with lease key key, on e: the
+// ranges it adds, a new owner, and a waiter where another holder's caching
+// grant would make it wait, refused together ErrDelay past a cap. It runs
+// before r starts a recall, which can close another client's disconnected
+// durable open, so a refusal changes nothing. A waiter behind a lock alone
+// takes no place here: it starts no recall, so it is charged, and refused,
+// where it is added, as nothing changes before it. The places count beside
+// the charges made where the state is added, which take them with no
+// refusal, until release gives them back at the end of r's step: a request
+// of the client racing r near a cap is refused meanwhile, which fails
+// closed. waiter reports whether a waiter's place was taken.
+func (t *Table) reserveLock(e *entry, r LockReq, op *open, key LeaseKey) (release func(), waiter bool, err error) {
 	c := r.Owner.Client
 	ls := e.lockState(r.Owner, openToken(op))
 	cur := lockState{owner: r.Owner}
 	if ls != nil {
 		cur.locks = ls.locks
 	}
-	waits := false
 	if r.Wait != WaitNone && e.waiterOf(r.Owner) < 0 {
 		for _, g := range e.grants {
-			waits = waits || !g.heldBy(c, key, op) && g.fsm.Kind != GrantNone
+			waiter = waiter || !g.heldBy(c, key, op) && g.fsm.Kind != GrantNone
 		}
 	}
+	var n [len(perClient)]int
+	n[cappedRanges] = max(len(cur.adding(r.Ranges...))-len(cur.locks), 0)
+	if waiter {
+		n[cappedWaiters] = 1
+	}
 	t.idx.Lock()
-	newOwner := ls == nil && t.owners[ownerKey{c, string(r.Owner.Name)}] == 0
-	t.idx.Unlock()
-	return t.full(c, cappedRanges, len(cur.adding(r.Ranges...))-len(cur.locks)) ||
-		newOwner && t.full(c, cappedOwners, 1) || waits && t.full(c, cappedWaiters, 1)
+	defer t.idx.Unlock()
+	if ls == nil && t.owners[ownerKey{c, string(r.Owner.Name)}] == 0 {
+		n[cappedOwners] = 1
+	}
+	for k, m := range n {
+		if t.overLocked(c, capped(k), m) {
+			return nil, false, &DelayError{DelayResources}
+		}
+	}
+	for k, m := range n {
+		_ = t.chargeLocked(c, capped(k), m, false)
+	}
+	return func() {
+		for k, m := range n {
+			_ = t.charge(c, capped(k), -m, false)
+		}
+	}, waiter, nil
 }
 
 // relock sets ls's locks to next, charging its client for the ranges next
@@ -720,9 +735,11 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	if op != nil {
 		key = op.lease
 	}
-	if t.lockFull(e, r, op, key) {
-		return LockResult{}, &DelayError{DelayResources}
+	release, reserved, err := t.reserveLock(e, r, op, key)
+	if err != nil {
+		return LockResult{}, err
 	}
+	defer release()
 	recall := t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(r.Owner.Client, key, op) }, func(*grant) GrantKind { return GrantNone }, out)
 	var de *DelayError
 	if errors.As(recall, &de) && (de.Cause != DelayRecall || r.Wait != WaitCallback) {
@@ -751,7 +768,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			return LockResult{}, err
 		}
 		// Held before the earlier waiter goes, so its drop keeps ls.
-		if err := t.relock(ctx, ls, ls.adding(r.Ranges...), true); err != nil {
+		if err := t.relock(ctx, ls, ls.adding(r.Ranges...), false); err != nil {
 			if minted {
 				t.dropLockState(e, ls)
 			}
@@ -795,7 +812,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if err != nil {
 			return LockResult{}, err
 		}
-		if err := t.charge(r.Owner.Client, cappedWaiters, 1, true); err != nil {
+		if err := t.charge(r.Owner.Client, cappedWaiters, 1, !reserved); err != nil {
 			if minted {
 				t.dropLockState(e, ls)
 			}

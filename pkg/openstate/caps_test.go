@@ -190,3 +190,59 @@ func TestOpenCapHoldsItsPlaceAcrossABreak(t *testing.T) {
 		t.Errorf("the open %v and the open racing it %v: want one refused for the cap", err, other)
 	}
 }
+
+// A lock holds its places under its client's caps from the check on: a lock
+// of the client racing it past the check takes no range, owner or waiter
+// place it counted on, so a lock a cap refuses has closed no disconnected
+// durable open its recall broke.
+func TestLockCapHoldsItsPlaceAcrossARecall(t *testing.T) {
+	for name, kind := range map[string]capped{"ranges": cappedRanges, "owners": cappedOwners, "waiters": cappedWaiters} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+			c := f.caller(t, nfs("c", 1, entity.NewUser()))
+			file, r := f.fileIn(t, "disk")
+			other := in(1)
+			lock := LockReq{Owner: owner(b, "new"), Ranges: []LockRange{x(0, 10)}}
+			racing := LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(20, 10)}}
+			switch kind {
+			case cappedOwners:
+				racing.Owner = owner(b, "racing")
+			case cappedWaiters:
+				// the recall of d's lease leaves the lock waiting, and c's
+				// lock the racing one
+				d := f.caller(t, smbMachine("pc-d"))
+				dr := r
+				dr.Access, dr.Lease, dr.Want = rd, LeaseKey{2}, rh
+				f.mustOpen(t, d, file, dr)
+				f.mustLock(t, c, other, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{x(20, 10)}})
+				lock.Wait, racing.Wait, racing.Owner = WaitCallback, WaitCallback, owner(b, "racing")
+			}
+			r.Access, r.Lease, r.Want = rd, LeaseKey{1}, rh
+			o := f.mustOpen(t, a, file, keep(r, entity.DurabilityDurable, s1, time.Hour, 1))
+			f.disconnect(t, a, s1)
+			f.mustLock(t, b, other, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+			f.lower(kind, map[capped]int{cappedRanges: 2, cappedOwners: 2, cappedWaiters: 1}[kind])
+			rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+			f.d.Rand = rnd
+			rnd.armed.Store(true)
+			locked := make(chan error)
+			go func() {
+				_, err := f.lock(b, file, lock)
+				locked <- err
+			}()
+			<-rnd.entered // past the cap check and the recall, minting its lock state
+			_, rerr := f.lock(b, other, racing)
+			close(rnd.released)
+			err := <-locked
+			if err != nil {
+				if _, cerr := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{1}}, s2); cerr != nil {
+					t.Errorf("a lock the cap refused (%v) closed a's durable open first: reconnect %v", err, cerr)
+				}
+			}
+			if delayedFor(rerr) != DelayResources {
+				t.Errorf("the lock racing past the check: %v, want ErrDelay (DelayResources)", rerr)
+			}
+		})
+	}
+}
