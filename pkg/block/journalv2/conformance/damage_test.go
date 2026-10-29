@@ -1377,7 +1377,7 @@ var (
 )
 
 // flipBit inverts bit b of the byte at off of the file name, through the
-// seam, synced; flipping it again puts the byte back.
+// seam, synced.
 func flipBit(t *testing.T, f *journalv2test.Fixture, name string, off int64, b uint) {
 	t.Helper()
 
@@ -1661,17 +1661,26 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 
 // flipStructure flips every bit of the field fd of the structure starting at
 // base in the file name, checking the outcome after each with check, told
-// where the sweep stands, and puts each bit back before the next.
+// where the sweep stands, and writes the field's original bytes back before
+// the next.
+//
+// decision: the field is restored from its bytes taken once from the durable
+// image before the first flip, not by flipping the bit again. An open may
+// write a new footer for a segment whose footer does not verify (RFC 28
+// section 2.4), and a second flip would then damage the rebuilt bytes and
+// leave every later bit of the field flipped on top of that damage.
 func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field, check func(where string)) {
 	t.Helper()
 
+	start := base + int64(fd.off)
+	orig := slices.Clone(durable(t, s.f, name)[start : start+int64(fd.size)])
 	for i := range fd.size {
 		for b := range uint(8) {
-			off := base + int64(fd.off+i)
+			off := start + int64(i)
 			where := fmt.Sprintf("bit %d of byte %d of %s, in its %s", b, off, name, fd.name)
 			flipBit(t, s.f, name, off, b)
 			check(where)
-			flipBit(t, s.f, name, off, b)
+			overwrite(t, s.f, name, start, orig)
 		}
 	}
 }
@@ -1691,8 +1700,9 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 // bit by bit. The record regions run on 4 KiB records, so each flip lands
 // on a record of its own, since a dropped record stays dropped by its loss
 // record once its byte is put back; the other regions run on 64 KiB records
-// and put each bit back before the next. A seal marker of a segment no
-// successor names is not flipped: the row gives no outcome for it.
+// and write each field's original bytes back before the next flip. A seal
+// marker of a segment no successor names is not flipped: the row gives no
+// outcome for it.
 //
 // decision: a record header flipped in a scanned segment is checked only
 // for the record reading missing and no byte of any record changing, with
