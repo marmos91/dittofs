@@ -178,9 +178,11 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 //
 // decision: this bound, with the per-client watch cap, replaces the SMB
 // adapter's changenotify.NotifyRegistry overflow, which caps watches at
-// MaxPendingWatches for the whole node and overflows a watch past its
-// request's MaxOutputLength, once the adapter moves onto the table; until
-// then the registry is the live one. Delete it with the move.
+// MaxPendingWatches for the whole node, once the adapter moves onto the
+// table; until then the registry is the live one. The overflow past a
+// request's MaxOutputLength stays in the adapter, which alone sees the
+// request: what it holds for an unread client must still collapse to
+// STATUS_NOTIFY_ENUM_DIR when it does not fit (MS-FSA 2.1.5.10).
 func (w *watch) hold(ch Change) {
 	switch {
 	case len(w.pending) == 1 && w.pending[0].What == ChangeEnumerate:
