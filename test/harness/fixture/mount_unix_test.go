@@ -31,7 +31,9 @@ import (
 // a share at DT_FAKE_VERS or none, a powershell that logs the share it maps
 // and whether its command line holds the password, fails as the mount does,
 // and prints drive Z: at DT_FAKE_VERS, and a net that logs. It returns a
-// function giving the calls so far.
+// function giving the calls so far. The unmount keeps its own waits, which a
+// fake that doesn't hang never reaches however slowly it starts; a test of a
+// hang shortens them itself.
 func fakeMounts(t *testing.T) func() []string {
 	t.Helper()
 	dir := t.TempDir()
@@ -72,7 +74,6 @@ echo "Z: $DT_FAKE_VERS"`,
 	t.Setenv("DT_FAKE_MOUNTINFO", table)
 	realInfo, realEuid, realWaits, realGOOS := mountinfo, geteuid, unmountWaits, goos
 	mountinfo, geteuid, goos = table, func() int { return 1000 }, "linux"
-	unmountWaits = [2]time.Duration{time.Second, time.Second}
 	t.Cleanup(func() { mountinfo, geteuid, unmountWaits, goos = realInfo, realEuid, realWaits, realGOOS })
 	return func() []string {
 		data, _ := os.ReadFile(log)
@@ -276,6 +277,10 @@ func TestUnmount(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := fakeMounts(t)
+			if tc.umount == "hang" {
+				// the fake sleeps 5 s; shorter waits make unmount give up on it
+				unmountWaits = [2]time.Duration{time.Second, time.Second}
+			}
 			t.Setenv("DT_FAKE_VERS", "4.1")
 			t.Setenv("DT_FAKE_UMOUNT", tc.umount)
 			var w bytes.Buffer

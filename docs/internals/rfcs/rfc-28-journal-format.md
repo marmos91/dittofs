@@ -144,10 +144,11 @@ re-appends nothing.
 
 **N1 boots with the journal's disk not mounted.**
 
-1. The journal directory is empty: the mount point is there, the NVMe disk is
-   not.
+1. The journal directory is a directory on the NVMe disk, not its mount root
+   ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). With the disk not mounted, only the empty mount point is
+   there, and the journal directory does not exist.
 2. The caller opens the journal with the identity it recorded for this
-   directory. Since that is not zero, the empty directory fails the open
+   directory. Since that is not zero, the missing directory fails the open
    ([§3.4](#3.4%20Unattachable%20files)).
 3. Open never creates a fresh journal there. A fresh one would answer every
    unuploaded write as never written ([§3.4](#3.4%20Unattachable%20files)).
@@ -244,7 +245,8 @@ generation), writes the
 new content to `format.tmp`, syncs it, renames it over `format`, and syncs the
 directory before returning, so a crash leaves the old file or the new one
 whole, never a mix. Open ignores a `format.tmp`, the next rewrite overwrites
-it, and `Init`'s refusal of a directory holding a journal does not count it.
+it, and `Init` does not count it when it requires an empty directory
+([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 ### 2.2 Segments
 
@@ -1081,14 +1083,13 @@ certain it wrote, **MUST** age-gate that decision, and **MUST NOT** unlink a
 file whose name it could not itself have produced.
 
 A directory that holds a segment file but no `format` file ([§2.1](#2.1%20Layout)) is not a journal
-this implementation can identify, and open **MUST** fail on it. An
+this implementation can identify, and open **MUST** fail on it with `ErrUnidentified`. An
 implementation **MUST NOT** treat such a directory as an empty journal: that
 turns data it cannot read into data it silently no longer holds, and the first
 write then mixes its own segments into the unknown ones. A directory with neither
-holds no journal: `Open` fails on it, and only `Init` creates one there
-([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); any other files in it, such as `lost+found`, are left alone. `Init`'s
-refusal of a directory that holds a `format` file or a segment is
-[RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s.
+holds no journal: `Open` fails on it and changes nothing in it. `Init` creates
+one only in an empty directory, so a journal is never laid over files it did
+not write ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
 **A journal that has gone is not replaced silently.** The journal is opened
 with the identity its caller has recorded for the directory (`expect`), as it
@@ -1205,7 +1206,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.4](#3.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and `Init` refuses both. Assert an empty directory fails to open and that `Init` creates a journal there whose `format` carries the installation ID given. |
 | [§3.4](#3.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and only `Init` then creates a new journal. Open the original journal with `expect` zero; assert it fails naming its journal identity and installation ID, and creates nothing. A design that opens an empty directory as new, or adopts a journal its caller has no record of, fails. |
 | [§3.1](#3.1%20Rebuilding) spares are re-adopted | Open a journal so it makes its spares; crash once with every spare untaken, and once after a stream takes one but before its first sync; reopen each. Assert every record-less segment is a spare again, the headroom and repack reserve are whole without new allocation, nothing is reported as an orphan or as damage, and a later roll takes a spare. A design that age-gates them as orphans comes back with its reserves short. |
-| [§2.2](#2.2%20Segments) a spare is whole or absent | Crash at the seam at every step of making a spare — after create, allocation, zero-fill, sync, rename — dropping unsynced allocations and directory changes; reopen. Assert every `<id>.seg` found is at its cap and fully allocated, no `.spare.tmp` survives, and a release appended into a re-adopted spare at a full filesystem succeeds. Then hold a spare after its sync and before its rename, let another operation's directory sync make its `.spare.tmp` entry durable, and crash; assert open unlinks the `.spare.tmp` and the next spare's id is above its id. A design that names the spare before it is whole re-adopts a short one. |
+| [§2.2](#2.2%20Segments) a spare is whole or absent | Crash at the seam at every step of making a spare — after create, allocation, zero-fill, sync, rename — dropping unsynced allocations and directory changes; reopen. Where one seam call both allocates and zero-fills, the two are one step and one crash point: every crash before the rename leaves only a `.spare.tmp` that open unlinks, so a crash between them could show nothing new. Assert every `<id>.seg` found is at its cap and fully allocated, no `.spare.tmp` survives, and a release appended into a re-adopted spare at a full filesystem succeeds. Then hold a spare after its sync and before its rename, let another operation's directory sync make its `.spare.tmp` entry durable, and crash; assert open unlinks the `.spare.tmp` and the next spare's id is above its id. A design that names the spare before it is whole re-adopts a short one. |
 | [§2.2](#2.2%20Segments) retired segments are recycled | Run sustained writes and repack until segments retire, with the pool below its target, at it, and moving across it between seal and retirement, and with some segments sealed early when idle; assert no segment sealed full is truncated, every segment sealed early is, each full-size segment is recycled exactly when the pool is below its target at its retirement and unlinked otherwise, and every recycled `<id>.seg` is at its cap and fully allocated with an id above every id the directory named. Assert the seam sees a rename, then a zeroed header slot and trailer slot per recycle, and no zero-fill; crash between the rename and the zeroing sync, and after it; assert each reopen re-adopts the segment as a spare, reports nothing as damage and attaches no old record, and that a segment whose sync or append failed is unlinked, never recycled. Hold spare-making at the seam; assert a write needing a roll is refused at once with `ErrNoSpace` naming `spare`, `spare_refusals` counts it, and a header-only record still appends. Then fail spare-making with `ENOSPC` with no full-size retired segment to hand; assert the roll is refused with `ENOSPC`, not `spare`. |
 | [§2.2](#2.2%20Segments) a recycled segment's old catalog is never read | Fill a segment so it is sealed full, retire and recycle it, let a stream take it, append and `Sync` records that stop short of the old seal marker; stop cleanly and reopen, then crash and reopen. Assert each reopen scans the segment, reads every new record, and attaches no record of the old life; that the old trailer and footer are not read, even with the trailer slot's zeroing dropped at the seam; and that the old bytes past the new records are cut off as a torn tail and not reported as damage. Fail an append into a recycled segment at the seam while a later append completes, after records were appended and synced there before the failure; assert the stream leaves the segment, the later record is re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), and a reopen reports no damage; assert the segment is not retired until repack has carried the pre-failure records forward, is then unlinked, never recycled, and those records read back after its retirement and again after a reopen. Repeat with a short write on a fresh segment at the seam. Crash with a later append into a recycled segment persisted and an earlier one not; assert the reopen attaches the later record, writes no seal marker there, and the stream continues in a new segment naming no predecessor. A design that zeroes only the header, or accepts a trailer without its seal marker, reads the old catalog and loses the synced records. |
 | [§3.4](#3.4%20Unattachable%20files) interrupted `Init` | Crash after `Init` writes `format` and before the caller records its identity; reopen with `expect` zero. Assert the open fails naming the identity and this installation's ID, and that no segment is present; record the identity and open with it; assert the journal opens empty and serves. Repeat with a segment in the directory; assert it stays refused. |

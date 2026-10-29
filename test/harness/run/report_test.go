@@ -31,9 +31,9 @@ type summary struct {
 		}
 		Environment struct{ Commit, OSPlatform string }
 		Extra       struct {
-			Run, Tier, In string
-			Exit          int
-			Cells         []struct{ Suite, Cell, Result, Note, Log string }
+			Run, Tier, Place, In string
+			Exit                 int
+			Cells                []struct{ Suite, Cell, Result, Note, Log string }
 		}
 	}
 }
@@ -100,7 +100,7 @@ suites:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep, err = Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: io.Discard, Tier: "pr"}); err != nil {
+	if rep, err = Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: io.Discard, Tier: "pr", Place: "dedicated"}); err != nil {
 		t.Fatal(err)
 	}
 	seen := readSummary(t, filepath.Join(rep.Dir, "second", "seen"))
@@ -113,7 +113,7 @@ suites:
 		t.Errorf("cells %+v", x.Cells)
 	}
 	env := final.Results.Environment
-	if x.Run != filepath.Base(rep.Dir) || !strings.Contains(x.Run, "-"+env.Commit) || x.Tier != "pr" || x.In != "container" || x.Exit != 1 || env.OSPlatform != runtime.GOOS {
+	if x.Run != filepath.Base(rep.Dir) || !strings.Contains(x.Run, "-"+env.Commit) || x.Tier != "pr" || x.Place != "dedicated" || x.In != "container" || x.Exit != 1 || env.OSPlatform != runtime.GOOS {
 		t.Errorf("run fields %+v, %+v", x, env)
 	}
 }

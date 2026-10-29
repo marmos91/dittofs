@@ -54,6 +54,9 @@ const (
 	// default it reads when a user-provided PasswordSecretRef names no key.
 	secretKeyPassword = "password"
 
+	// secretKeyUsername is the Secret key holding an account's username.
+	secretKeyUsername = "username"
+
 	// defaultAdminUsername is the admin username assumed when neither the
 	// credentials Secret nor spec.identity.admin.username supplies one.
 	defaultAdminUsername = "admin"
@@ -113,7 +116,7 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 				return fmt.Errorf("failed to generate admin password: %w", err)
 			}
 			secret.Data = map[string][]byte{
-				"username":        []byte(defaultAdminUsername),
+				secretKeyUsername: []byte(defaultAdminUsername),
 				secretKeyPassword: []byte(password),
 			}
 		}
@@ -155,14 +158,14 @@ func (r *DittoServerReconciler) legacyAdminSecretData(ctx context.Context, ds *d
 	if len(legacy.Data[secretKeyPassword]) == 0 {
 		return nil, nil
 	}
-	username := legacy.Data["username"]
+	username := legacy.Data[secretKeyUsername]
 	if len(username) == 0 {
 		username = []byte(defaultAdminUsername)
 	}
 	logger.Info("Adopting password from legacy admin credentials secret for rename migration",
 		"legacySecret", ds.GetLegacyAdminCredentialsSecretName())
 	return map[string][]byte{
-		"username":        username,
+		secretKeyUsername: username,
 		secretKeyPassword: legacy.Data[secretKeyPassword],
 	}, nil
 }
@@ -313,7 +316,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 		return ctrl.Result{}, fmt.Errorf("failed to get admin credentials secret %s: %w", adminSecretName, err)
 	}
 
-	adminUsername := string(adminSecret.Data["username"])
+	adminUsername := string(adminSecret.Data[secretKeyUsername])
 	adminPassword := string(adminSecret.Data[passwordKey])
 	// Fail fast with an actionable error when the referenced key is absent/empty,
 	// rather than attempting a login with a blank password (which surfaces as a
@@ -406,7 +409,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"username":        []byte(dittoiov1alpha1.OperatorServiceAccountUsername),
+			secretKeyUsername: []byte(dittoiov1alpha1.OperatorServiceAccountUsername),
 			secretKeyPassword: []byte(operatorPassword),
 			"access-token":    []byte(operatorTokens.AccessToken),
 			"refresh-token":   []byte(operatorTokens.RefreshToken),
@@ -532,7 +535,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 		return nil
 	}
 
-	adminUsername := string(adminSecret.Data["username"])
+	adminUsername := string(adminSecret.Data[secretKeyUsername])
 	adminPassword := string(adminSecret.Data[passwordKey])
 	if adminUsername == "" {
 		adminUsername = specAdminUsername
