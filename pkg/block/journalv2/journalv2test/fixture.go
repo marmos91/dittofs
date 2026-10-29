@@ -289,12 +289,16 @@ func (f *Fixture) Reopen() {
 
 // ReopenWithoutLimit is Reopen without setting a version limit, so the
 // journal it opens has none until the test sets one. Its floor is the same as
-// Reopen's.
+// Reopen's. A limit the test sets through f.J is not recorded: a later Reopen
+// or Crash takes its floor from the last limit the fixture set, not that one.
 func (f *Fixture) ReopenWithoutLimit() {
 	f.tb.Helper()
 	f.reopen(false)
 }
 
+// reopen closes every handle and the journal, failing the test if one does
+// not close cleanly, and opens the journal again, setting a version limit
+// when limit is set.
 func (f *Fixture) reopen(limit bool) {
 	f.tb.Helper()
 

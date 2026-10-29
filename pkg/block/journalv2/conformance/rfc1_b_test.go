@@ -26,10 +26,12 @@ import (
 // The checks here fail by leaving the journal in a state it cannot leave, or
 // by letting it consume without bound.
 
-// The tags of the shares the checks here attach with a limit of their own,
-// clear of the fixture's shares.
+// The tags of the shares the checks here attach themselves, clear of the
+// fixture's shares: limitedA with a limit of its own, closing one per round
+// of the handle-close check.
 var (
 	limitedA = journalv2test.Tag(4)
+	closing  = [2]journalv2.ShareTag{journalv2test.Tag(6), journalv2test.Tag(7)}
 )
 
 // backgroundWait bounds, in real time, how long a check waits for the
@@ -97,7 +99,8 @@ func sameBut(before, after, want int64) bool {
 
 // limitedShare attaches tag with limit through the journal itself, since the
 // fixture's shares carry none, at the fixture's floor, and closes the handle
-// when the test ends.
+// when the test ends. A limit of 0 attaches the share with none below the
+// journal's maximum.
 func limitedShare(t *testing.T, f *journalv2test.Fixture, tag journalv2.ShareTag, limit int64) *journalv2.Handle {
 	t.Helper()
 
@@ -156,20 +159,20 @@ func fullDevice(t *testing.T, f *journalv2test.Fixture) {
 
 // fillShare writes chunks of size bytes through h, round robin over ids, until
 // the share's limit refuses one, and returns every write made and the
-// refusal. share is recorded in each write so a check can tell whose it was.
-func fillShare(t *testing.T, h *journalv2.Handle, share int, ids []journalv2.FileID, size int64) ([]written, *journalv2.NoSpaceError) {
+// refusal. The writes record share -1: h is no fixture share.
+func fillShare(t *testing.T, h *journalv2.Handle, ids []journalv2.FileID, size int64) ([]written, *journalv2.NoSpaceError) {
 	t.Helper()
 
 	var out []written
 	offs := make([]int64, len(ids))
 	for i := range 2 * journalv2test.FixtureMaxBytes / size {
 		k := int(i) % len(ids)
-		v, err := tryWrite(t, h, ids[k], offs[k], pattern(fmt.Sprint("share", share, i), int(size)))
+		v, err := tryWrite(t, h, ids[k], offs[k], pattern(fmt.Sprint("share", ids[k], i), int(size)))
 		stub(t, "WriteAt", err)
 		if err != nil {
 			return out, refusal(t, err, "a write past the share's limit", journalv2.LimitShare, journalv2.UnitBytes)
 		}
-		out = append(out, written{share, ids[k], journalv2.Extent{Off: offs[k], Len: size}, v})
+		out = append(out, written{-1, ids[k], journalv2.Extent{Off: offs[k], Len: size}, v})
 		offs[k] += size
 	}
 	t.Fatalf("%d bytes written into a share were never refused by its limit", 2*journalv2test.FixtureMaxBytes)
@@ -572,136 +575,142 @@ func reserve(t *testing.T, h *journalv2.Handle, n int64, writes int) *journalv2.
 // beside 10 GiB: the fixture's journal holds 64 MiB, and the spare pool must
 // hold what the reservation takes.
 func TestRFC1B_ReserveAhead(t *testing.T) {
-	f := journalv2test.NewWith(t, func(s *journalv2.Settings) {
-		s.ExtentLimit = reserveAheadExtents
-		s.SpareTarget = reserveAheadSpares
-	})
-	a := limitedShare(t, f, limitedA, 4<<20)
-
 	const piece, chunk = 128 << 10, 256 << 10
-	r := reserve(t, a, 1<<20, 4)
-	ws, _ := fillShare(t, a, 4, []journalv2.FileID{journalv2test.File(40), journalv2test.File(41)}, chunk)
-	for i := range 4 {
-		id := journalv2test.File(42 + i%2)
-		_, err := r.WriteAt(t.Context(), id, int64(i/2)*piece, pattern(fmt.Sprint("reserved", i), piece), 0)
-		stub(t, "Reservation.WriteAt", err)
-		if err != nil {
-			t.Fatalf("reserved write %d, within the reservation, with the share at its limit: %v", i, err)
-		}
+	open := func(t *testing.T) *journalv2test.Fixture {
+		t.Helper()
+		return journalv2test.NewWith(t, func(s *journalv2.Settings) {
+			s.ExtentLimit = reserveAheadExtents
+			s.SpareTarget = reserveAheadSpares
+		})
 	}
-	// The fill was refused at this size, and the reserved writes took nothing
-	// from outside the reservation, so it does not fit.
-	_, err := a.WriteAt(t.Context(), journalv2test.File(40), 1<<30, pattern("plain", chunk), 0)
-	refusal(t, err, "a plain write with the share at its limit", journalv2.LimitShare, journalv2.UnitBytes)
-	_, err = a.Reserve(1<<20, 1)
-	refusal(t, err, "a reservation past the share's limit", journalv2.LimitShare, journalv2.UnitBytes)
 
-	if got := f.J.Stats().Shares[limitedA].ReservedBytes; got <= 0 {
-		t.Fatalf("the share's ReservedBytes = %d with half a reservation unused, want it counted", got)
-	}
-	stub(t, "Reservation.Close", r.Close())
-	if got := f.J.Stats().Shares[limitedA].ReservedBytes; got != 0 {
-		t.Fatalf("the share's ReservedBytes = %d after the reservation closed, want 0", got)
-	}
-	// What the reservation left unused, about half a megabyte, is the share's
-	// again.
-	last := ws[len(ws)-1]
-	write(t, a, last.id, last.extent.Off+last.extent.Len, pattern("returned", chunk))
-
-	// Reserved writes beside a writer rolling the other share's streams.
-	b, other := f.Share(1), f.Share(0)
-	const big = 1 << 20
-	rb := reserve(t, b, 4*(big+4096), 4)
-	others := make(chan error, 1)
-	go func() {
-		for i := range int64(32) {
-			if _, err := tryWrite(t, other, journalv2test.File(50+int(i%2)), i/2*big, pattern(fmt.Sprint("other", i), big)); err != nil {
-				others <- called("WriteAt", err)
-				return
+	t.Run("AtTheShareLimit", func(t *testing.T) {
+		f := open(t)
+		a := limitedShare(t, f, limitedA, 4<<20)
+		r := reserve(t, a, 1<<20, 4)
+		ws, _ := fillShare(t, a, []journalv2.FileID{journalv2test.File(40), journalv2test.File(41)}, chunk)
+		for i := range 4 {
+			id := journalv2test.File(42 + i%2)
+			_, err := r.WriteAt(t.Context(), id, int64(i/2)*piece, pattern(fmt.Sprint("reserved", i), piece), 0)
+			stub(t, "Reservation.WriteAt", err)
+			if err != nil {
+				t.Fatalf("reserved write %d, within the reservation, with the share at its limit: %v", i, err)
 			}
 		}
-		others <- nil
-	}()
-	for i := range 4 {
-		_, err := rb.WriteAt(t.Context(), journalv2test.File(60+i%2), int64(i/2)*big, pattern(fmt.Sprint("copy", i), big), 0)
-		stub(t, "Reservation.WriteAt", err)
-		if err != nil {
-			t.Fatalf("reserved write %d beside a rolling writer was refused: %v", i, err)
-		}
-	}
-	if err := <-others; err != nil {
-		var ce *callError
-		if errors.As(err, &ce) {
-			stub(t, ce.call, ce.err)
-		}
-		t.Fatalf("an unreserved write below the journal's maximum: %v", err)
-	}
-	stub(t, "Reservation.Close", rb.Close())
+		// The fill was refused at this size, and the reserved writes took nothing
+		// from outside the reservation, so it does not fit.
+		_, err := a.WriteAt(t.Context(), journalv2test.File(40), 1<<30, pattern("plain", chunk), 0)
+		refusal(t, err, "a plain write with the share at its limit", journalv2.LimitShare, journalv2.UnitBytes)
+		_, err = a.Reserve(1<<20, 1)
+		refusal(t, err, "a reservation past the share's limit", journalv2.LimitShare, journalv2.UnitBytes)
 
-	// A reservation left open across a restart.
-	reserve(t, b, 1<<20, 1)
-	if got := f.J.Stats().ReservedBytes; got <= 0 {
-		t.Fatalf("ReservedBytes = %d with a reservation open, want it counted", got)
-	}
-	_ = a.Close()
-	f.Reopen()
-	s := f.J.Stats()
-	if s.ReservedBytes != 0 || s.Shares[journalv2test.Tag(1)].ReservedBytes != 0 {
-		t.Fatalf("ReservedBytes = %d, the share's %d after a restart, want both 0: a restart drops a reservation", s.ReservedBytes, s.Shares[journalv2test.Tag(1)].ReservedBytes)
-	}
+		if got := f.J.Stats().Shares[limitedA].ReservedBytes; got <= 0 {
+			t.Fatalf("the share's ReservedBytes = %d with half a reservation unused, want it counted", got)
+		}
+		stub(t, "Reservation.Close", r.Close())
+		if got := f.J.Stats().Shares[limitedA].ReservedBytes; got != 0 {
+			t.Fatalf("the share's ReservedBytes = %d after the reservation closed, want 0", got)
+		}
+		// What the reservation left unused, about half a megabyte, is the share's
+		// again.
+		last := ws[len(ws)-1]
+		write(t, a, last.id, last.extent.Off+last.extent.Len, pattern("returned", chunk))
 
-	// Reserved writes beside a writer that filled the index.
-	const reserved = 10_000
-	b, other = f.Share(1), f.Share(0)
-	ri := reserve(t, b, reserved*writeRecordBytes(1), reserved)
-	filler, scattered := journalv2test.File(70), journalv2test.File(71)
-	// One-byte writes a byte apart never merge into one extent.
-	for i := int64(0); ; i++ {
-		if i == reserveAheadExtents {
-			t.Fatalf("%d one-byte writes under an index bound of %d were never refused", i, reserveAheadExtents)
-		}
-		_, err := tryWrite(t, other, filler, 2*i, []byte{byte(i)})
-		stub(t, "WriteAt", err)
-		if err != nil {
-			refusal(t, err, "a write past the index's bound", journalv2.LimitIndex, journalv2.UnitEntries)
-			break
-		}
-	}
-	for i := range int64(reserved) {
-		_, err := ri.WriteAt(t.Context(), scattered, 2*i, []byte{byte(i)}, 0)
-		stub(t, "Reservation.WriteAt", err)
-		if err != nil {
-			t.Fatalf("reserved write %d with the index full: %v", i, err)
-		}
-	}
-	_, err = other.WriteAt(t.Context(), filler, 1<<30, []byte{1}, 0)
-	refusal(t, err, "a plain write with the index full", journalv2.LimitIndex, journalv2.UnitEntries)
-	stub(t, "Reservation.Close", ri.Close())
-	for _, x := range []struct {
-		h  *journalv2.Handle
-		id journalv2.FileID
-	}{{other, filler}, {b, scattered}} {
-		v, err := x.h.Delete(t.Context(), x.id)
-		stub(t, "Delete", err)
-		if err != nil {
-			t.Fatalf("delete a file of the full index: %v", err)
-		}
-		x.h.Settle(x.id, v)
-	}
+	})
 
-	// A reserved write with the headroom below half.
-	full := headroom(t, f)
-	rh := reserve(t, b, 4*writeRecordBytes(4096), 4)
-	fillUntilRefused(t, f, []int{0}, 80, chunk)
-	drainHeadroom(t, f, other, journalv2test.File(82), full)
-	for i := range int64(4) {
-		_, err := rh.WriteAt(t.Context(), journalv2test.File(83), i*4096, pattern(fmt.Sprint("below-half", i), 4096), 0)
-		stub(t, "Reservation.WriteAt", err)
-		if err != nil {
-			t.Fatalf("reserved write %d with the headroom below half: %v", i, err)
+	t.Run("BesideARollingWriter", func(t *testing.T) {
+		f := open(t)
+		b, other := f.Share(1), f.Share(0)
+		const big = 1 << 20
+		rb := reserve(t, b, 4*(big+4096), 4)
+		others := make(chan error, 1)
+		go func() {
+			for i := range int64(32) {
+				if _, err := tryWrite(t, other, journalv2test.File(50+int(i%2)), i/2*big, pattern(fmt.Sprint("other", i), big)); err != nil {
+					others <- called("WriteAt", err)
+					return
+				}
+			}
+			others <- nil
+		}()
+		for i := range 4 {
+			_, err := rb.WriteAt(t.Context(), journalv2test.File(60+i%2), int64(i/2)*big, pattern(fmt.Sprint("copy", i), big), 0)
+			stub(t, "Reservation.WriteAt", err)
+			if err != nil {
+				t.Fatalf("reserved write %d beside a rolling writer was refused: %v", i, err)
+			}
 		}
-	}
-	stub(t, "Reservation.Close", rh.Close())
+		if err := <-others; err != nil {
+			var ce *callError
+			if errors.As(err, &ce) {
+				stub(t, ce.call, ce.err)
+			}
+			t.Fatalf("an unreserved write below the journal's maximum: %v", err)
+		}
+		stub(t, "Reservation.Close", rb.Close())
+
+	})
+
+	t.Run("DroppedByARestart", func(t *testing.T) {
+		f := open(t)
+		reserve(t, f.Share(1), 1<<20, 1)
+		if got := f.J.Stats().ReservedBytes; got <= 0 {
+			t.Fatalf("ReservedBytes = %d with a reservation open, want it counted", got)
+		}
+		f.Reopen()
+		s := f.J.Stats()
+		if s.ReservedBytes != 0 || s.Shares[journalv2test.Tag(1)].ReservedBytes != 0 {
+			t.Fatalf("ReservedBytes = %d, the share's %d after a restart, want both 0: a restart drops a reservation", s.ReservedBytes, s.Shares[journalv2test.Tag(1)].ReservedBytes)
+		}
+
+	})
+
+	t.Run("BesideAFullIndex", func(t *testing.T) {
+		f := open(t)
+		const reserved = 10_000
+		b, other := f.Share(1), f.Share(0)
+		ri := reserve(t, b, reserved*writeRecordBytes(1), reserved)
+		filler, scattered := journalv2test.File(70), journalv2test.File(71)
+		// One-byte writes a byte apart never merge into one extent.
+		for i := int64(0); ; i++ {
+			if i == reserveAheadExtents {
+				t.Fatalf("%d one-byte writes under an index bound of %d were never refused", i, reserveAheadExtents)
+			}
+			_, err := tryWrite(t, other, filler, 2*i, []byte{byte(i)})
+			stub(t, "WriteAt", err)
+			if err != nil {
+				refusal(t, err, "a write past the index's bound", journalv2.LimitIndex, journalv2.UnitEntries)
+				break
+			}
+		}
+		for i := range int64(reserved) {
+			_, err := ri.WriteAt(t.Context(), scattered, 2*i, []byte{byte(i)}, 0)
+			stub(t, "Reservation.WriteAt", err)
+			if err != nil {
+				t.Fatalf("reserved write %d with the index full: %v", i, err)
+			}
+		}
+		_, err := other.WriteAt(t.Context(), filler, 1<<30, []byte{1}, 0)
+		refusal(t, err, "a plain write with the index full", journalv2.LimitIndex, journalv2.UnitEntries)
+		stub(t, "Reservation.Close", ri.Close())
+	})
+
+	t.Run("BelowHalfTheHeadroom", func(t *testing.T) {
+		f := open(t)
+		b, other := f.Share(1), f.Share(0)
+		full := headroom(t, f)
+		rh := reserve(t, b, 4*writeRecordBytes(4096), 4)
+		fillUntilRefused(t, f, []int{0}, 80, chunk)
+		drainHeadroom(t, f, other, journalv2test.File(82), full)
+		for i := range int64(4) {
+			_, err := rh.WriteAt(t.Context(), journalv2test.File(83), i*4096, pattern(fmt.Sprint("below-half", i), 4096), 0)
+			stub(t, "Reservation.WriteAt", err)
+			if err != nil {
+				t.Fatalf("reserved write %d with the headroom below half: %v", i, err)
+			}
+		}
+		stub(t, "Reservation.Close", rh.Close())
+	})
 }
 
 // TestRFC1B_HandleClose checks that closing a handle waits for a write in
@@ -711,7 +720,7 @@ func TestRFC1B_HandleClose(t *testing.T) {
 	f := journalv2test.New(t)
 
 	for k := range 2 {
-		tag := journalv2test.Tag(6 + k)
+		tag := closing[k]
 		h := limitedShare(t, f, tag, 0)
 		id, p := journalv2test.File(k), pattern(fmt.Sprint("inflight", k), 4096)
 
@@ -836,7 +845,7 @@ func TestRFC1B_NamedRefusal(t *testing.T) {
 	// The share's limit.
 	a := limitedShare(t, f, limitedA, 8<<20)
 	ids := []journalv2.FileID{journalv2test.File(0), journalv2test.File(1)}
-	ws, _ := fillShare(t, a, 4, ids, 256<<10)
+	ws, _ := fillShare(t, a, ids, 256<<10)
 	syncNow(t, a, ids...)
 	p := pattern("past-share", 256<<10)
 	err := refusedAtOnce(t, f, "a write past the share's limit", func() error {
@@ -890,7 +899,7 @@ func TestRFC1B_ShareLimit(t *testing.T) {
 	aIDs := []journalv2.FileID{journalv2test.File(0), journalv2test.File(1)}
 	bID := journalv2test.File(2)
 
-	fillShare(t, a, 4, aIDs, 128<<10)
+	fillShare(t, a, aIDs, 128<<10)
 	write(t, b, bID, 0, pattern("other-share", 128<<10))
 	syncNow(t, a, aIDs...)
 	syncNow(t, b, bID)
@@ -1239,13 +1248,14 @@ func TestRFC1B_RecordsWithoutBytesAtTheLimit(t *testing.T) {
 	ws := fillUntilRefused(t, f, []int{0, 1}, 0, 256<<10)
 	h0, h1 := f.Share(0), f.Share(1)
 
-	s := f.J.Stats()
-	draws, sealed := s.Counters.HeadroomDraws, s.Sealed
 	// The active segments' tails would otherwise take the records below
 	// without the headroom.
 	fillTails(t, []*journalv2.Handle{h0, h1}, 20, func(err error) {
 		wantNoSpace(t, err, journalv2.LimitJournal, "a small write at the journal's maximum")
 	})
+	// Taken after the fill, so only the five records and the seal count.
+	s := f.J.Stats()
+	draws, sealed := s.Counters.HeadroomDraws, s.Sealed
 
 	try := func(call string, err error) {
 		t.Helper()
@@ -1388,8 +1398,10 @@ func TestRFC1B_NoVersionRepeats(t *testing.T) {
 // with probability about 91%, so a correct journal would refuse X's fill. Four
 // raise it with probability about 0.1%, and the file IDs are fixed, so a
 // journal whose hash puts one of them in X's bucket fails every run rather
-// than now and then. Overturned if the bucket of a file becomes observable,
-// so the check can pick files that miss X's.
+// than now and then. That holds for a hash fixed across opens; nothing
+// requires one, and a hash seeded per open makes the 0.1% a flake. Overturned
+// if the bucket of a file becomes observable, so the check can pick files
+// that miss X's.
 func TestRFC1B_FloorBuckets(t *testing.T) {
 	f := journalv2test.New(t)
 	h, other := f.Share(0), f.Share(1)
