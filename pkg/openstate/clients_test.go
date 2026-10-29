@@ -684,3 +684,25 @@ func TestExpireIsNodeLocal(t *testing.T) {
 		t.Error("Expire left the client current here, so it could still be granted an open")
 	}
 }
+
+// A reboot ends the old ID at once: it is granted no open, and the opens it
+// held are released, each file a close left to unlink raised Closed.
+func TestRebootEndsTheOldID(t *testing.T) {
+	f := newFixture(t)
+	c := nfs("host-a", 1, entity.NewUser())
+	old := f.caller(t, c)
+	marked, dir := anyFile(), entity.NewFileID()
+	f.mustOpen(t, old, marked, OpenRequest{Via: dir, Name: []byte("m"), Access: del, DeleteOnClose: true})
+	c.Boot = [8]byte{2}
+	f.connect(t, c)
+	if _, err := f.open(old, anyFile(), OpenRequest{Access: rd}); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("an open by the ID a reboot ended: %v, want ErrStaleClient", err)
+	}
+	var unlinked bool
+	for _, cl := range f.sink.closed {
+		unlinked = unlinked || cl.f == marked.ID && cl.r.Unlink != nil && cl.r.Unlink.Parent == dir
+	}
+	if !unlinked {
+		t.Errorf("Closed after the reboot: %+v, want the marked file's unlink", f.sink.closed)
+	}
+}
