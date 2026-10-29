@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"testing"
@@ -2123,6 +2125,182 @@ func TestRFC28C_JournalGone(t *testing.T) {
 	writeSynced(t, m, 0, 0, 0, size)
 	m.Shutdown()
 	wantIdentityError(t, m.TryReopenAs(journalv2.JournalID{}), m.ID(), journalv2test.FixtureInstall, true)
+}
+
+// TestRFC28C_UnidentifiedDirectory checks that a directory the journal cannot
+// identify is refused and left as it is: one holding segments and no format
+// file fails to open with ErrUnidentified, is never taken for an empty
+// journal, and Init refuses it; one holding only files the journal never
+// writes fails to open, and Init refuses it with ErrNotEmpty; and an empty
+// directory fails to open, while Init creates a journal there whose format
+// file carries the installation ID it was given.
+//
+// decision: the directory lost+found is made on the real filesystem, past
+// the seam, which has no call that makes a directory, and that leg reads the
+// real directory for its untouched check for the same reason; the seam's
+// call counts still show every call the journal made. Its open is asserted
+// to fail with ErrNoJournal: the format says a directory with neither a
+// segment nor a format file holds no journal, and that is the error the
+// open gives a directory that holds none.
+func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
+	const size = 64 << 10
+
+	// Segments and no format file.
+	f := journalv2test.New(t)
+	writeSynced(t, f, 0, 0, 0, size)
+	writeSynced(t, f, 1, 1, 0, size)
+	f.Shutdown()
+	if err := f.Seam.Remove("format"); err != nil {
+		t.Fatalf("remove the format file: %v", err)
+	}
+
+	if err := f.Seam.SyncDir(); err != nil {
+		t.Fatalf("sync the directory: %v", err)
+	}
+
+	before := dirNow(t, f)
+	err := f.TryReopen()
+	stub(t, "Open", err)
+	if !errors.Is(err, journalv2.ErrUnidentified) {
+		t.Fatalf("opening a directory with segments and no format file returned %v, want ErrUnidentified", err)
+	}
+
+	wantUntouched(t, f, before)
+
+	// The interface names ErrNotEmpty for any entry, while Init's contract
+	// names ErrJournalExists for a segment, so both are accepted until the
+	// two agree.
+	_, err = f.TryInit()
+	stub(t, "Init", err)
+	if !errors.Is(err, journalv2.ErrNotEmpty) && !errors.Is(err, journalv2.ErrJournalExists) {
+		t.Fatalf("Init on a directory with segments and no format file returned %v, want ErrNotEmpty or ErrJournalExists", err)
+	}
+
+	wantUntouched(t, f, before)
+
+	// Only unrelated files: a plain file and a directory, neither a name the
+	// journal writes.
+	g := journalv2test.NewUnwatched(t)
+	g.Shutdown()
+	emptyDir(t, g)
+	plant(t, g, "notes.txt", pattern("notes", 4096))
+	if err := os.Mkdir(filepath.Join(g.Dir, "lost+found"), 0o755); err != nil {
+		t.Fatalf("make lost+found: %v", err)
+	}
+
+	unrelated := realDirNow(t, g)
+	err = g.TryReopen()
+	stub(t, "Open", err)
+	if !errors.Is(err, journalv2.ErrNoJournal) {
+		t.Fatalf("opening a directory holding only unrelated files returned %v, want ErrNoJournal", err)
+	}
+
+	wantRealUntouched(t, g, unrelated)
+	_, err = g.TryInit()
+	stub(t, "Init", err)
+	if !errors.Is(err, journalv2.ErrNotEmpty) {
+		t.Fatalf("Init on a directory holding only unrelated files returned %v, want ErrNotEmpty", err)
+	}
+
+	wantRealUntouched(t, g, unrelated)
+
+	// An empty directory.
+	k := journalv2test.NewUnwatched(t)
+	k.Shutdown()
+	emptyDir(t, k)
+	err = k.TryReopen()
+	stub(t, "Open", err)
+	if !errors.Is(err, journalv2.ErrNoJournal) {
+		t.Fatalf("opening an empty directory returned %v, want ErrNoJournal", err)
+	}
+
+	_, err = k.TryInit()
+	stub(t, "Init", err)
+	if err != nil {
+		t.Fatalf("Init on an empty directory: %v", err)
+	}
+
+	if err := k.TryReopen(); err != nil {
+		t.Fatalf("open the new journal: %v", err)
+	}
+
+	format, err := raw.ParseFormat(durable(t, k, "format"))
+	if err != nil {
+		t.Fatalf("the new journal's format file does not parse: %v", err)
+	}
+
+	if format.Installation != [16]byte(journalv2test.FixtureInstall) {
+		t.Fatalf("the new journal's format file carries installation %x, want the %x Init was given", format.Installation, journalv2test.FixtureInstall)
+	}
+}
+
+// realDirImage is a directory as the real filesystem shows it, for a
+// directory holding entries the seam did not make: each name with whether it
+// is a directory and, for a file, its bytes, and the seam's counts of the
+// calls that change a directory or a file.
+type realDirImage struct {
+	dirs  map[string]bool
+	files map[string][]byte
+	calls map[string]int
+}
+
+// realDirNow reads the directory's image from the real filesystem.
+func realDirNow(t *testing.T, f *journalv2test.Fixture) realDirImage {
+	t.Helper()
+
+	img := realDirImage{dirs: map[string]bool{}, files: map[string][]byte{}, calls: map[string]int{}}
+	entries, err := os.ReadDir(f.Dir)
+	if err != nil {
+		t.Fatalf("read the directory: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			img.dirs[e.Name()] = true
+			continue
+		}
+
+		b, err := os.ReadFile(filepath.Join(f.Dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		img.files[e.Name()] = b
+	}
+
+	for _, op := range changingOps {
+		img.calls[op] = f.Seam.Calls(op)
+	}
+	return img
+}
+
+// wantRealUntouched fails the test unless the real directory holds the same
+// entries with the same bytes as before, and no call that changes a
+// directory or a file was made since.
+func wantRealUntouched(t *testing.T, f *journalv2test.Fixture, before realDirImage) {
+	t.Helper()
+
+	now := realDirNow(t, f)
+	if !maps.Equal(now.dirs, before.dirs) {
+		t.Fatalf("the directories are %v, were %v; the directory was to be left alone", slices.Sorted(maps.Keys(now.dirs)), slices.Sorted(maps.Keys(before.dirs)))
+	}
+
+	for name, b := range before.files {
+		if got, ok := now.files[name]; !ok || !bytes.Equal(got, b) {
+			t.Fatalf("%s was changed or removed; the directory was to be left alone", name)
+		}
+	}
+
+	for name := range now.files {
+		if _, ok := before.files[name]; !ok {
+			t.Fatalf("%s was created; the directory was to be left alone", name)
+		}
+	}
+
+	for _, op := range changingOps {
+		if now.calls[op] != before.calls[op] {
+			t.Fatalf("%d %s calls were made; the directory was to be left alone", now.calls[op]-before.calls[op], op)
+		}
+	}
 }
 
 // TestRFC28C_InterruptedInit checks that a journal whose identity its caller
