@@ -290,7 +290,7 @@ func headroom(t *testing.T, f *journalv2test.Fixture) int64 {
 // repackAll seals the segments left idle, then repacks scope until a pass
 // frees nothing, and returns the storage freed. A pass that frees nothing
 // before anything was freed is retried while the idle seals may still be
-// landing.
+// landing. Each pass is bounded as within bounds a call.
 func repackAll(t *testing.T, f *journalv2test.Fixture, scope journalv2.RepackScope) int64 {
 	t.Helper()
 
@@ -298,7 +298,11 @@ func repackAll(t *testing.T, f *journalv2test.Fixture, scope journalv2.RepackSco
 	var total int64
 	deadline := time.Now().Add(backgroundWait)
 	for range 256 {
-		freed, err := f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, scope)
+		var freed int64
+		err := within(t, f, "a repack pass", func() (err error) {
+			freed, err = f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, scope)
+			return err
+		})
 		stub(t, "Repack", err)
 		if err != nil {
 			t.Fatalf("repack: %v", err)

@@ -40,6 +40,25 @@ import (
 // waits it is in, when a check can see a call waiting instead of timing it.
 const callWait = 10 * time.Second
 
+// within runs call on a goroutine of its own and returns its error. If call
+// has not returned within callWait, it abandons the fixture's journal and
+// fails the test, since closing the journal at cleanup would wait for the
+// blocked call and hang the run instead.
+func within(t *testing.T, f *journalv2test.Fixture, what string, call func() error) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(callWait):
+		f.Abandon()
+		t.Fatalf("%s did not return within %v", what, callWait)
+		return nil
+	}
+}
+
 // drawVersion draws a content version from the journal, for a fill.
 func drawVersion(t *testing.T, f *journalv2test.Fixture) journalv2.Version {
 	t.Helper()
@@ -168,8 +187,20 @@ func wantPieces(t *testing.T, es []journalv2.IndexEntry, within journalv2.Extent
 	return len(in)
 }
 
+// parkWait bounds, in real time, how long a stalled offer callback stays
+// parked if the check never lets it go.
+//
+// decision: every journal call a check makes beside a parked callback is
+// bounded by callWait on its own, so the callback is not what ends a call
+// that waits for it; parkWait only stops a call the check did not bound, such
+// as a read of Stats, from hanging the run. It is far above callWait so a
+// sequence of calls beside the callback, each within callWait, never outlasts
+// it. The ceiling: a check whose calls beside one parked callback take longer
+// than this in all fails without being wrong. Overturned as callWait is.
+const parkWait = 10 * callWait
+
 // stall parks offer callbacks as a slow upload would, until the check lets
-// them go. A callback parked for callWait lets itself go and records that it
+// them go. A callback parked for parkWait lets itself go and records that it
 // did, so a journal call that waits for it returns, late, instead of hanging
 // the run, and the check reads the lateness as the failure.
 type stall struct {
@@ -188,13 +219,13 @@ func newStall(t *testing.T) *stall {
 	return s
 }
 
-// park blocks a callback until letGo, or until callWait has passed.
+// park blocks a callback until letGo, or until parkWait has passed.
 func (s *stall) park() {
 	s.waiting.Add(1)
 	s.first.Do(func() { close(s.reached) })
 	select {
 	case <-s.release:
-	case <-time.After(callWait):
+	case <-time.After(parkWait):
 		s.expired.Store(true)
 	}
 }
@@ -208,13 +239,15 @@ func (s *stall) wantParked(t *testing.T, what string) {
 	t.Helper()
 
 	if s.expired.Load() {
-		t.Fatalf("%s waited for the parked offer callback, which let itself go after %v", what, callWait)
+		t.Fatalf("%s waited for the parked offer callback, which let itself go after %v", what, parkWait)
 	}
 }
 
 // waitParked returns once n callbacks are parked at s, and fails the test if
-// an offer returns first or they are not all parked within callWait.
-func waitParked(t *testing.T, s *stall, n int32, offers <-chan error) {
+// an offer returns first or they are not all parked within callWait, then
+// abandoning the fixture's journal, whose offers may be blocked short of their
+// callbacks.
+func waitParked(t *testing.T, f *journalv2test.Fixture, s *stall, n int32, offers <-chan error) {
 	t.Helper()
 
 	deadline := time.Now().Add(callWait)
@@ -226,6 +259,7 @@ func waitParked(t *testing.T, s *stall, n int32, offers <-chan error) {
 		default:
 		}
 		if time.Now().After(deadline) {
+			f.Abandon()
 			t.Fatalf("%d of %d offer callbacks parked within %v", s.waiting.Load(), n, callWait)
 		}
 		time.Sleep(time.Millisecond)
@@ -248,8 +282,9 @@ func wantOffer(t *testing.T, err error) {
 }
 
 // joinOffers waits for n offers to return on done, each within callWait, and
-// fails the test on any error.
-func joinOffers(t *testing.T, done <-chan error, n int) {
+// fails the test on any error. An offer that does not return abandons the
+// fixture's journal.
+func joinOffers(t *testing.T, f *journalv2test.Fixture, done <-chan error, n int) {
 	t.Helper()
 
 	for range n {
@@ -257,6 +292,7 @@ func joinOffers(t *testing.T, done <-chan error, n int) {
 		case err := <-done:
 			wantOffer(t, err)
 		case <-time.After(callWait):
+			f.Abandon()
 			t.Fatalf("an offer did not return within %v of its callback being let go", callWait)
 		}
 	}
@@ -264,7 +300,8 @@ func joinOffers(t *testing.T, done <-chan error, n int) {
 
 // pinPeak samples PinnedSegments until the function it returns is called,
 // and that function returns the highest value seen. The sampling also stops
-// when the test ends.
+// when the test ends. A sample that does not return within callWait of the
+// stop fails the test and abandons the fixture's journal.
 //
 // decision: the gauge is sampled every 100 µs of real time, beside the exact
 // reading the checks take while every callback is parked. Its ceiling: a
@@ -290,7 +327,12 @@ func pinPeak(t *testing.T, f *journalv2test.Fixture) func() int {
 	end := func() int {
 		once.Do(func() {
 			close(stop)
-			high = <-peak
+			select {
+			case high = <-peak:
+			case <-time.After(callWait):
+				f.Abandon()
+				t.Errorf("a read of Stats did not return within %v", callWait)
+			}
 		})
 		return high
 	}
@@ -486,6 +528,16 @@ func TestRFC1B_IndexBoundRefuses(t *testing.T) {
 		t.Fatalf("the largest held extent of the 512 KiB file is %+v, too short for %d punches", e, punches)
 	}
 	ceiling := int64(indexBound + indexBound/8)
+	// decision: a punch accepted after one was refused fails the check, which
+	// holds only while nothing lowers the count during the loop. Only Settle
+	// and Forget drop removal markers, and only Release, a removal or a
+	// repack's coalescing drops a held entry; the loop makes none of those
+	// calls, and neither the fixture nor the journal's own background work
+	// (idle seals, retiring emptied segments, making spares) makes them. The
+	// ceiling: a journal that coalesced markers or entries on its own would
+	// fail here without being wrong. Overturned if the journal ever lowers the
+	// count without being called, when the check reads the count after a
+	// refusal and accepts a punch only below the ceiling.
 	accepted, refused := 0, 0
 	for i := range int64(punches) {
 		_, err := f.Share(1).Deallocate(t.Context(), holed, journalv2.Extent{Off: e.Off + 1 + 2*i, Len: 1})
@@ -568,7 +620,7 @@ func TestRFC1B_PinnedSegmentsBounded(t *testing.T) {
 			return nil
 		})
 	}()
-	waitParked(t, st, 1, done)
+	waitParked(t, f, st, 1, done)
 
 	pinned := map[journalv2.SegmentID]bool{}
 	for _, e := range offered {
@@ -602,7 +654,7 @@ func TestRFC1B_PinnedSegmentsBounded(t *testing.T) {
 	}
 
 	st.letGo()
-	joinOffers(t, done, 1)
+	joinOffers(t, f, done, 1)
 	if got := peak(); got > journalv2test.OfferPins {
 		t.Fatalf("PinnedSegments reached %d over one offer, past the bound of %d", got, journalv2test.OfferPins)
 	}
@@ -652,7 +704,7 @@ func TestRFC1B_PinsBoundedAcrossOffers(t *testing.T) {
 			})
 		}()
 	}
-	waitParked(t, st, offers, done)
+	waitParked(t, f, st, offers, done)
 
 	bound := journalv2test.JournalPins + offers
 	if got := f.J.Stats().PinnedSegments; got < offers || got > bound {
@@ -663,8 +715,10 @@ func TestRFC1B_PinsBoundedAcrossOffers(t *testing.T) {
 			t.Fatalf("offer %d offered nothing while dirty extents of its file remained", k)
 		}
 	}
+	// A callback that let itself go before the reading was not parked for it.
+	st.wantParked(t, "the reading of eight parked offers")
 	st.letGo()
-	joinOffers(t, done, offers)
+	joinOffers(t, f, done, offers)
 	if got := peak(); got > bound {
 		t.Fatalf("PinnedSegments reached %d over %d offers, past the journal-wide bound plus one each, %d", got, offers, bound)
 	}
@@ -702,6 +756,9 @@ func failWindow(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID)
 func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 	f := journalv2test.New(t)
 
+	// kept is each write of a failed window whose Sync succeeded: a crash at
+	// the end must find it, since reading it before only shows it readable.
+	var kept []int
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
 		a := journalv2.Extent{Off: 0, Len: 4096}
@@ -753,6 +810,8 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 			}
 		} else if len(missing) != 0 || !bytes.Equal(got, pa) {
 			t.Fatalf("share %d: Sync succeeded over a failed sync, and the write reads missing %+v or other bytes", k, missing)
+		} else {
+			kept = append(kept, k)
 		}
 
 		var offered []journalv2.Extent
@@ -774,6 +833,17 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 			t.Fatalf("share %d: the offload after a failed window offered %d bytes of the later write, want all %d", k, n, b.Len)
 		}
 	}
+
+	if len(kept) == 0 {
+		return
+	}
+	f.Crash()
+	for _, k := range kept {
+		got, missing := readBack(t, f.Share(k), journalv2test.File(k), 0, 4096)
+		if len(missing) != 0 || !bytes.Equal(got, pattern(fmt.Sprint("window", k), 4096)) {
+			t.Fatalf("share %d: the write of a failed window, whose later Sync succeeded, reads missing %+v or other bytes after a crash", k, missing)
+		}
+	}
 }
 
 // TestRFC1B_SyncFailure checks that a failed sync is reported, never recorded
@@ -788,10 +858,16 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 func TestRFC1B_SyncFailure(t *testing.T) {
 	f := journalv2test.New(t)
 
-	var durable []written
+	// durable is every write whose Sync succeeded, with its bytes.
+	type kept struct {
+		w written
+		p []byte
+	}
+	var durable []kept
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
-		v := write(t, h, id, 0, pattern(fmt.Sprint("failed", k), 4096))
+		pf := pattern(fmt.Sprint("failed", k), 4096)
+		v := write(t, h, id, 0, pf)
 		seg := segmentOf(t, f, id, 0)
 		failures := f.J.Stats().Counters.SyncFailures
 		f.FailNext(journalv2test.OpSync, segmentName(seg), 1)
@@ -802,34 +878,46 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 			t.Fatalf("share %d: a Sync whose sync failed with EIO returned %v, want a SyncError wrapping it", k, err)
 		}
 		if err == nil {
-			durable = append(durable, written{k, id, journalv2.Extent{Off: 0, Len: 4096}, v})
+			durable = append(durable, kept{written{k, id, journalv2.Extent{Off: 0, Len: 4096}, v}, pf})
 		}
 		s := f.J.Stats()
 		if s.Counters.SyncFailures <= failures || s.LastSyncError == nil || !errors.Is(s.LastSyncError.Err, syscall.EIO) {
 			t.Fatalf("share %d: SyncFailures moved by %d and LastSyncError is %+v after a sync failed with EIO, want it recorded", k, s.Counters.SyncFailures-failures, s.LastSyncError)
 		}
 
-		syncs := f.Seam.Calls(journalv2test.OpSync)
-		v = write(t, h, id, 64<<10, pattern(fmt.Sprint("next", k), 4096))
+		// Syncs are counted on the segment holding the write, only once the
+		// write returned, so neither another stream's sync nor one that began
+		// before the write stands in for a sync of it.
+		pn := pattern(fmt.Sprint("next", k), 4096)
+		v = write(t, h, id, 64<<10, pn)
+		next := segmentName(segmentOf(t, f, id, 64<<10))
+		syncs := f.Seam.CallsFor(journalv2test.OpSync, next)
 		syncNow(t, h, id)
-		if f.Seam.Calls(journalv2test.OpSync) == syncs {
-			t.Fatalf("share %d: a Sync after a failed one returned without a sync", k)
+		if f.Seam.CallsFor(journalv2test.OpSync, next) == syncs {
+			t.Fatalf("share %d: a Sync after a failed one returned without a sync of %s, which holds the write", k, next)
 		}
-		durable = append(durable, written{k, id, journalv2.Extent{Off: 64 << 10, Len: 4096}, v})
+		durable = append(durable, kept{written{k, id, journalv2.Extent{Off: 64 << 10, Len: 4096}, v}, pn})
 
-		syncs = f.Seam.Calls(journalv2test.OpSync)
-		write(t, h, id, 128<<10, pattern(fmt.Sprint("timer", k), 4096))
+		// The timer's sync is seen where it lands, in the image a crash keeps
+		// of the write's segment: that the write was synced, not that some
+		// sync happened.
+		pt := pattern(fmt.Sprint("timer", k), 4096)
+		v = write(t, h, id, 128<<10, pt)
+		timer := segmentName(segmentOf(t, f, id, 128<<10))
 		f.Advance(journalv2.SyncBound)
-		eventually(t, fmt.Sprintf("share %d: no sync within the sync bound of a write after a failed sync", k), func() bool {
-			return f.Seam.Calls(journalv2test.OpSync) > syncs
+		eventually(t, fmt.Sprintf("share %d: the write after a failed sync was not made durable in %s within the sync bound", k, timer), func() bool {
+			image, err := f.Seam.Durable(timer)
+			return err == nil && bytes.Contains(image, pt)
 		})
+		durable = append(durable, kept{written{k, id, journalv2.Extent{Off: 128 << 10, Len: 4096}, v}, pt})
 	}
 
 	f.Crash()
-	for _, w := range durable {
-		_, missing := readBack(t, f.Share(w.share), w.id, w.extent.Off, w.extent.Len)
-		if len(missing) != 0 {
-			t.Fatalf("share %d: the write at %d, whose Sync succeeded, reads missing %+v after a crash", w.share, w.extent.Off, missing)
+	for _, d := range durable {
+		w := d.w
+		got, missing := readBack(t, f.Share(w.share), w.id, w.extent.Off, w.extent.Len)
+		if len(missing) != 0 || !bytes.Equal(got, d.p) {
+			t.Fatalf("share %d: the write at %d, synced, reads missing %+v or other bytes after a crash", w.share, w.extent.Off, missing)
 		}
 	}
 }
@@ -933,12 +1021,22 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 				}
 			})
 		}
+		// join stops the readers and waits for them, for at most callWait: a
+		// reader blocked in the journal abandons it, as within does.
 		joined := false
 		join := func() {
-			if !joined {
-				joined = true
-				close(stop)
-				wg.Wait()
+			if joined {
+				return
+			}
+			joined = true
+			close(stop)
+			all := make(chan struct{})
+			go func() { wg.Wait(); close(all) }()
+			select {
+			case <-all:
+			case <-time.After(callWait):
+				f.Abandon()
+				t.Errorf("share %d: the readers did not return within %v of being stopped", k, callWait)
 			}
 		}
 		defer join()
@@ -958,8 +1056,13 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 		eventually(t, "the readers did not get going", func() bool { return reads.Load() >= 64 || len(failed) > 0 })
 		readerFailed()
 
+		// The repack starts only once the readers' reads are being relayed,
+		// so it meets the load from its first attempt at the segment, and
+		// every read relayed so far is a reader's.
 		relayed := newRelay(segmentName(seg.ID))
 		f.Seam.SetFault(relayed)
+		eventually(t, "the readers' reads were not relayed at the seam", func() bool { return relayed.relayed.Load() >= 64 || len(failed) > 0 })
+		readerFailed()
 		repacked := make(chan error, 1)
 		var freed int64
 		go func() {
@@ -971,15 +1074,13 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 		select {
 		case err = <-repacked:
 		case <-time.After(callWait):
+			f.Abandon()
 			join()
 			t.Fatalf("share %d: a repack of a segment under %d readers did not return within %v", k, readers, callWait)
 		}
 		join()
 		f.Seam.SetFault(nil)
 		readerFailed()
-		if relayed.relayed.Load() == 0 {
-			t.Fatalf("share %d: no read of segment %d was relayed at the seam: the reads did not reach it", k, seg.ID)
-		}
 		stub(t, "Repack", err)
 		if err != nil {
 			t.Fatalf("share %d: repack under readers: %v", k, err)
@@ -1063,21 +1164,30 @@ func TestRFC1B_RemovalsDoNotWaitOnOffload(t *testing.T) {
 			return nil
 		})
 	}()
-	waitParked(t, st, 1, done)
+	waitParked(t, f, st, 1, done)
 
 	yUsed := f.J.Stats().Shares[journalv2test.Tag(1)].UsedBytes
-	_, err := other.Delete(t.Context(), y)
+	err := within(t, f, "a delete beside a parked offer", func() error {
+		_, err := other.Delete(t.Context(), y)
+		return err
+	})
 	stub(t, "Delete", err)
 	if err != nil {
 		t.Fatalf("delete beside a parked offer: %v", err)
 	}
-	_, err = h.Truncate(t.Context(), x, 4*size)
+	err = within(t, f, "a truncate beside a parked offer", func() error {
+		_, err := h.Truncate(t.Context(), x, 4*size)
+		return err
+	})
 	stub(t, "Truncate", err)
 	if err != nil {
 		t.Fatalf("truncate of the offered file beside its parked offer: %v", err)
 	}
 	gone := journalv2.Extent{Off: size, Len: size}
-	_, err = h.Deallocate(t.Context(), x, gone)
+	err = within(t, f, "a deallocate beside a parked offer", func() error {
+		_, err := h.Deallocate(t.Context(), x, gone)
+		return err
+	})
 	stub(t, "Deallocate", err)
 	if err != nil {
 		t.Fatalf("deallocate of the offered file beside its parked offer: %v", err)
@@ -1103,7 +1213,7 @@ func TestRFC1B_RemovalsDoNotWaitOnOffload(t *testing.T) {
 	}
 
 	st.letGo()
-	joinOffers(t, done, 1)
+	joinOffers(t, f, done, 1)
 	repackAll(t, f, journalv2.RepackScope{Segments: ySegs})
 	for _, s := range ySegs {
 		if !retired(f, s) {
@@ -1214,6 +1324,20 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 	}
 	j := f.J
 
+	// done counts, per kind, the calls that changed something: a release
+	// that released, a fill that filled, a repack that freed. The run goes on
+	// until each kind has, so it never passes on calls that found nothing to
+	// do while the others ran.
+	done := map[string]*atomic.Int64{"release": {}, "fill": {}, "repack": {}}
+	allDid := func() bool {
+		for _, n := range done {
+			if n.Load() == 0 {
+				return false
+			}
+		}
+		return true
+	}
+
 	// pick returns a file's handle, the file and a chunk of it.
 	pick := func(r *rand.Rand) (*journalv2.Handle, journalv2.FileID, journalv2.Extent) {
 		k := r.IntN(files)
@@ -1248,6 +1372,9 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 				if errors.Is(err, journalv2.ErrNotOffloaded) {
 					return nil // overwritten since the mark
 				}
+				if err == nil {
+					done["release"].Add(1)
+				}
 				return named("Release", err)
 			})
 		},
@@ -1268,17 +1395,27 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 				if errors.Is(err, journalv2.ErrStaleFill) {
 					return nil // written since the read
 				}
+				if err == nil {
+					done["fill"].Add(1)
+				}
 				return named("Fill", err)
 			})
 		},
 		"repack": func(_ *rand.Rand, w *worker) error {
 			return w.do(func() error {
-				_, err := j.Repack(t.Context(), 2*journalv2test.FixtureSegmentCap, journalv2.RepackScope{})
+				freed, err := j.Repack(t.Context(), 2*journalv2test.FixtureSegmentCap, journalv2.RepackScope{})
+				if freed > 0 {
+					done["repack"].Add(1)
+				}
 				return named("Repack", err)
 			})
 		},
 	}
 
+	// Every worker starts at once, and each goes past its rounds, up to
+	// maxRounds, until every kind has changed something.
+	const maxRounds = 20 * rounds
+	start := make(chan struct{})
 	var workers []*worker
 	var wg sync.WaitGroup
 	for _, name := range slices.Sorted(maps.Keys(kinds)) {
@@ -1287,7 +1424,8 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 			workers = append(workers, w)
 			r := rand.New(rand.NewPCG(uint64(len(workers)), 1))
 			wg.Go(func() {
-				for range rounds {
+				<-start
+				for i := 0; i < rounds || (i < maxRounds && !allDid()); i++ {
 					if err := kinds[name](r, w); err != nil {
 						w.err = err
 						return
@@ -1296,6 +1434,7 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 			})
 		}
 	}
+	close(start)
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
 	if !watchCalls(t, workers, finished, callWait, f.Abandon) {
@@ -1311,6 +1450,11 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 			stub(t, ce.call, ce.err)
 		}
 		t.Fatalf("%s: %v", w.name, w.err)
+	}
+	for _, name := range slices.Sorted(maps.Keys(done)) {
+		if done[name].Load() == 0 {
+			t.Fatalf("no %s call changed anything in %d rounds of each worker beside the others", name, maxRounds)
+		}
 	}
 	rep, err := f.J.Inspect().Verify(t.Context())
 	stub(t, "Verify", err)
@@ -1358,11 +1502,9 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 	syncNow(t, h, id)
 
 	copied := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
-	var repackDone atomic.Bool
 	repacked := make(chan error, 1)
 	go func() {
 		_, err := f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg.ID}})
-		repackDone.Store(true)
 		repacked <- err
 	}()
 	select {
@@ -1371,18 +1513,39 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 		stub(t, "Repack", err)
 		t.Fatalf("a repack of a segment half released returned (%v) without writing a copy", err)
 	case <-time.After(callWait):
+		copied.Release()
+		f.Abandon()
 		t.Fatalf("a repack of a segment half released wrote no copy within %v", callWait)
 	}
 
+	// let is closed just before the copy is let go. The repack cannot return
+	// before then, so a Close that returns before it did not wait for the
+	// repack. Close returning after the copy was let go is not ordered against
+	// the repack's caller, so nothing is read from that.
 	j := f.J
-	var repackFirst atomic.Bool
+	let := make(chan struct{})
+	var early atomic.Bool
 	closed := make(chan error, 1)
 	go func() {
 		err := j.Close()
-		repackFirst.Store(repackDone.Load())
+		select {
+		case <-let:
+		default:
+			early.Store(true)
+		}
 		closed <- err
 	}()
-	// Close has begun once a new call is refused.
+	// stuck lets the parked copy go, abandons the journal, whose Close or
+	// repack is blocked, and fails the test.
+	stuck := func(format string, args ...any) {
+		t.Helper()
+		copied.Release()
+		f.Abandon()
+		t.Fatalf(format, args...)
+	}
+	// Close has begun once a new call is refused. Each probe is a call of its
+	// own, bounded by what is left of callWait, since one that blocks behind
+	// the shutdown would otherwise keep the check from ever letting the copy go.
 	for deadline := time.Now().Add(callWait); ; time.Sleep(time.Millisecond) {
 		select {
 		case err := <-closed:
@@ -1390,20 +1553,32 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 			t.Fatalf("Close returned (%v) while a repack was parked in its copy", err)
 		default:
 		}
-		if _, err := j.Draw(); errors.Is(err, journalv2.ErrClosed) {
+		probe := make(chan error, 1)
+		go func() {
+			_, err := j.Draw()
+			probe <- err
+		}()
+		var err error
+		select {
+		case err = <-probe:
+		case <-time.After(time.Until(deadline)):
+			stuck("a Draw did not return within %v of Close with a repack parked", callWait)
+		}
+		if errors.Is(err, journalv2.ErrClosed) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("calls were not refused within %v of Close", callWait)
+			stuck("calls were not refused within %v of Close", callWait)
 		}
 	}
+	close(let)
 	copied.Release()
 
 	var err error
 	select {
 	case err = <-repacked:
 	case <-time.After(callWait):
-		t.Fatalf("the repack in flight at Close did not return within %v of its copy being let go", callWait)
+		stuck("the repack in flight at Close did not return within %v of its copy being let go", callWait)
 	}
 	if !errors.Is(err, journalv2.ErrClosed) {
 		stub(t, "Repack", err)
@@ -1414,14 +1589,14 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 	select {
 	case err = <-closed:
 	case <-time.After(callWait):
-		t.Fatalf("Close did not return within %v of the repack in flight", callWait)
+		stuck("Close did not return within %v of the repack in flight", callWait)
 	}
 	stub(t, "Close", err)
 	if err != nil {
 		t.Fatalf("close with a repack in flight: %v", err)
 	}
-	if !repackFirst.Load() {
-		t.Fatal("Close returned before the repack in flight did")
+	if early.Load() {
+		t.Fatal("Close returned while the repack in flight was still parked in its copy")
 	}
 
 	after := f.Seam.Hold(t, "*", "*")
@@ -1589,8 +1764,10 @@ func TestRFC1B_RepackAimedAtShare(t *testing.T) {
 		}
 	}
 	evict(t, b, bws)
+	// Every other write of each of A's files, which alternate: half of each
+	// file, so no segment of A's is emptied and retired on its own.
 	for i, w := range aws {
-		if i%2 == 0 {
+		if (i/2)%2 == 0 {
 			evict(t, a, []written{w})
 		}
 	}
@@ -1683,14 +1860,18 @@ const descriptorSlack = 8
 // fixture's 1 MiB cap.
 func TestRFC1B_Descriptors(t *testing.T) {
 	const budget, size = 16, 256 << 10
+	// The process's count is taken before the journal opens, so what it opens
+	// at start counts against its bound too. A first listing goes before it,
+	// so descriptors the runtime opens on its first file are not counted.
+	prof.Descriptors()
+	base, counted := prof.Descriptors()
+	if !counted {
+		t.Log("the process's descriptors cannot be listed here; only Stats bounds them")
+	}
 	f := journalv2test.NewWithOptions(t, nil, journalv2.WithDescriptorBudget(journalv2.NewDescriptorBudget(budget)))
 	bound := f.J.Stats().DescriptorLimit
 	if bound != budget {
 		t.Fatalf("DescriptorLimit = %d under a budget of %d, want the budget", bound, budget)
-	}
-	base, counted := prof.Descriptors()
-	if !counted {
-		t.Log("the process's descriptors cannot be listed here; only Stats bounds them")
 	}
 	bounded := func(what string) {
 		t.Helper()
@@ -1698,8 +1879,15 @@ func TestRFC1B_Descriptors(t *testing.T) {
 		if s.OpenDescriptors > s.DescriptorLimit {
 			t.Fatalf("%s: OpenDescriptors = %d, past DescriptorLimit %d", what, s.OpenDescriptors, s.DescriptorLimit)
 		}
-		if n, ok := prof.Descriptors(); counted && ok && n-base > bound+descriptorSlack {
-			t.Fatalf("%s: the process holds %d descriptors more than once the journal opened, past its bound of %d and %d more", what, n-base, bound, descriptorSlack)
+		if !counted {
+			return
+		}
+		n, ok := prof.Descriptors()
+		if !ok {
+			t.Fatalf("%s: the process's descriptors, listed before the journal opened, can no longer be listed", what)
+		}
+		if n-base > bound+descriptorSlack {
+			t.Fatalf("%s: the process holds %d descriptors more than before the journal opened, past its bound of %d and %d more", what, n-base, bound, descriptorSlack)
 		}
 	}
 
