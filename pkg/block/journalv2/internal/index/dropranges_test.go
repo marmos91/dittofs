@@ -856,6 +856,66 @@ func TestNinthMergesIntoItsClosestNeighbour(t *testing.T) {
 		}
 		untouched(t, &fs, id, 0, 3, 4, 5, 6, 7)
 	})
+
+	t.Run("tie with the best old pair, neighbour lower", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		// Eight ranges ten long at 100, 200, …, 800: every gap between old
+		// pairs is 90, and each pair's position in the nine is 1 or more.
+		for i := range int64(8) {
+			noteRec(t, &fs, id, 1, ext(100+100*i, 10), nums(uint64(i+1), uint64(i+1)))
+		}
+		// The ninth, [0, 10): its right gap is 90 too, but its position in
+		// nine, 0, is below every old pair's, so the tie takes it and it
+		// merges right into [0, 110).
+		noteRec(t, &fs, id, 1, ext(0, 10), nums(3, 99))
+		rs, _ := rangesOf(&fs, id, 1)
+		if len(rs) != 8 {
+			t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+		}
+		want := dropRange{start: 0, end: 110, low: nums(1, 1)}
+		if !slices.Contains(rs, want) {
+			t.Fatalf("the tie with the old pair did not take the lower position: %+v not in %+v", want, rs)
+		}
+		// The lowest old pair merged instead when the ninth's tie lost: its
+		// merge would span [100, 210) across the gap the ninth's own gap tied.
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 100 && r.end == 210 }) {
+			t.Fatalf("the lowest old pair merged instead of the ninth's own tie at a lower position: %+v", rs)
+		}
+	})
+
+	t.Run("tie with the best old pair, old pair lower", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		// Eight ranges ten long: six at 0..500 with gaps of 90, then a
+		// close pair [970, 980) and [1010, 1020) with a gap of 30 — the best
+		// old pair, at position 6 in the nine.
+		offs := []int64{0, 100, 200, 300, 400, 500, 970, 1010}
+		for i, off := range offs {
+			noteRec(t, &fs, id, 1, ext(off, 10), nums(uint64(i+1), uint64(i+1)))
+		}
+		// The ninth, [1050, 1060): beyond the last range, so no right gap,
+		// and a left gap of 30 — equal to the best old pair's, but its pair
+		// sits one position higher in the nine (7 against 6), so the old pair
+		// wins and the ninth stays its own range.
+		noteRec(t, &fs, id, 1, ext(1050, 10), nums(3, 99))
+		rs, _ := rangesOf(&fs, id, 1)
+		if len(rs) != 8 {
+			t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+		}
+		if !slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 970 && r.end == 1020 }) {
+			t.Fatalf("the tie did not take the old pair at the lower position: %+v", rs)
+		}
+		if !slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 1050 && r.end == 1060 }) {
+			t.Fatalf("the ninth was merged into a tie it lost: %+v", rs)
+		}
+		// The wide-gap ranges are untouched.
+		for i := range int64(6) {
+			if !slices.Contains(rs, dropRange{start: i * 100, end: i*100 + 10, low: nums(uint64(i+1), uint64(i+1))}) {
+				t.Fatalf("range at %d was changed by the merge: %+v", i*100, rs)
+			}
+		}
+	})
 }
 
 // TestNoteIntoFullPairAllocatesNothing pins the note's steady-state cost: once

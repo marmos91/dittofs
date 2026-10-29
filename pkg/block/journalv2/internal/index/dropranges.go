@@ -138,7 +138,7 @@ func (s *segRecords) note(e core.Extent, n Numbers) int {
 		rightPos = inf
 	}
 	switch {
-	case leftGap < best && (leftGap < rightGap || (leftGap == rightGap && leftPos < rightPos)):
+	case (leftGap < best || leftGap == best && leftPos < lowGap) && (leftGap < rightGap || leftGap == rightGap && leftPos < rightPos):
 		// the new range merges with its left neighbour, in that slot
 		nb := s.ranges[i-1]
 		if nb.low.Compare(n) < 0 {
@@ -146,7 +146,7 @@ func (s *segRecords) note(e core.Extent, n Numbers) int {
 		}
 		s.ranges[i-1] = dropRange{start: min(lo, nb.start), end: max(hi, nb.end), low: n}
 		return len(s.ranges) - before
-	case rightGap < best && (rightGap < leftGap || (rightGap == leftGap && rightPos < leftPos)):
+	case (rightGap < best || rightGap == best && rightPos < lowGap) && (rightGap < leftGap || rightGap == leftGap && rightPos < leftPos):
 		// the new range merges with its right neighbour, in that slot
 		nb := s.ranges[i]
 		if nb.low.Compare(n) < 0 {
