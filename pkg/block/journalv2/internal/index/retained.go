@@ -146,60 +146,6 @@ func (s *retainedSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int
 	return n
 }
 
-// markOffloaded sets the offloaded bit of the parts inside e of every
-// retained piece whose version is in [oldest, newest] and whose bit is
-// unset, splitting a piece at e's ends, and returns the number of parts it
-// changed, like heldSet.markOffloaded. By, record and skip stay: the mark is
-// about the bytes, not the retention.
-//
-// decision: neither mark reaches a retained piece. A mark names the bytes
-// its record offered or unmarked, which are held or filled; a retained piece
-// overlaps newer content by construction, so a mark's version window says
-// nothing about it, and a bit wrongly set would read as a commit the piece
-// never had. At run time a retained piece's bit is fixed at supersede time —
-// writeRetain copies the bit of the content it keeps — and nothing marks
-// one after. These setters exist for the recovery code and its tests, which
-// compute retained pieces' bits by their own rules; overturn them when a
-// journal rule ever must reach retained pieces directly.
-func (s *retainedSet) markOffloaded(e core.Extent, oldest, newest core.Version) int {
-	n := 0
-	s.edit(e, func(r Retained) bool {
-		// The window is a property of the piece whole: a part sticks to its
-		// piece's version, so the match must not flip between the parts a
-		// split makes. The bit is decided per part below, since e can end
-		// between two parts that differ in it.
-		return r.Version.Compare(oldest) >= 0 && r.Version.Compare(newest) <= 0
-	}, func(r Retained) (Retained, bool) {
-		if r.Offloaded {
-			return r, true
-		}
-		r.Offloaded = true
-		n++
-		return r, true
-	})
-	return n
-}
-
-// unmark clears the offloaded bit of the parts inside e of every retained
-// piece whose version is at most newest and whose bit is set, splitting a
-// piece at e's ends, and returns the number of parts it changed. By, record
-// and skip stay.
-func (s *retainedSet) unmark(e core.Extent, newest core.Version) int {
-	n := 0
-	s.edit(e, func(r Retained) bool {
-		// The window is a property of the piece whole, as in markOffloaded.
-		return r.Version.Compare(newest) <= 0
-	}, func(r Retained) (Retained, bool) {
-		if !r.Offloaded {
-			return r, true
-		}
-		r.Offloaded = false
-		n++
-		return r, true
-	})
-	return n
-}
-
 // edit calls fn on the part inside e of every piece match selects, and puts
 // back what fn returns when it reports true, along with the parts outside e.
 // fn is called in order, and may change anything but the part's extent.

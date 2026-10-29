@@ -432,8 +432,9 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	clear(recs[len(kept):])
 	recs = kept
 
-	// The retained pieces go in before the offloaded-bit pass, so the
-	// marks reach them; their By and record location are the caller's.
+	// The retained pieces go in with the bits their caller computed: the
+	// marks of this replay reach held pieces only, never them. Their By
+	// and record location are the caller's too.
 	for _, r := range retained {
 		f.retained.add(r)
 	}
