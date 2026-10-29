@@ -62,7 +62,7 @@ and tests can cite them.
 | --- | --- | --- | --- |
 | R20 | `ExtentCount` counts held entries, retained extents and removal markers | §4.2 | 8 |
 | R21 | A `WriteAt` or `Fill` that would raise the count above `ExtentLimit` is refused at once, before any I/O, as the named index refusal, and counted in `index_refusals` | §4.2 | 8 |
-| R22 | Records without bytes are not refused by the bound, except a release or deallocate that splits a held extent once the count is at or above limit + limit/8. Truncate, delete, a non-splitting removal and `Forget` are never refused | §4.2, §3.6 | 8 |
+| R22 | Records without bytes are not refused by the bound, except a release, deallocate or clone target that splits a held extent once the count is at or above limit + limit/8. Truncate, delete, a non-splitting removal, `Forget`, a report, `MarkOffloaded` and `Unmark` are never refused | §4.2, §3.6 | 8 |
 | R23 | An index over its bound at open succeeds. Content inserts stay refused until the count drops below the bound | §4.2 | 8, 11 |
 
 **Versions and sequence numbers**
@@ -104,10 +104,10 @@ and tests can cite them.
 | R41 | Per-segment held bytes equal a recomputed walk at every step. Retained bytes count toward their segment | §9.4 D, §3.11 | 9 |
 | R42 | The index can be read out per file and in bulk, without mutating it or stopping it | §4.4 | 12 |
 | R43 | In E4: a shuffled-order rebuild and an incremental build of the same records give an identical index. Catalog-vs-scan equality needs segments on disk and is E7's | RFC 28 §3.1, §9.4 C | 11 (E7) |
-| R44 | Comparisons per lookup and per insert at most double from 10³ to 10⁶ extents | §9.7 | 1 |
-| R45 | ≤ 56 bytes per entry at 10⁶ entries. ≤ 8 drop ranges per (file, segment) after 10⁶ random 4 KiB overwrites | §9.7 | 12, 10 |
+| R44 | Comparisons per lookup and per insert at most 2.5 times from 10³ to 10⁶ extents, and each descent within 1.25 log2(n) (a SHOULD) | §9.7 | 1 |
+| R45 | ≤ 56 bytes per entry at 10⁶ entries written sequentially, ≤ 72 written in random order. ≤ 8 drop ranges per (file, segment) after 10⁶ random 4 KiB overwrites | §9.7 | 12, 10 |
 | R46 | Allocations per op on index lookup and insert are asserted, outside `-race` | plan rule 4 | 1, 2 |
-| R48 | Setting the offloaded bit over a span (what `report` does, block by block) costs O(k log n), and comparisons per marked extent at most double from 10³ to 10⁶ extents ("report cost"). The `report` logic itself is E9's | §3.3, §9.7 | 2 |
+| R48 | Setting the offloaded bit over a span (what `report` does, block by block) costs O(k log n), and comparisons per marked extent at most 2.5 times from 10³ to 10⁶ extents ("report cost"). The `report` logic itself is E9's | §3.3, §9.7 | 2 |
 
 ## Tasks
 
