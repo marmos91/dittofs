@@ -1167,7 +1167,7 @@ the tracker as #1705's alarm did:
 |---|---|
 | `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
 | `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
-| `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's; `auto`, the default, moves to `dtc` when a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
+| `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 
 | Exit status | Meaning |

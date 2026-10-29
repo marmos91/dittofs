@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,9 +42,10 @@ const (
 // stopGrace is how long dfs has to shut down before its group is killed.
 const stopGrace = 10 * time.Second
 
-// Unsupported says what of fixture f dt doesn't set up yet, or returns "". A
-// field that holds a matrix placeholder is checked once a cell fills it.
-func Unsupported(f *registry.Fixture) string {
+// Unsupported says what of fixture f dt doesn't set up yet on platform goos,
+// as runtime.GOOS names it, or returns "". A field that holds a matrix
+// placeholder is checked once a cell fills it.
+func Unsupported(f *registry.Fixture, goos string) string {
 	fixed := func(s string) bool { return len(registry.Placeholders(s)) == 0 }
 	if f.Server == "knfsd" {
 		return "" // the registry lets it set only what dt sets
@@ -59,13 +59,13 @@ func Unsupported(f *registry.Fixture) string {
 		return "dt doesn't mount a share over both NFS and SMB yet"
 	case f.NFS.Mounts() && !f.NFS.FromOptions && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
-	case f.NFS.Mounts() && fixed(f.NFS.Version) && runtime.GOOS != "linux":
+	case f.NFS.Mounts() && fixed(f.NFS.Version) && goos != "linux":
 		return "dt mounts NFS only on Linux yet"
-	case f.Client != "" && runtime.GOOS != "linux":
+	case f.Client != "" && goos != "linux":
 		return "dt sets up namespaced clients only on Linux yet"
 	case f.SMB.Encryption != "" && f.SMB.Encryption != "preferred" && fixed(f.SMB.Encryption):
 		return fmt.Sprintf("dt doesn't set SMB encryption %q", f.SMB.Encryption)
-	case f.Kerberos && (runtime.GOOS != "linux" || !f.SMB.Enabled):
+	case f.Kerberos && (goos != "linux" || !f.SMB.Enabled):
 		return "dt sets up Kerberos only for SMB on Linux yet"
 	case f.Reset != "" && f.Reset != "each" && fixed(f.Reset):
 		return fmt.Sprintf("dt doesn't reset shares %q", f.Reset)

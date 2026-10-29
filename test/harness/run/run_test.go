@@ -786,8 +786,12 @@ func TestFirstScenarioLimit(t *testing.T) {
 
 // --in auto moves a run to dtc when a cell needs what is missing here and the
 // container gives, unless a cell needs what is met here and the container
-// lacks. A cell dt can't run anywhere yet doesn't move it.
+// lacks. A cell dtc can't run doesn't move it, and keeps it here when it runs
+// here. The tests set hostOS to darwin.
 func TestContainer(t *testing.T) {
+	was := hostOS
+	hostOS = "darwin"
+	t.Cleanup(func() { hostOS = was })
 	missing := func(unmet ...string) func(string) error {
 		return func(n string) error {
 			if slices.Contains(unmet, n) {
@@ -803,6 +807,12 @@ func TestContainer(t *testing.T) {
 	}
 	both := cell("linux", "nfs-client", "smb-client")
 	both.Unit.Fixture = &registry.Fixture{NFS: registry.NFS{Version: "4.1"}, SMB: registry.SMB{Enabled: true, Mount: true}}
+	nfs := cell("linux", "nfs-client")
+	nfs.Unit.Fixture = &registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}
+	self := cell("linux")
+	self.Unit.Fixture = &registry.Fixture{Profile: "memory", Users: []string{"self"}}
+	selfHere := cell("root")
+	selfHere.Unit.Fixture = &registry.Fixture{Profile: "memory", Users: []string{"self"}}
 	for _, c := range []struct {
 		name  string
 		cells []Cell
@@ -815,6 +825,9 @@ func TestContainer(t *testing.T) {
 		{"a cell needs macOS, met here", []Cell{cell("linux"), cell("macos")}, []string{"linux"}, false},
 		{"missing in the container too", []Cell{cell("host:dedicated")}, []string{"host:dedicated"}, false},
 		{"a cell dt can't run anywhere", []Cell{both}, []string{"linux", "nfs-client", "smb-client"}, false},
+		{"an NFS mount, which dt makes only in dtc on this host", []Cell{nfs}, []string{"linux"}, true},
+		{"users: self, which dtc refuses as root", []Cell{self}, []string{"linux"}, false},
+		{"a cell that runs here but not in dtc", []Cell{selfHere, cell("linux")}, []string{"linux"}, false},
 		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
 		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
 	} {

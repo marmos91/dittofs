@@ -112,8 +112,9 @@ func newRun() *cobra.Command {
 var need = needs.Check
 
 // inContainer reports whether the run goes to dtc: with --in container, or
-// with --in auto, the default without --ci, when a cell needs what only the
-// container gives. A run inside dtc runs there whatever --in says.
+// with --in auto, the default without --ci, when Docker, which dtc runs in, is
+// here and a cell needs what only the container gives. A run inside dtc runs
+// there whatever --in says.
 func inContainer(root string, cells []run.Cell, in string, ci bool, place string) bool {
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		return false
@@ -124,7 +125,7 @@ func inContainer(root string, cells []run.Cell, in string, ci bool, place string
 			in = "host"
 		}
 	}
-	return in == "container" || in == "auto" && run.Container(cells, func(n string) error {
+	return in == "container" || in == "auto" && need(root, "docker") == nil && run.Container(cells, func(n string) error {
 		if n == "host:"+place {
 			return nil
 		}
@@ -149,8 +150,10 @@ func again(cmd *cobra.Command, args []string) []string {
 }
 
 // dtc runs dt with argv in the dev container, through test/harness/bin/dtc,
-// and gives back its exit status as this run's. Ctrl-C reaches dtc from the
-// terminal as it reaches dt, which waits for dtc to stop.
+// and gives back its exit status as this run's: dt's 1 to 3 as they are, and
+// any other, docker's own or a kill by a signal, as 2, the run didn't run.
+// Ctrl-C reaches dtc from the terminal as it reaches dt, which waits for dtc
+// to stop; a SIGTERM sent to dt alone is passed on.
 func dtc(cmd *cobra.Command, root string, argv []string) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dt] in dtc: dt %s\n", strings.Join(argv, " "))
 	sigs := make(chan os.Signal, 1)
@@ -158,10 +161,30 @@ func dtc(cmd *cobra.Command, root string, argv []string) error {
 	defer signal.Stop(sigs)
 	c := exec.Command(filepath.Join(root, "test", "harness", "bin", "dtc"), argv...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()
-	err := c.Run()
+	if err := c.Start(); err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case s := <-sigs:
+				if s == syscall.SIGTERM {
+					_ = c.Process.Signal(s)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	err := c.Wait()
+	close(done)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		return exitStatus(exit.ExitCode())
+		if code := exit.ExitCode(); code >= 1 && code <= 3 {
+			return exitStatus(code)
+		}
+		return exitStatus(2)
 	}
 	return err
 }

@@ -186,7 +186,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
-		if why := fixture.Unsupported(&spec); why != "" {
+		if why := fixture.Unsupported(&spec, hostOS); why != "" {
 			return didntRun(why)
 		}
 	}
@@ -1006,14 +1006,21 @@ func exitCode(err error) (int, error) {
 	return 0, nil
 }
 
+// hostOS is the platform dt runs on, as runtime.GOOS names it; the tests set it.
+var hostOS = runtime.GOOS
+
 // Container reports whether dt run --in auto moves the run into dtc: a cell
 // that can't run here can there, as the container meets every need check
 // finds missing, and no cell needs what is met here but not in the container,
-// as another platform. A cell dt can't run anywhere yet counts for neither.
+// as another platform. A cell dtc can't run counts for neither, unless it runs
+// here, which keeps the run here.
 func Container(cells []Cell, check func(need string) error) bool {
 	move := false
 	for _, c := range cells {
-		if unsupported(c.Unit) != "" {
+		if inDtc(c.Unit) != "" {
+			if unsupported(c.Unit, hostOS) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
+				return false
+			}
 			continue
 		}
 		missing, there := false, true
@@ -1038,7 +1045,7 @@ func Container(cells []Cell, check func(need string) error) bool {
 // needs, and is empty when what stops the cell is something dt doesn't do
 // yet. dt run and dt list both decide through it, so they can't disagree.
 func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
-	if why := unsupported(u); why != "" {
+	if why := unsupported(u, hostOS); why != "" {
 		return why, nil
 	}
 	var reasons []string
@@ -1051,9 +1058,23 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 	return strings.Join(reasons, "; "), unmet
 }
 
-// unsupported says why dt can't run the suite yet, or returns "": only a
-// fixture field dt doesn't do yet, since it reads every format.
-func unsupported(u *registry.Suite) string {
+// inDtc says why dt can't run suite u in dtc, or returns "": dtc meets the
+// linux need and runs dt as root, which a fixture whose users hold self
+// refuses.
+func inDtc(u *registry.Suite) string {
+	if why := unsupported(u, "linux"); why != "" {
+		return why
+	}
+	if u.Fixture != nil && slices.Contains(u.Fixture.Users, "self") {
+		return "users: self needs an ordinary user, and dtc runs dt as root"
+	}
+	return ""
+}
+
+// unsupported says why dt can't run the suite yet on platform goos, or
+// returns "": only a fixture field dt doesn't do yet, since it reads every
+// format.
+func unsupported(u *registry.Suite, goos string) string {
 	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
 		return "dt doesn't run go test on a namespaced client yet"
 	}
@@ -1064,7 +1085,7 @@ func unsupported(u *registry.Suite) string {
 		return "dt doesn't run a suite that needs root on a namespaced client yet"
 	}
 	if u.Fixture != nil {
-		return fixture.Unsupported(u.Fixture)
+		return fixture.Unsupported(u.Fixture, goos)
 	}
 	return ""
 }
