@@ -65,7 +65,6 @@ type (
 	ChangeMask   = openstate.ChangeMask
 	Change       = openstate.Change
 	AppInstance  = openstate.AppInstance
-	Reconnect    = openstate.ReconnectMatch
 )
 
 // The values of open state's enumerations, so an adapter names them from here.

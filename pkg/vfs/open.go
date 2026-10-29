@@ -1,5 +1,7 @@
 package vfs
 
+import "time"
+
 // Disposition is what an open does when the name does or does not exist.
 type Disposition uint8
 
@@ -15,6 +17,12 @@ const (
 // OpenRequest is what an open asks for. It names the file by Dir and Name, the
 // directory the path resolved through and the entry in it, or, with no Name,
 // by H.
+//
+// A reconnect matches the open Reconnect names on the call's client and
+// principal, the share Dir or H lies in, CreateID and Lease; anything else
+// is refused as an open that does not exist. A lease reconnect's file name is
+// not matched: the adapter compares the name its request carries with the
+// open's before calling.
 type OpenRequest struct {
 	Dir         Handle
 	Name        []byte
@@ -32,12 +40,13 @@ type OpenRequest struct {
 	Epoch  *uint16   // a v2 lease request's epoch; nil: a v1 lease or an oplock
 
 	Durability Durability
-	CreateID   [16]byte    // the create's own ID, which a reconnect or a replay names; zero: none
-	Instance   AppInstance // zero: none
-	Replay     bool        // a create marked as a replay
-	Reconnect  *Reconnect  // a durable reconnect's match; nil: a new open
-	Reclaim    bool        // an open the client held before its shard lost its state
-	Snapshot   []byte      // the snapshot opened; nil: the live file
+	Timeout    time.Duration // a durable or persistent open's: how long it is kept once its session ends
+	CreateID   [16]byte      // the create's own ID, which a reconnect or a replay names; zero: none
+	Instance   AppInstance   // zero: none
+	Replay     bool          // a create marked as a replay
+	Reconnect  *OpenRef      // a durable reconnect: the open its FileId names, as DecodeFileID reads it; nil: a new open
+	Reclaim    bool          // an open the client held before its shard lost its state
+	Snapshot   []byte        // the snapshot opened; nil: the live file
 
 	Owner LockOwner // the owner of opens; zero where the protocol has none
 	Seqs  Seqs
