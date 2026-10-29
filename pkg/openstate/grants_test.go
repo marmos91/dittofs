@@ -942,7 +942,9 @@ func TestOnlyASentRecallLapses(t *testing.T) {
 	slow := <-held
 	f.pass(t, 2*coversDeadline)
 	close(release)
-	<-done
+	if err := <-done; delayedFor(err) != DelayRecall {
+		t.Fatalf("the open that sent the recalls: %v, want ErrDelay (DelayRecall)", err)
+	}
 	f.sink.onRecall = nil
 	for _, c := range []entity.ClientID{a.Client, b.Client} {
 		f.cmu.Lock()

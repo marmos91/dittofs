@@ -684,7 +684,7 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 	g.renew(t, c)
 	target := in(5) // c never held it
 	hold, release := make(chan struct{}), make(chan struct{})
-	go g.step(target.ID, func(*entry) error { close(hold); <-release; return nil })
+	go func() { _ = g.step(target.ID, func(*entry) error { close(hold); <-release; return nil }) }()
 	<-hold
 	done := make(chan error, 1)
 	go func() {
@@ -771,7 +771,7 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 			}
 		}
 		hold, release := make(chan struct{}), make(chan struct{})
-		go f.step(file.ID, func(*entry) error { close(hold); <-release; return nil })
+		go func() { _ = f.step(file.ID, func(*entry) error { close(hold); <-release; return nil }) }()
 		<-hold
 		served := make(chan error, 1)
 		go func() { served <- f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)) }()
@@ -784,7 +784,9 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 			pending bool
 		}
 		after := make(chan seen, 1)
-		go f.step(file.ID, func(e *entry) error { after <- seen{len(e.opens), e.pending != nil}; return nil })
+		go func() {
+			_ = f.step(file.ID, func(e *entry) error { after <- seen{len(e.opens), e.pending != nil}; return nil })
+		}()
 		waitUsers(3)
 		close(release)
 		if err := <-served; err != nil {

@@ -361,7 +361,7 @@ func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
 		}
 		own := id != 0 && ls.openToken() == id
 		for _, l := range ls.locks {
-			if ranges.Overlap(l.ByteRange, r) && (write && !(own && l.Exclusive) || !write && l.Exclusive && !own) {
+			if ranges.Overlap(l.ByteRange, r) && (write && (!own || !l.Exclusive) || !write && l.Exclusive && !own) {
 				return ErrLocked
 			}
 		}
