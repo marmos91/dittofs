@@ -545,6 +545,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if w := t.dropWaiter(e, prev); w.Wait == WaitCallback {
 			out.over = append(out.over, waitOver{*w, false})
 		}
+		t.serve(e, out) // the waiter it replaced may have barred the ones behind it
 	}
 	switch {
 	case held == nil:
@@ -566,9 +567,6 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		t.serve(e, out)
 		return LockResult{Ref: ls.ref}, nil
 	case r.Wait == WaitNone:
-		if prev >= 0 {
-			t.serve(e, out) // the waiter it replaced may have barred the ones behind it
-		}
 		return LockResult{}, &LockedError{*held}
 	case repeat:
 		if w := e.waiters[prev]; w.Wait == WaitPoll {
@@ -587,9 +585,6 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			t.idx.Unlock()
 		}
 		e.waiters = append(e.waiters, w)
-	}
-	if prev >= 0 && !repeat {
-		t.serve(e, out)
 	}
 	if r.Wait == WaitPoll {
 		return LockResult{}, &LockedError{*held}
