@@ -44,7 +44,7 @@ func TestCRC32CMatchesTheRFC3720Vectors(t *testing.T) {
 	}
 
 	// The stored form of the zeros vector is little-endian, as RFC 3720
-	// prints it: 8a 36 91 8a is checked above as a value, here as bytes.
+	// prints it: aa 36 91 8a is checked above as a value, here as bytes.
 	le := make([]byte, 4)
 	binary.LittleEndian.PutUint32(le, crc32c(make([]byte, 32)))
 	if got, want := le, []byte{0xaa, 0x36, 0x91, 0x8a}; !bytes.Equal(got, want) {
