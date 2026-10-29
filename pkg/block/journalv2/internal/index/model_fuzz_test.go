@@ -110,8 +110,7 @@ func (v indexView) Since(ctx context.Context, id journalv2.FileID, from journalv
 func (v indexView) Files() iter.Seq[journalv2.FileID] {
 	return func(yield func(journalv2.FileID) bool) {
 		for id, es := range v.mi.All() {
-			_ = es
-			if v.visible(id, false) && !yield(journalv2.NewFileID(id.Bytes())) {
+			if v.visible(es, false) && !yield(journalv2.NewFileID(id.Bytes())) {
 				return
 			}
 		}
@@ -122,19 +121,20 @@ func (v indexView) Files() iter.Seq[journalv2.FileID] {
 // unset. The times are zero, as the harness has no clock.
 func (v indexView) DirtyFiles() iter.Seq2[journalv2.FileID, time.Time] {
 	return func(yield func(journalv2.FileID, time.Time) bool) {
-		for id := range v.mi.All() {
-			if v.visible(id, true) && !yield(journalv2.NewFileID(id.Bytes()), time.Time{}) {
+		for id, es := range v.mi.All() {
+			if v.visible(es, true) && !yield(journalv2.NewFileID(id.Bytes()), time.Time{}) {
 				return
 			}
 		}
 	}
 }
 
-// visible reports whether id is this share's file and, when dirty is set,
-// whether it holds dirty content.
-func (v indexView) visible(id core.FileID, dirty bool) bool {
+// visible reports whether the entries the read-out handed over belong to
+// this share and, when dirty is set, whether the file holds dirty content: a
+// foreign tag answers false, nothing listed or nothing dirty false too.
+func (v indexView) visible(es []index.Entry, dirty bool) bool {
 	var listed, isDirty bool
-	for _, e := range v.mi.File(id) {
+	for _, e := range es {
 		if e.Tag != core.ShareTag(v.tag) {
 			return false
 		}
@@ -535,10 +535,13 @@ func (d *fuzzDriver) offload(tag journalv2.ShareTag, id core.FileID, jid journal
 		}
 	}
 	for _, e := range reported {
-		// A mark never fails the index — the bound refuses nothing it splits —
-		// but a refusal here would leave the model marked and the index not,
-		// so it is carried to the model's own answer rather than dropped.
-		_ = d.mi.Mark(core.ShareTag(tag), id, e, oldest, newest)
+		if err := d.mi.Mark(core.ShareTag(tag), id, e, oldest, newest); err != nil {
+			// A mark sets the bits first and can refuse only at the record's
+			// note; going on would leave the index marked and the model not,
+			// so the run stops on the refusal and names it.
+			d.mis(err)
+			return
+		}
 	}
 	d.log = append(d.log, fmt.Sprintf("  reported %d extents", len(reported)))
 	if d.mis(d.m.Report(tag, jid, reported, nil)) {

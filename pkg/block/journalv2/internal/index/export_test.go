@@ -2,6 +2,7 @@ package index
 
 import (
 	"errors"
+	"fmt"
 	"iter"
 	"slices"
 
@@ -47,8 +48,10 @@ func NewModelIndex() *ModelIndex {
 // file lands.
 func BucketOf(id core.FileID) int { return bucketOf(id) }
 
-// place draws the record home for one record: one more placement into the
-// journal's fifth segment, and the numbers the journal would have drawn.
+// place draws the record home for one record: the next free 4 KiB slot of the
+// segment the placements have reached, sixteen records to a segment, and the
+// numbers the journal would have drawn. Every record gets a home of its own,
+// so no record shares a placement with another.
 func (m *ModelIndex) place(v core.Version) (RecordAt, Numbers) {
 	r := RecordAt{Segment: 1 + core.SegmentID(m.slots/16), Offset: (m.slots % 16) * 4096}
 	seq, err := m.ctr.NextSeq()
@@ -124,9 +127,7 @@ func (m *ModelIndex) Fill(tag core.ShareTag, id core.FileID, off int64, data []b
 	}
 	r, n := m.place(v)
 	e := core.Extent{Off: off, Len: int64(len(data))}
-	if _, ok := m.recs[r]; !ok {
-		m.recs[r] = ModelRecord{Data: slices.Clone(data)}
-	}
+	m.recs[r] = ModelRecord{Data: slices.Clone(data)}
 	if err := m.fs.fill(id, Placed{Extent: e, Record: r, Version: v}, asOf); err != nil {
 		return err
 	}
@@ -318,7 +319,7 @@ func (m *ModelIndex) CheckAccounting() error {
 		}
 	}
 	if entries != m.fs.extentCount() {
-		return &accountingError{"the read-out counts " + itoa(entries) + " entries, extentCount() says " + itoa(m.fs.extentCount())}
+		return fmt.Errorf("index: the read-out counts %d entries, extentCount() says %d", entries, m.fs.extentCount())
 	}
 	for seg := core.SegmentID(1); seg <= m.last; seg++ {
 		want := SegmentBytes{}
@@ -326,38 +327,8 @@ func (m *ModelIndex) CheckAccounting() error {
 			want = b
 		}
 		if got := m.fs.segmentBytes(seg); got != want {
-			return &accountingError{"segment " + itoa(int64(seg)) + " counts " +
-				"{" + itoa(got.Held) + " " + itoa(got.Retained) + "}, the read-out says " +
-				"{" + itoa(want.Held) + " " + itoa(want.Retained) + "}"}
+			return fmt.Errorf("index: segment %d counts %+v, the read-out says %+v", seg, got, want)
 		}
 	}
 	return nil
-}
-
-// accountingError is an index-accounting mismatch the fuzz found.
-type accountingError struct{ msg string }
-
-func (e *accountingError) Error() string { return "index: " + e.msg }
-
-// itoa is the harness's own small formatter, kept to the standard library.
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [24]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
