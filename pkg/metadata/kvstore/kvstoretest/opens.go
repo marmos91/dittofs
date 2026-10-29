@@ -132,6 +132,28 @@ func testOpenRacesRelease(t *testing.T, kvo Opener) {
 	}
 }
 
+// Two last closes of an unlinked file, committing concurrently: one of
+// them names the file orphaned. The opens are persistent, so neither close
+// writes a key the other reads.
+func testLastClosesRace(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	a, b := f.newOpen(file.ID), f.newOpen(file.ID)
+	a.Durability, b.Durability = entity.DurabilityPersistent, entity.DurabilityPersistent
+	_, err := f.s.Namespace().Unlink(ctx, f.admin, f.root, []byte("a"), a, b)
+	must(t, err)
+	var oa, ob kvstore.Orphaned
+	ea, eb := race(h,
+		func() (err error) { oa, err = opens.Delete(ctx, f.share.ID, file.ID, a.ID); return },
+		func() (err error) { ob, err = opens.Delete(ctx, f.share.ID, file.ID, b.ID); return })
+	must(t, ea)
+	must(t, eb)
+	if oa == (kvstore.Orphaned{}) && ob == (kvstore.Orphaned{}) {
+		t.Fatal("neither last close named the file orphaned")
+	}
+}
+
 // RFC 14 §9.2: a clone holds its source with a durable open of its own
 // kind, naming the destination and the clone's version, listed in the
 // source shard's index; the clone's last batch closes it.

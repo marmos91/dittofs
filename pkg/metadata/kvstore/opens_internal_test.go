@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 )
 
 // An open of a named stream keeps its base file alive.
@@ -55,6 +56,40 @@ func TestStreamOpenKeepsBaseAlive(t *testing.T) {
 	}
 	closeOpen(base.ID, onBase, Orphaned{}) // the stream's open still holds it
 	closeOpen(stream.ID, again, Orphaned{File: base.ID})
+}
+
+// The last close of a base file's open and the last close of its stream's
+// open, committing concurrently: one of them names the base orphaned,
+// though the two touch only their own file's keys.
+func TestStreamAndBaseLastClosesRace(t *testing.T) {
+	var h *holdKV
+	f := newContentFix(t, func(db kv.KV) kv.KV { h = &holdKV{KV: db}; return h })
+	ctx := context.Background()
+	admin, id, root := adminRoot(t, f)
+	_, base, err := f.s.Namespace().Create(ctx, id, root, []byte("a"), NewFile{Type: entity.Regular, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := entity.File{ID: entity.NewFileID(), Share: f.share, Shard: 7, Type: entity.Stream, StreamOf: base.ID, Version: entity.VersionOf(1)}
+	rows(t, f.s, fileKey(f.share, stream.ID), encodeFile(stream), append(streamsPrefix(f.share, base.ID), stream.ID[:]...), encodeEmpty())
+	onStream := entity.OpenRecord{ID: 1, File: stream.ID, Client: 1, Principal: admin.Principal, Durability: entity.DurabilityPersistent}
+	onBase := entity.OpenRecord{ID: 2, File: base.ID, Client: 1, Principal: admin.Principal, Durability: entity.DurabilityPersistent}
+	if _, err := f.s.Namespace().Unlink(ctx, id, root, []byte("a"), onStream, onBase); err != nil {
+		t.Fatal(err)
+	}
+
+	var fromStream, fromBase Orphaned
+	var eb error
+	h.mu.Lock()
+	h.hook = func() { fromBase, eb = f.s.Opens().Delete(ctx, f.share, base.ID, onBase.ID) }
+	h.mu.Unlock()
+	fromStream, es := f.s.Opens().Delete(ctx, f.share, stream.ID, onStream.ID)
+	if es != nil || eb != nil {
+		t.Fatalf("the closes: %v, %v", es, eb)
+	}
+	if fromStream == (Orphaned{}) && fromBase == (Orphaned{}) {
+		t.Fatal("neither last close named the base orphaned")
+	}
 }
 
 // An unlink's opens are of the file or of its named streams: an open of any

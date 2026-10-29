@@ -103,15 +103,21 @@ func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.Fil
 }
 
 // heldOpen reports whether file or one of its named streams has a durable
-// open.
-func heldOpen(r kv.Reader, share entity.ShareID, file entity.FileID) (bool, error) {
-	streams, err := streamsOf(r, share, file)
+// open. The scan is not tracked, so it guards the open it found: two last
+// closes, each seeing the other's open, would otherwise both commit and
+// neither name the file orphaned. The other close deletes that key, so
+// whichever commits second retries and finds no open.
+func heldOpen(tx kv.Txn, share entity.ShareID, file entity.FileID) (bool, error) {
+	streams, err := streamsOf(tx, share, file)
 	if err != nil {
 		return false, err
 	}
 	for _, id := range append(streams, file) {
-		for _, err := range r.Scan(opensPrefix(share, id), nil) {
-			return err == nil, err
+		for row, err := range tx.Scan(opensPrefix(share, id), nil) {
+			if err != nil {
+				return false, err
+			}
+			return true, tx.Guard(row.Key)
 		}
 	}
 	return false, nil
