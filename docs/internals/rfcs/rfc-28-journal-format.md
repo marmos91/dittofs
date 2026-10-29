@@ -1074,24 +1074,28 @@ still reads nothing outside the journal ([§3.1](#3.1%20Rebuilding)).
 acknowledge a sync and then lose the last records it covered. No later record then
 proves them, so the scan alone reads the loss as a torn tail. The group commit
 records each stream's sync mark in metadata ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and `Open` is handed
-the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The tail is a lost synced tail in two
-cases:
-
-- the mark's segment is on disk, and its verifying records end below the mark's
-  offset;
-- no record on disk carries a sequence number at or above the mark's.
-
-A lost synced tail is a corrupt range that names no record, and is reconciled as
-above. This is RocksDB's `track_and_verify_wals_in_manifest`, which records each
-log's synced size outside the log.
+the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A mark's tail is lost when two things hold
+after recovery's own re-appends: its segment is on disk with its verifying records
+ending below the mark's offset, and no copy of the record carrying the mark's
+sequence number verifies anywhere. A lost synced tail is a corrupt range that names
+no record, and is reconciled as above. The next sequence number and the next
+segment id exceed every mark's, as they exceed every one on disk. That way a
+restored or drained directory never reissues them. RocksDB's
+`track_and_verify_wals_in_manifest` does the same: it records each log's synced
+size outside the log.
 
 **What the marks cannot see.** A mark is recorded at the next group commit after
 its sync, at most `existence_age` later ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A stability point covering
 an overwrite waits for that commit, so a stable overwrite is always below a mark.
-An append or hole fill synced since the last mark is not: on a device that loses
-acknowledged syncs, it can still vanish undetected. Its existence has not
-committed either, so the file reads as it did before the write, as after a lost
-journal device ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)).
+Three cases remain:
+- On a device that loses acknowledged syncs, records synced since the last mark can
+  vanish undetected.
+- An append or hole fill whose existence has not committed can vanish even below a
+  mark, because nothing in metadata names it for the reconcile to find. The file
+  reads as it did before the write, and only the raised loss generation tells
+  clients, of their unstable writes.
+- Only a journal whose engine group-commits records marks, so a replica-only
+  journal has none.
 
 Each record dropped as corrupt is a loss event with a loss record ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)),
 **unless another copy of it verifies.** A re-append ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), [§3.1](#3.1%20Rebuilding)) or a carried

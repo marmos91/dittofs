@@ -1687,7 +1687,8 @@ keeps its original numbers, which is the same record copied, not a number issued
 again. A re-append given new numbers would outrank records appended after the
 original — a release, a removal, a later write's loss record — and a crash would
 then bring back what those had covered. On recovery the next of each **MUST** exceed
-every one found on disk, and the next content version the floor too, taken from
+every one found on disk, the next sequence number every sync mark's too
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and the next content version the floor too, taken from
 the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).
