@@ -153,7 +153,13 @@ func putOpen(tx kv.Txn, share entity.ShareID, shard uint64, op entity.OpenRecord
 }
 
 // dropOpen deletes a durable open, the locks beneath it and its index entry.
+// It guards the open's range, as the scan finding the locks is not tracked:
+// a lock written beneath the open after the snapshot conflicts with the
+// delete rather than outliving it.
 func dropOpen(tx kv.Txn, share entity.ShareID, shard uint64, file entity.FileID, id entity.OpenID) error {
+	if err := tx.GuardRange(openKey(share, file, id)); err != nil {
+		return err
+	}
 	if err := deleteUnder(tx, openKey(share, file, id)); err != nil {
 		return err
 	}

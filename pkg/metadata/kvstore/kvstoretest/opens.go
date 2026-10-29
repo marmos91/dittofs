@@ -296,6 +296,29 @@ func testDurableLockChanges(t *testing.T, kvo Opener) {
 	}
 }
 
+// A lock change committing inside a close leaves no lock row beneath the
+// closed open: the close retries or fails, and the open and its locks go
+// together.
+func testCloseRacesLockChange(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	p := f.newOpen(file.ID)
+	p.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, p))
+	l := entity.LockRecord{ID: 1, Owner: entity.LockOwner{Client: 1, Owner: []byte("x")}, Length: 10}
+	closeErr, lockErr := race(h,
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, p.ID); return err },
+		func() error { return opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{l}, nil) })
+	must(t, lockErr)
+	must(t, closeErr)
+	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
+	must(t, err)
+	if len(got) != 0 {
+		t.Fatalf("locks left beneath the closed open: %+v", got)
+	}
+}
+
 // RFC 14 §9.4: delete pending is stored only while the file has a
 // persistent open, and goes with the unlink of the entry it names, not
 // with the unlink of another name of the file.
