@@ -134,7 +134,7 @@ func clip(p Piece, e core.Extent) Piece {
 type heldSet struct {
 	tree    btree[held]
 	scratch []Piece // the pieces cut is changing
-	work    []Piece // the pieces a mark, fill or repoint will put
+	work    []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
 }
 
 // len returns the number of entries.
@@ -220,6 +220,10 @@ func (s *heldSet) insert(p Placed) {
 // of one record, whose bytes sit in p.Record from p.Skip on; the gaps take
 // the matching parts of it. A fill that packs several absent extents into one
 // record calls fill once for each of them, with each one's own skip.
+//
+// It knows nothing of removal markers, which live beside the set: a fill of
+// a file goes through file.fill, which keeps it out of every extent a newer
+// marker covers.
 func (s *heldSet) fill(p Placed) {
 	s.work = s.work[:0]
 	cursor, end := p.Extent.Off, p.Extent.Off+p.Extent.Len
@@ -349,6 +353,24 @@ func (s *heldSet) put(p Piece) {
 	s.tree.set(uint64(p.Extent.Off), toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
 	s.coalesce(p.Extent.Off)
+}
+
+// cutBelow stops holding the parts inside e of every piece whose version is
+// below v, whatever its offloaded bit, and keeps the rest: a removal marker's
+// rule. At run time a removal's version is above everything held, so it cuts
+// all of e; a rebuild applying records in any order can meet content at or
+// above it, which stays. It costs O(log n) per piece cut.
+func (s *heldSet) cutBelow(e core.Extent, v core.Version) {
+	s.work = s.work[:0]
+	s.visit(e, func(p Piece) bool {
+		if p.Version.Compare(v) < 0 {
+			s.work = append(s.work, clip(p, e))
+		}
+		return true
+	})
+	for _, p := range s.work {
+		s.cut(p.Extent)
+	}
 }
 
 // cut stops holding e: pieces inside it are dropped, and pieces crossing its
