@@ -731,7 +731,7 @@ row.
 | `debug_logging_on` | §5.2 | node, naming the component | degraded | ticket |
 | `replication_under_floor` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | degraded | page at 5 min |
 | `shard_relinquished` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | unhealthy; waits for a replica or the operator | page at once |
-| `node_lost` **(cluster)** | [§3.8](#3.8%20Installation%20health%20%28cluster%29), [RFC 11 §9](rfc-11-ownership.md#9.%20Failure) | installation | degraded while its shards fail over | page at 5 min |
+| `node_lost` **(cluster)** | [RFC 11 §9](rfc-11-ownership.md#9.%20Failure), [§3.8](#3.8%20Installation%20health%20%28cluster%29) | installation | degraded while its shards fail over | page at 5 min |
 | `lock_grant_unacknowledged` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the client | degraded | ticket |
 | `recall_deadline_misses` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node | degraded while recalls revoked at their deadline exceed 1 per minute for 15 min (proposed) | ticket |
 | `adapter_record_near_bound` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the protocol | degraded while any adapter record written in the last hour exceeds 3 KiB of its 4 KiB bound | ticket |

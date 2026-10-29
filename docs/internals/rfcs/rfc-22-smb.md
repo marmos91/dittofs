@@ -1134,7 +1134,7 @@ stored record and reconnects with its lease
 **Writes on a persistent open, or on any open on a continuously available
 share, are stable.** Each **MUST** be synced to the primary's journal before
 it is acknowledged, whatever its write-through flag
-([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), §9.4). SMB has no write
+([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), [§9.4](#9.4%20Writes%2C%20flushes%20and%20stability)). SMB has no write
 verifier: when a primary is lost, a client is never told that unsynced writes
 it was answered for went with it, and never resends them. (A loss while the
 process keeps running is told, at the open's next `FLUSH`, §9.4.) An open that
@@ -1498,7 +1498,7 @@ and nothing else: every file may have holes, sparse or not, and holes are
   ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)),
   such a reply is held pending and re-driven up to `smb_pending_cap`, and only
   there answered `STATUS_UNEXPECTED_IO_ERROR`
-  ([§16.5](#16.5%20Errors), [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).
+  ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks), [§16.5](#16.5%20Errors)).
 - **A loss without a restart fails the next `FLUSH` of every open across it.**
   The journal can lose acknowledged, unoffloaded writes while the process runs —
   a record dropped as corrupt or a failed sync window, the loss events
@@ -2170,7 +2170,7 @@ onto them and onto the file's type:
   suspend and resume it (§9.3); any other value is a client-given time, stored
   as given ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). A time set travels on an open, so a client-given
   time needs write attributes in the open's grant, a mode bit's included
-  ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs), §6.1). `ChangeTime` is never suspended (§9.3).
+  ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs), [§6.1](#6.1%20Opening%20a%20file)). `ChangeTime` is never suspended (§9.3).
 - **Short names.** RFC 7 stores none
   ([RFC 7 §3.7](rfc-7-namespace-metadata.md#3.7%20No%20short%20names)): directory classes report the short name empty,
   `FileAlternateNameInformation` is `STATUS_OBJECT_NAME_NOT_FOUND` and a set of
