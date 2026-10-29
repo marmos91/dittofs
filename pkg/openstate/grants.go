@@ -84,6 +84,12 @@ const (
 	// measured workload loses grants it would have used.
 	maxGrants = 4096
 	// keepGrants is what a client reaching the budget is asked to keep.
+	//
+	// ponytail: a client at its budget is only asked through RecallAny; no
+	// grant is recalled by last use, so an NFSv4.0 or SMB client, which cannot
+	// be asked, stays at the budget until it closes or returns grants (RFC 14
+	// §5.5). Add a per-client last-use list and recall from its tail when one
+	// is seen pinned there.
 	keepGrants = maxGrants / 2
 	maxShared  = 16
 	maxUnsent  = 4096
