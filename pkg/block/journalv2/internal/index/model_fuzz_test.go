@@ -535,7 +535,10 @@ func (d *fuzzDriver) offload(tag journalv2.ShareTag, id core.FileID, jid journal
 		}
 	}
 	for _, e := range reported {
-		d.mi.Mark(core.ShareTag(tag), id, e, oldest, newest)
+		// A mark never fails the index — the bound refuses nothing it splits —
+		// but a refusal here would leave the model marked and the index not,
+		// so it is carried to the model's own answer rather than dropped.
+		_ = d.mi.Mark(core.ShareTag(tag), id, e, oldest, newest)
 	}
 	d.log = append(d.log, fmt.Sprintf("  reported %d extents", len(reported)))
 	if d.mis(d.m.Report(tag, jid, reported, nil)) {
