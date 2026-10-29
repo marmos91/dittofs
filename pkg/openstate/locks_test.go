@@ -415,6 +415,38 @@ func TestWaiterReplacedAndRefused(t *testing.T) {
 	}
 }
 
+// An owner's request that replaces its waiter, refused or waiting anew on
+// another range, grants the waiter its old one barred.
+func TestReplacedWaiterWakesTheNext(t *testing.T) {
+	for name, again := range map[string]LockReq{
+		"refused":         {Ranges: []LockRange{x(0, 10)}},
+		"waiting anew":    {Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll},
+		"waiting further": {Ranges: []LockRange{x(5, 10)}, Wait: WaitCallback},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a, o, h := f.host(t, "a", 1), f.host(t, "o", 1), f.host(t, "h", 1)
+			file := anyFile()
+			f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{sh(0, 10)}})
+			f.mustLock(t, o, file, LockReq{Owner: owner(o, "o"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+			f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
+			again.Owner = owner(o, "o")
+			if _, err := f.lock(o, file, again); err != nil && !errors.Is(err, ErrLocked) {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, w := range f.sink.takeWaits() {
+				if w.granted {
+					got = append(got, string(w.w.Owner.Name))
+				}
+			}
+			if len(got) != 1 || got[0] != "h" {
+				t.Errorf("after o replaced its waiter: granted %v, want h", got)
+			}
+		})
+	}
+}
+
 // A poll waiter's freed range is reserved for it, refusing everyone else,
 // until it polls or a lease period passes; then the timer drops it and, taking
 // the file's admission lock first, grants the callback waiter behind it.

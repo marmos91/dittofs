@@ -501,8 +501,8 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // lock decides r, under op (nil: none), on e under its step: every range
 // granted, or a conflict at the first range refused, recording a waiter for a
 // single range that waits. The owner's earlier waiter on the file is replaced,
-// a callback one reported not granted, unless r repeats its request and still
-// waits, which keeps its place.
+// a callback one reported not granted and the waiters it barred served, unless
+// r repeats its request and still waits, which keeps its place.
 func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *open, out *outbox) (LockResult, error) {
 	t.serve(e, out) // a range the timer freed goes to its waiters before this request is judged
 	now := t.d.Clock.Elapsed()
@@ -540,6 +540,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		t.serve(e, out)
 		return LockResult{Ref: ls.ref}, nil
 	case r.Wait == WaitNone:
+		if prev >= 0 {
+			t.serve(e, out) // the waiter it replaced may have barred the ones behind it
+		}
 		return LockResult{}, &LockedError{*held}
 	case repeat:
 		if w := e.waiters[prev]; w.Wait == WaitPoll {
@@ -558,6 +561,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			t.idx.Unlock()
 		}
 		e.waiters = append(e.waiters, w)
+	}
+	if prev >= 0 && !repeat {
+		t.serve(e, out)
 	}
 	if r.Wait == WaitPoll {
 		return LockResult{}, &LockedError{*held}
