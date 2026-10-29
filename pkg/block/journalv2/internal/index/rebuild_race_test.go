@@ -19,7 +19,7 @@ type keepEntry struct {
 }
 
 // collectKeeps names the retained pieces the concurrent test injects: every
-// seventh content record stands in for the pieces a later epic's hold rules
+// seventh content record stands in for the pieces the hold rules
 // would compute.
 func collectKeeps(recs []Record) []keepEntry {
 	var keeps []keepEntry
