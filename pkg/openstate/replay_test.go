@@ -521,3 +521,17 @@ func TestCreateReplayUnderAnotherLeaseKey(t *testing.T) {
 		t.Errorf("a replay with no lease context: %+v, %v; want the open, Replayed", res, err)
 	}
 }
+
+// A lock's replay on an open that is not durable, which the adapter passes
+// for a multichannel connection, is answered and not applied again.
+func TestLockReplayOnAPlainOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	q := LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}, Replay: &LockSequence{Index: 2, Seq: 1}}
+	f.mustLock(t, a, file, q)
+	if _, err := f.lock(a, file, q); err != nil {
+		t.Errorf("the replay of a lock on a non-durable open: %v; want it answered", err)
+	}
+}

@@ -67,8 +67,12 @@ type LockReq struct {
 	Ranges  []LockRange
 	Wait    WaitKind // only a single-range request waits
 	Seqs    Seqs
-	Reclaim bool          // locks the owner held before its shard lost its state; a reclaim never waits
-	Replay  *LockSequence // its place in its open's lock replay; nil: none
+	Reclaim bool // locks the owner held before its shard lost its state; a reclaim never waits
+	// Replay is its place in its open's lock replay; nil: none. The adapter
+	// sets it only where MS-SMB2 3.3.5.14 checks the lock sequence: for a
+	// durable or resilient open, or on a connection that negotiated
+	// multichannel. The table keeps the replay on any open it is given for.
+	Replay *LockSequence
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -145,14 +149,14 @@ type offer struct {
 }
 
 // lockSeq is the index r names in op's lock replay and the value a lock
-// granted under it stores there; ok is false for a request naming none, or
-// an open keeping none.
+// granted under it stores there; ok is false for a request naming none. The
+// caller decides which requests carry one, so any open keeps a replay.
 //
 // decision: the lock replay kept on the open replaces the SMB adapter's
 // pending.LockDRC once the adapter moves onto the table; until then that
 // cache is the live one. Delete it with the move.
 func lockSeq(op *open, r *LockSequence) (i int, v uint8, ok bool) {
-	if r == nil || op == nil || op.Durability == entity.DurabilityNone || r.Index < 1 || r.Index > 64 {
+	if r == nil || op == nil || r.Index < 1 || r.Index > 64 {
 		return 0, 0, false
 	}
 	return int(r.Index - 1), 0x10 | r.Seq&0xF, true
