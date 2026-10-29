@@ -523,7 +523,7 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the successor segment: %v", err)
 	}
-	h2, err := raw.ParseSegmentHeader(hdr[:raw.SegmentHeaderSize])
+	h2, err := raw.ParseSegmentHeader(headerSlot(t, segmentName(s2), hdr))
 	if err != nil {
 		t.Fatalf("parse the successor's header: %v", err)
 	}
@@ -1368,6 +1368,9 @@ func wantTakenClean(t *testing.T, f *journalv2test.Fixture, seg journalv2.Segmen
 	}
 
 	b := liveBytes(t, f, segmentName(seg))
+	if len(b) < raw.SegmentHeaderSize+raw.TrailerSize {
+		t.Fatalf("the taken segment %d is %d bytes in the live view, too short for a header slot and a trailer slot", seg, len(b))
+	}
 	hdr, err := raw.ParseSegmentHeader(b[:raw.SegmentHeaderSize])
 	if err != nil || hdr.ID != uint64(seg) {
 		t.Fatalf("the taken segment %d has no fresh header: %+v, %v", seg, hdr, err)
@@ -1742,7 +1745,7 @@ func wantLeftSegment(t *testing.T, f *journalv2test.Fixture, seg journalv2.Segme
 	if nseg == seg {
 		t.Fatalf("the stream appended into segment %d after a failed append there", seg)
 	}
-	hdr, err := raw.ParseSegmentHeader(durable(t, f, segmentName(nseg))[:raw.SegmentHeaderSize])
+	hdr, err := raw.ParseSegmentHeader(headerSlot(t, segmentName(nseg), durable(t, f, segmentName(nseg))))
 	if err != nil {
 		t.Fatalf("parse the next segment's header: %v", err)
 	}
@@ -1907,7 +1910,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	if nseg == rc.id {
 		t.Fatalf("the stream appended into segment %d after recovery ended it", rc.id)
 	}
-	hdr, err := raw.ParseSegmentHeader(durable(t, k, segmentName(nseg))[:raw.SegmentHeaderSize])
+	hdr, err := raw.ParseSegmentHeader(headerSlot(t, segmentName(nseg), durable(t, k, segmentName(nseg))))
 	if err != nil {
 		t.Fatalf("parse the next segment's header: %v", err)
 	}
