@@ -506,7 +506,7 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 1. **Refuse** what [RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work) lists, and a missing or foreign
    installation ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). `New` has already refused both: the first
    before it opens the metadata store, the second as `metadata.Open` reads the
-   format record ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). A start creates nothing.
+   format record ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). A start creates no installation.
 2. **Open the listeners.** From here the node's health endpoints answer
    (§2.5): live, not ready. The node's API address and the metrics listener
    open here. Until step 7, every `/api/v1` route but `/api/v1/health` answers
@@ -522,14 +522,17 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    every component holds the records' values before any of them starts.
 5. **The content side and the state the server reads**, in build order:
    **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the remote
-   stores, each served namespace's opened with
-   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim check, which completes before the engine
-   serves a binding of that namespace or GC starts on it; the engine, in
+   stores, each opened with
+   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim check for every namespace this node serves,
+   which completes before the engine serves a binding of that namespace or GC
+   starts on it, and which fences a namespace it finds copied rather than
+   failing the start; the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of shares this node serves in
    one call; GC, with each served share's namespace; open state for the shards
    this node acquires, handed the built server as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
-   created while the node serves is attached alone.
+   created while the node serves is attached alone, after the same claim check
+   when its namespace is new to this node.
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
    gateway, the client-address agent and the pNFS data server.
 7. The **operation runner** (§4.6), which resumes the operations this node
