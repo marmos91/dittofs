@@ -8,8 +8,8 @@ epic 3; the [epic 1](rfc-1-journal-epic1.md) and [epic 2](rfc-1-journal-epic2.md
 it runs ahead (plan §3.4).
 **Estimate:** 12 subtasks, against the plan's `rfc-1-journal-plan.md` §5, epic 3: "≈12
 subtasks". The Windows cache-policy refusal and the XFS and ext4 barrier rows, missing from
-the plan's list, are added (P21); the `format` replace, the direct reads, the
-storage-agnostic leg and the device fixtures leave this epic (P21).
+the plan's list, are added; the `format` replace, the direct reads, the storage-agnostic
+leg and the device fixtures leave this epic (P21).
 **Depends on:** sync point **S2, red suite in CI**; epic 1's storage seam (`storage.FS`,
 `storage.File`) and `internal/core` types; epic 2's `journalv2test/raw` (2.13a, #3381).
 **Blocks:** epic 5 (segments are made of this epic's records) and epic 7 (recovery parses
@@ -243,7 +243,7 @@ applies differently.
 | 7. v2 ignores v1 | **Applies.** Nothing is read from `pkg/block/journal`; the import test covers both new packages. |
 | 8. Real storage for storage properties | **Applies to the platform.** Every sync, rename and allocation test runs on a real directory. Codecs are pure logic and test in memory. Probes test on recorded mount tables and device answers (3.11, 3.12). |
 | 9. Comment conventions | **Applies.** No epic, issue or plan ID in source. The markers each subtask places are listed in it. |
-| 10. A test must be able to fail | **Applies.** Golden bytes are literal offsets copied from the RFC tables, with field values whose bytes do not repeat, so a field moved, swapped or written big-endian fails. Each platform test asserts the call issued through D6's table, and a table test pins each production entry to the call the RFC names. |
+| 10. A test must be able to fail | **Applies.** Golden bytes are literal offsets copied from the RFC tables, with field values whose bytes do not repeat, so a field moved, swapped or written big-endian fails. Each platform test asserts the call issued through D6's table, command included, and a table test pins each production entry to its `x/sys` function. |
 | 11. Export only what RFC 1 §3 uses | **Applies.** `journalv2` gains no symbol. Both packages are internal; their outcome classes are unexported or internal (D2, D7). |
 | 12. Create only what is declared | **Applies with D8.** Each package lands with its first subtask; no stub without a caller. |
 
@@ -330,6 +330,9 @@ subtask creates only what it declares) that epic 4 uses for `internal/index`.
 RFC 28 states 64-bit fields without a sign (RFC 28 §2.3: "the file offset it begins at, and
 its length, both 64-bit"); `core.Extent` is `{Off, Len int64}`. The decoder refuses a file
 offset or length above `MaxInt64`, and an offset plus length that overflows it, as damage.
+The footer reader applies the same bound to a catalog entry's file offset and length, and
+reads an entry outside it as "no footer" (3.5): the entry carries both as 64-bit fields
+(RFC 28 §2.5), and since P23 reads no `release`'s length, nothing else bounds it there.
 To confirm (P19).
 
 **D10. Copy-on-write is detected on Btrfs only; barriers by one mount-option table.**
@@ -531,7 +534,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Owner:** A. **Depends on:** 3.3, 3.4.
 - **Deliverables:** `catalog.go`: the 72-byte entry, the 32-byte trailer, the footer CRC, the
   reader (last 32 bytes, trailer CRC, magic, layout version and flags, seal marker before
-  `footerOffset`, `entryCount` fits, footer CRC); `golden/trailer_two_entries.hex`;
+  `footerOffset`, `entryCount` fits, footer CRC, D9's bounds on each entry, the last
+  entry's record end as P23 computes it); `golden/trailer_two_entries.hex`;
   `FuzzFooter`.
 - **Requirements:**
   - RFC 28 §2.4: "The footer **MUST** carry its own checksum, and **MUST** identify the
@@ -552,7 +556,14 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     that does not fit, layout version 2 and non-zero flags each yield no footer, one case
     each; so do a seal marker at `footerOffset − 32` that verifies for the previous segment
     id (a recycled segment's old trailer), a last entry whose record ends, padded to 8,
-    before `footerOffset − 32` (P23), and an entry with a non-zero epoch (P11).
+    before or after `footerOffset − 32` (P23), no entry with the seal marker past 48 (P23),
+    a last entry of kind 0, 15 or 128 (P23), an entry whose file offset or length is above
+    `MaxInt64` or whose sum overflows it (D9), and an entry with a non-zero epoch (P11); a
+    footer whose last entry is of each kind in RFC 28 §2.3's table is read, not refused,
+    each with a non-zero length where its kind has one and its seal marker at a literal
+    offset: from 48, a `write` of length 5 ends at 160, and a `release`, a `loss` and a
+    `clone target` of length 4096 end at 144, 160 and 200; so is a footer with no entry
+    and its seal marker at 48.
 - **Rules:** none beyond §2.1.
 
 ### 3.6 Slot scanner with resynchronisation
@@ -581,8 +592,10 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Done when:**
   - a corrupted length field refuses that record as damage, attaches every record after it
     and counts one scan that resynchronised; two resyncs in one scan count one, and a
-    stepped-over zero slot counts none (P8); a zero slot followed by a verifying record is stepped over,
-    reported as neither damage nor a torn tail, and the later record is attached;
+    stepped-over zero slot or a bad record with no verifying header after it counts none
+    (RFC 1 §3.9: "scans that found a record by resynchronising past a bad one"); a zero slot
+    followed by a verifying record is stepped over, reported as neither damage nor a torn
+    tail, and the later record is attached;
   - a seal marker copied into a payload does not stop the scan, and no record inside a
     payload holding a segment of this journal is attached; in a recycled segment no record
     or seal marker of the old life (it names another segment id) is attached or ends the
@@ -601,9 +614,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Deliverables:** `internal/platform` with `doc.go` (the `E1-D6` `decision:`), `OS`
   implementing `storage.FS` and `storage.File` (create, open, rename, remove, list, close,
   size, truncate, `WriteAt`, `ReadAt`), a contract test of `storage.FS` run on both
-  `platform.OS` and the seam, one case per sentence of `storage.go`'s contract, `Sync` as `fdatasync`, `SyncDir` as `fsync` on the
-  directory, the syscall table (D6). `ReadAtDirect`, which the seam declares, reads through
-  the page cache for now:
+  `platform.OS` and the seam, one case per sentence of `storage.go`'s contract, `Sync` as
+  `fdatasync`, `SyncDir` as `fsync` on the directory, the syscall table (D6).
+  `ReadAtDirect`, which the seam declares, reads through the page cache for now:
 
   ```go
   // ponytail: reads through the page cache; O_DIRECT, F_NOCACHE and
@@ -623,8 +636,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Done when:**
   - the contract test of `storage.FS` passes on `platform.OS` in a real directory and on
     the seam;
-  - the table records `fdatasync` per `Sync` and `fsync` on the directory per `SyncDir`, and
-    `TestSyscallTableIsReal` pins each production entry to the call the RFC names (D6);
+  - in `TestSyncCalls`, the recording table sees `fdatasync` per `Sync` and `fsync` on the
+    directory per `SyncDir`, and `TestSyscallTableIsReal` pins each production entry to its
+    `x/sys` function (D6);
   - an injected sync error is returned once and the next `Sync` issues a new call, never a
     hidden retry.
 - **Rules:** 2: does not apply, no parser. 5: `-race` with concurrent `WriteAt` on one file.
@@ -644,7 +658,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - RFC 28 §2.2: "An allocated region no record has reached reads as zeros."
 - **Done when:**
   - its allocated size covers the cap, and the table records `fallocate` then zero writes
-    over the whole range.
+    over the whole range;
+  - the linux case of `TestSyscallTableIsReal` pins the allocation's entries to their
+    `x/sys` functions, `fallocate` to `unix.Fallocate` (D6).
 - **Rules:** 2: does not apply, no parser. 9: RFC 28's zero-fill `decision:` at the Linux
   allocation.
 
@@ -659,10 +675,13 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     directory's included";
   - RFC 28 Appendix A: "`fcntl(F_PREALLOCATE)` then setting the size on macOS".
 - **Done when:**
-  - where a Mac runs `go test` (P22), the table records `F_FULLFSYNC` for every `Sync` and
-    `SyncDir`, and the darwin case of `TestSyscallTableIsReal` fails if the production
-    full-sync entry is bound to a plain `fsync` (D6);
-  - the storage contract tests of 3.7 pass on APFS.
+  - where a Mac runs `go test` (P22), the darwin case of `TestSyncCalls` sees
+    `fcntl(fd, F_FULLFSYNC, 0)` for every `Sync` and `SyncDir`, and the darwin case of
+    `TestSyscallTableIsReal` pins `fcntl` to `unix.FcntlInt` (D6);
+  - the recording table sees `F_PREALLOCATE`, its `Fstore_t` asking for the whole range with
+    `F_ALLOCATEALL`, then the size set, for every `Allocate`; the darwin case pins
+    `fcntlFstore` to `unix.FcntlFstore` and the size set to `unix.Ftruncate` (D6);
+  - the contract test of `storage.FS` (3.7) passes on APFS.
 - **Rules:** 2: does not apply, no parser. 8: real APFS only where a Mac runs the tests
   (P22); power-loss durability is not provable here (§8).
 
@@ -684,9 +703,12 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Done when:**
   - on the Windows runner a file open for reading is renamed and removed;
   - the table records `FlushFileBuffers` on the file and on the directory handle opened
-    with backup semantics, and the windows case of `TestSyscallTableIsReal` pins the
-    production entry to `FlushFileBuffers` (D6);
-  - the contract tests of 3.7 pass on NTFS.
+    with backup semantics, and the windows case of `TestSyscallTableIsReal` pins each
+    production entry to its `x/sys/windows` function: `FlushFileBuffers` to
+    `windows.FlushFileBuffers`, the directory open to `windows.CreateFile` (D6);
+  - once P2 is settled, the table records the allocation calls it chooses for every
+    `Allocate`, and the same case pins their entries (D6);
+  - the contract test of `storage.FS` (3.7) passes on NTFS.
 - **Rules:** 2: does not apply, no parser. 9: the `FILE_SHARE_DELETE` `decision:` as in
   `journalv2test/open_windows.go`.
 
@@ -769,7 +791,7 @@ the map; each row then gets its entry, pointing at the same test.
 | --- | --- | --- |
 | RFC 28 Appendix A, ext4, XFS and Btrfs mounted without cache flushes | `TestCheckMountOptions` | 3.11 |
 | RFC 28 Appendix A, copy-on-write disabled, and the Btrfs subvolume root | `TestCheckCopyOnWrite` | 3.11 |
-| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | `TestSyscallTableIsReal`, its darwin case | 3.7, 3.9 |
+| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | `TestSyncCalls` and `TestSyscallTableIsReal`, their darwin cases | 3.7, 3.9 |
 | RFC 28 Appendix A, Windows write-cache flushing off by policy | `TestCheckWriteCachePolicy` | 3.12 |
 | RFC 28 §4.2, "directory flush on NTFS" | parked, needs host: real NTFS and a power cut (§8) | |
 | `rfc-1-journal-plan.md` §5, epic 3, "on epic 2's device fixtures" | parked, needs host: no runner has loop devices (§8) | |
@@ -886,15 +908,12 @@ Each open point says what is asked, who decides it, and what it blocks.
   line". `Stats` has no field for it, and RFC 1 §3.8 says "The journal calls out to nothing
   to report." Rule 11 forbids a new `Stats` field the RFC does not name. **Decides:** RFC 1
   owner. **Blocks:** thin-provisioning detection, not planned until settled (§1.2).
-- **P8. What does the scanner count?** `rfc-1-journal-plan.md` §5, epic 3: "the scanner
-  returns the `torn_tails` and `scan_resyncs` contributions", but a torn tail is decided
+- **P8. What does the scanner count?** `rfc-1-journal-plan.md` §5, epic 3, had the scanner
+  return "the `torn_tails` and `scan_resyncs` contributions", but a torn tail is decided
   "In the newest segment of a stream" (RFC 28 §3.3), with synced-through proof only
-  recovery has. For `scan_resyncs` (RFC 1 §3.9: "scans that found a record by
-  resynchronising past a bad one"): does stepping over a zero slot count, and do two
-  resyncs in one scan count once or twice (RFC 28 §4.2, row "a scan resynchronises":
-  "`scan_resyncs` counts one")? **Decides:** RFC 1 owner. **Blocks:** nothing; 3.6 counts
-  whether the scan resynchronised (RFC 1 §3.9 counts scans), so two resyncs in one scan
-  count one, and a stepped-over zero slot counts none.
+  recovery has, so the scanner returns only `scan_resyncs` (counted per scan, RFC 1 §3.9)
+  and epic 7 owns `torn_tails`. This plan changes epics 3 and 7 of
+  `rfc-1-journal-plan.md` §5 to say so. **Decides:** plan owner. **Blocks:** nothing.
 - **P9. Are reserved bytes and zero fields refused on read?** RFC 28 §2.1: "Reserved bytes
   are written as zero and covered by their structure's checksum"; RFC 28 §2.3: "A field
   this table gives as 0 is written as zero."; only trailer flags have a reader rule (RFC 28
@@ -950,6 +969,8 @@ Each open point says what is asked, who decides it, and what it blocks.
     without `+C` and a non-subvolume Btrfs directory, but not the Windows cache policy, XFS
     `nobarrier` or ext4 `barrier=0` (RFC 28 Appendix A: "`nobarrier` or `barrier=0` on
     ext4, `nobarrier` on older XFS"). This plan includes them (3.11, 3.12).
+  - *Metrics:* the scanner returns `scan_resyncs` only, and `torn_tails` moves to epic 7's
+    metrics (P8); this edit is made in `rfc-1-journal-plan.md` itself.
 - **P22. Where do the macOS tests run?** CI has no macOS runner that runs `go test`, so
   3.9's done-when cannot run in CI. Either a macOS job is added, or the table check runs
   only on developer Macs. The only `windows-latest` job runs `net use`, not `go test`, so
@@ -958,9 +979,15 @@ Each open point says what is asked, who decides it, and what it blocks.
 - **P23. Is a footer that ends before the segment's last record "no footer"?** RFC 28 §2.4:
   "**MUST** identify the extent of the segment it describes, so that a footer describing
   fewer records than the segment holds is detectable rather than silently truncating".
-  The trailer gives the extent: the last entry's record end, padded to 8, must equal
-  `footerOffset − 32`. RFC 28 §2.5's reading list does not name this check. **Decides:**
-  RFC 28 owner. **Blocks:** nothing; 3.5 treats anything else as "no footer".
+  The trailer gives the extent: the last entry's record end must equal `footerOffset − 32`.
+  The end is the entry's `recordOffset`, plus the 96-byte header, plus what RFC 28 §2.3 puts
+  after it: the modification time and `length` bytes for `write`, `length` bytes for `fill`,
+  16 bytes for `loss`, 56 for `clone target`, 8 for `hold`, `unhold` and `stamp`, and none
+  otherwise, padded to 8; with no entry it is 48, the first record slot. A last entry of a
+  kind §2.3 does not define has no end, so it is "no footer" too, and the scan then meets
+  its header and fails the open (RFC 28 §2.3: "An unrecognised record kind fails the open").
+  RFC 28 §2.5's reading list does not name this check. **Decides:** RFC 28 owner.
+  **Blocks:** nothing; 3.5 treats anything else as "no footer".
 
 ### Checks that need hardware or a runner nobody provisions
 
