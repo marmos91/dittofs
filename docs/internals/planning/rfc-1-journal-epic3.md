@@ -243,7 +243,7 @@ applies differently.
 | 7. v2 ignores v1 | **Applies.** Nothing is read from `pkg/block/journal`; the import test covers both new packages. |
 | 8. Real storage for storage properties | **Applies to the platform.** Every sync, rename and allocation test runs on a real directory. Codecs are pure logic and test in memory. Probes test on recorded mount tables and device answers (3.11, 3.12). |
 | 9. Comment conventions | **Applies.** No epic, issue or plan ID in source. The markers each subtask places are listed in it. |
-| 10. A test must be able to fail | **Applies.** Golden bytes are literal offsets copied from the RFC tables, with field values whose bytes do not repeat, so a field moved, swapped or written big-endian fails. Each platform test asserts the call issued through D6's table, and a table test pins each production entry to the call the RFC names. |
+| 10. A test must be able to fail | **Applies.** Golden bytes are literal offsets copied from the RFC tables, with field values whose bytes do not repeat, so a field moved, swapped or written big-endian fails. Each platform test asserts the call issued through D6's table, command included, and a table test pins each production entry to its `x/sys` function. |
 | 11. Export only what RFC 1 §3 uses | **Applies.** `journalv2` gains no symbol. Both packages are internal; their outcome classes are unexported or internal (D2, D7). |
 | 12. Create only what is declared | **Applies with D8.** Each package lands with its first subtask; no stub without a caller. |
 
@@ -553,7 +553,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     each; so do a seal marker at `footerOffset − 32` that verifies for the previous segment
     id (a recycled segment's old trailer), a last entry whose record ends, padded to 8,
     before `footerOffset − 32` (P23), and an entry with a non-zero epoch (P11); a footer
-    whose last entry is a `release` with a non-zero length is read, not refused.
+    whose last entry is of each kind in RFC 28 §2.3's table is read, not refused, a
+    `write`'s modification time and a `release`'s non-zero length with no payload included.
 - **Rules:** none beyond §2.1.
 
 ### 3.6 Slot scanner with resynchronisation
@@ -664,6 +665,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - where a Mac runs `go test` (P22), the recording table sees `fcntl(fd, F_FULLFSYNC, 0)`
     for every `Sync` and `SyncDir`, and the darwin case of `TestSyscallTableIsReal` pins
     `fcntl` to `unix.FcntlInt` (D6);
+  - the recording table sees `F_PREALLOCATE` then the size set for every `Allocate`, and
+    the darwin case pins `fcntlFstore` to `unix.FcntlFstore` (D6);
   - the contract test of `storage.FS` (3.7) passes on APFS.
 - **Rules:** 2: does not apply, no parser. 8: real APFS only where a Mac runs the tests
   (P22); power-loss durability is not provable here (§8).
@@ -771,7 +774,7 @@ the map; each row then gets its entry, pointing at the same test.
 | --- | --- | --- |
 | RFC 28 Appendix A, ext4, XFS and Btrfs mounted without cache flushes | `TestCheckMountOptions` | 3.11 |
 | RFC 28 Appendix A, copy-on-write disabled, and the Btrfs subvolume root | `TestCheckCopyOnWrite` | 3.11 |
-| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | `TestSyscallTableIsReal`, its darwin case | 3.7, 3.9 |
+| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | 3.9's recording case, and `TestSyscallTableIsReal`'s darwin case | 3.7, 3.9 |
 | RFC 28 Appendix A, Windows write-cache flushing off by policy | `TestCheckWriteCachePolicy` | 3.12 |
 | RFC 28 §4.2, "directory flush on NTFS" | parked, needs host: real NTFS and a power cut (§8) | |
 | `rfc-1-journal-plan.md` §5, epic 3, "on epic 2's device fixtures" | parked, needs host: no runner has loop devices (§8) | |
