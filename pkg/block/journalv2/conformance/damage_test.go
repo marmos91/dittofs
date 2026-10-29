@@ -171,6 +171,77 @@ func (d *driven) crashed() {
 	}
 }
 
+// pieced is a write that was not synced, with the records it was stored as:
+// one piece, or one per segment for a write split at a segment cap, in file
+// order.
+type pieced struct {
+	share  int
+	id     journalv2.FileID
+	pieces []journalv2.Extent
+}
+
+// piecesOf returns the write over extent e of file id as the index places
+// it now: one piece per held entry over e, in file order, clipped to e. It
+// fails as a precondition unless the pieces cover e with no gap.
+func piecesOf(t *testing.T, where string, f *journalv2test.Fixture, s int, id journalv2.FileID, e journalv2.Extent) pieced {
+	t.Helper()
+
+	entries, err := f.J.Inspect().File(id)
+	stub(t, "Inspect.File", err)
+	if err != nil {
+		t.Fatalf("%s: inspect file %v: %v", where, id, err)
+	}
+
+	w := pieced{share: s, id: id}
+	at := e.Off
+	for _, en := range entries {
+		if en.Kind != journalv2.EntryHeld || en.Extent.Off+en.Extent.Len <= e.Off || en.Extent.Off >= e.Off+e.Len {
+			continue
+		}
+
+		lo, hi := max(en.Extent.Off, e.Off), min(en.Extent.Off+en.Extent.Len, e.Off+e.Len)
+		if lo != at {
+			t.Fatalf("precondition: %s: the index places file %v's write over %+v with a gap at %d: %+v", where, id, e, at, entries)
+		}
+
+		w.pieces = append(w.pieces, journalv2.Extent{Off: lo, Len: hi - lo})
+		at = hi
+	}
+
+	if at != e.Off+e.Len {
+		t.Fatalf("precondition: %s: the index places file %v's write over %+v only up to %d: %+v", where, id, e, at, entries)
+	}
+
+	return w
+}
+
+// wantWholePieces fails the test unless write w comes back after a crash as
+// a prefix of its pieces, each piece whole or not at all: a read of the
+// write reports nothing missing, or one missing extent that starts where a
+// piece starts and runs to the write's end. The model accepts any prefix of
+// an uncertain write, since it cannot see where the pieces split; this holds
+// it to whole pieces (RFC 28 section 4.4, lines 1262 to 1267).
+func wantWholePieces(t *testing.T, where string, h *journalv2.Handle, w pieced) {
+	t.Helper()
+
+	first, last := w.pieces[0], w.pieces[len(w.pieces)-1]
+	end := last.Off + last.Len
+	_, missing, err := readAt(t, h, w.id, first.Off, int(end-first.Off))
+	if err != nil {
+		t.Fatalf("%s: read file %v's write over [%d,%d): %v", where, w.id, first.Off, end, err)
+	}
+
+	if len(missing) == 0 {
+		return
+	}
+
+	if len(missing) == 1 && missing[0].Off+missing[0].Len == end && slices.ContainsFunc(w.pieces, func(p journalv2.Extent) bool { return p.Off == missing[0].Off }) {
+		return
+	}
+
+	t.Fatalf("%s: file %v's write, stored as pieces %+v, reads missing %+v: want nothing missing, or every piece from one piece's start missing", where, w.id, w.pieces, missing)
+}
+
 // holdNext installs a hold on the next call matching op and key and only
 // then releases cur, so the call parked at cur passes and the one after it
 // parks: a call sees the holds in place when it arrives, never one installed
@@ -206,6 +277,7 @@ type parked struct {
 	check  func() string
 	mirror func()
 	holds  []*journalv2test.Hold // other holds, released after the seam's crash
+	split  []pieced              // writes the crash takes in part, held to whole pieces
 }
 
 // crashParked crashes the storage with the parked call in flight, releases
@@ -241,6 +313,9 @@ func crashParked(t *testing.T, d *driven, p parked) {
 	d.f.Seam.SetFault(nil)
 	d.reopened()
 	d.crashed()
+	for _, w := range p.split {
+		wantWholePieces(t, d.label, d.f.Share(w.share), w)
+	}
 }
 
 // waitParked waits until the operation reaches its hold, failing the test
@@ -321,14 +396,29 @@ func rollParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 				t.Fatalf("precondition: the rolling write at %d is not in the index while its seal is parked, so the model cannot be told its version", off)
 			}
 
+			// Only the piece in the sealed segment is placed yet; the rest
+			// of the write, if any, is its second piece.
+			w := pieced{id: id, pieces: []journalv2.Extent{entryAt(t, d.f, id, off, d.label).Extent}}
+			if w.pieces[0].Off != off {
+				t.Fatalf("precondition: %s: the rolling write at %d is placed from %d", d.label, off, w.pieces[0].Off)
+			}
+
+			if pe := w.pieces[0].Off + w.pieces[0].Len; pe < off+size {
+				w.pieces = append(w.pieces, journalv2.Extent{Off: pe, Len: off + size - pe})
+			} else {
+				w.pieces[0].Len = size
+			}
+
 			mirror := func() { d.mirrorWrite(0, 0, off, p, wrote{v, nil}) }
-			return parked{held: held, done: done, mirror: mirror}, seg
+			return parked{held: held, done: done, mirror: mirror, split: []pieced{w}}, seg
 		case <-done:
 			if rolled() {
 				// The seal runs after the write returned, with no caller
-				// left to return to: its sync is still to come.
+				// left to return to: its sync is still to come. The write
+				// returned unsynced, so it too is held to whole pieces.
 				<-held.Reached()
-				return parked{held: held}, seg
+				w := piecesOf(t, d.label, d.f, 0, id, journalv2.Extent{Off: off, Len: size})
+				return parked{held: held, split: []pieced{w}}, seg
 			}
 
 			held.Release()
@@ -1094,7 +1184,8 @@ func TestDamage_TornWrites(t *testing.T) {
 				d.writeSynced(1, 1, 0, 64<<10)
 				a := d.writeSynced(0, 0, 0, 64<<10)
 				name := segmentName(entryAt(t, d.f, a.id, 0, d.label).Location.Segment)
-				d.write(0, 0, 64<<10, pattern(fmtTag("t", 0, 0, 64<<10), size))
+				last := d.write(0, 0, 64<<10, pattern(fmtTag("t", 0, 0, 64<<10), size))
+				w := piecesOf(t, d.label, d.f, 0, last.id, last.extent)
 
 				if err := d.f.TryCrash(journalv2test.TornIn(name, n)); err != nil {
 					stub(t, "Open", err)
@@ -1102,6 +1193,7 @@ func TestDamage_TornWrites(t *testing.T) {
 				}
 
 				d.crashed()
+				wantWholePieces(t, d.label, d.f.Share(0), w)
 			})
 		}
 	})
@@ -1131,6 +1223,9 @@ func TestDamage_TornWrites(t *testing.T) {
 
 				d.reopened()
 				d.crashed()
+				for _, w := range p.split {
+					wantWholePieces(t, d.label, d.f.Share(w.share), w)
+				}
 
 				// The sealed segment is the only one that can carry a
 				// catalog in this pass: the roll into a successor never
@@ -1152,8 +1247,8 @@ func TestDamage_TornWrites(t *testing.T) {
 // writes nothing, so the unsynced writes are the script's own and the
 // roll's, the same on every pass. It returns the hold parking spare-making,
 // to be released into the crashed storage before the dead journal is
-// closed.
-func reorderScript(t *testing.T, tb testing.TB, d *driven) *journalv2test.Hold {
+// closed, and the four unsynced writes as the index places them.
+func reorderScript(t *testing.T, tb testing.TB, d *driven) (*journalv2test.Hold, []pieced) {
 	t.Helper()
 
 	const size = 64 << 10
@@ -1166,11 +1261,23 @@ func reorderScript(t *testing.T, tb testing.TB, d *driven) *journalv2test.Hold {
 
 	d.writeSynced(0, 0, 0, size)
 	d.writeSynced(1, 1, 0, size)
-	d.write(0, 0, size, pattern(fmtTag("c", 0, 0, size), size))
-	d.write(1, 1, size, pattern(fmtTag("e", 1, 1, size), size))
-	d.write(0, 0, 2*size, pattern(fmtTag("g", 0, 0, 2*size), journalv2test.FixtureSegmentCap))
-	d.write(1, 1, 2*size, pattern(fmtTag("h", 1, 1, 2*size), size))
-	return spares
+	recs := []rec{
+		d.write(0, 0, size, pattern(fmtTag("c", 0, 0, size), size)),
+		d.write(1, 1, size, pattern(fmtTag("e", 1, 1, size), size)),
+		d.write(0, 0, 2*size, pattern(fmtTag("g", 0, 0, 2*size), journalv2test.FixtureSegmentCap)),
+		d.write(1, 1, 2*size, pattern(fmtTag("h", 1, 1, 2*size), size)),
+	}
+
+	var writes []pieced
+	for _, r := range recs {
+		writes = append(writes, piecesOf(t, d.label, d.f, r.share, r.id, r.extent))
+	}
+
+	if len(writes[2].pieces) < 2 {
+		t.Fatalf("precondition: %s: the write of the segment cap's size is placed as %+v, not split into a record per segment", d.label, writes[2].pieces)
+	}
+
+	return spares, writes
 }
 
 // maxReorderedWrites bounds the unsynced seam writes the reordered sweep
@@ -1192,7 +1299,7 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 	for mask := uint64(0); ; mask++ {
 		iterate(t, func(tb testing.TB) {
 			d := newDriven(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask))
-			spares := reorderScript(t, tb, d)
+			spares, writes := reorderScript(t, tb, d)
 
 			n := d.f.Seam.Unsynced()
 			switch {
@@ -1216,6 +1323,9 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 			spares.Release()
 			d.reopened()
 			d.crashed()
+			for _, w := range writes {
+				wantWholePieces(t, d.label, d.f.Share(w.share), w)
+			}
 		})
 		if mask+1 >= 1<<k {
 			break
