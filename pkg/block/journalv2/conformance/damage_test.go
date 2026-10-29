@@ -1453,22 +1453,23 @@ func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, 
 	}
 }
 
-// keepScanned flips the trailer's magic again and reopens when the last
-// open read S by its catalog, so the site stays scanned.
+// keepScanned breaks S's trailer again when its durable bytes carry a
+// trailer magic, so the reopen under test finds no footer and must scan S.
+// It reopens nothing itself: the reopen it prepares is the one the flip is
+// checked on.
 //
 // decision: an open may write a footer for a segment sealed by an earlier
-// process once it has verified it by scan, so a journal doing that is not
-// failed; the trailer is broken again before the next flip instead.
-func (s *flipSite) keepScanned(t *testing.T, where string) {
+// process once it has verified it by scan (RFC 28 section 2.4, lines 656 to
+// 659), so a journal doing that is not failed; the trailer is broken again
+// right before the next reopen instead. How an open read S says nothing of
+// whether it rebuilt S's footer afterwards, so the trailer's bytes are read,
+// not the recovery counts.
+func (s *flipSite) keepScanned(t *testing.T) {
 	t.Helper()
 
-	if s.f.J.Stats().Recovery.CatalogSegments == s.recovery.CatalogSegments {
-		return
+	if b := durable(t, s.f, s.name); string(b[len(b)-raw.TrailerSize:][:4]) == "DJT1" {
+		flipBit(t, s.f, s.name, int64(len(b))-raw.TrailerSize, 0)
 	}
-
-	flipBit(t, s.f, s.name, int64(len(durable(t, s.f, s.name)))-raw.TrailerSize, 0)
-	s.reopen(t, where)
-	wantScanned(t, "precondition: with its trailer's magic flipped again, before "+where, s.f, s.recovery, 0)
 }
 
 // recordRegion is a region of a record: the header, or a part of the body,
@@ -1526,13 +1527,18 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 			loc := entryAt(t, s.f, r.id, r.extent.Off, "the site").Location
 			where := fmt.Sprintf("bit %d of byte %d of the record at %d of %s", b, off, loc.Offset, s.name)
 			if s.scanned {
-				s.keepScanned(t, where)
+				s.keepScanned(t)
 			}
 
 			generation := s.f.J.Stats().LossGeneration
 			flipBit(t, s.f, s.name, loc.Offset+int64(off), b)
 			s.reopen(t, where)
 			dropped[i] = true
+			if s.scanned {
+				// The reopen the flip is checked on read S by scan, with no
+				// footer to read it by.
+				wantScanned(t, where, s.f, s.recovery, 0)
+			}
 
 			wantRecordMissing(t, where, s.f.Share(0), r)
 			if named {
