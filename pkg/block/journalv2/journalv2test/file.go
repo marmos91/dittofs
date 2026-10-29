@@ -246,10 +246,10 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	//
 	// decision: a silent tear tears the write's durability, not the write. The
 	// acknowledged write lands whole in the page cache, so Size and ReadAt see
-	// all of it; its first N bytes are recorded as a write and the rest as a
+	// all of it; its first tearAfter bytes are recorded as a write and the rest as a
 	// dropped one, so a Sync makes only the head durable and a crash leaves
 	// the file at its old size or the head's end, whichever is larger. Like
-	// Drop, it is a device that acknowledges what it never stores, a fault
+	// a lost write, it is a device that acknowledges what it never stores, a fault
 	// beyond the crash-time losses of the format's crash model.
 	n, err := sf.f.WriteAt(data, off)
 	landed := int64(len(data))
@@ -275,7 +275,7 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 			oldSize: size,
 			lost:    a.lost(),
 			dropped: a.lost(),
-			reorder: sf.seam.isMarked(sf.key()),
+			reorder: a.marked,
 		})
 	}
 

@@ -638,46 +638,36 @@ func TestAFailedSegmentCanHoldItsWriteAfterACrash(t *testing.T) {
 }
 
 func TestTornNeverPicksADroppedWrite(t *testing.T) {
-	cases := map[string]sim.FaultAction{"lost": drop}
-	for name, a := range cases {
-		t.Run(name, func(t *testing.T) {
-			s := newSeam(t)
-			f := create(t, s, "seg")
-			g := create(t, s, "other")
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	g := create(t, s, "other")
 
-			write(t, g, "bbbb", 0) // pending, and older than the dropped write
-			actOnce(t, s, OpWrite, a)
-			write(t, f, "aaaa", 0)
+	write(t, g, "bbbb", 0) // pending, and older than the dropped write
+	actOnce(t, s, OpWrite, drop)
+	write(t, f, "aaaa", 0)
 
-			crash(t, s, Torn(1))
+	crash(t, s, Torn(1))
 
-			if got := onDisk(t, s, "seg"); got != "" {
-				t.Fatalf("seg holds %q after the crash: a dropped write was torn", got)
-			}
-			if got := onDisk(t, s, "other"); got != "b" {
-				t.Fatalf("other holds %q, want the last write that was not dropped, torn to %q", got, "b")
-			}
-		})
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("seg holds %q after the crash: a dropped write was torn", got)
+	}
+	if got := onDisk(t, s, "other"); got != "b" {
+		t.Fatalf("other holds %q, want the last write that was not dropped, torn to %q", got, "b")
 	}
 }
 
 func TestReorderedNeverKeepsADroppedWrite(t *testing.T) {
-	cases := map[string]sim.FaultAction{"lost": drop}
-	for name, a := range cases {
-		t.Run(name, func(t *testing.T) {
-			for seed := range uint64(64) {
-				s := newSeam(t)
-				f := create(t, s, "seg")
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := create(t, s, "seg")
 
-				actOnce(t, s, OpWrite, a)
-				write(t, f, "gone", 0)
+		actOnce(t, s, OpWrite, drop)
+		write(t, f, "gone", 0)
 
-				crash(t, s, Reordered(seed))
-				if got := onDisk(t, s, "seg"); got != "" {
-					t.Fatalf("seed %d kept the dropped write: %q", seed, got)
-				}
-			}
-		})
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "seg"); got != "" {
+			t.Fatalf("seed %d kept the dropped write: %q", seed, got)
+		}
 	}
 }
 

@@ -241,16 +241,11 @@ func (s *Seam) MarkReorder(key string) {
 	s.marked = key
 }
 
-// isMarked reports whether a write of the file named key is marked; the
-// caller holds mu.
-func (s *Seam) isMarked(key string) bool {
-	return s.marked != "" && sim.Match(s.marked, key)
-}
-
 // action is what the seam's fault decided for one call.
 type action struct {
 	err       error
-	tearAfter int // > 0: tear a write after this many bytes; < 0: lose a write or a sync
+	tearAfter int  // > 0: tear a write after this many bytes; < 0: lose a write or a sync
+	marked    bool // a write MarkReorder marks, judged by the name the fault saw
 }
 
 func (a action) lost() bool { return a.tearAfter < 0 }
@@ -264,10 +259,11 @@ func (a action) torn(n int) bool { return a.tearAfter > 0 && a.tearAfter < n }
 func (s *Seam) consult(op, key string) action {
 	s.mu.Lock()
 	f := s.fault
+	marked := op == OpWrite && sim.Match(s.marked, key) // "" matches no file name
 	s.mu.Unlock()
 
 	if f == nil {
-		return action{}
+		return action{marked: marked}
 	}
 
 	_, err, tearAfter := f.At(op, []byte(key))
@@ -280,7 +276,7 @@ func (s *Seam) consult(op, key string) action {
 		panic(fmt.Sprintf("journalv2test: a loss on %s with an error is not supported", op))
 	}
 
-	return action{err: err, tearAfter: tearAfter}
+	return action{err: err, tearAfter: tearAfter, marked: marked}
 }
 
 // enter counts op on name, waits at any hold that matches it, then consults

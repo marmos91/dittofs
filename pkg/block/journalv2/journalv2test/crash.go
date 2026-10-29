@@ -48,7 +48,7 @@ func TornIn(name string, n int) CrashOption {
 // Reordered keeps a subset of the unsynced writes, chosen from seed, as a
 // device that wrote them in another order and lost power part-way would. A
 // dropped write is never among them, one a failed Sync covered may be, and
-// while any of them was marked by a Reorder fault, only the marked ones are.
+// while any of them was marked by MarkReorder, only the marked ones are.
 // The kept writes land in the order they were issued, so a write never ends
 // up under an older one it overlapped. Unsynced allocations, truncations and
 // directory changes are lost as usual.

@@ -127,8 +127,8 @@ func (r Rule) hash() uint64 {
 // delay as already elapsed.
 //
 // decision: err sits between delay and tearAfter, against Go's convention,
-// because the results are RFC 8's Fault signature, which every seam declares
-// in its own package and a Schedule must satisfy as is.
+// because the results are Fault's signature, which every seam declares in its
+// own package and a Schedule must satisfy as is.
 func (s *Schedule) At(op string, key []byte) (delay time.Duration, err error, tearAfter int) { //nolint:staticcheck // ST1008: the order is Fault's, see above
 	a := s.decide(op, string(key))
 	if a.Delay > 0 {
