@@ -602,9 +602,10 @@ Every conformance subtask also:
 ### 2.7 RFC 1 Group A, part 1: read, fill, offload, release and removals
 
 - **Owner:** B. **Depends on:** 2.5a.
-- **Deliverables:** sixteen checks of RFC 1 §9.4 Group A: no zero-fill, write during
+- **Deliverables:** seventeen checks of RFC 1 §9.4 Group A: no zero-fill, write during
   offload, offer stops at `through` with per-extent stamps, lost stamp is offered, fill
-  safety, fill sets the bit, refusal, partial release keeps the record whole
+  safety, a read's `asOf` against a change in flight, fill sets the bit, refusal,
+  partial release keeps the record whole
   (by catalog and by scan), release frees nothing inside a segment, unlink under read,
   removals survive to `Since`, no resurrection, removal during offload, neighbours are
   frozen, offered bytes verified, no pin on a segment under repack.
@@ -936,7 +937,7 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 | 2.5a fixture, registration | S | the fixture, the suite, CI wiring |
 | 2.5b Group D, clock | M | twelve checks |
 | 2.6 model-based test | M | one test, shrinking and the corpus |
-| 2.7 Group A part 1 | M | sixteen checks |
+| 2.7 Group A part 1 | M | seventeen checks |
 | 2.8 Group A part 2, counted | M | nineteen checks, two counted checks |
 | 2.9 Group B part 1 | M | fifteen checks |
 | 2.10 Group B part 2 | M | thirteen checks, some at 10⁶ extents |

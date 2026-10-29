@@ -479,11 +479,12 @@ failure.
 
 **Scenario catalogue (component level):**
 
-- **RFC 1 §9.4 Group A, silent data loss** (35 checks):
+- **RFC 1 §9.4 Group A, silent data loss** (36 checks):
   - no zero-fill;
   - a write during offload;
   - an offer stopping at `through`, and a lost stamp still offered;
   - fill safety and fill setting the offloaded bit;
+  - a read's `asOf` against a change still in flight;
   - release refusal;
   - partial release keeps the record whole;
   - repack copies only the live part, including across a crash;
@@ -811,6 +812,10 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
+  - `asOf`: a write holds its file's append domain from drawing its version until the
+    index has it, and a read takes its `asOf` under that domain, no later than it
+    resolves its extents (RFC 1 §8.4), so a `Fill` from that read is refused over a
+    change it did not see;
   - `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, with markers;
   - `Since` and `Settle`;
   - `Extents`, `Files`, `DirtyFiles` (O(dirty files), no walk).
