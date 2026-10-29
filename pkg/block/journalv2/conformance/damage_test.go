@@ -1493,6 +1493,13 @@ type recordRegion struct {
 // decision: the loss is looked for after the read whether S is scanned or
 // catalogued, so a scan that catches it at open and one that leaves it to
 // the read both pass, as the row allows either.
+//
+// decision: each flip reopens the journal, and that open places in the ring
+// the loss records the earlier flips left on disk. Whether placing one again
+// raises the generation is the journal's choice, as long as the generation
+// never goes back, so a flip on a record not offloaded may raise it by one
+// plus at most one for each earlier such flip. The first flip of a site has
+// none before it, so the rise by exactly one is still pinned there.
 func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bool) {
 	t.Helper()
 
@@ -1532,12 +1539,15 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				wantLossNamed(t, where, s.f, r, offloaded)
 			}
 
+			// The earlier flips of this site, all of one kind, are the loss
+			// records the open may have placed again.
+			replayed := uint64(k - 1)
 			switch got := s.f.J.Stats().LossGeneration; {
 			case !named:
 			case offloaded && got != generation:
 				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss the remote tier can repair", where, generation, got)
-			case !offloaded && got != generation+1:
-				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss of content not yet offloaded, want it raised by one", where, generation, got)
+			case !offloaded && (got < generation+1 || got > generation+1+replayed):
+				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss of content not yet offloaded, want it raised by one, plus at most %d for the loss records of earlier flips the open placed again", where, generation, got, replayed)
 			}
 
 			// A neighbour of each kind still reads after every flip.
