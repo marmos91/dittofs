@@ -733,3 +733,48 @@ func TestExpiryDuringUnlinkRaisesOneClosed(t *testing.T) {
 		}
 	}
 }
+
+// An open whose durable record the store refuses is not held: it is
+// refused, and nothing of it is left to list or to deny another open.
+func TestRefusedDurableOpenLeavesNothing(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile() // the store holds no such file, so its open's record is refused
+	if _, err := f.open(a, file, OpenRequest{Unlinked: true, Access: rd, Deny: wr}); err == nil {
+		t.Fatal("an open whose record the store refuses was granted")
+	}
+	if recs := f.durable(t, file); len(recs) != 0 {
+		t.Errorf("the refused open left %d opens of its file", len(recs))
+	}
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open after the refused deny-write: %v", err)
+	}
+}
+
+// An SMB open's ID is judged with the handle the request carries and the
+// caller's client: a handle naming another file is ErrBadState, and a
+// caller of another client is ErrNotYours, its principal the opener's too.
+func TestOpenIDJudgedByHandleAndClient(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd})
+	if _, err := f.Opens().Close(ctx, a, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(entity.NewFileID())}, Seqs{}); !errors.Is(err, ErrBadState) {
+		t.Errorf("a close of the open under another file's handle: %v, want ErrBadState", err)
+	}
+	other := Caller{Client: b.Client, Principal: a.Principal, Protocol: entity.ProtocolSMB}
+	if _, err := f.Opens().Close(ctx, other, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}, Seqs{}); !errors.Is(err, ErrNotYours) {
+		t.Errorf("a close of the open by its principal under another client: %v, want ErrNotYours", err)
+	}
+	f.close(t, a, o)
+}
+
+// A downgrade may not widen the deny an open holds.
+func TestDowngradeMayNotWidenDeny(t *testing.T) {
+	f := newFixture(t)
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd | wr})
+	if _, err := f.Opens().Downgrade(ctx, n, refOf(o), Seqs{}, rd, wr); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a downgrade to a deny the open does not hold: %v, want ErrInvalid", err)
+	}
+}
