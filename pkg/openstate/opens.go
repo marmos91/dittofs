@@ -410,11 +410,12 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
-		// A new open past its client's cap is refused here, before a
-		// predecessor or a disconnected open is closed or a recall started.
-		// Its place under the cap is taken at the check, so an open of the
-		// client racing it cannot take it between the check and the mint,
-		// and given back unless the open is minted into it.
+		// A new open past its client's cap, or whose shard its client's
+		// record cannot list, is refused here, before a predecessor or a
+		// disconnected open is closed or a recall started. Its place under
+		// the cap is taken at the check, so an open of the client racing it
+		// cannot take it between the check and the mint, and given back
+		// unless the open is minted into it.
 		if e.openOf(r.Owner, r.Stream) == nil {
 			if err := t.charge(who.Client, cappedOpens, 1, true); err != nil {
 				return err
@@ -424,6 +425,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 					_ = t.charge(who.Client, cappedOpens, -1, false)
 				}
 			}()
+			if err := t.markShard(ctx, who.Client, f.Shard); err != nil {
+				return err
+			}
 		}
 		if err := t.takeOver(ctx, e, who, r, out); err != nil {
 			return err
@@ -604,13 +608,10 @@ func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fr
 	})
 }
 
-// addOpen adds o, a new open of f, to e under its step: its shard listed in
-// its client's record, its reference minted, and its record written durable
-// where the file has no entry.
+// addOpen adds o, a new open of f, to e under its step, its shard already
+// listed in its client's record: its reference minted, and its record
+// written durable where the file has no entry.
 func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r OpenRequest) error {
-	if err := t.markShard(ctx, o.Client, f.Shard); err != nil {
-		return err
-	}
 	if err := t.mintOpen(e, o, f.Shard); err != nil {
 		return err
 	}

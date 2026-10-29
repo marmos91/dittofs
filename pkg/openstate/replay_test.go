@@ -389,3 +389,32 @@ func TestLockSequenceMismatchInvalidates(t *testing.T) {
 		t.Errorf("an unlock whose index another sequence reset was answered as a replay: %+v still held", h)
 	}
 }
+
+// An app-instance create that is its client's first state in the shard,
+// refused where the store refuses its client's shard mark, has closed no
+// predecessor.
+func TestAppInstanceWaitsForItsShardMark(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file := in(1)
+	as := func(who Caller, version uint64) OpenRequest {
+		q := keep(OpenRequest{Access: rd}, entity.DurabilityDurable, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: [2]uint64{1, version}}, true
+		return q
+	}
+	f.mustOpen(t, a, file, as(a, 5))
+	st.updateAt.Store(st.updates.Load() + 1)
+	if _, err := f.open(b, file, as(b, 6)); !errors.Is(err, errWrite) {
+		t.Fatalf("a create whose shard mark the store refuses: %v, want the store's error", err)
+	}
+	if e := f.entryOf(file.ID); e == nil || len(e.opens) != 1 {
+		t.Error("a create refused at its shard mark closed its predecessor")
+	}
+	if _, err := f.open(b, file, as(b, 6)); err != nil {
+		t.Fatalf("the create once the store writes again: %v", err)
+	}
+	if n := len(f.entryOf(file.ID).opens); n != 1 {
+		t.Errorf("%d opens, want only the one that replaced its predecessor", n)
+	}
+}
