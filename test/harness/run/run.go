@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/test/harness/fixture"
@@ -60,24 +61,28 @@ func (r Report) Status() int {
 
 // Options say where a run happens and writes.
 type Options struct {
-	Root    string    // the repository
-	Results string    // where runs are written, each in a directory of its own
-	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
-	Out     io.Writer // where the commands' output passes through
-	Tier    string    // the tier the run was asked for, recorded in its results
-	Retry   int       // --retry: how many times a new failure's test runs again
-	Place   string    // --place: the place the run is on, which meets that place's host need, recorded in its results
+	Root     string    // the repository
+	Results  string    // where runs are written, each in a directory of its own
+	CI       bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
+	Out      io.Writer // where the commands' output passes through
+	Tier     string    // the tier the run was asked for, recorded in its results
+	Retry    int       // --retry: how many times a new failure's test runs again
+	Place    string    // --place: the place the run is on, which meets that place's host need, recorded in its results
+	Parallel int       // --parallel: how many cells run at once; below 2, one after another
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
 var minute = time.Minute
 
-// Run runs the cells one after another, each logged under a new directory in
-// o.Results, where summary.json holds every finished cell's results: it's
+// Run runs the cells, each logged under a new directory in o.Results, where
+// summary.json holds every finished cell's results, in the cells' order: it's
 // written when the run starts and rewritten after each cell, so a run stopped
-// at any point still has them. A summary.json that can't be written doesn't
-// stop the run: dt says so, and Run returns the first such error once the
-// cells are done. Cancelling ctx stops the cell running and the ones after it.
+// at any point still has them. Cells start in order, up to o.Parallel at once,
+// each once none running conflicts with it; with more than one at once, each
+// line a cell prints is led by its name. A summary.json that can't be written
+// doesn't stop the run: dt says so, and Run returns the first such error once
+// the cells are done. Cancelling ctx stops the cells running and the ones
+// after them.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit, branch, dirty := gitState(o.Root)
 	// Absolute, so {out} means the same from any directory a command runs in.
@@ -110,27 +115,125 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	if len(cells) == 0 {
 		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
 	}
-	for _, c := range cells {
-		start := time.Now()
-		cell := runCell(ctx, c, o, rep.Dir, commit)
-		cell.Took = time.Since(start).Round(time.Second)
-		rep.Outcomes = append(rep.Outcomes, cell)
-		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
-		if o.CI {
-			for _, a := range annotations(cell) {
-				_, _ = fmt.Fprintln(o.Out, a)
+	// mu guards what the cells share: running, done, rep, sum and o.Out.
+	var mu sync.Mutex
+	freed := sync.NewCond(&mu)
+	running := map[int]bool{}
+	done := make([]*report.Cell, len(cells))
+	// waits reports whether c must wait: o.Parallel cells run, or one that
+	// conflicts with c does.
+	waits := func(c Cell) bool {
+		if len(running) >= max(o.Parallel, 1) {
+			return true
+		}
+		for j := range running {
+			if conflict(cells[j], c) {
+				return true
 			}
 		}
-		sum.Cells = append(sum.Cells, cell)
-		sum.Stop, sum.Exit = time.Now(), rep.Status()
-		// ponytail: the whole summary is rewritten after each cell: about
-		// 25 ms for the unit suite's 12,500 results, 0.2 s for 200,000.
-		// Write each cell's results to a file of its own when a run's time
-		// outside its cells, its stop less its start less its cells'
-		// seconds, passes 10 seconds.
-		write()
+		return false
 	}
+	var wg sync.WaitGroup
+	for i, c := range cells {
+		mu.Lock()
+		for waits(c) {
+			freed.Wait()
+		}
+		running[i] = true
+		mu.Unlock()
+		wg.Go(func() {
+			co := o
+			var out *prefixed
+			if o.Parallel > 1 {
+				out = &prefixed{mu: &mu, w: o.Out, prefix: "[" + c.Name + "] "}
+				co.Out = out
+			}
+			start := time.Now()
+			cell := runCell(ctx, c, co, rep.Dir, commit)
+			cell.Took = time.Since(start).Round(time.Second)
+			if out != nil {
+				out.flush()
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			delete(running, i)
+			done[i] = &cell
+			rep.Outcomes = rep.Outcomes[:0]
+			for _, d := range done {
+				if d != nil {
+					rep.Outcomes = append(rep.Outcomes, *d)
+				}
+			}
+			_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
+			if o.CI {
+				for _, a := range annotations(cell) {
+					_, _ = fmt.Fprintln(o.Out, a)
+				}
+			}
+			sum.Cells = rep.Outcomes
+			sum.Stop, sum.Exit = time.Now(), rep.Status()
+			// ponytail: the whole summary is rewritten after each cell: about
+			// 25 ms for the unit suite's 12,500 results, 0.2 s for 200,000.
+			// Write each cell's results to a file of its own when a run's time
+			// outside its cells, its stop less its start less its cells'
+			// seconds, passes 10 seconds.
+			write()
+			freed.Broadcast()
+		})
+	}
+	wg.Wait()
 	return rep, writeErr
+}
+
+// conflict reports whether cells a and b can't run at once: either is
+// exclusive, their fixtures set the same SMB port, or both use the host's
+// rpcbind, as a knfsd fixture's kernel server does too.
+func conflict(a, b Cell) bool {
+	if a.Unit.Exclusive || b.Unit.Exclusive {
+		return true
+	}
+	fa, fb := a.Unit.Fixture, b.Unit.Fixture
+	if fa == nil || fb == nil {
+		return false
+	}
+	hostRPC := func(f *registry.Fixture) bool { return f.RPCBind == "host" || f.Server == "knfsd" }
+	return fa.SMB.Port != 0 && fa.SMB.Port == fb.SMB.Port || hostRPC(fa) && hostRPC(fb)
+}
+
+// prefixed passes a cell's output on with each line led by the cell's name, a
+// whole line at a time, so cells that run at once don't cut into each other's
+// lines. mu is the run's, shared by every cell's writer.
+type prefixed struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	prefix string
+	part   []byte // the line not ended yet
+}
+
+func (l *prefixed) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.part = append(l.part, p...)
+	for {
+		i := bytes.IndexByte(l.part, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		if _, err := fmt.Fprintf(l.w, "%s%s\n", l.prefix, l.part[:i]); err != nil {
+			return len(p), err
+		}
+		l.part = l.part[i+1:]
+	}
+}
+
+// flush passes on a last line that has no end.
+func (l *prefixed) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.part) > 0 {
+		_, _ = fmt.Fprintf(l.w, "%s%s\n", l.prefix, l.part)
+		l.part = nil
+	}
 }
 
 // runName names a run by its start time and commit, and a job's re-run by its

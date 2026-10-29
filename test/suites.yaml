@@ -336,6 +336,7 @@ suites:
     # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
     # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
     timeout: { test: 3h }
+    exclusive: true   # it measures a host with nothing else running
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.
@@ -349,6 +350,7 @@ suites:
     needs_by_test:
       "9?-*.sh": ["host:dedicated", "disk:110"]
     timeout: { test: size, cell: 90m }
+    exclusive: true   # setup.sh takes the scenarios' lock, and a second run beside it exits, not waits
     shards: 4
     # decision: reported, never failing the gate, until a week of develop runs has no apt stall:
     # setup.sh ran apt-get update for every scenario, which stalled for minutes on hosted runners,

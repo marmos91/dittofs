@@ -148,6 +148,11 @@ func TestRunStatuses(t *testing.T) {
 			t.Errorf("dt run %s: %v, want exit status %d", suite, err, code)
 		}
 	}
+	// Taken as one at a time, --parallel 0 would run away and exit 2.
+	var status exitStatus
+	if _, err := dt(t, "run", "away", "--parallel", "0", "--results", t.TempDir()); err == nil || errors.As(err, &status) {
+		t.Errorf("dt run away --parallel 0: %v, want a usage error", err)
+	}
 }
 
 // An option's flag runs its cells only when it's true.

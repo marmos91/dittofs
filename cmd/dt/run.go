@@ -30,7 +30,7 @@ func newRun() *cobra.Command {
 	var tier, results, place, in string
 	var only, skip []string
 	var ci bool
-	var retry int
+	var retry, parallel int
 	options := map[string]bool{}
 	cmd := &cobra.Command{
 		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P",
@@ -53,6 +53,9 @@ func newRun() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !slices.Contains([]string{"", "host", "container", "auto"}, in) {
 				return fmt.Errorf("--in %q is not one of host, container, auto", in)
+			}
+			if parallel < 1 {
+				return errors.New("--parallel takes how many cells run at once: 1 or more")
 			}
 			root, r, err := load()
 			if err != nil {
@@ -83,7 +86,7 @@ func newRun() *cobra.Command {
 				}
 				return dtc(cmd, root, again(cmd, args))
 			}
-			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place})
+			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel})
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
@@ -91,6 +94,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
 	cmd.Flags().IntVar(&retry, "retry", 0, "run each test that failed new again, up to N times: a pass on a retry is flaky")
+	cmd.Flags().IntVar(&parallel, "parallel", 1, "run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
