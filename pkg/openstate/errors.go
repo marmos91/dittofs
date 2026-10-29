@@ -16,7 +16,7 @@ var (
 	ErrClientInUse = errors.New("openstate: client name held by another principal")
 	ErrClientBusy  = errors.New("openstate: client still holds a session or state")
 	ErrNoRecall    = errors.New("openstate: acknowledgement of a grant with no recall in flight")
-	ErrInvalid     = errors.New("openstate: request out of bounds: a client or owner name past 1,024 bytes, an Adapter record past 4 KiB, a lock list past 64 ranges, delete on close without delete access, or a recall answer claiming caching its grant does not hold or its recall did not offer")
+	ErrInvalid     = errors.New("openstate: request out of bounds")
 	ErrDelay       = errors.New("openstate: retry later")
 	ErrStopped     = errors.New("openstate: table not started, or stopped")
 
