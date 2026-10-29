@@ -764,6 +764,7 @@ suites:
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
 | `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
+| `parallel` | `true`: under `--parallel`, the suite's cells may run beside others (§4.4), set once someone has checked that they hold nothing else of the host's ([testing-parallel.md](../testing-parallel.md)) | `false`: they run alone |
 
 **Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
 each test. Each value is one argument, never split again, except `{packages}`, `{args}`, `{names}` and
@@ -956,7 +957,8 @@ The fixture gives the command these placeholders:
   names the server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
-  port, or `rpcbind: host`, run one at a time.
+  port, or that both use the host's rpcbind (`rpcbind: host`, or a knfsd server), run one at a time
+  (§4.4).
 - `{client2}`: the second client's address, with `clients: 2`.
 - `{bucket}`: with an S3 profile, the request that lists the keys under the fixture's prefix in its
   bucket, an S3 ListObjectsV2 URL, so a test can see what the server put there, as `clients`'s
@@ -1124,8 +1126,15 @@ cell must reach the cell's limit first, which fails it.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
-cells at once. That is safe only because each fixture gets its own ports, mount point and results
-directory. Today the suites share them and must run one at a time (`Makefile:108-111`).
+cells at once, 1 by default. Cells start in order, each once none running conflicts with it. A
+cell runs beside others only when its suite says `parallel: true` (§4.1); between two that do, dt
+still keeps apart, from their needs, which hold their fixtures': either needing free disk
+(`disk:N`), both needing the host's rpcbind (`rpcbind`, as `rpcbind: host` and a knfsd server
+give), and both needing the same port (`port:N`). The run's `{bin}` and `{tools}` are built and
+laid out once, before any cell starts. Everything else a suite holds of the host's is for whoever
+sets its `parallel` to check ([testing-parallel.md](../testing-parallel.md)). With more than one
+at once, each line a cell prints is led by its name, as `[CELL] `; its log keeps the lines as they
+are, and the summary and the results keep the cells' order.
 
 **The tier of a run.** `dt run` runs each suite or option it names at `--tier T`, `pr` by default,
 or at the suite's own tier when that is wider; `manual` counts as the widest, so
