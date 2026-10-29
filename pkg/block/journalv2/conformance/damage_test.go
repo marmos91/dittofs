@@ -704,7 +704,7 @@ var syncPoints = []struct {
 		d.writeSynced(0, 0, 0, 64<<10)
 		name := segmentName(seg)
 		removes := d.f.Seam.CallsFor(journalv2test.OpRemove, name)
-		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
@@ -725,7 +725,7 @@ var syncPoints = []struct {
 				t.Fatalf("precondition: the segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
-			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "", p.held)
+			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "*", p.held)
 			waitParked(t, p, "the repack")
 		}
 		return p
@@ -738,7 +738,7 @@ var syncPoints = []struct {
 		awaitSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journalv2test.FixtureSegmentCap) })
 		d.f.Reopen()
 		before := len(segmentFiles(t, d.f))
-		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
 		recs, _, _ := d.fill(0, 0, 64<<10)
 		d.sync(0, recs[0].id)
 		// The roll returned already; the spare's directory sync, off the
@@ -882,7 +882,7 @@ var syncPoints = []struct {
 		}()
 		p := parked{held: rename, done: done, holds: []*journalv2test.Hold{spares}}
 		waitParked(t, p, "the repack")
-		p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "", p.held)
+		p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "*", p.held)
 		p.check = func() string {
 			if d.f.Seam.CallsFor(journalv2test.OpRename, name) != 1 {
 				return "the held directory sync does not follow the recycle's rename"
@@ -928,7 +928,7 @@ var syncPoints = []struct {
 
 		rename.Release()
 		removes := d.f.Seam.CallsFor(journalv2test.OpRemove, tmp)
-		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
 		opened := make(chan error, 1)
 		go func() { opened <- d.f.TryCrash() }()
 		p := parked{held: held, done: opened, check: func() string {
@@ -943,7 +943,7 @@ var syncPoints = []struct {
 				t.Fatalf("precondition: the open did not unlink %s within %d directory syncs", tmp, n)
 			}
 
-			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "", p.held)
+			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "*", p.held)
 			waitParked(t, p, "the open after the crash")
 		}
 		return p
@@ -969,7 +969,7 @@ var syncPoints = []struct {
 		}
 
 		removes := d.f.Seam.CallsFor(journalv2test.OpRemove, name)
-		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+		held := d.f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journalv2test.FixtureSegmentCap, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg}})
@@ -987,7 +987,7 @@ var syncPoints = []struct {
 				t.Fatalf("precondition: the failed segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
-			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "", p.held)
+			p.held = holdNext(t, d.f, journalv2test.OpSyncDir, "*", p.held)
 			waitParked(t, p, "the repack")
 		}
 		return p

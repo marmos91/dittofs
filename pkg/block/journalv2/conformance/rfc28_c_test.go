@@ -1012,7 +1012,7 @@ func awaitSpare(t *testing.T, f *journalv2test.Fixture, roll func()) {
 	t.Helper()
 
 	before := segmentFiles(t, f)
-	held := f.Seam.Hold(t, journalv2test.OpSyncDir, "")
+	held := f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
 	roll()
 	<-held.Reached()
 
@@ -2557,7 +2557,7 @@ func TestRFC28C_FormatFile(t *testing.T) {
 	// A restamp crashed before the rename of the new file, then one crashed
 	// after the rename and before the directory sync.
 	other := journalv2.InstallationID{'o', 't', 'h', 'e', 'r'}
-	for _, step := range []struct{ op, key string }{{journalv2test.OpRename, "format.tmp"}, {journalv2test.OpSyncDir, ""}} {
+	for _, step := range []struct{ op, key string }{{journalv2test.OpRename, "format.tmp"}, {journalv2test.OpSyncDir, "*"}} {
 		f.Shutdown()
 		renames := f.Seam.CallsFor(journalv2test.OpRename, "format.tmp")
 		held := f.Seam.Hold(t, step.op, step.key)
