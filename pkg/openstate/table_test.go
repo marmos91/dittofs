@@ -170,17 +170,34 @@ func (s *recordingSink) takeWaits() []waitOverCall {
 	return w
 }
 
-// orderLog is an Order that records each file it is taken for.
+// orderLog is an Order that records each file it is taken for; blocking, it
+// is also a real lock per file, as the service's admission lock is.
 type orderLog struct {
-	mu    sync.Mutex
-	files []entity.FileID
+	mu       sync.Mutex
+	files    []entity.FileID
+	blocking bool
+	held     map[entity.FileID]*sync.Mutex
 }
 
 func (l *orderLog) order(f entity.FileID) func() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.files = append(l.files, f)
-	return func() {}
+	var m *sync.Mutex
+	if l.blocking {
+		if l.held == nil {
+			l.held = map[entity.FileID]*sync.Mutex{}
+		}
+		if m = l.held[f]; m == nil {
+			m = &sync.Mutex{}
+			l.held[f] = m
+		}
+	}
+	l.mu.Unlock()
+	if m == nil {
+		return func() {}
+	}
+	m.Lock()
+	return m.Unlock
 }
 
 func (s *recordingSink) Closed(f entity.FileID, r CloseResult) {

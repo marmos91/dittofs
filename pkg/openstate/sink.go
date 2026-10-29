@@ -5,7 +5,9 @@ import "github.com/marmos91/dittofs/pkg/metadata/entity"
 // Sink is how open state reaches clients and the service: every other call
 // goes into the table, and these come out of it. The service implements it.
 // Each method is called after the step that raised it has released every
-// table lock, by the goroutine that ran it, and only queues and returns.
+// table lock, by the goroutine that ran it, and only queues and returns: it
+// must not call back into the table before returning, as that goroutine may
+// hold the file's admission lock, which a call serving waiters takes again.
 type Sink interface {
 	// ClientEnded: this node ended a client; the service ends it at each
 	// shard's primary.

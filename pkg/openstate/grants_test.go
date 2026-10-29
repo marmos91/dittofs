@@ -726,25 +726,32 @@ func TestFreeStateOfALockState(t *testing.T) {
 	}
 }
 
-// A Sink that answers a recall from inside RecallGrant deadlocks nothing: no
-// table lock is held while it runs.
-func TestRecallSinkMayCallBack(t *testing.T) {
+// A Sink that hands a recall on and has it answered later deadlocks nothing,
+// though the call that raised the recall runs under the file's admission
+// lock and the answer takes it again to serve the waiters it frees.
+func TestRecallAnsweredOutsideTheSink(t *testing.T) {
 	f := newFixture(t)
+	f.order.blocking = true
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
 	file := anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
-	f.sink.onRecall = func(g CachingGrant, to GrantKind) { _ = f.ack(a, &g, to) }
+	acked := make(chan error, 1)
+	f.sink.onRecall = func(g CachingGrant, to GrantKind) { go func() { acked <- f.ack(a, &g, to) }() }
 	done := make(chan error)
 	go func() {
+		unlock := f.order.order(file.ID) // the service's admission lock, held across the call
+		defer unlock()
 		done <- f.Checks().CheckIO(ctx, b, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
 	}()
-	select {
-	case err := <-done:
-		if delayedFor(err) != DelayRecall {
-			t.Fatal(err)
+	for _, c := range []chan error{done, acked} {
+		select {
+		case err := <-c:
+			if c == done && delayedFor(err) != DelayRecall || c == acked && err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a recall answered from the Sink deadlocked")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a Sink answering a recall from RecallGrant deadlocked")
 	}
 }
 
