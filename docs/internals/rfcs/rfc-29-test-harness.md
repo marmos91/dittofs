@@ -705,11 +705,10 @@ suites:
     select: { merge: "[0-8]?-*.sh" }    # nightly runs all; the 0x smoke group joins pr once timed
     env: { SLACK_DIR: /nonexistent }    # dt reports the run; setup.sh posts to Slack on its own runs only (§4.6)
     known: test/scenarios/known.yaml
-    needs: [linux, podman]
-    needs_by_test:                      # the long runs only fit the dedicated host (§4.5)
-      "9?-*.sh": ["host:dedicated", "disk:110"]
-    timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: per shard (below)
-    shards: 4                           # split over 4 CI jobs
+    needs: [linux, podman, host:dedicated]  # on the dedicated host alone (§4.5)
+    needs_by_test:                      # the long runs need its disk, in a cell of their own
+      "9?-*.sh": ["disk:110"]
+    timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: below
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.
@@ -828,7 +827,7 @@ cell's limit counts (below) though `system` has no fixture.
 **A cell outlasts its tests.** A cell runs its tests one after another, so `dt plan` never gives
 it a limit shorter than the sum of its tests' limits plus the fixture's 5 minutes (§4.2); it raises
 the cell's limit and says so. A test with no bound counts as the cell's own limit. So the 9x cell,
-which `needs_by_test` gives the dedicated host, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
+which `needs_by_test` splits off, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
 its `xl` scenario, the cell's 90 minutes for each of its two `xxl` ones, and 5 for the fixture.
 
 Rules `dt` enforces when it loads the file:
@@ -1060,6 +1059,7 @@ dt run --tier T --place P                      the cells of tier T that dt plan 
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
    [--post CELL,...]                           run's planned cells and its runs
+dt report RUN --commit-status NAME             set the commit status NAME on the run's commit, from its exit status
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE [--ci] [--last N]         remove entries that matched no failing or skipping test in recent runs
@@ -1097,9 +1097,9 @@ left as it is. It edits the YAML only: while a suite keeps
 its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
-order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
+order the axes are written, then, for tests a `needs_by_test` entry splits off, the place they
 go to, and last `shard-I` when the suite has shards: `pjdfstest/badger-s3/4.1`,
-`smbtorture/kerberos`, `system/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
+`smbtorture/kerberos`, `smbtorture/badger-s3/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
 whose name begins with those segments. Shards split the tests of a cell on a shared place, dealt
 in turn so long and short tests spread evenly; a dedicated host runs its tests as one cell.
 `dt plan --shard I/N` deals the tier's cells the same way, for splitting a run across machines.
@@ -1172,6 +1172,15 @@ the tracker as #1705's alarm did:
   link (its workflow run's page), and nothing about customers or deployments, because issues are
   public. Planning detail of that kind goes in the project board's private draft items.
 
+**Commit status.** `dt report RUN --commit-status NAME` sets the commit status NAME on the run's
+commit: `success` for exit status 0, `failure` for 1, `error` for any other, described by the
+counts of passed tests, new failures and known ones, of cells that failed with no test to name,
+and of cells not run, and linked to the workflow run when there is one. It takes one run of the
+merge or nightly tier on develop, `main` or `feat/storage-v2`, the branches whose pushes run the
+merge tier, where `--post` takes develop's alone, and uses the same token. The dedicated host
+passes it for the cells it runs after a merge (§4.5), so a commit shows their result next to the
+workflow's.
+
 | Flag | Effect |
 |---|---|
 | `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
@@ -1214,7 +1223,8 @@ cells that ran, so `dt run go` on a laptop still checks what it can, and a run w
 is exit 2. With `--ci` it is an error, exit 2 (§4.4). In CI, `dt plan` gives each cell its place from the same list: `windows`
 and `macos` get those hosted runners, a cell needing `host:dedicated` or more disk than a runner has
 gets the dedicated host, and everything else Ubuntu. A `needs_by_test` entry splits its tests into
-cells of their own, so the 9x scenarios go to the host and the rest of `system` stays on runners.
+cells of their own, so the 9x scenarios, which need the host's disk, run apart from the rest of
+`system`, which needs the host too.
 
 There are three places to run:
 
@@ -1222,7 +1232,7 @@ There are three places to run:
 |---|---|---|
 | A developer's machine | the host, or `dtc` (pinned Linux toolchain, privileged) | anything the machine can meet; macOS runs Linux-only suites in `dtc` |
 | GitHub-hosted runner | Linux, 4 CPU, 16 GB RAM, 14 GB SSD (public repositories); the Ubuntu 24.04 image has Docker, podman 4.9.3 and Go 1.26.8. Windows runners are Windows Server 2025, and macOS runners are available | the `pr` and `merge` tiers, the nightly suites that fit, and the `clients` options |
-| Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
+| Dedicated test host | a large disk and long run times | the system scenarios after each merge, and nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file, and the performance night |
 
 **Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
 `smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
@@ -1247,15 +1257,23 @@ it pulls the image and gives the cache volume and all in it to that user, as fix
 host whose own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose
 podman fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc`
 gives the cell its Linux and Docker its podman. `setup.sh` ran `apt-get update` for every scenario,
-which stalled for minutes on hosted runners, and now updates apt's lists once per runner; until a
-week of develop runs has no apt stall, `system` is `blocking: false`: reported and annotated, never
-failing the gate.
+which stalled for minutes on hosted runners, and now updates apt's lists once per runner. The
+suite runs on the dedicated host alone (below). Should the host be down for long, dropping
+`host:dedicated` from its `needs`, with `shards: 4` and `blocking: false` back, returns it to
+runners until a week of develop runs has no apt stall.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on
 them. The host runs `dt run --tier nightly --place dedicated` from cron, on develop's latest commit
-only: just the cells hosted runners can't take, so it doesn't repeat the hosted nightly. It
-publishes its summary to the develop-status issue (§4.8) with a token that can only write issues.
+only: just the cells hosted runners don't take, so it doesn't repeat the hosted nightly. It
+publishes its summary to the develop-status issue (§4.8). Between nightly runs it checks the heads
+of develop, `main` and `feat/storage-v2` every 10 minutes, and when one has moved and nothing else
+runs on the host, it runs `dt run --tier merge --place dedicated --ci` on that commit, the system
+scenarios, and sets the commit status `system (dedicated)` with `dt report --commit-status`
+(§4.4); only develop's new failures go to the develop-status issue. Merges that land during a run
+are taken together by the next one, at the newest. The status isn't required, as the
+workflow's merge run isn't: both come after the merge. Its token can write issues and commit
+statuses, and nothing else.
 
 **Versions come from one place.** Go is one pin, the `toolchain` line of `go.mod`: the workflows
 read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag (the root, operator
@@ -1477,7 +1495,8 @@ CTRF is at version 0.1.0, so `dt` writes one pinned version (§7).
 **In CI**, a step after `dt run` that runs even when it failed or was stopped (`if: always()`)
 appends `dt report --format md` to the job summary. It is the summary's only writer: `dt run --ci`
 writes none, and `dt` rewrites `summary.json` after every cell, so a run that a timeout or a cancel
-stops still reports the cells it finished. This one shared step replaces the ten inline summary
+stops still reports the cells it finished. Until its last cell is done, its exit status counts the
+cells still to run as not run, so a run stopped or killed partway never reads as passed. This one shared step replaces the ten inline summary
 steps, including the two that always print green. `summary.json` and `junit/` are uploaded
 as artifacts. `dt history --ci` reads the last N develop runs' artifacts through the GitHub API;
 the default 90-day retention covers flake rates. Benchmark trends need longer, and can move to a
@@ -2076,9 +2095,10 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    *Exit:* PR p90 ≤ 20 min over a week, the gate required, and none of §3's 35 scripts left.
 4. **System scenarios, clients and fio.** The `system` suite, its known list, its exit 75 read as not
    run, and the podman-in-container path on runners. The `clients` suite on Linux, macOS and Windows,
-   and then `smb-client-compat.yml` goes. Groups 0x–8x run in the merge tier, sharded over runners;
-   the 9x long runs run nightly on the dedicated host, through `needs_by_test` and
-   `dt run --tier nightly --place dedicated`. Then `fio-verify` against the fixture's mount.
+   and then `smb-client-compat.yml` goes. Groups 0x-8x ran in the merge tier, sharded over runners,
+   until the dedicated host set the `system (dedicated)` status on develop's commits: the whole
+   suite runs there now, 0x-8x after each merge and the 9x long runs nightly, in a cell of their
+   own through `needs_by_test`, both by `dt run --place dedicated`. Then `fio-verify` against the fixture's mount.
    *Exit:* the merge tier includes the system scenarios, and has no new failures.
 5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`,
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
@@ -2121,9 +2141,10 @@ From the third review:
   without grading them, and opt in package by package, each with a known list using
   `where: { tier, os }`, starting with e2e, where the silent cases in §1 were.
 - **The dedicated host.** Decided: `ditto`, a server Cubbit rents, stays the dedicated host, with a
-  token that can only write issues. If it has to move, cloud spot VMs are the alternative. Whatever
-  runs it needs x86_64 Linux with passwordless sudo, the kernel NFS and SMB clients, podman, about
-  110 GB of free disk for the long scenarios, and its own bucket and credentials.
+  token that can only write issues and commit statuses. If it has to move, cloud spot VMs are the
+  alternative. Whatever runs it needs x86_64 Linux with passwordless sudo, the kernel NFS and SMB
+  clients, podman, about 110 GB of free disk for the long scenarios, and its own bucket and
+  credentials.
 
 Carried over from earlier reviews:
 

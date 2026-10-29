@@ -836,3 +836,22 @@ func TestContainer(t *testing.T) {
 		}
 	}
 }
+
+// Until its last cell is done, a run's summary.json says it didn't finish, so
+// a run killed after its passing cells never reads as passed.
+func TestUnfinishedRunIsNotAPass(t *testing.T) {
+	root, r := repo(t, `groups: { g: [a, b] }
+suites:
+  a: { cmd: "true" }
+  b: { cmd: "sh t/peek.sh {out}" }
+`, map[string]string{"t/peek.sh": `! grep -q '"exit": 0' "$1/../summary.json"
+`})
+	rep, out := runTarget(t, root, r, "g", false)
+	if rep.Status() != 0 {
+		t.Fatalf("b saw a finished run's exit status while it ran:\n%s", out)
+	}
+	sum, err := report.Read(rep.Dir)
+	if err != nil || sum.Exit != 0 {
+		t.Errorf("the finished run's summary: exit %d, %v", sum.Exit, err)
+	}
+}

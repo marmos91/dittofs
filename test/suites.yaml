@@ -351,15 +351,14 @@ suites:
     select: { merge: "[0-8]?-*.sh" }
     env: { SLACK_DIR: /nonexistent }
     known: test/scenarios/known.yaml
-    needs: [linux, podman]
+    # decision: on the dedicated host alone, which sets the `system (dedicated)` status on the
+    # develop commits it runs. Should it be down for long, dropping host:dedicated and putting back
+    # `shards: 4` and `blocking: false` runs the scenarios on hosted runners again, where apt
+    # mirrors stalled setup.sh for minutes.
+    needs: [linux, podman, host:dedicated]
     needs_by_test:
-      "9?-*.sh": ["host:dedicated", "disk:110"]
+      "9?-*.sh": ["disk:110"]
     timeout: { test: size, cell: 90m }
-    shards: 4
-    # decision: reported, never failing the gate, until a week of develop runs has no apt stall:
-    # setup.sh ran apt-get update for every scenario, which stalled for minutes on hosted runners,
-    # and now updates apt's lists once per runner there.
-    blocking: false
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.
