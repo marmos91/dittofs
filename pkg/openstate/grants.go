@@ -569,8 +569,7 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			g.fsm.Timeout()
 			err = ErrInvalid
 		}
-		switch {
-		case next:
+		if next {
 			// decision: only a recall's first stage is held to maxUnsent; a
 			// later one is queued past it, since refusing it would leave the
 			// grant mid-recall with nothing in flight to end it, and the
@@ -580,7 +579,10 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			t.unsent++
 			t.idx.Unlock()
 			t.queueRecall(e, g, &out)
-		case inFlight && g.fsm.Recall == nil:
+		}
+		// the recall ended, its last stage perhaps as it was queued: a break of
+		// read caching alone ends as it is sent
+		if inFlight && g.fsm.Recall == nil {
 			t.recallEnded(e, g)
 		}
 		if !g.covers() && g.fsm.Kind == GrantNone {

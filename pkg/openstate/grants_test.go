@@ -596,6 +596,44 @@ func TestRecallNotRacedByANewGrant(t *testing.T) {
 	f.mustOpen(t, b, file, OpenRequest{Access: wr})
 }
 
+// A recall that ends in stages holds the file back from new grants as one
+// answered at once does, though its last stage, a break of read caching
+// alone, ends as it is queued.
+func TestStagedRecallHoldsTheFileBack(t *testing.T) {
+	for name, staged := range map[string]bool{"answered to none": false, "answered in stages": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a, d := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-d"))
+			file := anyFile()
+			f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
+			anon := OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}
+			if err := f.Checks().CheckIO(ctx, Caller{}, anon, br(0, 1), false); delayedFor(err) != DelayRecall {
+				t.Fatal(err)
+			}
+			if err := f.Checks().CheckIO(ctx, Caller{}, anon, br(0, 1), true); delayedFor(err) != DelayRecall {
+				t.Fatal(err)
+			}
+			r := f.sink.takeRecalls()
+			if len(r) != 1 {
+				t.Fatalf("recalls %+v, want one", r)
+			}
+			g := r[0].g
+			acks := []GrantKind{GrantNone}
+			if staged {
+				acks = []GrantKind{rh, GrantRead}
+			}
+			for _, to := range acks {
+				if err := f.ack(a, &g, to); err != nil {
+					t.Fatalf("ack to %v: %v", to, err)
+				}
+			}
+			if _, g := f.grantOpen(t, d, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rwh}); g != nil {
+				t.Errorf("a new grant %+v overtakes the write the recall delayed", g)
+			}
+		})
+	}
+}
+
 // A delegation's reference is its client's alone: another client naming it
 // is ErrNotYours and leaves it intact, and naming another kind of state by a
 // grant's ID is ErrBadState.
