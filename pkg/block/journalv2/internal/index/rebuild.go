@@ -379,18 +379,23 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// at append.
 	//
 	// decision: the drop ranges are noted in sequence order, as the running
-	// journal notes them. The ninth-range merge keeps the pair of the two
-	// ranges with the smallest gap, which depends on the order records are
-	// noted in, so a rebuild's ranges can differ from the ranges of the
-	// same history built incrementally — a carried-forward record is noted
-	// twice, at different times. They never under-cover, and the rebuild is
-	// deterministic: any feed order of the same records gives the same
-	// ranges.
+	// journal notes them. Any two rebuilds of the same records give the
+	// same ranges, whatever the feed order, because the sequence number
+	// orders the notes alone. A rebuild against an incremental build is
+	// compared for soundness only — every record covered, never under-
+	// covering — because the ninth-range merge keeps the pair of the two
+	// ranges with the smallest gap, which depends on the order records
+	// arrive in, and the running journal notes a carried-forward record at
+	// repack time while a rebuild notes it with its original numbers.
+	// Overturned by a rule that keeps records rather than ranges, which
+	// makes the merge's choice independent of arrival order.
 	//
 	// decision: every copy of a record is noted, its duplicates included.
 	// Each copy sits in a segment that must keep the file's tag and its
 	// ranges, so unnoting one would let that segment's unlink end the tag
-	// while the copy is still on disk.
+	// while the copy is still on disk. Overturned by a rule that knows a
+	// copy's segment by its id alone, which would not need the copy noted
+	// to keep the unlink safe.
 	//
 	// decision: a rivalled file from a two-tag history is rebuilt rivalled,
 	// not refused. The OtherShareError that noting a second tag returns
@@ -398,6 +403,9 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// through either tag until one is forgotten is the correct rebuilt
 	// state — the running journal's rival route reaches the same state only
 	// through a fault, while a rebuild reaches it from records alone.
+	// Overturned by a recovery rule that can tell which tag's records a
+	// segment holds, which would let the rebuild keep the owner serving and
+	// park the rival's records.
 	notes := slices.Clone(recs)
 	slices.SortStableFunc(notes, func(a, c bufRec) int {
 		return cmp.Or(
@@ -463,7 +471,10 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 			// marker masking decide the same bytes, the put is the simpler
 			// replay: nothing lower in precedence sits inside the fill's
 			// extent, and the markers above its version cut the put piece
-			// by the same rule they masked the runtime fill with.
+			// by the same rule they masked the runtime fill with. Overturned
+			// by a fill record whose extent names bytes its journal still
+			// held when it appended the record, which the mask would have
+			// left alone and a put supersedes.
 			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
 			// A fill's own mark, so an unmark's order against it matters
 			// exactly as against a real offloaded record: filled content
@@ -475,7 +486,9 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 			// offloaded refusal belongs to the call that appended it, which
 			// checked the bits before it wrote. Precedence keeps the cut
 			// right: content above the release's pair is applied after it
-			// and lands over the cut span.
+			// and lands over the cut span. Overturned by content the
+			// running journal kept inside a released span at a pair the
+			// release outranks, which the cut would wrongly drop.
 			f.held.cut(e)
 		case RecTruncate:
 			f.truncate(r.off, r.numbers.Version)
@@ -505,17 +518,19 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	slices.SortStableFunc(marks, func(a, c bufRec) int {
 		return cmp.Or(cmp.Compare(a.numbers.Seq, c.numbers.Seq), compareBufRec(a, c))
 	})
-	// decision: the marks reach the held set only, never the retained pieces.
+	// decision: the marks reach the held set only, never retained pieces.
 	// A mark names the bytes its record offered or unmarked, which are
 	// held or filled, and a retained piece overlaps newer content by
 	// construction: the v7 record says nothing about the v3 bytes it
 	// superseded, and setting the older piece's bit would be the unsafe
 	// direction — a later hold or offload reading the bit as a commit could
 	// drop the piece before its snapshot's upload happens. At run time a
-	// retained piece's bit is fixed at supersede time (writeRetain copies
-	// the bit of the content it keeps) and nothing marks one, so this is
-	// what the runtime holds too. The Retain caller sets the bits of the
-	// pieces it computes, whose rules read them.
+	// retained piece's bit is fixed at supersede time, when writeRetain
+	// copies the bit of the content it keeps, and nothing marks one after;
+	// the Retain caller sets the bits of the pieces it hands over.
+	// Overturned by a journal rule that reports an offload commit for a
+	// superseded version directly, which would reach retained pieces by
+	// its own window and make the rebuild apply it here.
 	for _, r := range marks {
 		e := core.Extent{Off: r.off, Len: r.n}
 		v := r.numbers.Version
