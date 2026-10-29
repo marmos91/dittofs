@@ -34,7 +34,7 @@ type Open struct {
 
 	Durability entity.Durability // none, durable, persistent: what it survives
 	Session    entity.SessionRef // the session that opened or last reconnected it; zero: none
-	Durable    *DurableKeys      // what a reconnect matches; nil unless durable or persistent
+	Durable    DurableKeys       // what a reconnect matches; zero unless durable or persistent
 }
 
 // DurableKeys is what a reconnect of a durable or persistent open matches.
@@ -96,8 +96,8 @@ type OpenRequest struct {
 	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 	Reclaim       bool      // the open is one the client held before its shard lost its state
 
-	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable set
-	Durable    *DurableKeys
+	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
+	Durable    DurableKeys
 	Session    entity.SessionRef // the opening session
 }
 
@@ -254,9 +254,7 @@ func (o *open) record() entity.OpenRecord {
 		DeleteOnClose: o.Delete.OnClose, DeleteBy: o.Delete.By, Suspended: o.Suspended,
 		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session,
 	}
-	if k := o.Durable; k != nil {
-		r.Timeout, r.CreateGUID = k.Timeout, k.Create
-	}
+	r.Timeout, r.CreateGUID = o.Durable.Timeout, o.Durable.Create
 	return r
 }
 
@@ -314,7 +312,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
 		return OpenResult{}, ErrInvalid // a lease key is SMB's
 	}
-	if r.Durability != entity.DurabilityNone && (r.Durable == nil || r.Durable.Timeout <= 0 || who.Protocol != entity.ProtocolSMB) {
+	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || who.Protocol != entity.ProtocolSMB) {
 		return OpenResult{}, ErrInvalid // only an SMB open, named by its ID, is reconnected
 	}
 	// decision: a persistent open of a named stream is refused, since its
@@ -343,12 +341,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	o := &open{share: f.Share, lease: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
-		Durability: r.Durability, Session: r.Session,
+		Durability: r.Durability, Session: r.Session, Durable: r.Durable,
 	}}
-	if r.Durable != nil {
-		k := *r.Durable
-		o.Durable = &k
-	}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
@@ -410,7 +404,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return err
 			}
 		}
-		res.Open = granted.public()
+		res.Open = granted.Open
 		return nil
 	})
 	if grace && errors.Is(err, ErrShareViolation) {
@@ -438,7 +432,7 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 	case !t.mayUse(o, who):
 		return ErrNotYours
 	}
-	res.Open = o.public()
+	res.Open = o.Open
 	for _, g := range e.grants {
 		if g.heldBy(who.Client, o.lease, o) {
 			p := g.public(e.file)

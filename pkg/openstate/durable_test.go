@@ -31,7 +31,7 @@ func smbMachine(name string) Client {
 // keep makes r an open of session s kept as d says for timeout, under the
 // create ID create.
 func keep(r OpenRequest, d entity.Durability, s entity.SessionRef, timeout time.Duration, create byte) OpenRequest {
-	r.Durability, r.Session, r.Durable = d, s, &DurableKeys{Timeout: timeout, Create: [16]byte{create}}
+	r.Durability, r.Session, r.Durable = d, s, DurableKeys{Timeout: timeout, Create: [16]byte{create}}
 	return r
 }
 
@@ -160,8 +160,6 @@ func TestReconnectMatches(t *testing.T) {
 		t.Fatal("no lease offered")
 	}
 	exact := ReconnectMatch{Share: file.Share, Create: [16]byte{9}, Lease: k}
-	*req.Durable = DurableKeys{} // the caller's keys are its own: the open keeps a copy
-	*o.Durable = DurableKeys{}   // and the keys answered are the caller's too
 	if _, err := f.reconnect(a, o, exact, s2); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reconnect of an open still attached: %v, want ErrNoReclaim", err)
 	}

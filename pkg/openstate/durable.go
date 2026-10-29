@@ -243,7 +243,7 @@ func (t *Table) park(e *entry, o *open, out *outbox) {
 // reconnects an oplock under a new ClientGuid. Match it only under a lease
 // if that test is to pass.
 func (o *open) reconnects(who Caller, m ReconnectMatch, now time.Duration) bool {
-	return o.Durable != nil && o.parked != 0 && now < o.parked &&
+	return o.parked != 0 && now < o.parked &&
 		o.Client == who.Client && o.Principal == who.Principal && o.share == m.Share &&
 		o.Durable.Create == m.Create && o.lease == m.Lease
 }
@@ -288,7 +288,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		t.cmu.Lock()
 		delete(t.adopted, o.Client) // it came back: its installed state is its own again
 		t.cmu.Unlock()
-		res.Open = o.public()
+		res.Open = o.Open
 		if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
 			p := g.public(e.file)
 			res.Grant = &p
@@ -439,7 +439,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 		Mode:       OpenMode{Access: rec.Access, Deny: rec.Deny, Privileged: rec.Privileged},
 		Delete:     DeleteMark{OnClose: rec.DeleteOnClose, By: rec.DeleteBy},
 		Suspended:  rec.Suspended,
-		Durability: rec.Durability, Session: rec.Session, Durable: &DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID},
+		Durability: rec.Durability, Session: rec.Session, Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID},
 	}}
 	if cl.Recovery == entity.RecoverReconnect {
 		o.owedTo = sh
@@ -590,16 +590,6 @@ func (ls *lockState) removing(rs []ByteRange) (lockState, error) {
 	n := lockState{owner: ls.owner, locks: slices.Clone(ls.locks), offers: slices.Clone(ls.offers)}
 	err := n.unlock(rs)
 	return n, err
-}
-
-// public is o as its caller sees it, with keys of its own.
-func (o *open) public() Open {
-	p := o.Open
-	if p.Durable != nil {
-		k := *p.Durable
-		p.Durable = &k
-	}
-	return p
 }
 
 // keepPending writes the delete pending set, through o, or cleared by
