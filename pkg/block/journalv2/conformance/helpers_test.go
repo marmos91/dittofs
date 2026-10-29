@@ -240,10 +240,6 @@ func liveBytes(t *testing.T, f *journalv2test.Fixture, name string) []byte {
 	return b
 }
 
-// sentinel fills a read's buffer before the read, so a byte the journal did
-// not write is told from one it did: no pattern byte has this value.
-const sentinel byte = 0xa5
-
 // readAt reads n bytes at off of file id through h into a buffer filled with
 // sentinel, and returns the buffer, the extents reported missing and the
 // read's error, which a read that drops a corrupt record may return.
@@ -286,11 +282,11 @@ func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64
 	}
 }
 
-// wantMissing fails the test unless a read of extent e of file id returns
+// wantExtentMissing fails the test unless a read of extent e of file id returns
 // no error, reports exactly e missing and leaves every byte of its buffer
 // untouched; a label says where a sweep stands. The buffer is compared byte
 // by byte, since the sentinel is not valid UTF-8 on its own.
-func wantMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, where ...string) {
+func wantExtentMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, where ...string) {
 	t.Helper()
 
 	p, missing, err := readAt(t, h, id, e.Off, int(e.Len))

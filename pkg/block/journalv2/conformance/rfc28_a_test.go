@@ -54,7 +54,7 @@ func corruptAndRead(t *testing.T, f *journalv2test.Fixture, a rec) (journalv2.Lo
 
 	before := f.J.Stats()
 	corrupt(t, f, a.id, a.p)
-	wantMissing(t, f.Share(a.share), a.id, a.extent)
+	wantExtentMissing(t, f.Share(a.share), a.id, a.extent)
 
 	ev := lastLoss(t, f, before)
 	if ev.Share != journalv2test.Tag(a.share) || ev.File != a.id || ev.Extent != a.extent || ev.Reason != journalv2.LossCorrupt {
@@ -494,7 +494,7 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 		t.Fatalf("the extent at %d is held from %+v, want the planted segment %d, whose catalog describes it", extent.Off, got, id)
 	}
 
-	wantMissing(t, g.Share(0), x.id, extent)
+	wantExtentMissing(t, g.Share(0), x.id, extent)
 	ev := lastLoss(t, g, before)
 	if ev.File != x.id || ev.Extent != extent || ev.Reason != journalv2.LossCorrupt {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, x.id, extent)
@@ -568,7 +568,7 @@ func TestRFC28A_WriteCarriesItsMtime(t *testing.T) {
 	f.Reopen()
 
 	for _, r := range []rec{a, b} {
-		wantMissing(t, f.Share(r.share), r.id, r.extent)
+		wantExtentMissing(t, f.Share(r.share), r.id, r.extent)
 		wantLost(t, f, r)
 	}
 }

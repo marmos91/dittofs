@@ -1640,7 +1640,7 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				wantScanned(t, where, s.f, s.recovery, 0)
 			}
 
-			wantMissing(t, s.f.Share(0), r.id, r.extent, where)
+			wantExtentMissing(t, s.f.Share(0), r.id, r.extent, where)
 			if named {
 				wantLossNamed(t, where, s.f, r, offloaded)
 			}
@@ -1915,7 +1915,7 @@ func TestDamage_SegmentDeleted(t *testing.T) {
 	// The last record of the segment may be split at the cap, its second
 	// piece held in the successor.
 	for _, r := range recs[:len(recs)-1] {
-		wantMissing(t, f.Share(0), r.id, r.extent)
+		wantExtentMissing(t, f.Share(0), r.id, r.extent)
 	}
 
 	wantMissingFrom(t, f.Share(0), recs[len(recs)-1].id, recs[len(recs)-1].extent)
@@ -2019,7 +2019,7 @@ func TestDamage_DirectoryRestored(t *testing.T) {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as stale", ev, id, a.extent)
 	}
 
-	wantMissing(t, h, id, a.extent)
+	wantExtentMissing(t, h, id, a.extent)
 
 	floor := f.Floor()
 	c := writeSynced(t, f, 0, 0, size, size)

@@ -133,7 +133,7 @@ func TestRFC28C_NeighboursSurvive(t *testing.T) {
 		t.Fatalf("the damage was noticed at open, with the catalog in use: %+v", s.Losses)
 	}
 
-	wantMissing(t, f.Share(0), mid.id, mid.extent)
+	wantExtentMissing(t, f.Share(0), mid.id, mid.extent)
 	ev := lastLoss(t, f, s)
 	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
@@ -461,7 +461,7 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 	if !segmentInfo(t, f, xSeg).Sealed {
 		t.Fatalf("the torn segment %d was not sealed", xSeg)
 	}
-	wantMissing(t, f.Share(0), id, x.extent)
+	wantExtentMissing(t, f.Share(0), id, x.extent)
 
 	a := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
 	if seg := entryAt(t, f, id, a.extent.Off).Location.Segment; seg == xSeg {
@@ -850,7 +850,7 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
 	}
-	wantMissing(t, f.Share(0), mid.id, mid.extent)
+	wantExtentMissing(t, f.Share(0), mid.id, mid.extent)
 	for _, r := range s.recs {
 		if r.extent != mid.extent {
 			wantBytes(t, f.Share(0), r.id, r.extent.Off, r.p)
@@ -1579,7 +1579,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	}
 
 	if errors.As(err, &se) {
-		wantMissing(t, n.Share(0), a.id, a.extent)
+		wantExtentMissing(t, n.Share(0), a.id, a.extent)
 	} else {
 		wantBytes(t, n.Share(0), a.id, 0, a.p)
 	}
@@ -1853,7 +1853,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	var se *journalv2.SyncError
 	switch {
 	case errors.As(err, &se):
-		wantMissing(t, hh, id, journalv2.Extent{Off: off + size, Len: size})
+		wantExtentMissing(t, hh, id, journalv2.Extent{Off: off + size, Len: size})
 	case err != nil:
 		t.Fatalf("sync after a failed append: %v", err)
 	default:
@@ -1893,7 +1893,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	k.Crash()
 
 	wantBytes(t, k.Share(0), w2.id, w2.extent.Off, w2.p)
-	wantMissing(t, k.Share(0), w1.id, w1.extent)
+	wantExtentMissing(t, k.Share(0), w1.id, w1.extent)
 	s := k.J.Stats()
 	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
 		t.Fatalf("the lost earlier write was reported: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
@@ -1992,7 +1992,7 @@ func TestRFC28C_StaleExtent(t *testing.T) {
 	if got := f.J.Stats().Counters.StaleExtents; got != 1 {
 		t.Fatalf("StaleExtents = %d after one extent dropped as stale, want 1", got)
 	}
-	wantMissing(t, h, id, a.extent)
+	wantExtentMissing(t, h, id, a.extent)
 	if got := f.J.Stats().LossGeneration; got != before.LossGeneration {
 		t.Fatalf("LossGeneration = %d after a stale loss, want %d unchanged", got, before.LossGeneration)
 	}
@@ -2388,7 +2388,7 @@ func TestRFC28C_ForeignSegment(t *testing.T) {
 	if entries := heldEntries(t, f, journalv2test.File(5)); len(entries) != 0 {
 		t.Fatalf("the foreign segment's file is indexed as %+v", entries)
 	}
-	wantMissing(t, f.Share(0), journalv2test.File(5), recs[0].extent)
+	wantExtentMissing(t, f.Share(0), journalv2test.File(5), recs[0].extent)
 	wantLeftAlone(t, f, name, foreign, before)
 	wantBytes(t, f.Share(0), a.id, 0, a.p)
 	wantBytes(t, f.Share(1), b.id, 0, b.p)
@@ -2434,7 +2434,7 @@ func TestRFC28C_ForeignHeaderIsForeignNotDamaged(t *testing.T) {
 	if entries := heldEntries(t, f, journalv2test.File(5)); len(entries) != 0 {
 		t.Fatalf("the foreign segment's file is indexed as %+v", entries)
 	}
-	wantMissing(t, f.Share(0), journalv2test.File(5), extent)
+	wantExtentMissing(t, f.Share(0), journalv2test.File(5), extent)
 	wantLeftAlone(t, f, name, segment, before)
 	wantBytes(t, f.Share(0), a.id, 0, a.p)
 	wantBytes(t, f.Share(1), b.id, 0, b.p)
