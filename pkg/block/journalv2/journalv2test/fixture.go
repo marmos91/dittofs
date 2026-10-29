@@ -356,7 +356,7 @@ func (f *Fixture) FailNext(op, key string, n int) {
 
 	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{
 		Op: op, Key: key, Count: n,
-		Action: sim.FaultAction{Kind: sim.Fail, Err: syscall.EIO},
+		Action: sim.FaultAction{Err: syscall.EIO},
 	})
 	if err != nil {
 		f.tb.Fatalf("fixture: fail %s on %s: %v", op, key, err)
@@ -370,7 +370,7 @@ func (f *Fixture) FailNext(op, key string, n int) {
 func (f *Fixture) Drop(op, key string) {
 	f.tb.Helper()
 
-	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{Op: op, Key: key, Action: sim.FaultAction{Kind: sim.Drop}})
+	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{Op: op, Key: key, Action: sim.FaultAction{TearAfter: sim.Lose}})
 	if err != nil {
 		f.tb.Fatalf("fixture: drop %s on %s: %v", op, key, err)
 	}

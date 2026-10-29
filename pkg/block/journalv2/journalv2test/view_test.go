@@ -109,7 +109,7 @@ func TestAFaultMatchesARenamedFileByItsNewName(t *testing.T) {
 	}
 
 	eio := errors.New("injected")
-	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpSync, Key: "*.seg", Action: sim.FaultAction{Kind: sim.Fail, Err: eio}})
+	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpSync, Key: "*.seg", Action: sim.FaultAction{Err: eio}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	eio    = FaultAction{Kind: Fail, Err: syscall.EIO}
-	enospc = FaultAction{Kind: Fail, Err: syscall.ENOSPC}
+	eio    = FaultAction{Err: syscall.EIO}
+	enospc = FaultAction{Err: syscall.ENOSPC}
 )
 
 func newSchedule(t *testing.T, seed uint64, rules ...Rule) *Schedule {
@@ -23,11 +23,17 @@ func newSchedule(t *testing.T, seed uint64, rules ...Rule) *Schedule {
 	return s
 }
 
+// at returns the results s gives one call of op on key, as an action.
+func at(s *Schedule, op, key string) FaultAction {
+	d, err, tear := s.At(op, []byte(key))
+	return FaultAction{Delay: d, Err: err, TearAfter: tear}
+}
+
 // calls returns the actions s gives n calls of op on key.
 func calls(s *Schedule, op, key string, n int) []FaultAction {
 	got := make([]FaultAction, n)
 	for i := range got {
-		got[i] = s.At(op, []byte(key))
+		got[i] = at(s, op, key)
 	}
 	return got
 }
@@ -36,7 +42,7 @@ func calls(s *Schedule, op, key string, n int) []FaultAction {
 func fires(got []FaultAction) []int {
 	var n []int
 	for i, a := range got {
-		if a.Kind != Pass {
+		if a != (FaultAction{}) {
 			n = append(n, i+1)
 		}
 	}
@@ -50,15 +56,15 @@ func mixed(s *Schedule) []FaultAction {
 
 	got := make([]FaultAction, 1000)
 	for i := range got {
-		got[i] = s.At(ops[i%len(ops)], []byte(keys[i%len(keys)]))
+		got[i] = at(s, ops[i%len(ops)], keys[i%len(keys)])
 	}
 	return got
 }
 
 var mixedRules = []Rule{
 	{Op: "read", Key: "seg-*", Prob: 0.3, Action: eio},
-	{Op: "write", Key: "*", Prob: 0.2, Action: FaultAction{Kind: Tear, N: 3}},
-	{Op: "*", Key: "*", Prob: 0.1, Action: FaultAction{Kind: Drop}},
+	{Op: "write", Key: "*", Prob: 0.2, Action: FaultAction{TearAfter: 3}},
+	{Op: "*", Key: "*", Prob: 0.1, Action: FaultAction{TearAfter: Lose}},
 }
 
 func TestSameSeedAndRulesGiveTheSameActions(t *testing.T) {
@@ -104,13 +110,13 @@ func TestNthCallCountsOnlyItsOpAndKey(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		// Calls on another key and another op on the same key, which the
 		// rule's count must not see.
-		if a := s.At("sync", []byte("seg-8")); a.Kind != Pass {
+		if a := at(s, "sync", "seg-8"); a != (FaultAction{}) {
 			t.Fatalf("a sync of seg-8 got %v", a)
 		}
-		if a := s.At("write", []byte("seg-7")); a.Kind != Pass {
+		if a := at(s, "write", "seg-7"); a != (FaultAction{}) {
 			t.Fatalf("a write of seg-7 got %v", a)
 		}
-		if s.At("sync", []byte("seg-7")) == eio {
+		if at(s, "sync", "seg-7") == eio {
 			hit = append(hit, i)
 		}
 	}
@@ -136,7 +142,7 @@ func TestFirstFiringRuleWinsAndEveryMatchingRuleCounts(t *testing.T) {
 
 func TestARulesDrawsDoNotDependOnOtherRules(t *testing.T) {
 	p := Rule{Op: "write", Key: "*", Prob: 0.5, Action: eio}
-	other := Rule{Op: "read", Key: "*", Prob: 0.5, Action: FaultAction{Kind: Drop}}
+	other := Rule{Op: "read", Key: "*", Prob: 0.5, Action: FaultAction{TearAfter: Lose}}
 
 	alone := fires(calls(newSchedule(t, 3, p), "write", "seg-1", 200))
 	behind := fires(calls(newSchedule(t, 3, other, p), "write", "seg-1", 200))
@@ -173,7 +179,7 @@ func TestKeyPatterns(t *testing.T) {
 		"catalog":    {},
 	}
 	for key, want := range cases {
-		if got := s.At("read", []byte(key)); got != want {
+		if got := at(s, "read", key); got != want {
 			t.Errorf("read of %q: %v, want %v", key, got, want)
 		}
 	}
@@ -190,7 +196,7 @@ func TestStarMatchesEveryKey(t *testing.T) {
 		"a\x2fb",    // a binary key holding the byte '/'
 		"\xff/\xfe", // not valid UTF-8
 	} {
-		if got := s.At("read", []byte(key)); got != eio {
+		if got := at(s, "read", key); got != eio {
 			t.Errorf("read of %q under Key \"*\": %v, want %v", key, got, eio)
 		}
 	}
@@ -212,7 +218,7 @@ func TestAStarCrossesSlashesAndBacktracks(t *testing.T) {
 		"a.seg.tmp": {},
 	}
 	for key, want := range cases {
-		if got := s.At("read", []byte(key)); got != want {
+		if got := at(s, "read", key); got != want {
 			t.Errorf("read of %q: %v, want %v", key, got, want)
 		}
 	}
@@ -228,7 +234,7 @@ func TestMoreThanOneStar(t *testing.T) {
 		"acb":    {}, // the literals out of order
 	}
 	for key, want := range cases {
-		if got := s.At("read", []byte(key)); got != want {
+		if got := at(s, "read", key); got != want {
 			t.Errorf("read of %q under Key \"a*b*c\": %v, want %v", key, got, want)
 		}
 	}
@@ -248,13 +254,13 @@ func TestProbability(t *testing.T) {
 
 func TestDelayWaitsOnTheClock(t *testing.T) {
 	c := NewTestClock(start)
-	s, err := NewSchedule(1, c, Rule{Op: "sync", Key: "*", Action: FaultAction{Kind: Delay, Delay: 5 * time.Second}})
+	s, err := NewSchedule(1, c, Rule{Op: "sync", Key: "*", Action: FaultAction{Delay: 5 * time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	done := make(chan FaultAction)
-	go func() { done <- s.At("sync", []byte("seg-1")) }()
+	go func() { done <- at(s, "sync", "seg-1") }()
 
 	// Wait for At to set its timer, or Advance below could run first and
 	// leave it waiting forever. An At that waited in real time, or not at
@@ -275,7 +281,7 @@ func TestDelayWaitsOnTheClock(t *testing.T) {
 	c.Advance(time.Second)
 	select {
 	case a := <-done:
-		if a.Kind != Delay {
+		if a.Delay != 5*time.Second {
 			t.Fatalf("At returned %v, want the delay", a)
 		}
 	case <-time.After(2 * time.Second):
@@ -286,13 +292,11 @@ func TestDelayWaitsOnTheClock(t *testing.T) {
 func TestNewScheduleRefusesActionsASeamCannotApply(t *testing.T) {
 	c := NewTestClock(start)
 	cases := map[string]Rule{
-		"fail with no error":  {Op: "*", Key: "*", Action: FaultAction{Kind: Fail}},
-		"zero delay":          {Op: "*", Key: "*", Action: FaultAction{Kind: Delay}},
-		"negative tear":       {Op: "*", Key: "*", Action: FaultAction{Kind: Tear, N: -1}},
+		"negative delay":      {Op: "*", Key: "*", Action: FaultAction{Delay: -1}},
+		"loss with an error":  {Op: "*", Key: "*", Action: FaultAction{Err: syscall.EIO, TearAfter: Lose}},
 		"probability above 1": {Op: "*", Key: "*", Prob: 1.5, Action: eio},
 		"negative from":       {Op: "*", Key: "*", From: -1, Action: eio},
 		"negative count":      {Op: "*", Key: "*", Count: -1, Action: eio},
-		"unknown kind":        {Op: "*", Key: "*", Action: FaultAction{Kind: Reorder + 1}},
 		"empty op":            {Op: "", Key: "*", Action: eio},
 		"empty key":           {Op: "*", Key: "", Action: eio},
 	}
@@ -302,7 +306,7 @@ func TestNewScheduleRefusesActionsASeamCannotApply(t *testing.T) {
 		}
 	}
 
-	if _, err := NewSchedule(1, nil, Rule{Op: "*", Key: "*", Action: FaultAction{Kind: Delay, Delay: time.Second}}); err == nil {
+	if _, err := NewSchedule(1, nil, Rule{Op: "*", Key: "*", Action: FaultAction{Delay: time.Second}}); err == nil {
 		t.Error("a delay with no clock: accepted")
 	}
 }
@@ -318,7 +322,7 @@ func TestConcurrentAt(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			for range 100 {
-				if s.At("read", []byte("seg-1")) == eio {
+				if at(s, "read", "seg-1") == eio {
 					mu.Lock()
 					failed++
 					mu.Unlock()

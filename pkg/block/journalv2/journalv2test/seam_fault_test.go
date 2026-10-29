@@ -17,15 +17,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/sim"
 )
 
-// faultFunc is a Fault written inline.
+// faultFunc is a Fault written inline, deciding one action per call.
 type faultFunc func(op string, key []byte) sim.FaultAction
 
-func (f faultFunc) At(op string, key []byte) sim.FaultAction { return f(op, key) }
-
-var eio = sim.FaultAction{
-	Kind: sim.Fail,
-	Err:  syscall.EIO,
+func (f faultFunc) At(op string, key []byte) (time.Duration, error, int) { //nolint:staticcheck // ST1008: the order is sim.Fault's
+	a := f(op, key)
+	return a.Delay, a.Err, a.TearAfter
 }
+
+var eio = sim.FaultAction{Err: syscall.EIO}
 
 // failOn makes every later call of op fail with EIO.
 func failOn(t *testing.T, s *Seam, op string) {
@@ -338,7 +338,7 @@ func TestDelayStallsOnlyItsOwnCall(t *testing.T) {
 	g := create(t, s, "b")
 
 	c := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSync, Key: "a", Action: sim.FaultAction{Kind: sim.Delay, Delay: 5 * time.Second}})
+	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSync, Key: "a", Action: sim.FaultAction{Delay: 5 * time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestCrashDuringADelayedSyncLeavesTheNewHandlesWritesUnsynced(t *testing.T) 
 	syncFile(t, f)
 
 	c := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSync, Key: "seg", Count: 1, Action: sim.FaultAction{Kind: sim.Delay, Delay: time.Second}})
+	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSync, Key: "seg", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,38 +408,38 @@ func TestCrashDuringADelayedSyncLeavesTheNewHandlesWritesUnsynced(t *testing.T) 
 	}
 }
 
-func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
+func TestUnsupportedActionPanicsNamingItAndTheOp(t *testing.T) {
+	lose := sim.FaultAction{TearAfter: sim.Lose}
+	tear := sim.FaultAction{TearAfter: 1}
 	cases := []struct {
 		op   string
-		kind sim.FaultKind
+		a    sim.FaultAction
+		want string
 		call func(s *Seam, f storage.File)
 	}{
-		{OpRename, sim.Drop, func(s *Seam, f storage.File) { _ = s.Rename("seg", "other") }},
-		{OpRemove, sim.Drop, func(s *Seam, f storage.File) { _ = s.Remove("seg") }},
-		{OpCreate, sim.Drop, func(s *Seam, f storage.File) { _, _ = s.Create("new") }},
-		{OpClose, sim.Drop, func(s *Seam, f storage.File) { _ = f.Close() }},
-		{OpAllocate, sim.Drop, func(s *Seam, f storage.File) { _ = f.Allocate(0, 8) }},
-		{OpTruncate, sim.Drop, func(s *Seam, f storage.File) { _ = f.Truncate(0) }},
-		{OpRead, sim.Drop, func(s *Seam, f storage.File) { _, _ = f.ReadAt(make([]byte, 1), 0) }},
-		{OpSync, sim.Tear, func(s *Seam, f storage.File) { _ = f.Sync() }},
-		{OpReadDirect, sim.Tear, func(s *Seam, f storage.File) { _, _ = f.ReadAtDirect(make([]byte, 1), 0) }},
-		{OpSyncDir, sim.Tear, func(s *Seam, f storage.File) { _ = s.SyncDir() }},
-		{OpRead, sim.Reorder, func(s *Seam, f storage.File) { _, _ = f.ReadAt(make([]byte, 1), 0) }},
-		{OpSync, sim.Reorder, func(s *Seam, f storage.File) { _ = f.Sync() }},
+		{OpRename, lose, "loss", func(s *Seam, f storage.File) { _ = s.Rename("seg", "other") }},
+		{OpRemove, lose, "loss", func(s *Seam, f storage.File) { _ = s.Remove("seg") }},
+		{OpCreate, lose, "loss", func(s *Seam, f storage.File) { _, _ = s.Create("new") }},
+		{OpClose, lose, "loss", func(s *Seam, f storage.File) { _ = f.Close() }},
+		{OpAllocate, lose, "loss", func(s *Seam, f storage.File) { _ = f.Allocate(0, 8) }},
+		{OpTruncate, lose, "loss", func(s *Seam, f storage.File) { _ = f.Truncate(0) }},
+		{OpRead, lose, "loss", func(s *Seam, f storage.File) { _, _ = f.ReadAt(make([]byte, 1), 0) }},
+		{OpWrite, sim.FaultAction{Err: syscall.EIO, TearAfter: sim.Lose}, "loss", func(s *Seam, f storage.File) { _, _ = f.WriteAt([]byte("a"), 0) }},
+		{OpSync, tear, "tear", func(s *Seam, f storage.File) { _ = f.Sync() }},
+		{OpReadDirect, tear, "tear", func(s *Seam, f storage.File) { _, _ = f.ReadAtDirect(make([]byte, 1), 0) }},
+		{OpSyncDir, tear, "tear", func(s *Seam, f storage.File) { _ = s.SyncDir() }},
 	}
 	for _, tc := range cases {
-		name := fmt.Sprintf("%v on %s", tc.kind, tc.op)
+		name := fmt.Sprintf("%v on %s", tc.a, tc.op)
 		t.Run(name, func(t *testing.T) {
 			s := newSeam(t)
 			f := create(t, s, "seg")
-			s.SetFault(faultFunc(func(string, []byte) sim.FaultAction {
-				return sim.FaultAction{Kind: tc.kind}
-			}))
+			s.SetFault(faultFunc(func(string, []byte) sim.FaultAction { return tc.a }))
 
 			defer func() {
 				msg := fmt.Sprint(recover())
-				if !strings.Contains(msg, tc.kind.String()) || !strings.Contains(msg, tc.op) {
-					t.Fatalf("panic %q, want one naming %v and %s", msg, tc.kind, tc.op)
+				if !strings.Contains(msg, tc.want) || !strings.Contains(msg, tc.op) {
+					t.Fatalf("panic %q, want one naming a %s and %s", msg, tc.want, tc.op)
 				}
 			}()
 			tc.call(s, f)
@@ -638,10 +638,7 @@ func TestAFailedSegmentCanHoldItsWriteAfterACrash(t *testing.T) {
 }
 
 func TestTornNeverPicksADroppedWrite(t *testing.T) {
-	cases := map[string]sim.FaultAction{
-		"drop":        drop,
-		"silent tear": {Kind: sim.Tear, N: 0},
-	}
+	cases := map[string]sim.FaultAction{"lost": drop}
 	for name, a := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := newSeam(t)
@@ -665,10 +662,7 @@ func TestTornNeverPicksADroppedWrite(t *testing.T) {
 }
 
 func TestReorderedNeverKeepsADroppedWrite(t *testing.T) {
-	cases := map[string]sim.FaultAction{
-		"drop":        drop,
-		"silent tear": {Kind: sim.Tear, N: 0},
-	}
+	cases := map[string]sim.FaultAction{"lost": drop}
 	for name, a := range cases {
 		t.Run(name, func(t *testing.T) {
 			for seed := range uint64(64) {
@@ -1119,7 +1113,7 @@ func actOnce(t *testing.T, s *Seam, op string, a sim.FaultAction) {
 	s.SetFault(sched)
 }
 
-var drop = sim.FaultAction{Kind: sim.Drop}
+var drop = sim.FaultAction{TearAfter: sim.Lose}
 
 func readAt(t *testing.T, f storage.File, n int) string {
 	t.Helper()
@@ -1274,7 +1268,7 @@ func TestASilentTearIsWholeUntilACrash(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxx")
 
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 2})
+	actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 2})
 	if n, err := f.WriteAt([]byte("hello"), 2); n != 5 || err != nil {
 		t.Fatalf("a write torn at 2 returned %d, %v; want the whole 5, nil", n, err)
 	}
@@ -1301,7 +1295,7 @@ func TestASyncAfterASilentTearLeavesTheTailLost(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxxxxxx")
 
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 3})
+	actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 3})
 	if _, err := f.WriteAt([]byte("ABCDE"), 2); err != nil {
 		t.Fatal(err)
 	}
@@ -1323,30 +1317,13 @@ func TestASyncAfterASilentTearLeavesTheTailLost(t *testing.T) {
 	}
 }
 
-func TestASilentTearAtZeroLosesTheWholeWrite(t *testing.T) {
-	s := newSeam(t)
-	f := durableFile(t, s, "seg", "xxxx")
-
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 0})
-	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
-		t.Fatalf("a write torn at 0 returned %d, %v; want the whole 2, nil", n, err)
-	}
-
-	if got := readAt(t, f, 16); got != "xABx" {
-		t.Fatalf("ReadAt after a tear at 0: %q, want %q", got, "xABx")
-	}
-
-	syncFile(t, f)
-	wantDurable(t, s, "seg", new("xxxx"))
-}
-
 func TestASilentTearPastTheEndLeavesTheFileAsItWas(t *testing.T) {
-	for _, n := range []int64{0, 2} { // all of it lost, or a head kept
+	for _, n := range []int{sim.Lose, 2} { // all of it lost, or a head kept
 		t.Run(fmt.Sprint("torn at ", n), func(t *testing.T) {
 			s := newSeam(t)
 			f := durableFile(t, s, "seg", "xx")
 
-			actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: n})
+			actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: n})
 			if _, err := f.WriteAt([]byte("hello"), 4); err != nil { // past the end
 				t.Fatal(err)
 			}
@@ -1365,7 +1342,7 @@ func TestTearPastTheWriteWritesItWhole(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxx")
 
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 4096})
+	actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 4096})
 	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
 		t.Fatalf("a write shorter than its tear returned %d, %v; want 2, nil", n, err)
 	}
@@ -1384,7 +1361,7 @@ func TestTornWriteRecordsOnlyTheBytesWritten(t *testing.T) {
 		s := newSeam(t)
 		f := durableFile(t, s, "seg", "")
 
-		actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 2})
+		actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 2})
 		_, _ = f.WriteAt([]byte("ABCD"), 0)
 
 		crash(t, s, Reordered(seed))
@@ -1394,27 +1371,13 @@ func TestTornWriteRecordsOnlyTheBytesWritten(t *testing.T) {
 	}
 }
 
-var reorder = sim.FaultAction{Kind: sim.Reorder}
-
-// markWrites makes every write of a file whose name matches key take the
-// Reorder action, and every other call pass.
-func markWrites(t *testing.T, s *Seam, key string) {
-	t.Helper()
-
-	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpWrite, Key: key, Action: reorder})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.SetFault(sched)
-}
-
 func TestAnUnmarkedWriteNeverSurvivesAReorderedCrashOnceOneIsMarked(t *testing.T) {
 	for seed := range uint64(64) {
 		s := newSeam(t)
 		f := durableFile(t, s, "marked", "")
 		g := durableFile(t, s, "plain", "")
 
-		markWrites(t, s, "marked")
+		s.MarkReorder("marked")
 		write(t, g, "uu", 0) // unmarked
 		write(t, f, "mm", 0) // marked
 
@@ -1431,7 +1394,7 @@ func TestAMarkedWriteSurvivesAReorderedCrashForSomeSeed(t *testing.T) {
 		s := newSeam(t)
 		f := durableFile(t, s, "seg", "")
 
-		markWrites(t, s, "seg")
+		s.MarkReorder("seg")
 		write(t, f, "mm", 0)
 
 		crash(t, s, Reordered(seed))
@@ -1451,7 +1414,7 @@ func TestAMarkedWriteSurvivesAReorderedCrashForSomeSeed(t *testing.T) {
 func TestMarksHaveNoEffectUnderCrashOrTorn(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "")
-	markWrites(t, s, "seg")
+	s.MarkReorder("seg")
 	write(t, f, "mm", 0)
 
 	crash(t, s)
@@ -1462,7 +1425,7 @@ func TestMarksHaveNoEffectUnderCrashOrTorn(t *testing.T) {
 	s = newSeam(t)
 	f = durableFile(t, s, "seg", "")
 	g := durableFile(t, s, "plain", "")
-	markWrites(t, s, "seg")
+	s.MarkReorder("seg")
 	write(t, f, "mm", 0) // marked, older
 	write(t, g, "uu", 0) // unmarked, the last write
 
@@ -1481,7 +1444,7 @@ func TestASyncedMarkedWriteIsNeverDrawn(t *testing.T) {
 		f := durableFile(t, s, "seg", "")
 		g := durableFile(t, s, "plain", "")
 
-		markWrites(t, s, "seg")
+		s.MarkReorder("seg")
 		write(t, f, "mm", 0)
 		syncFile(t, f)
 		write(t, g, "uu", 0)
@@ -1504,7 +1467,7 @@ func TestTearWithAnErrorIsAShortWrite(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxxxxxx")
 
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 3, Err: syscall.EIO})
+	actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 3, Err: syscall.EIO})
 	n, err := f.WriteAt([]byte("ABCDE"), 2)
 
 	var pe *fs.PathError
@@ -1528,7 +1491,7 @@ func TestTearWithAnErrorPastTheWriteWritesItWhole(t *testing.T) {
 	s := newSeam(t)
 	f := durableFile(t, s, "seg", "xxxx")
 
-	actOnce(t, s, OpWrite, sim.FaultAction{Kind: sim.Tear, N: 4096, Err: syscall.EIO})
+	actOnce(t, s, OpWrite, sim.FaultAction{TearAfter: 4096, Err: syscall.EIO})
 	if n, err := f.WriteAt([]byte("AB"), 1); n != 2 || err != nil {
 		t.Fatalf("a write shorter than its tear returned %d, %v; want 2, nil: nothing was torn", n, err)
 	}
@@ -1548,7 +1511,7 @@ func TestASyncDirDelayedAcrossACrashLeavesTheNewLogPending(t *testing.T) {
 	s := newSeam(t)
 
 	c := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSyncDir, Key: "*", Count: 1, Action: sim.FaultAction{Kind: sim.Delay, Delay: time.Second}})
+	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSyncDir, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}

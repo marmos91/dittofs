@@ -58,6 +58,7 @@ type Seam struct {
 	dir    string
 	stash  string
 	fault  sim.Fault
+	marked string // a sim.Match pattern of the files whose writes MarkReorder marks; "" marks none
 	seq    uint64
 	names  map[string]*node // the directory as it is now
 	dirLog []dirOp          // Create, Rename and Remove since the last SyncDir
@@ -108,7 +109,7 @@ type change struct {
 	newSize int64  // resize: the file's size after it
 	lost    bool   // a failed Sync covered it, or it was dropped: no Sync ever makes it durable
 	dropped bool   // write: it never reached the device, so no crash keeps it either
-	reorder bool   // write: a Reorder fault marked it for Reordered's draw
+	reorder bool   // write: MarkReorder marked it for Reordered's draw
 }
 
 type dirOpKind int
@@ -192,77 +193,94 @@ func (v view) List() ([]string, error)                  { return v.s.listFrom(v.
 func (v view) SyncDir() error                           { return v.s.syncDirFrom(v.epoch) }
 
 // SetFault makes the seam consult f before every operation, and apply the
-// action it returns. A nil f, the default, passes every call.
+// results it returns. A nil f, the default, passes every call.
 //
 // Each operation is named by one of the Op constants, and its key is the name
 // of the file it acts on, as the directory names it at the call: the old name
 // for a rename, and empty for list and sync_dir. Size and Name are not
 // operations and consult nothing. A call on a closed file fails with
 // fs.ErrClosed before f is consulted, so it never counts in a rule. f is
-// called without the seam's lock held, so a Delay stalls only its own call.
+// called without the seam's lock held, so a delay stalls only its own call.
+// The delay is one f has already waited out, so the seam applies it as passed.
 //
-// How the seam applies each action:
-//   - Pass, Delay: performs the operation.
-//   - Drop on write: reports the whole write done, and the bytes reach the
-//     file, so ReadAt sees them, but they are lost: no Sync makes them
-//     durable, and Torn and Reordered never keep them.
-//   - Drop on sync or sync_dir: reports success and does nothing, so what
+// How the seam applies the results:
+//   - Zero, or a delay alone: performs the operation.
+//   - A loss (tearAfter < 0) on write: reports the whole write done, and the
+//     bytes reach the file, so ReadAt sees them, but they are lost: no Sync
+//     makes them durable, and Torn and Reordered never keep them.
+//   - A loss on sync or sync_dir: reports success and does nothing, so what
 //     was pending stays pending and a later sync can make it durable.
-//   - Tear on write: with the action's Err nil, a silent tear, performs the
-//     write whole and reports it done, but only its first N bytes can become
-//     durable: the rest is lost, as a dropped write is. With Err set it is a
-//     short write: only the first N bytes land, and it returns N and Err.
-//     With N at or past the write's length nothing is torn.
-//   - Reorder on write: performs it and marks it. While any pending write
-//     is marked, Reordered draws only among the marked ones; a plain Crash
-//     and Torn ignore marks. A Sync that covers the write clears its mark.
-//   - Fail: performs nothing and returns the action's Err. A failed sync
-//     also marks every pending change of the file lost: ReadAt still
-//     serves it, and no later Sync makes it durable, but a crash may still
-//     find it, as Torn and Reordered may keep it. A failed sync_dir
-//     loses its directory changes the same way: they stay in the directory,
-//     and no later SyncDir makes them durable.
+//   - A tear (tearAfter > 0) on write: with err nil, a silent tear, performs
+//     the write whole and reports it done, but only its first tearAfter bytes
+//     can become durable: the rest is lost, as a lost write is. With err set
+//     it is a short write: only the first tearAfter bytes land, and it returns
+//     them and err. At or past the write's length nothing is torn.
+//   - err alone: performs nothing and returns err. A failed sync also marks
+//     every pending change of the file lost: ReadAt still serves it, and no
+//     later Sync makes it durable, but a crash may still find it, as Torn and
+//     Reordered may keep it. A failed sync_dir loses its directory changes
+//     the same way: they stay in the directory, and no later SyncDir makes
+//     them durable.
 //
-// Any other kind, or Drop, Tear or Reorder on any other op, panics, naming the
-// kind and the op: it is a mistake in the test, not a storage fault.
+// A tear on any other op, or a loss on any other op or with err set, panics,
+// naming it and the op: it is a mistake in the test, not a storage fault.
 func (s *Seam) SetFault(f sim.Fault) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fault = f
 }
 
-// consult asks the seam's fault what to do with op on key, and panics on an
-// action the seam cannot apply to op. The caller must not hold mu, because a
-// Delay waits inside At.
-func (s *Seam) consult(op, key string) sim.FaultAction {
+// MarkReorder marks every later write of a file whose name matches key, a
+// pattern as sim.Match takes it, replacing any pattern set before; "" marks
+// none. While any pending write is marked, Reordered draws only among the
+// marked ones; a plain Crash and Torn ignore marks. A Sync that covers a
+// write clears its mark.
+func (s *Seam) MarkReorder(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.marked = key
+}
+
+// isMarked reports whether a write of the file named key is marked; the
+// caller holds mu.
+func (s *Seam) isMarked(key string) bool {
+	return s.marked != "" && sim.Match(s.marked, key)
+}
+
+// action is what the seam's fault decided for one call.
+type action struct {
+	err       error
+	tearAfter int // > 0: tear a write after this many bytes; < 0: lose a write or a sync
+}
+
+func (a action) lost() bool { return a.tearAfter < 0 }
+
+// torn reports whether a tears a write of n bytes.
+func (a action) torn(n int) bool { return a.tearAfter > 0 && a.tearAfter < n }
+
+// consult asks the seam's fault what to do with op on key, and panics on
+// results the seam cannot apply to op. The caller must not hold mu, because a
+// delay waits inside At.
+func (s *Seam) consult(op, key string) action {
 	s.mu.Lock()
 	f := s.fault
 	s.mu.Unlock()
 
 	if f == nil {
-		return sim.FaultAction{}
+		return action{}
 	}
 
-	a := f.At(op, []byte(key))
-	if !applies(a.Kind, op) {
-		panic(fmt.Sprintf("journalv2test: a %v fault on %s is not supported", a.Kind, op))
+	_, err, tearAfter := f.At(op, []byte(key))
+	switch {
+	case tearAfter > 0 && op != OpWrite:
+		panic(fmt.Sprintf("journalv2test: a tear on %s is not supported", op))
+	case tearAfter < 0 && op != OpWrite && op != OpSync && op != OpSyncDir:
+		panic(fmt.Sprintf("journalv2test: a loss on %s is not supported", op))
+	case tearAfter < 0 && err != nil:
+		panic(fmt.Sprintf("journalv2test: a loss on %s with an error is not supported", op))
 	}
 
-	return a
-}
-
-// applies reports whether the seam can apply a fault of kind k to op.
-func applies(k sim.FaultKind, op string) bool {
-	switch k {
-	case sim.Pass, sim.Delay, sim.Fail:
-		return true
-	case sim.Drop:
-		return op == OpWrite || op == OpSync || op == OpSyncDir
-	case sim.Tear, sim.Reorder:
-		return op == OpWrite
-	default:
-		return false
-	}
+	return action{err: err, tearAfter: tearAfter}
 }
 
 // enter counts op on name, waits at any hold that matches it, then consults
@@ -276,11 +294,11 @@ func applies(k sim.FaultKind, op string) bool {
 // A call refused on entry is not counted: its process no longer exists, so it
 // is no call of the journal under test. A call on a file a Crash closed is
 // counted, as file.go's enter does, because it is one the live process made.
-func (s *Seam) enter(op, name string, epoch uint64) (sim.FaultAction, error) {
+func (s *Seam) enter(op, name string, epoch uint64) (action, error) {
 	s.mu.Lock()
 	if s.crashes != epoch {
 		s.mu.Unlock()
-		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+		return action{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
 	}
 	s.count(op, name)
 	s.mu.Unlock()
@@ -291,16 +309,16 @@ func (s *Seam) enter(op, name string, epoch uint64) (sim.FaultAction, error) {
 	s.mu.Lock()
 	if s.crashes != epoch {
 		s.mu.Unlock()
-		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+		return action{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
 	}
 
-	if a.Kind == sim.Fail {
+	if a.err != nil && a.tearAfter == 0 {
 		if op == OpSyncDir {
 			s.loseDirLog()
 		}
 
 		s.mu.Unlock()
-		return a, &fs.PathError{Op: op, Path: name, Err: a.Err}
+		return a, &fs.PathError{Op: op, Path: name, Err: a.err}
 	}
 
 	return a, nil
@@ -487,7 +505,7 @@ func (s *Seam) syncDirFrom(epoch uint64) error {
 	}
 	defer s.mu.Unlock()
 
-	if a.Kind == sim.Drop {
+	if a.lost() {
 		return nil
 	}
 

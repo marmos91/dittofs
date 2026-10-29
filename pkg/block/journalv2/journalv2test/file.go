@@ -9,7 +9,6 @@ import (
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
-	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // loseUndo marks every pending change lost, after a Sync that failed.
@@ -89,7 +88,7 @@ var _ storage.File = (*seamFile)(nil)
 // with ErrClosed before it is held or the fault is consulted, and again after
 // both: a Crash may have closed the file while the call was held or delayed,
 // and the call must not then act on the node a new handle is using.
-func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
+func (sf *seamFile) enter(op string) (action, error) {
 	s := sf.seam
 
 	s.mu.Lock()
@@ -99,7 +98,7 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	s.mu.Unlock()
 
 	if closed {
-		return sim.FaultAction{}, sf.closedErr(op)
+		return action{}, sf.closedErr(op)
 	}
 
 	s.hold(op, key)
@@ -108,16 +107,16 @@ func (sf *seamFile) enter(op string) (sim.FaultAction, error) {
 	s.mu.Lock()
 	if sf.closed {
 		s.mu.Unlock()
-		return sim.FaultAction{}, sf.closedErr(op)
+		return action{}, sf.closedErr(op)
 	}
 
-	if a.Kind == sim.Fail {
+	if a.err != nil && a.tearAfter == 0 {
 		if op == OpSync {
 			sf.node.loseUndo()
 		}
 
 		s.mu.Unlock()
-		return a, &fs.PathError{Op: op, Path: sf.name, Err: a.Err}
+		return a, &fs.PathError{Op: op, Path: sf.name, Err: a.err}
 	}
 
 	return a, nil
@@ -218,8 +217,8 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 
 	// A short write, a tear with an error, lands only up to its tear.
 	data := p
-	if a.Kind == sim.Tear && a.Err != nil && a.N < int64(len(p)) {
-		data = p[:a.N]
+	if a.err != nil && a.torn(len(p)) {
+		data = p[:a.tearAfter]
 	}
 
 	size, err := sf.size()
@@ -263,8 +262,8 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	}
 
 	tear := landed
-	if a.Kind == sim.Tear && a.Err == nil {
-		tear = min(a.N, landed)
+	if a.err == nil && a.tearAfter > 0 {
+		tear = min(int64(a.tearAfter), landed)
 	}
 
 	if tear > 0 {
@@ -274,9 +273,9 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 			data:    append([]byte(nil), data[:tear]...),
 			old:     old[:min(int64(len(old)), tear)],
 			oldSize: size,
-			lost:    a.Kind == sim.Drop,
-			dropped: a.Kind == sim.Drop,
-			reorder: a.Kind == sim.Reorder,
+			lost:    a.lost(),
+			dropped: a.lost(),
+			reorder: sf.seam.isMarked(sf.key()),
 		})
 	}
 
@@ -304,8 +303,8 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 	// A torn write reports itself whole, as a device that acknowledged it
 	// and kept only part would, unless it carries an error: then it is a
 	// write that failed part-way.
-	if a.Kind == sim.Tear && a.Err != nil && a.N < int64(len(p)) {
-		return n, &fs.PathError{Op: OpWrite, Path: sf.name, Err: a.Err}
+	if a.err != nil && a.torn(len(p)) {
+		return n, &fs.PathError{Op: OpWrite, Path: sf.name, Err: a.err}
 	}
 
 	return len(p), nil
@@ -376,7 +375,7 @@ func (sf *seamFile) Sync() error {
 	}
 	defer sf.seam.mu.Unlock()
 
-	if a.Kind == sim.Drop {
+	if a.lost() {
 		return nil
 	}
 
