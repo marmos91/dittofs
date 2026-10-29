@@ -1145,3 +1145,21 @@ func TestNoGrantBesideAnothersLock(t *testing.T) {
 		t.Error("no lease beside the client's own lock")
 	}
 }
+
+// An oplock is broken only to Level II or none, the two an oplock break can
+// carry: a read beside a batch oplock recalls it to R, not to RH.
+func TestOplockBreaksToLevelIIOrNone(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: rwh}); g == nil || g.Kind != rwh || g.Key != (LeaseKey{}) {
+		t.Fatalf("a batch oplock: %+v", g)
+	}
+	err := f.Checks().CheckIO(ctx, b, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), false)
+	if delayedFor(err) != DelayRecall {
+		t.Fatal(err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantRead {
+		t.Fatalf("recalls %+v, want the oplock to R", r)
+	}
+}

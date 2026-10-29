@@ -193,8 +193,11 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 		if grantfsm.Within(g.fsm.Kind, a) == g.fsm.Kind {
 			continue
 		}
-		if !g.covers() {
+		switch {
+		case !g.covers():
 			a = GrantNone
+		case g.open != nil:
+			a &= GrantRead // an oplock break carries only Level II or none
 		}
 		hit = append(hit, recall{g, a})
 		if g.fsm.Recall == nil {
