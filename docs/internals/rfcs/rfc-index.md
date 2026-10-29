@@ -308,8 +308,12 @@ than a private one per RFC.
 1. **One clock and one fault interface.** Every component that reads time —
    the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
    from one clock interface (now, timers, and, under test, advance and skew).
-   Every fault seam consults one fault interface: fail, delay, drop, tear or
-   reorder a named operation, on a seeded schedule read from that clock. The
+   Every fault seam consults one fault interface: fail, delay, tear or lose a
+   named operation, on a seeded schedule read from that clock. The lost, torn
+   and reordered writes of a crash ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)) are the seam's simulated
+   crash, never a call's fault. A seam's other faults, such as a reply lost
+   after its commit applied, a reordered message, or the fault transport's, are
+   its own settings. The
    interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
    component declares the methods it uses in its own package, in standard-library
    types, so the node's one clock and the seeded fault satisfy each as they are;

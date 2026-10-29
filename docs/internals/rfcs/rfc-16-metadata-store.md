@@ -2116,7 +2116,7 @@ serial order of the committed operations.
 
 ### 6.4 Faults and crashes
 
-A fault-injecting `KV` wrapper fails, delays or reorders at every call:
+A fault-injecting `KV` wrapper fails or delays any call:
 
 - concurrent `Update`s on the embedded store, with power cut after some return: assert every returned `Update` survives, and that the commits shared syncs (fewer syncs than commits);
 - a conflict on the Nth `Update` attempt (retry must converge, never apply twice);
