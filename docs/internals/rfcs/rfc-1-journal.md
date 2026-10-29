@@ -1160,7 +1160,7 @@ walk can produce is omitted.
 | `HeadroomBytes` / `RepackReserveBytes` | gauge | the reserved headroom for records without bytes and the repack reserve, each as allocated now ([§6](#6.%20Capacity)) |
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
-| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn tail is never one |
+| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn tail or torn slot is never one |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
