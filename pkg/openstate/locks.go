@@ -592,7 +592,10 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 // reclaimHeld answers a reclaim of locks in a shard that lost nothing, under
 // e's step: the owner's lock state under op, when it holds every range of r
 // as asked, else ErrNoReclaim. Like a resend answered granted, it settles a
-// callback grant of the range still offered to the owner.
+// callback grant of the range still offered to a merging owner. A stacking
+// owner's reclaim answers none of its grants, as lock answers none for a
+// reclaim in grace: it names a lock of r, which need not be the grant's, and
+// removes none, so the grant stays whole for its refusal to release.
 func reclaimHeld(e *entry, r LockReq, op *open, res *LockResult) error {
 	ls := e.lockState(r.Owner, openToken(op))
 	if ls == nil {
@@ -606,6 +609,9 @@ func reclaimHeld(e *entry, r LockReq, op *open, res *LockResult) error {
 		}
 	}
 	for _, rg := range r.Ranges {
+		if ls.owner.Stack {
+			break
+		}
 		ls.dropOffers(rg.ByteRange) // the reclaim answers the callback granted: its refusal releases nothing
 	}
 	res.Ref = ls.ref

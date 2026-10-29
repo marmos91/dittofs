@@ -727,6 +727,25 @@ func TestHeldReclaimSettlesAnOfferedGrant(t *testing.T) {
 	}
 }
 
+// A stacking host reclaiming the range a callback grant has just given it
+// leaves the grant whole: the reclaim names a lock of the range, not the
+// grant, so refusing the callback then releases it.
+func TestStackingHeldReclaimLeavesAnOfferedGrantWhole(t *testing.T) {
+	f := newFixture(t)
+	h := f.host(t, "h", 1)
+	ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{sh(30, 5)}}) // keeps h's record once [0,10) goes
+	g := callbackGrant(t, f, file, h, ho, "a", br(0, 10), x(0, 10))
+	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+	if err := f.Locks().WaitAnswered(ctx, h, g, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.holder(t, file, br(0, 10)); l != nil {
+		t.Errorf("h reclaimed [0,10) and refused its grant, yet holds %+v", *l)
+	}
+}
+
 // A shard served again under a new instance refuses its requests while its
 // old state goes, and a file whose opens the loss drops is no longer delete
 // pending to a request that waited on the file's step meanwhile.
