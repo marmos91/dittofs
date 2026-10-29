@@ -53,7 +53,7 @@
   <text x="312" y="109" class="s">poll (e.g. NFSv4): LockedError; it asks again</text>
   <text x="312" y="124" class="s">callback (e.g. NLM, SMB): Waiting</text>
   <text x="312" y="142" class="s">one per owner per file; a repeat keeps</text>
-  <text x="312" y="157" class="s">Arrived; a replaced callback one is answered</text>
+  <text x="312" y="157" class="s">its place; a replaced callback one is answered</text>
 
   <path d="M562,90 L656,78" class="ln"/><path d="M562,130 L656,162" class="ln"/>
   <text x="572" y="114" class="s">range frees:</text>
@@ -61,8 +61,8 @@
 
   <rect x="660" y="44" width="216" height="76" rx="6" class="sv"/>
   <text x="672" y="63" class="h">callback: granted</text>
-  <text x="672" y="80" class="s">in the freeing step; LockWaitOver</text>
-  <text x="672" y="95" class="s">repeated until WaitAnswered</text>
+  <text x="672" y="80" class="s">under the admission lock;</text>
+  <text x="672" y="95" class="s">LockWaitOver until WaitAnswered</text>
   <text x="672" y="110" class="s">(NLM_GRANTED is one spelling)</text>
   <rect x="660" y="132" width="216" height="76" rx="6" class="dr"/>
   <text x="672" y="151" class="h">poll: reserved until Deadline</text>

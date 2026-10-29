@@ -2125,7 +2125,8 @@ persistent open, so a later disconnect of that session times it.
 whose `Durable.Create` names an existing open of the same client returns that
 open (`OpenResult.Replayed`). A create naming a create ID that another open of
 its client holds is `ErrCreateInUse` (`STATUS_DUPLICATE_OBJECTID`): one not
-marked as a replay, and a replay of an open that is disconnected. A replayed
+marked as a replay, a replay of an open that is disconnected, and a replay on
+another session than the open's. A replayed
 create, like a replayed lock, is answered in grace too, as it creates no new
 state. A lock request on an SMB-durable v2 or persistent
 open names an index and a sequence; if `LockSeq` at that index already holds
