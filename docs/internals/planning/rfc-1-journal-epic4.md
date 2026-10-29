@@ -103,7 +103,7 @@ and tests can cite them.
 | --- | --- | --- | --- |
 | R41 | Per-segment held bytes equal a recomputed walk at every step. Retained bytes count toward their segment | §9.4 D, §3.11 | 9 |
 | R42 | The index can be read out per file and in bulk, without mutating it or stopping it | §4.4 | 12 |
-| R43 | In E4: a shuffled-order rebuild and an incremental build of the same records give an identical index. Catalog-vs-scan equality needs segments on disk and is E7's | RFC 28 §3.1, §9.4 C | 11 (E7) |
+| R43 | In E4: any two rebuilds of the same records, in any order, give an identical index, drop ranges included; a rebuild and an incremental build give an identical index except drop ranges, whose rebuilt ranges cover every record with a pair at or below its own. Catalog-vs-scan equality needs segments on disk and is E7's | RFC 28 §3.1, §9.4 C | 11 (E7) |
 | R44 | Comparisons per lookup and per insert at most double from 10³ to 10⁶ extents | §9.7 | 1 |
 | R45 | ≤ 56 bytes per entry at 10⁶ entries. ≤ 8 drop ranges per (file, segment) after 10⁶ random 4 KiB overwrites | §9.7 | 12, 10 |
 | R46 | Allocations per op on index lookup and insert are asserted, outside `-race` | plan rule 4 | 1, 2 |
