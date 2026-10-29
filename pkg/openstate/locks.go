@@ -947,8 +947,11 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 // swept by the timer, if NLM lock churn shows those writes in a profile. A
 // record outlives idleness while a grace still waits on the host's reclaim,
 // since the host holds nothing in a shard until it reclaims there. One left
-// idle when grace ends stays until a later call of the host's leaves it idle,
-// which only adds the host to the next failover's notices.
+// idle when grace ends stays until a later call of the host's leaves it idle.
+// Until then each restart lists it in its shards: it is told again, the
+// restart-notice number is raised for it, it may reclaim there, and those
+// shards' graces run their full lease period for it. Drop the idle records a
+// grace listed once the grace ends, if NLM hosts are seen holding graces open.
 //
 // decision: the record is deleted without asking whether a restart notice to
 // the host is outstanding, since the table records none. A failed delete
