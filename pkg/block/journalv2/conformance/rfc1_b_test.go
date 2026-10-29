@@ -297,10 +297,11 @@ func repackAll(t *testing.T, f *journalv2test.Fixture, scope journalv2.RepackSco
 	f.Advance(2 * journalv2test.IdleSealAge)
 	var total int64
 	deadline := time.Now().Add(backgroundWait)
+	j := f.J
 	for range 256 {
 		var freed int64
 		err := within(t, f, "a repack pass", func() (err error) {
-			freed, err = f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, scope)
+			freed, err = j.Repack(t.Context(), journalv2test.FixtureMaxBytes, scope)
 			return err
 		})
 		stub(t, "Repack", err)

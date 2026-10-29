@@ -36,7 +36,7 @@ import (
 // decision: a call blocked on a lock reports nothing to the seam or the
 // clock, so only a real-time wait sees it never return; a correct journal
 // returns in milliseconds. The ceiling: a call slower than this on a loaded
-// runner fails without being wrong. Overturned once the journal reports the
+// machine fails without being wrong. Overturned once the journal reports the
 // waits it is in, when a check can see a call waiting instead of timing it.
 const callWait = 10 * time.Second
 
@@ -331,7 +331,7 @@ func pinPeak(t *testing.T, f *journalv2test.Fixture) func() int {
 			case high = <-peak:
 			case <-time.After(callWait):
 				f.Abandon()
-				t.Errorf("a read of Stats did not return within %v", callWait)
+				t.Fatalf("a read of Stats did not return within %v", callWait)
 			}
 		})
 		return high
@@ -581,7 +581,9 @@ func TestRFC1B_IndexBoundRefuses(t *testing.T) {
 // the segments it did not pin while its callback is parked.
 //
 // The segments are the fixture's 1 MiB cap, each sealed once idle at about
-// 80 KiB, in a journal holding 256 MiB.
+// 80 KiB, in a journal holding 256 MiB. A segment sealed early is truncated to
+// end after its trailer and accounted at that size, so the 1,000 take about
+// 80 MiB; a journal that kept each at its cap would refuse the setup.
 func TestRFC1B_PinnedSegmentsBounded(t *testing.T) {
 	f := journalv2test.NewWith(t, func(s *journalv2.Settings) { s.MaxBytes = 4 * journalv2test.FixtureMaxBytes })
 	h, id := f.Share(0), journalv2test.File(0)
@@ -1022,7 +1024,9 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 			})
 		}
 		// join stops the readers and waits for them, for at most callWait: a
-		// reader blocked in the journal abandons it, as within does.
+		// reader blocked in the journal abandons it and fails the test, as
+		// within does. It runs at the end of the round, or at cleanup when the
+		// round failed first.
 		joined := false
 		join := func() {
 			if joined {
@@ -1036,10 +1040,10 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 			case <-all:
 			case <-time.After(callWait):
 				f.Abandon()
-				t.Errorf("share %d: the readers did not return within %v of being stopped", k, callWait)
+				t.Fatalf("share %d: the readers did not return within %v of being stopped", k, callWait)
 			}
 		}
-		defer join()
+		t.Cleanup(join)
 		readerFailed := func() {
 			t.Helper()
 			select {
@@ -1065,9 +1069,10 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 		readerFailed()
 		repacked := make(chan error, 1)
 		var freed int64
+		j := f.J
 		go func() {
 			var err error
-			freed, err = f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg.ID}})
+			freed, err = j.Repack(t.Context(), journalv2test.FixtureMaxBytes, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg.ID}})
 			repacked <- err
 		}()
 		var err error
@@ -1075,7 +1080,6 @@ func TestRFC1B_ReclaimNotStarved(t *testing.T) {
 		case err = <-repacked:
 		case <-time.After(callWait):
 			f.Abandon()
-			join()
 			t.Fatalf("share %d: a repack of a segment under %d readers did not return within %v", k, readers, callWait)
 		}
 		join()
@@ -1348,6 +1352,9 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 			h, id, e := pick(r)
 			return w.do(func() error {
 				_, err := tryWrite(t, h, id, e.Off, pattern(fmt.Sprint("w", r.Uint64()), chunk))
+				if errors.As(err, new(*journalv2.NoSpaceError)) {
+					return nil // full while repack catches up
+				}
 				return named("WriteAt", err)
 			})
 		},
@@ -1394,6 +1401,9 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 				})
 				if errors.Is(err, journalv2.ErrStaleFill) {
 					return nil // written since the read
+				}
+				if errors.As(err, new(*journalv2.NoSpaceError)) {
+					return nil // full while repack catches up
 				}
 				if err == nil {
 					done["fill"].Add(1)
@@ -1501,10 +1511,11 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 	}
 	syncNow(t, h, id)
 
+	j := f.J
 	copied := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
 	repacked := make(chan error, 1)
 	go func() {
-		_, err := f.J.Repack(t.Context(), journalv2test.FixtureMaxBytes, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg.ID}})
+		_, err := j.Repack(t.Context(), journalv2test.FixtureMaxBytes, journalv2.RepackScope{Segments: []journalv2.SegmentID{seg.ID}})
 		repacked <- err
 	}()
 	select {
@@ -1522,7 +1533,6 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 	// before then, so a Close that returns before it did not wait for the
 	// repack. Close returning after the copy was let go is not ordered against
 	// the repack's caller, so nothing is read from that.
-	j := f.J
 	let := make(chan struct{})
 	var early atomic.Bool
 	closed := make(chan error, 1)
