@@ -632,8 +632,8 @@ rule 12), and places epic 1's D6 `decision:` marker (`golang.org/x/sys` in
   - thin-provisioning detection.
 
 This epic carries the main fuzz targets, one per parser, and golden vectors checked into
-`testdata`. Metrics: the scanner returns the `torn_tails` and `scan_resyncs`
-contributions, and epic 7 folds them into `Stats`.
+`testdata`. Metrics: the scanner returns the `scan_resyncs` contribution, and epic 7
+folds it into `Stats`; `torn_tails` is epic 7's, decided at recovery (epic 3's P8).
 
 **Conformance tests that land here.** These need `internal/format` or `internal/platform`,
 so they cannot compile before this epic creates the packages, and they move here from
@@ -783,7 +783,8 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   a report-only verification. Repair is a separate, explicit action.
 
 Metrics: `Recovery` (catalog vs scan count and duration), `RejectedSegments`,
-`DamagedSegments`, `corrupt_extents{outcome}`, `stale_extents`. Span: `open`, with child
+`DamagedSegments`, `corrupt_extents{outcome}`, `stale_extents`, `torn_tails`, and the
+scanner's `scan_resyncs` folded into `Stats`. Span: `open`, with child
 spans per phase. Also the J6, J7 and J9 benchmark harnesses (RFC 28 §4.3), recorded but
 not gated.
 
