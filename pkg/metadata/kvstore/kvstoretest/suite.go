@@ -96,6 +96,7 @@ func Run(t *testing.T, open Opener) {
 		{"DurableLockChanges", testDurableLockChanges},
 		{"CloseRacesLockChange", testCloseRacesLockChange},
 		{"DeletePending", testDeletePending},
+		{"DeletePendingRace", testDeletePendingRace},
 		{"NSMState", testNSMState},
 		{"RaiseIncarnations", testRaiseIncarnations},
 		{"RaiseIncarnationsAllOrNone", testRaiseIncarnationsAllOrNone},

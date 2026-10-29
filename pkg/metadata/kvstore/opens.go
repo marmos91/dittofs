@@ -91,11 +91,16 @@ func (o Opens) Delete(ctx context.Context, share entity.ShareID, file entity.Fil
 		if err != nil {
 			return err
 		}
-		if !slices.ContainsFunc(rest, func(r entity.OpenRecord) bool { return r.Durability == entity.DurabilityPersistent }) {
-			// delete pending is durable only while a persistent open holds the file
-			if err := tx.Delete(deletePendingKey(share, file)); err != nil {
+		if i := slices.IndexFunc(rest, func(r entity.OpenRecord) bool { return r.Durability == entity.DurabilityPersistent }); i >= 0 {
+			// The scan is not tracked: guard the persistent open that keeps
+			// delete pending, so that two last persistent closes, each seeing
+			// the other's open, cannot both commit and leave it behind.
+			if err := tx.Guard(openKey(share, file, rest[i].ID)); err != nil {
 				return err
 			}
+		} else if err := tx.Delete(deletePendingKey(share, file)); err != nil {
+			// delete pending is durable only while a persistent open holds the file
+			return err
 		}
 		if f.IsStream() {
 			if f, err = fileIn(tx, share, f.StreamOf); err != nil {
