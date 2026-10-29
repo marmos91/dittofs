@@ -97,7 +97,8 @@ type recordingSink struct {
 	onRecall func(g CachingGrant, to GrantKind)
 }
 
-func (s *recordingSink) RecallGrant(_ entity.ClientID, g CachingGrant, to GrantKind) {
+func (s *recordingSink) RecallGrant(g CachingGrant) {
+	to := g.Recall.To
 	s.mu.Lock()
 	s.recalls = append(s.recalls, recallCall{g, to})
 	fn := s.onRecall

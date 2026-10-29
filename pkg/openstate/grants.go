@@ -54,8 +54,7 @@ type CachingGrant struct {
 
 // Recall is a recall in flight.
 type Recall struct {
-	To       GrantKind     // the kind it goes to; none: a return
-	Deadline time.Duration // the Deps.Clock.Elapsed reading it ends at unanswered; zero while not yet handed to the Sink
+	To GrantKind // the kind it goes to; none: a return
 }
 
 // Grants is the view of caching grants; it runs at the primary of the shard a
@@ -154,7 +153,7 @@ func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
 func (g *grant) public(f entity.FileID) CachingGrant {
 	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch, V2: g.fsm.V2}
 	if r := g.fsm.Recall; r != nil {
-		p.Recall = &Recall{To: r.To, Deadline: g.sent}
+		p.Recall = &Recall{To: r.To}
 	}
 	return p
 }

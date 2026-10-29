@@ -20,10 +20,12 @@ type Sink interface {
 	// service forwards it to w.Owner.Client and reports the client's answer to a grant
 	// through WaitAnswered.
 	LockWaitOver(w LockWaiter, granted bool)
-	// RecallGrant: recall g, held by c, to kind to; the service sends it in
-	// the holder's protocol, and the client answers through AckRecall. The
-	// recall's deadline starts when this call returns.
-	RecallGrant(c entity.ClientID, g CachingGrant, to GrantKind)
+	// RecallGrant: recall g, held by g.Client, to g.Recall.To; the service
+	// sends it in the holder's protocol, and the client answers through
+	// AckRecall, unless the recall already ended as it was sent, an SMB break
+	// of read caching alone. The recall's deadline starts when this call
+	// returns.
+	RecallGrant(g CachingGrant)
 	// RecallAny: c reached its grant budget here; the service asks it, where
 	// its protocol can be asked, to return grants until it holds keep.
 	RecallAny(c entity.ClientID, keep int)
@@ -114,7 +116,7 @@ func (o *outbox) raise(t *Table, sink Sink) {
 		sink.RecallAny(c, keepGrants)
 	}
 	for _, r := range o.recalls {
-		sink.RecallGrant(r.g.Client, r.g, r.g.Recall.To)
+		sink.RecallGrant(r.g)
 		t.idx.Lock()
 		t.unsent--
 		t.idx.Unlock()
