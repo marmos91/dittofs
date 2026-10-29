@@ -64,12 +64,25 @@ type ended struct {
 	shards []ShardID
 }
 
+// closed is one Closed call.
+type closed struct {
+	f entity.FileID
+	r CloseResult
+}
+
 // recordingSink records what the table raises; onEnded, if set, runs inside
 // ClientEnded.
 type recordingSink struct {
 	mu      sync.Mutex
 	ended   []ended
+	closed  []closed
 	onEnded func(c entity.ClientID)
+}
+
+func (s *recordingSink) Closed(f entity.FileID, r CloseResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = append(s.closed, closed{f, r})
 }
 
 func (s *recordingSink) ClientEnded(c entity.ClientID, shards []ShardID, _ RevokeReason) {

@@ -21,10 +21,13 @@ type Table struct {
 	// is held only to find, add or free an entry, never while a step runs.
 	files [256]fileStripe
 
-	// idx guards the state references. It is taken after a file's step,
-	// never before one, and only to add, remove or look up a reference.
+	// idx guards the state references, the open IDs and the counts per Via.
+	// It is taken after a file's step, never before one, and only to add,
+	// remove or look up a reference.
 	idx  sync.Mutex
 	refs map[refKey]holder
+	byID map[entity.OpenID]refKey
+	via  map[entity.FileID]int // the opens made through each directory
 
 	// cstep is the client step: every change to a client record, and every
 	// lease armed from one, runs under it, so a confirm, an expiry and a
@@ -38,9 +41,11 @@ type Table struct {
 
 	// cmu guards the client area: the clients this node serves, the
 	// proposals it answered and the lifecycle. It is held only to read or
-	// change those maps, never across a store call or a Sink call.
+	// change those maps, never across a store call or a Sink call, and may
+	// be taken under idx, never the other way.
 	cmu     sync.Mutex
 	leases  map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
+	known   map[entity.ClientID]known         // what the table reads of each client's record, with its lease
 	pending map[nameKey]pending
 	sources map[netip.Prefix]int // pending proposals per source
 	sink    Sink                 // nil before Start and after Stop
@@ -60,6 +65,17 @@ type entry struct {
 	mu     sync.Mutex
 	users  int // steps running or waiting on this entry, guarded by its file stripe's mutex
 	states int // pieces of state held, guarded by mu
+
+	opens    map[uint64]*open     // by reference token
+	pending  *entity.DeleteRecord // the file is delete pending; nil: not
+	unlinked bool                 // an unlink made the opens durable: the file has no entry, and every new open is written durable
+}
+
+// known is what the table holds of a client's record while it is current
+// here.
+type known struct {
+	owner  entity.Principal // the owner that may act on all its state; zero unless it protects it
+	shards []ShardID        // shards seen listed in its record
 }
 
 // New builds an empty table. It starts nothing: Start does.
@@ -68,8 +84,8 @@ func New(d Deps) (*Table, error) {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	t := &Table{
-		d: d, refs: map[refKey]holder{},
-		leases: map[entity.ClientID]time.Duration{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
+		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{},
+		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
 	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}
@@ -171,6 +187,16 @@ func (t *Table) Stop() {
 	if stop != nil {
 		stop()
 	}
+}
+
+// current reports whether client c is current here: known, and its lease, if
+// it holds one, not ended. The caller holds idx or nothing.
+func (t *Table) current(c entity.ClientID) bool {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	_, ok := t.known[c]
+	end := t.leases[c]
+	return ok && (end == 0 || t.d.Clock.Elapsed() < end)
 }
 
 // running is the Sink, or ErrStopped before Start and after Stop.
