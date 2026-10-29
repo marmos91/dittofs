@@ -278,14 +278,14 @@ func TestRepairSkipsWhenEvidenceMoved(t *testing.T) {
 
 	base := func() (*metadata.File, map[string]*block.FileChunk) {
 		return &metadata.File{
-				FileAttr: metadata.FileAttr{
-					Size:      4096,
-					PayloadID: metadata.PayloadID(payloadID),
-					Blocks:    []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}},
-				},
-			}, map[string]*block.FileChunk{
-				payloadID + "/x": {ID: payloadID + "/x", Hash: hash, DataSize: 4096},
-			}
+			FileAttr: metadata.FileAttr{
+				Size:      4096,
+				PayloadID: metadata.PayloadID(payloadID),
+				Blocks:    []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}},
+			},
+		}, map[string]*block.FileChunk{
+			payloadID + "/x": {ID: payloadID + "/x", Hash: hash, DataSize: 4096},
+		}
 	}
 
 	cases := []struct {

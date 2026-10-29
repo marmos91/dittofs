@@ -3,9 +3,9 @@
 # container of this image on the Docker host's Linux kernel: kernel NFS and CIFS
 # clients, root without sudo, GNU userland, bash 5.
 #
-# Pins follow the repo: Go 1.26, golangci-lint at the lint checks' version,
-# pjdfstest, pynfs, cthon04 and nfstest from flake.lock, the test tools the suites'
-# {tools} names.
+# Pins follow the repo: Go from go.mod's toolchain line, golangci-lint at the lint
+# checks' version, pjdfstest, pynfs, cthon04 and nfstest from flake.lock, the test
+# tools the suites' {tools} names.
 # The kernel is the Docker host's; Docker Desktop's has no NFS Kerberos
 # (rpcsec_gss_krb5) and no dm-flakey.
 
@@ -34,7 +34,7 @@ RUN git clone git://git.linux-nfs.org/projects/steved/cthon04.git /opt/cthon04/s
 
 FROM docker:29-cli AS dockercli
 
-FROM golang:1.26.10-bookworm
+FROM golang:1.27.3-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # protocol clients and services the suites use
@@ -62,7 +62,7 @@ COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 
 # golangci-lint at the lint checks' version, built with this Go.
-RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
+RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 \
     && mv /go/bin/golangci-lint /usr/local/bin/ && rm -rf /root/.cache/go-build /go/pkg/mod
 
 COPY --from=pjdfstest /opt/pjdfstest /opt/pjdfstest

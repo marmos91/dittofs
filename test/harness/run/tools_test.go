@@ -430,3 +430,77 @@ func pinDrift(lock, dockerfile []byte) []string {
 	}
 	return out
 }
+
+// The images build with the Go release the root module's toolchain line
+// names, as the workflows read it there, and so does the operator's module:
+// moving that one line moves them all. A golang tag or a toolchain line that
+// differs fails, and so does a golangci-lint pin other than the dtc image's.
+func TestImagesUseTheModuleToolchain(t *testing.T) {
+	read := func(path string) []byte {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	files := map[string][]byte{}
+	for _, f := range []string{"go.mod", "k8s/dittofs-operator/go.mod", "Dockerfile", "k8s/dittofs-operator/Dockerfile", "test/harness/docker/dev.Dockerfile"} {
+		files[f] = read(f)
+	}
+	for _, d := range toolchainDrift(files) {
+		t.Error(d)
+	}
+	for _, c := range []struct{ path, old, new string }{
+		{"k8s/dittofs-operator/Dockerfile", "golang:", "golang:0"},
+		{"k8s/dittofs-operator/go.mod", "toolchain go", "toolchain go0"},
+		{"Dockerfile", "FROM alpine", "FROM golang:0"}, // a later stage
+	} {
+		changed := maps.Clone(files)
+		changed[c.path] = bytes.Replace(files[c.path], []byte(c.old), []byte(c.new), 1)
+		if d := toolchainDrift(changed); len(d) != 1 || !strings.Contains(d[0], c.path) {
+			t.Errorf("%q for %q in %s gives %q", c.new, c.old, c.path, d)
+		}
+	}
+	want := regexp.MustCompile(`golangci-lint@(v[0-9.]+)`).FindSubmatch(files["test/harness/docker/dev.Dockerfile"])[1]
+	for f, pin := range map[string]string{
+		".github/workflows/tests.yml":   `(?m)^\s+version: (v[0-9.]+)$`,
+		"k8s/dittofs-operator/Makefile": `(?m)^GOLANGCI_LINT_VERSION \?= (v[0-9.]+)$`,
+	} {
+		if m := regexp.MustCompile(pin).FindSubmatch(read(f)); m == nil || !bytes.Equal(m[1], want) {
+			t.Errorf("%s does not pin golangci-lint %s", f, want)
+		}
+	}
+}
+
+// toolchainDrift says how each of files, by path, differs from go.mod's
+// toolchain release: another module's toolchain line, or the golang image
+// tag of any of a Dockerfile's stages.
+func toolchainDrift(files map[string][]byte) []string {
+	toolchain := regexp.MustCompile(`(?m)^toolchain go(\S+)\r?$`)
+	golang := regexp.MustCompile(`(?m)^FROM .*\bgolang:([0-9.]+)\b`)
+	m := toolchain.FindSubmatch(files["go.mod"])
+	if m == nil {
+		return []string{"go.mod has no toolchain line"}
+	}
+	want := string(m[1])
+	var out []string
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		re := golang
+		switch {
+		case path == "go.mod":
+			continue
+		case strings.HasSuffix(path, "go.mod"):
+			re = toolchain
+		}
+		got := re.FindAllSubmatch(files[path], -1)
+		if got == nil {
+			out = append(out, path+" names no Go release")
+		}
+		for _, g := range got {
+			if string(g[1]) != want {
+				out = append(out, fmt.Sprintf("%s has Go %s, but go.mod's toolchain is go%s", path, g[1], want))
+			}
+		}
+	}
+	return out
+}

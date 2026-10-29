@@ -52,12 +52,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # decision: the same Go release as tests.yml rather than 1.26.x, which
-      # resolves to whichever 1.26 the machine already has. Bump the pins together.
+      # decision: go.mod's toolchain release, as tests.yml has, rather than a
+      # floating 1.27.x, which resolves to whichever 1.27 the machine already has.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: false
 
       - name: Run self-test
@@ -123,7 +123,7 @@ jobs:
         if: steps.select.outputs.any == 'true'
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: false
 
       - name: Build each combination

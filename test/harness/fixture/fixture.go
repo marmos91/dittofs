@@ -246,7 +246,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	case err = <-done:
 	case <-ctx.Done():
 		_ = s.Stop()
-		<-done
+		<-done //nolint:errcheck // ctx's error is the one to return
 		err = ctx.Err()
 	}
 	if err == nil && f.Client != "" {

@@ -344,7 +344,7 @@ func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
 
 		close(release)
 		select {
-		case <-stopReturned:
+		case <-stopReturned: //nolint:errcheck // Shutdown's own deadline has passed, so Stop may return it
 		case <-time.After(5 * time.Second):
 			t.Fatal("Stop did not return after the handler finished")
 		}
