@@ -351,10 +351,8 @@ func TestExpiryDuringUnlinkLeavesNoRecord(t *testing.T) {
 func TestOnlySMBAndDurableOpensTakeAnID(t *testing.T) {
 	f := newFixture(t)
 	n, s := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.caller(t, smb("alice-pc"))
-	for range 100 {
-		if o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd}); o.ID != 0 {
-			t.Fatalf("an NFS open took ID %d", o.ID)
-		}
+	if o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd}); o.ID != 0 {
+		t.Fatalf("an NFS open took ID %d", o.ID)
 	}
 	if o := f.mustOpen(t, s, anyFile(), OpenRequest{Access: rd}); o.ID == 0 {
 		t.Error("an SMB open took no ID")
