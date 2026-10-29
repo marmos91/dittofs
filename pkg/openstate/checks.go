@@ -192,8 +192,9 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	}
 	// A name may be held by a deny mode still to be reclaimed, or not yet
 	// known in a shard not begun.
+	var frozen *DelayError
 	switch err := t.guarded(f.Shard); {
-	case errors.Is(err, ErrDelay), err != nil && what&(ChangeRemove|ChangeRename) != 0:
+	case errors.As(err, &frozen), err != nil && what&(ChangeRemove|ChangeRename) != 0:
 		return err
 	}
 	smb := who.Protocol == entity.ProtocolSMB

@@ -268,7 +268,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		return OpenResult{}, ErrNoReclaim
 	}
 	if _, begun := t.instance(k.shard); !begun {
-		return OpenResult{}, ErrDelay // its shard is being installed
+		return OpenResult{}, &DelayError{DelayFrozen} // its shard is being installed
 	}
 	var res OpenResult
 	err := t.step(f, func(e *entry) error {
@@ -280,7 +280,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		case o == nil || ended || !o.reconnects(who, m, t.d.Clock.Elapsed()):
 			return ErrNoReclaim
 		case o.unsaved:
-			return ErrDelay // its record is written again by the timer first
+			return &DelayError{DelayCommit} // its record is written again by the timer first
 		}
 		if o.persistent() {
 			was := o.Session

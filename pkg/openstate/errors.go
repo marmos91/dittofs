@@ -56,7 +56,10 @@ type DelayCause uint8
 
 const (
 	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled
-	DelayResources                       // a cap: pending proposals per node or per source, or recalls not yet sent
+	DelayResources                       // a cap: pending proposals per node or per source, recalls not yet sent, or a client's opens, locks, owners, waiters or grants
+	DelayFrozen                          // the shard is not served here yet: its start or takeover is still installing it
+	DelayCommit                          // the store is not landing a write: a durable open's record is still to be written again
+	DelayConflict                        // another numbered request of the same owner is between its check and its answer
 )
 
 func (e *DelayError) Error() string        { return ErrDelay.Error() }

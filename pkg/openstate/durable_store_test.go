@@ -271,8 +271,8 @@ func TestRenameIsWrittenAgain(t *testing.T) {
 	}
 	f.disconnect(t, a, s1)
 	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
-	if _, err := f.reconnect(a, o, m, s2); !errors.Is(err, ErrDelay) {
-		t.Errorf("a reconnect of the unsaved open: %v, want ErrDelay", err)
+	if _, err := f.reconnect(a, o, m, s2); delayedFor(err) != DelayCommit {
+		t.Errorf("a reconnect of the unsaved open: %v, want ErrDelay (DelayCommit)", err)
 	}
 	f.idle(0)
 	g := f.restart(t)
@@ -518,8 +518,8 @@ func TestReconnectWaitsForItsShard(t *testing.T) {
 	delete(g.shards, file.Shard)
 	g.cmu.Unlock()
 	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
-	if _, err := g.reconnect(a, o, m, s2); !errors.Is(err, ErrDelay) {
-		t.Errorf("a reconnect in a shard not begun: %v, want ErrDelay", err)
+	if _, err := g.reconnect(a, o, m, s2); delayedFor(err) != DelayFrozen {
+		t.Errorf("a reconnect in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
 	g.cmu.Lock()
 	g.shards[file.Shard] = sh

@@ -760,7 +760,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(repla
 	t.smu.Lock()
 	if _, busy := t.inflight[o]; busy {
 		t.smu.Unlock()
-		return ErrDelay
+		return &DelayError{DelayConflict}
 	}
 	replaces := false
 	if t.seqs.Unconfirmed(o) {

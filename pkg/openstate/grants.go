@@ -389,7 +389,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	}
 	ref, err := t.mintUnder(e, who.Client, f.Shard, StateGrant, func(StateRef) error {
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
-			return ErrDelay
+			return &DelayError{DelayResources} // offered none: the open stands without it
 		}
 		if t.granted[who.Client]++; t.granted[who.Client] == maxGrants {
 			out.full = append(out.full, who.Client)

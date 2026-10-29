@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -547,11 +548,11 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	f := newFixture(t)
 	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
 	file := in(9)
-	if _, err := f.open(c, file, OpenRequest{Access: rd}); !errors.Is(err, ErrDelay) {
-		t.Errorf("an open in a shard not begun: %v, want ErrDelay", err)
+	if _, err := f.open(c, file, OpenRequest{Access: rd}); delayedFor(err) != DelayFrozen {
+		t.Errorf("an open in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
-	if _, err := f.lock(c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrDelay) {
-		t.Errorf("a lock in a shard not begun: %v, want ErrDelay", err)
+	if _, err := f.lock(c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 1)}}); delayedFor(err) != DelayFrozen {
+		t.Errorf("a lock in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
 	if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 0 {
 		t.Errorf("shards listed by the refusals: %+v", rec.Shards)
@@ -776,8 +777,8 @@ func TestServedAgainWhileAFileIsStepped(t *testing.T) {
 		served := make(chan error, 1)
 		go func() { served <- f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)) }()
 		waitUsers(2) // the loss waits for the file's step
-		if _, err := f.open(c, in(s), OpenRequest{Access: rd}); !errors.Is(err, ErrDelay) {
-			t.Errorf("an open while the shard's old state goes: %v, want ErrDelay", err)
+		if _, err := f.open(c, in(s), OpenRequest{Access: rd}); delayedFor(err) != DelayFrozen {
+			t.Errorf("an open while the shard's old state goes: %v, want ErrDelay (DelayFrozen)", err)
 		}
 		type seen struct {
 			opens   int
@@ -880,12 +881,12 @@ func TestShardNotBegunDelaysIOAndChanges(t *testing.T) {
 	f.mustOpen(t, n, file, OpenRequest{Access: rd, Deny: wr})
 	f.Stop()
 	g := reopenServing(t, f.fs, f.clock, []ShardID{0})
-	if err := g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); !errors.Is(err, ErrDelay) {
-		t.Errorf("an anonymous write in a shard not begun: %v, want ErrDelay", err)
+	if err := g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); delayedFor(err) != DelayFrozen {
+		t.Errorf("an anonymous write in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
 	for _, what := range []ChangeMask{ChangeRemove, ChangeAttrs} {
-		if err := g.Checks().CheckChange(ctx, Caller{}, file, nil, what); !errors.Is(err, ErrDelay) {
-			t.Errorf("a change %b in a shard not begun: %v, want ErrDelay", what, err)
+		if err := g.Checks().CheckChange(ctx, Caller{}, file, nil, what); delayedFor(err) != DelayFrozen {
+			t.Errorf("a change %b in a shard not begun: %v, want ErrDelay (DelayFrozen)", what, err)
 		}
 	}
 }
@@ -966,4 +967,21 @@ func TestHeldReclaimOfMoreIsRefused(t *testing.T) {
 	if _, err := f.open(c, file, OpenRequest{Access: rd, Deny: wr, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reclaim of a wider deny than held: %v, want ErrNoReclaim", err)
 	}
+}
+
+// blockingRand is a Deps.Rand whose next read, once armed, waits until
+// released.
+type blockingRand struct {
+	armed    atomic.Bool
+	entered  chan struct{}
+	released chan struct{}
+	r        *seeded
+}
+
+func (b *blockingRand) Read(p []byte) (int, error) {
+	if b.armed.CompareAndSwap(true, false) {
+		close(b.entered)
+		<-b.released
+	}
+	return b.r.Read(p)
 }
