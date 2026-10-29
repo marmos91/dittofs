@@ -268,7 +268,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		return OpenResult{}, ErrNoReclaim
 	}
 	if _, begun := t.instance(k.shard); !begun {
-		return OpenResult{}, ErrDelay // its shard is being installed
+		return OpenResult{}, &DelayError{DelayFrozen} // its shard is being installed
 	}
 	var res OpenResult
 	err := t.step(f, func(e *entry) error {
@@ -280,7 +280,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		case o == nil || ended || !o.reconnects(who, m, t.d.Clock.Elapsed()):
 			return ErrNoReclaim
 		case o.unsaved:
-			return ErrDelay // its record is written again by the timer first
+			return &DelayError{DelayCommit} // its record is written again by the timer first
 		}
 		if o.persistent() {
 			was := o.Session
@@ -470,6 +470,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 				return err
 			}
 			ls.locks = append(ls.locks, LockRange{ByteRange{Offset: l.Offset, Length: l.Length}, l.Exclusive})
+			_ = t.charge(o.Client, cappedRanges, 1, false)
 		}
 		if e.pending == nil {
 			e.pending = pending
@@ -583,6 +584,12 @@ func lockNames(locks []LockRange) map[lockName]LockRange {
 }
 
 // adding is ls's locks with rs added, as add takes them, leaving ls as it is.
+//
+// ponytail: it clones and cuts the owner's whole list, O(ranges held) per
+// lock under the file's step, about 850µs at 16,384 ranges and 3.5 ms at the
+// 65,536 cap, which every other call on the file waits out. Switch to an
+// interval index per owner when an owner holding thousands of ranges on one
+// file shows up in a profile.
 func (ls *lockState) adding(rs ...LockRange) []LockRange {
 	n := lockState{owner: ls.owner, locks: slices.Clone(ls.locks)}
 	for _, r := range rs {

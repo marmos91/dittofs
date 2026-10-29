@@ -277,7 +277,7 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 	defer t.cmu.Unlock()
 	sh := t.shards[s]
 	if sh == nil {
-		return false, ErrDelay
+		return false, &DelayError{DelayFrozen}
 	}
 	if t.mustConnectLocked(who.Client) {
 		return false, ErrStaleClient
@@ -302,7 +302,7 @@ func (t *Table) guarded(s ShardID) error {
 	defer t.cmu.Unlock()
 	switch sh := t.shards[s]; {
 	case sh == nil:
-		return ErrDelay
+		return &DelayError{DelayFrozen}
 	case sh.guarded && sh.inGrace(t.d.Clock.Elapsed()):
 		return ErrGrace
 	}

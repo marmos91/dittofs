@@ -33,6 +33,12 @@ func (r Range) last() (l uint64, ok bool) {
 
 // span is the range of the bytes [first, last]: one reaching the last byte
 // is spelled with a Length of all ones.
+//
+// decision: [0, 2^64-2] has a Length of all ones too, which reads as
+// reaching the last byte, so a piece Minus or Join makes of exactly those
+// bytes holds one byte more: an unlock of only the last byte of a lock from
+// 0 to the end leaves the whole range held, failing closed. Spell ranges by
+// their last byte if a client is seen locking or unlocking that byte alone.
 func span(first, last uint64) Range {
 	if last == end {
 		return Range{first, end}

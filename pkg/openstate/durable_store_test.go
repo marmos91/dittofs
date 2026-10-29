@@ -234,7 +234,10 @@ func TestTimedOutLeaseIsWrittenAgain(t *testing.T) {
 	f.pass(t, coversDeadline+time.Second)
 	f.idle(0) // the timer's write is refused again
 	st.fail.Store(false)
-	f.clock.advance(f.recalledFor(file))
+	d := f.recalledFor(file)
+	f.clock.mu.Lock()
+	f.clock.now += d // firing no sweep, which would write the record again
+	f.clock.mu.Unlock()
 	if res, err := f.Opens().Open(ctx, b, file, OpenRequest{Access: rd, Want: GrantRead}); err != nil || res.Grant != nil {
 		t.Errorf("an open on the unsaved file: grant %+v, %v; want none offered", res.Grant, err)
 	}
@@ -268,8 +271,8 @@ func TestRenameIsWrittenAgain(t *testing.T) {
 	}
 	f.disconnect(t, a, s1)
 	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
-	if _, err := f.reconnect(a, o, m, s2); !errors.Is(err, ErrDelay) {
-		t.Errorf("a reconnect of the unsaved open: %v, want ErrDelay", err)
+	if _, err := f.reconnect(a, o, m, s2); delayedFor(err) != DelayCommit {
+		t.Errorf("a reconnect of the unsaved open: %v, want ErrDelay (DelayCommit)", err)
 	}
 	f.idle(0)
 	g := f.restart(t)
@@ -442,6 +445,7 @@ func TestInstalledLeaseCountsInTheBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.granted[a.Client] = maxGrants - 1
+	unchecked.Store(g.Table, true)
 	if err := g.Recovery().ServeShard(ctx, file.Share, file.Shard, instances.Add(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -514,8 +518,8 @@ func TestReconnectWaitsForItsShard(t *testing.T) {
 	delete(g.shards, file.Shard)
 	g.cmu.Unlock()
 	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
-	if _, err := g.reconnect(a, o, m, s2); !errors.Is(err, ErrDelay) {
-		t.Errorf("a reconnect in a shard not begun: %v, want ErrDelay", err)
+	if _, err := g.reconnect(a, o, m, s2); delayedFor(err) != DelayFrozen {
+		t.Errorf("a reconnect in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
 	}
 	g.cmu.Lock()
 	g.shards[file.Shard] = sh
@@ -1142,5 +1146,45 @@ func TestDisconnectOfNoSessionRefusesNoOpen(t *testing.T) {
 	f.disconnect(t, a, entity.SessionRef{})
 	if _, err := f.open(a, anyFile(), OpenRequest{Access: rd}); err != nil {
 		t.Errorf("an open naming no session after a disconnect naming none: %v", err)
+	}
+}
+
+// A client's first state in a shard is answered only once its shard mark
+// commits: a refused mark refuses the first open and the first lock with no
+// open, with the store's error, leaving no state, and each is granted once
+// the store writes again.
+func TestFirstStateWaitsForItsShardMark(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	for what, first := range map[string]func(c Caller, file FileKey) error{
+		"open": func(c Caller, file FileKey) error {
+			_, err := f.open(c, file, OpenRequest{Access: rd, Want: GrantRead})
+			return err
+		},
+		"lock": func(c Caller, file FileKey) error {
+			_, err := f.lock(c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}})
+			return err
+		},
+	} {
+		c := f.caller(t, nfs(what, 1, entity.NewUser()))
+		file := in(1)
+		st.fail.Store(true)
+		err := first(c, file)
+		st.fail.Store(false)
+		if !errors.Is(err, errWrite) {
+			t.Errorf("the first %s over a refusing store: %v, want the store's error", what, err)
+		}
+		if f.entryOf(file.ID) != nil {
+			t.Errorf("the refused first %s left state", what)
+		}
+		if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 0 {
+			t.Errorf("the refused first %s left the shard listed: %+v", what, rec.Shards)
+		}
+		if err := first(c, file); err != nil {
+			t.Errorf("the first %s once the store writes again: %v", what, err)
+		}
+		if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 1 {
+			t.Errorf("after the first %s the shards listed are %+v, want its own", what, rec.Shards)
+		}
 	}
 }

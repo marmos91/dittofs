@@ -39,6 +39,9 @@ type Table struct {
 	unsent    int                             // recalls started and not yet handed to the Sink
 	parked    map[entity.FileID]struct{}      // the files holding a disconnected open or an unsaved record, which the timer visits
 	ended     map[sessionKey]time.Duration    // the sessions each client ended here, from the Elapsed reading of their end, for a lease period
+	held      map[heldKey]int                 // what each client holds here of each capped kind
+	owners    map[ownerKey]int                // the lock states of each lock owner, which holds one per open or file it locks under
+	caps      [len(perClient)]int             // the most of each capped kind one client holds here
 
 	// smu guards the owner sequences. It is taken under a file's step or
 	// under nothing, and nothing is taken under it.
@@ -74,6 +77,75 @@ type Table struct {
 
 	order Order          // set by Start, before the timer runs
 	timer sync.WaitGroup // the timer and the steps it starts
+}
+
+// capped is a kind of state each client holds a bounded count of here.
+type capped uint8
+
+const (
+	cappedOpens capped = iota
+	cappedRanges
+	cappedOwners
+	cappedWaiters
+)
+
+// perClient is the most of each capped kind one client holds here.
+//
+// decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners and 1,024
+// waiters per client. BenchmarkHeapPerState measures about
+// 865 B an open, 25 B a lock range and 166 B a client, so a client at its caps
+// holds about 14 MB of opens and 1.6 MB of ranges. A request past one is
+// refused ErrDelay before it changes anything, so one client cannot spend
+// what the node holds for every client: an open and a lock take their places
+// at the check, before a break or a recall that can close another client's
+// disconnected durable open, and a request of the client racing them past
+// the check is refused instead. The caps bound memory, not time: one
+// owner's lock on one file costs O(ranges it holds) under the file's step, as
+// adding's ponytail says. SMB names one lock owner per open,
+// so an SMB client locking through every open it holds is refused at 4,096
+// such opens, by the owner cap, before the open cap's 16,384 binds. Each
+// table starts from these in its caps field, which a case lowers. Make them
+// settings if a measured client is refused below them.
+var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024}
+
+type heldKey struct {
+	client entity.ClientID
+	kind   capped
+}
+
+type ownerKey struct {
+	client entity.ClientID
+	name   string
+}
+
+// chargeLocked adds n of kind k to what client c holds; with refuse set, a
+// count past the cap is ErrDelay and changes nothing. The caller holds idx.
+// State of no client is counted against none.
+func (t *Table) chargeLocked(c entity.ClientID, k capped, n int, refuse bool) error {
+	if c == 0 || n == 0 {
+		return nil
+	}
+	if refuse && t.overLocked(c, k, n) {
+		return &DelayError{DelayResources}
+	}
+	key := heldKey{c, k}
+	if t.held[key] += n; t.held[key] <= 0 {
+		delete(t.held, key)
+	}
+	return nil
+}
+
+// overLocked reports whether n more of kind k would take client c past its
+// cap; the caller holds idx.
+func (t *Table) overLocked(c entity.ClientID, k capped, n int) bool {
+	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > t.caps[k]
+}
+
+// charge is chargeLocked, taking idx.
+func (t *Table) charge(c entity.ClientID, k capped, n int, refuse bool) error {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	return t.chargeLocked(c, k, n, refuse)
 }
 
 type fileStripe struct {
@@ -117,10 +189,10 @@ func New(d Deps) (*Table, error) {
 	t := &Table{
 		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},
 		revoked: map[refKey]revokedRef{}, granted: map[entity.ClientID]int{}, keys: map[clientKey]keyUse{}, recalling: map[entity.FileID]struct{}{}, recalled: map[entity.FileID]time.Duration{}, parked: map[entity.FileID]struct{}{}, ended: map[sessionKey]time.Duration{},
-		adopted: map[entity.ClientID]struct{}{},
-		seqs:    sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
+		adopted: map[entity.ClientID]struct{}{}, held: map[heldKey]int{}, owners: map[ownerKey]int{},
+		seqs: sequence.Book{}, inflight: map[sequence.Owner]struct{}{},
 		leases: map[entity.ClientID]time.Duration{}, known: map[entity.ClientID]known{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{}, fenced: map[entity.ClientID]time.Duration{},
-		shards: map[ShardID]*served{},
+		shards: map[ShardID]*served{}, caps: perClient,
 	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}

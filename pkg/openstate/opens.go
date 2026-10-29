@@ -372,6 +372,21 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
+		// A new open past its client's cap is refused here, before a break
+		// closes a disconnected open or a recall is started. Its place under
+		// the cap is taken at the check, so an open of the client racing it
+		// cannot take it between the check and the mint, and given back
+		// unless the open is minted into it.
+		if e.openOf(r.Owner, r.Stream) == nil {
+			if err := t.charge(who.Client, cappedOpens, 1, true); err != nil {
+				return err
+			}
+			defer func() {
+				if o.Ref == (StateRef{}) {
+					_ = t.charge(who.Client, cappedOpens, -1, false)
+				}
+			}()
+		}
 		granted, access, deny := o, r.Access, r.Deny
 		if up := e.openOf(r.Owner, r.Stream); up != nil {
 			if !t.mayUse(up, who) {
@@ -563,12 +578,18 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		if o.parked == 0 && t.endedLocked(o.Client, o.Session) {
 			return ErrStaleClient
 		}
+		ck := clientKey{o.Client, o.lease}
+		u := t.keys[ck]
+		if o.lease != (LeaseKey{}) && u.opens > 0 && u.file != e.file {
+			return ErrInvalid
+		}
+		// A new open's place under its client's cap was taken when it
+		// was judged; an installed open, minted disconnected, is counted
+		// here and never refused: it was granted before the restart.
+		if o.parked != 0 {
+			_ = t.chargeLocked(o.Client, cappedOpens, 1, false)
+		}
 		if o.lease != (LeaseKey{}) {
-			ck := clientKey{o.Client, o.lease}
-			u := t.keys[ck]
-			if u.opens > 0 && u.file != e.file {
-				return ErrInvalid
-			}
 			u.file, u.opens = e.file, u.opens+1
 			t.keys[ck] = u
 		}
@@ -603,6 +624,7 @@ func (t *Table) dropOpen(e *entry, o *open) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	delete(t.byID, o.ID)
+	_ = t.chargeLocked(o.Client, cappedOpens, -1, false)
 	if o.lease != (LeaseKey{}) {
 		ck := clientKey{o.Client, o.lease}
 		if u := t.keys[ck]; u.opens <= 1 {
@@ -749,7 +771,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(repla
 	t.smu.Lock()
 	if _, busy := t.inflight[o]; busy {
 		t.smu.Unlock()
-		return ErrDelay
+		return &DelayError{DelayConflict}
 	}
 	replaces := false
 	if t.seqs.Unconfirmed(o) {

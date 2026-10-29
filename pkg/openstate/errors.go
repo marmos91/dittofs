@@ -52,11 +52,24 @@ var (
 type DelayError struct{ Cause DelayCause }
 
 // DelayCause is why a call is to be retried.
+//
+// decision: each cause is one RFC 17's service carries on, so the adapters
+// answer it as that one: DelayRecall as DelayRecall; DelayResources, a cap
+// reached, as DelayResources, answered at once (NFS4ERR_DELAY,
+// STATUS_INSUFFICIENT_RESOURCES); DelayFrozen as DelayFrozen; DelayCommit,
+// a record the store has not landed, as DelayCommit; and DelayConflict
+// as DelayConflict, which only a numbered NFSv4.0 owner's request meets, so
+// it is NFS's alone and answered NFS4ERR_DELAY.
+// Split a cause here if an adapter is found needing to answer two of its
+// refusals apart.
 type DelayCause uint8
 
 const (
 	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled
-	DelayResources                       // a cap: pending proposals per node or per source, or recalls not yet sent
+	DelayResources                       // a cap: pending proposals per node or per source, recalls not yet sent, or a client's opens, locks, owners, waiters or grants
+	DelayFrozen                          // the shard is not served here yet: its start or takeover is still installing it
+	DelayCommit                          // the store is not landing a write: a durable open's record is still to be written again
+	DelayConflict                        // another numbered request of the same owner is between its check and its answer
 )
 
 func (e *DelayError) Error() string        { return ErrDelay.Error() }
