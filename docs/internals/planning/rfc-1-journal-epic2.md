@@ -260,34 +260,36 @@ stubs until epics 7 and 8 land, so every test fails at the fixture's first step.
 - *What review checks instead:* each test against its RFC row, and that each refusal is
   asserted against its named sentinel, never as "any error".
 
-**D5. The fault interface is RFC 8's, in `pkg/sim`, with the action kinds RFC 8 lists.**
+**D5. The fault interface is RFC 8's, in `pkg/sim`, with RFC 8's three results.**
 
 ```go
 type Fault interface {
-    At(op string, key []byte) FaultAction
+    At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
 
-type FaultAction struct {
-    Kind  FaultKind     // Pass, Fail, Delay, Drop, Tear, Reorder
-    Err   error         // Fail: the error returned
-    Delay time.Duration // Delay: waited on the schedule's clock
-    N     int64         // Tear: bytes kept
+type FaultAction struct { // a Schedule rule's action: the three results of At
+    Delay     time.Duration // waited on the schedule's clock first
+    Err       error         // fails the operation, or a torn write
+    TearAfter int           // > 0: the bytes a write keeps; sim.Lose: the call is lost
 }
 ```
 
-- *Why declared here:* `Fault` and `FaultAction` are the node's, not the journal's (RFC 8
-  §2.1): every fault seam implements `Fault`, including a fault-injecting store and a fake
-  `Content`. `FaultAction` is not a standard-library type, so it cannot be redeclared per
-  component the way `Clock` is, and `pkg/sim` is its one home.
-  [#3347](https://github.com/marmos91/dittofs/pull/3347) records that in RFC 8 §2.1; until
-  it merges, `develop`'s RFC 8 still shows a tuple result, which no code implements.
+- *Why declared here:* `Fault` is the node's, not the journal's (RFC 8 §2.1): every fault
+  seam consults one, a fault-injecting store and a fake `Content` included. Its results
+  are standard-library values, so a seam that may import only the standard library
+  declares it in its own package and a `Schedule` satisfies it as is. `FaultAction` is
+  only a `Schedule` rule's data, and `pkg/sim` is its home.
+- *Reordering is the crash's, never a fault's* (RFC 8 §2.1): which unsynced writes survive
+  is 2.1's crash, and the seam's `MarkReorder` narrows its draw to the writes of the files
+  it names.
 - *The seam's operation names:* `create`, `open`, `allocate`, `write`, `read`,
   `read_direct`, `sync`, `truncate`, `close`, `rename`, `remove`, `list`, `sync_dir`. The
-  key is the file name. These names are the seam's contract with every schedule, and are
-  documented on the seam.
-- *Not frozen until S2.* `FaultAction`, the kinds and the seam's operation names are
+  key is the file name, so a fault never sees a call's offset: a read that fails only on
+  a byte range is the seam's own (2.1). These names are the seam's contract with every
+  schedule, and are documented on the seam.
+- *Not frozen until S2.* `FaultAction`, its fields and the seam's operation names are
   reviewed with the filesystem service's owner at 2.15 before they freeze, since the
-  store's and the engine's fault seams implement the same interface. A change after S2
+  store's and the engine's fault seams consult the same interface. A change after S2
   goes through RFC 8 §2.1.
 - *`Schedule`* implements `Fault` from a seed and a list of rules (an op, a key pattern,
   a call count or probability, an action). The same seed gives the same actions in the
@@ -295,8 +297,9 @@ type FaultAction struct {
 
 **D6. A hold is test choreography in the seam, not a fault.**
 Many checks stop the journal at one call and act while it waits ("hold a `Fill` at the
-storage seam after it has found the extent absent"). A `Delay` on the test clock cannot do
-this, because advancing the clock to release it also fires the journal's own timers.
+storage seam after it has found the extent absent"). A fault's delay on the test clock
+cannot do this, because advancing the clock to release it also fires the journal's own
+timers.
 
 - *The API:* `seam.Hold(op, key) *Hold`, with `Reached() <-chan struct{}`, `Waiting() int`
   and `Release()`. A held call blocks until `Release`, on no clock.
@@ -440,22 +443,39 @@ Every conformance subtask also:
     undone. It then closes every handle, so the journal can be reopened on the same
     directory;
   - supports the variants RFC 28 §4.4 names: *lost writes* (the default), *torn* (the
-    last unsynced write kept up to byte n), and *reordered* (unsynced writes kept in a
-    seeded order other than the one issued, where the filesystem allows it);
+    last unsynced write kept up to byte n), and *reordered* (a seeded subset of the
+    unsynced writes survives; any subset is allowed, since outside data-journaling modes
+    a filesystem gives unsynced writes no order);
   - counts calls per operation and per file, and exposes the durable image of a file
     (what a crash would leave) for stale-read checks;
   - can serve reads of a named file from its durable image instead of the page cache
-    (`StaleReads(name)`), which the "re-append trusts no page cache" checks need.
+    (`StaleReads(name)`), which the "re-append trusts no page cache" checks need;
+  - can make the reads of a named file that overlap a byte range go bad, as a bad sector
+    does, until the range is cleared, while reads elsewhere in the file pass: `read`,
+    `read_direct` or both fail with `EIO`, or return the range with a bit flipped, from
+    the nth overlapping read on, so a record can verify at a scan and fail when read
+    again. Several ranges of one file can be bad at once. A fault cannot do this, since
+    `Fault.At` is given no offset (D5);
+  - `Abandon()`, a process killed with no power loss: every handle closes, unsynced
+    writes stay readable through `read` as a dead process's page cache, `read_direct`
+    serves only what a sync made durable, and a later `Crash()` still drops them.
 - **Done when:**
   - its unit tests, on a real temporary directory, show each discard rule: a synced write
     survives a crash, an unsynced one does not, a renamed file's directory entry survives
-    only after `SyncDir`, a torn write keeps exactly n bytes, and a reordering never
-    produces an order the filesystem cannot;
+    only after `SyncDir`, a torn write keeps exactly n bytes, a reordering can keep a
+    later unsynced write without an earlier one, and no variant loses a synced write;
+  - a read overlapping a bad range by one byte fails, one ending just before it passes,
+    and both pass once the range is cleared; a range bad for `read_direct` alone leaves
+    `read` passing; a range going bad from read n returns the original bytes to the
+    reads before it;
+  - after `Abandon`, `read` returns an unsynced write and `read_direct` does not;
   - each test reverts the matching rule in the seam and watches the test fail.
 - **Rules:**
   - 1, 10: the seam is fully implemented and its tests can fail.
   - 8: wraps a real directory; nothing is in memory but the record of unsynced operations.
   - 12: its first consumer within the epic is 2.2's fault wiring; its tests use it at once.
+    The bad range lands with 2.13b's "a failed read is not damage", its first user, and
+    its flipped form with "an ended segment is emptied once".
 
 ### 2.2 Fault, schedule and the test clock
 
@@ -467,13 +487,17 @@ Every conformance subtask also:
       `Now` moves by d, `Elapsed` does not, and no timer fires. `After` fires only on
       `Advance`. `Jump` is beyond RFC 8 §2.1's `TestClock`, and is added there with the
       first check outside the journal that needs it;
-    - `Fault`, `FaultAction`, `FaultKind` (D5);
-    - `Schedule`: seeded, rule-driven, implementing `Fault`; `Delay` waits on the
+    - `Fault`, `FaultAction`, `Lose` (D5);
+    - `Schedule`: seeded, rule-driven, implementing `Fault`; a delay waits on the
       schedule's clock.
-  - **The seam consults its `Fault`** before every operation and applies the action:
-    `Fail` returns the error (`EIO`, `ENOSPC` or any given), `Drop` reports success and
-    discards the effect, `Tear` keeps the first n bytes, `Delay` waits, `Reorder` marks the
-    write for 2.1's reordering.
+  - **The seam consults its `Fault`** before every operation and applies its results (RFC
+    8 §2.1, RFC 1 §1.3): an error alone fails the call (`EIO`, `ENOSPC` or any given); a
+    loss (`tearAfter` < 0) reports success, a lost write staying readable but never
+    durable and a lost sync or `sync_dir` leaving what was pending still pending; a tear
+    (`tearAfter` > 0) keeps the first n bytes; a delay waits. A tear of any op but
+    `write`, or a loss of any but `write`, `sync` and `sync_dir` or with an error, is a
+    mistake in the test: the seam panics, naming the op and the action. Which unsynced
+    writes survive is 2.1's crash, narrowed by `MarkReorder` (D5).
   - **Holds** (D6): `Hold`, `Reached`, `Waiting`, `Release`.
 - **Done when:**
   - the same seed and rules give the same actions over the same calls, and a different
@@ -482,13 +506,14 @@ Every conformance subtask also:
     fires timers due by 105 s;
   - a `Jump`, forward or back, moves `Now` by exactly its argument, leaves `Elapsed`
     where it was, and fires no timer;
-  - each action kind is observable through the seam on a real file, including a failed
+  - each result is observable through the seam on a real file, including a failed
     `sync`, a failed `sync_dir` and a failed `read_direct`, the three RFC 1 §1.3 names;
   - a held call blocks until `Release`, and `Waiting` counts the blocked calls.
 - **Rules:**
   - 1, 10: each property above is a test that a plausible bug fails.
   - 9: `decision:` markers for D5 at `FaultAction` and for D6 at `Hold`.
-  - 12: `TestClock` lands with `Delay`, its first consumer; `Fault` with the seam.
+  - 12: `TestClock` lands with the schedule's delay, its first consumer; `Fault` with the
+    seam.
   - `pkg/sim` is node-wide (RFC 8 §2.1) and imports nothing of the journal, so a component
     outside it (open state, which keeps a private fake clock today) takes `TestClock`
     as it is, with no wait on the rest of this epic.
@@ -520,8 +545,9 @@ Every conformance subtask also:
     (a no-op on content), `Crash` with the set of operations a returned `Sync` covered,
     and `Reopen`;
   - after a crash, the model holds exactly what RFC 28 §4.4 allows: everything a returned
-    `Sync` covered, and for every other write either all of it or none of it, as a set of
-    acceptable states the comparison accepts;
+    `Sync` covered, and for every other write all of it or none of it, a write split at
+    a segment cap a prefix of its bytes cut anywhere, as a set of acceptable states the
+    comparison accepts;
   - `Compare(j)`: reads every file of the model through a journal handle and reports the
     first difference in bytes, `missing` extents, offloaded bits or `Since` output.
 - **Done when:**
@@ -542,10 +568,22 @@ Every conformance subtask also:
     filesystem, the seam with an empty schedule, a `TestClock`, the profiler, `Init` and
     `Open` with `WithStorage`, `WithClock` and settings of two append streams and a 1 MiB
     segment cap (D8). It attaches two shares on request and offers `Crash()` (seam crash,
-    then reopen with the recorded identity and floor), `Reopen()`, `Advance`, `Jump` and
-    `Now`. Every failure of its own starts with `fixture:`, and its assertion helpers
-    report a stub as `stub: <call>` (D4).
+    then reopen with the recorded identity, floor and sync marks, the marks read from
+    `Stats().SyncMarks` after each returned `Sync`, as the group commit records them, RFC
+    28 §3.3), `Reopen()`, `Advance`, `Jump` and `Now`. Every failure of its own starts
+    with `fixture:`, and its assertion helpers report a stub as `stub: <call>` (D4).
   - **`internal/core`:** the unexported segment-cap field and `SetSegmentCap` (D8).
+  - **Stubs for what #3518 and #3511 add to RFC 1 §3**, each call returning
+    `ErrNotImplemented` and each field zero: `SyncMark`, `Stats.SyncMarks` and `Open`'s
+    `marks []SyncMark` (#3518); `SegmentRange`, `Journal.Acknowledge`,
+    `AcknowledgeUnreadable` and `Stats.SuspectSegments` (#3511); `Handle.DropSuperseded`
+    (#3511) and `Handle.DropOlder` (#3518). The surface is frozen at S1, so they follow
+    epic 1's change process: the team agrees, `rfc_signatures_test.go` and every caller
+    of `Open` change in the same commit, and a line goes to the epic 1 plan's §8. They
+    land once both RFC PRs have merged, before the fixture passes sync marks and before
+    any 2.13b test calls them, so the red suite keeps compiling. The two PRs conflict
+    (`DropSuperseded` against `DropOlder`), so the names follow RFC 1 §3 as merged, and
+    one may replace the other.
   - **Registration** (D1, D2): the `journal_conformance` tag, the `journal-conformance`
     suite and `journal` group in `test/suites.yaml`, the tag on `lint-go`'s vet line, and
     `test/journalv2/known.yaml`.
@@ -556,7 +594,8 @@ Every conformance subtask also:
 - **Rules:**
   - 4: every test runs under the profiler through the fixture.
   - 6: the known list exists from this subtask on.
-  - 11: no exported symbol is added to `journalv2` (D8).
+  - 11: no exported symbol is added to `journalv2` for the fixture's own needs (D8); the
+    stubs above are RFC 1 §3's.
   - 12: the fixture and the suite land with their first tagged tests, 2.5b's (one PR with
     2.5b is fine); 2.7–2.13b depend on this subtask only.
 
@@ -659,12 +698,12 @@ Every conformance subtask also:
 ### 2.10 RFC 1 Group B, part 2: reclamation, bounds and concurrency
 
 - **Owner:** B. **Depends on:** 2.5a.
-- **Deliverables:** thirteen checks of RFC 1 §9.4 Group B: descriptors, coalescing, index
+- **Deliverables:** fourteen checks of RFC 1 §9.4 Group B: descriptors, coalescing, index
   bound refuses, pinned segments bounded, pins bounded across offers, a failed window does
-  not wedge, sync failure, reclaim not starved, removals do not wait on offload, no
-  deadlock (the public half: concurrent readers, writers, fills, repack and release finish
-  under `-race` with no call blocked past a bound of virtual time), background joined,
-  removal records dropped per extent, repack aimed at a share.
+  not wedge, sync failure, read-only stops the drain, reclaim not starved, removals do not
+  wait on offload, no deadlock (the public half: concurrent readers, writers, fills,
+  repack and release finish under `-race` with no call blocked past a bound of virtual
+  time), background joined, removal records dropped per extent, repack aimed at a share.
 - **Not here:** "bounds" (comparison counts per lookup, epic 4) and the lock-order recorder
   half of "no deadlock" (epic 8). Both need internal instrumentation (§6).
 - **Done when:** as 2.7. Checks at 10⁴–10⁶ extents or 1,000 segments use the 1 MiB cap
@@ -672,6 +711,9 @@ Every conformance subtask also:
 - **Rules:**
   - 4: the descriptor bound is read from `Stats` and from the profiler's descriptor count.
   - 5: concurrency runs under `-race`.
+  - 12: the seam's schedule gets a rule failing every `create`, `allocate`, `write`,
+    `truncate`, `rename`, `remove`, `sync` and `sync_dir` with `EROFS` from call n on,
+    reads passing, in the same change as "read-only stops the drain", its first user.
 
 ### 2.11 RFC 1 Group C: recovery
 
@@ -684,8 +726,8 @@ Every conformance subtask also:
   to name, a cancelled call changes nothing or completes (the second leg cancels a
   `WriteAt` held at the seam after its append), restamp after a lost store, forget leaves nothing to settle, unclaimed tag
   reported, a file is its share's (the planted record under a second tag built with
-  `raw`), clone target survives a crash, header-only records are never failed, a loss
-  survives restart.
+  `raw`), clone target survives a crash, header-only records are re-appended outside a
+  read-only journal, a loss survives restart.
 - **Not here:** "stranded tag salvaged after serving" needs the store, a recovery import
   and the master key: epic 11 (§6).
 - **Done when:** as 2.7.
@@ -711,7 +753,13 @@ Every conformance subtask also:
     over, against the share and the journal; `ENOSPC` from the filesystem below the
     journal's maximum, distinct from `ErrNoSpace`; a sync that fails then succeeds on the
     same stream; truncate, delete, release, mark and seal at the maximum; one segment
-    retired by eviction and by repack, footprint falling once and never below zero;
+    retired by eviction and by repack, footprint falling once and never below zero; a
+    file deleted and settled by `Settle(id, deleteVersion)` while its old bytes lie in
+    segment S, the spare pool at its target so S is unlinked rather than recycled, the
+    schedule failing every `remove` of S with `EIO`, then the segment holding the delete
+    repacked (RFC 28 §2.2, RFC 1 §7.2): `CallsFor("remove", S)` is at least 1, so an
+    unlink was tried and, by the schedule, failed (the seam counts a call before it
+    consults the fault), and after a crash and reopen the file still does not exist;
   - **opening:** an empty directory, one holding only a `format` file, one from an older
     format, and `Init` on each.
 - **Done when:** as 2.7. Each test's name says its case (`TestEdge_ThreeWaySplit`).
@@ -735,18 +783,31 @@ Every conformance subtask also:
 
 - **Owner:** A. **Depends on:** 2.5a, 2.13a.
 - **Deliverables:**
-  - **RFC 28 §4.2 Group A**, nine checks: corrupt dirty, corrupt offloaded, directory
+  - **RFC 28 §4.2 Group A**, sixteen checks: corrupt dirty, corrupt offloaded, directory
     entry survives, footer is not authoritative, unmark clears, write carries its mtime,
-    unproven tail verified at open, failed directory sync is a failed window, a zero slot
-    is not the end. (Directory flush on NTFS is parked, §6.)
+    unproven tail verified at open, a zero slot is not the end, a failed read is not
+    damage, unproven tail with a failed re-read, failed window with a failed read,
+    unreadable is not empty, acknowledging a range, an unread file keeps its order,
+    unread offloaded, a dead unread record. An unread record is the seam's bad range
+    (2.1). Four are split rows whose engine half is epic 11's (§6), and whose journal half
+    is here: in "a failed read is not damage", up to the open failing and the record
+    reading back with no reopen; in "acknowledging a range", `Acknowledge`,
+    `AcknowledgeUnreadable` and `DropSuperseded` called as the engine would, their loss
+    records, the loss generation, repack unlinking the segment and a crash during each;
+    in "an unread file keeps its order", the failed `Sync`, the failed reads and the file
+    once the record reads; in "unread, offloaded", `missing` with no loss record.
+    (Directory flush on NTFS is parked, §6.)
   - **Group B**: segment reclaimable.
-  - **Group C**, the 22 rows that need no encoder, plus the refusal halves of three
+  - **Group C**, the 23 rows that need no encoder, plus the refusal halves of three
     split rows (D9): rebuild, sources agree, synced damage is not a torn tail, bits
     survive restart, reseed by version, trailer torn, truncated sealed segment, foreign
     segment, version floor, stale extent, unidentified directory, journal gone, spares are
     re-adopted, a spare is whole or absent, retired segments are recycled, a recycled
     segment's old catalog is never read, interrupted `Init`, unknown version, neighbours
-    survive, a scan resynchronises, torn tail cut off, a bad copy does not mask a good one;
+    survive, a scan resynchronises, torn tail cut off, a bad copy does not mask a good one,
+    an ended segment is emptied once (its two reopens follow `Abandon` and `Crash`, the
+    record failing only when read for the copy is a range flipped from its second read
+    on, and the second target's failed sync is the second refusal in a row of RFC 1 §5.4);
     and the refusal halves of kind values (kinds 15 and 128 fail the open), segment header
     and seal marker (a foreign header is foreign, not damaged; a seal marker copied into a
     payload does not stop a scan), and `format` file (55 or 57 bytes, a bad checksum and
@@ -754,10 +815,16 @@ Every conformance subtask also:
     or new whole). "Record layout" and "trailer" are encoder goldens, epic 3's.
   - **RFC 28 §4.4, injected systematically:** a bit flipped in turn in every region (record
     header and payload, catalog entry, footer, trailer, segment header, seal marker,
-    `format`), each with its required outcome; lost writes at every sync point of every
-    operation that syncs; torn writes cut at every byte of the final record and of the
-    trailer; reordered unsynced writes. After each, the reopened journal is compared with
-    the reference model. Plus the table of edits from outside, one test per row.
+    `format`), each with its required outcome (a record header §3.3's scan finds corrupt
+    in a segment with no catalog: reported damaged, the loss generation raised once and
+    `Stats.Recovery` flagged, compared with the model only after `DropOlder`); lost
+    writes at every sync point of every operation that syncs, `Open`'s own included; torn
+    writes cut at every byte of the final record and of the trailer; reordered unsynced
+    writes. After each, the reopened journal is compared with the model's acceptable
+    states and a second clean reopen holds the same index as the first; after each lost,
+    torn or reordered write it also reports no damaged segment, no loss the model does not
+    expect and an unchanged loss generation (RFC 28 §3.3). Plus the table of edits from
+    outside, one test per row.
 - **Done when:** as 2.7.
 - **Rules:**
   - 8: every flipped bit and every crash is applied to a real file.
@@ -788,7 +855,7 @@ Every conformance subtask also:
   `t.Skip`, no panic, no real-time wait outside the profiler's teardown (D12), every
   check on two files, two streams and, where relevant, two shares, no clock reached but
   the fixture's (D10), and, once #3391 has landed, a `message:` on every `known.yaml`
-  entry (D1). It freezes `FaultAction`, its kinds and the seam's operation names (D5).
+  entry (D1). It freezes `FaultAction`, its fields and the seam's operation names (D5).
 - **Done when:**
   - `dt run journal` is green on `develop`'s CI, with every conformance test graded
     `known`;
@@ -820,6 +887,15 @@ Every other row in D3's scope lands as a test in this epic (§5). These do not, 
 | RFC 1 §9.7 "report cost" | epic 9 | needs offload over the index's counters |
 | RFC 8 §15 "one clock", node half | epic 11 | two `TestClock`s across every component of a node; the journal's half is 2.5b |
 | RFC 0 §1.4 "clock bound" | epic 11 | a wait on another clock's timeout; the journal has none (2.5b) |
+| RFC 28 A "a failed read is not damage", engine half | epic 11 | the engine serving other journals' shares and attaching the refused ones with no restart; the journal's half is 2.13b |
+| RFC 28 A "acknowledging a range", engine half | epic 11 | `check=true`, `journal_range_unreadable` and a file read from metadata need the operator command, the alert and the store, and the unnamed range's drops are the engine's reconcile against metadata; the journal's half is 2.13b |
+| RFC 28 A "an unread file keeps its order", `applied` half | epic 11 | `applied` is the engine's metadata version, held below the unread record by the engine's commits; the journal's half is 2.13b |
+| RFC 28 A "unread, offloaded", **Remote** half | epic 11 | resolving `missing` as **Remote** is the engine's residency (RFC 0 §4.2); the journal's half is 2.13b |
+
+**A known limit, not a row:** the seam simulates a crash above the filesystem, so a
+filesystem's own bug after a rename or a directory sync never shows. RFC 1 §9.3 asks for
+every supported filesystem, and CI runs ext4 only; no tier provisions another yet
+(parked, #3491).
 
 ---
 
@@ -948,11 +1024,11 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 | 2.7 Group A part 1 | M | seventeen checks |
 | 2.8 Group A part 2, counted | M | nineteen checks, two counted checks |
 | 2.9 Group B part 1 | M | fifteen checks |
-| 2.10 Group B part 2 | M | thirteen checks, some at 10⁶ extents |
+| 2.10 Group B part 2 | M | fourteen checks, some at 10⁶ extents |
 | 2.11 Group C | M | eighteen checks |
 | 2.12 edge cases | L | about thirty cases |
 | 2.13a `raw` | S | byte builders and their field tests |
-| 2.13b RFC 28 checks, damage | L | thirty-five checks and the systematic sweeps of RFC 28 §4.4 |
+| 2.13b RFC 28 checks, damage | L | forty-three checks and the systematic sweeps of RFC 28 §4.4 |
 | 2.14 traceability | S | one map, one parser of the RFC sections |
 | 2.15 review | M | every test against its row |
 
