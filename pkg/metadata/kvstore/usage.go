@@ -168,8 +168,9 @@ const foldPartyKeys = 7
 //
 // ponytail: the guard on the shard record is meant to make a former
 // primary's fold conflict with the takeover that rewrites the record, but
-// nothing writes shard records yet, so on one node it guards nothing. It
-// protects once a takeover writes SH‖shard.
+// only a start's incarnation raise writes shard records yet, and on one node
+// no former primary folds beside it, so it guards nothing. It protects once a
+// takeover writes SH‖shard.
 func (c Capacity) FoldUsage(ctx context.Context, share entity.ShareID, shard uint64) (more bool, err error) {
 	n := max(1, c.s.k/(1+foldPartyKeys))
 	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {

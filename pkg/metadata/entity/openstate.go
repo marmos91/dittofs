@@ -43,6 +43,21 @@ type ShardID uint32
 
 const ShardLimit ShardID = 1 << 24
 
+// Shard is a shard's durable record, of which only two fields are built: the
+// shard incarnation, raised each time a node or journal begins serving the
+// shard as primary, which the write verifier and open state read, and the
+// grace instance, the incarnation the shard was first served under after it
+// last lost its open state. A stateid carries the grace instance's low 5 bits.
+//
+// ponytail: the record's cluster fields (primary, replicas, placement) are
+// not built, so codec v1 holds these two alone. Add them, as a v2 decoding
+// v1, when the first cluster code reads one.
+type Shard struct {
+	ID            ShardID
+	Incarnation   uint64
+	GraceInstance uint64
+}
+
 // ClientRecord is a client's durable record: one per client instance, found
 // by ID and by its protocol and name. Each field is one open state decides
 // on; protocol detail it never interprets is the adapter's, in Adapter. The
