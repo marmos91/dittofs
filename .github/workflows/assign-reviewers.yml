@@ -29,7 +29,7 @@ jobs:
           case "$AUTHOR" in
             didimelli)      pool="rif viquitorreis marmos91" ;;
             llucian-iws)    pool="rif viquitorreis simonebaracchi" ;;
-            rif)            pool="llucian-iws viquitorreis marmos91" ;;
+            rif)            pool="llucian-iws viquitorreis marmos91 didimelli" ;;
             viquitorreis)   pool="rif simonebaracchi llucian-iws" ;;
             marmos91)       pool="simonebaracchi llucian-iws didimelli" ;;
             simonebaracchi) pool="marmos91 llucian-iws viquitorreis" ;;
