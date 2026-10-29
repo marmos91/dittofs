@@ -8,7 +8,7 @@ of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through tha
 
 **Status:** draft for review. Piece 1 has merged (#3256), and so has the store's first PR (#3329);
 pieces 2–8 are in review (#3330, #3336, #3341, #3344, #3363, #3400, #3417), with the store's side in
-#3335, #3362 and #3399.
+#3335, #3362 and #3399. The RFC 14, 17 and 22 edits this plan names go in #3414.
 The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
 before these links resolve to them.
 
@@ -56,10 +56,10 @@ nothing switches over until stage 5.
 - Adapters never import it (RFC 20 §2.3). The service maps each `openstate` error once to RFC 17
   §4.3's neutral errors. For that mapping to be total, every `ErrDelay` the table returns is a
   `DelayError` naming its cause, one the service maps to one of RFC 17 §4.3's `Delay…` values; a
-  bare `ErrDelay` would reach an adapter as a server fault (RFC 20 §7.3). Pieces 1–7 left some
-  paths bare; piece 8 names their causes, after RFC 17's: `DelayFrozen` for a shard not yet served
-  here, `DelayCommit` for a durable record still to be written again, and `DelayConflict` for an
-  owner's own numbered request in flight. A test fails on any bare `ErrDelay` return.
+  bare `ErrDelay` would reach an adapter as a server fault (RFC 20 §7.3). Each cause is named after
+  RFC 17's: `DelayFrozen` for a shard not yet served here, `DelayCommit` for a durable record still
+  to be written again, and `DelayConflict` for an owner's own numbered request in flight. A test
+  fails on any `ErrDelay` not wrapped in a `DelayError`.
 
 **D2. Single node first, cluster rules behind seams.** Every rule RFC 14 marks "(cluster)" is out of
 stage 1: one lease owner per client (§4.1), handover and batch moves (§10) with
@@ -84,7 +84,8 @@ shard under instance zero, which nothing can reach before stage 2.
 - the shape of `ValidateReconnect`.
 
 Not ported: the manager, its blocking waits, its grace manager, lock persistence, and its deadlock
-detector (plan §5 Q2). Route B skips RFC 17 §9's slice 3 shim (its `decision:`): the filesystem
+detector: §2.10 decides against deadlock detection, so smbtorture's open-brlock-deadlock, which
+expects a refusal, is recorded as a known failure. Route B skips RFC 17 §9's slice 3 shim (its `decision:`): the filesystem
 service is built against the seven views from its first piece, and `pkg/metadata/lock` stays only
 under today's server until stage 5, then is deleted. Stage 4 carries none of its lock persistence
 over.
@@ -127,8 +128,9 @@ Several files: their steps in `FileID` order, then fold admission, then accept l
   reply that triggered it (RFC 20 §6.2).
 
 The pure parts that port existing tests are leaf packages tested alone: `ranges`, `conflict`,
-`grantfsm` and `sequence`. §11.1's tree also lists `deadline/` and `grace/`; they are small and the
-table is their only caller, so they stay in `pkg/openstate`.
+`grantfsm` and `sequence`. §11.1's tree also lists `deadline/` and `grace/`: grace stays in the
+table, and there is no deadline heap: a 10 s sweep (`sweepEvery`'s `ponytail:`) fires each deadline
+up to one interval late, so stage 2's fake-clock cases advance past one interval.
 
 **D5. Open state reports to the service through RFC 14's `Sink`.**
 - Delivery to adapters is the service's (RFC 17 §3.2); the table sees only the `Sink`.
@@ -147,9 +149,10 @@ table is their only caller, so they stay in `pkg/openstate`.
   func (t *Table) Stop()
   ```
 - The service's own `Start` then calls `Recovery.ServeShard(ctx, share, s, instance)` for each
-  shard this node serves (§11.2): it reads the shard's grace instance, which the node's start
-  transaction raised, installs the shard's persistent opens (its clone-source opens from piece
-  8) before anything there is answered, enters grace and arms the shard's timers.
+  shard this node serves (§11.2), passing the shard's grace instance, which the node's start
+  transaction raises (piece 0's follow-up). The table installs the shard's persistent opens (its
+  clone-source opens from piece 8) before anything there is answered, enters grace and arms the
+  shard's timers.
 
 **D6. Time through the shared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
 break, one lease for NFS) and NFSv4 waiter polls are `Deps.Clock.Elapsed` readings, monotonic;
@@ -166,7 +169,7 @@ last name.
 
 ## 3. Pieces, in build order
 
-Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (plan §4), each after the
+Each piece lands as its PR into `feat/storage-v2`, with its tests (plan §4), each after the
 one before it. A row may be split: its first piece lands the cases it can reach, and the piece that
 completes it is named beside it, e.g. L27 (→6). The piece an arrow names lists the row again in its
 own "Done when", so the row's completion is gated there. "Done when" means every listed row passes
@@ -212,7 +215,7 @@ Where the built calls still differ from §11.1, one store PR after piece 7 close
 
 Done when: `kvstoretest` covers each call above.
 
-**Piece 1: Skeleton and state references** (§2.11, §3, §11; 1 PR, ~1,500 lines)
+**Piece 1: Skeleton and state references** (§2.11, §3, §11; #3256, merged)
 Builds: the errors, the per-file table and its step, the file map's 256 stripes; `StateRef`
 (`Type`, `Shard`, `Instance`, `Token`, `Seq`) and an index keyed by shard and token; a miss is bad state until
 piece 6 adds stale; the stateid seqid check (`ErrOldState`); every random bit from `Deps.Rand`.
@@ -220,7 +223,7 @@ The wire layout is `pkg/vfs`'s (RFC 17 §3.4). `GrantID` and `WatchID` arrive wi
 watches that use them.
 Done when: L26, L27 (→6), L49 (→6), L56 (→8), L57 (→8) pass.
 
-**Piece 2: Clients and leases** (§2.1, §2.9, §4.1, §4.3; 1–2 PRs, ~2,000 lines)
+**Piece 2: Clients and leases** (§2.1, §2.9, §4.1, §4.3; #3330)
 Builds: `Start`, `Stop` and the `Sink`; `Clients.Propose/Connect/Record/AddSession/Renew/Expire/Destroy`;
 the `ClientEnded` event. `Propose` holds a client pending confirmation at the node that answered
 it, capped per node and per source address (§2.9), and `Connect` confirms it; an NLM host's
@@ -230,21 +233,21 @@ compare-and-swap.
 Done when: L25 (→7), L38 (→4), L41, L60 (→8), L64, L65 pass: `ErrStopped` before `Start` and
 after `Stop`, and no `Sink` call under a lock.
 
-**Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; 2 PRs, ~2,500 lines)
+**Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; #3336)
 Builds: `Opens.Open/Downgrade/Update/Close/Durable`, `Checks.CheckIO/CheckChange`, the `Closed`
 event, which every later piece that closes an open itself also raises. Deny modes at open;
 open-unlinked kept alive; delete on close; open children refuse an SMB rename or delete of their
 directory.
 Done when: L6, L7 (→7), L14 (→7), L21 (→7), L23, L34, L36, L66, L67 pass.
 
-**Piece 4: Byte-range locks and waiters** (§2.3, §2.8, §2.10, §4.5; 2 PRs, ~3,000 lines)
+**Piece 4: Byte-range locks and waiters** (§2.3, §2.8, §2.10, §4.5; #3341)
 Builds: `Locks.Lock/CancelLock/WaitAnswered/TestLock/Unlock/ReleaseLockOwner`, `Opens.ConfirmOpen`,
 the `LockWaitOver` event. `Lock` takes every range of a request, each shared or exclusive, in one
 step, all or none, and only a single range may wait (§11.3, RFC 17 §5.11); FIFO waiters with no
 adapter timeout; NFSv4.0 owner sequences and their confirm; NLM.
 Done when: L17 (→6), L22 (→6), L38, L39, L44 (→5), L58 (→6), L68 pass.
 
-**Piece 5: Caching grants and recalls** (§2.4, §5; 2 PRs, ~2,500 lines)
+**Piece 5: Caching grants and recalls** (§2.4, §5; #3344)
 Builds: `Grants.AckRecall(ctx, who, g, to)`, `Clients.Revoke/ChannelDown/Rebind`,
 `Recovery.TestState/FreeState`, the `RecallGrant`, `RecallAny` and `Revoked` events. Grants offered
 at open; a return is `AckRecall` to `GrantNone`; recalls with deadlines; revocation into the
@@ -252,14 +255,14 @@ revoked set; no grant for a lease period after a revoke, nor while the back chan
 (`ChannelDown` until `Rebind`); the per-client grant budget.
 Done when: L5, L5b, L16, L33, L40, L44, L45, L50 (→6), L51, L62, L63 pass.
 
-**Piece 6: Grace and reclaim** (§4.2, §4.4, §8, §9.2; 1–2 PRs, ~2,000 lines)
+**Piece 6: Grace and reclaim** (§4.2, §4.4, §8, §9.2; #3363)
 Builds: `Recovery.ServeShard/ReclaimComplete`, `Opens.Renamed`. The refusal of a shard not begun
 (D2); grace per shard after a restart, reclaims only, early end; every client a shard's records
 name told to reclaim (`Clients.ByShard`); a rename keeps an open's name for its deferred unlink.
-Done when: L2, L3, L3b, L17, L22, L24 (the pool case waits for RFC 24's `Budget`), L27, L29, L29b,
-L47 (→7), L49, L50, L58 pass, L3b as a direct case of two reclaims rather than §12's model fuzzing.
+Done when: L2, L3, L3b, L17, L22, L24 (→RFC 24's `Budget`, after stage 1: its pool case), L27,
+L29 (→stage 2: its restart case needs `RaiseIncarnations`), L29b, L47 (→7), L49, L50, L58 pass, L3b as a direct case of two reclaims rather than §12's model fuzzing.
 
-**Piece 7: SMB durable and persistent opens** (§8.1, §9.2; 1 PR, ~2,000 lines)
+**Piece 7: SMB durable and persistent opens** (§8.1, §9.2; #3400)
 Builds: `Opens.Reconnect/Flushed`, `Clients.Disconnect`, the `GraceEnded` event. Timeouts,
 disconnect and reconnect, `Flushed`'s loss; persistent opens installed from the store's per-shard
 durable-open index (`S‖id‖do‖shard`) before the shard answers anything; grace's end closes every
@@ -267,10 +270,12 @@ durable record nobody reclaimed, then raises `GraceEnded`, and a new primary rel
 before.
 Done when: L7, L14, L15 (→8), L21, L25, L30, L30b (→8), L43, L47, L48 (→8) pass.
 
-**Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; 1 PR, ~1,500 lines)
+**Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; four PRs, split from #3417)
 Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/CloneClose`, the
 `Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); channel sequence,
-create and lock replay and app instance. The store's clone already writes the source's hold in its
+create and lock replay and app instance. It lands as four PRs, each after the one before: (A) the
+per-client caps; (B) watches; (C) the SMB durable group: channel sequence, create and lock replay
+and app instance; (D) `DropShare` and the clone holds. The store's clone already writes the source's hold in its
 first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
 through piece 7's install path and `CloneClose` drops it. Three RFC 14 sentences are edited to
 match: §11.3's "written in its own transaction", §9.2's "the clone's first phase makes it with
@@ -279,7 +284,7 @@ store's clone writes the hold itself. Also: every `ErrDelay` names its cause (D1
 case, and the fuzz targets (plan §4).
 Done when: L15, L30b, L48, L54, L55, L56, L57, L60 pass. L52 is not the table's: the table has no
 logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (MS-SMB2 3.3.5.6; RFC 22
-Appendix G says so once #3414 lands), so its case lands with the SMB adapter in stage 2.
+Appendix G says so once #3414 lands), so its case lands with the SMB adapter in stage 5.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages, L8 among them; piece 8 tests
 `DropShare`'s part of it. Three rows are other layers': L1 and L20 are the service's, tested in
@@ -296,7 +301,7 @@ refuse or stay silent, to drive recalls to their deadlines. Pieces 1–7 build t
   closed open, every durable open matching its record, every revoked stateid in its client's set;
 - `export_test.go`'s rebuild of the indexes, which L54 compares against as a table-suite case.
 
-L56 and L57 are "model layer" rows, but model fuzzing waits for slice 9, so both run as `-race`
+L56 and L57 are "model layer" rows, but model fuzzing comes after stage 1, so both run as `-race`
 loops, as L3b runs as a direct case: L56's 10⁴ races and L57's watchdog land with piece 8.
 
 §13.1's other two layers:
@@ -318,27 +323,22 @@ Ported test scenarios, rewritten to RFC 14's semantics (a recall answers `ErrDel
 `pkg/metadata/lock`'s lock and split tests (owners), lease key and epoch tests, progressive-break
 and late-ack tests (recall deadline), cross-protocol tests, and reconnect-matching tests.
 
-Of §13.3's benchmarks only heap per state (RFC 24 M6) ships with its piece; the rest follow once
-the service can drive them.
+None of §13.3's benchmarks is built yet: heap per state (RFC 24 M6) needs only the table and is
+added with piece 8; the rest follow once the service can drive them.
 
 ## 5. Open questions
 
-1. **D2:** is single node first, with the cluster rules behind seams, the right cut?
-2. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. §2.10 decides against
-   detection, so it is recorded as a known failure unless that decision is overturned in the RFC.
-3. **Persistent handles in stage 1:** today's server refuses them, and §8.1 justifies them by
-   failover only. Kept, because piece 7 (#3400) already builds them, with `SetLocks` and the
-   persistent-open install: deferring them now deletes written code rather than skipping work.
-4. **Seven views, one implementation each:** kept as interfaces because §11.3 declares them.
+1. **Persistent handles in stage 1:** kept: on one node they are the only open that survives a
+   restart (§8.1), and piece 7 (#3400) already builds them, with `SetLocks` and the
+   persistent-open install.
+2. **Seven views, one implementation each:** kept as interfaces because §11.3 declares them.
    Since stage 2 runs the real table (#3264's D6) and no area fakes a view, concrete types would
    do; that is an RFC 14 edit, made with stage 2's first area if agreed.
-5. **Behaviours today's code has and RFC 14 does not state:** courtesy clients (RFC 7530
+3. **Behaviours today's code has and RFC 14 does not state:** courtesy clients (RFC 7530
    §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
    (RFC 8881 §18.51.3), and `RENEW`'s principal check. Should RFC 14 state them?
 
 ## 6. What sets the pace
 
-Writing a piece is not what takes the time; review is. Stage 1 lands as about twelve PRs beside
-piece 0's four, each read by its author and reviewed in two or three rounds, so it takes about as
-long as twelve review cycles. What blocks what: `develop`'s RFCs merged into `feat/storage-v2`;
-then each piece after the one before it, carrying its store PR.
+What blocks what: `develop`'s RFCs on `feat/storage-v2`; each piece after the one before it,
+carrying its store PR.
