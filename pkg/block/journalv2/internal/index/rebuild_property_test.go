@@ -73,9 +73,7 @@ func snapshot(fs *files, withRanges bool) indexSnap {
 					segs:      make([]core.SegmentID, 0, len(f.segs)),
 					withRange: withRanges,
 				}
-				for _, r := range f.retained.list(nil) {
-					fsnap.retained = append(fsnap.retained, r)
-				}
+				fsnap.retained = f.retained.list(fsnap.retained)
 				for _, m := range f.markers {
 					sm := snapMarker{extent: m.extent, version: m.version, kind: m.kind}
 					if m.clone != nil {
