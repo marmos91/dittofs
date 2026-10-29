@@ -87,7 +87,7 @@ type recordingSink struct {
 	onWait  func(w LockWaiter)
 }
 
-func (s *recordingSink) LockWaitOver(_ entity.ClientID, w LockWaiter, granted bool) {
+func (s *recordingSink) LockWaitOver(w LockWaiter, granted bool) {
 	s.mu.Lock()
 	s.waits = append(s.waits, waitOverCall{w, granted})
 	fn := s.onWait

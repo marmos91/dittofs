@@ -15,9 +15,9 @@ type Sink interface {
 	// Close's. One call per file carries everything the release left there.
 	Closed(f entity.FileID, r CloseResult)
 	// LockWaitOver: a callback waiter's wait ended, granted or not; the
-	// service forwards it to c and reports the client's answer to a grant
+	// service forwards it to w.Owner.Client and reports the client's answer to a grant
 	// through WaitAnswered.
-	LockWaitOver(c entity.ClientID, w LockWaiter, granted bool)
+	LockWaitOver(w LockWaiter, granted bool)
 }
 
 // Order takes a file's admission lock and returns its unlock. The table takes
@@ -65,6 +65,6 @@ func (o *outbox) raise(sink Sink) {
 		sink.Closed(f, r)
 	}
 	for _, w := range o.over {
-		sink.LockWaitOver(w.w.Owner.Client, w.w, w.granted)
+		sink.LockWaitOver(w.w, w.granted)
 	}
 }
