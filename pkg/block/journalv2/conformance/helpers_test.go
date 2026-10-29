@@ -22,7 +22,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
-	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // tryWrite writes p at off of file id through h, retrying a refusal for want
@@ -521,23 +520,15 @@ func journalIdentity(t *testing.T, f *journalv2test.Fixture) [16]byte {
 }
 
 // schedule sets rules as the seam's fault, replacing any set before. Each
-// rule names an op and a key pattern as sim.Match takes them. The fixture's
-// FailNext and Drop cover the common faults; this is for the rest, such as a
-// full filesystem, a short write or one dropped write.
-func schedule(t *testing.T, f *journalv2test.Fixture, rules ...sim.Rule) {
+// rule names an op and a key pattern as the seam's Schedule takes them. The
+// fixture's FailNext and Drop cover the common faults; this is for the rest,
+// such as a full filesystem, a short write or one dropped write.
+func schedule(t *testing.T, f *journalv2test.Fixture, rules ...journalv2test.Rule) {
 	t.Helper()
 
-	fault, err := sim.NewSchedule(1, nil, rules...)
-	if err != nil {
+	if err := f.Seam.Schedule(rules...); err != nil {
 		t.Fatalf("schedule a fault: %v", err)
 	}
-	f.Seam.SetFault(fault)
-}
-
-// failing returns a rule failing every call of op on a file matching key
-// with err.
-func failing(op, key string, err error) sim.Rule {
-	return sim.Rule{Op: op, Key: key, Action: sim.FaultAction{Kind: sim.Fail, Err: err}}
 }
 
 // list returns the names in the journal's directory as it is now, unsynced
