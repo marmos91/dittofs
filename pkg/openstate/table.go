@@ -96,7 +96,10 @@ const (
 // 865 B an open, 25 B a lock range and 166 B a client, so a client at its caps
 // holds about 14 MB of opens and 1.6 MB of ranges. A request past one is
 // refused ErrDelay before it changes anything, so one client cannot spend
-// what the node holds for every client. The caps bound memory, not time: one
+// what the node holds for every client: an open and a lock take their places
+// at the check, before a break or a recall that can close another client's
+// disconnected durable open, and a request of the client racing them past
+// the check is refused instead. The caps bound memory, not time: one
 // owner's lock on one file costs O(ranges it holds) under the file's step, as
 // adding's ponytail says. SMB names one lock owner per open,
 // so an SMB client locking through every open it holds is refused at 4,096
