@@ -210,10 +210,11 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 			}
 		}
 		// decision: a grant covering only disconnected durable opens that are
-		// not persistent closes them rather than being recalled: no session is
-		// left to answer, and MS-SMB2 3.3.5.9.7 refuses to reconnect a durable
-		// open whose handle caching a break took. Recall it if a client is seen
-		// answering a break for a disconnected open.
+		// not persistent closes them on any break, handle caching kept or not:
+		// MS-SMB2 3.3.4.7 completes an undeliverable break of a non-persistent
+		// open with NONE, after which 3.3.5.9.7 refuses its reconnect, so
+		// keeping it would only hold its deny mode. Recall instead if a client
+		// with another live session is seen reconnecting such an open.
 		if len(hs) > 0 && !slices.ContainsFunc(hs, func(h *open) bool { return h.parked == 0 || h.persistent() }) {
 			for _, h := range hs {
 				t.closeByTable(ctx, e, h, out)
