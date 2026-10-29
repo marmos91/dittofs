@@ -19,7 +19,8 @@ run_case() {
     local name="$1" want="$2" message="$3" verdict="${4:-}" got
     cat >"$WORK/cthon04.log"
     rm -rf "$WORK/results" && mkdir -p "$WORK/results"
-    "$SCRIPT_DIR/parse-results.sh" "$WORK/cthon04.log" "$WORK/known.md" "$WORK/results" \
+    DITTOFS_RESULTS_DIR="$WORK/results" \
+        "$SCRIPT_DIR/parse-results.sh" "$WORK/cthon04.log" "$WORK/known.md" "$WORK/results" \
         >"$WORK/output" 2>&1
     got=$?
     if [[ "$got" -ne "$want" ]] || ! grep -qF "$message" "$WORK/output"; then
@@ -31,6 +32,19 @@ run_case() {
         FAILURES=$((FAILURES + 1))
     else
         echo "ok: $name"
+    fi
+}
+
+# want_grades NAME < grades: the grades the last case recorded under the common
+# runner, which the parity comparison reads: each failure, then the tests that
+# passed or failed, unless a test has no result.
+want_grades() {
+    if diff <(cat) "$WORK/results/grades" >"$WORK/diff" 2>&1; then
+        echo "ok: $1: grades"
+    else
+        echo "FAIL: $1: grades"
+        cat "$WORK/diff"
+        FAILURES=$((FAILURES + 1))
     fi
 }
 
@@ -46,17 +60,29 @@ CTHON04-RESULT basic/test6 FAIL
 CTHON04-RESULT special/telldir FAIL
 CTHON04-DONE 3
 EOF
+want_grades "known failures only" <<'EOF'
+known basic/test6
+known special/telldir
+ran 3
+EOF
 
 run_case "new failure" 1 "1 new failure(s)" "graded 1 0 0" <<'EOF'
 CTHON04-RESULT basic/test1 PASS
 CTHON04-RESULT basic/test7 FAIL
 CTHON04-DONE 2
 EOF
+want_grades "new failure" <<'EOF'
+new basic/test7
+ran 2
+EOF
 
 # A blacklist entry names a test that fails, not one that hangs.
 run_case "timeout on a known name" 1 "1 new failure(s)" "graded 1 0 0" <<'EOF'
 CTHON04-RESULT basic/test6 TIMEOUT
 CTHON04-DONE 1
+EOF
+want_grades "timeout on a known name" <<'EOF'
+new basic/test6
 EOF
 
 run_case "known test now passes" 0 "consider removing" <<'EOF'

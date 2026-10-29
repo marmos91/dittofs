@@ -121,8 +121,8 @@ offer picks it up, and a release of it is refused until then.
 ### What this RFC promises
 
 - An acknowledged write survives the process dying at once, and a host crash or
-  power loss once synced: by the client's flush, or, on a share whose sync
-  policy is `bounded` (the default), within a fixed time bound (1 s proposed).
+  power loss once synced: by the client's flush or, in any case, within a
+  fixed time bound after the write (1 s proposed).
 - A read never returns zeros for an extent the journal does not hold. It names
   that extent as missing, exactly, and leaves the bytes untouched.
 - Bytes not reported offloaded are never released: such a release is
@@ -146,11 +146,10 @@ offer picks it up, and a release of it is refused until then.
 1. alice-pc writes 64 KiB and does not flush. The journal writes the record
    before `WriteAt` returns, and the write is acknowledged ([§3.1](#3.1%20Write)).
 2. Had only the DittoFS process died now, the record would survive: the
-   operating system still holds it ([§5.2](#5.2%20Sync%20policy)).
-3. The share's sync policy is `bounded`, the default. Its timer syncs the record
-   within the time bound, 1 s proposed ([§5.2](#5.2%20Sync%20policy)).
+   operating system still holds it ([§5.2](#5.2%20Syncing)).
+3. The journal's sync timer syncs the record within the time bound, 1 s proposed ([§5.2](#5.2%20Syncing)).
 4. The power fails 0.5 s after the write, before that sync. An unsynced record
-   does not survive host loss, so the write can be gone ([§5.2](#5.2%20Sync%20policy)).
+   does not survive host loss, so the write can be gone ([§5.2](#5.2%20Syncing)).
 5. At restart, a half-written record at the end is cut off as a torn tail, not
    reported as damage ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
 
@@ -289,7 +288,7 @@ the same directory. The seam implements the set's one fault interface
 a failed uncached read are each reachable. Killing the process instead leaves unsynced
 writes in the page cache, and proves a durability the journal does not have.
 
-**Time is virtual.** The sync timer ([§5.2](#5.2%20Sync%20policy)), write stalls and every bounded wait
+**Time is virtual.** The sync timer ([§5.2](#5.2%20Syncing)), write stalls and every bounded wait
 run on that clock interface, so the journal **MUST NOT** read time from anywhere
 a test cannot advance.
 
@@ -377,20 +376,19 @@ derived from its identifier.
 ## 3. Interface
 
 ```go
-Init(dir string, install InstallationID) (JournalID, error)
-Open(dir string, floor Version, expect JournalID) (*Journal, error)
-Restamp(dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
-(*Journal) Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error)
-(*Journal) Forget(tag ShareTag) error
+Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
+Open(ctx context.Context, dir string, floor Version, expect JournalID) (*Journal, error)
+Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
+(*Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error)
+(*Journal) Forget(ctx context.Context, tag ShareTag) error
 (*Journal) Strand(tag ShareTag) error // §3: serve, evict and offer none of the tag's extents
+(*Journal) Close() error // §8.7: joins background work, waits for calls in flight
 (*Handle) Close() error
-(*Handle) SetSyncPolicy(policy SyncPolicy) error           // §5.2
 (*Handle) Reserve(n int64, writes int) (*Reservation, error)  // §6
-(*Reservation) WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error)
+(*Reservation) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (Version, error)
 (*Reservation) Close() error                       // returns what is left
 
 type ShareTag uint32 // a share's tag in this installation: Share.Tag (RFC 16 §2.3), never given to another share
-type SyncPolicy uint8 // the share's sync policy (§5.2): Bounded, the default, or Standard
 ```
 
 One journal serves several shares. Each share's engine works through its own
@@ -399,6 +397,52 @@ written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-forma
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
 this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
+
+**A call that does I/O or can wait takes a context first.** Those are the calls
+that append a record, read a segment, sync, or wait on another operation: `Init`,
+`Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
+`WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
+receives a context derived from it), `MarkOffloaded`, `Unmark`, `Release`, the removals of
+[§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`, and the verification of [§4.4](#4.4%20Inspection), which
+reads every segment. A call that only reads or changes
+memory and never waits takes none: `Share`, `Strand`,
+`Reserve`, `Draw`, `SetVersionLimit`, `Settle`, `Held`, `Extents`, `Files`,
+`DirtyFiles` and `Stats`. No `Close` takes one either, the journal's, a
+handle's or a reservation's, like the syncer's, the remote tier's, the engine's
+and GC's: the journal's and a handle's wait only for calls already in flight,
+each under its own context, and the journal's also joins its background work
+([§8.7](#8.7%20Shutdown)).
+
+The context carries the caller's deadline. The journal honours its
+cancellation only where that leaves no outcome unknown:
+
+- a call checks the context first, before any refusal check ([§6](#6.%20Capacity)) and before
+  it changes any state, and if it is done returns the context's error having
+  changed nothing;
+- once a call has appended its record, it completes and returns its result
+  whatever the context says, so a cancelled write is never half made;
+- a cancelled `Sync` stops waiting, not the sync: the sync runs on for the other
+  writes it covers, and its outcome reaches the next `Sync` of the file as
+  [§5.3](#5.3%20A%20failed%20sync) says. A `Sync` that returns the context's error clears no
+  file's mark of an unreported failure;
+- `Open` checks between recovery phases, and a cancelled open leaves the
+  directory for a later `Open` to recover;
+- `OffloadMany` and `Repack` stop at a record boundary, and every record they
+  appended stands; `Since` ends its iteration with the context's error;
+- `report` ignores the context: what it records has already committed
+  ([RFC 8 §6.8](rfc-8-engine.md#6.8%20The%20callback%20returns%20only%20what%20committed)), and refusing it would cost a second upload;
+- a call past the context check that is refused ([§6](#6.%20Capacity)) returns the refusal at
+  once, as itself.
+
+> decision: the journal takes a context although it never waits for capacity,
+> only on its own appends and syncs ([§6](#6.%20Capacity), [§8.1](#8.1%20What%20must%20not%20block%20what)); the deadline
+> stays the engine's. `Replicated`, which the engine calls in place of the
+> journal on a replicated shard ([RFC 10 §12](rfc-10-journal-replication.md#12.%20API%20surface)),
+> takes a context on these same calls, so with one here the engine has one call
+> path for both; context-taking variants beside context-free calls would give it
+> two. The set's other I/O interfaces, the syncer's, the remote tier's and block
+> metadata's, take one too. Overturned for a call shown to do no I/O and never
+> wait, which then takes none.
 
 **A tag names one share, once.** The metadata store mints a share's tag from an
 installation-wide counter that is never lowered, whenever a share arrives in the
@@ -440,7 +484,7 @@ re-mint, or a move back whose drop never ran `Forget`, would otherwise serve one
 share's extents through another's handle after every permission check had
 passed, let its writes supersede them, and let an offload commit them under the
 wrong share's refs. The engine answers it with `ErrCorrupt`, never retried
-([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)). A recovery that rebuilds one `FileID` under two tags, which
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)). A recovery that rebuilds one `FileID` under two tags, which
 only such a fault leaves, **MUST** refuse every call on that file through
 either tag, and name it in `Stats`, until one of the two is forgotten.
 
@@ -609,12 +653,12 @@ above resolves it at that journal's next start.
 ### 3.1 Write
 
 ```go
-WriteAt(id FileID, off int64, p []byte, mtime int64) (v Version, err error) // mtime: ns since the Unix epoch, 0 when the open suspended it (RFC 28 §2.3)
-Sync(ids ...FileID) error
+WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (v Version, err error) // mtime: ns since the Unix epoch, 0 when the open suspended it (RFC 28 §2.3)
+Sync(ctx context.Context, ids ...FileID) error
 ```
 
-Stages `p` at `off`, with the modification time the write sets ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and makes it durable by the next `Sync` naming the file or, under `bounded`,
-within the sync bound ([§5.2](#5.2%20Sync%20policy)). On return with `err == nil`, the extent `(off, len(p))` is held, is
+Stages `p` at `off`, with the modification time the write sets ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and makes it durable by the next `Sync` naming the file or
+within the sync bound, whichever comes first ([§5.2](#5.2%20Syncing)). On return with `err == nil`, the extent `(off, len(p))` is held, is
 **Dirty**, and **MUST** survive process death.
 
 `WriteAt` **assigns** the write's content version `v` and returns it. The version
@@ -625,7 +669,7 @@ offers the higher without the lower, breaking [RFC 6 §4.4](rfc-6-block-metadata
 
 `Sync` returns once every operation on the named files that returned before the
 call is durable. It is the journal's part of a client's
-flush ([§5.2](#5.2%20Sync%20policy)).
+flush ([§5.2](#5.2%20Syncing)).
 
 `WriteAt` **MUST** reserve capacity before accepting bytes ([§6](#6.%20Capacity)) and **MUST**
 fail rather than exceed the configured limit.
@@ -637,7 +681,7 @@ newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error)
+ReadAt(ctx context.Context, id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error)
 
 type Held struct {
     Extent  Extent
@@ -668,23 +712,61 @@ a `missing` extent passes it back to `Fill`.
 ### 3.3 Offload
 
 ```go
-Offload(id FileID, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error
+Offload(ctx context.Context, id FileID, through Version, limit, widen int64, fn func(ctx context.Context, o Offer, report func(offloaded []Extent) error) error) error
 
-OffloadMany(ids []FileID, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
+OffloadMany(ctx context.Context, files []Capture, limit, widen int64, fn func(ctx context.Context, offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
+
+type Capture struct {
+    ID      FileID
+    Through Version // the version the caller's existence commit covered; nothing above it is offered
+}
 
 type Offer struct {
     ID         FileID
-    Dirty      []Extent
-    Neighbours []Extent    // offloaded held extents offered on request (widen); see below
-    Superseded []Held      // superseded versions the journal still retains for offload (§3.11)
-    Oldest     Version     // the oldest content version among the offered records, neighbours included
-    Newest     Version     // the newest
-    Offered    io.ReaderAt // the bytes as offered; see below
+    Dirty      []OfferedExtent // the extents offered, each with its version and stamp
+    Neighbours []Held          // offloaded held extents offered on request (widen); see below
+    Superseded []OfferedExtent // superseded versions the journal still retains for offload (§3.11)
+    Oldest     Version         // the oldest content version among the offered records, neighbours included
+    Newest     Version         // the newest
+    Offered    io.ReaderAt     // the bytes as offered; see below
+}
+
+type OfferedExtent struct {
+    Extent  Extent
+    Version Version
+    Cut     SnapshotCut // the cut its existence commit read (§3.11); valid only when Stamped
+    Stamped bool        // false: the stamp was lost; the offload commit rebuilds born (§3.11)
 }
 ```
 
-Offers held extents of `id` whose offloaded bit is unset, and marks exactly the
-extents reported offloaded through `report`.
+Offers held extents of `id` whose offloaded bit is unset and whose version is
+at or below `through`, and marks exactly the extents reported offloaded through
+`report`.
+
+**An offer stops at the caller's existence commit.** `through` is the version
+the caller's own existence commit covered for the file, the commit that precedes
+the offer ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)). An extent whose version is above it is not offered,
+stays dirty, and is offered by a later call. A version whose existence has not
+committed has no stamp, and nothing correct can be written as its `born`
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)): its commit will read a cut that may not exist yet. Writes take
+no lock the offer holds, so without the bound a write landing between the
+caller's commit and the offer would be offered. Where a version above it
+overwrote one at or below it, the older one is still offered, retained, in
+`Dirty` as the file's live content ([§3.11](#3.11%20Snapshot%20holds)), and the newer waits for a
+later call. The caller passes the bound
+rather than the journal deriving it from its stamps, because a stamp can be
+lost ([§3.11](#3.11%20Snapshot%20holds)).
+
+**Each offered extent carries its version and its stamp.** One offer can hold
+several versions of one file side by side — `[0, 4)` MiB at v10 with `[1, 2)`
+MiB overwritten at v12 — and the two rules that set a ref's `born` work per
+extent: a ref takes the highest `born` of its versions, and a run splits at a
+live hold mark ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). `Oldest` and `Newest` bound the whole offer and
+cannot say which bytes are which. So `Dirty` and `Superseded` carry, per extent,
+the content version and the cut its existence commit read, from the file's
+stamps ([§3.11](#3.11%20Snapshot%20holds)); `Stamped` is false only for a version whose stamp was
+lost, which is offered all the same. A neighbour carries its version only: its
+`born` is the one the ref it re-tiles already carries ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)).
 
 **Offload is how dirty content becomes evictable.** The journal uploads nothing.
 It hands the engine a frozen view of a file's dirty content, the **offer**; the
@@ -697,7 +779,7 @@ serves ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)).
 **What an offer is.** A snapshot of one file's dirty content, taken when the call
 starts:
 
-- `Dirty`: the extents offered;
+- `Dirty`: the extents offered, each with its version and stamp;
 - `Oldest`, `Newest`: the range of their content versions;
 - `Offered`: a reader that returns exactly those bytes for as long as `fn` runs.
 
@@ -797,13 +879,14 @@ need.
 
 `OffloadMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
-holds per file within it, and `limit` bounds the total across the files. The
+holds per file within it, each file bounded by its own `Through`, and `limit`
+bounds the total across the files. The
 segment bounds apply to the call as one offer, not per file: "the first extent
 always fits" holds for the call's first extent only, and every later file's
 first extent counts against the bounds like any other. Read per file, a call
 over a thousand small files would pin a thousand segments.
-`Offload(id, …)` is `OffloadMany` with one file, and an implementation **SHOULD**
-build it that way.
+`Offload(id, through, …)` is `OffloadMany` with one `Capture{id, through}`, and an
+implementation **SHOULD** build it that way.
 
 The journal **MUST** mark exactly the reported extents and **MUST NOT** mark an
 extent for which no report was received, including when `fn` returns an error
@@ -841,8 +924,8 @@ nothing is held there. The engine drops the removed refs at commit
 **Marking outside an offer.**
 
 ```go
-MarkOffloaded(id FileID, extents []Extent, oldest, newest Version) error
-Unmark(id FileID, extents []Extent) error
+MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error
+Unmark(ctx context.Context, id FileID, extents []Extent) error
 ```
 
 `MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
@@ -859,7 +942,7 @@ does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%
 ### 3.4 Fill
 
 ```go
-Fill(id FileID, off int64, p []byte, asOf Version, v Version) error
+Fill(ctx context.Context, id FileID, off int64, p []byte, asOf Version, v Version) error
 ```
 
 Places retrieved remote bytes into local storage. This is the only path by which
@@ -871,7 +954,7 @@ make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
 **A Fill older than the file is refused.** `asOf` is the change version `ReadAt` returned
-when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The journal keeps, per file, the
+when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The journal keeps, per file, the
 highest content version of any operation that changed its extents — `WriteAt`,
 `Truncate`, `Deallocate`, `Delete` and `CloneTarget`, each of which assigns a new
 one; a `Release` carries a version already counted. If it
@@ -926,7 +1009,7 @@ make content not yet offloaded evictable, and nothing would fail at the time.
 ### 3.5 Release
 
 ```go
-Release(id FileID, extents []Extent) error
+Release(ctx context.Context, id FileID, extents []Extent) error
 ```
 
 Stops holding `extents`. This is the mechanism of eviction; the policy is the
@@ -965,10 +1048,10 @@ was before the release. A release record draws on the reserved headroom of
 ### 3.6 Truncate, deallocate and delete
 
 ```go
-Truncate(id FileID, size int64) (Version, error)
-Deallocate(id FileID, e Extent) (Version, error)
-Delete(id FileID) (Version, error)
-CloneTarget(id FileID, spec CloneSpec) (Version, error)
+Truncate(ctx context.Context, id FileID, size int64) (Version, error)
+Deallocate(ctx context.Context, id FileID, e Extent) (Version, error)
+Delete(ctx context.Context, id FileID) (Version, error)
+CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Version, error)
 
 type CloneSpec struct {
     SrcShare       ShareID // the source's share: a source in another share is found by both IDs
@@ -1031,7 +1114,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss record
 Stats() Stats                              // the Journal's, not the Handle's (§3): journal-wide, with a per-share breakdown
-DirtyFiles() iter.Seq2[FileID, time.Time]  // files with an unset offloaded bit, each with its oldest dirty byte's write time
+DirtyFiles() iter.Seq2[FileID, time.Time]  // files with a held or retained extent whose offloaded bit is unset, each with its oldest dirty byte's write time
 ```
 
 `Extents` reports what the journal holds, and is not an answer about what
@@ -1046,8 +1129,11 @@ as past the end of file or as zeros rather than **Lost**.
 `DirtyFiles` is what the engine's age tick reads ([RFC 8 §6.1](rfc-8-engine.md#6.1%20The%20work%20queue)), so it
 **MUST** be cheap: the journal keeps a per-journal list of dirty files keyed by
 their oldest dirty byte's write time, updated when a write sets a file's first
-unset offloaded bit and when `Offload` or a removal clears its last, and
-rebuilt at recovery. It **MUST NOT** walk the placement index or read a record,
+unset offloaded bit and when `Offload` or a removal leaves the file no held or
+retained extent with an unset bit, and rebuilt at recovery. A retained extent
+counts: a removal after a snapshot cut leaves the held version only retained
+([§3.11](#3.11%20Snapshot%20holds)), and a file dropped from the list then would never be
+offered, so its hold would never be released. It **MUST NOT** walk the placement index or read a record,
 and costs O(dirty files), not O(extents).
 
 `Stats` **MUST** be served from maintained counters: it **MUST NOT** walk the
@@ -1064,7 +1150,6 @@ walk can produce is omitted.
 | `OldestDirty` | value | when the oldest held extent whose offloaded bit is unset was written; the age of the upload backlog |
 | `Files` | gauge | files with at least one held extent |
 | `ExtentCount` | gauge | placement index entries: held and retained extents and removal markers ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
-| `spare_refusals` | counter | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `DropRanges` | gauge | ranges the removal-drop test keeps per file and segment ([§7.2](#7.2%20Repack)) |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
 | `UnreclaimedBytes` | gauge | storage in segments not yet unlinked that backs no held or retained extent and no live record: released or superseded but still on disk; what repack can recover ([§7.2](#7.2%20Repack)) |
@@ -1072,7 +1157,7 @@ walk can produce is omitted.
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
-| `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Sync%20policy)) |
+| `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 | `VersionLimit` / `VersionsLeft` / `NextVersion` | value / gauge / value | the version limit, how many versions remain below it, and the next version the counter issues ([§4.3](#4.3%20Versions)) |
@@ -1213,9 +1298,10 @@ failing — **MUST** be readable from one `Stats` call.
 ### 3.9 Metrics
 
 The journal exports nothing itself: its dependency set excludes any metrics
-library ([§1.1](#1.1%20Non-goals)). The engine exports every `Stats` field of [§3.7](#3.7%20State%20introspection), and the
-counters below, labelled with the journal, and the per-share fields labelled with
-the share too. A metric is listed only if the journal alone knows it; the caller
+library ([§1.1](#1.1%20Non-goals)). The engine exports every `Stats` field of [§3.7](#3.7%20State%20introspection) and the
+counters below: each counter as `journal_<field>_total` (`written_bytes` as
+`journal_written_bytes_total`), each gauge as `journal_<field>`, labelled with
+the journal; per-share fields follow RFC 25's worst-n rule. A metric is listed only if the journal alone knows it; the caller
 times `WriteAt` and counts read hits and misses itself. The counters live in
 `Stats` and reset on open.
 
@@ -1228,7 +1314,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by unlinking segments ([§7.1](#7.1%20Releasing%20storage)) |
 | `repacked_bytes` | bytes moved by repack; the write amplification reclamation adds |
 | `reservation_refused` | writes refused at capacity ([§6](#6.%20Capacity)) |
-| `syncs`, `sync_failures` | syncs issued, and failed ([§5.2](#5.2%20Sync%20policy)); syncs against writes shows whether group commit works |
+| `syncs`, `sync_failures` | syncs issued, and failed ([§5.2](#5.2%20Syncing)); syncs against writes shows whether group commit works |
 | `sync_reappended_bytes` | bytes re-appended to a new segment after a failed sync ([§5.3](#5.3%20A%20failed%20sync)) |
 | `headroom_draws` | records without bytes appended from the reserved headroom while the journal was at its limit ([§6](#6.%20Capacity)) |
 | `corrupt_extents` | extents dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), labelled `outcome` = `data_loss` (offloaded bit unset) or `repairable` (set). Any `data_loss` is an alert |
@@ -1236,6 +1322,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `torn_tails` | torn tails truncated at open; one per crashed stream is normal |
 | `scan_resyncs` | scans that found a record by resynchronising past a bad one ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
 | `index_refusals` | writes refused at the index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
+| `spare_refusals` | rolls refused at once, naming `spare`, because no spare was ready; none waits ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) |
 | `segment_reopens` | reads that had to reopen a closed segment ([§7.4](#7.4%20Open%20descriptors)) |
 
 `RemovalMarkers` growing is a caller that never settles ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
@@ -1243,7 +1330,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 ### 3.10 Settle and Since
 
 ```go
-Since(id FileID, from Version) iter.Seq2[Change, error]
+Since(ctx context.Context, id FileID, from Version) iter.Seq2[Change, error]
 Settle(id FileID, v Version)
 
 type Change struct {
@@ -1284,10 +1371,10 @@ rebuilds it.
 ### 3.11 Snapshot holds
 
 ```go
-Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
-Unhold(share ShareID, cut SnapshotCut) error
+Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
+Unhold(ctx context.Context, share ShareID, cut SnapshotCut) error
 Held(share ShareID) (bytes int64)
-Stamp(id FileID, through Version, cut SnapshotCut) error
+Stamp(ctx context.Context, id FileID, through Version, cut SnapshotCut) error
 ```
 
 A snapshot cut is taken without draining the journal ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the
@@ -1298,8 +1385,8 @@ committed up to.
 `Stamp(id, through, cut)` records the cut an existence commit read, for every
 version of `id` it covered up to `through`. It is stored with those versions, not
 with each write record: a version's cut is the cut of the commit that made it
-exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
-stamp, and the offload commit copies it into the ref as `born`
+exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each extent with its
+version's stamp, as `OfferedExtent.Cut` ([§3.3](#3.3%20Offload)), and the offload commit copies it into the ref as `born`
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A `Stamp` that cannot append its record — refused below half the headroom
 ([§6](#6.%20Capacity)), or a failed write — returns the error and records nothing; it carries
 `through`, a version already issued, so the version limit never refuses it, and the caller treats it as the lost stamp below
@@ -1313,6 +1400,17 @@ whose `applied` covers the version carries the same cut as its `born`. A version
 that record the rebuild needs can have been dropped only if no live cut lies
 between the two candidate cuts, and then either gives the same visibility
 ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+
+**A version whose stamp was lost is offered, not skipped.** An offer carries it,
+at or below its `through` like any other, with `Stamped` false, and the offload
+commit rebuilds its `born` by the same rule recovery uses, above, from the file's
+record. An offer that skipped it would never offload it, so never let its bytes
+be released, and the headroom whose exhaustion refused the stamp would never come
+back: the file would wedge under exactly the pressure offloading relieves.
+Re-stamping before the offer is no way out, since it is refused by that same
+pressure. The rebuild writes no key, so the commit stays within its key budget
+`K`; what it reads is bounded by [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed). Lost stamps arise only below half
+the headroom or from a failed write, so the cost lands only under pressure.
 
 - **An existence-committed version is superseded only once its successor's
   existence commits.** Until then it **MUST NOT** be released, dropped by repack or
@@ -1470,7 +1568,7 @@ retained extents included.
 
 **The index is bounded, and the bound refuses.** An implementation **MUST NOT**
 silently degrade when the index grows. A configured entry bound (`ExtentLimit`,
-sized against a memory budget at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
+sized from RFC 24's index pool at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
 all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in
@@ -1690,7 +1788,7 @@ Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 
 | Rule | Why |
 | --- | --- |
-| A record **MUST** be written before `WriteAt` returns, and synced by a `Sync` or, under `bounded`, within the sync bound ([§5.2](#5.2%20Sync%20policy)). `Sync` returns only once synced. | The acknowledgement is a promise, of exactly the durability the policy states. |
+| A record **MUST** be written before `WriteAt` returns, and synced by a `Sync` or within the sync bound, whichever comes first ([§5.2](#5.2%20Syncing)). `Sync` returns only once synced. | The acknowledgement is a promise, of exactly the durability §5.2 states. |
 | `Release` **MUST NOT** precede the committed offload transaction the offloaded bit reflects. | Otherwise a crash can leave content whose only copy is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
 | A release record **MUST** be durable before the segment holding the record it released is unlinked or recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). | Otherwise a crash can lose the record and keep the unlink, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked or recycled by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
@@ -1700,33 +1798,18 @@ Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 | A sync that failed **MUST NOT** satisfy, by a later success, a `Sync` for writes made before the failure. | Those writes may be lost already ([§5.3](#5.3%20A%20failed%20sync)). |
 | A segment whose sync failed, or a recycled segment one of whose appends failed, **MUST NOT** be appended to again. | What the device holds past its last successful sync is unknown, and a recycled segment's failed slot holds its old life's bytes, not zeros; a record appended after either could follow bytes a scan cannot cross ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 
-### 5.2 Sync policy
+### 5.2 Syncing
 
 The journal **MUST** be on durable local storage: a synced record survives a
 process crash, a host crash and power loss. There is no setting that declares a
 journal not durable. The journal's part in a client's flush is `Sync` ([§3.1](#3.1%20Write));
 what else a flush waits for is its caller's ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 
-There are two policies, chosen per share by its `sync.policy` setting
-([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) and passed to `Share`. Under both,
-`WriteAt` writes its record before it returns, and a `Sync` naming its file
-syncs it. Under **`bounded`**, the default, the record is also synced within a
-fixed time bound after the write, whichever comes first. Under **`standard`**,
-only a `Sync` syncs it: a write no client flushes is as durable as on a local
-filesystem, written back by the operating system on its own schedule. A stream
-carrying records of both kinds of share runs the timer for the `bounded` ones;
-the sync it issues covers the stream's whole segment, so `standard` records
-written before it are synced too, at no extra flush. Under `standard` the
-unsynced backlog is bounded by the operating system's writeback and by one
-active segment per stream, since a roll syncs the segment it leaves, so a
-snapshot cut syncs the share's streams with its gate still open and closes the
-gate over only what was written since ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)). The journal takes the policy
-when the share is attached, and `SetSyncPolicy` changes it live, with no
-reattach: every record the handle writes after the call returns follows the new
-policy, and a record written before it keeps the bound it was written under —
-moved to `standard`, a `bounded` record already written is still synced within
-its bound. The timer is per stream, so the change only adds the share's records
-to, or drops them from, what each stream's timer must cover. A record written but not yet synced survives process
+Every record is synced the same way, on every share. `WriteAt` writes its
+record before it returns. A `Sync` naming its file syncs it, and in any case
+it is synced within a fixed time bound after the write, whichever comes first.
+The timer that keeps the bound is per stream, and the sync it issues covers the
+stream's whole active segment, every share's records on it alike. A record written but not yet synced survives process
 death, since the operating system holds it, but not host loss. A client that asks
 for a stable write gets one because the engine calls `Sync` before replying
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
@@ -1750,26 +1833,21 @@ but without a device flush. It does add flushes — at most one per stream per
 second, where writeback alone flushes none — and each flush waits for every
 dirty byte of the segment, so for a large transfer that flushes only at its end
 the timer is overhead the client never asked for. It shrinks what a host crash
-can lose, for a client that never flushes, to the bound; a share that does not
-need that chooses `standard`.
+can lose, for a client that never flushes, to the bound.
 
-> decision: `bounded` is the default sync policy and its bound a constant of the
-> implementation (proposal: 1 s), neither measured. The policy is per share
-> because only some deployments need a loss window for clients that never flush
-> (a recovery point of 1 s); the others pay a flush a second per stream for
-> nothing, and would compare badly with a filesystem that syncs only on request.
-> The bound stays a constant: a setting would let an operator trade an unstated
-> loss window for throughput nobody has measured. Settled by J1
-> ([§9.6](#9.6%20Benchmarks)) without a `Sync` after each write, so only the
-> timer syncs, run under `bounded` and under `standard`: a throughput loss
-> under `bounded` beyond the regression rule's 10% makes `standard` the
-> default; a host-loss window within the bound that a deployment cannot accept
-> keeps `bounded` there.
+> ponytail: one behaviour for every share — each pays at most one flush per
+> stream per second, for a loss window of about the bound (a constant of the
+> implementation, proposal: 1 s) for clients that never flush. The bound stays a
+> constant: a setting would let an operator trade an unstated loss window for
+> throughput nobody has measured. Upgrade to a per-share mode that syncs only on
+> request when J1 ([§9.6](#9.6%20Benchmarks)) without a `Sync` after each write
+> measures that flush costing real throughput on a deployment that does not need
+> the loss window.
 
-Whatever the policy:
+For the sync bound:
 
 - the journal **MUST** be able to state it;
-- under `bounded` it is a bound in time, not only in bytes;
+- it is a bound in time, not only in bytes;
 - a failure to sync **MUST** be reported to the caller, and **MUST NOT** be
   recorded as success and retried silently.
 
@@ -2129,7 +2207,7 @@ it not held are durable, without waiting for a repack to select it.
 ### 7.2 Repack
 
 ```go
-Repack(budget int64, scope RepackScope) (freed int64, err error)
+Repack(ctx context.Context, budget int64, scope RepackScope) (freed int64, err error)
 
 type RepackScope struct {
     Share    ShareTag    // zero: any share
@@ -2375,6 +2453,9 @@ which domain guards it. The domains are:
 The file append domain is what [§3.1](#3.1%20Write), [§3.4](#3.4%20Fill) and [§7.2](#7.2%20Repack) mean by the file's
 serialised append. It is the one domain held across I/O — the record write — and
 it guards one file only, so writes to different files still run concurrently.
+A wait for it is not abandoned when the caller's context is done: the domain is
+held across one local record write and nothing remote, which is the bound
+[RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline) asks a lock that cannot be abandoned to state.
 
 The file index domain is deliberately per-file, not store-wide: a store-wide
 index lock makes every read of every file contend with every write to any file.
@@ -2424,7 +2505,7 @@ Publishing an extent **MUST** be the last step of a write, after its record is
 written, so a read never finds an index entry pointing at bytes not yet in the
 segment. It **MUST NOT** wait for the record to be durable: that would put the
 sync on every read of freshly written bytes, which is what the sync bound
-([§5.2](#5.2%20Sync%20policy)) exists to avoid. A published extent may therefore not survive a host
+([§5.2](#5.2%20Syncing)) exists to avoid. A published extent may therefore not survive a host
 crash, so everything that turns journal content into a durable claim elsewhere
 syncs first: an offer **MUST** sync the records it captures before handing them to
 `fn` ([§3.3](#3.3%20Offload)), and the engine **MUST** `Sync` a file before committing its
@@ -2554,6 +2635,8 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | --- | --- |
 | [§3.2](#3.2%20Read) no zero-fill | Fill `p` with a sentinel pattern, then read a never-written extent and an explicitly released extent; both report `missing`, the sentinel is untouched in both, and the two are indistinguishable to the journal. |
 | [§3.3](#3.3%20Offload) write during offload | Write to an offered extent mid-callback, report it offloaded, assert the extent's bit stays unset and `Release` refuses it. |
+| [§3.3](#3.3%20Offload) offer stops at `through`, per-extent stamps | Write `[0, 4)` MiB at v10 and stamp it at cut 3; write `[1, 2)` MiB at v12 and stamp it at cut 4; write `[8, 9)` MiB at v13; offload with `through` v12. Assert v13 is not offered and stays dirty, `[0, 1)` and `[2, 4)` are offered at v10 with cut 3, and `[1, 2)` at v12 with cut 4. |
+| [§3.11](#3.11%20Snapshot%20holds) lost stamp is offered | Draw the headroom below half, existence-commit a version, and have its `Stamp` refused. Assert the next offer carries the version with `Stamped` false rather than skipping it, and that once reported and released the headroom recovers. |
 | [§3.4](#3.4%20Fill) fill safety | Hold a `Fill` at the storage seam after it has found the extent absent, `WriteAt` the same extent, then let the fill continue; assert the written bytes survive. |
 | [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
 | [§3.5](#3.5%20Release) refusal | Ask to release an extent with no offloaded bit; assert refusal and no partial progress. |
@@ -2565,14 +2648,13 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§8.5](#8.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy and unlink instead; assert the read sees the old or the new location, never neither. |
 | [§3.10](#3.10%20Settle%20and%20Since) removals survive to `Since` | Write, then truncate, deallocate and delete across three files; crash before any `Settle`; reopen; assert `Since(id, 0)` yields each held extent and each removal marker at its version, and `Since(id, v)` for a removal's own version `v` does not yield it. `Settle` each file at its removal's version; assert `Since` no longer yields the marker and `RemovalMarkers` is zero. Crash and reopen again; assert the markers are back, unsettled. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Write at v2, deallocate at v3 over it, then `Fill` the extent with a current `asOf` and version v2; assert the extent reads `missing`, and still does after reopen. Repeat with version v3: assert the fill is held, since only content below the marker's version is excluded. |
-| [§7.2](#7.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty. |
+| [§7.2](#7.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. Repeat with the delete settled by `Settle(id, deleteVersion)` before reclamation and the unlink of the segments holding the old bytes not yet durable: hold their directory sync, let reclamation reach the segment holding the delete, crash and reopen; assert the file still does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty; one that drops a removal before the unlink it covers is durable brings the old bytes back. |
 | [§3.3](#3.3%20Offload) removal during offload | Truncate an offered extent while `fn` runs, then read `offered`; assert it returns the offered bytes, `ReadAt` reports the extent missing, and a report naming it marks nothing. Repeat with delete. |
 | [§3.3](#3.3%20Offload) neighbours are frozen | Hold offloaded content either side of a dirty extent; offload with `widen`; while `fn` runs, overwrite one neighbour and release the other; assert `Offered` still returns the neighbours' original bytes, `Oldest` covers their versions, and a report naming them changes no bit. |
 | [§7.2](#7.2%20Repack) removal records carried forward | Write A, offload; truncate it away; let every segment holding A's records but the oldest be repacked; reopen; assert the extent reads `missing`, not A. Repeat with a delete and a deallocate. Then truncate a file whose older records are all gone, leave the marker unsettled, repack the truncate's segment, reopen; assert `Since` still yields the marker. |
 | [§7.2](#7.2%20Repack) copy loses to a newer write | Hold a repack after it has read a record and before it appends the copy; overwrite the extent and `Sync`, with no hold; let the repack continue; assert the new bytes are served, before and after reopen, and no copy of the old record was appended. Repeat with the overwrite unsynced: assert the copy is appended as retained, the source segment is unlinked, and failing the overwrite's window then serves the old bytes, before and after reopen. A pass that skips a source that has just become retained loses the flushed write when the window fails. |
 | [§3.8](#3.8%20Loss%20events) loss raises the loss generation | Read `LossGeneration`; drop a corrupt dirty extent and assert it rose by one; drop a corrupt offloaded extent and a stale one and assert it did not move; fail a sync and resolve it by failing its window, and assert it rose again before the failing `Sync` returned; fail another and resolve it by re-appending, and assert it did not move. A design without the generation leaves the write verifier unchanged, and a client never resends the writes the loss took. |
 | [§7.1](#7.1%20Releasing%20storage) a recycled segment keeps its new records | Run writes and repack until a segment sealed full is retired and recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); write and `Sync` A into it while its new records stop short of the old seal marker; close cleanly and reopen, then crash and reopen. Assert A reads back both times and no extent of the segment's old life is held. Then write and `Sync` B into a recycled segment and fail a later append there at the seam; assert the segment is a repack candidate only once that append's window is resolved, is unlinked, never recycled, only after repack carried B forward, and B reads back after the retirement and after a reopen. The format-level half, with the zeroing dropped at the seam and a failed append, is [RFC 28 §4.2](rfc-28-journal-format.md#4.2%20The%20checks)'s. |
-| [§5.2](#5.2%20Sync%20policy) a policy change applies live | Attach a share under `standard`; write A and call nothing; `SetSyncPolicy(Bounded)`; write B with no `Sync`. Wait one bound past B and drop at the seam every write it never saw synced. Assert B reads back, with no reattach between the call and B. Switch back to `standard`, write C, and assert the timer no longer syncs on C's account while a `bounded` record written before the call is still synced within its bound. |
 | [§5.3](#5.3%20A%20failed%20sync) failed sync window | Write A and B to one segment; fail the sync at the seam and drop the unsynced writes; let a later sync of the segment succeed; assert `Sync` for A and B either failed or returned only after A and B were synced in another segment, and that after a crash both read back or `Sync` reported the failure. |
 | [§3.3](#3.3%20Offload) offered bytes verified | Write a 1 MiB record, corrupt one byte at its end through the seam, offload with `limit` covering only its first 64 KiB; assert `Offered` returns no byte of it, the record is dropped as corrupt, and no report marks it. A design that checks only the bytes it returns hands the carver the first 64 KiB as good and the next pass the rotted rest. |
 | [§7.2](#7.2%20Repack) repack verifies the whole source | Release the middle of an offloaded 1 MiB record, then corrupt a byte in the released middle; repack its segment; assert nothing of the record is copied, it is dropped as corrupt, and both ends read `missing` rather than bytes under a fresh checksum. |
@@ -2639,6 +2721,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§4.3](#4.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§3](#3.%20Interface) attached share raises the counter | Open a journal whose counter stands at 10^3; attach a share with a floor of 9×10^8; assert the first write through it is assigned a version above the floor, and that a design attaching without raising assigns one below the share's imported refs. |
 | [§3](#3.%20Interface) unclaimed tags are the caller's to name | Write and offload file F under tag T and dirty file G under tag P; reopen and attach only a new tag U. Assert the journal forgets neither T nor P on its own and serves G under P once P attaches; then `Forget(T)` as the caller names it and assert no read of F serves the old bytes and `Since` yields nothing of T. A journal that forgets every tag not yet attached drops P's acknowledged writes. |
+| [§3](#3.%20Interface) a cancelled call changes nothing or completes | Call `WriteAt`, `Release` and `Forget` with a context already done: assert each returns the context's error and appends no record, and a crash and reopen finds nothing of them. Cancel the context of a `WriteAt` held at the storage seam after its record is appended: assert it returns its version and the extent reads back. Cancel a `Sync` while it waits, then fail that sync at the seam: assert the cancelled call returned the context's error and the next `Sync` of the file reports the failure; fail another sync, call `Sync` with a done context, and assert the `Sync` after it still reports that failure. Fill a share to its limit and call `WriteAt` with a done context: assert it returns the context's error and takes no reservation. A journal that checks the context after appending leaves a write the caller was told failed but that recovery serves. |
 | [§3](#3.%20Interface) restamp after a lost store | `Init` a journal under installation I1 and write F; `Restamp` it to I2 with its own identity as `expect`; reopen. Assert `format` names I2, F still reads, and `Restamp` with another identity is refused and changes nothing. |
 | [§3](#3.%20Interface) forget leaves nothing to settle | Write files F and G under tag T, delete G and leave its marker unsettled; `Forget(T)`; crash and reopen. Assert no extent or marker of T is held, `Since` yields nothing for F or G, `RemovalMarkers` does not count them, and `Forget` was refused while a handle of T was open. Attach T again, write F at a higher version, crash and reopen: assert the new write is held. A drop that deletes per file leaves a marker that a later attach's `Since` yields as a removal. |
 | [§3](#3.%20Interface) unclaimed tag reported | Write dirty extents under tag T; reopen and attach no share for T. Assert `Stats().Shares` lists T with its held and dirty bytes, and that after `Forget(T)` it lists T no more. |
@@ -2686,7 +2769,7 @@ sync pattern. The targets are proposed, and the first run replaces them under
 
 | # | Measures | Setup | Proposed target |
 | --- | --- | --- | --- |
-| J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, with and without a `Sync` after each write ([§5.2](#5.2%20Sync%20policy)), 16 writers; without a `Sync`, once under each sync policy; and a mixed case of one writer syncing every 4 KiB write beside one streaming 256 MiB files synced at their end, on one stream | sequential ≥ 256 KiB: ≥ 95% of the filesystem; random 4 KiB: ≥ 90% of its IOPS with an `fsync` per write; `WriteAt` excluding sync and copy: p99 ≤ 20 µs |
+| J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, with and without a `Sync` after each write ([§5.2](#5.2%20Syncing)), 16 writers; and a mixed case of one writer syncing every 4 KiB write beside one streaming 256 MiB files synced at their end, on one stream | sequential ≥ 256 KiB: ≥ 95% of the filesystem; random 4 KiB: ≥ 90% of its IOPS with an `fsync` per write; `WriteAt` excluding sync and copy: p99 ≤ 20 µs |
 | J2 | write scaling | 1, 4, 16 and 64 files written concurrently | rises to within 5% of the filesystem, then stays there to 64 |
 | J3 | read path | `ReadAt` over held extents, index at 10^3 to 10^6 extents ([§4.1](#4.1%20What%20it%20must%20answer)) | point lookup ≤ 1 µs at 10^6; warm 1 MiB `ReadAt` ≥ 2 GB/s single stream |
 | J4 | offload offer | `Offload` over files of many small extents and of few large ones, `fn` returning at once | ≤ 1 µs per offered extent; index insertion at 10^6 ≤ 2 µs |
@@ -2711,7 +2794,7 @@ No timed check runs per change ([tiers](rfc-index.md#Test%20tiers)). The regress
 lost group commit, an index that stopped being `O(log n)` — are counted instead:
 
 - **syncs per write**: 16 concurrent writers on one append stream,
-  every writer calling `Sync` after each write ([§5.2](#5.2%20Sync%20policy)); the storage seam counts syncs and holds each
+  every writer calling `Sync` after each write ([§5.2](#5.2%20Syncing)); the storage seam counts syncs and holds each
   one until all 16 are waiting, so scheduling cannot decide the result. They
   **MUST** issue at most one sync per four writes. A design without group commit
   issues one per write; one that groups all 16 issues one per 16. The check sits
@@ -2722,7 +2805,7 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   the end of each 256 MiB file; the seam counts the bytes each of the first
   writer's syncs waited for. They **MUST** stay at or below what the second
   writer appended within one sync's interval, never grow with its file size —
-  the cost [§5.2](#5.2%20Sync%20policy)'s ponytail names. J1 runs the same mix in real time;
+  the cost [§5.2](#5.2%20Syncing)'s ponytail names. J1 runs the same mix in real time;
 - **index cost**: the placement index counts comparisons per lookup and per
   insertion; going from 10^3 to 10^6 extents **MUST** at most double them, the
   ratio log(10^6) / log(10^3) an `O(log n)` structure gives;
@@ -2751,7 +2834,7 @@ The open questions of the on-disk format and of recovery are
    settled: it refuses the write. Unmeasured is **insertion** cost — the
    benchmark covered memory and lookup, and it is insertion, not lookup, where a
    sorted slice actually fails.
-3. **The scope of one sync.** A sync covers one append stream ([§5.2](#5.2%20Sync%20policy)), and
+3. **The scope of one sync.** A sync covers one append stream ([§5.2](#5.2%20Syncing)), and
    more streams spread writers across more syncs: a create-heavy load split over
    many streams shares fewer syncs, and measured slower as streams were added.
    Whether one leader may sync several streams at once, or streams should be

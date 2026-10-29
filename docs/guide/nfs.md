@@ -444,11 +444,17 @@ before DittoFS checks permissions. Its classic use is to stop a remote `root`
 from acting as `root` on your files — a remote machine's superuser should not
 automatically be the superuser of your export.
 
-This is a **per-share, NFS-only** policy. It does not apply to SMB (which has its
-own [guest mapping](smb.md)). Crucially, squashing happens at the *identity*
-layer — **after** the client authenticates but **before** the
-[export gate and POSIX/ACL checks](access-control.md). It rewrites *who you are*;
-it never grants access on its own.
+This is a **per-share** policy, set with `dfsctl share nfs-config` but applied
+to SMB sessions as well: an SMB user whose UID is 0 — the built-in `admin`
+among them — is squashed on a `root_to_guest` share exactly as NFS root is, and
+an `all_to_guest` share maps every SMB user to the anonymous UID/GID. SMB guest
+sessions are the exception and stay at UID/GID 65534 under every mode
+([guest mapping](smb.md)). Crucially, squashing happens at the *identity*
+layer — **after** the client authenticates and after the
+[share-permission gate](access-control.md), but **before** the POSIX/ACL checks.
+The gate resolves grants for the UID the client claimed (NFS) or the user it
+authenticated as (SMB); only file operations run as the squashed identity. It
+rewrites *who you are* on the filesystem; it never grants access on its own.
 
 ### How NFS sends an identity
 
@@ -604,9 +610,13 @@ accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
+| `allow_auth_sys` | `true` | When `false`, every flavor but RPCSEC_GSS is refused, AUTH_SYS (AUTH_UNIX) and AUTH_NULL alike. |
 | `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
-| `min_kerberos_level` | `krb5` | Minimum GSS protection level a Kerberos session must negotiate (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+| `min_kerberos_level` | `krb5` | The protection floor for any authenticated session (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+
+Over NFS the two flavor gates refuse the same flavors; they differ over SMB, where
+an NTLM session passes `allow_auth_sys=false` but not `require_kerberos` (see
+[SMB § Share access policy](smb.md#share-access-policy)).
 
 `allow_auth_sys`, `require_kerberos`, and `min_kerberos_level` are enforced
 identically on **NFSv3** (at MOUNT) and on **NFSv4.0/v4.1** (at the first
@@ -630,11 +640,13 @@ share that still carries `require_kerberos=true` stops the server with exit code
 78 and an error naming the share. Either re-enable `kerberos.enabled`, or clear
 the policy with `dfsctl share nfs-config set <share> --require-kerberos false`.
 
-`min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
-session whose negotiated service level is below the floor (e.g. a plain `krb5`
-authentication-only session on a `krb5p` privacy share). Non-GSS flavors are
-governed by `allow_auth_sys` / `require_kerberos`; pair `min_kerberos_level`
-with `require_kerberos=true` to mandate a protection floor for *all* access.
+`min_kerberos_level` is the protection floor for any authenticated session.
+Over NFS only RPCSEC_GSS authenticates, so it rejects a Kerberos session whose
+negotiated service level is below the floor (e.g. a plain `krb5`
+authentication-only session on a `krb5p` privacy share). AUTH_SYS and AUTH_NULL
+prove nothing and are governed by `allow_auth_sys` / `require_kerberos` alone;
+pair `min_kerberos_level` with either to mandate a protection floor for *all*
+access.
 
 **Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
 A successful `sec=krb5` mount has two stages, and they fail differently:

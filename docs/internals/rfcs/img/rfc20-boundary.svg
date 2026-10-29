@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .ad{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.4}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.4}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .ln{stroke:#3d444d;stroke-width:1.4;fill:none;marker-end:url(#a)}
+      .bad{stroke:#b04a4a;stroke-width:1.6;fill:none;stroke-dasharray:6 4;marker-end:url(#r)}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+    </style>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+  <text x="16" y="26" class="t">What an adapter holds, what it may call, and what it may not reach.</text>
+
+  <rect x="40" y="48" width="380" height="170" rx="6" class="ad"/>
+  <text x="56" y="72" class="h">NFS adapter</text>
+  <text x="56" y="94" class="l">wire: RPC record marking, XDR codecs</text>
+  <text x="56" y="114" class="l">sessions: v4.1 slot tables, reply cache</text>
+  <text x="56" y="134" class="l">security: AUTH_SYS, RPCSEC_GSS contexts</text>
+  <text x="56" y="154" class="l">IDs: stateids, cookies decoded, no table</text>
+  <text x="56" y="174" class="l">compound: current / saved filehandle</text>
+  <text x="56" y="200" class="s">in memory only · gone on restart · client rebuilds it</text>
+
+  <rect x="480" y="48" width="380" height="170" rx="6" class="ad"/>
+  <text x="496" y="72" class="h">SMB adapter</text>
+  <text x="496" y="94" class="l">wire: NetBIOS framing, SMB2 codecs</text>
+  <text x="496" y="114" class="l">sessions: credits, message-ID window</text>
+  <text x="496" y="134" class="l">security: NTLM / Kerberos, signing, encryption</text>
+  <text x="496" y="154" class="l">IDs: tree ID, FileId volatile half</text>
+  <text x="496" y="174" class="l">held requests: STATUS_PENDING re-drive</text>
+  <text x="496" y="200" class="s">in memory only · gone on restart · client rebuilds it</text>
+
+  <path d="M230,220 L410,276" class="ln"/>
+  <path d="M670,220 L490,276" class="ln"/>
+  <text x="240" y="256" class="s">≤ 1 mutating call</text>
+  <text x="560" y="256" class="s">≤ 1 mutating call</text>
+
+  <rect x="230" y="280" width="440" height="58" rx="6" class="sv"/>
+  <text x="246" y="304" class="h">vfs.Service (RFC 17)</text>
+  <text x="246" y="324" class="l">admission · authorisation · conflicts · quota · ordering · routing</text>
+
+  <path d="M330,340 L190,392" class="ln"/>
+  <path d="M410,340 L380,392" class="ln"/>
+  <path d="M490,340 L560,392" class="ln"/>
+  <path d="M570,340 L740,392" class="ln"/>
+
+  <rect x="90" y="396" width="180" height="50" rx="4" class="st"/><text x="106" y="418" class="m">metadata store</text><text x="106" y="436" class="s">RFC 16, RFC 7</text>
+  <rect x="290" y="396" width="180" height="50" rx="4" class="st"/><text x="306" y="418" class="m">open state</text><text x="306" y="436" class="s">RFC 14</text>
+  <rect x="490" y="396" width="160" height="50" rx="4" class="st"/><text x="506" y="418" class="m">content engine</text><text x="506" y="436" class="s">RFC 8</text>
+  <rect x="670" y="396" width="160" height="50" rx="4" class="st"/><text x="686" y="418" class="m">routing</text><text x="686" y="436" class="s">RFC 15</text>
+
+  <path d="M70,220 C40,320 60,380 96,402" class="bad"/>
+  <text x="74" y="300" class="no">✗ direct import</text>
+  <text x="74" y="316" class="s">fails the import test</text>
+  <path d="M840,220 C870,320 820,370 800,392" class="bad"/>
+  <text x="838" y="300" class="no">✗</text>
+</svg>

@@ -278,14 +278,12 @@ func TestCheckFileAccess_NilACLOwnerGrantsRequested(t *testing.T) {
 	require.Equal(t, rightReadData|rightWriteData, granted)
 }
 
-// TestCheckFileAccess_NilACLNonOwnerGrantsRequested verifies the open-time
-// gate does NOT deny a non-owner's request when file.ACL == nil — even when
-// the POSIX mode would deny the same operation downstream. This is the WPTS
-// BVT load-bearing case (and smb2.create.multi): CREATE asks for DELETE,
-// WRITE_DAC, or higher-namespace rights that the rwx mapping cannot encode,
-// and the pre-#529 server granted those opens. We must keep granting them at
-// open time; per-op enforcement in read/write/delete catches abuse.
-func TestCheckFileAccess_NilACLNonOwnerGrantsRequested(t *testing.T) {
+// TestCheckFileAccess_NilACLNonOwnerDeniedByMode verifies the open-time gate
+// judges a file with no DACL by its POSIX mode: a non-owner of a 0o600 file is
+// denied write, and the bits the rwx mapping grants only to the owner
+// (DELETE, WRITE_DAC, WRITE_OWNER). The granted rights become the handle's
+// authority downstream, so granting them here would bypass the mode.
+func TestCheckFileAccess_NilACLNonOwnerDeniedByMode(t *testing.T) {
 	f := newTestFixture(t)
 
 	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix_owner_only.txt",
@@ -299,25 +297,22 @@ func TestCheckFileAccess_NilACLNonOwnerGrantsRequested(t *testing.T) {
 
 	authCtx := f.authContext(1001, 1001)
 
-	// Non-owner requesting WRITE_DATA on a 0o600 file. Open succeeds
-	// (no DACL to enforce); the actual WRITE op denies via POSIX mode.
-	granted, err := f.service.CheckFileAccess(created, authCtx, rightWriteData|rightAppendData)
-	require.NoError(t, err)
-	require.Equal(t, rightWriteData|rightAppendData, granted)
+	_, err = f.service.CheckFileAccess(created, authCtx, rightWriteData|rightAppendData)
+	require.Error(t, err)
 
-	// DELETE / WRITE_DAC / WRITE_OWNER — bits the POSIX rwx mapping cannot
-	// encode — must also pass the open gate when there is no DACL.
 	const rightWriteDac uint32 = 0x00040000
 	const rightWriteOwner uint32 = 0x00080000
-	probe := rightDelete | rightWriteDac | rightWriteOwner
-	granted, err = f.service.CheckFileAccess(created, authCtx, probe)
-	require.NoError(t, err)
-	require.Equal(t, probe, granted)
+	for _, bit := range []uint32{rightDelete, rightWriteDac, rightWriteOwner} {
+		_, err = f.service.CheckFileAccess(created, authCtx, bit)
+		require.Error(t, err, "bit 0x%x", bit)
+	}
 }
 
 // TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll verifies that
-// MAXIMUM_ALLOWED on a no-DACL file returns the full GENERIC_ALL set, mirroring
-// the MxAc reply produced by computeMaximalAccess.
+// MAXIMUM_ALLOWED on a no-DACL file returns the owner's GENERIC_ALL set,
+// mirroring the MxAc reply produced by computeMaximalAccess — less DELETE,
+// which is a right on the parent and so cannot be granted with no parent in
+// scope.
 func TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll(t *testing.T) {
 	f := newTestFixture(t)
 
@@ -335,8 +330,8 @@ func TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll(t *testing.T) {
 
 	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed)
 	require.NoError(t, err)
-	// GENERIC_ALL = 0x001F01FF
-	require.Equal(t, uint32(0x001F01FF), granted)
+	// GENERIC_ALL = 0x001F01FF, less DELETE (0x00010000).
+	require.Equal(t, uint32(0x001F01FF)&^rightDelete, granted)
 }
 
 // TestCheckFileAccess_ZeroDesiredAccessIsNoop guards against returning
@@ -894,4 +889,94 @@ func TestCheckFileAccess_StrictGenericReadGranted(t *testing.T) {
 	require.NoError(t, err, "GENERIC_READ against a READ-granting DACL must succeed in strict mode")
 	require.NotZero(t, granted&acl.ACE4_READ_DATA, "expected READ_DATA in granted mask, got 0x%x", granted)
 	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
+}
+
+// TestCheckFileAccessWithParent_NoACLWritableDirGrantsDeleteChild pins the
+// non-owner write bundle on a directory with no DACL: write carries
+// FILE_DELETE_CHILD, as the synthesized DACL maps it, for both a group and an
+// other writer, through an explicit request and through MAXIMUM_ALLOWED.
+func TestCheckFileAccessWithParent_NoACLWritableDirGrantsDeleteChild(t *testing.T) {
+	const requester uint32 = 1001
+	cases := []struct {
+		name  string
+		mode  uint32
+		gid   uint32
+		grant bool
+	}{
+		{"other writer on 0777", 0o777, 9999, true},
+		{"group writer on 0775", 0o775, requester, true},
+		{"other reader on 0775", 0o775, 9999, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTestFixture(t)
+			dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "d",
+				&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: tc.mode, UID: 9999, GID: tc.gid})
+			require.NoError(t, err)
+			root, err := f.service.GetFile(f.rootContext().Context, f.rootHandle)
+			require.NoError(t, err)
+			authCtx := f.authContext(requester, requester)
+
+			_, err = f.service.CheckFileAccessWithParent(dir, root, authCtx, acl.ACE4_DELETE_CHILD)
+			maxAccess, maxErr := f.service.CheckFileAccessWithParent(dir, root, authCtx, rightMaxAllowed)
+			require.NoError(t, maxErr)
+			if tc.grant {
+				require.NoError(t, err, "explicit FILE_DELETE_CHILD")
+				require.NotZero(t, maxAccess&acl.ACE4_DELETE_CHILD, "MAXIMUM_ALLOWED = 0x%x lacks FILE_DELETE_CHILD", maxAccess)
+			} else {
+				require.Error(t, err, "explicit FILE_DELETE_CHILD")
+				require.Zero(t, maxAccess&acl.ACE4_DELETE_CHILD, "MAXIMUM_ALLOWED = 0x%x carries FILE_DELETE_CHILD", maxAccess)
+			}
+		})
+	}
+}
+
+// TestCheckFileAccessWithParent_NoACLParentOverrideJudgedByMode pins the
+// delete-via-parent override when the child has a DACL lacking DELETE and the
+// parent has none: the parent is judged by its POSIX mode and sticky bit, as
+// NFS REMOVE is, not treated as a NULL DACL granting everything. The
+// requester owns neither the child nor the parent.
+func TestCheckFileAccessWithParent_NoACLParentOverrideJudgedByMode(t *testing.T) {
+	const requester uint32 = 1001
+	const requesterSID = "S-1-5-21-1-2-3-2001"
+	cases := []struct {
+		name  string
+		mode  uint32
+		grant bool
+	}{
+		{"0755 parent owned by another user", 0o755, false},
+		{"1777 sticky parent", 0o1777, false},
+		{"0777 non-sticky parent", 0o777, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTestFixture(t)
+			parent, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "p",
+				&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: tc.mode, UID: 9999, GID: 9999})
+			require.NoError(t, err)
+			require.Nil(t, parent.ACL)
+			require.Equal(t, tc.mode, parent.Mode)
+			child := &metadata.File{FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular, Mode: 0o644, UID: 9999, GID: 9999,
+				ACL: &acl.ACL{ACEs: []acl.ACE{{
+					Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+					Who:        "sid:" + requesterSID,
+					AccessMask: acl.ACE4_READ_DATA | acl.ACE4_SYNCHRONIZE,
+				}}},
+			}}
+			authCtx := f.authContext(requester, requester)
+			authCtx.Identity.SID = strPtr(requesterSID)
+
+			_, err = f.service.CheckFileAccessWithParent(child, parent, authCtx, rightDelete)
+			maxAccess, maxErr := f.service.CheckFileAccessWithParent(child, parent, authCtx, rightMaxAllowed)
+			require.NoError(t, maxErr)
+			if tc.grant {
+				require.NoError(t, err, "explicit DELETE")
+				require.NotZero(t, maxAccess&rightDelete, "MAXIMUM_ALLOWED = 0x%x lacks DELETE", maxAccess)
+			} else {
+				require.Error(t, err, "explicit DELETE")
+				require.Zero(t, maxAccess&rightDelete, "MAXIMUM_ALLOWED = 0x%x carries DELETE", maxAccess)
+			}
+		})
+	}
 }

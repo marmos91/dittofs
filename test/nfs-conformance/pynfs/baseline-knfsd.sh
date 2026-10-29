@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the pynfs suite against the Linux kernel NFS server, for comparison.
 #
-# This is what stops KNOWN_FAILURES from becoming a place to park bugs. A pynfs
+# This is what stops known.yaml from becoming a place to park bugs. A pynfs
 # failure means one of two quite different things, and only a second server can
 # tell them apart:
 #
@@ -11,7 +11,7 @@
 #                                   is expected to satisfy, and blacklisting it
 #                                   says nothing about DittoFS
 #
-# Only the second case justifies a `suite` row. The output is a Markdown table
+# Only the second case justifies a `proto` entry. The output is a Markdown table
 # of per-test knfsd verdicts, written to baseline-knfsd.md and committed, so
 # triage can cite it and later readers can see the evidence without re-running.
 #
@@ -60,7 +60,7 @@ done
 if [[ "$(uname -s)" != "Linux" ]]; then
     log_error "The baseline needs the in-kernel nfsd, so it only runs on Linux."
     log_error "From a macOS box, run it in CI instead:"
-    log_error "  gh workflow run nfs-pynfs.yml -f baseline=true"
+    log_error "  gh workflow run nfs-pynfs.yml"
     exit 1
 fi
 
@@ -109,10 +109,11 @@ mkdir -p "$EXPORT_DIR" /etc/exports.d
 chmod 777 "$EXPORT_DIR"
 echo "${EXPORT_DIR} *(rw,insecure,no_root_squash,no_subtree_check,fsid=0)" > "$EXPORTS_FILE"
 
-# Match run-pynfs.sh's lease time: expiry tests sleep for a full lease, and at
-# the 90s default they dominate the run. nfsv4leasetime lives in the nfsd
-# filesystem, which rpc.nfsd mounts, and the kernel refuses to change it while
-# threads are running — so start, drop to zero threads, set, start again.
+# Match the pynfs suite's lease in test/suites.yaml: expiry tests sleep for a
+# full lease, and at the 90s default they dominate the run. nfsv4leasetime
+# lives in the nfsd filesystem, which rpc.nfsd mounts, and the kernel refuses
+# to change it while threads are running, so start, drop to zero threads, set,
+# start again.
 # Best-effort: a baseline at the kernel default is slower but just as valid,
 # since lease time changes how long expiry tests wait, not their verdict.
 modprobe nfsd 2>/dev/null || true
@@ -141,8 +142,9 @@ fi
 RESULTS_DIR="${SCRIPT_DIR}/results/baseline-knfsd-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 
-# Flags must match run-pynfs.sh exactly, or this compares two different
-# experiments. fsid=0 makes the export path "/".
+# The flags that decide a verdict must match the pynfs suite's command in
+# test/suites.yaml, or this compares two different experiments. fsid=0 makes
+# the export path "/".
 for v in 4.0 4.1; do
     case "$v" in
         4.0) minor=0 ;;
@@ -159,8 +161,8 @@ for v in 4.0 4.1; do
     tail -2 "${RESULTS_DIR}/knfsd-v${v}.log"
 done
 
-# Emit the evidence table. Only the final results block is read, for the same
-# reason parse-results.sh reads only that: -v reprints every test as it runs.
+# Emit the evidence table. Only the final results block is read: -v reprints
+# every test as it runs.
 OUT="${SCRIPT_DIR}/baseline-knfsd.md"
 {
     echo "# pynfs against Linux knfsd — baseline"
@@ -171,8 +173,8 @@ OUT="${SCRIPT_DIR}/baseline-knfsd.md"
     echo "implement, or an assertion no server satisfies. This table separates the"
     echo "second case from the first by measuring rather than assuming: a test the"
     echo "Linux kernel server also fails is evidence about the suite, not about"
-    echo "DittoFS, and is the only thing that justifies a \`suite\` row in"
-    echo "KNOWN_FAILURES."
+    echo "DittoFS, and is the only thing that justifies a \`proto\` entry in"
+    echo "known.yaml."
     echo ""
     echo "- Kernel: \`$(uname -r)\`"
     echo "- Lease time: \`$(cat /proc/fs/nfsd/nfsv4leasetime 2>/dev/null || echo unknown)s\`"

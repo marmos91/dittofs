@@ -15,6 +15,10 @@ import (
 // full IOCTL request body (starting at StructureSize, after the SMB2 header).
 type IOCTLHandler func(h *Handler, ctx *SMBHandlerContext, body []byte) (*HandlerResult, error)
 
+// ioctlFlagIsFSCTL is SMB2_0_IOCTL_IS_FSCTL, the only IOCTL request Flags
+// value the server processes [MS-SMB2] 2.2.31.
+const ioctlFlagIsFSCTL uint32 = 0x00000001
+
 // ioctlDispatch maps FSCTL control codes to their handlers.
 // Populated in init() so that adding new handlers only requires a new entry.
 var ioctlDispatch map[uint32]IOCTLHandler
@@ -62,10 +66,12 @@ func init() {
 // Per MS-SMB2 3.3.5.15, the FileID must correspond to a valid open file
 // unless the FSCTL uses a special handle (e.g., VALIDATE_NEGOTIATE_INFO).
 func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// Read CtlCode at offset 4 (past StructureSize(2) + Reserved(2))
+	// Read CtlCode at offset 4 and Flags at offset 48
 	r := smbenc.NewReader(body)
 	r.Skip(4) // StructureSize(2) + Reserved(2)
 	ctlCode := r.ReadUint32()
+	r.Skip(40) // FileId(16) + InputOffset..MaxOutputResponse(24)
+	flags := r.ReadUint32()
 	if r.Err() != nil {
 		logger.Debug("IOCTL request too small", "len", len(body))
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -74,6 +80,16 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	logger.Debug("IOCTL request",
 		"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
 		"bodyLen", len(body))
+
+	// Per MS-SMB2 3.3.5.15, a request whose Flags is not SMB2_0_IOCTL_IS_FSCTL
+	// is a device IOCTL, which the server fails with STATUS_NOT_SUPPORTED
+	// before it looks at the FileId.
+	if flags != ioctlFlagIsFSCTL {
+		logger.Debug("IOCTL request is not an FSCTL",
+			"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
+			"flags", fmt.Sprintf("0x%08X", flags))
+		return NewErrorResult(types.StatusNotSupported), nil
+	}
 
 	// Per MS-SMB2 3.3.5.15: validate that the FileID corresponds to an open
 	// file, unless this is a "no-handle" FSCTL that uses the 16-byte all-0xFF

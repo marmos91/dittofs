@@ -4,11 +4,12 @@
 # clients, root without sudo, GNU userland, bash 5.
 #
 # Pins follow the repo: Go 1.26, golangci-lint at the lint checks' version,
-# pjdfstest and pynfs from flake.lock, the test tools the suites' {tools} names.
+# pjdfstest, pynfs, cthon04 and nfstest from flake.lock, the test tools the suites'
+# {tools} names.
 # The kernel is the Docker host's; Docker Desktop's has no NFS Kerberos
 # (rpcsec_gss_krb5) and no dm-flakey.
 
-# pjdfstest at the flake.lock revision, in the layout run-posix.sh looks for.
+# pjdfstest at the flake.lock revision, in the layout dt looks for.
 FROM debian:bookworm-slim AS pjdfstest
 ARG PJDFSTEST_REV=03eb25706d8dbf3611c3f820b45b7a5e09a36c06
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,13 +21,24 @@ RUN git clone https://github.com/pjd/pjdfstest.git /src && cd /src && git checko
     && cp pjdfstest /opt/pjdfstest/bin/ && cp pjdfstest /opt/pjdfstest/share/pjdfstest/ \
     && cp -r tests /opt/pjdfstest/share/pjdfstest/
 
+# cthon04 at the flake.lock revision, built in its tree, laid out as the flake's
+# output: the tree in share/cthon04, upstream's entry points in bin.
+FROM debian:bookworm-slim AS cthon04
+ARG CTHON04_REV=86a4501a6e1e415844dc632894a85a5253cc1505
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libtirpc-dev pkg-config git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone git://git.linux-nfs.org/projects/steved/cthon04.git /opt/cthon04/share/cthon04 \
+    && cd /opt/cthon04/share/cthon04 && git checkout "$CTHON04_REV" && make \
+    && mkdir /opt/cthon04/bin && ln -s /opt/cthon04/share/cthon04/runtests /opt/cthon04/share/cthon04/server /opt/cthon04/bin/
+
 FROM docker:29-cli AS dockercli
 
-FROM golang:1.26.8-bookworm
+FROM golang:1.26.10-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # protocol clients and services the suites use
-        nfs-common cifs-utils smbclient krb5-user rpcbind nfs4-acl-tools keyutils \
+        nfs-common cifs-utils smbclient krb5-user rpcbind nfs4-acl-tools keyutils nfs-kernel-server \
         # userland the repo's scripts assume (GNU, bash 5, perl and prove for pjdfstest)
         bash coreutils util-linux procps psmisc lsof iproute2 iptables netcat-openbsd \
         socat curl ca-certificates openssl netbase kmod acl attr perl git \
@@ -36,6 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gawk \
         # pynfs (Python 3.11 still ships xdrlib)
         python3 python3-ply python3-setuptools \
+        # cthon04 compiles its general tests on the mount; nfstest captures
+        # packets and drives its second client over ssh, with sudo as an
+        # ordinary user, which the suites that run as the user dt runs as need
+        libtirpc-dev pkg-config time tcpdump openssh-client openssh-server sudo \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /etc/samba && printf '[global]\n' > /etc/samba/smb.conf
 
@@ -60,6 +76,17 @@ RUN git clone https://github.com/kofemann/pynfs.git /opt/pynfs && cd /opt/pynfs 
     && mkdir bin && for v in 4.0 4.1; do \
         printf '#!/bin/sh\ncd /opt/pynfs/nfs%s && exec python3 /opt/pynfs/nfs%s/testserver.py "$@"\n' "$v" "$v" > bin/pynfs-$v; \
         chmod +x bin/pynfs-$v; done
+
+COPY --from=cthon04 /opt/cthon04 /opt/cthon04
+
+# nfstest at the flake.lock revision, with a wrapper per module in its bin, as
+# in the flake's output.
+ARG NFSTEST_REV=94089545caa18bbe4be1b055125d0721fe8dee80
+RUN git clone git://git.linux-nfs.org/projects/mora/nfstest.git /opt/nfstest/share/nfstest \
+    && cd /opt/nfstest/share/nfstest && git checkout "$NFSTEST_REV" && mkdir /opt/nfstest/bin \
+    && for t in /opt/nfstest/share/nfstest/test/nfstest_*; do \
+        printf '#!/bin/sh\nPYTHONPATH=/opt/nfstest/share/nfstest exec python3 %s "$@"\n' "$t" > "/opt/nfstest/bin/${t##*/}"; \
+        chmod +x "/opt/nfstest/bin/${t##*/}"; done
 
 ENV PATH=/opt/pjdfstest/bin:/opt/pynfs/bin:$PATH \
     GOTOOLCHAIN=local \
