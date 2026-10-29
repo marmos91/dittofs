@@ -329,3 +329,57 @@ func TestChannelLeaveIsAlwaysCounted(t *testing.T) {
 		t.Error("a replay after a request told it left twice: stale")
 	}
 }
+
+// A lock or an unlock under another sequence than its index stores is no
+// replay: the index stops naming the stored one, so the 4-bit sequence
+// wrapping round to it later is applied, not answered. A persistent open's
+// record follows.
+func TestLockSequenceMismatchInvalidates(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	ob := f.mustOpen(t, b, file, OpenRequest{Access: rd})
+	lockAs := func(seq uint8, rg LockRange) error {
+		_, err := f.lock(a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{rg}, Replay: &LockSequence{Index: 3, Seq: seq}})
+		return err
+	}
+	if err := lockAs(1, x(0, 10)); err != nil {
+		t.Fatal(err)
+	}
+	f.mustLock(t, b, file, LockReq{Owner: smbOwner(b, ob), Open: byID(ob), Ranges: []LockRange{x(100, 10)}})
+	for seq := uint8(2); seq != 17; seq++ {
+		if err := lockAs(seq&0xF, x(100, 10)); !errors.Is(err, ErrLocked) {
+			t.Fatalf("sequence %d of a conflicting lock: %v, want the conflict", seq&0xF, err)
+		}
+	}
+	if err := lockAs(1, x(100, 10)); !errors.Is(err, ErrLocked) {
+		t.Errorf("a new lock whose index wrapped to a stale sequence: %v; want the conflict, not a replay's success", err)
+	}
+	f.step(file.ID, func(e *entry) error {
+		f.timeouts(ctx, e, &outbox{}) // the timer writes the open's record again
+		return nil
+	})
+	if got := f.stored(t, file); len(got) != 1 || got[0].LockSeq[2] != 0 {
+		t.Errorf("stored %+v, want the reset index written", got)
+	}
+
+	unlockAs := func(seq uint8, rg ByteRange) error {
+		_, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{rg}, Seqs{}, &LockSequence{Index: 4, Seq: seq})
+		return err
+	}
+	if err := unlockAs(1, br(0, 10)); err != nil {
+		t.Fatal(err)
+	}
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}})
+	if err := unlockAs(2, br(500, 5)); !errors.Is(err, ErrRangeNotLocked) {
+		t.Fatalf("an unlock of a range not held: %v", err)
+	}
+	if err := unlockAs(1, br(0, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if h := f.holder(t, file, br(0, 10)); h != nil {
+		t.Errorf("an unlock whose index another sequence reset was answered as a replay: %+v still held", h)
+	}
+}

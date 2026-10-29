@@ -171,6 +171,24 @@ func (t *Table) lockSeqRecord(e *entry, op *open, q *LockSequence) (rec *entity.
 	return rec, func() { op.Durable.LockSeq[i] = v }
 }
 
+// resetLockSeq invalidates index i of op's lock replay, under e's step, for
+// a request under another sequence than the one stored there: the request
+// is then judged as a new one, and a later request wrapping round to the
+// old sequence is no replay. A persistent open's record follows by the
+// timer, the open unsaved until it is written.
+func (t *Table) resetLockSeq(e *entry, op *open, i int) {
+	if op.Durable.LockSeq[i] == 0 {
+		return
+	}
+	op.Durable.LockSeq[i] = 0
+	if op.persistent() {
+		op.unsaved = true
+		t.idx.Lock()
+		t.parked[e.file] = struct{}{}
+		t.idx.Unlock()
+	}
+}
+
 // dropOffers takes r out of every offer of a merging owner, and forgets an
 // offer once nothing of it is left: the owner's own lock or unlock of r
 // answered the host first, so a later refusal releases nothing of r. A
@@ -709,12 +727,15 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			if op != nil && !t.confirmed(op) {
 				return ErrBadState // the owner's sequence refuses it only when numbered
 			}
-			if i, v, ok := lockSeq(op, r.Replay); ok && op.Durable.LockSeq[i] == v {
-				// A replay is answered, never applied again, in grace too.
-				if ls := e.lockState(r.Owner, openToken(op)); ls != nil {
-					res.Ref = ls.ref
+			if i, v, ok := lockSeq(op, r.Replay); ok {
+				if op.Durable.LockSeq[i] == v {
+					// A replay is answered, never applied again, in grace too.
+					if ls := e.lockState(r.Owner, openToken(op)); ls != nil {
+						res.Ref = ls.ref
+					}
+					return nil
 				}
-				return nil
+				t.resetLockSeq(e, op, i) // another sequence is no replay of the stored one
 			}
 			// Admitted under the step, so grace is judged as it stands when
 			// the lock is decided, and a refusal answers the owner's number.
@@ -1027,8 +1048,11 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			if op != nil && !t.mayUse(op, who) {
 				return ErrNotYours
 			}
-			if i, v, ok := lockSeq(op, replay); ok && op.Durable.LockSeq[i] == v {
-				return nil // a replay is answered, never applied again
+			if i, v, ok := lockSeq(op, replay); ok {
+				if op.Durable.LockSeq[i] == v {
+					return nil // a replay is answered, never applied again
+				}
+				t.resetLockSeq(e, op, i)
 			}
 			if ls == nil {
 				if o.Stack && len(rs) > 0 {
