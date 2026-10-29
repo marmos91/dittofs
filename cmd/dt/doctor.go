@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -11,21 +13,21 @@ import (
 )
 
 // decision: dt doctor reports only the needs the registry names, checked as
-// dt run checks them. What dt itself can't do yet isn't a need of the
-// machine, and dt list shows which suites it stops. Tool versions and the
-// like aren't reported: when a suite fails for want of something no need
-// names, add that need rather than a check here.
+// dt run checks them, and then fails on each expired quarantine entry. What
+// dt itself can't do yet isn't a need of the machine, and dt list shows which
+// suites it stops. Tool versions and the like aren't reported: when a suite
+// fails for want of something no need names, add that need rather than a
+// check here.
 func newDoctor() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Which needs this machine meets, and how to meet the rest",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
-			root, _ := repoRoot()
 			var lists [][]string
 			for _, s := range r.Suites {
 				for _, u := range r.Units(s) {
@@ -41,7 +43,13 @@ func newDoctor() *cobra.Command {
 					rows = append(rows, []string{n, "yes", "", ""})
 				}
 			}
-			return table(cmd.OutOrStdout(), rows)
+			if err := table(cmd.OutOrStdout(), rows); err != nil {
+				return err
+			}
+			if len(r.Expired) > 0 {
+				return errors.New(strings.Join(r.Expired, "\n"))
+			}
+			return nil
 		},
 	}
 }

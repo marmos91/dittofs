@@ -300,7 +300,7 @@ func TestBindIdentityMatchesSession(t *testing.T) {
 	const sidA = "S-1-5-21-1-2-3-1107"
 	const sidB = "S-1-5-21-1-2-3-1200"
 	mk := func(username, sid string) *models.User {
-		return &models.User{Username: username, SID: sid}
+		return &models.User{ID: "id-" + username, Username: username, SID: sid}
 	}
 	tests := []struct {
 		name string
@@ -313,8 +313,10 @@ func TestBindIdentityMatchesSession(t *testing.T) {
 		{"SID session vs SID-less local same name rejected (escalation)", mk("alice", sidA), &models.User{Username: "alice", SID: ""}, false},
 		{"SID-less bind onto SID session rejected regardless of name", mk("alice", sidA), &models.User{Username: "ALICE", SID: ""}, false},
 		{"SID bind onto SID-less session rejected", mk("alice", ""), &models.User{Username: "alice", SID: sidA}, false},
-		{"local-vs-local same name (case-insensitive) matches", mk("alice", ""), &models.User{Username: "ALICE", SID: ""}, true},
-		{"local-vs-local different name rejected", mk("alice", ""), &models.User{Username: "bob", SID: ""}, false},
+		{"local-vs-local same record matches", mk("alice", ""), mk("alice", ""), true},
+		{"local-vs-local case-distinct accounts rejected", mk("alice", ""), mk("ALICE", ""), false},
+		{"local-vs-local different name rejected", mk("alice", ""), mk("bob", ""), false},
+		{"SID-less identities without record IDs rejected", &models.User{Username: "alice"}, &models.User{Username: "alice"}, false},
 		{"nil auth user rejected", mk("alice", sidA), nil, false},
 	}
 	for _, tt := range tests {

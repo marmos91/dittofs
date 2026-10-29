@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="pjdfstest/badger-s3/4.1" tests="1" failures="0" errors="0" skipped="0" time="912.000">
+  <testsuite name="unit" tests="1" failures="0" errors="0" skipped="0" time="912.000">
     <properties>
       <property name="result" value="passed"></property>
     </properties>
-    <testcase name="rename/09.t" classname="pjdfstest/badger-s3/4.1" time="3.310">
+    <testcase name="TestF" classname="unit/example.com/m/a" time="0.000">
       <properties>
         <property name="flaky" value="true"></property>
       </properties>

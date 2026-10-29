@@ -12,6 +12,7 @@ groups:              # `dt run GROUP` runs every suite in it
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke]
+  journal: [journal-conformance]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -24,7 +25,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress,journal_conformance ./...
       - go run ./test/spec-citations          # the MS-FSCC, MS-FSA and MS-SMB2 citations
       # The tests that pin an authorization or encryption gate, run by name: the edit that
       # reopens a gate can delete its test in the same change.
@@ -34,7 +35,8 @@ suites:
     job: Repo Checks
     tier: pr
     cmd:
-      - test/conformance/check-docs.sh         # the documentation's suite tables match the manifest
+      - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
+      - test/harness/bin/dt doctor             # fails on an expired quarantine entry, here alone
       - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
       - test/smb-conformance/compose-env_test.sh
@@ -73,9 +75,16 @@ suites:
         needs: [windows]
         blocking: { pr: false }
       nonrace:
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
+  # The journal's conformance checks, behind their own tag: they fail until the journal they
+  # check is written, and each failure is a known one, so the unit suite would turn red on them.
+  journal-conformance:
+    format: go-json
+    cmd: go test -race -tags=journal_conformance -timeout=30m -artifacts -outputdir={out} ./pkg/block/journalv2/conformance/...
+    known: test/journalv2/known.yaml
+    tier: pr
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -123,67 +132,155 @@ suites:
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
 
-  # Conformance. On pull requests only the production profile, badger-s3, runs.
+  # Conformance runs the production profile, badger-s3, only.
   pjdfstest:
     format: tap
     cmd: prove -v {test}
     dir: "{mount}"
     tests: "{tools}/pjdfstest/tests/*/*.t"
-    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], nfs: ["3", "4", "4.1"] }
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }
       squash: none                      # root keeps its privileges, as pjdfstest needs
       users: [65532, 65533, 65534]
       delegations: false
+    known: test/posix/known.yaml
     tier: pr
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit
-    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml all"
-    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
-    select: { pr: { profile: [badger-s3] } }
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
+    names: all                          # what {names} holds when a run names no tests
+    matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # uid 1 is pynfs's second client
+    known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
     needs: [linux]
     options:
-      knfsd:
+      knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }
-        fixture: { server: knfsd, nfs: export }
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }
         tier: manual
         blocking: false
   wpts:
     format: trx
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
-    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    # Its entrypoint only lists the tests unless DryRun is false, and writes these over the
+    # config's own values, so they repeat the fixture's.
+    env:
+      Usage: RunTestCases
+      Filter: TestCategory=BVT
+      DryRun: "false"
+      SutComputerName: "{server}"
+      SutIPAddress: "{server}"
+      # A value without a dot keeps WPTS in workgroup mode, as the fixture has no domain
+      # controller. The server's address won't do: WPTS reads it as a domain's name once
+      # its last byte has two digits.
+      DomainName: localhost
+      AdminUserName: "{user}"
+      PasswordForAllUsers: "{password}"
+    matrix: { profile: [badger-s3] }
     fixture:
       profile: "{profile}"
-      smb: { encryption: preferred }
+      smb: { encryption: preferred, port: 445 }
+      shares: test/smb-conformance/shares.yaml
     templates: test/smb-conformance/ptfconfig/*.template
     volumes: { "{out}/config": /data/fileserver }
+    known: test/smb-conformance/known.yaml
     tier: pr
     needs: [linux, docker]
   smbtorture:
     format: subunit
     image: quay.io/samba.org/samba-toolbox:v0.8
-    # Its test list, with each test's limit and the shards that split it on pull requests, is
-    # still built by smb-conformance/smbtorture/run.sh; it comes here as a file of its own.
-    cmd: "smbtorture //{server}/smbbasic -U{user}%{password}"
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, reset: each }
+    # The options, as smbtorture/run.sh gives them. smbtorture's second connections, to IPC$,
+    # fail unless its NetBIOS name resolves, as localhost does. smb2.maxfid opens handles
+    # until the server refuses one, 65520 by default, which no limit fits: 2000 is far past
+    # any real client, so a pass means 2000 handles work, not that the server's ceiling was
+    # found. smb2.ea.acl_xattr writes the xattr name the server keeps for its ACLs. A space
+    # splits arguments, so the options' names have none: smbtorture ignores them in a name.
+    cmd: >-
+      smbtorture //{server}/{share} -p {smb-port} -U{user}%{password}
+      --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
+      --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
+      --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
+    tests: test/smb-conformance/smbtorture/tests.txt
+    # One limit for every line of the list, as run.sh gives: it stops a hang, it doesn't grade
+    # speed. The slowest suite took 193 s, and one suite 22 s on one profile and 112 s on another.
+    timeout: { test: 5m }
+    matrix: { profile: [badger-s3] }
+    # smb2.multichannel.bugs.bug_15346 opens its extra connections to 445, whatever -p says.
+    fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }
+    known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
+    # Over two runners: in one cell it takes about 20 minutes, the pr tier's whole budget.
+    # decision: in every tier, since shards isn't set per tier.
+    shards: 2
     needs: [linux, docker]
     options:
+      # The suite's options, as run.sh --kerberos gives them too. smbtorture finds the KDC in
+      # the fixture's krb5.conf, and asks it for a ticket to cifs/{server}, a name here.
       kerberos:
-        cmd: "smbtorture //{server}/smbbasic -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: >-
+          smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required
+          --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
+          --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
+          --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
+        volumes: { "{krb5-conf}": /etc/krb5.conf }
         tests: [smb2.session, smb2.read, smb2.lock]
+        timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}
-        fixture: { profile: memory, smb: true, kerberos: true }
+        fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
+        known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
+        shards: 1                       # its three tests in one cell
+
+  # What a kernel client sees through an untuned mount, one change at a time: the named
+  # mount-option sets. Both run as the user dt runs as, on a client in a network namespace
+  # of its own, so an NFSv3 lock reaches the server's lock manager through the host's rpcbind.
+  cthon04:
+    tests: test/nfs-mount/cthon04/tests.txt   # each program on its own, with its command line
+    cmd: "{test-args}"
+    dir: "{tools}/cthon04"
+    matrix:
+      profile: [badger-s3]
+      mount-options:
+        - default: ""                   # none: the kernel negotiates NFSv4.2 against DittoFS
+        - v3: vers=3,tcp,mountproto=tcp
+        - v4.0: vers=4.0
+        - v4.1: vers=4.1
+        - v4.1-noac: vers=4.1,noac
+        - v4.1-smallio: vers=4.1,rsize=32768,wsize=32768
+    fixture:
+      profile: "{profile}"
+      nfs: { options: "{mount-options}" }    # mounted at {mount}, at the version vers= gives
+      shares: test/nfs-mount/shares.yaml
+      users: [self]
+      client: namespace
+      rpcbind: host
+    known: test/nfs-mount/cthon04/known.yaml
+    timeout: { test: 10m }
+    tier: pr
+    needs: [linux]
+  nfstest:
+    format: nfstest
+    tests: test/nfs-mount/nfstest/tests.txt   # the modules, each with the sets it runs on
+    # nfstest mounts by itself, at the version it's told, so a set gives its flags.
+    cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
+    matrix:
+      profile: [badger-s3]
+      mount-options:
+        - default: { nfs: "4.2", mtopts: hard }
+        - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }
+        - v4.0: { nfs: "4.0", mtopts: hard }
+        - v4.1: { nfs: "4.1", mtopts: hard }
+        - v4.1-noac: { nfs: "4.1", mtopts: "hard,noac" }
+        - v4.1-smallio: { nfs: "4.1", mtopts: "hard,rsize=32768,wsize=32768" }
+    fixture: { profile: "{profile}", nfs: export, shares: test/nfs-mount/shares.yaml, users: [self], client: namespace, clients: 2, rpcbind: host }
+    known: test/nfs-mount/nfstest/known.yaml
+    timeout: { test: 20m }
+    tier: nightly
+    needs: [linux]
 
   # Each OS's own clients mount the fixture's share, and the workloads run over the mount.
   # The suite itself is the Linux run, with every workload; macOS and Windows run a smoke test.
@@ -193,6 +290,9 @@ suites:
     fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
     needs: [linux, root, smb-client, nfs-client]
     tier: nightly
+    # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
+    # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
+    # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
       macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }
       windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }
@@ -208,14 +308,19 @@ suites:
     timeout: { test: size, cell: 90m }
     shards: 4
   fio-verify:
-    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
-    tests: bench/workloads/*.fio
+    # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
+    # perl fills them from the environment into a copy below {out}, which fio runs.
+    cmd:
+      - cp {test} {out}/{test}
+      - perl -pi -e s/\$\{(\w+):-([^}]*)\}/$ENV{$1}||$2/ge {out}/{test}
+      - fio --output-format=json --output={out}/{test}.json {out}/{test}
+    tests: bench/*/*.fio   # dfsbench's workloads, and the verify jobs, which read their data back
     exclude: [bench/workloads/layout.fio]
-    fixture: { profile: badger-s3, nfs: "4.1" }
+    fixture: { profile: badger-s3, nfs: "4.1", squash: none }   # fio runs as root, which keeps its privileges
     env: { BENCH_DIR: "{mount}" }
     metrics: fio-json
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }

@@ -259,8 +259,10 @@ func (pm *PipeManager) SetMachineDomainName(name string) {
 
 // CreatePipe creates a new named pipe instance.
 // The handler type is determined by the pipe name: "lsarpc" creates an
-// LSARPCHandler, all others create an SRVSVCHandler.
-func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
+// LSARPCHandler, all others create an SRVSVCHandler. canConnect reports whether
+// the opening session could connect to a share; srvsvc serves only those it
+// admits, and lsarpc does not use it.
+func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string, canConnect func(shareName string) bool) *PipeState {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -280,7 +282,7 @@ func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
 		// Create SRVSVC handler for share enumeration
 		sharesCopy := make([]ShareInfo1, len(pm.shares))
 		copy(sharesCopy, pm.shares)
-		handler = NewSRVSVCHandler(sharesCopy)
+		handler = NewSRVSVCHandler(sharesCopy, canConnect)
 	}
 
 	pipe := NewPipeState(pipeName, handler)

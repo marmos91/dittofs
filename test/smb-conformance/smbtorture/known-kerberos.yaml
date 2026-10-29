@@ -1,0 +1,41 @@
+- test: smb2.reauth5
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'Upstream Samba selftest known-fail (selftest/knownfail.d/ line 213): the test asserts `smb2_util_unlink` of a nonexistent file returns OK, but a correct server returns OBJECT_NAME_NOT_FOUND. Not a DittoFS bug: reauth1-4 (key retention across reauth) pass.'
+  issue: '#340'
+- test: smb2.reauth6
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'smb2.session.reauth6 makes a session setup fail, which smbtorture does only over NTLM (Can''t test failing session setup with kerberos.); the suite''s own run covers it'
+- test: smb2.bind_different_user
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'smb2.session.bind_different_user needs valid user2 credentials: the run gives no --option=torture:user2name and torture:user2password, so binding a second user''s session goes untested'
+- test: smb2.bug14607
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'smb2.read.bug14607 needs smbtorture''s own response padding FSCTL (FSCTL_SMBTORTURE_GLOBAL_READ_RESPONSE_BODY_PADDING8), which only Samba''s smbd implements'
+- test: smb2.rw-none
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: smb2.lock.rw-none tests a NONE-type lock that W2K8 grants by a bug; smbtorture skips it for any other target
+- test: smb2.replay_broken_windows
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'smb2.lock.replay_broken_windows is for servers that, as Windows has, check LockSequence only on resilient or persistent handles: DittoFS checks it on a plain handle under SMB 3, as MS-SMB2 3.3.5.14 allows, so smbtorture skips it (SMB3 Server implements LockSequence for all handles)'
+- test: smb2.ctdb-delrec-deadlock
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: smb2.lock.ctdb-delrec-deadlock must run on a ctdb cluster, Samba's clustered database
+- test: smb2.open-brlock-deadlock
+  status: skip
+  fix: wontfix
+  category: env
+  reason: smb2.lock.open-brlock-deadlock runs only with --option=torture:open_brlock_deadlock_timemout=SEC, which the run doesn't give

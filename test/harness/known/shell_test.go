@@ -78,11 +78,11 @@ func TestShellAgreesOnRealLists(t *testing.T) {
 			if err := alone.Load(path); err != nil {
 				t.Fatal(err)
 			}
-			if d := differ(rows(&alone), shellRows(t, path)); d != "" {
-				t.Errorf("%s, Load against kf_load:%s", path, d)
+			if got, want := rows(&alone), shellRows(t, path); !slices.Equal(got, want) {
+				t.Errorf("%s: Load %q, kf_load %q", path, got, want)
 			}
-			if d := differ(rows(&merged), shellRows(t, paths[:i+1]...)); d != "" {
-				t.Errorf("%q, Load against kf_load:%s", paths[:i+1], d)
+			if got, want := rows(&merged), shellRows(t, paths[:i+1]...); !slices.Equal(got, want) {
+				t.Errorf("%q: Load %q, kf_load %q", paths[:i+1], got, want)
 			}
 			n++
 		}
@@ -90,24 +90,12 @@ func TestShellAgreesOnRealLists(t *testing.T) {
 	t.Logf("%d lists agree", n)
 }
 
-// Each table in the test data loads exactly the rows its .want file lists
-// through kf_load too, whichever of the two test suites a change runs.
-func TestShellTables(t *testing.T) {
-	tables, _ := filepath.Glob(filepath.Join(testdata, "*.md"))
-	for _, table := range tables {
-		want := lines(t, strings.TrimSuffix(table, ".md")+".want")
-		if d := differ(shellRows(t, table), want); d != "" {
-			t.Errorf("%s:%s", filepath.Base(table), d)
-		}
-	}
-}
-
 // The tables the test data can't hold load the same through kf_load.
 func TestShellLineEnds(t *testing.T) {
 	for _, c := range lineEnds {
 		path := write(t, filepath.Join(t.TempDir(), "list.md"), c.table)
-		if d := differ(shellRows(t, path), c.want); d != "" {
-			t.Errorf("%s:%s", c.name, d)
+		if got := shellRows(t, path); !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

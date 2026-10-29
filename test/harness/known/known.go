@@ -3,11 +3,14 @@
 // known-failure lists the scripts still use, and matches test names against
 // either as test/common/known-failures.sh does: kf_load is Load and
 // kf_match_pattern is Match. Both run on the cases in test/common/testdata.
+// Import converts such a list into a known file, once. ParseQuarantine reads
+// the quarantine list, whose entries grade a cell's results beside it.
 package known
 
 import (
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -18,9 +21,14 @@ import (
 const space = " \t\n\v\f\r"
 
 // Row is a row of a list: a test name, which may be a pattern, and why the
-// test fails.
+// test fails. The rest is what dt known import reads: the row's Category and
+// Issue columns, its third and fifth fields, the last heading above it, and
+// whether its table is one of tests, headed "Test Name".
 type Row struct {
-	Name, Reason string
+	Name, Reason    string
+	Category, Issue string
+	Heading         string
+	NamesTest       bool
 }
 
 // List holds the rows of one or more tables, one per name, in the order the
@@ -50,31 +58,50 @@ func (l *List) Load(path string) error {
 // fourth the reason, each trimmed. Lines inside a fence are skipped, and so
 // are separator rows, the header (named "Test Name"), and a row with no
 // name. A row with no reason gets "unknown". A later row with the same name
-// replaces the reason.
+// replaces the earlier one. A table's rows name tests when its header does,
+// up to the next line outside a fence that isn't a row.
 func (l *List) parse(text string) {
 	// The shell's read drops NUL bytes, and a last line with no newline.
 	lines := strings.Split(strings.ReplaceAll(text, "\x00", ""), "\n")
 	lines = lines[:len(lines)-1]
-	fenced := false
+	fenced, tests, heading := false, false, ""
 	for _, line := range lines {
 		if isFence(line) {
 			fenced = !fenced
 			continue
 		}
-		if fenced || !strings.HasPrefix(line, "|") || isSeparator(line) {
+		if fenced {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			tests = false
+			if atx.MatchString(line) {
+				heading = strings.Trim(line, "#"+space)
+			}
+			continue
+		}
+		if isSeparator(line) {
 			continue
 		}
 		fields := strings.Split(line, "|")
 		name, reason := field(fields, 1), field(fields, 3)
-		if name == "" || name == "Test Name" {
+		if name == "Test Name" {
+			tests = true
+			continue
+		}
+		if name == "" {
 			continue
 		}
 		if reason == "" {
 			reason = "unknown"
 		}
-		l.add(name, reason)
+		l.add(Row{name, reason, field(fields, 2), field(fields, 4), heading, tests})
 	}
 }
+
+// atx matches a heading line, so that prose wrapped onto a line starting with
+// an issue number, such as "#N, an intermittent hang", isn't read as one.
+var atx = regexp.MustCompile(`^#{1,6}([ \t]|$)`)
 
 // isFence reports whether line opens or closes a fence: it starts with ```
 // or ~~~ after any indentation. Either marker closes a fence the other
@@ -98,16 +125,16 @@ func field(fields []string, i int) string {
 	return strings.Trim(fields[i], space)
 }
 
-func (l *List) add(name, reason string) {
-	if i, ok := l.index[name]; ok {
-		l.rows[i].Reason = reason
+func (l *List) add(r Row) {
+	if i, ok := l.index[r.Name]; ok {
+		l.rows[i] = r
 		return
 	}
 	if l.index == nil {
 		l.index = map[string]int{}
 	}
-	l.index[name] = len(l.rows)
-	l.rows = append(l.rows, Row{name, reason})
+	l.index[r.Name] = len(l.rows)
+	l.rows = append(l.rows, r)
 }
 
 // Rows returns the rows, one per name, in the order the names first appear.

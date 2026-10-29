@@ -19,6 +19,10 @@
 # directory is given, a "verdict" sidecar records the count for
 # test/conformance/run.sh, which cannot tell a failure count from a crash by
 # the exit status alone.
+#
+# Under the common runner, each failure is also recorded in its grades file,
+# and then the tests that passed or failed, unless a TIMEOUT or an INCOMPLETE
+# leaves a test without a result: those grades count no test that ran.
 
 set -euo pipefail
 
@@ -41,7 +45,7 @@ for table in "${TABLES[@]}"; do
 done
 echo "Loaded ${KF_COUNT} known failure pattern(s) from ${#TABLES[@]} table(s)"
 
-PASSED=0 KNOWN=0 NEW=0
+PASSED=0 KNOWN=0 NEW=0 NO_RESULT=0
 declare -a NEW_LIST=() STALE_LIST=()
 
 echo ""
@@ -57,13 +61,16 @@ while IFS=$'\t' read -r verdict name; do
         kf_is_known "$name" && STALE_LIST+=("$name")
         ;;
     FAIL | TIMEOUT | INCOMPLETE)
+        [[ "$verdict" == FAIL ]] || NO_RESULT=$((NO_RESULT + 1))
         if [[ "$verdict" == FAIL ]] && kf_is_known "$name"; then
             KNOWN=$((KNOWN + 1))
             printf "  ${YELLOW}KNOWN${NC} %s (%s)\n" "$name" "$(kf_reason "$name")"
+            kf_record known "$name"
         else
             NEW=$((NEW + 1))
             NEW_LIST+=("$name")
             printf "  ${RED}%-10s${NC} %s\n" "$verdict" "$name"
+            kf_record new "$name"
         fi
         ;;
     *)
@@ -73,6 +80,9 @@ while IFS=$'\t' read -r verdict name; do
     esac
 done <"$RESULTS"
 [[ $((KNOWN + NEW)) -eq 0 ]] && echo "  (none)"
+if [[ "$NO_RESULT" -eq 0 ]]; then
+    kf_record ran "$((PASSED + KNOWN + NEW))"
+fi
 
 if [[ ${#STALE_LIST[@]} -gt 0 ]]; then
     echo ""

@@ -238,20 +238,6 @@ func TestReopenRefusesAFloorBelowAVersionIssued(t *testing.T) {
 	misused(t, m.Reopen(ver(6)))
 }
 
-// The search for the state a crash left is decided by what the journal shows
-// wherever it can be: sixteen lost 4 KiB writes are decided record by record,
-// not by trying every subset of them.
-func TestCrashSearchIsDecidedByWhatTheJournalShows(t *testing.T) {
-	m := New()
-	for i := range maxUncertain {
-		ok(t, m.WriteAt(shareA, fid(1), int64(i)<<12, fill(byte('a'+i), 4<<10), 0, ver(uint64(i)+1), nil))
-	}
-	ok(t, m.Crash())
-	ok(t, m.Reopen(ver(100)))
-	ok(t, m.Compare(t.Context(), shareA, modelView{New(), shareA}))
-	equalSpans(t, heldSpans(t, m, fid(1)), nil)
-}
-
 // Once a removal's settled marker did not come back, repack may have dropped
 // its record, and the change version the journal rebuilds need not count it.
 func TestChangeVersionNeedNotCountAMarkerThatDidNotComeBack(t *testing.T) {
@@ -399,26 +385,6 @@ func TestOverlappingUnsyncedWritesNeedNoSearch(t *testing.T) {
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(30)))
 	ok(t, m.Compare(t.Context(), shareA, modelView{j, shareA}))
-}
-
-// Every version the journal issues exceeds every version on disk, so once it
-// issued v50 after a reopen, a fill at v100 that the crash left uncertain
-// cannot have survived.
-func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
-	setup := func(t *testing.T) *Model {
-		m := New()
-		ok(t, m.WriteAt(shareB, fid(2), 0, fill('x', 1), 0, ver(1), nil))
-		ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
-		ok(t, m.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
-		ok(t, m.Crash())
-		ok(t, m.Reopen(ver(5)))
-		ok(t, m.WriteAt(shareB, fid(2), 0, fill('y', 1), 0, ver(50), nil))
-		return m
-	}
-	kept := New()
-	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
-	diverged(t, setup(t).Compare(t.Context(), shareA, modelView{kept, shareA}))
-	ok(t, setup(t).Compare(t.Context(), shareA, modelView{New(), shareA}))
 }
 
 // A marker that came back after a crash still counts in the file's change

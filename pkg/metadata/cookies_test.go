@@ -59,6 +59,28 @@ func TestCookieManager_GenerateCookie(t *testing.T) {
 
 		assert.NotEqual(t, cookie1, cookie2)
 	})
+
+	// A client may treat a cookie as a signed directory offset and refuse to
+	// seek to a negative one, so no cookie may have bit 63 set, including
+	// those whose hash has it.
+	t.Run("cookies stay below 2^63", func(t *testing.T) {
+		t.Parallel()
+		cm := NewCookieManager()
+
+		hashedHigh := 0
+		for d := range 8 {
+			dir := FileHandle(fmt.Sprintf("/export:00000000-0000-0000-0000-%012d", d))
+			for i := range 1000 {
+				name := fmt.Sprintf("%04d.txt", i)
+				if fnv1a64(dir, name)>>63 == 1 {
+					hashedHigh++
+				}
+				cookie := cm.GenerateCookie(dir, name)
+				require.Zero(t, cookie>>63, "cookie %#x for %q in %q has bit 63 set", cookie, name, dir)
+			}
+		}
+		require.NotZero(t, hashedHigh, "no name hashed with bit 63 set, so nothing was checked")
+	})
 }
 
 func TestCookieManager_GetToken(t *testing.T) {

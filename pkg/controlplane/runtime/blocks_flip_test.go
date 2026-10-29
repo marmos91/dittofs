@@ -87,19 +87,25 @@ func registerMeta(t *testing.T, rt *Runtime, cp cpstore.Store, name string) meta
 
 // setJournalRoot points the runtime's journal root at a temp dir and drops
 // every share the test leaves behind. Each share opens its own journal beneath
-// the root, so a test that adds a share needs one — and the journal stays open
-// until the share is removed. The removal is registered after the temp dir so
-// cleanup's reverse order releases the journals before the dir is removed:
-// a platform that refuses to unlink an open file cannot remove the root
-// otherwise. Removing an already-removed share is a no-op, so a second call
-// on the same runtime is harmless.
+// the root, so a test that adds a share needs one. The journal stays open, and
+// the share's engine reads its metadata store, until the share is removed.
+// Cleanup runs in reverse order of registration, and the removal has to run
+// before that store closes, or a download still in flight reads a closed
+// store. A store is opened before any share that uses it is added, so the
+// removal is registered whenever the shares change rather than once here,
+// where it would run last. That also releases the journals before the temp dir
+// is removed, which a platform that refuses to unlink an open file needs.
+// Removing an already-removed share is a no-op, so a second call on the same
+// runtime is harmless.
 func setJournalRoot(t *testing.T, rt *Runtime) {
 	t.Helper()
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
+	rt.OnShareChange(func([]string) {
+		t.Cleanup(func() {
+			for _, name := range rt.ListShares() {
+				_ = rt.RemoveShare(name)
+			}
+		})
 	})
 }
 

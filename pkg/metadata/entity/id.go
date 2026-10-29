@@ -17,6 +17,9 @@ type (
 	PrincipalID [16]byte
 )
 
+// NodeID names a node; minted at random, never reused.
+type NodeID [16]byte
+
 // ErrSyntax is text that does not parse as the type asked for.
 var ErrSyntax = errors.New("entity: invalid syntax")
 

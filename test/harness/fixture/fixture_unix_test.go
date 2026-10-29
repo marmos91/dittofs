@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -142,6 +143,68 @@ func TestSetupServerExits(t *testing.T) {
 	}
 }
 
+// SMB on a set port, as WPTS's 445, starts dfs as dt's user with the one
+// capability that binds it, through setpriv, and through sudo -n unless dt
+// runs as root. sudo passes the admin's password on in the environment it
+// resets, never on the command line dt shows. The setup's end stops it.
+func TestStartOnSetPort(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	scripts := map[string]string{
+		// sudo resets the environment to PATH, keeping what --preserve-env names.
+		"sudo": `echo "sudo $*" >> ` + calls + `
+[ "$1" = -n ] || exit 1; shift
+case $1 in --preserve-env=DITTOFS_ADMIN_INITIAL_PASSWORD) shift; exec env -i "PATH=$PATH" "DITTOFS_ADMIN_INITIAL_PASSWORD=$DITTOFS_ADMIN_INITIAL_PASSWORD" "$@" ;; esac
+exec env -i "PATH=$PATH" "$@"`,
+		"setpriv": `echo "setpriv $*" >> ` + calls + `
+while [ "$1" != -- ]; do shift; done; shift; exec "$@"`,
+	}
+	for name, body := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	realEuid := geteuid
+	t.Cleanup(func() { geteuid = realEuid })
+	priv := fmt.Sprintf("setpriv --reuid=%d --regid=%d --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- ", os.Getuid(), os.Getgid())
+	for _, tc := range []struct {
+		euid int
+		want []string // the calls, each up to dfs's arguments
+	}{
+		{1000, []string{"sudo -n --preserve-env=DITTOFS_ADMIN_INITIAL_PASSWORD " + priv, priv}},
+		{0, []string{priv}},
+	} {
+		geteuid = func() int { return tc.euid }
+		_ = os.Remove(calls)
+		bin, starts := fakeDFS(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { started(starts); cancel() }()
+		var w bytes.Buffer
+		_, err := Start(ctx, registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Port: 445}}, nil, bin, t.TempDir(), &w)
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("euid %d: Start: %v", tc.euid, err)
+		}
+		runs := started(starts)
+		if len(runs) != 1 || len(runs[0]) != 3 || runs[0][2] != "DITTOFS_ADMIN_INITIAL_PASSWORD," {
+			t.Fatalf("euid %d: dfs started as %q", tc.euid, runs)
+		}
+		if !ended(runs[0][0]) {
+			t.Errorf("euid %d: dfs %s still runs", tc.euid, runs[0][0])
+		}
+		data, _ := os.ReadFile(calls)
+		got := strings.Split(strings.TrimSpace(string(data)), "\n")
+		dfs := filepath.Join(bin, "dfs") + " start --foreground --config "
+		if len(got) != len(tc.want) || !strings.HasPrefix(got[0], tc.want[0]+dfs) || !strings.HasPrefix(got[len(got)-1], priv+dfs) {
+			t.Errorf("euid %d: calls\n%s\nwant each to start\n%s", tc.euid, data, strings.Join(tc.want, dfs+"...\n"))
+		}
+		if !strings.Contains(w.String(), "[dt] fixture: $ "+got[0]+"\n") || strings.Contains(w.String(), "DITTOFS_ADMIN_INITIAL_PASSWORD=") {
+			t.Errorf("euid %d: dt's lines:\n%s", tc.euid, w.String())
+		}
+	}
+}
+
 // A real dfs, built from this checkout, starts on each profile, exports the
 // share over NFS at {server} on its own port, and stops; a "dfs start" dt
 // didn't start survives the stop. badger-s3 runs where the S3 service it
@@ -163,7 +226,7 @@ func TestRealServer(t *testing.T) {
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []int{65532}, Delegations: &no, Lease: "30s"}
+			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []string{"65532"}, Delegations: &no, Lease: "30s"}
 			s, err := Start(ctx, f, services, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
@@ -191,6 +254,88 @@ func TestRealServer(t *testing.T) {
 			}
 			if !alive(other.Process.Pid) {
 				t.Error("the dfs dt didn't start was stopped too")
+			}
+		})
+	}
+}
+
+// A real dfs serves the SMB suites' shares on a port of its own and, where
+// root and setpriv are and nothing holds it, on 445, as dt's user. Where
+// smbclient is, {user} with {password} lists the shares and makes a
+// directory at the root of the first, {share}, and again once the reset has
+// created the share again. Stop stops the server.
+func TestRealSMB(t *testing.T) {
+	bin := realBin(t)
+	shares, _ := filepath.Abs(filepath.Join(smbConformance, "shares.yaml"))
+	for _, port := range []int{0, 445} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			if port != 0 {
+				if _, err := exec.LookPath("setpriv"); err != nil {
+					t.Skip("no setpriv here")
+				}
+				for _, n := range []string{"root", "port:445"} {
+					if err := needs.Check("", n); err != nil {
+						t.Skipf("%s: %v", n, err)
+					}
+				}
+			}
+			out := t.TempDir()
+			var w bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			f := registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred", Port: port}, Shares: shares, Reset: "each"}
+			s, err := Start(ctx, f, nil, bin, out, &w)
+			if err != nil {
+				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
+				t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
+			}
+			api := s.api
+			defer func() {
+				if err := s.Stop(); err != nil {
+					t.Errorf("Stop: %v", err)
+				}
+				if ready(context.Background(), api) == nil {
+					t.Error("the API still answers")
+				}
+			}()
+			vals := s.Placeholders()
+			if strings.Contains(w.String(), vals["password"]) {
+				t.Errorf("dt's lines show {password}:\n%s", w.String())
+			}
+			if info, err := os.Stat(filepath.Join(s.data, "controlplane.db")); err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+				t.Errorf("dfs doesn't run as dt's user: %v", err)
+			}
+			if vals["share"] != "smbbasic" {
+				t.Errorf("{share} is %q, not the first share without its /", vals["share"])
+			}
+			smbclient, err := exec.LookPath("smbclient")
+			if err != nil {
+				t.Skip("no smbclient here")
+			}
+			run := func(args ...string) string {
+				t.Helper()
+				args = append([]string{"-p", vals["smb-port"], "-U", vals["user"] + "%" + vals["password"]}, args...)
+				got, err := exec.Command(smbclient, args...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("smbclient %s: %v\n%s", strings.Join(args[4:], " "), err, got)
+				}
+				return string(got)
+			}
+			list := run("-L", "//"+vals["server"])
+			for _, name := range []string{"smbbasic", "smbencrypted", "fileshare", "hideunread", "change_notify_disabled", "smbnoncanon", "create_no_streams", "smbpersistent"} {
+				if !strings.Contains(list, name) {
+					t.Errorf("smbclient -L lacks %s:\n%s", name, list)
+				}
+			}
+			share := "//" + vals["server"] + "/" + vals["share"]
+			if got := run(share, "-c", "mkdir before; ls"); !strings.Contains(got, "before") {
+				t.Fatalf("{user} made no directory at the root:\n%s", got)
+			}
+			if err := s.Reset(vals["share"]); err != nil {
+				t.Fatal(err)
+			}
+			if got := run(share, "-c", "mkdir after; ls"); !strings.Contains(got, "after") {
+				t.Errorf("{user} made no directory at the root after the reset:\n%s", got)
 			}
 		})
 	}
