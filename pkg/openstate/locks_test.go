@@ -885,20 +885,23 @@ func refusalSparesTheOther(t *testing.T, refuseOlder bool) {
 // the two callback grants: newer must start inside older and end past it.
 func overlappingGrants(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, older, newer LockRange) (LockWaiter, LockWaiter) {
 	t.Helper()
-	grant := func(name string, held ByteRange, r LockRange) LockWaiter {
-		t.Helper()
-		blocker := f.host(t, name, 1)
-		f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
-		f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
-		f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
-		ws := f.sink.takeWaits()
-		if g := granted(t, ws); len(g) != 1 {
-			t.Fatalf("granted %v, want h", g)
-		}
-		return ws[0].w
-	}
 	end := older.Offset + older.Length
-	return grant("a", older.ByteRange, older), grant("b", br(end, newer.Offset+newer.Length-end), newer)
+	return callbackGrant(t, f, file, h, ho, "a", older.ByteRange, older), callbackGrant(t, f, file, h, ho, "b", br(end, newer.Offset+newer.Length-end), newer)
+}
+
+// callbackGrant has ho of h wait for r behind host name's exclusive lock of
+// held, which is then unlocked, and returns the callback grant of r.
+func callbackGrant(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, name string, held ByteRange, r LockRange) LockWaiter {
+	t.Helper()
+	blocker := f.host(t, name, 1)
+	f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
+	f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
+	ws := f.sink.takeWaits()
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("granted %v, want h", g)
+	}
+	return ws[0].w
 }
 
 // answerGrants has h accept accepted and refuse refused, the acceptance first
@@ -950,6 +953,49 @@ func TestStackingRefusalReleasesItsOwnLock(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A stacking owner's unlock of another lock overlapping its callback grant
+// leaves the grant whole, so refusing it releases it: holding shared [0,15)
+// and granted shared [10,20), it unlocks [0,15) and refuses, and holds nothing.
+func TestStackingUnlockLeavesItsGrantWholeToRefuse(t *testing.T) {
+	f := newFixture(t)
+	h := f.host(t, "h", 1)
+	ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
+	file := anyFile()
+	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{sh(0, 15)}})
+	g := callbackGrant(t, f, file, h, ho, "b", br(15, 5), sh(10, 10))
+	f.unlock(t, h, file, ho, br(0, 15))
+	if err := f.Locks().WaitAnswered(ctx, h, g, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.holder(t, file, br(0, 20)); l != nil {
+		t.Errorf("h unlocked [0,15) and refused [10,20), yet holds %+v", *l)
+	}
+}
+
+// A stacking owner's own lock overlapping its callback grant, or of exactly
+// its range, is another lock, not an answer to the grant: granted shared
+// [10,20), it locks shared [0,15) or [10,20), refuses the grant and unlocks
+// its own lock, and holds nothing.
+func TestStackingLockLeavesItsGrantWholeToRefuse(t *testing.T) {
+	for name, own := range map[string]ByteRange{"[0,15)": br(0, 15), "[10,20)": br(10, 10)} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			h := f.host(t, "h", 1)
+			ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
+			file := anyFile()
+			g := callbackGrant(t, f, file, h, ho, "b", br(15, 5), sh(10, 10))
+			f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{{own, false}}})
+			if err := f.Locks().WaitAnswered(ctx, h, g, true); err != nil {
+				t.Fatal(err)
+			}
+			f.unlock(t, h, file, ho, own)
+			if l := f.holder(t, file, br(0, 20)); l != nil {
+				t.Errorf("h locked %s, refused [10,20) and unlocked %s, yet holds %+v", name, name, *l)
+			}
+		})
 	}
 }
 

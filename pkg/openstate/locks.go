@@ -137,10 +137,18 @@ type offer struct {
 
 // dropOffers takes r out of every offer, and forgets an offer once nothing of
 // it is left: the owner's own lock or unlock of r answered the host first, so
-// a later refusal releases nothing of r.
+// a later refusal releases nothing of r. A stacking owner's grant is a lock
+// of its own, which only an unlock of exactly its range answers: any other
+// range leaves it whole.
 func (ls *lockState) dropOffers(r ByteRange) {
 	kept := ls.offers[:0]
 	for _, o := range ls.offers {
+		if ls.owner.Stack {
+			if o.asked.ByteRange != r {
+				kept = append(kept, o)
+			}
+			continue
+		}
 		var left []ByteRange
 		for _, l := range o.left {
 			left = append(left, ranges.Minus(l, r)...)
@@ -584,6 +592,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			ls.add(rg)
 		}
 		for _, rg := range r.Ranges {
+			if ls.owner.Stack {
+				break // a stacking owner's lock is another lock, answering no grant
+			}
 			ls.dropOffers(rg.ByteRange) // this answer supersedes the callback's: its refusal releases nothing
 		}
 		if !minted {
