@@ -15,12 +15,12 @@
 .cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
 </style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
 <rect width="900" height="530" fill="#ffffff"/>
-<text x="16" y="26" class="t">Routing: any node's front-end forwards to the primary; a stale route is refused and re-routed.</text>
+<text x="16" y="26" class="t">Routing: any node's gateway forwards to the primary; a stale route is refused and re-routed.</text>
 <rect x="15" y="44" width="110" height="30" rx="4" class="ext"/>
 <text x="70" y="64" class="h" text-anchor="middle">client</text>
 <path d="M70 76V462" class="lane"/>
 <rect x="160" y="44" width="160" height="30" rx="4" class="vfs"/>
-<text x="240" y="64" class="h" text-anchor="middle">front-end (node C)</text>
+<text x="240" y="64" class="h" text-anchor="middle">gateway (node C)</text>
 <path d="M240 76V462" class="lane"/>
 <rect x="345" y="44" width="170" height="30" rx="4" class="ext"/>
 <text x="430" y="64" class="h" text-anchor="middle">node A (old primary)</text>
@@ -37,7 +37,7 @@
 <path d="M242 150H426" class="arr"/>
 <text x="250" y="145" class="s">req 42, (S, e5), hop 0</text>
 <path d="M428 180H244" class="dash"/>
-<text x="250" y="175" class="rt">refused: S is at e6, not mine</text>
+<text x="250" y="175" class="rt">vfs.Serve refuses: S is at e6, not mine</text>
 <path d="M242 214H796" class="arr"/>
 <text x="390" y="209" class="s">re-read shard record S</text>
 <path d="M798 240H244" class="arr"/>
@@ -45,7 +45,7 @@
 <path d="M242 274H606" class="arr"/>
 <text x="390" y="269" class="s">req 42, (S, e6), hop 0</text>
 <text x="618" y="300" class="s">journal, replicate,</text>
-<text x="618" y="314" class="s">record req 42 in dedup</text>
+<text x="618" y="314" class="s">record req 42 in dedup (vfs.Serve)</text>
 <path d="M608 336H244" class="arr"/>
 <text x="390" y="331" class="s">ok</text>
 <path d="M238 360H74" class="arr"/>
@@ -56,6 +56,6 @@
 <path d="M608 432H244" class="arr"/>
 <text x="252" y="427" class="s">same result, from the dedup table — not applied twice</text>
 <text x="16" y="480" class="l">The cache may be stale: a stale entry costs one refusal and a retry, never a wrong write.</text>
-<text x="16" y="498" class="s">Node A refuses because the receiver checks the epoch; it never forwards on itself, so a call cannot loop.</text>
-<text x="16" y="516" class="s">A file that moved to another shard is refused the same way, by its recorded shard.</text>
+<text x="16" y="498" class="s">Node A refuses because the receiver's vfs.Serve checks the epoch; it never forwards on itself, so a call cannot loop.</text>
+<text x="16" y="516" class="s">A file that moved to another shard is refused by the primary's server, by its recorded shard.</text>
 </svg>

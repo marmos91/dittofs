@@ -33,6 +33,8 @@ func userWithGrant(perm models.SharePermission, uid uint32, groupGID uint32) *mo
 func buildDispatchIdentity(t *testing.T, h *Handler, sessionID uint64) *metadata.Identity {
 	t.Helper()
 	ctx := NewSMBHandlerContext(context.Background(), "127.0.0.1:12345", sessionID, 0, 1)
+	// The operation runs on the fixture's share, whose squash mode applies.
+	ctx.ShareName = "/export"
 	h.primeAuthContext(ctx, 0, sessionID)
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {

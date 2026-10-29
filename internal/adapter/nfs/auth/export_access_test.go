@@ -112,8 +112,8 @@ func TestCheckExportAccess_AuthFlavorPolicy(t *testing.T) {
 }
 
 // TestCheckExportAccess_Netgroup covers the client-address allowlist: it runs
-// only when a lookup is supplied, and both an unparseable address and a failing
-// lookup deny rather than fall through.
+// only when a lookup is supplied, a failing lookup denies rather than falls
+// through, and an unparseable address is left to the lookup.
 func TestCheckExportAccess_Netgroup(t *testing.T) {
 	share := &runtime.Share{Name: "/export", AllowAuthSys: true}
 	allow := func(context.Context, string, net.IP) (bool, error) { return true, nil }
@@ -129,8 +129,13 @@ func TestCheckExportAccess_Netgroup(t *testing.T) {
 	if err := CheckExportAccess(context.Background(), share, rpc.AuthUnix, net.ParseIP("10.0.0.1"), fail); !errors.Is(err, ErrExportAccessDenied) {
 		t.Errorf("netgroup lookup failure must fail closed: err = %v, want ErrExportAccessDenied", err)
 	}
-	if err := CheckExportAccess(context.Background(), share, rpc.AuthUnix, nil, allow); !errors.Is(err, ErrExportAccessDenied) {
-		t.Errorf("unparseable client address must fail closed: err = %v, want ErrExportAccessDenied", err)
+	// An unparseable client address is the lookup's to judge: a share with no
+	// allowlist admits it, one with an allowlist refuses it.
+	if err := CheckExportAccess(context.Background(), share, rpc.AuthUnix, nil, allow); err != nil {
+		t.Errorf("unparseable client address, lookup allows: err = %v, want nil", err)
+	}
+	if err := CheckExportAccess(context.Background(), share, rpc.AuthUnix, nil, refuse); !errors.Is(err, ErrExportAccessDenied) {
+		t.Errorf("unparseable client address, lookup refuses: err = %v, want ErrExportAccessDenied", err)
 	}
 	// Without a lookup there is no address gate to apply, so an absent client
 	// IP is not a denial on its own.

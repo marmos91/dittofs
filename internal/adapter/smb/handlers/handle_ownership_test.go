@@ -121,7 +121,7 @@ func buildIoctlRequestBody(ctlCode uint32, fileID [16]byte, input []byte, maxOut
 	w.WriteUint32(uint32(64 + fixedSize)) // OutputOffset
 	w.WriteUint32(0)                      // OutputCount
 	w.WriteUint32(maxOutput)              // MaxOutputResponse
-	w.WriteUint32(0)                      // Flags
+	w.WriteUint32(1)                      // Flags: SMB2_0_IOCTL_IS_FSCTL
 	w.WriteUint32(0)                      // Reserved2
 	if len(input) > 0 {
 		w.WriteBytes(input)
@@ -205,6 +205,13 @@ func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 		{"IOCTL FSCTL_SET_ZERO_DATA", ioctlOp(FsctlSetZeroData, byteRange)},
 		{"IOCTL FSCTL_SET_COMPRESSION", ioctlOp(FsctlSetCompression, []byte{0, 0})},
 		{"IOCTL FSCTL_GET_REPARSE_POINT", ioctlOp(FsctlGetReparsePoint, nil)},
+		{"IOCTL FSCTL_GET_COMPRESSION", ioctlOp(FsctlGetCompression, nil)},
+		{"IOCTL FSCTL_GET_OBJECT_ID", ioctlOp(FsctlGetObjectID, nil)},
+		{"IOCTL FSCTL_CREATE_OR_GET_OBJECT_ID", ioctlOp(FsctlCreateOrGetObjectID, nil)},
+		{"IOCTL FSCTL_MARK_HANDLE", ioctlOp(FsctlMarkHandle, nil)},
+		{"IOCTL FSCTL_QUERY_FILE_REGIONS", ioctlOp(FsctlQueryFileRegions, nil)},
+		{"IOCTL FSCTL_GET_NTFS_VOLUME_DATA", ioctlOp(FsctlGetNtfsVolumeData, nil)},
+		{"IOCTL FSCTL_READ_FILE_USN_DATA", ioctlOp(FsctlReadFileUsnData, nil)},
 	}
 
 	// A fixture per arm, since several of these commands consume the handle.

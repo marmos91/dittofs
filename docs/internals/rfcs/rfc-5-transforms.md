@@ -891,9 +891,28 @@ blocks are deleted, and T19 still holds. The check is one check before any
 K-bounded batches, and every retained export's material as the metadata store's
 backup state records it, never by reading remote locations. If any of them
 names **any** of the namespace's material, the drain destroys none of it and
-stops; it destroys all of it only when the whole check passed and a re-read of
-the namespace's fence shows no census entry naming its material appeared since
-the check began ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)).
+stops; it destroys all of it only when the whole check passed and no census
+entry naming its material has appeared since the check began
+([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)).
+
+**The drain mark carries a check token.** The check first rewrites the drain
+mark `NS‖ns‖drain` with a fresh token. Every copy transaction that adds a
+census entry for this namespace's material, in any namespace's folder record,
+reads the mark with tracking and, while it exists, writes a new token into it
+in the same transaction ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+The transaction that removes the keys reads the mark with tracking, proceeds
+only if it still holds the token its own check wrote, and rewrites the mark.
+Both commit orders are then caught:
+
+| Commits first | What stops the removal |
+| --- | --- |
+| a census entry, at any point after the check began — before the removal transaction started, or while it runs | it has replaced the token, so the removal finds another value, or conflicts, removes nothing, and the check runs again |
+| the removal | it has written the mark the later copy transaction read, so that copy aborts and finds the material gone |
+
+A mark with no value would catch neither: a census entry committed before the
+removal transaction's snapshot is no conflict for it
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)),
+and a removal that only reads the mark writes nothing a copy read.
 Folder censuses list transform material only, so a key-by-key check would
 destroy the chunk-ID key and the chunking key, which no census lists, before the
 data key stopped it, and leave another namespace's retained backups of these
@@ -933,7 +952,7 @@ without writing any: the chain exports them around each call.
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
 | time per call, by direction | `transform_seconds` | histogram |
 | decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `transform_decode_failures_total` | counter |
-| bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `transform_census_blocks` | gauge |
+| bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the census per material is read through the management API, not exported, so rotations add no series | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
 refuses the store ([§2.7](#2.7%20Failures)). A transform logs nothing per chunk: its outcomes
@@ -1028,7 +1047,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no unkeyed hash of its chunks appears anywhere in the stored block, the header's chunk IDs equal block metadata's, and every read still verifies. With encryption off, the header lists chunk IDs, none of which equals an unkeyed hash of the file's chunks. |
 | T19 | Rotate a master key while a retained export carries the old wrapping: destroying the old key is refused with `ErrMaterialInUse` naming the backup; expire the backup and the destroy succeeds. A design that checks only the key records destroys it and leaves the backup unopenable. Make one backup location unreachable: the destroy is refused naming it. Move the namespace to a second installation sharing the key service: the importer re-wraps every key record under its own master key before publish, and the exporter refuses to destroy the old key until an operator releases the move's pin. |
 | [Appendix B.3](#B.3%20Rotation) | Rotate the export key: the next export is sealed under the new key, names both IDs in its clear part and carries the old key wrapped; importing it alone opens an export sealed under the old key. Destroying the old export key while a retained export names it is refused. |
-| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` role key is refused. |
+| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` wrapping key is refused. |
 | T20 | Destroy a data key while the journal still holds some chunks its blocks cover: a decode of a remote-only chunk returns `ErrMaterialDestroyed`, the codec's verification-failure counter does not move, the engine reports those chunks Lost; the chunks still held locally are not evicted, are offloaded again under the current key, and read back. |
 | T21 | Encode a block of an encrypting namespace: no unkeyed hash of any of its chunks appears in its bytes; its header's chunk IDs are the keyed ones block metadata records, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
 | [Appendix B.2](#B.2%20Keys) | Rotate the data key after the last catalog backup, relocate that backup's blocks under it, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key becomes current once the bucket's `keys` put succeeds, and the next version written at that location waits until its `keys` object holds every key record. Fail the bucket's `keys` put: the old key stays current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
@@ -1492,7 +1511,7 @@ above are the one statement of the escrow rule; other RFCs cite it. A rotated ke
 no escrow would leave every key record re-wrapped under it held only on the host.
 
 **No storage-key fallback.** A namespace key is wrapped only under a master key
-of its store configuration. The `storage` role's wrapping key
+of its store configuration. The `storage` wrapping key
 ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), which seals remote-tier credentials in the metadata store,
 **MUST NOT** wrap a namespace key: it lives on the host, so an export wrapped
 under it would restore only on the host that made it, which is the one place a
@@ -1908,9 +1927,9 @@ What a bucket reader can still see:
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| chunks encrypted, labelled by data key ID | `encryption_chunks_total` | counter |
-| the data key ID new chunks use, per namespace | `encryption_current_key` | gauge (1 on the current key's label) |
-| whether the provider can currently return each configured key with a matching fingerprint | `encryption_key_available` | gauge (0/1) |
+| chunks encrypted | `encryption_chunks_total` | counter |
+| how long the namespace's current data key has been current; the key ID itself is read through the management API | `encryption_current_key_age_seconds` | gauge, labelled `namespace` |
+| configured keys the provider cannot currently return with a matching fingerprint, a count; the `material_unavailable` health condition names the keys (RFC 25) | `encryption_keys_unavailable` | gauge |
 
 ## Appendix C — example, a parity transform
 

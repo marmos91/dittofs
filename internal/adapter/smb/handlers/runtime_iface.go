@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -43,6 +44,12 @@ type smbRuntime interface {
 
 	// Share-change notification (tree-connect cache invalidation).
 	OnShareChange(callback func(shares []string)) func()
+
+	// Netgroup client allowlist, applied through runtime.CheckShareAccess.
+	CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
+
+	// ApplyIdentityMapping applies the share's squash mode to an identity.
+	ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error)
 
 	// Identity / auth backends.
 	GetUserStore() models.UserStore

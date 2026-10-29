@@ -1,0 +1,351 @@
+- test: WRT18
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: write-session freeze deliberately holds ctime, so change cannot advance
+  where: {minor: ["0"]}
+- test: DELEG24
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'knfsd fails this too: needs FATTR4_OPEN_ARGUMENTS (v4.2)'
+  where: {minor: ["1"]}
+- test: DELEG25
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'knfsd fails this too: needs FATTR4_OPEN_ARGUMENTS (v4.2)'
+  where: {minor: ["1"]}
+# The skips the runs give that no row of the Markdown list holds.
+- test: DELEG*
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the delegation tests'' flags (delegations or writedelegations) don''t include all, which the run selects'
+  issue: '#2996'
+  where: {minor: ["0"]}
+- test: REBT*
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the reboot tests'' flags (reboot) don''t include all, which the run selects; each needs the server restarted while it runs'
+  issue: '#2996'
+- test: LOCK18
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the blocking-lock fairness tests'' flags (fairlocks) don''t include all, which the run selects'
+  issue: '#2996'
+  where: {minor: ["0"]}
+- test: LOCK19
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the blocking-lock fairness tests'' flags (fairlocks) don''t include all, which the run selects'
+  issue: '#2996'
+  where: {minor: ["0"]}
+- test: LOCK21
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the blocking-lock fairness tests'' flags (fairlocks) don''t include all, which the run selects'
+  issue: '#2996'
+  where: {minor: ["0"]}
+- test: LOCK22
+  status: skip
+  fix: planned
+  category: env
+  reason: 'pynfs omits it: the blocking-lock fairness tests'' flags (fairlocks) don''t include all, which the run selects'
+  issue: '#2996'
+  where: {minor: ["0"]}
+- test: FSLOC*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: the fs_locations tests'' flags (fslocations) don''t include all, which the run selects; DittoFS has no fs_locations referrals'
+  where: {minor: ["0"]}
+- test: GSS*
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its dependency _using_gss fails, as the run uses --security sys'
+  where: {minor: ["0"]}
+- test: SPOOF*
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: the user spoofing tests'' flags (spoof) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: CIDCF2
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LINK8
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (link, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LKU6c
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LOCK11g
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LOCK13a
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LOCK8c
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: it has no flag, and the run selects all'
+  where: {minor: ["0"]}
+- test: LOOK7
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (lookup, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LOOKP5
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (special) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: LOOKP6
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (special, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: OPEN13
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (open, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: PUTFH3
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (putfh, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: RD12
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (read) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: RD13
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (read) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: RD4
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: RD9g
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: RM5
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (remove, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: SATT1a
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: it has no flag, and the run selects all'
+  where: {minor: ["0"]}
+- test: SATT1s
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (setattr, socketall, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: SATT9
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (setattr, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: SEC6
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (secinfo, utf8, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: SEC7
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (secinfo, gss) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: WRT10g
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: WRT16
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (write, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: WRT17
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (write, ganesha) don''t include all, which the run selects'
+  where: {minor: ["0"]}
+- test: COMP3
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (compound, utf8, ganesha) don''t include all, which the run selects'
+- test: RNM8
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (rename, utf8, ganesha) don''t include all, which the run selects'
+- test: RNM9
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (rename, utf8, ganesha) don''t include all, which the run selects'
+- test: ALLOC*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'pynfs omits it at minor version 1: the ALLOCATE tests are NFSv4.2 tests'
+  where: {minor: ["1"]}
+- test: XATT*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'pynfs omits it at minor version 1: the extended attribute tests are NFSv4.2 tests'
+  where: {minor: ["1"]}
+- test: BLOCK*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: the pNFS block layout tests'' flags (block) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: FF*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: the pNFS flexfile layout tests'' flags (flex) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: GETLAYOUT*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: the LAYOUTGET tests'' flags (pnfs, or none) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: LAYOUTRET*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: the LAYOUTRETURN tests'' flags (pnfs) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: CSID7
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: its flags (currentstateid, pnfs) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: GETDINFO1
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: its flags (pnfs) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: GETDLIST1
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: its flags (pnfs) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: LAYOUTCOMMIT1
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'pynfs omits it: its flags (pnfs) don''t include all, which the run selects; DittoFS serves no pNFS layouts'
+  where: {minor: ["1"]}
+- test: DSESS900?
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: the DESTROY_SESSION 900x tests'' flags (destroy_session, some with ganesha) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: CALLBACK1
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (callback) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: COPY5
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (copy) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: COUR1
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (courteous) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: COUR7
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (courteous) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: CSESS20
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: CSESS21
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (ganesha) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: EID50
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (exchange_id) don''t include all, which the run selects'
+  where: {minor: ["1"]}
+- test: LKPP4
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'pynfs omits it: its flags (special) don''t include all, which the run selects'
+  where: {minor: ["1"]}

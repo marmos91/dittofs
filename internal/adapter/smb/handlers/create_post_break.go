@@ -602,8 +602,16 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 	}
 
 	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
+	// On an existing file the check runs against the rights the gate above
+	// resolved, not the request: MAXIMUM_ALLOWED resolves to whatever the
+	// file grants, which may carry no DELETE, and CLOSE unlinks a
+	// delete-on-close handle without re-checking.
 	if req.CreateOptions&types.FileDeleteOnClose != 0 {
-		if !hasDeleteAccess(req.DesiredAccess) {
+		docAccess := req.DesiredAccess
+		if grantedComputed {
+			docAccess = grantedAccess
+		}
+		if !hasDeleteAccess(docAccess) {
 			logger.Debug("CREATE: delete-on-close without DELETE access",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))

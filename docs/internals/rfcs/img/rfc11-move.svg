@@ -55,7 +55,7 @@
 <text x="122" y="431" class="s">committed</text>
 <rect x="30" y="448" width="250" height="34" rx="4" class="r"/>
 <text x="40" y="462" class="s">A refuses f1–f3 from now on:</text>
-<text x="40" y="476" class="s">routing error, front-end re-routes</text>
+<text x="40" y="476" class="s">routing error, gateway re-routes</text>
 <rect x="30" y="492" width="250" height="34" rx="4" class="k"/>
 <text x="40" y="506" class="s">5 Discard G's entries on G's set:</text>
 <text x="40" y="520" class="s">B, C (in both) keep R's entries</text>
