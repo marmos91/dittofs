@@ -155,3 +155,38 @@ func TestCappedRequestChangesNothing(t *testing.T) {
 		t.Errorf("a lock its cap refuses sent %d recalls", n)
 	}
 }
+
+// A new open holds its place under its client's cap from the check on: an
+// open of the client racing it past the check takes no place it counted on,
+// so an open the cap refuses has closed no disconnected durable open its
+// conflict broke.
+func TestOpenCapHoldsItsPlaceAcrossABreak(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Deny, r.Lease, r.Want = rd, wr, LeaseKey{1}, rh
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityDurable, s1, time.Hour, 1))
+	f.disconnect(t, a, s1)
+	f.mustOpen(t, b, in(1), OpenRequest{Access: rd}) // b's shard listed, so its next opens write nothing
+	f.lower(cappedOpens, 2)
+	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+	f.d.Rand = rnd
+	rnd.armed.Store(true)
+	opened := make(chan error)
+	go func() {
+		_, err := f.open(b, file, OpenRequest{Access: wr})
+		opened <- err
+	}()
+	<-rnd.entered // past the cap check, minting its reference
+	_, other := f.open(b, in(1), OpenRequest{Access: rd})
+	close(rnd.released)
+	err := <-opened
+	if err != nil {
+		if _, rerr := f.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{1}}, s2); rerr != nil {
+			t.Errorf("an open the cap refused (%v) closed a's durable open first: reconnect %v", err, rerr)
+		}
+	}
+	if (err == nil) == (other == nil) {
+		t.Errorf("the open %v and the open racing it %v: want one refused for the cap", err, other)
+	}
+}

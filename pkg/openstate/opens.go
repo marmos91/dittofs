@@ -372,10 +372,20 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
-		// A new open past its client's cap is refused here, before a
-		// recall is started.
-		if e.openOf(r.Owner, r.Stream) == nil && t.full(who.Client, cappedOpens, 1) {
-			return &DelayError{DelayResources}
+		// A new open past its client's cap is refused here, before a break
+		// closes a disconnected open or a recall is started. Its place under
+		// the cap is taken at the check, so an open of the client racing it
+		// cannot take it between the check and the mint, and given back
+		// unless the open is minted into it.
+		if e.openOf(r.Owner, r.Stream) == nil {
+			if err := t.charge(who.Client, cappedOpens, 1, true); err != nil {
+				return err
+			}
+			defer func() {
+				if o.Ref == (StateRef{}) {
+					_ = t.charge(who.Client, cappedOpens, -1, false)
+				}
+			}()
 		}
 		granted, access, deny := o, r.Access, r.Deny
 		if up := e.openOf(r.Owner, r.Stream); up != nil {
@@ -573,10 +583,11 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		if o.lease != (LeaseKey{}) && u.opens > 0 && u.file != e.file {
 			return ErrInvalid
 		}
-		// An installed open, minted disconnected, is counted and never
-		// refused: it was granted before the restart.
-		if err := t.chargeLocked(o.Client, cappedOpens, 1, o.parked == 0); err != nil {
-			return err
+		// A new open's place under its client's cap was taken when it
+		// was judged; an installed open, minted disconnected, is counted
+		// here and never refused: it was granted before the restart.
+		if o.parked != 0 {
+			_ = t.chargeLocked(o.Client, cappedOpens, 1, false)
 		}
 		if o.lease != (LeaseKey{}) {
 			u.file, u.opens = e.file, u.opens+1
