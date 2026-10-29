@@ -8,5 +8,4 @@ cthon04 is graded per program (`basic/test6`, `special/telldir`), not per assert
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| special/telldir | semantics | seekdir() to a saved cookie can return no entries: cookies are a full 64-bit hash (pkg/metadata/cookies.go), and Linux likely reads one with the top bit set as a negative directory offset. Fails on most runs, on every option set | [#2979](https://github.com/marmos91/dittofs/issues/2979) |
 | special/op_chmod | bug | a WRITE that reaches the server after the file's owner chmods it to 0 is refused; knfsd lets the owner through regardless of mode. Whether it shows depends on when the client flushes: it fails on v3, v4.0 and v4.1-noac, and passes where the client holds the writes until close | [#3097](https://github.com/marmos91/dittofs/issues/3097) |

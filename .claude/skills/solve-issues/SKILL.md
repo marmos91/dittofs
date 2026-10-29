@@ -101,7 +101,7 @@ Deviations from fix-issue for this parallel run:
   The orchestrator holds one watch across every PR and will send you the
   failing job and its output if CI goes red; you resume from your own
   context then, which is the part the orchestrator cannot reproduce.
-- Do NOT run test/e2e/run-e2e.sh or test/smb-conformance/run.sh without
+- Do NOT run test/e2e/run-e2e.sh or a conformance suite (test/harness/bin/dt) without
   asking me first — they collide on
   ports, mounts and sudo, and only one agent may hold them at a time.
 - Do NOT provision or tear down any Scaleway VM. Ask me instead.

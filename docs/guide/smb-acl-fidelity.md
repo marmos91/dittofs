@@ -57,7 +57,8 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 | DENY ACE (type 0x01) | Works | `accessDeniedACEType` ↔ `ACE4_ACCESS_DENIED_ACE_TYPE`. Stored and round-tripped; canonical ordering (deny before allow) is the ACL engine's concern. |
 | Access mask bits | Works | Identical bit positions; written/parsed verbatim. Generic bits are expanded on write (see below). |
 | ACE count | Partial | Capped at `acl.MaxACECount` (128). `parseDACL` rejects a DACL whose header AceCount exceeds the cap with an error → SET_INFO returns `STATUS_INVALID_PARAMETER`. DACL size cap is `acl.MaxDACLSize` (64 KiB). |
-| Unknown ACE types on write | Partial | `parseDACL` skips ACE types it cannot map (anything other than ALLOW/DENY/AUDIT) — the ACE is dropped, the rest of the DACL still parses. |
+| Unknown ACE types on write | Unsupported | An ACE type the server cannot store (object, callback, mandatory label, …) refuses the whole SET_INFO or CREATE with `STATUS_INVALID_PARAMETER`: nothing is stored, and a CREATE creates nothing. A SACL is parsed whenever it is present, so a label ACE fails the request even when the SACL was not selected. |
+| Integrity labels (`icacls /setintegritylevel`) | Unsupported | Refused with `STATUS_INVALID_PARAMETER`, not silently dropped. |
 | Empty DACL (0 ACEs) | Works | `file.ACL != nil, len(ACEs)==0` emits a 0-ACE DACL (deny-all) on read; no default is synthesized. |
 | nil ACL on read | Partial (synthesized) | `file.ACL == nil` → `SynthesizeWindowsDefault`: ALLOW `OWNER@` + ALLOW `SYSTEM@`, both FullControl, no inherit flags, `Protected=true` (SD control `0x9004`). This is a *display* default; server-side access enforcement still uses POSIX mode bits for nil-ACL files. `SynthesizeFromMode` (POSIX-mode → Allow-only DACL) exists but is currently only exercised by tests. |
 

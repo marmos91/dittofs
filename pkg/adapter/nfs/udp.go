@@ -168,6 +168,22 @@ func (c *NFSConnection) handleUDPDatagram(ctx context.Context, conn *net.UDPConn
 
 	clientAddr := src.String()
 
+	// The UDP listener has no RPCSEC_GSS processing, so a flavor-6 credential
+	// could only reach a handler unverified: refuse it as the TCP path does
+	// when no GSS processor is configured.
+	authStat := rpc.CheckCredential(call)
+	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS {
+		authStat = rpc.AuthTooWeak
+	}
+	if authStat != rpc.AuthOK {
+		logger.Debug("NFS UDP: rejecting bad credential", "client", clientAddr,
+			"xid", fmt.Sprintf("0x%x", call.XID), "flavor", call.GetAuthFlavor())
+		if reply, err := rpc.MakeAuthErrorReply(call.XID, authStat); err == nil {
+			sendUDP(conn, src, reply)
+		}
+		return
+	}
+
 	logger.Debug("NFS UDP request",
 		"program", call.Program, "version", call.Version, "procedure", call.Procedure,
 		"client", clientAddr, "xid", fmt.Sprintf("0x%x", call.XID))

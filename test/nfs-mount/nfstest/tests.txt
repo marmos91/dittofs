@@ -1,0 +1,18 @@
+# nfstest's modules for dt (test/suites.yaml), each run on its own: a module's line names the
+# mount-option sets it runs on when it isn't all of them, and after -- its own flags. Each
+# has 20 minutes. It holds what nfs-mount/nfstest/run.sh runs, until that script goes.
+posix
+# dio checks every assertion against a packet capture it stops right before reading. The
+# default two seconds for tcpdump to flush aren't always enough on a busy runner, and an
+# empty capture reads as a failed test.
+dio -- --trcdelay 5
+# cache times attribute caching against a change from the second client. On NFSv4 that change
+# recalls the first client's delegation, which then revalidates at once: correct, and fatal
+# to every timing check, so it runs on NFSv3 only.
+cache mount-options=v3 -- --client {client2}
+# lock is the slowest after dio, and found nothing that varies with caching or I/O size, so
+# it runs on each protocol's plain set only.
+lock mount-options=v3,v4.0,v4.1
+# delegation's recall tests drive the second client, which mounts the server's port: without
+# one it mounts 2049, and every recall waits out a refused mount.
+delegation mount-options=default,v4.0,v4.1,v4.1-noac,v4.1-smallio -- --client {client2}:port={nfs-port}

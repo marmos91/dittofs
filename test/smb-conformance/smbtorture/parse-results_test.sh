@@ -93,6 +93,26 @@ failure: smb2.rename.rename1 [ regression ]
 EOF
 assert_output "new failure named" "- smb2.rename.rename1"
 
+# -- The grades the parity jobs compare with dt's: each failure, then the tests that ran. --
+DITTOFS_RESULTS_DIR="${WORK}/case" run_case "grades written" 1 <<'EOF'
+test: smb2.connect.connect1
+success: smb2.connect.connect1
+test: smb2.lock.lock1
+failure: smb2.lock.lock1 [ expected ]
+test: smb2.rename.rename1
+failure: smb2.rename.rename1 [ regression ]
+test: smb2.multichannel
+skip: smb2.multichannel [ not supported ]
+test: smb2.notify.mask
+EOF
+if [[ "$(cat "${WORK}/case/grades")" == $'known smb2.lock.lock1\nnew smb2.rename.rename1\nran 3' ]]; then
+    echo "ok: grades"
+else
+    echo "FAIL: grades:"
+    cat "${WORK}/case/grades"
+    FAILURES=$((FAILURES + 1))
+fi
+
 # -- Same results, different order: same verdict, same new-failure set. --
 run_case "verdict is order-independent" 1 <<'EOF'
 test: smb2.rename.rename1

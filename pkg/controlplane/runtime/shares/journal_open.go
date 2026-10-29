@@ -50,6 +50,21 @@ func OpenShareJournal(shareName string, defaults *LocalStoreDefaults) (*journal.
 	return openJournalStore(shareDir, int64(defaults.MaxSize), defaults.MaxLogBytes, cfg)
 }
 
+// RemoveShareJournal deletes a share's directory beneath the server's journal
+// root: its journal, which holds the share's local blocks, and everything kept
+// beside it. The share's block store must be closed first.
+func RemoveShareJournal(shareName string, defaults *LocalStoreDefaults) error {
+	// Without a root no share has a journal to remove.
+	if defaults == nil || defaults.JournalRoot == "" {
+		return nil
+	}
+	shareDir := ShareJournalDir(defaults.JournalRoot, shareName)
+	if err := checkUnderJournalRoot(defaults.JournalRoot, shareDir); err != nil {
+		return err
+	}
+	return os.RemoveAll(shareDir)
+}
+
 // checkUnderJournalRoot confirms a share directory sits strictly beneath the
 // journal root before anything is created there: the share name arrives from an
 // operator and reaches the filesystem through this directory, so containment is

@@ -216,6 +216,19 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 		return NewErrorResult(types.StatusObjectNameNotFound), nil
 	}
 
+	// The dispatcher applied the share policy to this request's own tree only.
+	// A source on another tree is read here too, so that tree's share policy
+	// must admit this request as well.
+	if srcOpen.TreeID != ctx.TreeID {
+		srcTree, ok := h.GetTree(srcOpen.TreeID)
+		if !ok {
+			return NewErrorResult(types.StatusObjectNameNotFound), nil
+		}
+		if st := h.TreeSharePolicyStatus(ctx.Context, srcTree, ctx.ClientAddr); st != 0 {
+			return NewErrorResult(st), nil
+		}
+	}
+
 	// Validate that neither source nor destination is a directory or pipe
 	if srcOpen.IsDirectory || srcOpen.IsPipe {
 		logger.Debug("COPYCHUNK: source is directory or pipe", "path", srcOpen.Name().Path)

@@ -19,7 +19,7 @@
 [![E2E Tests](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml)
 [![Lint](https://github.com/marmos91/dittofs/actions/workflows/lint.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/lint.yml)
 [![Conformance](https://github.com/marmos91/dittofs/actions/workflows/conformance.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/conformance.yml)
-[![NFS Conformance](https://github.com/marmos91/dittofs/actions/workflows/nfs-pynfs.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/nfs-pynfs.yml)
+[![Tests](https://github.com/marmos91/dittofs/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/tests.yml)
 
 **A modular virtual filesystem written entirely in Go**
 

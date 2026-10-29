@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/fixture"
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
@@ -97,10 +100,10 @@ func TestImageDockerArgs(t *testing.T) {
 	log := fakeDocker(t)
 	t.Setenv("FAKE_IMAGE", "missing")
 	rep, out := runTarget(t, root, r, "img", false)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Fatalf("img: %+v\n%s", o, out)
 	}
-	if rep, out := runTarget(t, root, r, "own", false); rep.Outcomes[0].Result != Passed || !strings.Contains(out, "the image's own command") {
+	if rep, out := runTarget(t, root, r, "own", false); rep.Outcomes[0].Result != report.Passed || !strings.Contains(out, "the image's own command") {
 		t.Fatalf("own: %+v\n%s", rep.Outcomes[0], out)
 	}
 	cellOut := filepath.Join(rep.Dir, "img-a")
@@ -114,23 +117,6 @@ func TestImageDockerArgs(t *testing.T) {
 	golden(t, "docker-run.golden", got)
 }
 
-// The network is the one the fixture's server is on: the host's, or, for dt
-// in a dtc container on a bridge network, that container's.
-func TestImageNetwork(t *testing.T) {
-	for _, c := range []struct{ in, hostnet, want string }{
-		{"", "", "host"},
-		{"1", "1", "host"},
-		{"1", "", "container:dtc-1"},
-	} {
-		t.Setenv("DT_IN_CONTAINER", c.in)
-		t.Setenv("DT_HOSTNET", c.hostnet)
-		t.Setenv("DT_CONTAINER_NAME", "dtc-1")
-		if got := network(); got != c.want {
-			t.Errorf("in %q, hostnet %q: %s, want %s", c.in, c.hostnet, got, c.want)
-		}
-	}
-}
-
 // A test stopped at its limit, at the cell's or by an interrupt has its
 // container removed by name: killing docker's client leaves the container
 // running.
@@ -140,7 +126,7 @@ func TestKillRemovesContainer(t *testing.T) {
   cell: { image: x, cmd: "sleep 30", timeout: { test: 10s, cell: 1m } }
   stop: { image: x, cmd: "sleep 30" }
 `, nil)
-	minute = 500 * time.Millisecond
+	minute = 200 * time.Millisecond
 	t.Cleanup(func() { minute = time.Minute })
 	for _, suite := range []string{"slow", "cell", "stop"} {
 		t.Run(suite, func(t *testing.T) {
@@ -185,7 +171,7 @@ func TestOnlyAKilledContainerIsRemoved(t *testing.T) {
 `, nil)
 	for suite, runs := range map[string]int{"exited": 1, "unstarted": 0} {
 		log := fakeDocker(t)
-		if rep, _ := runTarget(t, root, r, suite, false); rep.Outcomes[0].Result != Failed {
+		if rep, _ := runTarget(t, root, r, suite, false); rep.Outcomes[0].Result != report.Failed {
 			t.Fatalf("%s: %+v", suite, rep.Outcomes[0])
 		}
 		got := map[string]int{}
@@ -207,8 +193,8 @@ func TestImagePull(t *testing.T) {
 	for _, c := range []struct {
 		image, result, note, calls string
 	}{
-		{"", Passed, "", "image run"},
-		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
+		{"", report.Passed, "", "image run"},
+		{"fail", report.NotRun, "the image: `docker pull x` exited 1", "image pull"},
 	} {
 		log := fakeDocker(t)
 		t.Setenv("FAKE_IMAGE", c.image)
@@ -230,10 +216,9 @@ func TestImagePull(t *testing.T) {
 // start: the test didn't run, and nor did the cell, unless another test
 // failed. In a format a reader reads, that holds whatever the reader finds.
 func TestContainerNotStartedIsNotRun(t *testing.T) {
-	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+	fakeTAP(t, func(r report.Ran) ([]report.Test, error) {
 		return []report.Test{{Name: r.Test, Status: report.Passed}}, nil
-	}
-	t.Cleanup(func() { delete(readers, "tap") })
+	})
 	root, r := repo(t, `suites:
   exit: { image: x, cmd: "sh {test}", tests: "e/*.sh" }
   read: { image: x, cmd: "sh {test}", tests: "e/*.sh", format: tap }
@@ -253,15 +238,15 @@ func TestContainerNotStartedIsNotRun(t *testing.T) {
 				t.Errorf("%s: note %q lacks %s", suite, o.Note, code)
 			}
 		}
-		if o.Result != NotRun || rep.Status() != 2 {
+		if o.Result != report.NotRun || rep.Status() != 2 {
 			t.Errorf("%s: %+v, status %d", suite, o, rep.Status())
 		}
 	}
-	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != Failed || rep.Status() != 1 {
+	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != report.Failed || rep.Status() != 1 {
 		t.Errorf("mixed: %+v, status %d", rep.Outcomes[0], rep.Status())
 	}
 	// A command on the host that exits 125 is its own failure.
-	if rep, _ := runTarget(t, root, r, "host", false); rep.Outcomes[0].Result != Failed {
+	if rep, _ := runTarget(t, root, r, "host", false); rep.Outcomes[0].Result != report.Failed {
 		t.Errorf("host: %+v", rep.Outcomes[0])
 	}
 }
@@ -279,7 +264,7 @@ func TestTemplates(t *testing.T) {
 	})
 	log := fakeDocker(t)
 	rep, out := runTarget(t, root, r, "ok", false)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Fatalf("ok: %+v\n%s", o, out)
 	}
 	cellOut := filepath.Join(rep.Dir, "ok-v")
@@ -291,11 +276,69 @@ func TestTemplates(t *testing.T) {
 	}
 	_ = os.Remove(log)
 	rep, _ = runTarget(t, root, r, "unfilled", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "the templates: b.template: dt doesn't provide {server} yet") {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "the templates: b.template: dt doesn't provide {server} yet") {
 		t.Errorf("unfilled: %+v", o)
 	}
 	if _, err := os.Stat(log); err == nil {
 		t.Error("a cell whose templates dt can't fill ran docker")
+	}
+}
+
+// wptsDomain is the shape of a DomainName WPTS takes for a domain's name: a
+// DNS name whose last label has at least two characters.
+var wptsDomain = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// The registry's wpts cell keeps WPTS in workgroup mode whatever the server's
+// address, in the environment its container is given and in the config dt
+// fills in for it: an address whose last byte has two digits, as a DomainName,
+// would have WPTS run its domain tests against a domain controller the
+// fixture doesn't have.
+func TestWPTSWorkgroup(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	r, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Select(root, r, "wpts", "", "pr", nil, nil, nil)
+	if err != nil || len(cells) == 0 {
+		t.Fatalf("wpts: %d cells, %v", len(cells), err)
+	}
+	c := cells[0]
+	matrix := c.Unit.Matrix.Fill(c.Matrix)
+	spec, err := cellFixture(*c.Unit.Fixture, matrix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vals := map[string]string{"out": t.TempDir()}
+	maps.Copy(vals, matrix)
+	for _, k := range fixture.Placeholders(spec) {
+		vals[k] = "dt"
+	}
+	vals["server"] = "10.1.1.180"
+
+	env, err := suiteEnv(c.Unit, c.Tier, vals, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inEnv []string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "DomainName="); ok {
+			inEnv = append(inEnv, v)
+		}
+	}
+	dir := filepath.Join(vals["out"], "config")
+	if err := renderTemplates(root, c.Unit.Templates, dir, vals, nil); err != nil {
+		t.Fatal(err)
+	}
+	property := regexp.MustCompile(`<Property name="DomainName" value="([^"]*)"`)
+	m := property.FindStringSubmatch(readFile(t, filepath.Join(dir, "CommonTestSuite.deployment.ptfconfig")))
+	if len(inEnv) != 1 || m == nil {
+		t.Fatalf("DomainName in the environment %q, in the config %q: want one of each", inEnv, m)
+	}
+	for where, v := range map[string]string{"environment": inEnv[0], "config": m[1]} {
+		if wptsDomain.MatchString(v) {
+			t.Errorf("the %s's DomainName %q, with the server at %s: WPTS takes it for a domain's name", where, v, vals["server"])
+		}
 	}
 }
 

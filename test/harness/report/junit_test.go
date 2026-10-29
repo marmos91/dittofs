@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,9 +16,10 @@ import (
 // pass; a failure; skipped with the entry's reason for a known failure, and
 // with the tool's for an ungraded skip; an error for an unexpected skip; a
 // failure with its grade as its message for an unexpected pass, which the
-// tool said nothing about; and a flaky pass is a pass with a flaky property.
-// JUnit reads the grade only for that message, so grades that share a status
-// share a row.
+// tool said nothing about; a pass with a flaky property for a pass on a
+// retry; and a pass with a quarantined property, its issue, for a quarantined
+// test's pass. JUnit reads the grade only for that message and property, so
+// grades that share a status share a row.
 func TestJUnitGrades(t *testing.T) {
 	pjdfstest, smbtorture, unit := "pjdfstest/badger-s3/4.1", "smbtorture/memory", "unit"
 	for _, c := range []struct {
@@ -35,15 +34,15 @@ func TestJUnitGrades(t *testing.T) {
 			Reason: "a buffered backlog arrives per operation", Issue: "#12"}},
 		{"unexpected_skip", smbtorture, "not run", Test{Name: "smb2.lock.rw", Status: Other, Message: "skip: no lock support", Grade: "unexpected_skip"}},
 		{"ungraded", unit, "passed", Test{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded}},
-		{"flaky", pjdfstest, "passed", Test{Name: "rename/09.t", Status: Passed, Duration: 3310 * time.Millisecond, Flaky: true}},
+		{"flaky", unit, "passed", Test{Name: "TestF", Suite: []string{"example.com/m/a"}, Status: Passed, Message: "a_test.go:7: timed out", Retries: 1, Flaky: true}},
+		{"quarantined", unit, "passed", Test{Name: "TestQ", Suite: []string{"example.com/m/a"}, Status: Passed, Grade: Quarantined, Reason: "quarantined as flaky, see #12", Issue: "#12"}},
 	} {
 		cell := Cell{Name: c.cell, Result: c.result, Took: 912 * time.Second, Tests: []Test{c.test}}
-		got, err := cell.JUnit()
+		got, err := cell.junit()
 		if err != nil {
 			t.Fatal(err)
 		}
 		golden(t, filepath.Join("junit", c.file+".xml"), got)
-		wellFormed(t, c.file, got)
 	}
 }
 
@@ -63,12 +62,11 @@ func TestJUnitCellResult(t *testing.T) {
 			Tests: []Test{{Name: "chmod/00.t", Status: Passed, Duration: time.Second}}}},
 		{"skipped-cell", Cell{Name: "smbtorture/memory", Result: "skipped", Note: "docker: not found"}},
 	} {
-		got, err := c.cell.JUnit()
+		got, err := c.cell.junit()
 		if err != nil {
 			t.Fatal(err)
 		}
 		golden(t, filepath.Join("junit", c.file+".xml"), got)
-		wellFormed(t, c.file, got)
 	}
 }
 
@@ -84,11 +82,10 @@ func TestJUnitIsWellFormed(t *testing.T) {
 		{Name: "skip", Status: Skipped, Reason: odd, Message: odd},
 		{Name: "pass", Status: Passed},
 	}}
-	data, err := cell.JUnit()
+	data, err := cell.junit()
 	if err != nil {
 		t.Fatal(err)
 	}
-	wellFormed(t, "odd", data)
 	var doc junitDoc
 	if err := xml.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
@@ -104,42 +101,6 @@ func TestJUnitIsWellFormed(t *testing.T) {
 	if s.Tests != 4 || s.Failures != 1 || s.Errors != 1 || s.Skipped != 1 {
 		t.Errorf("counts %+v", s)
 	}
-}
-
-// wellFormed fails the test unless data is one well-formed XML document.
-func wellFormed(t *testing.T, name string, data []byte) {
-	t.Helper()
-	if err := oneDocument(data); err != nil {
-		t.Errorf("%s: %v", name, err)
-	}
-}
-
-// oneDocument says why data isn't one well-formed XML document, or returns nil.
-func oneDocument(data []byte) error {
-	d := xml.NewDecoder(bytes.NewReader(data))
-	roots := 0
-	for depth := 0; ; {
-		tok, err := d.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("not well-formed: %w", err)
-		}
-		switch tok.(type) {
-		case xml.StartElement:
-			if depth == 0 {
-				roots++
-			}
-			depth++
-		case xml.EndElement:
-			depth--
-		}
-	}
-	if roots != 1 {
-		return fmt.Errorf("%d root elements", roots)
-	}
-	return nil
 }
 
 // Write writes summary.json last, so it never names a JUnit file that isn't
@@ -158,7 +119,8 @@ func TestWriteSummaryLast(t *testing.T) {
 }
 
 // Write writes a JUnit file for every cell, the one its entry in summary.json
-// names, readable by anyone, and leaves no temporary file.
+// names, readable by anyone, as every file Write writes is, and leaves no
+// temporary file.
 func TestWriteJUnit(t *testing.T) {
 	dir := t.TempDir()
 	if err := full.Write(dir); err != nil {
@@ -182,7 +144,7 @@ func TestWriteJUnit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.Name, err)
 		}
-		want, _ := c.JUnit()
+		want, _ := c.junit()
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: %s isn't the cell's JUnit", c.Name, path)
 		}

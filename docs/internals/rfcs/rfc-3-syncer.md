@@ -442,11 +442,10 @@ Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, erro
 // probes and its counters end with it.
 Unregister(store StoreID) error
 // SetDrift raises the store's drift condition, err naming the drifted
-// setting, or clears it when err is nil (§2.8). The store's one Recheck
-// caller (RFC 4 §4.11) calls it after a Recheck whose read found a setting
-// that differs, or after two periods in a row whose Recheck could not read
-// at all; a transient Recheck failure alone never raises it. Nothing else
-// calls it.
+// setting, or clears it when err is nil (§2.8). The process's GC is its one
+// caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
+// record holds drift, cleared once it holds a passed Recheck, on every node,
+// whichever node ran the Recheck. Nothing else calls it.
 SetDrift(store StoreID, err error)
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
@@ -715,7 +714,7 @@ the caller needs, each by its hash and the `Range` block metadata recorded for i
 chunk by chunk, each body checked against its own hash and yielded as soon as it
 passes, never buffered whole first, and the block's name recomputed from the header
 ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec),
-[RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The store merges ranges adjacent in the block into one ranged get
+[RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The store merges ranges adjacent in the block into one ranged get
 ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)), so a packed small file, or a run of one file's chunks, costs one
 request ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); ranges that are not adjacent cost one request each, or
 the engine asks for the whole block instead. A range is always a whole chunk: a
@@ -793,7 +792,7 @@ S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 **Memory is checked by holding, then measuring.** With every call held and every
 pool full, the heap in use above the idle baseline **MUST** stay within the bound
 of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. The test chooses the chunk `Max` and pool size large
-enough that the runtime's own noise stays under that slack.
+enough that the Go runtime's own noise stays under that slack.
 
 The fake covers the syncer's logic. It does not cover the adapter from the remote
 tier to `Store`, nor a real backend's failure modes; those run the same checks
@@ -825,7 +824,10 @@ Two further limits are permitted, each with its interaction stated:
 - the **throttle limit** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It is never above
   the store's cap, is lowered only by a throttling response and raised only by
   successes, and binds only on a store that has throttled; on a store that has
-  not, it equals the cap and the pool and caps decide as before.
+  not, it equals the cap and the pool and caps decide as before;
+- the **background CPU token** of RFC 24 §6.2, taken per chunk's encode and
+  returned before the next network wait; it bounds CPU, not transfers, so the
+  pool still decides how many run.
 
 ### 2.2 The pool size is a memory bound
 
@@ -1269,9 +1271,10 @@ each direction on its own:
 - a probe **MUST** be bounded in time like any call, and one that does not
   return within its bound is a failed probe. A hung probe that left the store
   healthy would keep sending traffic to a dead store;
-- **a store's drift condition makes its put direction unhealthy.** GC raises the
-  condition when its `Recheck` finds a service setting drifted — versioning,
-  object lock, a lifecycle rule — and clears it when a later `Recheck` passes
+- **a store's drift condition makes its put direction unhealthy.** Each
+  process's GC raises the condition from the namespace's `Recheck` record when
+  a `Recheck` found a service setting drifted — versioning, object lock, a
+  lifecycle rule — and clears it once the record holds a later pass
   ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), through `SetDrift` ([§1.3](#1.3%20Interface)). While it stands the syncer **MUST** treat the
   put direction as unhealthy whatever its probes say, since a put into a drifted
   store may be expired or kept as a version nothing deletes; the get direction
@@ -1482,6 +1485,9 @@ The syncer exposes exactly two settings, both process-wide:
 | `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 | `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
+Unset, both are reduced in equal proportion to fit the node's transfers pool, at
+least eight each (RFC 24 §7.2).
+
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
 Little's law, workers ≈ throughput × time per transfer ÷ block size. A request
@@ -1583,11 +1589,13 @@ needs, and its cost **MUST NOT** grow with the number of transfers in flight.
 Metric names are shown without the deployment's prefix. Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
 is also the direction the health metrics describe. Queue metrics also carry
 `class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). Queue
-metrics are also reported per flow; the syncer knows a flow by its id, and the
-engine replaces it with the share when it exports ([§1.3](#1.3%20Interface)). The syncer also
-reports each queue metric summed over all flows, so the total needs no query
-across series and survives the engine capping how many shares it exports one by
-one. The syncer
+gauges (`syncer_queue_depth`, `syncer_waiters`) are also reported per flow, which
+the engine exports by share under RFC 25's worst-n rule; the syncer knows a flow
+by its id, and the engine replaces it with the share when it exports
+([§1.3](#1.3%20Interface)). Queue histograms and counters are reported summed
+only. The syncer reports each queue gauge summed over all flows too, so the
+total needs no query across series and survives the engine capping how many
+shares it exports one by one. The syncer
 **MUST** make every metric below observable:
 
 **Pools** — is the syncer the limit?
@@ -1614,8 +1622,8 @@ one. The syncer
 | `syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `verify`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, per flow; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `syncer_store_throughput_bytes` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, summed over flows; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_store_throughput_bytes_per_second` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 **Fetches** — are reads being shared?
 
@@ -1736,7 +1744,7 @@ A fetch of chunks held only remotely — some ranges of one block, or all of it 
 produces verified chunks, one at a time, and yields them to its caller. The caller
 is the engine, which uses them twice: to answer the read that caused the fetch,
 and, where its fill policy says so, to fill the journal so the next read is local
-([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
+([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
 
 Both uses **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
 verified before it is yielded, which is what makes one buffer safe for both. A
@@ -1748,7 +1756,7 @@ whole range has.
 ### 4.2 The reply neither waits on the fill nor fails with it
 
 That the reply neither waits on the fill nor fails with it is the engine's rule
-([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The syncer's part is to yield each chunk as soon as it is verified,
+([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The syncer's part is to yield each chunk as soon as it is verified,
 valid until the caller's next iteration ([§1.3](#1.3%20Interface)).
 
 ### 4.3 Concurrent demand for one chunk is one fetch

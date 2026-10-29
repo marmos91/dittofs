@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -85,6 +86,16 @@ func newDocLeaseEnv(t *testing.T, withChild bool) *docLeaseEnv {
 	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: rec}, nil)
 
 	metaSvc := rt.GetMetadataService()
+	// The teardown deletes as the open's session user, so that user needs
+	// write on the share root to remove docdir from it.
+	rootMode := uint32(0o777)
+	if _, err := metaSvc.SetFileAttributes(rootAuth, root, &metadata.SetAttrs{Mode: &rootMode}); err != nil {
+		t.Fatalf("SetFileAttributes root: %v", err)
+	}
+	docUID := uint32(1000)
+	h.CreateSessionWithUser(docSessionID, "127.0.0.1:1", &models.User{
+		Username: "doc", Enabled: true, UID: &docUID, GID: &docUID,
+	}, "")
 	dir, _, err := metaSvc.CreateDirectory(rootAuth, root, "docdir", &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

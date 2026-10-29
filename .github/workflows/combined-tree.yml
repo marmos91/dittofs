@@ -13,7 +13,7 @@ name: Combined Tree
 
 on:
   schedule:
-    # Across the working day in UTC, deliberately clear of the 04:00 nightly
+    # Across the working day in UTC, deliberately clear of the 22:00 nightly
     # block where conformance, E2E, pynfs and the AD-DC suite all start.
     - cron: '20 7-19/3 * * *'
   workflow_dispatch:

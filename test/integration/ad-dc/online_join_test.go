@@ -50,35 +50,6 @@ func (m *memSecret) SetMachineSecret(_ context.Context, s string) error {
 	return nil
 }
 
-// waitForDCStable blocks until the DC's NETLOGON/LDAP/KDC stack has been
-// continuously serving for a short streak, riding out the entrypoint's
-// provisioning-samba -> foreground-samba re-exec. It requires several
-// consecutive successful `samba-tool processes` calls AND a reachable DNS (53)
-// + SMB (445), since the secure channel and DC discovery use both.
-func waitForDCStable(t *testing.T, timeout time.Duration) {
-	t.Helper()
-	const needStreak = 4
-	deadline := time.Now().Add(timeout)
-	streak := 0
-	for time.Now().Before(deadline) {
-		_, err := adDockerExec("samba-tool", "processes")
-		ok := err == nil
-		if ok {
-			streak++
-			if streak >= needStreak {
-				t.Logf("AD-DC stable (%d consecutive readiness checks)", streak)
-				time.Sleep(2 * time.Second) // small extra settle
-				return
-			}
-		} else {
-			streak = 0
-		}
-		time.Sleep(2 * time.Second)
-	}
-	dumpADLogs(t)
-	t.Fatalf("AD-DC did not stabilize within %s", timeout)
-}
-
 // TestOnlineJoinAndMemberLogon proves the full online-join lifecycle live:
 //  1. The online provider creates the DITTOJOIN$ computer object over LDAP
 //     (StartTLS) using the Administrator join credentials and sets its password.
@@ -104,16 +75,6 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
 	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
 	waitForTCPAddr(t, dcIP+":389", 90*time.Second)
-
-	// The fixture entrypoint provisions the domain, exports the keytab, then
-	// STOPS the provisioning samba and re-execs it in the foreground. setupADDC
-	// returns as soon as the keytab exists — i.e. right at that restart. Driving a
-	// NETLOGON SamLogon through the just-joined account during that window yields
-	// transient DNS/SMB failures (connection refused on :53, "logon is invalid"
-	// on the SMB bind). Gate on the DC being CONTINUOUSLY ready (samba-tool
-	// processes succeeds several times in a row) so join + logon run against a
-	// stable DC, not the restart window.
-	waitForDCStable(t, 4*time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -147,21 +108,11 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	defer auth.Close(ctx)
 
 	// First Credential() triggers the online join (create computer + set pwd +
-	// persist). Retry: the DC re-execs samba into the foreground shortly after
-	// provisioning, so LDAP/SMB have a brief down window.
-	var cred *netlogon.MachineCredential
-	var err error
-	for attempt := 1; attempt <= 15; attempt++ {
-		cred, err = provider.Credential(ctx)
-		if err == nil {
-			break
-		}
-		t.Logf("online join attempt %d/15 not ready: %v", attempt, err)
-		time.Sleep(3 * time.Second)
-	}
+	// persist).
+	cred, err := provider.Credential(ctx)
 	if err != nil {
 		dumpADLogs(t)
-		t.Fatalf("online join failed after retries: %v", err)
+		t.Fatalf("online join: %v", err)
 	}
 	t.Logf("online join complete: account=%q password_len=%d", cred.AccountName, len(cred.Password))
 
@@ -172,10 +123,8 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 		t.Fatal("persisted secret does not match the credential password")
 	}
 
-	// Confirm the computer object now exists in AD (best-effort: the entrypoint
-	// re-execs samba into the foreground shortly after provisioning, so a
-	// concurrent `docker exec` can be SIGTERM'd — that is informational only and
-	// must not fail the test, which proves the join via the live logon below).
+	// Log the computer objects for diagnosis only: the live logon below is what
+	// proves the join.
 	if out, lerr := adDockerExec("samba-tool", "computer", "list"); lerr != nil {
 		t.Logf("samba-tool computer list (non-fatal): %v\n%s", lerr, out)
 	} else {

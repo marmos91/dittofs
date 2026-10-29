@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "cthon04-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780309463,
+        "narHash": "sha256-1hWaJoYzL5yjORBIq502TWGzvObAnrwXy5YoWz3SUxc=",
+        "ref": "master",
+        "rev": "86a4501a6e1e415844dc632894a85a5253cc1505",
+        "revCount": 41,
+        "type": "git",
+        "url": "git://git.linux-nfs.org/projects/steved/cthon04.git"
+      },
+      "original": {
+        "type": "git",
+        "url": "git://git.linux-nfs.org/projects/steved/cthon04.git"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -16,6 +32,22 @@
         "owner": "numtide",
         "repo": "flake-utils",
         "type": "github"
+      }
+    },
+    "nfstest-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1705514556,
+        "narHash": "sha256-0VLC+1cfRlqS+UqQh6oCJXdkX9m1pBejDL5FZKTR79M=",
+        "ref": "master",
+        "rev": "94089545caa18bbe4be1b055125d0721fe8dee80",
+        "revCount": 1034,
+        "type": "git",
+        "url": "git://git.linux-nfs.org/projects/mora/nfstest.git"
+      },
+      "original": {
+        "type": "git",
+        "url": "git://git.linux-nfs.org/projects/mora/nfstest.git"
       }
     },
     "nixpkgs": {
@@ -68,7 +100,9 @@
     },
     "root": {
       "inputs": {
+        "cthon04-src": "cthon04-src",
         "flake-utils": "flake-utils",
+        "nfstest-src": "nfstest-src",
         "nixpkgs": "nixpkgs",
         "pjdfstest-src": "pjdfstest-src",
         "pynfs-src": "pynfs-src"

@@ -134,7 +134,7 @@ func clip(p Piece, e core.Extent) Piece {
 type heldSet struct {
 	tree    btree[held]
 	scratch []Piece // the pieces cut is changing
-	work    []Piece // the pieces a mark, fill or repoint will put
+	work    []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
 }
 
 // len returns the number of entries.
@@ -204,6 +204,41 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 	return placed, missing
 }
 
+// gaps counts the absent sub-extents of e: the gaps a fill of e would hold.
+// Like the other reads it changes nothing, and it allocates nothing, so
+// admission can run it under the file's read lock; the count it returns is an
+// upper bound on the entries the fill's put calls would add, exact unless a
+// put joins a neighbour of the same record.
+func (s *heldSet) gaps(e core.Extent) int64 {
+	var n int64
+	cursor := e.Off
+	s.visit(e, func(p Piece) bool {
+		lo := max(p.Extent.Off, e.Off)
+		hi := min(p.Extent.Off+p.Extent.Len, e.Off+e.Len)
+		if lo > cursor {
+			n++
+		}
+		cursor = max(cursor, hi)
+		return true
+	})
+	if e.Len > 0 && e.Off+e.Len > cursor {
+		n++
+	}
+	return n
+}
+
+// straddle reports whether e covers the middle of one piece, ending inside it
+// at both ends: the shape whose removal splits the piece in two. It costs one
+// descent, O(log n), like lookup, and allocates nothing. A zero-length e
+// never straddles.
+func (s *heldSet) straddle(e core.Extent) bool {
+	if e.Len <= 0 {
+		return false
+	}
+	k, v, ok := s.tree.floor(uint64(e.Off))
+	return ok && k < uint64(e.Off) && k+uint64(v.len) > uint64(e.Off+e.Len)
+}
+
 // insert holds p as a client write: dirty, superseding whatever was held in
 // its extent. A piece it covers whole is dropped, and one it covers in part is
 // narrowed, or split in three when p lies inside it. It takes no offloaded
@@ -220,6 +255,10 @@ func (s *heldSet) insert(p Placed) {
 // of one record, whose bytes sit in p.Record from p.Skip on; the gaps take
 // the matching parts of it. A fill that packs several absent extents into one
 // record calls fill once for each of them, with each one's own skip.
+//
+// It knows nothing of removal markers, which live beside the set: a fill of
+// a file goes through file.fill, which keeps it out of every extent a newer
+// marker covers.
 func (s *heldSet) fill(p Placed) {
 	s.work = s.work[:0]
 	cursor, end := p.Extent.Off, p.Extent.Off+p.Extent.Len
@@ -349,6 +388,24 @@ func (s *heldSet) put(p Piece) {
 	s.tree.set(uint64(p.Extent.Off), toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
 	s.coalesce(p.Extent.Off)
+}
+
+// cutBelow stops holding the parts inside e of every piece whose version is
+// below v, whatever its offloaded bit, and keeps the rest: a removal marker's
+// rule. At run time a removal's version is above everything held, so it cuts
+// all of e; a rebuild applying records in any order can meet content at or
+// above it, which stays. It costs O(log n) per piece cut.
+func (s *heldSet) cutBelow(e core.Extent, v core.Version) {
+	s.work = s.work[:0]
+	s.visit(e, func(p Piece) bool {
+		if p.Version.Compare(v) < 0 {
+			s.work = append(s.work, clip(p, e))
+		}
+		return true
+	})
+	for _, p := range s.work {
+		s.cut(p.Extent)
+	}
 }
 
 // cut stops holding e: pieces inside it are dropped, and pieces crossing its
