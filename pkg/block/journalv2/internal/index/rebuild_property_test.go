@@ -10,24 +10,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
-// snapMarker is one removal marker by value, its clone spec copied, so two
-// snapshots compare without a file's lock.
-type snapMarker struct {
-	extent  core.Extent
-	version core.Version
-	kind    core.ChangeKind
-	clone   core.CloneSpec
-	hasSpec bool
-}
-
 // fileSnap is one file's state, copied out under its read lock. ranges is
 // captured only when the comparison wants it: a rebuild's drop ranges are
 // sound and deterministic, but not equal to an incremental build's, so the
 // incremental comparison leaves them out and checks them separately.
 type fileSnap struct {
-	held      []Piece
-	retained  []Retained
-	markers   []snapMarker
+	// entries is the file's read-out: its held pieces, retained pieces and
+	// markers as the inspection read-out reports them, which is what the
+	// snapshot now compares.
+	entries   []Entry
 	change    core.Version
 	hasChange bool
 	tag       core.ShareTag
@@ -69,18 +60,11 @@ func snapshot(fs *files, withRanges bool) indexSnap {
 		for _, id := range ids {
 			fs.view(id, func(f *file) {
 				fsnap := fileSnap{
-					held:      f.held.pieces(nil),
 					segs:      make([]core.SegmentID, 0, len(f.segs)),
 					withRange: withRanges,
 				}
-				fsnap.retained = f.retained.list(fsnap.retained)
-				for _, m := range f.markers {
-					sm := snapMarker{extent: m.extent, version: m.version, kind: m.kind}
-					if m.clone != nil {
-						sm.clone, sm.hasSpec = *m.clone, true
-					}
-					fsnap.markers = append(fsnap.markers, sm)
-				}
+				fsnap.entries = f.appendEntries(nil)
+				sortEntries(fsnap.entries)
 				fsnap.change, fsnap.hasChange = f.changeVersion()
 				fsnap.tag, fsnap.tagged = f.owner()
 				fsnap.rival, fsnap.rivalled = f.rival, f.rivalled
@@ -138,14 +122,8 @@ func diffFile(name string, a, b fileSnap) string {
 	k := func(field, format string, args ...any) string {
 		return fmt.Sprintf("%s: %s = %s", name, field, fmt.Sprintf(format, args...))
 	}
-	if !slices.Equal(a.held, b.held) {
-		return fmt.Sprintf("%s: held\n  %v\n  %v", name, a.held, b.held)
-	}
-	if !slices.Equal(a.retained, b.retained) {
-		return fmt.Sprintf("%s: retained = %v and %v", name, a.retained, b.retained)
-	}
-	if !slices.Equal(a.markers, b.markers) {
-		return fmt.Sprintf("%s: markers = %v and %v", name, a.markers, b.markers)
+	if !slices.EqualFunc(a.entries, b.entries, sameEntry) {
+		return fmt.Sprintf("%s: entries\n%v\n  against\n%v", name, fmtEntries(a.entries), fmtEntries(b.entries))
 	}
 	if a.change != b.change || a.hasChange != b.hasChange {
 		return k("change version", "%v and %v (has: %v %v)", a.change, b.change, a.hasChange, b.hasChange)
