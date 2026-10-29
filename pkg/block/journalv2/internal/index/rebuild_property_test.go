@@ -193,14 +193,16 @@ type history struct {
 	// removals are the removal records fed, for a carried-forward copy.
 	removals []Record
 	// cover tracks, per file and per 4 KiB cell of the generator's 256 KiB
-	// world, the newest version any record has committed over that cell.
-	// A fill draws its version from it: the remote tier's ref returns
-	// content at least as new as the newest version committed for the
-	// span, so a refill of a released or superseded span never carries an
-	// older version than the content the journal wrote there. Without the
-	// clamp the generator would invent fills the running engine cannot
-	// produce — a fill older than the content a release record names,
+	// world, the newest version a release has taken out of that cell. A
+	// refill of a released span carries content at least as new as the
+	// bytes the release took, because the remote tier's ref returns the
+	// newest version committed for the span: without the clamp the generator
+	// would invent a fill older than the content the release record names,
 	// which no precedence rule can rebuild identically to the runtime.
+	// Releases alone raise it: a removal leaves a mask the fill must
+	// respect and the ref serves the fill from what it committed, so a
+	// fill under an unsettled marker stays legal whatever version it
+	// draws.
 	cover [16][64]core.Version
 }
 
@@ -317,7 +319,6 @@ func (h *history) step() {
 			f.write(Placed{Extent: ext(r.Off, r.Len), Record: RecordAt{Segment: r.Segment, Offset: r.At}, Version: v})
 			return nil
 		})
-		h.covered(fi, off, n, v)
 		rCopy := r
 		h.pending = &rCopy
 
@@ -347,7 +348,6 @@ func (h *history) step() {
 				f.fill(Placed{Extent: e, Record: RecordAt{Segment: r.Segment, Offset: r.At}, Version: v})
 				return nil
 			})
-			h.covered(fi, e.Off, e.Len, v)
 		}
 
 	case 4: // offloaded report over a span
@@ -402,7 +402,6 @@ func (h *history) step() {
 		size := int64(h.rng.IntN(64)) * 4096
 		r := h.note(RecTruncate, id, v, ext(size, 0))
 		change(h.t, &h.fs, id, func(f *file) error { f.truncate(size, v); return nil })
-		h.covered(fi, size, 256*1024-size, v)
 		h.removals = append(h.removals, r)
 		h.pending = nil
 
@@ -411,7 +410,6 @@ func (h *history) step() {
 		v := h.draw()
 		r := h.note(RecDeallocate, id, v, ext(off, n))
 		change(h.t, &h.fs, id, func(f *file) error { return f.deallocate(ext(off, n), v) })
-		h.covered(fi, off, n, v)
 		h.removals = append(h.removals, r)
 		h.pending = nil
 
@@ -419,7 +417,6 @@ func (h *history) step() {
 		v := h.draw()
 		r := h.note(RecDelete, id, v, ext(0, 0))
 		change(h.t, &h.fs, id, func(f *file) error { f.delete(v); return nil })
-		h.covered(fi, 0, 256*1024, v)
 		h.removals = append(h.removals, r)
 		h.pending = nil
 
@@ -438,7 +435,6 @@ func (h *history) step() {
 			return f.recorded(seg, notedExtent(r), r.Numbers, 7, id)
 		})
 		change(h.t, &h.fs, id, func(f *file) error { return f.cloneTarget(spec, v) })
-		h.covered(fi, off, n, v)
 		h.recs = append(h.recs, r)
 		h.removals = append(h.removals, r)
 		h.pending = nil
@@ -470,13 +466,10 @@ func (h *history) step() {
 			return
 		}
 		origin := h.removals[h.rng.IntN(len(h.removals))]
-		// the copy keeps the ORIGIN file's index so `covered` lands right
-		originFi := int(origin.File.Bytes()[15] - 1)
 		seg, at := h.place()
 		change(h.t, &h.fs, origin.File, func(f *file) error {
 			return f.recorded(seg, notedExtent(origin), origin.Numbers, origin.Tag, origin.File)
 		})
-		h.covered(originFi, origin.Off, origin.Len, origin.Numbers.Version)
 		h.recs = append(h.recs, Record{Kind: origin.Kind, File: origin.File, Tag: origin.Tag,
 			Segment: seg, At: at, Off: origin.Off, Len: origin.Len,
 			Numbers: origin.Numbers, Clone: origin.Clone})
