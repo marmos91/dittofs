@@ -1093,17 +1093,30 @@ func (t *Table) closeOpensOf(ctx context.Context, owner LockOwner, out *outbox) 
 }
 
 // closeByTable closes o, of e's file, under its step, with no Close to
-// answer: what the close leaves the service to run goes to out.
-func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) {
-	var r CloseResult
-	r.Orphan, _ = t.unrecord(ctx, o)
-	if _, err := t.closePending(ctx, e, o); err != nil {
+// answer, and reports whether it did: what the close leaves the service to
+// run goes to out. Its delete pending is written before its record is
+// deleted, as Close writes them. A parked persistent open whose record's
+// delete is refused stays, its delete pending taken back, for the timer to
+// close at the next sweep: dropped here, it would be installed again at the
+// next start, with its deny modes and locks.
+func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox) bool {
+	p, perr := t.closePending(ctx, e, o)
+	orphan, err := t.unrecord(ctx, o)
+	if err != nil && o.persistent() && o.parked != 0 {
+		if p != nil && perr == nil {
+			t.savePending(ctx, e)
+		}
+		return false
+	}
+	if perr != nil {
 		defer t.savePending(ctx, e) // the close is the table's, with no caller to refuse
 	}
+	r := CloseResult{Orphan: orphan}
 	r.Unlink = t.closeOpen(ctx, e, o, out)
 	if o.unlinking {
 		o.late = r // the unlink's commit raises it, in its one Closed for the file
-		return
+		return true
 	}
 	out.close(e.file, r)
+	return true
 }

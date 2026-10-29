@@ -329,7 +329,7 @@ func (t *Table) timeouts(ctx context.Context, e *entry, out *outbox) {
 		switch {
 		case o.parked == 0:
 		case now >= o.parked:
-			t.closeByTable(ctx, e, o, out)
+			kept = !t.closeByTable(ctx, e, o, out) || kept
 		default:
 			kept = true
 		}

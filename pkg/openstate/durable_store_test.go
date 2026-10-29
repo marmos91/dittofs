@@ -1029,3 +1029,58 @@ func TestClearedPendingIsNotInstalled(t *testing.T) {
 		t.Errorf("the close after the failover unlinks %q, whose delete pending was cleared", res.Unlink.Name)
 	}
 }
+
+// A parked persistent open whose Timeout passes while its record's delete is
+// refused stays, its deny mode with it, and is closed at the next sweep: it
+// never comes back from its record after a restart.
+func TestTimedOutPersistentOpenStaysUntilItsRecordGoes(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access, r.Deny = rd, wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	f.disconnect(t, a, s1)
+	st.fail.Store(true)
+	f.idle(time.Minute) // the Timeout passes, the record's delete refused
+	st.fail.Store(false)
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
+		t.Fatalf("a writer while the timed-out open's record stays: %v, want ErrShareViolation", err)
+	}
+	f.idle(0)
+	ob := f.mustOpen(t, b, file, OpenRequest{Access: wr})
+	f.close(t, b, ob)
+	g := f.restart(t)
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s2); err == nil {
+		t.Error("the open closed by its Timeout reconnected after a restart")
+	}
+}
+
+// A close by the table writes its delete pending before it deletes its
+// record, as Close does: a node stopping between the two leaves the record,
+// whose close after the restart writes the pending again, and never a deleted
+// record whose pending was not written.
+func TestTableCloseWritesPendingFirst(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access = rd
+	oa := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	rb := r
+	rb.Access, rb.DeleteOnClose = rd|del, true
+	f.mustOpen(t, b, file, keep(rb, entity.DurabilityPersistent, s2, time.Minute, 2))
+	f.disconnect(t, b, s2)
+	st.failFrom.Store(st.updates.Load() + 2) // the node stops after the close's first write
+	f.idle(time.Minute)
+	st.failFrom.Store(0)
+	g := f.restart(t)
+	back, err := g.reconnect(a, oa, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.idle(time.Minute) // b's installed open, if its record stayed, times out again
+	if res := g.close(t, a, back.Open); res.Unlink == nil || string(res.Unlink.Name) != "doc" {
+		t.Errorf("the last close after the restart: %+v, want the unlink of doc", res)
+	}
+}
