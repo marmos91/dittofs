@@ -1586,30 +1586,20 @@ type recordRegion struct {
 	header    bool // the bytes are the header's
 }
 
-// flipRecordBytes flips every bit of each of the bytes of the region in
-// turn, each flip on a record of its own, free ones after the marked run or
-// marked ones from its start, and checks the outcome: the record reads
-// missing with the caller's buffer untouched, and the records not flipped
-// still read their bytes. Where named says so, a loss event names the
-// record as corrupt with its bit, and the loss generation rises by one for a
-// record not offloaded and not at all for one that is. Neither the last
-// record of S, which may be split at the cap, nor the last marked one, read
-// as a neighbour after every flip, is ever flipped.
+// flipRecordBytes flips each bit of the region's bytes in turn, each on a
+// record of its own, and checks that the record reads missing with the
+// caller's buffer untouched while its neighbours still read. Where named is
+// set, a loss event names the record, and the loss generation rises for a
+// record not yet offloaded and stays put for one that is. The last record of
+// S and the last marked one are never flipped: they are the neighbours read
+// after each flip.
 //
-// decision: the loss is looked for after the read whether S is scanned or
-// catalogued, so a scan that catches it at open and one that leaves it to
-// the read both pass, as the row allows either.
-//
-// decision: each flip reopens the journal, and that open places in the ring
-// the loss records the earlier flips left on disk. Whether placing one again
-// raises the generation is the journal's choice, as long as the generation
-// never goes back. Where S is catalogued the flip is caught on the read, not
-// at open, so the generation is read after the reopen and the loss must
-// raise it by exactly one. Where S is scanned the open itself may catch the
-// flip, so the generation is read before the reopen and a flip on a record
-// not offloaded may raise it by one plus at most one for each earlier such
-// flip; the first flip of a site has none before it, so the rise by exactly
-// one is pinned there too.
+// decision: an open may read the records or leave them to the read (RFC 28
+// sections 1 and 2.4), so the loss is looked for after the read and its rise
+// is accepted on the read or at the open. A reopen also replays the loss
+// records of earlier flips, which may raise the generation again, so it may
+// rise by at most one more per earlier flip; a site's first flip has none,
+// so there it must rise by exactly one.
 func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bool) {
 	t.Helper()
 
@@ -1639,20 +1629,15 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				s.keepScanned(t)
 			}
 
-			generation := s.f.J.Stats().LossGeneration
+			before := s.f.J.Stats().LossGeneration
 			flipBit(t, s.f, s.name, loc.Offset+int64(off), b)
 			s.reopen(t, where)
 			dropped[i] = true
-			// The earlier flips of this site, all of one kind, are the loss
-			// records the open may have placed again; where S is catalogued
-			// the open is behind the reading.
-			replayed := uint64(k - 1)
+			opened := s.f.J.Stats().LossGeneration
 			if s.scanned {
 				// The reopen the flip is checked on read S by scan, with no
 				// footer to read it by.
 				wantScanned(t, where, s.f, s.recovery, 0)
-			} else {
-				generation, replayed = s.f.J.Stats().LossGeneration, 0
 			}
 
 			wantMissing(t, s.f.Share(0), r.id, r.extent, where)
@@ -1660,12 +1645,17 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				wantLossNamed(t, where, s.f, r, offloaded)
 			}
 
-			switch got := s.f.J.Stats().LossGeneration; {
+			// Loss records of the earlier flips the reopen may have replayed.
+			replayed := uint64(k - 1)
+			got := s.f.J.Stats().LossGeneration
+			onRead := got == opened+1 && opened >= before && opened <= before+replayed
+			atOpen := got == opened && opened >= before+1 && opened <= before+1+replayed
+			switch {
 			case !named:
-			case offloaded && got != generation:
-				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss the remote tier can repair", where, generation, got)
-			case !offloaded && (got < generation+1 || got > generation+1+replayed):
-				t.Fatalf("%s: LossGeneration moved from %d to %d on a loss of content not yet offloaded, want it raised by one, plus at most %d for the loss records of earlier flips the open placed again", where, generation, got, replayed)
+			case offloaded && (opened != before || got != before):
+				t.Fatalf("%s: LossGeneration went from %d before the reopen to %d after it and %d after the read, on a loss the remote tier can repair, want it unchanged", where, before, opened, got)
+			case !offloaded && !onRead && !atOpen:
+				t.Fatalf("%s: LossGeneration went from %d before the reopen to %d after it and %d after the read, on a loss of content not yet offloaded, want it raised by one on the read or at the open, plus at most %d at the open for the loss records of earlier flips placed again", where, before, opened, got, replayed)
 			}
 
 			// A neighbour of each kind still reads after every flip.
