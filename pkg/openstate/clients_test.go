@@ -547,6 +547,8 @@ func TestStartAndStop(t *testing.T) {
 			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
 		},
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
+		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },
+		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
 	}
 	check := func(when string) {
 		for name, call := range calls {
