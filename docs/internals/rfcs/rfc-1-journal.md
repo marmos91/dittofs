@@ -1168,6 +1168,7 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
+| `ReadOnly` | value | whether the journal is read-only, the error that made it so, and whether a spare has since been made ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
@@ -1975,6 +1976,39 @@ acknowledged bytes and loses nothing. Recovery does not then trust them as
 synced: they lie past the last proven sync point, and are verified in place at
 open and re-appended only where that fails ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)).
 
+### 5.4 A journal that cannot write
+
+**Once writes cannot succeed, the journal stops trying.** Each failed segment is
+left for a spare ([§5.3](#5.3%20A%20failed%20sync)), so a filesystem that refuses every write would drain the
+spares and the headroom one failed call at a time. The journal therefore turns
+**read-only** when any call it makes fails with `EROFS`, or when a sync or
+append fails in the spare a stream took to leave a failed segment before any
+sync in that spare has succeeded. The state is sticky: the journal is not
+written again until it is closed and reopened, and that open's recovery
+([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) decides what is durable. While read-only:
+
+- `ReadAt` serves every held extent, dirty ones included;
+- every call that would append a record — `WriteAt`, `Fill`, a removal,
+  `Release`, `Hold` and the rest — fails at once with `ErrJournalReadOnly`,
+  reserves nothing and takes no spare;
+- the window that was open is failed ([§5.3](#5.3%20A%20failed%20sync)) with no loss record appended, and
+  its header-only records, which cannot be re-appended, stay applied in memory;
+  every `Sync` they or the window's writes wait on fails with
+  `ErrJournalReadOnly`, so their callers know none is durable, and a reopen
+  finds them as after a crash that lost them;
+- `report` sets offloaded bits in memory only, as below half the headroom ([§6](#6.%20Capacity)).
+
+**The state ends with a reopen, not with an operator.** While read-only, the
+journal tries to make a spare at a bounded interval; once one is made, it
+reports the device writable again, and its caller closes and reopens it
+([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), so the state resolves on its own once the cause is removed
+([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A reopen before then would fail at recovery's first write and
+serve nothing, so the caller does not attempt one.
+
+> ponytail: read-only is left only by a reopen. Upgrade to a `Resume` that
+> leaves the state in place once its probe succeeds, when an operator workflow
+> needs the journal's reads to stay uninterrupted across the recovery.
+
 ## 6. Capacity
 
 The journal has a configured maximum local footprint, shared by its shares. Each
@@ -2721,6 +2755,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | Requirement | Check |
 | --- | --- |
 | [§6](#6.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only stops the drain | Write and `Sync` A, write B, then fail every call with `EROFS` at the seam from the next sync on, and separately fail a sync and then the first sync in the spare the stream takes. Assert the journal turns read-only, takes no further spare, `WriteAt`, `Release` and B's `Sync` fail at once with `ErrJournalReadOnly`, A still reads back, an offload's `report` succeeds, and `Stats` names the state; clear the faults and assert a spare is made, `Stats` reports it, and after the reopen A is held and the journal writes again. A journal that answers each `EROFS` with a new segment drains its spares. |
 | [§6](#6.%20Capacity) reserve ahead | `Reserve` n bytes, then fill the share to its limit from another writer; assert `(*Reservation).WriteAt` within n succeeds while a plain `WriteAt` is refused, a `Reserve` past the limit is refused naming it, and `(*Reservation).Close` returns the unused bytes to `ReservedBytes`. Reserve for 10^4 writes beside a writer holding the index one entry below `ExtentLimit`, and with the headroom below half; assert every reserved write succeeds while a plain one is refused naming the index. Reserve for a 1 GiB copy in 1 MiB writes while other writers append 10 GiB to the same stream, with the spare pool at its target; assert no reserved write is refused, the footer and index entries drawn stay within the reservation, and any `spare` refusal falls on an unreserved write. Restart; assert the reservation is gone. |
 | [§3](#3.%20Interface) handle close | Hold a `WriteAt` in flight through a handle and call `Close`; assert `Close` returns only after the write does, a later call through the handle is refused, and the written extent is still held and readable through a new handle for the same tag. |
 | [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum. |
