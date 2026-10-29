@@ -463,7 +463,7 @@ suites:
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...   # tagged tests compile
       - go run ./test/spec-citations
       - test/required-tests.sh
-      - golangci-lint run --timeout=5m          # the version lint.yml pins
+      - golangci-lint run --timeout=5m          # the version tests.yml pins
   lint-repo:
     job: Repo Checks
     tier: pr
@@ -1248,13 +1248,14 @@ them. The host runs `dt run --tier nightly --place dedicated` from cron, on deve
 only: just the cells hosted runners can't take, so it doesn't repeat the hosted nightly. It
 publishes its summary to the develop-status issue (§4.8) with a token that can only write issues.
 
-**Versions come from one place.** Today Go is `1.26.0` in `go.mod`, `1.26.x` in the workflows,
-`1.26.8` in the `dtc` image, and a floating `1.26` in the e2e-linux image. The pjdfstest and pynfs
-revisions are copied into Dockerfiles from `flake.lock`, and CI builds the tools with
-`nix build .#pjdfstest` and `.#pynfs`. Proposed: one Go pin (a `toolchain` line in `go.mod`), read
-by the workflows and the images. The test tools stay pinned in `flake.lock`: CI and laptops with
-Nix build them from it, as today, and `lint-repo` fails a Dockerfile whose copied revision differs
-from it. Only Linux cells use the tools, so no macOS or Windows cell needs Nix.
+**Versions come from one place.** Go is one pin, the `toolchain` line of `go.mod`: the workflows
+read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag (the root, operator
+and dtc Dockerfiles), or the operator's module whose `toolchain` line, names another release. The
+`go` line stays the oldest release the module builds with. golangci-lint is one version too:
+`lint-repo` fails a pin in `tests.yml` or the operator's Makefile other than the dtc image's.
+The test tools stay pinned in `flake.lock`: CI and laptops with Nix build them
+from it, and `lint-repo` fails a Dockerfile whose copied revision differs from it. Only Linux
+cells use the tools, so no macOS or Windows cell needs Nix.
 
 ### 4.6 Results
 

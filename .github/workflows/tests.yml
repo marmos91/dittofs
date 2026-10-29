@@ -82,14 +82,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # decision: every job here pins the same Go release rather than 1.26.x,
-      # which resolves to whichever 1.26 the machine already has. Each release
-      # has a module cache of its own, so a floating version splits the jobs
-      # between caches. Bump the pins together.
+      # decision: every job here takes its Go release from go.mod's toolchain
+      # line rather than a floating 1.27.x, which resolves to whichever 1.27 the
+      # machine already has. Each release has a module cache of its own, so a
+      # floating version splits the jobs between caches.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version-file: go.mod
           cache: false
 
       - name: Build dt
@@ -160,7 +160,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version-file: go.mod
 
       # Every module before anything builds: the cache is saved once per key
       # and never updated, so whichever job saves it saves all of them. -x
@@ -312,14 +312,14 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version-file: go.mod
 
       - *download
 
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.15.0
           install-only: true
           # Analyse cold every run. The action restores and saves its analysis
           # cache even when it only installs, and dt's run reads it. Its cache
@@ -379,7 +379,7 @@ jobs:
         name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version-file: go.mod
           cache: false
 
       - *build
@@ -417,6 +417,8 @@ jobs:
   # docs-only change, and a skipped job passes the check the ruleset requires.
   # decision: they run when plan fails, so a check the ruleset requires never
   # passes on a plan that wasn't made.
+  # decision: their names keep "1.26.x", the check names the ruleset requires;
+  # both run go.mod's toolchain.
   unit:
     name: Unit Tests (1.26.x)
     needs: plan
@@ -575,7 +577,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version-file: go.mod
           cache: false
 
       - name: Build dt
