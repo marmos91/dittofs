@@ -1491,22 +1491,6 @@ func (s *flipSite) wantSuccessor(t *testing.T) {
 	}
 }
 
-// wantRecordMissing fails the test unless a read of record r reports exactly
-// its extent missing and leaves the caller's buffer untouched, naming where
-// the sweep stands in the failure.
-func wantRecordMissing(t *testing.T, where string, h *journalv2.Handle, r rec) {
-	t.Helper()
-
-	p, missing, err := readAt(t, h, r.id, r.extent.Off, len(r.p))
-	if err != nil || len(missing) != 1 || missing[0] != r.extent {
-		t.Fatalf("%s: read of the flipped record %+v reports missing %+v, err %v, want exactly it", where, r.extent, missing, err)
-	}
-
-	if i := slices.IndexFunc(p, func(b byte) bool { return b != sentinel }); i >= 0 {
-		t.Fatalf("%s: read of the flipped record %+v wrote byte %#x into the buffer at %d, want it untouched", where, r.extent, p[i], i)
-	}
-}
-
 // wantAllExact fails the test unless every record of S not in dropped, and
 // file 1's record, read their exact bytes.
 func (s *flipSite) wantAllExact(t *testing.T, where string, dropped map[int]bool) {
@@ -1650,7 +1634,7 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				wantScanned(t, where, s.f, s.recovery, 0)
 			}
 
-			wantRecordMissing(t, where, s.f.Share(0), r)
+			wantMissing(t, s.f.Share(0), r.id, r.extent, where)
 			if named {
 				wantLossNamed(t, where, s.f, r, offloaded)
 			}
