@@ -444,7 +444,9 @@ func sealedSegmentBytes(identity [16]byte, id journalv2.SegmentID, records []raw
 // the index is the one the footer gave; and with a footer that verifies but
 // describes its record wrongly, the open trusts the footer and the read
 // through its entry finds the header disagreeing and refuses the record as
-// corruption rather than serving what the entry says.
+// corruption rather than serving what the entry says. The segment is not
+// required to be reported damaged: its record verifies, and only the
+// catalog entry describing it is wrong (RFC 1 section 3.7).
 func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 	f := journalv2test.New(t)
 	s := sealedSetup(t, f)
@@ -496,9 +498,6 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 	ev := lastLoss(t, g, before)
 	if ev.File != x.id || ev.Extent != extent || ev.Reason != journalv2.LossCorrupt {
 		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, x.id, extent)
-	}
-	if !segmentInfo(t, g, id).Damaged {
-		t.Fatalf("the planted segment %d holds a record its catalog misdescribes and is not reported damaged", id)
 	}
 
 	wantBytes(t, g.Share(0), x.id, 0, x.p)
