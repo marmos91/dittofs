@@ -53,15 +53,25 @@ func TestAppendFormatFileAppendsToDst(t *testing.T) {
 func TestDecodeFormatFileRefusesAWrongLength(t *testing.T) {
 	golden := readGolden(t, "format_v1")
 
+	// A truncated input is built by copy into a slice of exactly its
+	// length, never a re-slice of the golden file: a re-slice keeps the
+	// 56-byte capacity, so a decode that read past len would read the
+	// golden's bytes and pass rather than panic.
+	trunc := func(n int) []byte {
+		b := make([]byte, n)
+		copy(b, golden)
+		return b
+	}
+
 	for name, b := range map[string][]byte{
 		"empty":    {},
-		"5 bytes":  golden[:5],
-		"55 bytes": golden[:55],
+		"5 bytes":  trunc(5),
+		"55 bytes": trunc(55),
 		"57 bytes": append(slices.Clone(golden), 0),
 	} {
 		_, err := DecodeFormatFile(b)
-		if !errors.Is(err, ErrDamaged) {
-			t.Errorf("DecodeFormatFile(%s) = %v, want an error matching ErrDamaged", name, err)
+		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrUnknownVersion) {
+			t.Errorf("DecodeFormatFile(%s) = %v, want an error matching ErrDamaged and not ErrUnknownVersion", name, err)
 		}
 	}
 }

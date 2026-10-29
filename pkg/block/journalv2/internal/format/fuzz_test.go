@@ -18,6 +18,7 @@ func FuzzFormatFile(f *testing.F) {
 
 	f.Add(golden)
 	f.Add(slices.Clone(golden[:55]))
+	f.Add(slices.Clone(golden[:5]))
 	f.Add(append(slices.Clone(golden), 0x00))
 	f.Add(raw.Format{Version: 2, Identity: testIdentity, Installation: testInstallation}.Bytes())
 
