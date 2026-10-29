@@ -358,7 +358,7 @@ the write rate shows before it costs a client.
 
 > ponytail: segments are a constant size (proposal 256 MiB), so a stream
 > writing at an NVMe drive's 5 GB/s rolls about twenty times a second, each
-> roll a seal and a segment sync, which a transfer that flushes only at its end
+> roll a seal's syncs, which a transfer that flushes only at its end
 > never asked for. Upgrade to a larger constant, chosen by J1's sequential row
 > and J8's repack amplification measured at two or three sizes, when
 > `spare_refusals` or J1's sequential row shows the roll rate at the device's
@@ -737,11 +737,16 @@ and the segment scanned. **An unrecognised format version is also "no footer",
 not an error**: the footer is an accelerator, so a reader that does not
 understand it loses speed and nothing else.
 
-**Writing.** At seal: make every record durable; append the seal marker, the
-footer and the trailer; make those durable; then, for a segment sealed early,
-truncate the file past the trailer and make that durable. The trailer **MUST NOT** be written before the entries it
-describes are durable: a valid trailer over unwritten entries is the one failure
-this layout cannot detect.
+**Writing.** At seal: make every record durable; then append the seal marker,
+the footer and the trailer and make them durable with one sync; then, for a
+segment sealed early, truncate the file past the trailer and make that durable.
+A full seal is two syncs and an early one three; an implementation **MAY** split
+a step into more. The second step needs no order among its writes: a crash that
+keeps only part of them is "no footer" above, and the segment, which no
+successor names yet ([§2.2](#2.2%20Segments)), is scanned as its stream's newest. A sync of
+the seal that fails is a failed sync ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)): the segment is never sealed
+and its successor names none. The first step comes first because the footer
+follows the records it describes ([§2.4](#2.4%20The%20segment%20catalog)).
 
 ### 2.6 Segments or staging files, chosen by benchmark
 
@@ -1255,7 +1260,7 @@ No flip may produce a read that returns bytes other than the ones written.
 
 **Crashes.** Through the storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), never by killing the process:
 
-- *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, seal, footer, repack copy, repack unlink, each directory sync, and those of `Open` itself: the sync of an unproven tail, the truncation of a torn tail and the seal after it, a re-append, and the zeroing of a re-adopted spare's slots — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
+- *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, each of a seal's syncs, repack copy, repack unlink, each directory sync, and those of `Open` itself: the sync of an unproven tail, the truncation of a torn tail and the seal after it, a re-append, and the zeroing of a re-adopted spare's slots — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
 - *torn writes*: the last unsynced write survives only in part, cut at every byte of the final record and of the trailer;
 - *reordered writes*: any subset of the unsynced writes survives, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
 

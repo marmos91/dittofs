@@ -1846,8 +1846,8 @@ extra: each is due a sync within the bound anyway, and a sync only writes it
 sooner. A `Sync` touches one segment only, the stream's active one: the stream
 makes a segment durable when it rolls to the next, because the seal marker
 **MUST** be durable before a successor naming the segment exists
-([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs a
-segment sync, the spare it takes having had its entry synced when it was made
+([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs
+the seal's syncs ([RFC 28 §2.5](rfc-28-journal-format.md#2.5%20Catalog%20layout)), the spare it takes having had its entry synced when it was made
 ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and a `Sync` otherwise costs one: an append overwrites blocks
 already allocated and written ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), so a data-only sync commits no
 filesystem metadata with it.
