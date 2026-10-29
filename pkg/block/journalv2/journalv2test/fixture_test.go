@@ -58,7 +58,7 @@ func TestFixtureReportsItsOwnFailures(t *testing.T) {
 // TestShutdownOnNoJournalIsIdle pins that shutting down a journal that is not
 // open changes nothing and makes no call on the seam.
 func TestShutdownOnNoJournalIsIdle(t *testing.T) {
-	f := bareFixture(t, nil)
+	f := bareFixture(t, nil, FixtureSegmentCap)
 	f.Shutdown()
 	f.Shutdown()
 
@@ -76,7 +76,7 @@ func TestShutdownOnNoJournalIsIdle(t *testing.T) {
 // journal shut and the fixture's identity as it was: on an empty directory
 // every open fails, whatever identity it expects.
 func TestTryReopenAsKeepsTheIdentity(t *testing.T) {
-	f := bareFixture(t, nil)
+	f := bareFixture(t, nil, FixtureSegmentCap)
 	for _, expect := range []journalv2.JournalID{{}, {1}} {
 		if err := f.TryReopenAs(expect); err == nil {
 			t.Fatalf("opening an empty directory as %x succeeded", expect)
@@ -96,7 +96,7 @@ func TestTryReopenAsKeepsTheIdentity(t *testing.T) {
 // TestTryInitRecordsOnSuccessOnly pins that TryInit makes its identity the
 // fixture's only when Init succeeded, and opens nothing either way.
 func TestTryInitRecordsOnSuccessOnly(t *testing.T) {
-	f := bareFixture(t, nil)
+	f := bareFixture(t, nil, FixtureSegmentCap)
 	id, err := f.TryInit()
 
 	switch {
@@ -113,7 +113,7 @@ func TestTryInitRecordsOnSuccessOnly(t *testing.T) {
 // TestTryRestampLeavesTheJournalShut pins that a restamp opens nothing and,
 // on an empty directory, fails as an open does.
 func TestTryRestampLeavesTheJournalShut(t *testing.T) {
-	f := bareFixture(t, nil)
+	f := bareFixture(t, nil, FixtureSegmentCap)
 	if err := f.TryRestamp(journalv2.InstallationID{1}); err == nil {
 		t.Fatalf("restamping an empty directory succeeded")
 	}

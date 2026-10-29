@@ -577,7 +577,7 @@ func TestRFC28A_WriteCarriesItsMtime(t *testing.T) {
 // tryWriteMtime is tryWrite with the write's modification time.
 func tryWriteMtime(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64, p []byte, mtime int64) (journalv2.Version, error) {
 	var v journalv2.Version
-	err := retrySpare(func() (err error) {
+	err := journalv2test.RetrySpare(func() (err error) {
 		v, err = h.WriteAt(t.Context(), id, off, p, mtime)
 		return err
 	})

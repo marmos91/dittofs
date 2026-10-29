@@ -120,7 +120,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		prof.Watch(tb, prof.Options{})
 	}
 
-	f := bareFixture(tb, fault)
+	f := bareFixture(tb, fault, segCap)
 	var err error
 	f.id, err = journalv2.Init(tb.Context(), f.Dir, FixtureInstall, f.options()...)
 	if err != nil {
@@ -132,9 +132,10 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 }
 
 // bareFixture is a fixture on a new, empty directory with no journal in it:
-// the seam, the clock and the options are set and nothing is initialised or
-// opened. What it opens later is closed when the test ends.
-func bareFixture(tb testing.TB, fault sim.Fault) *Fixture {
+// the seam, the clock and the options are set, with segments of segCap
+// bytes, and nothing is initialised or opened. What it opens later is closed
+// when the test ends.
+func bareFixture(tb testing.TB, fault sim.Fault, segCap int64) *Fixture {
 	tb.Helper()
 
 	dir := tb.TempDir()
