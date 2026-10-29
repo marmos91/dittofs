@@ -185,7 +185,7 @@ func TestRFC28C_SyncedDamageIsNotATornTail(t *testing.T) {
 		t.Fatalf("B moved from %+v to %+v across the crash; it was synced where it was", bLoc, got)
 	}
 
-	wantBytes(t, h, id, b.extent.Off, b.p)
+	wantBytes(t, f.Share(0), id, b.extent.Off, b.p)
 
 	// A record's header, then a write's 8-byte modification time, then its
 	// payload: B's end is where no truncation may reach.
