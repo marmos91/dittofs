@@ -199,9 +199,14 @@ type Opens interface {
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
 	// Reconnect attaches a durable or persistent open, disconnected and
 	// within its Timeout, to session s, answering it with the lease covering
-	// it. It matches only the open's client and principal, its create ID and
-	// its lease key; anything else is ErrNoReclaim, as for an open that does
-	// not exist, and changes nothing.
+	// it. It matches only the open's client and principal, its share, its
+	// create ID and its lease key; anything else is ErrNoReclaim, as for an
+	// open that does not exist, and changes nothing.
+	//
+	// decision: a lease reconnect's file-name check is not made here: the
+	// adapter compares the name the request carries with the open's before
+	// calling, as only it holds the request's path. Match Open.Name here if
+	// a second adapter reconnects leases.
 	Reconnect(ctx context.Context, who Caller, o entity.OpenID, m ReconnectMatch, s entity.SessionRef) (OpenResult, error)
 	// Flushed reports a flush through open o, at the file's loss sequence
 	// loss: ErrLost, once, when a loss happened since the open was made or

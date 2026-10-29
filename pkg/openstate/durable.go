@@ -63,6 +63,13 @@ func (e *entry) unsaved() bool {
 
 // persistLease writes the record of each persistent open on e that g
 // covers, so each carries the lease's kind and epoch as they now stand.
+//
+// ponytail: one write per record, so a failure part way leaves the records
+// written before it ahead of the table, which a refused change then does
+// not take back; recallOthers' writes, one lease at a time, are the same.
+// A restart before the next write of those records installs a lease state
+// the client was never sent. Write them in one transaction if a store
+// failure is seen leaving a record's lease ahead across a restart.
 func (t *Table) persistLease(ctx context.Context, e *entry, g *grant) error {
 	for _, h := range e.opens {
 		if h.persistent() && h.Grant == g.id {
