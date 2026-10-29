@@ -120,27 +120,40 @@ func (s *segRecords) note(e core.Extent, n Numbers) int {
 			k, best, lowGap = m-1, g, p
 		}
 	}
+	// The two gaps beside the new range are weighed with the old pairs' best
+	// in one choice, not searched one at a time: a left-first search that
+	// commits before the right gap is known merges the wrong side whenever
+	// the right gap is the smaller. The candidates carry their position in
+	// the nine, so a tie takes the lowest offsets; a gap absent for the
+	// ninth sitting at an end is longer than any gap there.
+	inf := int64(^uint64(0) >> 1)
+	leftGap, leftPos := inf, int64(-1)
 	if i > 0 {
-		if g := lo - s.ranges[i-1].end; g < best || (g == best && int64(i-1) < lowGap) {
-			// the new range merges with its left neighbour, in that slot
-			nb := s.ranges[i-1]
-			if nb.low.Compare(n) < 0 {
-				n = nb.low
-			}
-			s.ranges[i-1] = dropRange{start: min(lo, nb.start), end: max(hi, nb.end), low: n}
-			return len(s.ranges) - before
-		}
+		leftGap, leftPos = lo-s.ranges[i-1].end, int64(i-1)
 	}
+	rightGap, rightPos := inf, int64(i)
 	if i < len(s.ranges) {
-		if g := s.ranges[i].start - hi; g < best || (g == best && int64(i) < lowGap) {
-			// the new range merges with its right neighbour, in that slot
-			nb := s.ranges[i]
-			if nb.low.Compare(n) < 0 {
-				n = nb.low
-			}
-			s.ranges[i] = dropRange{start: min(lo, nb.start), end: max(hi, nb.end), low: n}
-			return len(s.ranges) - before
+		rightGap = s.ranges[i].start - hi
+	} else {
+		rightPos = inf
+	}
+	switch {
+	case leftGap < best && (leftGap < rightGap || (leftGap == rightGap && leftPos < rightPos)):
+		// the new range merges with its left neighbour, in that slot
+		nb := s.ranges[i-1]
+		if nb.low.Compare(n) < 0 {
+			n = nb.low
 		}
+		s.ranges[i-1] = dropRange{start: min(lo, nb.start), end: max(hi, nb.end), low: n}
+		return len(s.ranges) - before
+	case rightGap < best && (rightGap < leftGap || (rightGap == leftGap && rightPos < leftPos)):
+		// the new range merges with its right neighbour, in that slot
+		nb := s.ranges[i]
+		if nb.low.Compare(n) < 0 {
+			n = nb.low
+		}
+		s.ranges[i] = dropRange{start: min(lo, nb.start), end: max(hi, nb.end), low: n}
+		return len(s.ranges) - before
 	}
 	// An old pair merges, in place, and the new range takes its slot in the
 	// seven that remain.

@@ -469,8 +469,13 @@ func (f *file) segmentGone(seg core.SegmentID) {
 	for i := range f.segs {
 		if f.segs[i].seg == seg {
 			f.nranges -= len(f.segs[i].ranges)
-			f.segs[i] = f.segs[len(f.segs)-1]
-			f.segs = f.segs[:len(f.segs)-1]
+			last := len(f.segs) - 1
+			f.segs[i] = f.segs[last]
+			// The vacated slot is cleared, not just cut off: the backing
+			// array keeps it reachable, and the tail entry it still holds
+			// would pin that segment's ranges array for the entry's life.
+			f.segs[last] = segRecords{}
+			f.segs = f.segs[:last]
 			return
 		}
 	}

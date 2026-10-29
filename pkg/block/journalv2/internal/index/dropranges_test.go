@@ -526,6 +526,34 @@ func TestSegmentGoneForgetsItsRanges(t *testing.T) {
 	}
 }
 
+// TestSegmentGoneClearsTheVacatedSlot: the swap-remove moves the last segment
+// entry over the removed one, leaving the last slot holding the tail entry —
+// and its ranges array — past the slice's end. A slot that nothing clears
+// keeps every unlinked tail segment's array alive through the pointer, so the
+// entry costs memory for as long as the file lives.
+func TestSegmentGoneClearsTheVacatedSlot(t *testing.T) {
+	var fs files
+	id := fid(1)
+	for seg := core.SegmentID(1); seg <= 3; seg++ {
+		noteRec(t, &fs, id, seg, ext(0, 8), nums(1, 1))
+	}
+	// Remove a segment that is not the last: slots 1 and 2 swap, and the
+	// slot past the end must no longer hold the moved tail's array.
+	_ = fs.update(id, func(f *file) error { f.segmentGone(1); return nil })
+	_ = fs.view(id, func(f *file) {
+		n := len(f.segs)
+		if n != 2 {
+			t.Fatalf("len(segs) = %d, want 2", n)
+		}
+		// The slot past the end is reachable through the backing array, of
+		// which three appends leave room for four.
+		vacated := f.segs[:cap(f.segs)][n]
+		if vacated.seg != 0 || vacated.ranges != nil {
+			t.Fatalf("the vacated slot holds segment %d with ranges %+v, want the zero entry", vacated.seg, vacated.ranges)
+		}
+	})
+}
+
 // TestRecordWithoutExtentKeepsTag: a record with no extent marks its segment
 // only, so the tag outlives the change version, and it adds no range. A path
 // that dropped the tag for having no extent would lose the file's owner
@@ -727,40 +755,107 @@ func TestNoteKeepsRangeArrayAtMaxDropRanges(t *testing.T) {
 	}
 }
 
-// TestNinthMergesIntoItsNeighbourWhenClosest pins that the ninth's own two
-// gaps count as merge candidates: when the space beside the arriving range is
-// the smallest of the nine, the range merges with that neighbour rather than
-// an old pair. The choice is made over all nine ranges, not the eight that
-// were there first.
-func TestNinthMergesIntoItsNeighbourWhenClosest(t *testing.T) {
-	var fs files
-	id := fid(1)
-	// Eight ranges ten long at 0, 100, …, 700: every gap is 90.
-	for i := range int64(8) {
-		noteRec(t, &fs, id, 1, ext(i*100, 10), nums(uint64(i+1), uint64(i+1)))
-	}
-	// The ninth, [112, 120): a gap of 2 to [100, 110) on its left and 80 on its
-	// right — the smallest of the nine — so it merges left.
-	noteRec(t, &fs, id, 1, ext(112, 8), nums(3, 99))
-	rs, _ := rangesOf(&fs, id, 1)
-	if len(rs) != 8 {
-		t.Fatalf("%d ranges after the ninth, want 8", len(rs))
-	}
-	want := dropRange{start: 100, end: 120, low: nums(2, 2)} // min of (2, 2) and (3, 99)
-	if !slices.Contains(rs, want) {
-		t.Fatalf("the ninth did not merge with its closest neighbour: %+v not in %+v", want, rs)
-	}
-	if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 112 }) {
-		t.Fatalf("the ninth stayed its own range: %+v", rs)
-	}
-	for i := range int64(8) {
-		if i == 1 {
-			continue // the merged neighbour
-		}
-		if !slices.Contains(rs, dropRange{start: i * 100, end: i*100 + 10, low: nums(uint64(i+1), uint64(i+1))}) {
-			t.Fatalf("range at %d was changed by the merge: %+v", i*100, rs)
+// TestNinthMergesIntoItsClosestNeighbour pins that the ninth's own two gaps
+// count as merge candidates and are compared with the old pairs' gaps
+// together: when the space beside the arriving range is the smallest of the
+// nine, the range merges with that neighbour rather than an old pair. Both
+// sides must win on their own gap — a left-then-right search that compares
+// only the left gap against the old ones merges the wrong side whenever the
+// right gap is smaller — and on a tie between the two, the left, lower-offset
+// one merges.
+func TestNinthMergesIntoItsClosestNeighbour(t *testing.T) {
+	// Eight ranges ten long at 0, 100, …, 700, carrying pairs 1..8: every gap
+	// between old ranges is 90.
+	fill := func(fs *files, id core.FileID) {
+		for i := range int64(8) {
+			noteRec(t, fs, id, 1, ext(i*100, 10), nums(uint64(i+1), uint64(i+1)))
 		}
 	}
+	// untouched returns the ranges of the given slots, which the merge must not
+	// have touched: neighbours are indexed by their slot above.
+	untouched := func(t *testing.T, fs *files, id core.FileID, slots ...int64) {
+		t.Helper()
+		rs, _ := rangesOf(fs, id, 1)
+		for _, i := range slots {
+			if !slices.Contains(rs, dropRange{start: i * 100, end: i*100 + 10, low: nums(uint64(i+1), uint64(i+1))}) {
+				t.Fatalf("range at %d was changed by the merge: %+v", i*100, rs)
+			}
+		}
+	}
+
+	t.Run("left gap smaller", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		fill(&fs, id)
+		// The ninth, [112, 120): a gap of 2 to [100, 110) on its left, 80 to
+		// [200, 210) on its right — the left is the smallest of the nine.
+		noteRec(t, &fs, id, 1, ext(112, 8), nums(3, 99))
+		rs, _ := rangesOf(&fs, id, 1)
+		if len(rs) != 8 {
+			t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+		}
+		// The merged neighbour keeps its own lower pair (2, 2).
+		want := dropRange{start: 100, end: 120, low: nums(2, 2)}
+		if !slices.Contains(rs, want) {
+			t.Fatalf("the ninth did not merge with its closest neighbour: %+v not in %+v", want, rs)
+		}
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 112 }) {
+			t.Fatalf("the ninth stayed its own range: %+v", rs)
+		}
+		untouched(t, &fs, id, 0, 2, 3, 4, 5, 6, 7)
+	})
+
+	t.Run("right gap smaller", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		fill(&fs, id)
+		// The ninth, [180, 198): a gap of 70 to [100, 110) on its left, 2 to
+		// [200, 210) on its right, and 90 between the old pairs — the right
+		// is the smallest of the nine. A left-first search that never reaches
+		// the right gap merges left across 70 bytes instead.
+		noteRec(t, &fs, id, 1, ext(180, 18), nums(3, 99))
+		rs, _ := rangesOf(&fs, id, 1)
+		if len(rs) != 8 {
+			t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+		}
+		// The merged neighbour's pair (3, 3) is the lower of (3, 3) and (3, 99).
+		want := dropRange{start: 180, end: 210, low: nums(3, 3)}
+		if !slices.Contains(rs, want) {
+			t.Fatalf("the ninth did not merge with its closest neighbour: %+v not in %+v", want, rs)
+		}
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 100 && r.end > 110 }) {
+			t.Fatalf("the ninth merged left across the larger gap: %+v", rs)
+		}
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 180 && r.end == 198 }) {
+			t.Fatalf("the ninth stayed its own range: %+v", rs)
+		}
+		untouched(t, &fs, id, 0, 1, 3, 4, 5, 6, 7)
+	})
+
+	t.Run("left and right gaps tie", func(t *testing.T) {
+		var fs files
+		id := fid(1)
+		fill(&fs, id)
+		// The ninth, [150, 160): 40 to [100, 110) on its left and 40 to
+		// [200, 210) on its right — the smallest of the nine, tied. The tie
+		// takes the lower offsets, so it merges left.
+		noteRec(t, &fs, id, 1, ext(150, 10), nums(3, 99))
+		rs, _ := rangesOf(&fs, id, 1)
+		if len(rs) != 8 {
+			t.Fatalf("%d ranges after the ninth, want 8", len(rs))
+		}
+		want := dropRange{start: 100, end: 160, low: nums(2, 2)}
+		if !slices.Contains(rs, want) {
+			t.Fatalf("the tied ninth did not merge with its lower-offset neighbour: %+v not in %+v", want, rs)
+		}
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start == 150 && r.end == 160 }) {
+			t.Fatalf("the ninth stayed its own range: %+v", rs)
+		}
+		if slices.ContainsFunc(rs, func(r dropRange) bool { return r.start < 210 && r.end > 210 && r.start > 160 }) {
+			t.Fatalf("the tie merged right instead: %+v", rs)
+		}
+		untouched(t, &fs, id, 0, 3, 4, 5, 6, 7)
+	})
 }
 
 // TestNoteIntoFullPairAllocatesNothing pins the note's steady-state cost: once
