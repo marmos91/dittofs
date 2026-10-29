@@ -136,8 +136,9 @@ func TestRebuildGolden(t *testing.T) {
 // TestRebuildPrecedenceTiesAndCopies is the precedence rule on ties: equal
 // versions are ordered by sequence number, a repack copy succeeds its
 // original wherever it is fed, a newer version wins however low its sequence
-// number, and the same record carried in two places is one record, read from
-// its newer home.
+// number, and the same record carried in two places is one record, kept at
+// the greater (segment, offset) — a tie-break making the replay deterministic,
+// not a claim about which copy is newer.
 func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 	t.Run("repack copy wins its record's home", func(t *testing.T) {
 		// W(v7, s5) in segment 1 and its repack copy W(v7, s9) in segment 2:
@@ -234,8 +235,8 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 				t.Fatalf("order %v: segments noted = %v, want both copies' segments 1 and 3", order, segs)
 			}
 			// The surviving placement is the run's greater (segment, offset),
-			// so a copied record reads from its newer home — the failed
-			// segment's copy must not be the one the piece names.
+			// the tie-break's pick: whichever order the copies were fed in,
+			// the same one is kept.
 			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
 				{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7)},
 			}) {

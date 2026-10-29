@@ -423,13 +423,13 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// still on disk. Every copy has been noted above, so the drop ranges
 	// lose nothing here.
 	//
-	// decision: of two copies of one record, the one at the greater
-	// (segment, offset) is the newer home: a stream takes the lowest-id
-	// spare, so a segment taken later has a greater id than every segment
-	// taken before it. Both copies were verified and hold identical bytes,
-	// so either serves a read; the key makes the rebuild deterministic.
-	// Overturned if spares are ever taken out of id order, or a read ever
-	// distinguishes the copies.
+	// decision: of two copies of one record, the replay keeps the one at
+	// the greater (segment, offset). Both carry the record's numbers, so
+	// they decide every read the same way, and the key only makes the
+	// rebuild deterministic. It is not always the newer home: a re-append
+	// at open into an older repack-reserve spare can be the lower one.
+	// Overturned if a read or a repack ever treats the two copies
+	// differently, such as a copy in a segment marked untrusted on disk.
 	kept := recs[:0]
 	for i := 0; i < len(recs); {
 		j := i + 1
