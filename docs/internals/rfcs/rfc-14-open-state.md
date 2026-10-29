@@ -919,9 +919,12 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
 - **Callback:** the primary grants the lock once the range frees, under the
   file's admission lock
   ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), and calls
-  `LockWaitOver`. The lock stays granted, and the service **MUST** keep calling
-  until the client answers — acknowledges, refuses, cancels — or its state ends:
-  its host restarts, an administrator
+  `LockWaitOver`. A grant that would take its client past §5.5's range cap, or
+  whose persistent open's write fails, is not made: the waiter is dropped and
+  reported `LockWaitOver(granted=false)`, and the client asks again. The lock
+  stays granted, and the service **MUST** keep calling until the client
+  answers — acknowledges, refuses, cancels — or its state ends: its host
+  restarts, an administrator
   revokes it ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
   or `DropShare` ends its share. `WaitAnswered` returns the client's answer
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): on an acknowledgement the
@@ -955,9 +958,10 @@ whose ranges do not overlap are independent.
 
 **A waiter has one lifetime, this one.** It is dropped when it is granted; when
 its owner cancels it (`CancelLock`) or, polling, has not polled by `Deadline`;
-when it is replaced (above); when its open closes, or its open's session loses
-its last channel; and with everything else its client holds when the client's
-lease expires or its state is revoked
+when it is replaced (above); when, callback, its grant is refused (above); when
+its open closes, or its open's session loses its last channel; and with
+everything else its client holds when the client's lease expires or its state
+is revoked
 ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
 or its host restarts ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)),
 or `DropShare` ends its share (§4.3). Nothing else ends it: an adapter **MUST
@@ -1840,8 +1844,8 @@ budget at each primary it reaches, and a new primary starts every count at zero.
 > decision: each primary holds, per client, at most 16,384 opens, 65,536 lock
 > ranges, 4,096 lock owners, 1,024 waiters and 1,024 watches, proposed, settled
 > with RFC 24's M6. A request past one is refused `ErrDelay` (`DelayResources`)
-> before it changes anything; a close, a cancel and an unlock that splits no
-> range never is. A cap is judged before the request closes an app instance's
+> before it changes anything; a close, a cancel, a refusal of a callback grant,
+> an unlock that splits no range, and what a restart installs never are. A cap is judged before the request closes an app instance's
 > predecessor or starts a recall. A merging owner's unlock of a range's middle
 > adds a range, so at the range cap it is refused as a lock past it would be, and the client
 > unlocks a whole range or closes instead; a stacking owner's unlock never
@@ -2971,7 +2975,7 @@ Deleted numbers are not reused.
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. | Register a recursive watch above a child shard on another primary; create a file in the child: the watch completes with enumerate-directory. |
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: refused; unlink the base's name: the stream open keeps the file alive. Suspend the change time on an SMB open and write: the change attribute advanced. |
 | L38 | A proposal changes no state until its confirm; it is volatile in the answering node's open state and confirmed only by its principal within one lease period; its caps count per source address, an IPv6 /64 as one. | A confirmed client holds a lock; `Propose` its owner with a new verifier: the lock held and no record written; confirm from another principal: refused. Seventeen proposals from one /64: the seventeenth `ErrDelay`. Principal Q replaces P's pending proposal for a new name: counted. Two hosts alternate proposals under one name: each reboot counted, `client_reboot_loop` raised. RFC 21 §13 holds the wire walk. |
-| L39 | No worker waits on a blocked lock: a waiter is volatile, served first in, first out per range, barred only where its blockers are, and ends only on what §2.10 lists, a replaced callback waiter answered; an NLM grant is resent, never released for a silence; no adapter answers a waiting request other than as granted before `CancelLock` returns. | Hold an exclusive lock; owners request blocking exclusive A, shared B, exclusive C while a fourth takes non-waiting shared locks on the held range; release: A first, B, then C, the fourth refused while A waits, no worker held. Owner A1 holds byte 0 and A2 of the same client waits exclusive on [0, ∞): another client's lock on [4096, 8192) is granted. Two blocking NLM locks of one owner on one file: the first is reported `LockWaitOver(granted=false)` when the second replaces it. A poll waiter that stops polling loses its reservation after a lease period. An NLM grant whose acknowledgements are dropped for ten minutes is still resent and held; a refusal releases it. Race a cancel against an unlock 10⁴ times: granted and held, or cancelled and none held. |
+| L39 | No worker waits on a blocked lock: a waiter is volatile, served first in, first out per range, barred only where its blockers are, and ends only on what §2.10 lists, a replaced callback waiter or a refused callback grant answered; an NLM grant is resent, never released for a silence; no adapter answers a waiting request other than as granted before `CancelLock` returns. | Hold an exclusive lock; owners request blocking exclusive A, shared B, exclusive C while a fourth takes non-waiting shared locks on the held range; release: A first, B, then C, the fourth refused while A waits, no worker held. Owner A1 holds byte 0 and A2 of the same client waits exclusive on [0, ∞): another client's lock on [4096, 8192) is granted. Two blocking NLM locks of one owner on one file: the first is reported `LockWaitOver(granted=false)` when the second replaces it. A poll waiter that stops polling loses its reservation after a lease period. An NLM grant whose acknowledgements are dropped for ten minutes is still resent and held; a refusal releases it. Race a cancel against an unlock 10⁴ times: granted and held, or cancelled and none held. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none, and is asked once per climb to the budget to return down to 2048 where its protocol can be asked. | An NFSv4.1 client opens 5000 files at one primary: grants stop at 4096 and one `Sink.RecallAny` names 2048; return 100, climb back to 4096: a second `RecallAny`. Over SMB: leases stop at 4096, every lease held stays, and one is offered again once the count falls. |
 | L41 | A client's `Expires` is volatile; its `Adapter` is durable, written only in the step of the change it belongs to, and only over the bytes the writer read. | `AddSession` with new bytes, restart, `Record` through another node: the bytes as written and one session. Two `AddSession`s expecting the same bytes race: one writes, the other writes nothing and is answered `ErrRecordChanged` with the first's record. 10⁵ clients renew for two lease periods: no record write; restart the lease owner: none expired within a lease period. A renewal racing the sweep that expires it: the client stays. RFC 21 N18 holds the `CREATE_SESSION` replay. |
 | L43 | Every SMB open that was open across a loss of an acknowledged, unoffloaded write of its file fails its next flush with `ErrLost`, once. | Two SMB durable opens, write unstable through the first, drop its journal record as corrupt: each `Flushed` is `ErrLost` once, then succeeds; a reconnect before flushing does not clear it. |
