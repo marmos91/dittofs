@@ -774,7 +774,7 @@ func wantNoFooter(t *testing.T, f *journalv2test.Fixture, s sealed) {
 
 // wantBadFooter fails the test unless Verify names segment seg among those
 // whose footer did not verify, which verification reports rather than
-// repairs (RFC 1 section 4.4, line 1713).
+// repairs (RFC 1 section 4.4).
 func wantBadFooter(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) {
 	t.Helper()
 
@@ -2547,7 +2547,7 @@ func TestRFC28C_FormatFile(t *testing.T) {
 			t.Fatalf("opening with a format file of %s returned %v, want one of %v", leg.name, err, leg.want)
 		}
 		if got := callsFor(f, "format"); got[journalv2test.OpWrite] != before[journalv2test.OpWrite] || got[journalv2test.OpTruncate] != before[journalv2test.OpTruncate] || f.Seam.CallsFor(journalv2test.OpCreate, "format.tmp") != creates {
-			t.Fatalf("the open wrote to the format file of %s; it is never repaired or upgraded in silence (RFC 28 section 2.1, line 209)", leg.name)
+			t.Fatalf("the open wrote to the format file of %s; it is never repaired or upgraded in silence (RFC 28 section 2.1)", leg.name)
 		}
 
 		// The file put back as it was.

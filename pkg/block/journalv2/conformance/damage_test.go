@@ -220,7 +220,7 @@ func piecesOf(t *testing.T, where string, f *journalv2test.Fixture, s int, id jo
 // write reports nothing missing, or one missing extent that starts where a
 // piece starts and runs to the write's end. The model accepts any prefix of
 // an uncertain write, since it cannot see where the pieces split; this holds
-// it to whole pieces (RFC 28 section 4.4, lines 1262 to 1267).
+// it to whole pieces (RFC 28 section 4.4).
 func wantWholePieces(t *testing.T, where string, h *journalv2.Handle, w pieced) {
 	t.Helper()
 
@@ -1564,9 +1564,9 @@ func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, 
 // checked on.
 //
 // decision: an open may write a footer for a segment sealed by an earlier
-// process once it has verified it by scan (RFC 28 section 2.4, lines 656 to
-// 659), so a journal doing that is not failed; the trailer is broken again
-// right before the next reopen instead. How an open read S says nothing of
+// process once it has verified it by scan (RFC 28 section 2.4), so a journal
+// doing that is not failed; the trailer is broken again right before the
+// next reopen instead. How an open read S says nothing of
 // whether it rebuilt S's footer afterwards, so the trailer's bytes are read,
 // not the recovery counts.
 func (s *flipSite) keepScanned(t *testing.T) {
@@ -1732,7 +1732,7 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 //
 // decision: a flipped segment header and a flipped seal marker are asserted
 // through Damaged, as the section 4.4 row asks for the segment reported as
-// damaged, while RFC 1 section 3.7 line 1159 defines DamagedSegments by
+// damaged, while RFC 1 section 3.7 defines DamagedSegments by
 // records that do not verify, and neither the header nor the marker is a
 // record. The RFC does not yet say which field reports damage outside a
 // record; move the assertion when it does.
@@ -1889,8 +1889,8 @@ func TestDamage_BitFlip(t *testing.T) {
 // no longer held, so a read of them reports them missing, and everything
 // else is still served. The deleted name is never made again, by a create or
 // by the rename a spare reaches its name through: a fresh id exceeds every
-// id the directory names, those found at open included (RFC 28 section 2.2,
-// lines 316 to 319).
+// id the directory names, those found at open included (RFC 28 section
+// 2.2).
 //
 // decision: the row says the deletion is not noticed by the journal, and
 // nothing here asserts that: a journal that counts the missing predecessor
