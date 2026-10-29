@@ -110,7 +110,9 @@ type Locks interface {
 	Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error)
 	// ReleaseLockOwner drops o's lock states at this primary, with their
 	// waiters and o's sequence; while o holds a lock, on any file, it is
-	// ErrLocksHeld and changes nothing.
+	// ErrLocksHeld and changes nothing. The waiters the release frees are
+	// served under each file's admission lock, which the table takes itself:
+	// the service must not hold one when calling.
 	ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) error
 }
 
@@ -730,7 +732,7 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	// is refused here too, after the files before it were released. The
 	// owner's requests are serial, so only a client racing its own release
 	// meets it. Hold every file's step across both passes if one is seen.
-	var out outbox
+	out := outbox{timer: true} // a release names no file, so no admission lock is held for its grants
 	for _, f := range files {
 		err = t.step(f, func(e *entry) error {
 			if err := holds(e); err != nil {
@@ -754,6 +756,7 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 		t.smu.Unlock()
 	}
 	out.raise(sink)
+	t.serveFiles(sink, out.serve)
 	t.dropIdle(ctx, o.Client)
 	return err
 }

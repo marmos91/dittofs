@@ -526,6 +526,40 @@ func TestConnectGrantsWaitersUnderOrder(t *testing.T) {
 	}
 }
 
+// ReleaseLockOwner, which names an owner and no file, grants the waiter that
+// dropping the owner's reserved poll waiter frees under the file's admission
+// lock.
+func TestReleaseLockOwnerGrantsWaitersUnderOrder(t *testing.T) {
+	f := newFixture(t)
+	a, b, h := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.host(t, "b", 1), f.host(t, "h", 1)
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
+	lo := owner(a, "lo")
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(a, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lo's poll: %v, want ErrLocked", err)
+	}
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, b, file, owner(b, "b"), br(0, 10))
+	if ws := f.sink.takeWaits(); len(ws) != 0 {
+		t.Fatalf("the range freed under lo's poll granted %+v, want it reserved", ws)
+	}
+	f.order.mu.Lock()
+	f.order.files = nil
+	f.order.mu.Unlock()
+	if err := f.Locks().ReleaseLockOwner(ctx, a, lo); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "h" {
+		t.Fatalf("after the release: granted %v, want h", got)
+	}
+	f.order.mu.Lock()
+	defer f.order.mu.Unlock()
+	if !slices.Contains(f.order.files, file.ID) {
+		t.Errorf("ReleaseLockOwner granted the waiter without the file's admission lock: taken for %v", f.order.files)
+	}
+}
+
 // A range a lease expiry frees goes to the waiter on it, even when a request
 // for it arrives after the expiry and before the timer serves the file.
 func TestExpiryGrantIsNotJumped(t *testing.T) {

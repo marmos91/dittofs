@@ -21,8 +21,9 @@ type Sink interface {
 }
 
 // Order takes a file's admission lock and returns its unlock. The table takes
-// it only for the one timer step that adds state: granting a callback waiter
-// on a range the timer freed.
+// it to grant a callback waiter on a range freed by a call that names no file:
+// the timer, Connect and ReleaseLockOwner. Their callers must hold no admission
+// lock.
 type Order func(f entity.FileID) (unlock func())
 
 // RevokeReason is why a client's state ended without the client asking.
@@ -37,7 +38,7 @@ const (
 type outbox struct {
 	closed map[entity.FileID]CloseResult // one per file: only a file's last close leaves anything
 	over   []waitOver
-	timer  bool            // raised on the timer: waiters are served later, under the file's admission lock
+	timer  bool            // raised by a call that names no file: waiters are served later, under the file's admission lock
 	serve  []entity.FileID // the files whose waiters are still to be served
 }
 
