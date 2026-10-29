@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,34 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// shareConnectFilter returns the test srvsvc applies to every share it would
+// report to sessionID: whether that session could TREE_CONNECT to it now. The
+// session is looked up on each call rather than captured, so a pipe held open
+// across a re-authentication answers for the identity the session holds.
+// The admission check runs against clientAddr, the address of the connection
+// that opened the pipe, so a check that depends on the peer answers as it
+// would for a TREE_CONNECT sent there: a pipe opened over a channel bound from
+// another address answers for that address, not the session's first one.
+// Anything that cannot be resolved hides the share.
+func (h *Handler) shareConnectFilter(sessionID uint64, clientAddr string) func(shareName string) bool {
+	return func(shareName string) bool {
+		if h.Registry == nil {
+			return false
+		}
+		share, err := h.Registry.GetShare("/" + shareName)
+		if err != nil {
+			return false
+		}
+		sess, ok := h.SessionManager.GetSession(sessionID)
+		if !ok || sess == nil {
+			return false
+		}
+		ctx := NewSMBHandlerContext(context.Background(), clientAddr, sessionID, 0, 0)
+		_, _, status := h.admitTreeConnect(ctx, sess, share)
+		return status == types.StatusSuccess
+	}
+}
 
 // CREATE path resolution: pipe opens, root opens, path walking, and the
 // new/overwrite file open arms.
@@ -41,7 +70,7 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 	smbFileID := h.GenerateFileID()
 
 	// Create pipe state
-	h.PipeManager.CreatePipe(smbFileID, pipeName)
+	h.PipeManager.CreatePipe(smbFileID, pipeName, h.shareConnectFilter(ctx.SessionID, ctx.ClientAddr))
 
 	// Store open file entry for the pipe
 	openFile := (&OpenFile{

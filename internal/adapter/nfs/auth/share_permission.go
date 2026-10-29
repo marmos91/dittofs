@@ -103,12 +103,7 @@ func ResolveSharePermission(
 	// Root has full admin access only when squash mode is: none, root_to_admin,
 	// or all_to_admin. An empty/unset squash normalizes to DefaultSquashMode
 	// (root_to_guest), which does NOT promote root.
-	isCallerRoot := *uid == 0
-	effSquash := share.Squash.OrDefault()
-	rootHasAdmin := effSquash == models.SquashNone ||
-		effSquash == models.SquashRootToAdmin ||
-		effSquash == models.SquashAllToAdmin
-	if isCallerRoot && rootHasAdmin {
+	if *uid == 0 && share.Squash.RootKeepsAdmin() {
 		result.ReadOnly = share.ReadOnly
 		result.Username = "root"
 		return result, nil

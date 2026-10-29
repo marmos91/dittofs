@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 540" width="900" height="540" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}
+      .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#3d444d}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.4;fill:none;marker-end:url(#a)}
+      .dl{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:4 3;marker-end:url(#a)}
+    </style>
+  </defs>
+  <rect width="900" height="540" fill="#ffffff"/>
+  <text x="16" y="26" class="t">The node builds its components bottom-up, drives them, and is never on the request path.</text>
+
+  <!-- left: the control path -->
+  <rect x="16" y="56" width="200" height="46" rx="6" class="sv"/>
+  <text x="28" y="75" class="h">management API</text>
+  <text x="28" y="92" class="s">writes records; identity: sign-in</text>
+  <path d="M116,104 L116,136" class="ln"/>
+
+  <rect x="16" y="140" width="200" height="60" rx="6" class="st"/>
+  <text x="28" y="159" class="h">control-plane store</text>
+  <text x="28" y="176" class="s">generations: shares, principals,</text>
+  <text x="28" y="190" class="s">settings, stores, shard records</text>
+  <path d="M116,202 L116,234" class="ln"/><text x="124" y="223" class="s">reconcile reads</text>
+
+  <rect x="16" y="238" width="200" height="118" rx="6" class="st"/>
+  <text x="28" y="258" class="h">node.Node</text>
+  <text x="28" y="276" class="k">New</text><text x="62" y="276" class="s">builds 1 → 10</text>
+  <text x="28" y="292" class="k">Start</text><text x="70" y="292" class="s">in build order</text>
+  <text x="28" y="308" class="k">Stop</text><text x="62" y="308" class="s">in reverse</text>
+  <text x="28" y="326" class="s">reconcile calls</text>
+  <text x="28" y="342" class="k">addShare removeShare apply</text>
+  <path d="M218,297 L232,297" class="ln"/>
+  <path d="M236,56 L236,500" stroke="#5b6472" stroke-width="1.4" fill="none"/>
+  <text x="28" y="384" class="s">drives every component on</text>
+  <text x="28" y="398" class="s">the right; it hands the</text>
+  <text x="28" y="412" class="s">adapters a vfs.Service once,</text>
+  <text x="28" y="426" class="s">at New, and no request</text>
+  <text x="28" y="440" class="s">reaches it</text>
+
+  <!-- 11 adapters -->
+  <rect x="250" y="56" width="634" height="40" rx="6" class="sv"/>
+  <text x="262" y="74" class="h">10 · adapters</text>
+  <text x="262" y="89" class="s">call vfs.Service only, sign-in included: the gateway in a cluster, the server on one node</text>
+
+  <!-- 10 gateway, Serve -->
+  <rect x="290" y="128" width="270" height="44" rx="6" class="pr"/>
+  <text x="302" y="146" class="h">9 · vfs.Gateway (cluster)</text>
+  <text x="302" y="162" class="s">forwards: Router, then local or Transport</text>
+  <rect x="614" y="128" width="270" height="44" rx="6" class="pr"/>
+  <text x="626" y="146" class="h">9 · vfs.Serve (cluster)</text>
+  <text x="626" y="162" class="s">fence, dedup, then the server</text>
+  <path d="M420,98 L420,124" class="ln"/>
+  <path d="M562,142 L610,142" class="dl"/>
+  <text x="566" y="124" class="s">Transport</text>
+  <path d="M562,160 L610,160" class="ln"/>
+  <text x="572" y="186" class="s">local</text>
+
+  <!-- 9 server -->
+  <rect x="290" y="204" width="594" height="40" rx="6" class="sv"/>
+  <text x="302" y="222" class="h">8 · *vfs.Server, at the primary</text>
+  <text x="302" y="237" class="s">decides: admission, identity, squash, ordering, open state, metadata, content</text>
+  <path d="M750,174 L750,200" class="ln"/>
+
+  <!-- row D: 8 identity, 7 open state, 5 engine, 6 GC -->
+  <rect x="250" y="284" width="145" height="40" rx="6" class="sv"/>
+  <text x="262" y="302" class="h">7 · identity</text>
+  <text x="262" y="317" class="s">resolver, authenticator</text>
+  <rect x="413" y="284" width="145" height="40" rx="6" class="sv"/>
+  <text x="425" y="302" class="h">6 · open state</text>
+  <rect x="576" y="284" width="145" height="40" rx="6" class="sv"/>
+  <text x="588" y="302" class="h">4 · engine</text>
+  <text x="588" y="317" class="s">called by the server only</text>
+  <rect x="739" y="284" width="145" height="40" rx="6" class="sv"/>
+  <text x="751" y="302" class="h">5 · GC</text>
+  <text x="751" y="317" class="s">sibling, not in the engine</text>
+  <path d="M214,100 L262,280" class="ln"/>
+  <path d="M330,246 L322,280" class="ln"/>
+  <path d="M485,246 L485,280" class="ln"/>
+  <path d="M648,246 L648,280" class="ln"/>
+
+  <!-- row E: 3 journal, 4 syncer -->
+  <rect x="600" y="364" width="121" height="40" rx="6" class="st"/>
+  <text x="612" y="382" class="h">journals</text>
+  <text x="612" y="397" class="s">opened by the engine</text>
+  <rect x="739" y="364" width="120" height="40" rx="6" class="st"/>
+  <text x="751" y="382" class="h">3 · syncer</text>
+  <path d="M660,326 L660,360" class="ln"/>
+  <path d="M712,326 L748,360" class="ln"/>
+  <path d="M800,326 L800,360" class="ln"/>
+
+  <!-- row F: 1 metadata store, 2 remote stores -->
+  <rect x="250" y="444" width="471" height="40" rx="6" class="st"/>
+  <text x="262" y="462" class="h">1 · metadata store</text>
+  <text x="262" y="477" class="s">the metadata views, Blocks, open state's and identity's records</text>
+  <rect x="739" y="444" width="145" height="40" rx="6" class="st"/>
+  <text x="751" y="462" class="h">2 · remote stores</text>
+  <text x="751" y="477" class="s">ref-counted per config</text>
+  <path d="M322,326 L322,440" class="ln"/>
+  <path d="M485,326 L485,440" class="ln"/>
+  <path d="M567,246 L567,440" class="ln"/>
+  <path d="M585,326 L585,440" class="ln"/>
+  <path d="M745,326 L716,440" class="ln"/>
+  <path d="M800,406 L800,440" class="ln"/>
+  <path d="M872,326 L872,440" class="ln"/>
+
+  <text x="16" y="516" class="s">Arrows are calls. Numbers are build order: Start runs 1 → 10, Stop 10 → 1, shards handed over before Serve stops, GC drained before the server.</text>
+  <text x="16" y="531" class="s">Blue: built in a cluster only; on one node the adapters call the server directly, unfenced. Dashed: to another node.</text>
+</svg>

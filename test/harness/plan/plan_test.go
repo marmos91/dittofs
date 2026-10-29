@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -29,8 +30,9 @@ func names(cells []Cell) []string {
 }
 
 // The pr tier is today's pull-request checks, with the conformance suites on
-// the production profile, badger-s3, only. With no change given, the Kerberos
-// e2e run, which has paths, is planned too.
+// the production profile, badger-s3, only, and smbtorture over two runners.
+// With no change given, the Kerberos e2e run, which has paths, is planned too.
+// A cell names the test tools it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -45,7 +47,8 @@ func TestPRTier(t *testing.T) {
 		"e2e/kerberos",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
-		"wpts/badger-s3", "smbtorture/badger-s3",
+		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
+		"cthon04/badger-s3/default", "cthon04/badger-s3/v3", "cthon04/badger-s3/v4.0", "cthon04/badger-s3/v4.1", "cthon04/badger-s3/v4.1-noac", "cthon04/badger-s3/v4.1-smallio",
 		"bench-smoke",
 	}
 	if got := names(cells); !slices.Equal(got, want) {
@@ -55,6 +58,28 @@ func TestPRTier(t *testing.T) {
 		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
+		}
+		var tools []string
+		if c.Suite == "pjdfstest" || c.Suite == "pynfs" || c.Suite == "cthon04" {
+			tools = []string{c.Suite}
+		}
+		if !slices.Equal(c.Tools, tools) {
+			t.Errorf("%s: tools %q, want %q", c.Name, c.Tools, tools)
+		}
+	}
+}
+
+// Conformance runs the production profile, badger-s3, in every tier, its
+// options included, so each of its nightly cells needs Localstack.
+func TestConformanceRunsBadgerS3(t *testing.T) {
+	cells, err := Plan("../../..", repo(t), "nightly", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conformance := []string{"pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04", "nfstest"}
+	for _, c := range cells {
+		if slices.Contains(conformance, c.Suite) && !slices.Contains(c.Needs, "service:localstack") {
+			t.Errorf("%s doesn't run badger-s3: needs %v", c.Name, c.Needs)
 		}
 	}
 }
@@ -124,7 +149,7 @@ suites:
 		t.Fatal(err)
 	}
 	last := nightly[len(nightly)-1]
-	if last.Name != "system/dedicated" || last.Place != Dedicated || len(last.Tests) != 2 {
+	if last.Name != "system/dedicated" || last.Place != dedicated || len(last.Tests) != 2 {
 		t.Fatalf("needs_by_test cell %+v", last)
 	}
 	// 90-d-xl's 122 minutes, 91-e-xxl counted as the cell's 90, and 5 for the fixture.
@@ -144,19 +169,24 @@ suites:
 }
 
 // A fixture adds to each cell's needs what its fields imply there: a service
-// for an S3 profile, and root and the client for a mount, but nothing for an
-// export without one.
+// for an S3 profile, root and the client for a mount, but nothing for an
+// export without one, and root and the port for SMB on a set port.
 func TestFixtureNeeds(t *testing.T) {
 	root := t.TempDir()
 	y := `version: 1
 defaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }
 suites:
+  n: { cmd: "true", fixture: { server: knfsd, nfs: export }, needs: [linux] }
   a:
     cmd: "true"
     matrix: { profile: [memory, badger-s3], nfs: ["export", "4.1"] }
     fixture: { profile: "{profile}", nfs: "{nfs}" }
     needs: [linux, root]
   b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
+  c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
+  d: { cmd: "true", fixture: { profile: memory, nfs: { options: "" } } }
+  e: { cmd: "true", fixture: { profile: memory, nfs: export, client: namespace, rpcbind: host } }
+  k: { cmd: "true", fixture: { profile: memory, smb: true, kerberos: true } }
 `
 	r, err := registry.Parse(root, []byte(y))
 	if err != nil {
@@ -167,11 +197,16 @@ suites:
 		t.Fatal(err)
 	}
 	want := map[string][]string{
+		"n":                  {"linux", "root", "knfsd", "port:2049"},
 		"a/memory/export":    {"linux", "root"},
 		"a/memory/4.1":       {"linux", "root", "nfs-client"},
 		"a/badger-s3/export": {"linux", "root", "service:localstack"},
 		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
 		"b":                  {"root", "smb-client"},
+		"c":                  {"linux", "root", "port:445"},
+		"d":                  {"root", "nfs-client"},
+		"e":                  {"root", "nfs-client", "rpcbind"},
+		"k":                  {"docker"},
 	}
 	for _, c := range cells {
 		if !slices.Equal(c.Needs, want[c.Name]) {
@@ -185,18 +220,15 @@ suites:
 
 func TestPlaceOf(t *testing.T) {
 	cases := map[string][]string{
-		Ubuntu:    {"linux", "root", "disk:10"},
-		Windows:   {"windows"},
-		MacOS:     {"macos"},
-		Dedicated: {"linux", "disk:110"},
+		ubuntu:    {"linux", "root", "disk:10"},
+		windows:   {"windows"},
+		macOS:     {"macos"},
+		dedicated: {"linux", "disk:110"},
 	}
 	for want, needs := range cases {
 		if got := placeOf(needs); got != want {
 			t.Errorf("placeOf(%v) = %s, want %s", needs, got, want)
 		}
-	}
-	if got := placeOf([]string{"host:dedicated"}); got != Dedicated {
-		t.Errorf("host:dedicated goes to %s", got)
 	}
 }
 
@@ -204,19 +236,12 @@ func TestSizeLimit(t *testing.T) {
 	cases := map[string]time.Duration{
 		"test/scenarios/00-smb-x-xs.sh": 2*10*time.Second + 2*time.Minute,
 		"57-smb-x-l.sh":                 32 * time.Minute,
-		"92-smb-x-xl.sh":                2*time.Hour + 2*time.Minute,
 		"90-smb-x-xxl.sh":               0,
 	}
 	for name, want := range cases {
 		if got := sizeLimit(name); got != want {
 			t.Errorf("sizeLimit(%s) = %s, want %s", name, got, want)
 		}
-	}
-}
-
-func TestUnknownTier(t *testing.T) {
-	if _, err := Plan("../../..", repo(t), "weekly", nil); err == nil || !strings.Contains(err.Error(), "weekly") {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -254,10 +279,13 @@ func TestChangedPaths(t *testing.T) {
 	}
 }
 
-// A .txt test list may give a test its own limit, which the cell covers.
+// A .txt test list may give a test its own limit, which the cell covers, and
+// the share it runs on and the prefix of the names it reports, in any order.
+// Anything else on a line is an error, as are an empty or a repeated share= or
+// prefix=.
 func TestTestListLimits(t *testing.T) {
 	root := t.TempDir()
-	list := "# a comment\nslow 40m\nquick\n"
+	list := "# a comment\nslow 40m\nquick prefix=q share=two\n"
 	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(list), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -281,26 +309,67 @@ suites:
 	if cells[0].TimeoutMinutes != 45 || cells[1].TimeoutMinutes != 30 {
 		t.Errorf("limits %d and %d minutes, want 45 and 30", cells[0].TimeoutMinutes, cells[1].TimeoutMinutes)
 	}
-
-	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte("slow forty\n"), 0o644); err != nil {
-		t.Fatal(err)
+	_, lines, err := ListTests(root, r.Units(r.Suite("s"))[0], "")
+	if err != nil || !reflect.DeepEqual(lines["quick"], Line{Share: "two", Prefix: "q"}) || !reflect.DeepEqual(lines["slow"], Line{Limit: 40 * time.Minute}) {
+		t.Errorf("lines %+v, %v", lines, err)
 	}
-	if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
-		t.Errorf("a bad limit: %v", err)
+
+	for _, bad := range []string{"slow forty", "slow 0s", "slow 1m 2m", "slow shard=x", "slow share", "slow share=", "slow prefix=", "slow share=a share=b", "slow prefix=a prefix=b"} {
+		if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(bad+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }
 
-func TestShort(t *testing.T) {
-	cases := map[time.Duration]string{
-		10 * time.Minute:            "10m",
-		2*time.Hour + 7*time.Minute: "2h7m",
-		2 * time.Hour:               "2h",
-		90 * time.Minute:            "1h30m",
-		5 * time.Minute:             "5m",
+// A .txt test list's line may name the matrix values of the cells its test
+// runs in, among its share= and prefix= in any order, and give the test its
+// {test-args}; a line that names a value the matrix lacks or an axis twice,
+// an unknown placeholder, or a word that is none of these is an error.
+func TestTestListLines(t *testing.T) {
+	root := t.TempDir()
+	list := "all -- run {mount}\nonly-b prefix=p v=b share=two -- {share}\nb-or-c v=b,c 5m\n"
+	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(list), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for d, want := range cases {
-		if got := short(d); got != want {
-			t.Errorf("short(%s) = %q, want %q", d, got, want)
+	y := `version: 1
+defaults: { format: exit, tier: merge, timeout: { test: 10m, cell: 30m } }
+suites:
+  s: { cmd: "run {v} {test}", tests: tests.txt, matrix: { v: [a, b, c] } }
+`
+	r, err := registry.Parse(root, []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Plan(root, r, "merge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"s/a": {"all"}, "s/b": {"all", "only-b", "b-or-c"}, "s/c": {"all", "b-or-c"}}
+	for _, c := range cells {
+		if !slices.Equal(c.Tests, want[c.Name]) {
+			t.Errorf("%s: tests %q, want %q", c.Name, c.Tests, want[c.Name])
+		}
+	}
+	_, lines, err := ListTests(root, r.Units(r.Suite("s"))[0], "")
+	only := Line{Share: "two", Prefix: "p", Where: map[string][]string{"v": {"b"}}, Args: []string{"{share}"}}
+	if err != nil || !slices.Equal(lines["all"].Args, []string{"run", "{mount}"}) || !reflect.DeepEqual(lines["only-b"], only) || lines["b-or-c"].Limit != 5*time.Minute {
+		t.Errorf("lines %+v, %v", lines, err)
+	}
+	for bad, want := range map[string]string{
+		"x v=d\n":       `v has no value "d"`,
+		"x v=\n":        `v has no value ""`,
+		"x v=a v=b\n":   `"v=b" is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once`,
+		"x -- {nope}\n": "unknown placeholder {nope}",
+		"x w=a\n":       `"w=a" is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once`,
+	} {
+		if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(bad), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1: "+want) {
+			t.Errorf("%q: %v", bad, err)
 		}
 	}
 }

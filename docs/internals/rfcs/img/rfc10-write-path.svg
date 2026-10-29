@@ -20,7 +20,7 @@
 <text x="75" y="64" class="h" text-anchor="middle">client</text>
 <path d="M75 76V548" class="lane"/>
 <rect x="155" y="44" width="120" height="30" rx="4" class="vfs"/>
-<text x="215" y="64" class="h" text-anchor="middle">front-end</text>
+<text x="215" y="64" class="h" text-anchor="middle">gateway</text>
 <path d="M215 76V548" class="lane"/>
 <rect x="300" y="44" width="120" height="30" rx="4" class="data"/>
 <text x="360" y="64" class="h" text-anchor="middle">primary journal</text>

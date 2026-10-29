@@ -59,6 +59,17 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	// cannot accept with AUTH_TOOWEAK, and no legitimate client is refused: with
 	// no processor the GSS INIT below is never answered either, so no context can
 	// be established in this state.
+	if authStat := rpc.CheckCredential(call); authStat != rpc.AuthOK {
+		logger.Debug("Rejecting RPC call: bad credential",
+			"xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr,
+			"program", call.Program, "procedure", call.Procedure, "flavor", call.GetAuthFlavor())
+		authErrReply, makeErr := rpc.MakeAuthErrorReply(call.XID, authStat)
+		if makeErr != nil {
+			return fmt.Errorf("make auth error reply: %w", makeErr)
+		}
+		return c.writeReply(call.XID, authErrReply)
+	}
+
 	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor == nil {
 		logger.Warn("Rejecting RPCSEC_GSS call: no GSS processor configured",
 			"xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr,

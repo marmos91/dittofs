@@ -7,23 +7,18 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"strings"
 	"testing"
 	"unicode/utf8"
 )
 
-// schema checks JSON values against testdata/ctrf.schema.json, CTRF's own
-// schema at v0.1.0, copied unchanged from
+// loadSchema reads testdata/ctrf.schema.json, CTRF's own schema at v0.1.0,
+// which check checks JSON values against, copied unchanged from
 // https://github.com/ctrf-io/ctrf/blob/v0.1.0/schema/ctrf.schema.json
 // (sha256 742dee4cffda469902a9c30c4a87b0b7000d59d2ee502dcccb12ec471cea96a2).
-// It knows the keywords that schema uses and fails on any other, so a schema
-// that asks for more than it checks can't pass unchecked. format is an
-// annotation, as JSON Schema's draft 7 has it by default.
-type schema struct {
-	root map[string]any
-}
-
-func loadSchema(t *testing.T) schema {
+// The check knows the keywords of the parts of that schema dt's output
+// reaches, and fails on any other, so a field dt starts writing whose schema
+// asks for more than the check knows can't pass unchecked.
+func loadSchema(t *testing.T) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile("testdata/ctrf.schema.json")
 	if err != nil {
@@ -33,7 +28,7 @@ func loadSchema(t *testing.T) schema {
 	if !ok {
 		t.Fatal("the schema isn't an object")
 	}
-	return schema{root}
+	return root
 }
 
 // decode reads JSON with numbers kept as json.Number, so an integer can be
@@ -50,22 +45,13 @@ func decode(t *testing.T, data []byte) any {
 }
 
 // check returns every way v breaks the schema node, each at its path.
-func (s schema) check(node map[string]any, v any, at string) []string {
-	if ref, ok := node["$ref"].(string); ok {
-		defs, _ := s.root["definitions"].(map[string]any)
-		name, _ := strings.CutPrefix(ref, "#/definitions/")
-		def, ok := defs[name].(map[string]any)
-		if !ok {
-			return []string{at + ": unresolved $ref " + ref}
-		}
-		node = def
-	}
+func check(node map[string]any, v any, at string) []string {
 	var errs []string
 	fail := func(format string, args ...any) { errs = append(errs, at+": "+fmt.Sprintf(format, args...)) }
 	obj, _ := v.(map[string]any)
 	for key, kw := range node {
 		switch key {
-		case "$schema", "$ref", "title", "description", "definitions", "format":
+		case "$schema", "title", "description", "definitions":
 		case "type":
 			if !isType(v, kw.(string)) {
 				fail("not of type %s", kw)
@@ -87,48 +73,38 @@ func (s schema) check(node map[string]any, v any, at string) []string {
 		case "properties":
 			for name, sub := range kw.(map[string]any) {
 				if x, ok := obj[name]; ok {
-					errs = append(errs, s.check(sub.(map[string]any), x, at+"."+name)...)
+					errs = append(errs, check(sub.(map[string]any), x, at+"."+name)...)
 				}
 			}
-		case "additionalProperties":
+		case "additionalProperties": // false wherever dt's output reaches
 			props, _ := node["properties"].(map[string]any)
-			for name, x := range obj {
-				if _, known := props[name]; known {
-					continue
-				}
-				switch extra := kw.(type) {
-				case bool:
-					if !extra {
-						fail("has the field %s, which the schema doesn't allow", name)
-					}
-				case map[string]any:
-					errs = append(errs, s.check(extra, x, at+"."+name)...)
+			for name := range obj {
+				if props[name] == nil {
+					fail("has the field %s, which the schema doesn't allow", name)
 				}
 			}
 		case "items":
 			arr, _ := v.([]any)
 			for i, x := range arr {
-				errs = append(errs, s.check(kw.(map[string]any), x, fmt.Sprintf("%s[%d]", at, i))...)
+				errs = append(errs, check(kw.(map[string]any), x, fmt.Sprintf("%s[%d]", at, i))...)
 			}
 		case "minItems":
 			if arr, ok := v.([]any); ok && len(arr) < number(kw) {
 				fail("has fewer than %v items", kw)
 			}
+		case "minimum":
+			if n, ok := v.(json.Number); ok {
+				if i, err := n.Int64(); err != nil || i < int64(number(kw)) {
+					fail("is less than %v", kw)
+				}
+			}
 		case "minLength":
 			if str, ok := v.(string); ok && utf8.RuneCountInString(str) < number(kw) {
 				fail("is shorter than %v", kw)
 			}
-		case "minimum":
-			if n, ok := v.(json.Number); ok && number(n) < number(kw) {
-				fail("is below %v", kw)
-			}
 		case "pattern":
 			if str, ok := v.(string); ok && !regexp.MustCompile(kw.(string)).MatchString(str) {
 				fail("%q doesn't match %s", str, kw)
-			}
-		case "anyOf":
-			if !slices.ContainsFunc(kw.([]any), func(sub any) bool { return len(s.check(sub.(map[string]any), v, at)) == 0 }) {
-				fail("matches none of anyOf")
 			}
 		default:
 			fail("the check doesn't know the keyword %q", key)
@@ -154,8 +130,7 @@ func isType(v any, typ string) bool {
 	return false
 }
 
-// number is a schema's or a document's whole number; the schema's bounds
-// are all whole.
+// number is a schema's bound, which is a whole number.
 func number(v any) int {
 	n, _ := v.(json.Number).Int64()
 	return int(n)

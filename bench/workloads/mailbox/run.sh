@@ -27,8 +27,8 @@ export COMPACT_BS="${COMPACT_BS:-1m}"
 job="${1:?usage: run.sh <job.fio> [fio args]}"; shift
 [ -r "$job" ] || { echo "run.sh: cannot read job file: $job" >&2; exit 1; }
 
-# Results live next to this script, wherever it is called from.
-results_dir="$(cd "$(dirname "$0")" && pwd)/results"
+# Results live next to this script, wherever it is called from, unless RESULTS_DIR says otherwise.
+results_dir="${RESULTS_DIR:-$(cd "$(dirname "$0")" && pwd)/results}"
 mkdir -p "$results_dir"
 
 # A job that never references ${USERS} (03 opens only user.0.vhdx) measures one user.

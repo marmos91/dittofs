@@ -56,8 +56,8 @@ files still use that chunk. The read path asks it where bytes are; GC (garbage
 collection) asks it what is safe to delete. It lives in the metadata store, the
 same transactional database as the names and directories ([RFC 7](rfc-7-namespace-metadata.md)).
 
-In outline: clients write over NFS (Network File System) or SMB (Server Message
-Block) into a local journal and are acknowledged from there; later the bytes
+In outline: clients write over a file protocol, whichever adapter serves it
+([RFC 20](rfc-20-adapters.md)), into a local journal and are acknowledged from there; later the bytes
 are cut into chunks of about 256 KiB, each named by the hash of its content,
 packed into blocks of about 4 MiB and uploaded to an S3 (Simple Storage Service)
 bucket; then the local copy may be dropped ([RFC 0](rfc-0-data-lifecycle.md)).
@@ -71,7 +71,7 @@ bucket `dfs-data`. Every write the journal stages gets a **version**, higher
 than any before it for that file.
 
 1. **09:00.** alice-pc writes 1 MiB at offset 4 GiB, version v1, into a part of
-   the disk never written before, then sends an SMB flush. The flush is answered
+   the disk never written before, then sends a flush. The flush is answered
    once the journal has synced the bytes; within a second the journal's group
    commit records in metadata that the extent exists. Only the journal holds the
    bytes.
@@ -235,8 +235,8 @@ The engine is its caller on the content path: write, offload, read, truncate,
 clone. Two other components hold narrow views, wired by whoever composes them
 ([RFC 15](rfc-15-topology.md)): the filesystem service reads `size` and write-time attributes as fields of
 `File`, joined with the engine's overlay ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and GC retires blocks, relocates and audits ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Releasing a
-file reaches this component only through the engine's `Release`, which drops the
-refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+file reaches this component only through the engine's `Delete`, which drops the
+refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 ### 1.1 Non-goals
 
@@ -415,8 +415,8 @@ ref is a `ChunkRef` with `Died` set.
 | Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes and when they last grew, generation, size, encodings, carried chunk list | may this remote object be deleted, when, what does it carry, and how was it written? |
 | Placement ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | the (shard, epoch) of the file's primary | is the writer on this path, or the namespace transaction guarding it, still the file's primary? |
 | Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest`, latest cut time, the cut a running deletion removes | which cut does a commit fall after, and must a superseded ref move to history? |
-| | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
-| | **Died index** | `(ShareID, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
+| | **LiveCut** | `(ShareID, k)` | kind, share or subtree; the snapshot's ordinal; a subtree cut's covered set of shards | which cuts do live snapshots hold? |
+| | **Died index** | `(ShareID, shard, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
 | Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | domain, domain ID and epoch of the attempt, and the writer's node and node epoch for a shard | which minted names may still be put and committed? |
 | | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first, the compaction one by dead-ratio bucket first | — | which blocks are in the trash, await their delete, or are compaction candidates ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
@@ -824,7 +824,7 @@ A pass that had been offered the 11 MiB file at versions up to 3 and commits now
 finds `Removal(f, 4)` and drops its refs that overlap `[3M, ∞)`. Once no pass
 offered below v4 is in flight, the primary prunes the removal.
 
-**t7 — delete.** The namespace releases the file through the engine's `Release`
+**t7 — delete.** The namespace releases the file through the engine's `Delete`
 ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the File record, and with it the FileData fields, and writes `Removal(f, 5) = [0, ∞)`,
 kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
 `live` reach 0, and the sub-transaction that takes each to zero retires it:
@@ -1238,7 +1238,9 @@ database page, a log rewritten in place — which is this section's livelock.
 
 An offload commit **MUST** write O(refs replaced + chunks committed + blocks
 committed) records, and **MUST** read no more than O(log *n*) records per ref it
-replaces, where *n* is the number of refs in the file. An existence commit
+replaces, where *n* is the number of refs in the file, plus O(log *h*) per
+unstamped version whose `born` it rebuilds ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)),
+where *h* is the number of versions in the file record's history. An existence commit
 **MUST** write O(holes changed + overwritten runs) records per file it covers:
 one overwrite record per run of a write that replaced committed content, plus
 at most two for the existing records it splits ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). No per-commit cost may
@@ -1830,7 +1832,7 @@ Phase 2 leaks rather than loses:
 Refs belong to a **file**, not to a name. Hard links, renames, trash and a file
 unlinked while open are namespace states of one file, and none changes a ref.
 Block metadata learns of a deletion only when [RFC 7](rfc-7-namespace-metadata.md) releases the file through
-the engine's `Release`.
+the engine's `Delete`.
 
 A **snapshot** holds counted content through the refs its files had at its cut,
 and writes nothing per file when it is taken:
@@ -2076,7 +2078,7 @@ adoption**, run as the batched pattern of [§6.2](#6.2%20Truncation%20and%20deal
 **A clone fails only before it changes anything.** Every failure the design
 admits — an overlapping extent, an over-length clone, a clone across namespaces
 (which includes a clone by reference into a share whose re-home is `closing`,
-refused with `ErrCrossNamespace` though the share still lists both namespaces,
+refused with `ErrCross` (`CrossNamespace`) though the share still lists both namespaces,
 since the finish never reads a ref written at the old generation then,
 [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)),
 a source a restored snapshot lists as incomplete (`ErrIncomplete`,
@@ -2123,7 +2125,7 @@ carries, and the removal drops what that pass would have committed there.
 namespace the source ref's `nsgen` names, and the engine admits a clone only
 when the destination's share lists every namespace the source's share lists, so
 the cloned ref carries the generation it has there. Between namespaces a clone or
-copy is refused with `ErrCrossNamespace`, and the client copies the bytes itself
+copy is refused with `ErrCross` (`CrossNamespace`), and the client copies the bytes itself
 ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 A clone **MUST NOT** record the destination extent as existing unless its bytes
@@ -2532,7 +2534,7 @@ that resumes from a cursor the caller holds.
 type FileCommit struct {
     File  FileID
     Epoch uint64 // primary's epoch the pass ran under (§4.1)
-    Refs  []ChunkRef // File, Offset, Length, Chunk, Skip, Oldest, Newest; Born and Died are the commit's
+    Refs  []ChunkRef // File, Offset, Length, Chunk, Skip, Oldest, Newest; Born is the offered version's stamp (§6.5), Died is the commit's
 }
 
 type BlockCommit struct {
@@ -2652,7 +2654,7 @@ Metric names are shown without the deployment's prefix.
 | conflicts retried, by `op` | `blockmeta_conflict_retries_total` | counter |
 | removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `blockmeta_removals`, `blockmeta_removals_pending` | gauge, gauge |
 | phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `blockmeta_batches_total`, `blockmeta_batch_refs` | counter, histogram |
-| history refs held, per share | `blockmeta_history_refs` | gauge |
+| history refs held, per share, under RFC 25's worst-n rule | `blockmeta_history_refs` | gauge |
 
 An underflow logs the record at `Error`. An audit mismatch logs the record, its
 stored and recomputed counts, at `Error` when low (sweep hazard) and `Warn` when
@@ -2865,18 +2867,19 @@ requires of it: one file's per-file records form one contiguous range under
 `F‖ShareID‖FileID`; live refs scan in offset order (the covering lookup reads
 from an offset down, [§8.1](#8.1%20Covering%20lookup)); history records scan by offset, then `died`; chunk, block and put
 intent records are keyed by namespace, then by hash-like values, so within a
-namespace they spread evenly. The GC index is the exception: the retired index
-`BR‖ns‖not_before‖name` is ordered by time, so every retirement inserts near the
-same key range's tail, and the compaction index `BC‖ns‖bucket‖name` buckets by
-dead ratio in sixteenths, so its writes fall in a handful of ranges. Each is one insert or delete
-per retirement, resurrection or bucket change, written in that transaction
-([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)); the keys are distinct, so they contend on no record, only on a
-range-splitting backend's tail range.
-
-> ponytail: a time-ordered retired index puts every retirement in one namespace
-> on one key range. Upgrade to a hash-bucketed prefix (`BR‖ns‖h‖not_before‖name`,
-> the deleter scanning the buckets in parallel) when that range's write rate
-> shows in a profile of a delete-heavy workload.
+namespace they spread evenly. The GC index is ordered within a partition: the
+retired index `BR‖ns‖b‖not_before‖name` and the compaction index
+`BC‖ns‖b‖bucket‖name` lead with `b`, the block name's first byte, which is the
+unit GC partitions by
+([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
+Within one `b`, retirements insert near that range's tail and compaction
+candidates fall into its handful of dead-ratio buckets, in sixteenths; across
+`b`, writes spread over up to 256 ranges per namespace. Each is one insert or
+delete per retirement, resurrection or bucket change, written in that
+transaction
+([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt));
+the keys are distinct, so they contend on no record, only on a
+range-splitting backend's tail ranges.
 
 ### B.2 Records
 
@@ -2892,7 +2895,7 @@ range-splitting backend's tail range.
 | **Namespace history** (RFC 7's records) | the record's value as it was, `died` in the key | a transaction superseding a record a live snapshot sees ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 | **Fence F_x / F_o** | `shard` ShardID and `epoch` u64: the (shard, epoch) of the file's primary | new primary; removals and releases; guarded by namespace transactions |
 | **Cut** | `k` u64 · `klatest` u64 · `cut time` (i64 ns) · `deleting` cut u64 (zero when none runs) | snapshot cut, snapshot deletion (behind the cut gate) |
-| **LiveCut** | — | snapshot cut creates, deletion removes |
+| **LiveCut** | kind (share or subtree) · the snapshot's ordinal · a subtree cut's covered set of shards | snapshot cut creates, deletion removes |
 | **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation and a carrying commit repoint; prune of its block deletes |
 | **Reverse ref** | — (the key is `hash‖share‖file‖offset‖died`) | every transaction that writes or deletes a ChunkRef or History record, in the same transaction |
 | **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns, store time) · `marked_at` (i64 ns, store time of the move to `deleted`) · `live` u32 · `dead` u64 · `dead_at` (i64 ns) · `generation` u8 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) · `carried` list of (hash 32 B, length u32), at most `N` | offload commit, relocation create; abandonment and the listing backstop create as `retired`; every count change across zero retires or resurrects; the deleter moves to `deleted`; pruning deletes |

@@ -88,10 +88,25 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
     log "Provision complete"
 fi
 
-# Start samba in the background so samba-tool (which talks to the running DC for
-# user/group management) can operate. Foreground samba is re-exec'd at the end.
-log "Starting samba for provisioning..."
-samba -D
+# Start samba once and keep it: samba-tool below talks to the running DC, and a
+# test starts using the DC as soon as the setup marks it ready, so the samba that
+# serves the setup must be the one that keeps serving. Restarting it after the
+# setup would leave a window where the DC is down for a test that already started.
+# Samba becomes PID 1 here so a stop signal reaches it, and this script re-runs
+# itself in the background to create the test objects. A ready marker left by an
+# earlier start of this container is dropped first.
+if [ "${1:-}" != --populate ]; then
+    rm -f "$KEYTAB_DIR/.ready"
+    "$0" --populate &
+    log "Starting samba in foreground..."
+    exec samba --foreground --no-process-group
+fi
+
+# A failed setup step stops the container, so no test runs against a half-built
+# DC. An EXIT trap rather than ERR: ERR misses the explicit exits below and
+# failures inside functions.
+trap '[ $? -eq 0 ] || { log "ERROR: setup failed, stopping samba"; kill -TERM 1; }' EXIT
+
 # Wait for the LDAP/KDC stack to accept connections.
 for _ in $(seq 1 30); do
     if samba-tool processes >/dev/null 2>&1; then
@@ -259,15 +274,16 @@ EOF
     chmod 0400 "$keytab" 2>/dev/null || true
 fi
 
+# Tests wait for this marker, so it is written last: once the keytab is whole
+# and the KDC, LDAP and DNS accept connections.
+for port in 88 389 53; do
+    for _ in $(seq 1 60); do
+        (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && continue 2
+        sleep 1
+    done
+    log "ERROR: nothing listens on port $port"
+    exit 1
+done
+touch "$KEYTAB_DIR/.ready"
+
 log "AD-DC ready: realm=$REALM users=[$USER_ALICE,$USER_BOB] groups=[engineering,devs(nested)]"
-
-# Stop the backgrounded samba and re-exec it in the foreground as PID 1's child
-# so the container stays alive and signals propagate. The name must match
-# exactly: a test may already be running samba-tool against the ready DC, and a
-# substring match would kill it too.
-samba-tool processes >/dev/null 2>&1 || true
-pkill -TERM -x samba 2>/dev/null || true
-sleep 2
-
-log "Starting samba in foreground..."
-exec samba --foreground --no-process-group

@@ -28,7 +28,7 @@
 <path d="M546 120C536 80 596 80 586 118" class="arr"/><text x="520" y="72" class="s">same name, same bytes</text>
 <path d="M670 120C660 80 720 80 710 118" class="arr"/><text x="660" y="72" class="s">retry on conflict</text>
 <rect x="16" y="300" width="604" height="54" rx="4" class="r"/>
-<text x="28" y="322" class="h">Dirty, file re-queued with RetryDue (jittered backoff, per file; never stops while owned)</text>
+<text x="28" y="322" class="h">Dirty, file backed off by the scheduler (jittered, per file; never stops while owned)</text>
 <text x="28" y="340" class="s">what was reported stays reported; the next offer is a new attempt and mints a new name</text>
 <path d="M70 180V298" class="dash"/><text x="76" y="236" class="s">nothing offered</text>
 <path d="M194 180V298" class="dash"/><text x="200" y="256" class="s">pass ends</text>
@@ -40,6 +40,6 @@
 <text x="652" y="394" class="h">stale epoch: stop the unit</text>
 <text x="652" y="412" class="s">not a retry; the new owner re-offers</text>
 <path d="M736 180V370" class="arr"/>
-<path d="M300 356C300 400 60 420 40 356" class="arr"/><text x="80" y="420" class="s">AgeTick or RetryDue → Capture again</text>
+<path d="M300 356C300 400 60 420 40 356" class="arr"/><text x="80" y="420" class="s">age tick or backoff ends → Capture again</text>
 <text x="16" y="458" class="s">Abandoning an attempt also abandons its intent (RFC 6 §7.6), so its object is collected without waiting for a new epoch.</text>
 </svg>

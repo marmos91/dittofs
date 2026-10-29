@@ -16,6 +16,16 @@
       url = "github:kofemann/pynfs";
       flake = false;
     };
+    # Connectathon and NetApp's nfstest: what a kernel client sees through an
+    # untuned mount. git.linux-nfs.org serves them over git:// only.
+    cthon04-src = {
+      url = "git+git://git.linux-nfs.org/projects/steved/cthon04.git";
+      flake = false;
+    };
+    nfstest-src = {
+      url = "git+git://git.linux-nfs.org/projects/mora/nfstest.git";
+      flake = false;
+    };
   };
 
   outputs =
@@ -25,6 +35,8 @@
       flake-utils,
       pjdfstest-src,
       pynfs-src,
+      cthon04-src,
+      nfstest-src,
     }:
     let
       # Version configuration - update this for releases
@@ -167,6 +179,78 @@
               license = licenses.gpl2Only;
               platforms = platforms.unix;
               mainProgram = "pynfs-4.1";
+            };
+          };
+
+        # Connectathon's basic, general, special and lock tests, built in their
+        # tree, which they run from; general's compile on the mount at run time.
+        # bin holds upstream's entry points.
+        cthon04 = pkgs.stdenv.mkDerivation {
+          pname = "cthon04";
+          version = "2026-06-01";
+          src = cthon04-src;
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.libtirpc ];
+
+          # The Makefile runs tests.init.sh to write tests.init, which it includes,
+          # and whose PATH would hide the build's own tools.
+          postPatch = "patchShebangs tests.init.sh";
+          buildPhase = ''make PATH="$PATH"'';
+
+          installPhase = ''
+            mkdir -p $out/share $out/bin
+            cp -a . $out/share/cthon04
+            ln -s $out/share/cthon04/runtests $out/share/cthon04/server $out/bin/
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Connectathon NFS test suite";
+            homepage = "https://git.linux-nfs.org/?p=steved/cthon04.git";
+            license = licenses.bsd2;
+            platforms = platforms.linux;
+          };
+        };
+
+        # NetApp's nfstest modules, one wrapper each in bin, as nfstest_posix.
+        #
+        # Python 3.12 is deliberate, as for pynfs. nfstest's rexec runs each
+        # statement it is sent with a bare exec() inside a function, and from 3.13
+        # on a name one statement binds is gone by the next, so the lock and
+        # delegation modules abort at their setup with KeyError: 'fcntl'. The
+        # install check runs that setup, so moving to python3 fails the build.
+        nfstest =
+          let
+            python = pkgs.python312;
+          in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "nfstest";
+            version = "2024-01-17";
+            src = nfstest-src;
+
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            dontBuild = true;
+
+            installPhase = ''
+              mkdir -p $out/share $out/bin
+              cp -a . $out/share/nfstest
+              for t in $out/share/nfstest/test/nfstest_*; do
+                makeWrapper ${python}/bin/python3 "$out/bin/$(basename "$t")" \
+                  --add-flags "$t" --prefix PYTHONPATH : $out/share/nfstest
+              done
+            '';
+
+            doInstallCheck = true;
+            installCheckPhase = ''
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$out/share/nfstest ${python}/bin/python3 -P -c \
+                'from nfstest.rexec import Rexec; Rexec().rimport("fcntl", ["fcntl", "F_SETLK"])'
+            '';
+
+            meta = with pkgs.lib; {
+              description = "NFS test modules";
+              homepage = "https://git.linux-nfs.org/?p=mora/nfstest.git";
+              license = licenses.gpl2Only;
+              platforms = platforms.linux;
             };
           };
 
@@ -354,8 +438,7 @@
           curl # health checks in bootstrap/local mode
 
           # NFSv4 conformance suite. Pure Python speaking NFSv4 over TCP, so it
-          # needs no kernel mount and runs on every platform. Kept on PATH so
-          # run-pynfs.sh finds it instead of rebuilding it per invocation.
+          # needs no kernel mount and runs on every platform.
           pynfs
 
           # PostgreSQL test container helpers. They only drive the docker CLI,
@@ -558,7 +641,7 @@
             inherit pynfs;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            inherit pjdfstest;
+            inherit pjdfstest cthon04 nfstest;
           };
 
         # `nix run .#dfs` / `nix run github:marmos91/dittofs#dfsctl`, so the
@@ -613,14 +696,13 @@
           # They run against synthetic output in about a second each, with no
           # server and no network, so they belong in the pre-push check.
           conformance-graders = pkgs.runCommand "check-conformance-graders" { } ''
-            mkdir -p test/smb-conformance test/nfs-conformance
+            mkdir -p test/smb-conformance
             cp -r ${./test/common} test/common
             cp -r ${./test/smb-conformance/smbtorture} test/smb-conformance/smbtorture
-            cp -r ${./test/nfs-conformance/pynfs} test/nfs-conformance/pynfs
             chmod -R u+w test
 
             status=0
-            for suite in test/smb-conformance/smbtorture test/nfs-conformance/pynfs; do
+            for suite in test/smb-conformance/smbtorture; do
               echo "== $suite/parse-results_test.sh"
               report="$(bash "$suite/parse-results_test.sh" 2>&1)" || status=1
               printf '%s\n' "$report"

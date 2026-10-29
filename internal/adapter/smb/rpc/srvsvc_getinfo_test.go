@@ -81,7 +81,7 @@ func TestNetrShareGetInfo502RoundTrip(t *testing.T) {
 		Type:               STYPE_DISKTREE,
 		Comment:            "DittoFS share",
 		SecurityDescriptor: sd,
-	}})
+	}}, admitAll)
 
 	stub := encodeGetInfoRequest(0x00020000, "\\\\SERVER", "export", 502)
 
@@ -140,7 +140,7 @@ func TestNetrShareGetInfo502RoundTrip(t *testing.T) {
 }
 
 func TestNetrShareGetInfo_UnknownShare(t *testing.T) {
-	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}})
+	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}}, admitAll)
 
 	stub := encodeGetInfoRequest(0, "", "missing", 502)
 
@@ -153,7 +153,7 @@ func TestNetrShareGetInfo_UnknownShare(t *testing.T) {
 }
 
 func TestNetrShareGetInfo_UnsupportedLevel(t *testing.T) {
-	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}})
+	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}}, admitAll)
 
 	stub := encodeGetInfoRequest(0, "", "export", 2) // level 2, unsupported
 
@@ -163,3 +163,6 @@ func TestNetrShareGetInfo_UnsupportedLevel(t *testing.T) {
 		t.Errorf("status = %#x, want ERROR_INVALID_LEVEL (%#x)", status, ERROR_INVALID_LEVEL)
 	}
 }
+
+// admitAll is a canConnect that admits every share.
+func admitAll(string) bool { return true }

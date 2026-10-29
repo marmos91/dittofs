@@ -109,31 +109,29 @@ any failure of that program.
 
 In CI the suites are entries in [`test/conformance/suites.json`](../conformance/suites.json) and run
 in the `nfs-mount` job of `.github/workflows/conformance.yml`. That is an Ubuntu runner, with
-`sudo` for the mount and the namespaces. PRs run cthon04 on `memory`, five short jobs, one per option set. Everything
-else runs only in the nightly, because a v4 nfstest cell takes tens of minutes: cthon04 on every
-profile, and nfstest on `memory` only. Most of what nfstest checks is client and protocol behaviour
-the storage backend shouldn't change; its first runs on `memory` and `badger-s3` gave the same
-results, at twice the runner time. Merges to develop run neither.
+`sudo` for the mount and the namespaces. Both suites run on `badger-s3`, the production profile.
+PRs run cthon04 on every option set, six short jobs. nfstest runs only in the nightly, because a v4
+cell takes tens of minutes. Merges to develop run neither.
 
-On a Linux host with root:
+On a Linux host with root, and a localstack on localhost:4566
+(`docker run -d -p 4566:4566 -e SERVICES=s3 localstack/localstack:4.13.1`):
 
 ```bash
-test/conformance/run.sh --suite cthon04 --profile memory --variant v4.1
-test/conformance/run.sh --suite nfstest --profile memory --variant v3
+test/conformance/run.sh --suite cthon04 --profile badger-s3 --variant v4.1
+test/conformance/run.sh --suite nfstest --profile badger-s3 --variant v3
 ```
 
 Anywhere with Docker, a Mac included:
 
 ```bash
-test/nfs-mount/dev-docker.sh cthon04 memory v4.1
-test/nfs-mount/dev-docker.sh nfstest memory v3
+test/nfs-mount/dev-docker.sh cthon04 badger-s3 v4.1
+test/nfs-mount/dev-docker.sh nfstest badger-s3 v3
 test/nfs-mount/dev-docker.sh shell
 ```
 
 `dev-docker.sh` runs the same `run.sh` inside a privileged Ubuntu container. That container uses the
-Docker VM's kernel NFS client, so it needs nothing installed on the host. It supports the `memory`
-and `badger` profiles; the `-s3` profiles need CI's localstack service. Results land in
-`test/nfs-mount/results/`.
+Docker VM's kernel NFS client, so it needs nothing installed on the host, and a localstack beside it
+for the `-s3` profiles. Results land in `test/nfs-mount/results/`.
 
 Containers share the Docker VM's kernel, so `dev-docker.sh` runs one suite at a time. If a dfs
 hangs or dies under a mounted `hard` share, the kernel's writeback to it never finishes. Containers
@@ -150,7 +148,7 @@ DittoFS if the Linux kernel server passes the same assertion on the same kernel.
 `run.sh` against knfsd, under every option set, grades each set against DittoFS's tables, and
 writes [`nfstest/baseline-knfsd.md`](nfstest/baseline-knfsd.md). A row knfsd fails every time is
 about the client; a row knfsd passes is ours. It needs the in-kernel nfsd, so it runs on a Linux
-host, or in CI: nightly beside the nfstest cells, or on demand:
+host, or in CI on demand:
 
 ```bash
 gh workflow run nfs-knfsd-baseline.yml            # every option set
