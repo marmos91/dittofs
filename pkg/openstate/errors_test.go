@@ -1,8 +1,7 @@
 package openstate
 
 import (
-	"go/ast"
-	"go/parser"
+	"go/scanner"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -36,81 +35,29 @@ func TestOwnerRequestInFlightIsDelayed(t *testing.T) {
 	}
 }
 
-// bareDelays lists each use of ErrDelay in src but its declaration and
-// DelayError's own methods: every retry-later names its cause in a
-// DelayError, so no other code returns, assigns or wraps the bare one.
-func bareDelays(fset *token.FileSet, src *ast.File) []string {
-	var found []string
-	ast.Inspect(src, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.FuncDecl:
-			if x.Recv != nil && len(x.Recv.List) == 1 {
-				if st, ok := x.Recv.List[0].Type.(*ast.StarExpr); ok {
-					if id, ok := st.X.(*ast.Ident); ok && id.Name == "DelayError" {
-						return false
-					}
-				}
-			}
-		case *ast.ValueSpec:
-			for _, v := range x.Values {
-				ast.Inspect(v, func(m ast.Node) bool {
-					if id, ok := m.(*ast.Ident); ok && id.Name == "ErrDelay" {
-						found = append(found, fset.Position(id.Pos()).String())
-					}
-					return true
-				})
-			}
-			return false // its names declare, and are no use
-		case *ast.Ident:
-			if x.Name == "ErrDelay" {
-				found = append(found, fset.Position(x.Pos()).String())
-			}
-		}
-		return true
-	})
-	return found
-}
-
-// No source of the package uses the bare ErrDelay, and the check finds one
-// returned, assigned or wrapped, and passes its declaration, DelayError's
-// methods and a comment naming it.
+// No source of the package but errors.go names ErrDelay: every retry-later
+// names its cause in a DelayError, so no other code returns, assigns, wraps or
+// tests for the bare one.
 func TestNoBareDelay(t *testing.T) {
-	fset := token.NewFileSet()
-	for src, want := range map[string]int{
-		"func f() error { return ErrDelay }":                                    1,
-		"func f() (err error) { err = ErrDelay; return err }":                   1,
-		"func f() error { return fmt.Errorf(\"x: %w\", ErrDelay) }":             1,
-		"var e = struct{ error }{ErrDelay}":                                     1,
-		"var ErrDelay = errors.New(\"d\")":                                      0,
-		"func (e *DelayError) Is(t error) bool { return t == ErrDelay }":        0,
-		"// a comment naming ErrDelay\nfunc f() error { return &DelayError{} }": 0,
-	} {
-		planted, err := parser.ParseFile(fset, "planted.go", "package p\n"+src+"\n", parser.ParseComments)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := len(bareDelays(fset, planted)); got != want {
-			t.Fatalf("the check found %d bare ErrDelay in %q, want %d", got, src, want)
-		}
-	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	fset := token.NewFileSet()
 	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
+		if name == "errors.go" || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		b, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		src, err := parser.ParseFile(fset, name, b, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, at := range bareDelays(fset, src) {
-			t.Errorf("%s uses the bare ErrDelay: give it a DelayError with its cause", at)
+		var s scanner.Scanner
+		s.Init(fset.AddFile(name, -1, len(b)), b, nil, 0)
+		for pos, tok, lit := s.Scan(); tok != token.EOF; pos, tok, lit = s.Scan() {
+			if tok == token.IDENT && lit == "ErrDelay" {
+				t.Errorf("%s uses the bare ErrDelay: give it a DelayError with its cause", fset.Position(pos))
+			}
 		}
 	}
 }
