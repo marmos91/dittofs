@@ -405,7 +405,7 @@ func TestRebuildOffloadedBits(t *testing.T) {
 	// one with a lower seq does not.
 	scene(t,
 		[]Record{recd(RecUnmark, fid(1), 9, 5, 2, 0, 0, 8)},
-		[]Piece{Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}, dirtyV8},
+		[]Piece{{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}, dirtyV8},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 	scene(t,
