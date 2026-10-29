@@ -116,10 +116,10 @@ func (t *Table) chargeLocked(c entity.ClientID, k capped, n int, refuse bool) er
 	if c == 0 || n == 0 {
 		return nil
 	}
-	key := heldKey{c, k}
-	if refuse && n > 0 && t.held[key]+n > perClient[k] {
+	if refuse && t.overLocked(c, k, n) {
 		return &DelayError{DelayResources}
 	}
+	key := heldKey{c, k}
 	if t.held[key] += n; t.held[key] <= 0 {
 		delete(t.held, key)
 	}
@@ -130,6 +130,11 @@ func (t *Table) chargeLocked(c entity.ClientID, k capped, n int, refuse bool) er
 func (t *Table) full(c entity.ClientID, k capped, n int) bool {
 	t.idx.Lock()
 	defer t.idx.Unlock()
+	return t.overLocked(c, k, n)
+}
+
+// overLocked is full, its caller holding idx.
+func (t *Table) overLocked(c entity.ClientID, k capped, n int) bool {
 	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > perClient[k]
 }
 
