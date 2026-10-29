@@ -417,6 +417,8 @@ jobs:
   # docs-only change, and a skipped job passes the check the ruleset requires.
   # decision: they run when plan fails, so a check the ruleset requires never
   # passes on a plan that wasn't made.
+  # decision: their names keep "1.26.x", the check names the ruleset requires;
+  # both run go.mod's toolchain.
   unit:
     name: Unit Tests (1.26.x)
     needs: plan
