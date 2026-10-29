@@ -1572,7 +1572,7 @@ func wantLossNamed(t *testing.T, where string, f *journalv2test.Fixture, r rec, 
 func (s *flipSite) keepScanned(t *testing.T) {
 	t.Helper()
 
-	if b := durable(t, s.f, s.name); string(b[len(b)-raw.TrailerSize:][:4]) == "DJT1" {
+	if b := durable(t, s.f, s.name); endsInTrailer(b) {
 		flipBit(t, s.f, s.name, int64(len(b))-raw.TrailerSize, 0)
 	}
 }
