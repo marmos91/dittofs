@@ -1592,9 +1592,13 @@ type recordRegion struct {
 // decision: each flip reopens the journal, and that open places in the ring
 // the loss records the earlier flips left on disk. Whether placing one again
 // raises the generation is the journal's choice, as long as the generation
-// never goes back, so a flip on a record not offloaded may raise it by one
-// plus at most one for each earlier such flip. The first flip of a site has
-// none before it, so the rise by exactly one is still pinned there.
+// never goes back. Where S is catalogued the flip is caught on the read, not
+// at open, so the generation is read after the reopen and the loss must
+// raise it by exactly one. Where S is scanned the open itself may catch the
+// flip, so the generation is read before the reopen and a flip on a record
+// not offloaded may raise it by one plus at most one for each earlier such
+// flip; the first flip of a site has none before it, so the rise by exactly
+// one is pinned there too.
 func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bool) {
 	t.Helper()
 
@@ -1628,10 +1632,16 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 			flipBit(t, s.f, s.name, loc.Offset+int64(off), b)
 			s.reopen(t, where)
 			dropped[i] = true
+			// The earlier flips of this site, all of one kind, are the loss
+			// records the open may have placed again; where S is catalogued
+			// the open is behind the reading.
+			replayed := uint64(k - 1)
 			if s.scanned {
 				// The reopen the flip is checked on read S by scan, with no
 				// footer to read it by.
 				wantScanned(t, where, s.f, s.recovery, 0)
+			} else {
+				generation, replayed = s.f.J.Stats().LossGeneration, 0
 			}
 
 			wantMissing(t, s.f.Share(0), r.id, r.extent, where)
@@ -1639,9 +1649,6 @@ func flipRecordBytes(t *testing.T, s *flipSite, bytes []int, offloaded, named bo
 				wantLossNamed(t, where, s.f, r, offloaded)
 			}
 
-			// The earlier flips of this site, all of one kind, are the loss
-			// records the open may have placed again.
-			replayed := uint64(k - 1)
 			switch got := s.f.J.Stats().LossGeneration; {
 			case !named:
 			case offloaded && got != generation:
