@@ -650,3 +650,30 @@ func TestDurableOpenIsSMBs(t *testing.T) {
 		t.Errorf("the refused open left %d opens", len(e.opens))
 	}
 }
+
+// A live persistent open released with its client, whose record's delete the
+// store refuses, stays and holds its deny modes until a sweep deletes the
+// record, so it does not come back after a restart.
+func TestReleasedPersistentOpenComesBack(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "doc")
+	r.Access, r.Deny = rd, wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	st.fail.Store(true)
+	_ = f.Expire(ctx, a.Client)
+	st.fail.Store(false)
+	if ob, err := f.open(b, file, OpenRequest{Access: wr}); err == nil {
+		t.Error("b opened for write while a's deny-write record is still stored")
+		f.close(t, b, ob)
+	}
+	f.idle(time.Second)
+	if got := f.stored(t, file); len(got) != 0 {
+		t.Errorf("the released open's record is still stored: %d", len(got))
+	}
+	g := f.restart(t)
+	if _, err := g.reconnect(a, o, ReconnectMatch{Share: file.Share, Create: [16]byte{1}}, s3); err == nil {
+		t.Error("a persistent open released with its client reconnects after a restart")
+	}
+}

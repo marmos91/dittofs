@@ -869,12 +869,14 @@ func (t *Table) holdsAnyLocked(c entity.ClientID) bool {
 // ponytail: the owners' sequences are found by a scan of every slot,
 // O(owners), per release. Key the book by client when a profile shows it.
 //
-// decision: an open is released here even when its durable record's delete
-// fails. The record stays a holder of its file, and the file stays unreleased
-// until the next start: a persistent record is installed there and closed
-// at its Timeout, and any other is closed once that start's grace ends; an
-// expiry that kept the open instead would hold its deny modes for a client
-// that is gone. Keep the open if a store outage is shown to strand files.
+// decision: an open whose durable record's delete fails is released here
+// unless it is persistent; an expiry that kept it would hold its deny modes
+// for a client that is gone. Its record stays a holder of its file until the
+// next start, which closes it once that start's grace ends. A persistent open
+// is kept instead, parked as timed out, holding its deny modes and locks until
+// a sweep deletes its record: released, it would be installed at the next
+// start and reconnect with them. Keep the other opens too if a store outage
+// is shown to strand files.
 func (t *Table) releaseClient(ctx context.Context, c entity.ClientID, out *outbox) {
 	for _, h := range t.heldBy(c) {
 		_ = t.step(h.file, func(e *entry) error {
