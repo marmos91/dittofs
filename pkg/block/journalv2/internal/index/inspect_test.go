@@ -230,8 +230,18 @@ func TestInspectToEndMarker(t *testing.T) {
 
 // TestInspectOrderTieBreaks: at one offset the read-out hands out a held
 // piece, then retained pieces in storage order, then markers in version
-// order. Catches an unstable sort, or one that puts the kind before the
-// offset.
+// order. The markers are built the way remove builds them — an
+// out-of-version-order marker slice is a state no operation can produce —
+// and the retained pair is added in the reverse of version order, so a
+// rewrite of either tie-break shows.
+//
+// The kind tie-break itself cannot be caught by this test: appendEntries
+// appends held, then retained, then markers, so entries leaving the three
+// loops already sit in kind order, and on five entries the sort is an
+// insertion sort that never moves an equal offset pair. A kind-first
+// comparison over offsets would still show here — nothing below moves an
+// entry whose offset differs — so what the test pins is the offset-first
+// key, and the stored order of each kind at one offset.
 func TestInspectOrderTieBreaks(t *testing.T) {
 	heldTag, retainedTag, markerTag = 0, 0, 0
 	var fs files
@@ -241,11 +251,10 @@ func TestInspectOrderTieBreaks(t *testing.T) {
 		// reverse of version order here, so a wrong tie-break shows.
 		f.retained.add(Retained{Piece: Piece{Extent: ext(2, 4), Record: rec(1, 4096), Version: ver(2)}, By: ver(6)})
 		f.retained.add(Retained{Piece: Piece{Extent: ext(2, 4), Record: rec(1, 8192), Version: ver(1)}, By: ver(5)})
-		// Markers v5 first, then v3, as remove inserts them.
-		f.markers = append(f.markers,
-			marker{extent: ext(2, 4), version: ver(5), kind: core.ChangeDeallocate},
-			marker{extent: ext(2, 4), version: ver(3), kind: core.ChangeDeallocate},
-		)
+		// Markers inserted as remove inserts them: applied v5 first, the slice
+		// keeps v3 before v5, version order.
+		f.deallocate(ext(2, 4), ver(5))
+		f.deallocate(ext(2, 4), ver(3))
 		f.write(write(2, 4, rec(1, 0), 8))
 		return nil
 	})
@@ -253,8 +262,8 @@ func TestInspectOrderTieBreaks(t *testing.T) {
 		heldEntry(2, 4, rec(1, 0), 0, 8, false),
 		retainedEntry(2, 4, rec(1, 8192), 0, 1, 5),
 		retainedEntry(2, 4, rec(1, 4096), 0, 2, 6),
-		markerEntry(core.ChangeDeallocate, 2, 4, 5),
 		markerEntry(core.ChangeDeallocate, 2, 4, 3),
+		markerEntry(core.ChangeDeallocate, 2, 4, 5),
 	}
 	if got := inspectFile(&fs, id); !slices.EqualFunc(got, want, sameEntry) {
 		t.Fatalf("entries:\n got %v\nwant %v", got, want)

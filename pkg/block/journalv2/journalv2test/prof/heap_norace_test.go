@@ -75,18 +75,26 @@ func TestWatchHeapSlackAllowsGrowthWithinIt(t *testing.T) {
 }
 
 // TestLiveHeapSeesARetainedAllocation: LiveHeap counts what a live buffer
-// holds, so a check measuring a structure's heap reads a real figure, not an
-// uncollected or a wrong one. It catches the wrong statistic, or a missing
-// collection: either leaves most of the 32 MiB outside the difference. The
-// bound leaves room for the collection's own movement around the buffer: a
-// pointer-holding live object dying between the two reads lowers the
-// difference a little below the buffer's size.
+// holds and only that, so a check measuring a structure's heap reads a real
+// figure. Two ways it can go wrong, each caught by one side of the bound:
+// the wrong statistic — one that counts what was ever allocated, not what is
+// still reachable — shows once the 16 MiB of garbage that dies between the
+// two reads lands inside the difference; a missing collection leaves the
+// garbage uncounted too, by the same 16 MiB. The upper bound holds room for
+// the collection's own movement around the buffer, a pointer-holding live
+// object dying between the two reads, and nothing more.
 func TestLiveHeapSeesARetainedAllocation(t *testing.T) {
 	before := LiveHeap()
 	buf := make([]byte, 32<<20)
+	garbage := make([]byte, 16<<20)
+	for i := 0; i < len(garbage); i += 4096 {
+		garbage[i] = 1
+	}
+	garbage = nil
 	after := LiveHeap()
 	runtime.KeepAlive(buf)
-	if after < before || after-before < 30<<20 {
-		t.Fatalf("LiveHeap saw %d bytes of a 32 MiB buffer kept alive", after-before)
+	runtime.KeepAlive(garbage)
+	if d := after - before; d < 30<<20 || d > 32<<20+2<<20 {
+		t.Fatalf("LiveHeap saw %d bytes at a 32 MiB buffer kept alive beside 16 MiB of garbage dropped", d)
 	}
 }
