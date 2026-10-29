@@ -266,15 +266,17 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
-		db, err := badgerkv.Open(badgerkv.Options{})
-		if err != nil {
-			tb.Fatal(err)
-		}
-		tb.Cleanup(func() { _ = db.Close() })
-		return db
-	})
-	return reopen(t, fs, &fakeClock{})
+	return reopen(t, kvstoretest.NewFS(t, memKV), &fakeClock{})
+}
+
+// memKV is a fresh in-memory store, closed with the case.
+func memKV(tb testing.TB) kv.KV {
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = db.Close() })
+	return db
 }
 
 // reopen builds and starts a new table over fs's store, as a restart does:

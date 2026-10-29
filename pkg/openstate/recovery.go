@@ -293,7 +293,11 @@ func (v recovery) DropShare(ctx context.Context, share entity.ShareID, moved net
 	}
 	// Each shard is served anew, dropped, before its state goes: a grace-end
 	// pass already under way then finds it served again and stops, and a
-	// call minting there once the state is listed is refused.
+	// call minting there once the state is listed is refused. The client
+	// step orders the drop with a serve of the share's shards, which holds
+	// it while a shard is out of the served set: the drop finds the shard
+	// once installed, and a serve after it finds it dropped.
+	t.cstep.Lock()
 	t.cmu.Lock()
 	dropped := map[ShardID]bool{}
 	for s, sh := range t.shards {
@@ -303,7 +307,9 @@ func (v recovery) DropShare(ctx context.Context, share entity.ShareID, moved net
 		}
 	}
 	t.cmu.Unlock()
-	for c := range t.lose(func(s ShardID) bool { return dropped[s] }) {
+	holders := t.lose(func(s ShardID) bool { return dropped[s] })
+	t.cstep.Unlock()
+	for c := range holders {
 		sink.Revoked(Revocation{Client: c, Share: share, Addr: moved, Reason: RevokedShare})
 	}
 	return nil

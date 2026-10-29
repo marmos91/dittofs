@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
 )
 
 // nfsAs is an NFSv4 client that recovers as k says: status for NFSv4.1,
@@ -1189,4 +1190,37 @@ func (f *fixture) droppedShard(s ShardID) bool {
 	f.cmu.Lock()
 	defer f.cmu.Unlock()
 	return f.shards[s] != nil && f.shards[s].dropped
+}
+
+// A DropShare racing a serve of one of its share's shards, while the serve
+// is writing the restart notice with the shard out of the served set, waits
+// for the serve: the shard then comes out dropped, not served in grace.
+func TestDropShareWaitsForAServe(t *testing.T) {
+	fs, held := kvstoretest.NewHeldFS(t, memKV)
+	f := reopen(t, fs, &fakeClock{})
+	h := f.host(t, "h", 1) // a notice client in shard 1, so its serve raises the notice
+	f.mustLock(t, h, in(1), LockReq{Owner: owner(h, "lo"), Ranges: []LockRange{x(0, 10)}})
+	dropped := make(chan error, 1)
+	serveErr, _ := held.Race(
+		func() error { return f.Recovery().ServeShard(ctx, fs.Share.ID, 1, instances.Add(1)) },
+		func() error {
+			go func() { dropped <- f.Recovery().DropShare(ctx, fs.Share.ID, netip.Addr{}) }()
+			select {
+			case err := <-dropped:
+				dropped <- err // it ran inside the serve
+			case <-time.After(200 * time.Millisecond): // it waits for the serve
+			}
+			return nil
+		},
+	)
+	if serveErr != nil {
+		t.Fatal(serveErr)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	a := f.caller(t, nfs("a", 1, entity.NewUser()))
+	if _, err := f.open(a, in(1), OpenRequest{Access: rd}); !errors.Is(err, ErrBadState) {
+		t.Errorf("an open in the shard once DropShare returned: %v, want ErrBadState", err)
+	}
 }
