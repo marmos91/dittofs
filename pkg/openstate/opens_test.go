@@ -630,4 +630,8 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, n, y, delegated(g, z), br(0, 1), false); !errors.Is(err, ErrBadState) {
 		t.Errorf("a read of y through a delegation of z: %v, want ErrBadState", err)
 	}
+	res := f.mustLock(t, a, x, LockReq{Owner: owner(a, "lo"), Open: refOf(ox), Ranges: []LockRange{{br(0, 10), true}}})
+	if err := f.Checks().CheckIO(ctx, a, y, OpenRef{Kind: RefLocked, State: res.Ref, Handle: handle(x.ID)}, br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write to y through a lock state of x: %v, want ErrBadState", err)
+	}
 }
