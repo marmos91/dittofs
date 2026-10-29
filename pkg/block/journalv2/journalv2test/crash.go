@@ -17,9 +17,18 @@ type crashConfig struct {
 	torn      bool
 	tornBytes int
 	tornName  string // TornIn: the only file Torn picks from
+	tornEnd   bool   // TornEnd: tornBytes counts from the end of the write
 	reordered bool
 	seed      uint64
+	keeping   bool
+	mask      uint64
 }
+
+// ErrCrashRefused is wrapped by the error of a Crash refused for its options:
+// a bit of Keeping past the last unsynced write, a cut past the write Torn
+// picked, or options that cannot be combined. A refused crash changes
+// nothing.
+var ErrCrashRefused = errors.New("journalv2test: the crash is refused")
 
 // Torn keeps the last unsynced write, across every file, cut to its first n
 // bytes. A dropped write never counts; one a failed Sync covered does. Every
@@ -42,6 +51,32 @@ func Torn(n int) CrashOption {
 func TornIn(name string, n int) CrashOption {
 	return func(c *crashConfig) {
 		c.torn, c.tornBytes, c.tornName = true, n, name
+	}
+}
+
+// TornEnd is TornIn with the cut counted from the end: the last unsynced
+// write of the file called name survives but its last n bytes. It is for a
+// check that cuts inside the tail of a write whose length it does not know,
+// such as the trailer a seal writes last.
+func TornEnd(name string, n int) CrashOption {
+	return func(c *crashConfig) {
+		c.torn, c.tornBytes, c.tornName, c.tornEnd = true, n, name, true
+	}
+}
+
+// Keeping keeps exactly the unsynced writes whose bit is set in mask, bit i
+// for the i-th unsynced write in the order they were issued across every file
+// of the durable directory, as Unsynced counts them, and loses the others. A
+// dropped write is never among them. The kept writes land in the order they
+// were issued. Marks set by a Reorder fault are ignored: Keeping names the
+// subset itself. A bit set past the last unsynced write refuses the crash.
+//
+// decision: Reordered draws a subset from a seed, which cannot name the
+// subset it drew, so a check that must visit every subset of the unsynced
+// writes needs this option to enumerate them.
+func Keeping(mask uint64) CrashOption {
+	return func(c *crashConfig) {
+		c.keeping, c.mask = true, mask
 	}
 }
 
@@ -80,7 +115,11 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		o(&cfg)
 	}
 	if cfg.torn && cfg.reordered {
-		return errors.New("journalv2test: Torn and Reordered cannot be combined")
+		return fmt.Errorf("%w: Torn and Reordered cannot be combined", ErrCrashRefused)
+	}
+
+	if cfg.keeping && (cfg.torn || cfg.reordered) {
+		return fmt.Errorf("%w: Keeping cannot be combined with Torn or Reordered", ErrCrashRefused)
 	}
 
 	s.mu.Lock()
@@ -90,6 +129,18 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	alive := make(map[*node]bool, len(survivors))
 	for _, n := range survivors {
 		alive[n] = true
+	}
+
+	keep := map[*change]bool{}
+	if cfg.keeping {
+		writes := unsyncedWrites(alive)
+		if len(writes) < 64 && cfg.mask>>uint(len(writes)) != 0 {
+			return fmt.Errorf("%w: Keeping(%#x) names a write past the %d unsynced writes", ErrCrashRefused, cfg.mask, len(writes))
+		}
+
+		for i, c := range writes {
+			keep[c] = i < 64 && cfg.mask&(1<<i) != 0
+		}
 	}
 
 	var torn *change
@@ -108,11 +159,19 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		}
 
 		if torn == nil {
-			return errors.New("journalv2test: Torn needs an unsynced write in a file it may pick from")
+			return fmt.Errorf("%w: Torn needs an unsynced write in a file it may pick from", ErrCrashRefused)
 		}
 
 		if cfg.tornBytes < 0 || cfg.tornBytes > len(torn.data) {
-			return fmt.Errorf("journalv2test: Torn(%d) of a %d-byte write", cfg.tornBytes, len(torn.data))
+			option := "Torn"
+			if cfg.tornEnd {
+				option = "TornEnd"
+			}
+			return fmt.Errorf("%w: %s(%d) of a %d-byte write", ErrCrashRefused, option, cfg.tornBytes, len(torn.data))
+		}
+
+		if cfg.tornEnd {
+			cfg.tornBytes = len(torn.data) - cfg.tornBytes
 		}
 	}
 
@@ -132,17 +191,8 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 
 	// The draws follow the order the writes were issued, never the map's, so
 	// a seed keeps the same writes on every run.
-	keep := map[*change]bool{}
 	if cfg.reordered {
-		var writes []*change
-
-		for n := range alive {
-			for i := range n.undo {
-				if n.undo[i].kind == changeWrite && !n.undo[i].dropped {
-					writes = append(writes, &n.undo[i])
-				}
-			}
-		}
+		writes := unsyncedWrites(alive)
 
 		// ponytail: a mark narrows the draw to the marked writes and loses
 		// every other one, which any device may do. It cannot express a device
@@ -153,10 +203,6 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		if slices.ContainsFunc(writes, func(c *change) bool { return c.reorder }) {
 			writes = slices.DeleteFunc(writes, func(c *change) bool { return !c.reorder })
 		}
-
-		slices.SortFunc(writes, func(a, b *change) int {
-			return cmp.Compare(a.seq, b.seq)
-		})
 
 		rng := rand.New(rand.NewPCG(cfg.seed, cfg.seed^0x9e3779b97f4a7c15))
 		for _, c := range writes {
@@ -178,7 +224,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 		case n == tornNode:
 			img = writeInto(img, torn.off, torn.data[:cfg.tornBytes])
 
-		case cfg.reordered:
+		case cfg.reordered || cfg.keeping:
 			for i := range n.undo {
 				if c := &n.undo[i]; keep[c] {
 					img = writeInto(img, c.off, c.data)
@@ -207,6 +253,57 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	}
 
 	return s.emptyStash()
+}
+
+// unsyncedWrites returns the unsynced writes of the files in alive that a
+// crash may keep, dropped writes left out, in the order they were issued.
+func unsyncedWrites(alive map[*node]bool) []*change {
+	var writes []*change
+
+	for n := range alive {
+		for i := range n.undo {
+			if n.undo[i].kind == changeWrite && !n.undo[i].dropped {
+				writes = append(writes, &n.undo[i])
+			}
+		}
+	}
+
+	slices.SortFunc(writes, func(a, b *change) int {
+		return cmp.Compare(a.seq, b.seq)
+	})
+
+	return writes
+}
+
+// Unsynced returns how many unsynced writes a crash may keep now, across
+// every file of the durable directory: the writes Keeping names by bit.
+func (s *Seam) Unsynced() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	alive := map[*node]bool{}
+	for _, n := range s.durableNames() {
+		alive[n] = true
+	}
+
+	return len(unsyncedWrites(alive))
+}
+
+// Abandon ends the process using the seam without a power loss, as a kill
+// does: it closes every open file and stops serving every view made before,
+// as Crash does, and changes nothing else. Every file and the directory stay
+// as they are, unsynced changes included, as the operating system keeps a
+// dead process's writes in its cache. The durable images do not change, so
+// what no sync covered is still lost by a later Crash, and a read past the
+// cache still serves only what was synced.
+func (s *Seam) Abandon() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for sf := range s.open {
+		_ = sf.closeLocked() // a dead process never sees what close returns
+	}
+	s.crashes++
 }
 
 // restoreDir makes the directory hold exactly names, the durable directory

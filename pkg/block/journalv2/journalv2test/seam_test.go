@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
+	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 func newSeam(t *testing.T) *Seam {
@@ -944,5 +945,226 @@ func TestFailedWriteLeavesNoUndo(t *testing.T) {
 	got := make([]byte, 2)
 	if _, err := f.ReadAtDirect(got, 0); err != nil || string(got) != "ab" {
 		t.Fatalf("ReadAtDirect after a failed write: %q, %v; want %q", got, err, "ab")
+	}
+}
+
+// TestAbandonKeepsUnsyncedWritesReadable pins that an Abandon leaves a dead
+// process's unsynced writes in the cache, readable through a new handle,
+// while the durable image holds only what was synced. An Abandon that put
+// the files back to their durable images, as Crash does, would lose the
+// write; one that synced them would put it in the image.
+func TestAbandonKeepsUnsyncedWritesReadable(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+
+	s.Abandon()
+
+	g, err := s.Open("seg")
+	if err != nil {
+		t.Fatalf("open seg after Abandon: %v", err)
+	}
+
+	if got := readAt(t, g, 6); got != "aaaabb" {
+		t.Fatalf("after Abandon a read serves %q, want the cache's %q", got, "aaaabb")
+	}
+
+	durable, err := s.Durable("seg")
+	if err != nil {
+		t.Fatalf("read the durable image of seg after Abandon: %v", err)
+	}
+	if string(durable) != "aaaa" {
+		t.Fatalf("after Abandon the durable image holds %q, want the synced %q", durable, "aaaa")
+	}
+}
+
+// TestAbandonThenCrashDropsUnsyncedWrites pins that a Crash after an Abandon
+// drops what no sync covered, as a crash with no Abandon before it does. An
+// Abandon that forgot the pending changes, by clearing the undo log, would
+// let the crash keep the write.
+func TestAbandonThenCrashDropsUnsyncedWrites(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+
+	s.Abandon()
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "aaaa" {
+		t.Fatalf("after Abandon then Crash the file holds %q, want the synced %q", got, "aaaa")
+	}
+}
+
+// TestAbandonIssuesNoCallOnTheSeam pins that an Abandon issues no call on
+// the seam: the dead process closes, seals and syncs nothing. What it opened
+// fails from then on as after a crash, and a new view serves the directory.
+// An Abandon that closed the files through Close, or synced them, would
+// count those calls.
+func TestAbandonIssuesNoCallOnTheSeam(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	old := s.FS()
+
+	closes, syncs, dirSyncs := s.Calls(OpClose), s.Calls(OpSync), s.Calls(OpSyncDir)
+	s.Abandon()
+	if got := [3]int{s.Calls(OpClose), s.Calls(OpSync), s.Calls(OpSyncDir)}; got != [3]int{closes, syncs, dirSyncs} {
+		t.Fatalf("Abandon made close, sync and sync_dir calls: %v, want %v", got, [3]int{closes, syncs, dirSyncs})
+	}
+
+	if _, err := f.WriteAt([]byte("x"), 0); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a write through the dead process's handle returned %v, want an error matching fs.ErrClosed", err)
+	}
+	if _, err := old.Open("seg"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("an open through the dead process's view returned %v, want an error matching fs.ErrClosed", err)
+	}
+	if _, err := s.Open("seg"); err != nil {
+		t.Fatalf("an open through a new view failed: %v", err)
+	}
+}
+
+// TestAbandonKeepsSyncedWritesThroughACrash pins that a synced write
+// survives an Abandon and the crash after it, with the durable image a
+// failed sync left behind kept as it was. An Abandon that reset the image
+// kept from a failed sync would let the crash rebuild it from the file, and
+// bring the lost write back.
+func TestAbandonKeepsSyncedWritesThroughACrash(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 4)
+	failNextSync(t, s)
+	if err := f.Sync(); err == nil {
+		t.Fatal("the failing sync returned nil")
+	}
+	write(t, f, "cc", 6)
+	syncFile(t, f)
+
+	s.Abandon()
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "aaaa\x00\x00cc" {
+		t.Fatalf("after Abandon then Crash the file holds %q, want %q: the synced writes, and not the one the failed sync lost", got, "aaaa\x00\x00cc")
+	}
+}
+
+// TestKeepingKeepsExactlyTheMaskedWrites pins that Keeping keeps the
+// unsynced writes whose bit is set, counted across files in the order they
+// were issued, and loses the others.
+func TestKeepingKeepsExactlyTheMaskedWrites(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	g := create(t, s, "other")
+	syncDir(t, s)
+
+	write(t, f, "aaaa", 0)
+	write(t, g, "bbbb", 0)
+	write(t, f, "cccc", 4)
+	if got := s.Unsynced(); got != 3 {
+		t.Fatalf("Unsynced() = %d after three unsynced writes, want 3", got)
+	}
+
+	crash(t, s, Keeping(0b101))
+
+	if got := onDisk(t, s, "seg"); got != "aaaacccc" {
+		t.Fatalf("seg holds %q, want its first and third writes %q", got, "aaaacccc")
+	}
+
+	if got := onDisk(t, s, "other"); got != "" {
+		t.Fatalf("other holds %q, want its write, the second, lost", got)
+	}
+}
+
+// TestKeepingRefusesABitPastTheWrites pins that Keeping refuses a bit past
+// the last unsynced write and a combination with Torn, and that a refused
+// crash changes nothing.
+func TestKeepingRefusesABitPastTheWrites(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncDir(t, s)
+	write(t, f, "aaaa", 0)
+
+	if err := s.Crash(Keeping(0b10)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("Keeping a second write with one unsynced returned %v, want the refusal", err)
+	}
+
+	if err := s.Crash(Keeping(0b01), Torn(1)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("Keeping with Torn returned %v, want the refusal", err)
+	}
+
+	// A refused crash changes nothing: the file is still open and the write
+	// still pending.
+	write(t, f, "bbbb", 4)
+	if got := s.Unsynced(); got != 2 {
+		t.Fatalf("Unsynced() = %d after a refused crash and another write, want 2", got)
+	}
+}
+
+// TestUnsyncedCountsNoSyncedOrDroppedWrite pins that Unsynced counts the
+// writes a crash may keep: not one a sync covered, and not one a fault
+// dropped.
+func TestUnsyncedCountsNoSyncedOrDroppedWrite(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncDir(t, s)
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	if got := s.Unsynced(); got != 0 {
+		t.Fatalf("Unsynced() = %d after a sync, want 0", got)
+	}
+
+	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpWrite, Key: "seg", Action: sim.FaultAction{Kind: sim.Drop}})
+	if err != nil {
+		t.Fatalf("make a schedule dropping the writes of seg: %v", err)
+	}
+
+	s.SetFault(fault)
+	write(t, f, "bbbb", 4)
+	s.SetFault(nil)
+	write(t, f, "cccc", 8)
+	if got := s.Unsynced(); got != 1 {
+		t.Fatalf("Unsynced() = %d with one dropped and one pending write, want 1", got)
+	}
+}
+
+// TestTornEndKeepsAllButTheLastNBytes pins that TornEnd cuts the last
+// unsynced write of the named file n bytes short from its end.
+func TestTornEndKeepsAllButTheLastNBytes(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncDir(t, s)
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bbbbbb", 4)
+
+	crash(t, s, TornEnd("seg", 2))
+
+	if got := onDisk(t, s, "seg"); got != "aaaabbbb" {
+		t.Fatalf("seg holds %q, want its last write cut two bytes short, %q", got, "aaaabbbb")
+	}
+}
+
+// TestTornEndRefusesACutPastTheWrite pins that TornEnd refuses a cut longer
+// than the write it would shorten.
+func TestTornEndRefusesACutPastTheWrite(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncDir(t, s)
+	write(t, f, "bbbb", 0)
+
+	if err := s.Crash(TornEnd("seg", 5)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("cutting five bytes off a four-byte write returned %v, want the refusal", err)
+	}
+
+	crash(t, s, TornEnd("seg", 4))
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("seg holds %q after its only write was cut whole, want nothing", got)
 	}
 }

@@ -1,189 +1,1195 @@
 # The journal's conformance tests that fail or skip today, one entry per test, never a pattern, each
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
-# its entry in the change that turned it green.
+# its entry in the change that turned it green. Each entry's message is text the test's output
+# must contain for its failure or skip to count as the one listed: until Open works, every failing
+# test fails in the fixture, whose failures start with "fixture:", and any other failure is graded new.
 - test: TestClock_WallJumpMovesNoTimer
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the bounded sync timer and the data path.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestModel
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, offload, release, repack and recovery.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_FillSafety
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Fill, its absence check atomic with WriteAt, and the data path.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1A_FillSetsTheBit
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Fill, its offloaded bit and Release.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_LostStampIsOffered
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, the headroom, stamps, offers of unstamped versions, release and repack.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_NeighboursAreFrozen
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offers widened to offloaded neighbours, frozen while the callback runs, and release.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_NoPinOnSegmentUnderRepack
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offers that skip segments under repack, and repack.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_NoResurrection
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Fill, Deallocate and its removal marker.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1A_NoZeroFill
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, MarkOffloaded and Release.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_OfferStopsAtThrough
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs stamps and offers bounded by through, carrying per-extent stamps.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_OfferedBytesVerified
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offers whose reader verifies whole records, and corrupt drops.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_PartialReleaseKeepsRecordWhole
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_Refusal
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded and Release refusing dirty extents.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_ReleaseFreesNothingInsideSegment
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and per-segment accounting.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_RemovalDuringOffload
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offers frozen across Truncate and Delete.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_RemovalsSurviveToSince
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1A_UnlinkUnderRead
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and the reader guard.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1A_WriteDuringOffload
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs offload and its report, and Release refusing dirty extents.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_AccountingFollowsCap
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs segments, their accounting and the data path.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_BacklogAge
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path and MarkOffloaded.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_CleanBytesCountAsOccupancy
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Fill, capacity refusals and MarkOffloaded.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_GenerationNeverRepeats
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the loss generation and corrupt reads.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_LossEvents
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_MetricsAreReachable
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed syncs, corrupt reads, torn tails and foreign segments counted.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, release, truncate and repack.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_SegmentHeldBytes
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs per-segment accounting, release and repack.'
   issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_StatsCostIsFlat
   status: skip
   fix: planned
   category: env
   reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
   issue: '#3395'
+  message: 'the race detector changes allocation counts'
 - test: TestRFC1D_StatsTakeNoWriteLock
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Verify and the data path.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_WedgeIsVisibleDirty
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals and Stats per share.'
   issue: '#3378'
+  message: 'fixture:'
 - test: TestRFC1D_WedgeIsVisibleUnreclaimed
   status: fail
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, MarkOffloaded and release.'
   issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28A_CorruptDirty
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, corrupt reads, the loss ring and the loss generation.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28A_CorruptOffloaded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, corrupt reads and the loss ring.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28B_SegmentReclaimable
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, idle seals, repack and the spare pool.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs failed sync windows, the re-append, recovery and the loss ring.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_NeighboursSurvive
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery by catalog, corrupt reads and the loss ring.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_SyncedDamageIsNotATornTail
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan with the synced-through rule, and corrupt reads.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_Rebuild
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync, and recovery that cuts and seals a torn tail.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28A_DirectoryEntrySurvives
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segments taken from spares, Sync and recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28A_AZeroSlotIsNotTheEnd
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_TornTailCutOff
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that cuts a torn tail, seals the segment and counts it.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_TruncatedSealedSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_BitsSurviveRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28A_UnmarkClears
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_ReseedByVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded by version, release and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28A_UnprovenTailVerifiedAtOpen
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_SourcesAgree
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and the index built the same way from both.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_TrailerTorn
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and Verify.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28A_FooterIsNotAuthoritative
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_UnknownVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_ScanResynchronises
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that resynchronises past a bad record, corrupt reads and the loss ring.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28A_WriteCarriesItsMtime
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Since with the modification time, recovery and corrupt reads.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_SealMarkerCopiedIntoAPayload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_SparesAreReAdopted
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/create
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/allocate
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/write
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/sync
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_RetiredSegmentsAreRecycled
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the refusal of a roll naming the pool.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recycling, recovery by scan with the torn-tail rule on a recycled segment, failed appends, reservations and repack.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_StaleExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC28C_VersionFloor
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the version floor at open and MarkOffloaded.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_JournalGone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_UnidentifiedDirectory
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a directory it cannot identify, Init refusing a directory that is not empty, and the format file.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_InterruptedInit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the identity error of an open with no recorded identity, and the data path.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_ForeignSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that rejects a segment naming another journal and counts it.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_ForeignHeaderIsForeignNotDamaged
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that checks the identity a header names before anything else.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_KindValuesRefused
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that fails the open on a kind the format does not define.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC28C_FormatFile
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/write_at
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/seal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/footer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/repack_copy
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/repack_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/spare_entry
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_unproven_tail
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_torn_tail_truncation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_seal_after_truncation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_reappend
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_spare_zeroing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/recycle_rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/open_tmp_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_LostWrites/failed_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestDamage_TornWrites/final_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_TornWrites/trailer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_ReorderedWrites
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/kind
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/reserved_5
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/file_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/file_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/length
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/sequence_number
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/version_epoch
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/version_counter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/share_tag
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/synced_through
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/payload_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/reserved_88
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header/header_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body/modification_time
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body/payload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body/payload_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body/header_checksum_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/kind
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/reserved_5
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/file_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/file_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/length
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/sequence_number
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/version_epoch
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/version_counter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/share_tag
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/synced_through
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/payload_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/reserved_88
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/record_header_scanned/header_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body_scanned/modification_time
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body_scanned/payload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body_scanned/payload_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/write_body_scanned/header_checksum_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/file_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/file_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/record_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/length
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/sequence_number
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/version_epoch
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/version_counter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/kind
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/reserved_61
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/share_tag
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/catalog_entry/reserved_68
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/layout_version
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/flags
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/footer_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/entry_count
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/footer_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/reserved_24
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/trailer/crc
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/format_version
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/reserved_6
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/journal_identity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/predecessor
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/stream
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/segment_header/crc
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/reserved_4
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/reserved_24
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/seal_marker/crc
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/format_version
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/reserved_6
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/journal_identity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/installation_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/generation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/reserved_48
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_BitFlip/format/crc
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_SegmentDeleted
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that opens without a segment a successor names, and the data path.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_UnnamedFileLeftAlone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs recovery that leaves a file it did not name alone, and the data path.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestDamage_DirectoryRestored
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
+  issue: '#3379'
+  message: 'fixture:'

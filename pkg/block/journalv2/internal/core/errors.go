@@ -31,10 +31,25 @@ var (
 	// format file or a segment. Nothing is written.
 	ErrJournalExists = errors.New("journal: directory already holds a journal")
 
+	// ErrNotEmpty is returned by Init when the directory holds any entry but
+	// a format.tmp, which an Init that crashed before its rename leaves.
+	// Nothing is written: Init creates a journal only in an empty directory,
+	// so a journal is never laid over files it did not write. It is never
+	// retried; the caller points Init at an empty directory.
+	ErrNotEmpty = errors.New("journal: directory is not empty")
+
 	// ErrNoJournal is returned by Open and Restamp when the directory holds no
-	// journal, empty or missing, whatever identity the caller expected. Neither
-	// ever creates one; only Init does.
+	// journal, empty, missing, or holding neither a format file nor a segment,
+	// whatever identity the caller expected. Neither ever creates one; only
+	// Init does.
 	ErrNoJournal = errors.New("journal: directory holds no journal")
+
+	// ErrUnidentified is returned by Open when the directory holds a segment
+	// file and no format file: a journal this implementation cannot identify,
+	// which is never taken for an empty one. Nothing in the directory is
+	// written, removed or attached. It is never retried; an operator restores
+	// the format file or moves the segments away.
+	ErrUnidentified = errors.New("journal: directory holds segments and no format file")
 
 	// ErrIdentityMismatch is matched by every IdentityError: the journal in
 	// the directory is not the one the caller expected, or the caller expected
