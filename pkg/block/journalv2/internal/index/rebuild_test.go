@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -1050,4 +1051,102 @@ func TestRebuildSegmentsAndTags(t *testing.T) {
 			t.Fatalf("owner = %d, %v, want 7", tag, ok)
 		}
 	})
+}
+
+// TestRebuildBucketsCoverEveryAcceptedRecord: a feeder racing Finish must
+// not leave a held record above the bucket start. Finish closes every shard
+// before it reads the start, so every record it accepted — observed, like
+// the rest, under its shard's lock — is in the start. A start read while a
+// shard was still open leaves a file reporting an asOf below the version it
+// serves, and a fill resolved against that asOf would be accepted.
+func TestRebuildBucketsCoverEveryAcceptedRecord(t *testing.T) {
+	const rounds = 20
+	for range rounds {
+		var fs files
+		id := fid(1)
+		b := newRebuilder(&fs, &Counters{})
+		// One record lands before the race, so the round always has
+		// something to hold even if the feeder wins nothing further.
+		if err := b.Feed(recd(RecWrite, id, 1, 1, 1, 0, 0, 8)); err != nil {
+			t.Fatal(err)
+		}
+		fed := make(chan int, 1)
+		go func() {
+			for v := 2; ; v++ {
+				if err := b.Feed(recd(RecWrite, id, uint64(v), uint64(v), core.SegmentID(1+v/100), uint32(v)*8, int64(v)*8, 8)); err != nil {
+					fed <- v - 2 // how many the race fed
+					return
+				}
+			}
+		}()
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatal(err)
+		}
+		raced := <-fed
+		start := fs.asOf(fid(2)) // a file with no entry reads its bucket
+		held := heldPieces(&fs, id)
+		if len(held) == 0 {
+			t.Fatal("no record survived")
+		}
+		for _, p := range held {
+			if p.Version.Compare(start) > 0 {
+				t.Fatalf("held %v above the bucket start %v (the race fed %d): the start was read before a shard closed", p.Version, start, raced)
+			}
+		}
+	}
+}
+
+// TestRebuildTwoFinishes: two concurrent Finish calls on one builder — one
+// must win, the other must return errRebuilt without touching the buckets.
+// Without an atomic claim after the floor check, the loser's openBuckets
+// can lower the buckets while the winner is replaying, or stand the start
+// at its own floor below the winner's records.
+func TestRebuildTwoFinishes(t *testing.T) {
+	for range 20 {
+		var fs files
+		id := fid(1)
+		ctr := &Counters{}
+		b := newRebuilder(&fs, ctr)
+		for _, r := range []Record{
+			recd(RecWrite, id, 1, 1, 1, 0, 0, 4),
+		} {
+			if err := b.Feed(r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		wg.Go(func() { errs <- b.Finish(ver(0)) })
+		wg.Go(func() { errs <- b.Finish(ver(30)) })
+		wg.Wait()
+		close(errs)
+		wins, refused := 0, 0
+		var opened core.Version
+		for err := range errs {
+			switch {
+			case err == nil:
+				wins++
+				opened = fs.asOf(fid(2))
+			case errors.Is(err, errRebuilt):
+				refused++
+			default:
+				t.Fatalf("Finish = %v, want nil or errRebuilt", err)
+			}
+		}
+		if wins != 1 || refused != 1 {
+			t.Fatalf("%d wins, %d refusals: exactly one Finish must take the builder", wins, refused)
+		}
+		// The buckets stand at the winner's start still: the loser neither
+		// lowered them with its own floor nor re-stored a different one.
+		if now := fs.asOf(fid(2)); now != opened {
+			t.Fatalf("the buckets stand at %v but the winner opened %v: the loser moved them", now, opened)
+		}
+		if opened.Counter != 1 && opened.Counter != 30 {
+			t.Fatalf("the winner opened %v, want the fed maximum 1 or the refusing floor's 30", opened)
+		}
+		// A third Finish on the finished builder is refused.
+		if err := b.Finish(ver(0)); !errors.Is(err, errRebuilt) {
+			t.Fatalf("a third Finish = %v, want errRebuilt", err)
+		}
+	}
 }

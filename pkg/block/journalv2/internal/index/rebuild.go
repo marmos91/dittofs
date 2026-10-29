@@ -126,9 +126,11 @@ type rebuilder struct {
 	// holds its entry, so Finish's workers and the file map agree on the
 	// split.
 	shards [fileShards]*rebuildShard
-	// high is the highest version counter fed, for the bucket start.
-	high atomic.Uint64
-	// finished marks the builder whose Finish succeeded.
+	// finishing claims the builder for Finish: one call wins the
+	// CompareAndSwap and runs the rebuild, every other is refused with
+	// errRebuilt and touches nothing.
+	finishing atomic.Bool
+	// finished marks the builder whose Finish has run.
 	finished atomic.Bool
 }
 
@@ -208,7 +210,6 @@ func (b *rebuilder) Feed(r Record) error {
 		numbers: r.Numbers, clone: r.Clone,
 	})
 	s.mu.Unlock()
-	raise(&b.high, r.Numbers.Version.Counter)
 	return nil
 }
 
@@ -265,9 +266,26 @@ func (b *rebuilder) Finish(floor core.Version) error {
 	if err := b.ctr.RaiseFloor(floor); err != nil {
 		return err
 	}
-	// The counters never issue above the greatest version, so the start is
-	// clamped there: a clamped floor refuses draws rather than issue there.
-	start := min(max(b.high.Load(), floor.Counter), maxVersion)
+	// The claim is taken after the floor check, so a refused floor never
+	// claims and the builder stays open for a good one, and the loser of
+	// two good floors is refused before it stores anything: an openBuckets
+	// of its own could lower the buckets the winner is dropping entries
+	// against.
+	if !b.finishing.CompareAndSwap(false, true) {
+		return errRebuilt
+	}
+	// Every shard refuses feeds before the start is read, and each record
+	// accepted before that was observed under its shard's lock — Observe
+	// runs there — so the counters' high is the highest version on the
+	// disk the rebuild replays, floor and feed together.
+	for _, s := range b.shards {
+		s.mu.Lock()
+		s.drained = true
+		s.mu.Unlock()
+	}
+	// RaiseFloor clamps the counter to the greatest version it ever
+	// issues, so the start needs no clamp of its own.
+	start := b.ctr.high.Load()
 	b.fs.openBuckets(core.Version{Counter: start})
 
 	workers := min(runtime.GOMAXPROCS(0), fileShards)
