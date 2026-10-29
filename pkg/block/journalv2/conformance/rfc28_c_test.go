@@ -677,7 +677,7 @@ func sealedSegments(t *testing.T, f *journalv2test.Fixture) []journalv2.SegmentI
 			continue
 		}
 		b := durable(t, f, segmentName(s.ID))
-		if len(b) >= raw.TrailerSize && string(b[len(b)-raw.TrailerSize:][:4]) == "DJT1" {
+		if endsInTrailer(b) {
 			ids = append(ids, s.ID)
 		}
 	}
@@ -1663,7 +1663,7 @@ func recycledSegment(t *testing.T, f *journalv2test.Fixture) recycled {
 	if n := f.Seam.Calls(journalv2test.OpWrite) - writes; n < 2 || n != f.Seam.CallsFor(journalv2test.OpWrite, r.name) {
 		t.Fatalf("%d writes after the rename, %d of them to %s, want at least two and all of them there", n, f.Seam.CallsFor(journalv2test.OpWrite, r.name), r.name)
 	}
-	if b := durable(t, f, r.name); string(b[len(b)-raw.TrailerSize:][:4]) != "DJT1" {
+	if !endsInTrailer(durable(t, f, r.name)) {
 		t.Fatalf("the trailer slot of %s is not the old trailer on the device; the zeroing was not dropped", r.name)
 	}
 

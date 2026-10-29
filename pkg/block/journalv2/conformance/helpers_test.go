@@ -481,6 +481,13 @@ func wantSameIndex(t *testing.T, f *journalv2test.Fixture, want map[journalv2.Fi
 	}
 }
 
+// endsInTrailer reports whether the segment bytes b are long enough to end
+// in a trailer and their last trailer-sized slot starts with its magic. It
+// checks no checksum.
+func endsInTrailer(b []byte) bool {
+	return len(b) >= raw.TrailerSize && string(b[len(b)-raw.TrailerSize:][:4]) == "DJT1"
+}
+
 // trailerOf reads the trailer that ends the segment bytes b, at the offsets
 // the format's tables give and checking no checksum: the footer's offset and
 // its entries. b must end in a trailer, with a seal marker just before the
@@ -488,7 +495,7 @@ func wantSameIndex(t *testing.T, f *journalv2test.Fixture, want map[journalv2.Fi
 func trailerOf(t *testing.T, b []byte) (footerOffset int64, entries [][raw.CatalogEntrySize]byte) {
 	t.Helper()
 
-	if len(b) < raw.TrailerSize || string(b[len(b)-raw.TrailerSize:][:4]) != "DJT1" {
+	if !endsInTrailer(b) {
 		t.Fatalf("the segment's last %d bytes are not a trailer", raw.TrailerSize)
 	}
 	trailer := b[len(b)-raw.TrailerSize:]
