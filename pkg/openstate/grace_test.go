@@ -819,3 +819,32 @@ func TestReconnectingClientHoldsNoDenyInGrace(t *testing.T) {
 		t.Errorf("a lock that is no reclaim, while the host may reclaim: %v, want ErrGrace", err)
 	}
 }
+
+// A client silent through a whole grace expires a lease period after the
+// grace began, as if it had renewed once at the restart: the next grace does
+// not list it, so it cannot reclaim over a lock granted meanwhile.
+func TestSilentThroughGraceExpires(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfsAs("a", entity.RecoverStatus)), f.caller(t, nfsAs("b", entity.RecoverStatus))
+	file := in(5)
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.renew(t, b)
+	g.pass(t, leasePeriod, b.Client)
+	g.sweep(ctx)
+	g.mustLock(t, b, file, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+
+	h := g.restart(t)
+	_, err := h.Renew(ctx, a.Client)
+	if err == nil {
+		_, err = h.lock(a, file, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+	}
+	if err == nil {
+		t.Error("a client silent through the last grace reclaimed its lock")
+	}
+	h.renew(t, b)
+	if _, err := h.lock(b, file, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); err != nil {
+		t.Errorf("the lock granted after the last grace, reclaimed: %v", err)
+	}
+}

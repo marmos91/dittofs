@@ -149,6 +149,25 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 			kind: rec.Recovery,
 			deny: rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
 		}
+		// A client the table does not know yet starts its lease at the
+		// grace's start, as its first call would: one silent through the
+		// whole grace then expires, and no later grace names it again.
+		//
+		// ponytail: a restart in the last sweep interval of that lease, before
+		// the sweep expires it, lists the client once more. Expire it as the
+		// grace is begun if a lease ended before a restart is seen reclaiming.
+		//
+		// decision: an NLM host or an SMB client holds no lease, so it is
+		// neither made known nor expired for silence here: an NLM host's
+		// state goes with its restart notice, and an SMB client's with its
+		// opens' Timeouts. Give either a lease from the grace's start if one
+		// is seen reclaiming in a grace long after it went silent.
+		t.cmu.Lock()
+		if _, ok := t.leases[rec.ID]; !ok && rec.Protocol == entity.ProtocolNFSv4 {
+			t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+			t.know(rec)
+		}
+		t.cmu.Unlock()
 		if rec.Recovery == entity.RecoverReconnect || rec.Recovery == entity.RecoverNotice {
 			told = append(told, Revocation{Client: rec.ID, Shard: s, Reason: RevokedShardState, Adapter: rec.Adapter})
 			notice = notice || rec.Recovery == entity.RecoverNotice

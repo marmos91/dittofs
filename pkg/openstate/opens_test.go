@@ -407,10 +407,7 @@ func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
 
 	f.Stop()
 	g := reopen(t, f.fs, f.clock)
-	g.clock.advance(leasePeriod) // past the restart's grace
-	if _, err := g.Renew(ctx, b.Client); err != nil {
-		t.Fatal(err)
-	}
+	g.pass(t, leasePeriod, b.Client) // past the restart's grace, b renewing
 	f.fs.Counts.Take()
 	g.close(t, b, g.mustOpen(t, b, file, req))
 	if got := f.fs.Counts.Take(); got.Sets != 0 || got.Deletes != 0 {
