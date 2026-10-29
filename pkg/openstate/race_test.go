@@ -39,7 +39,10 @@ func watchdog(t *testing.T, d time.Duration, fn func()) {
 // A check and the I/O it admits are never separated by a grant, on a file
 // with state or none, and a file never has two entries. 10,000 rounds race
 // a deny-write open against anonymous writes on a file whose entry the round
-// before freed: a write begun after the open returned is refused. Then a
+// before freed, each holding the file's admission lock as the service does,
+// the write from its check to its staging, while reads that take none free
+// and make the entry again: a write is refused, or staged before the open
+// is granted. Then a
 // timer step that frees a range a callback waiter waits on runs while a
 // write admitted on that range holds the file's admission lock: the waiter
 // is granted only once the write is staged.
@@ -63,20 +66,33 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 		var oerr error
 		var o Open
 		var wg sync.WaitGroup
+		anon := OpenRef{Kind: RefAnonymous, Handle: handle(scratch.ID)}
 		wg.Go(func() {
-			defer opened.Store(true)
+			unlock := adm.lock(scratch.ID)
+			defer unlock()
 			o, oerr = f.open(b, scratch, OpenRequest{Access: rd, Deny: wr})
+			opened.Store(true)
 		})
 		wg.Go(func() {
-			for {
+			for done := false; !done; {
+				unlock := adm.lock(scratch.ID)
 				after := opened.Load()
-				err := f.Checks().CheckIO(ctx, Caller{}, scratch, OpenRef{Kind: RefAnonymous, Handle: handle(scratch.ID)}, br(0, 1), true)
-				if after && err == nil {
-					t.Errorf("round %d: a write begun after a deny-write open returned was admitted", round)
+				if f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), true) == nil {
+					runtime.Gosched() // the write, staged under the same lock
+					if !after && opened.Load() {
+						t.Errorf("round %d: an open was granted between a write's check and its staging", round)
+					}
+					if after {
+						t.Errorf("round %d: a write begun after a deny-write open was granted was admitted", round)
+					}
 				}
-				if after {
-					return
-				}
+				unlock()
+				done = after
+			}
+		})
+		wg.Go(func() {
+			for range 2 {
+				_ = f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), false)
 			}
 		})
 		wg.Wait()
@@ -126,15 +142,16 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 }
 
 // A release across files never holds an index while it waits for an entry:
-// an expiry of a client holding 10,000 opens completes while 64 openers open
-// the same files, and the indexes are still what the entries derive.
+// an expiry of a client holding 10,000 deny-write opens completes while 64
+// openers open the same files, half of them for write against the deny
+// mode, and the indexes are still what the entries derive.
 func TestExpiryRacesOpeners(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("a", 1, entity.NewUser()))
 	files := make([]FileKey, 10_000)
 	for i := range files {
 		files[i] = in(1)
-		f.mustOpen(t, a, files[i], OpenRequest{Access: rd})
+		f.mustOpen(t, a, files[i], OpenRequest{Access: rd, Deny: wr})
 	}
 	var others [64]Caller
 	for i := range others {
@@ -144,8 +161,14 @@ func TestExpiryRacesOpeners(t *testing.T) {
 		var wg sync.WaitGroup
 		for k, who := range others {
 			wg.Go(func() {
+				// Every other opener meets the deny mode until the expiry
+				// releases it.
+				access := rd
+				if k%2 == 1 {
+					access |= wr
+				}
 				for i := k; i < len(files); i += len(others) {
-					if _, err := f.open(who, files[i], OpenRequest{Access: rd}); err != nil {
+					if _, err := f.open(who, files[i], OpenRequest{Access: access}); err != nil && !errors.Is(err, ErrShareViolation) {
 						t.Errorf("open: %v", err)
 					}
 				}
