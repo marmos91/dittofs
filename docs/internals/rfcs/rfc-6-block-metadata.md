@@ -965,8 +965,9 @@ at every write:
    records ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 4. Existence is committed — `size` grown, holes shrunk, overwrite records
    written, times set, `applied` advanced to the newest version covered —
-   **group-committed across files**: one transaction per journal for every file
-   with pending existence, not one per write. A stability reply waits for it when
+   **group-committed across files**: one journal's files with pending existence
+   commit together, in bounded batches
+   ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), not one transaction per write. A stability reply waits for it when
    a pending write in its extent overwrites committed content, joining the next
    group commit rather than issuing its own; otherwise the group commit runs
    within a bounded age of the sync ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
@@ -2549,7 +2550,7 @@ type BlockCommit struct {
 type CommitResult map[FileID][]Extent
 
 type Existence interface {
-    // Commit applies pending existence for many files in one transaction (§3.4).
+    // Commit applies pending existence for many files in one bounded batch (§3.4).
     Commit(ctx context.Context, pending []PendingExistence) error
     // Remove applies phase 1 of a truncate, deallocate or release at the journal's
     // version (§6.2, §6.4). For a release, in the same transaction, it re-checks the
@@ -2678,7 +2679,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero ref under an overwrite | Offload an all-zero extent, overwrite part of it with nonzero bytes and commit existence, without offloading. Assert `SEEK_HOLE`, `READ_PLUS` and the allocated-range answer report the overwritten part as data, and a sparse-aware copy carries its bytes. |
 | [§8.1](#8.1%20Covering%20lookup) overwrite after the journal lookup | Hold a read between its journal miss and its covering lookup; commit an overwrite of the extent and keep its bytes in the journal. Assert the lookup's uncarved run carries the overwrite's version and the file's `applied`, and the read re-asks the journal and returns the new bytes rather than failing as **Lost**. Repeat with a write that fills a hole the read saw, and one that grows the file past it: assert the same. A re-ask keyed on overwrite records alone fails both as **Lost**. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) recovery replay | Write, crash before the stability point. Assert recovery re-applies existence from the journal and the write reads back. Then commit, crash, drop the journal extent. Assert the read fails as **Lost**. |
-| [§3.4](#3.4%20Ordering%20against%20the%20journal) group commit | Write to 64 files, then `COMMIT` one. Assert one transaction covered every file with pending existence. |
+| [§3.4](#3.4%20Ordering%20against%20the%20journal) group commit | Write to 64 files, fewer than [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)'s `G` and within `K`, then `COMMIT` one. Assert one transaction covered every file with pending existence. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate an extent with nothing staged. Assert it reads zeros, not a failure. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero chunks | Write and offload an all-zero extent. Assert zero refs, no chunk record, no refcount change, `SEEK_HOLE` reports a hole, and reads return zeros with no fetch. |
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then A over the same offsets with a lower `newest`. Assert B's refs survive. Commit again with a `newest` inside B's version range. Assert nothing changes and the extent is reported offloaded. |

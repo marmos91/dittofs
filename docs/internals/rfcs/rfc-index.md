@@ -10,8 +10,9 @@ aliases:
 
 The specification of DittoFS, from the bytes a client writes to the objects in the remote tier,
 and the layers around them. [RFC 0](rfc-0-data-lifecycle.md) is the root: it defines the terms ([Glossary](rfc-0-data-lifecycle.md#Glossary)),
-the residency function and the invariants every other RFC inherits. Start there, and read in
-order: each part builds on the ones before it.
+the residency function and the invariants every other RFC inherits. Start there. The table
+groups the rest by part; what each RFC builds on is the [Dependencies](#Dependencies) graph, not
+the table's order.
 
 | RFC | Component | Status | Owns |
 | --- | --- | --- | --- |
