@@ -58,7 +58,8 @@ type DelayError struct{ Cause DelayCause }
 // reached, as DelayHoldBudget, answered at once (NFS4ERR_DELAY,
 // STATUS_INSUFFICIENT_RESOURCES); DelayFrozen as DelayFrozen; DelayCommit,
 // a record the store has not landed, as DelayStoreStall; and DelayConflict
-// as DelayConflict, which SMB holds and answers STATUS_FILE_NOT_AVAILABLE.
+// as DelayConflict, which only a numbered NFSv4.0 owner's request meets, so
+// it is NFS's alone and answered NFS4ERR_DELAY.
 // Split a cause here if an adapter is found needing to answer two of its
 // refusals apart.
 type DelayCause uint8
