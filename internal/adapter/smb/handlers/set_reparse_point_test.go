@@ -148,7 +148,7 @@ func buildSetReparseBody(fileID [16]byte, reparse []byte) []byte {
 	w.WriteUint32(0)                    // OutputOffset
 	w.WriteUint32(0)                    // OutputCount
 	w.WriteUint32(0)                    // MaxOutputResponse
-	w.WriteUint32(0)                    // Flags
+	w.WriteUint32(1)                    // Flags: SMB2_0_IOCTL_IS_FSCTL
 	w.WriteUint32(0)                    // Reserved2
 	w.WriteBytes(reparse)
 	return w.Bytes()

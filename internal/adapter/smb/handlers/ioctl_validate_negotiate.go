@@ -9,6 +9,10 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
+// vnegResponseSize is the size of the VALIDATE_NEGOTIATE_INFO response
+// [MS-SMB2] 2.2.32.6: Capabilities(4) + Guid(16) + SecurityMode(2) + Dialect(2).
+const vnegResponseSize = 24
+
 // handleValidateNegotiateInfo validates the negotiation parameters [MS-SMB2] 2.2.31.4.
 //
 // This FSCTL is used by SMB 3.x clients to verify that the negotiation wasn't
@@ -18,6 +22,7 @@ import (
 //
 // Per MS-SMB2 section 3.3.5.15.12:
 //   - For SMB 3.1.1 connections: drop the TCP connection immediately without response.
+//   - MaxOutputResponse smaller than the 24-byte response: drop the TCP connection.
 //   - For SMB 3.0/3.0.2: validate all 4 fields (Capabilities, ServerGUID, SecurityMode, Dialect).
 //   - On mismatch: drop the TCP connection (possible downgrade attack).
 //   - On success: return 24-byte response with server values.
@@ -115,6 +120,15 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 		return &HandlerResult{DropConnection: true}, nil
 	}
 
+	// Per MS-SMB2 3.3.5.15.12, a MaxOutputResponse smaller than the response
+	// also drops the connection: the reply cannot be sent without exceeding
+	// it, and a zero MaxOutputResponse is no exception.
+	if maxOutput := parseIoctlMaxOutputSize(body); maxOutput < vnegResponseSize {
+		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: MaxOutputResponse below the response size, dropping TCP",
+			"client", ctx.ClientAddr, "maxOutput", maxOutput)
+		return &HandlerResult{DropConnection: true}, nil
+	}
+
 	// For 3.0/3.0.2: validate all 4 fields against CryptoState.
 	// If CryptoState is nil (pre-plan-02 connections or tests), fall back to
 	// the legacy re-computation path.
@@ -197,7 +211,7 @@ func (h *Handler) validateFromCryptoState(
 	serverGUID := cs.GetServerGUID()
 	serverSecMode := cs.GetServerSecurityMode()
 
-	w := smbenc.NewWriter(24)
+	w := smbenc.NewWriter(vnegResponseSize)
 	w.WriteUint32(uint32(serverCaps))
 	w.WriteBytes(serverGUID[:])
 	w.WriteUint16(uint16(serverSecMode))
@@ -306,7 +320,7 @@ func (h *Handler) validateLegacy(ctx *SMBHandlerContext, inputData []byte, fileI
 	capabilities := uint32(h.buildCapabilities(selectedDialect))
 
 	// Build response
-	w := smbenc.NewWriter(24)
+	w := smbenc.NewWriter(vnegResponseSize)
 	w.WriteUint32(capabilities)
 	w.WriteBytes(h.ServerGUID[:])
 	w.WriteUint16(uint16(securityMode))

@@ -91,10 +91,16 @@ func Run(t *testing.T, open Opener) {
 		{"ClientNameRace", testClientNameRace},
 		{"DurableOpens", testDurableOpens},
 		{"OpenRacesRelease", testOpenRacesRelease},
+		{"LastClosesRace", testLastClosesRace},
 		{"CloneHold", testCloneHold},
-		{"DurableLocks", testDurableLocks},
+		{"DurableLockChanges", testDurableLockChanges},
+		{"CloseRacesLockChange", testCloseRacesLockChange},
 		{"DeletePending", testDeletePending},
+		{"DeletePendingRace", testDeletePendingRace},
 		{"NSMState", testNSMState},
+		{"RaiseIncarnations", testRaiseIncarnations},
+		{"RaiseIncarnationsAllOrNone", testRaiseIncarnationsAllOrNone},
+		{"RaiseIncarnationsRace", testRaiseIncarnationsRace},
 		{"NextID", testNextID},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })

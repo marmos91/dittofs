@@ -132,6 +132,10 @@ func clip(p Piece, e core.Extent) Piece {
 // does not overflow, and a piece is no longer than a segment. Refusing others
 // is the journal API's job, as for the tree.
 type heldSet struct {
+	// acct are the per-segment counters this set feeds: every piece put
+	// adds to its record's segment, and every piece cut subtracts. Nil keeps
+	// the set unaccounted, as the standalone sets of tests are.
+	acct    *segments
 	tree    btree[held]
 	scratch []Piece // the pieces cut is changing
 	work    []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
@@ -202,6 +206,41 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 		missing = append(missing, core.Extent{Off: cursor, Len: end - cursor})
 	}
 	return placed, missing
+}
+
+// gaps counts the absent sub-extents of e: the gaps a fill of e would hold.
+// Like the other reads it changes nothing, and it allocates nothing, so
+// admission can run it under the file's read lock; the count it returns is an
+// upper bound on the entries the fill's put calls would add, exact unless a
+// put joins a neighbour of the same record.
+func (s *heldSet) gaps(e core.Extent) int64 {
+	var n int64
+	cursor := e.Off
+	s.visit(e, func(p Piece) bool {
+		lo := max(p.Extent.Off, e.Off)
+		hi := min(p.Extent.Off+p.Extent.Len, e.Off+e.Len)
+		if lo > cursor {
+			n++
+		}
+		cursor = max(cursor, hi)
+		return true
+	})
+	if e.Len > 0 && e.Off+e.Len > cursor {
+		n++
+	}
+	return n
+}
+
+// straddle reports whether e covers the middle of one piece, ending inside it
+// at both ends: the shape whose removal splits the piece in two. It costs one
+// descent, O(log n), like lookup, and allocates nothing. A zero-length e
+// never straddles.
+func (s *heldSet) straddle(e core.Extent) bool {
+	if e.Len <= 0 {
+		return false
+	}
+	k, v, ok := s.tree.floor(uint64(e.Off))
+	return ok && k < uint64(e.Off) && k+uint64(v.len) > uint64(e.Off+e.Len)
 }
 
 // insert holds p as a client write: dirty, superseding whatever was held in
@@ -348,7 +387,16 @@ func (s *heldSet) pieces(out []Piece) []Piece {
 
 // put holds p over whatever is held in its extent, then merges it with a
 // neighbour it joins.
+//
+// decision: p is counted before what it supersedes is cut, not after. The
+// counters are read with no lock, and this is the shape of nearly every write:
+// counting the cut first would let a concurrent read — reclamation's candidacy,
+// which selects a segment on a zero — see a live segment count zero. The double
+// count is transient and the totals agree once the update ends.
 func (s *heldSet) put(p Piece) {
+	if s.acct != nil && p.Extent.Len > 0 {
+		s.acct.add(p.Record.Segment, p.Extent.Len, 0)
+	}
 	s.cut(p.Extent)
 	s.tree.set(uint64(p.Extent.Off), toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
@@ -384,6 +432,17 @@ func (s *heldSet) cut(e core.Extent) {
 	end := e.Off + e.Len
 	for _, p := range s.scratch {
 		pend := p.Extent.Off + p.Extent.Len
+		// Only the intersection of p and e stops being held: the head and
+		// tail the loop below writes back in place never leave the counters,
+		// since the writes below do not account, so there is nothing to add
+		// back for them. A hook that subtracted p whole here would count the
+		// head and tail twice over.
+		if s.acct != nil {
+			n := min(pend, end) - max(p.Extent.Off, e.Off)
+			if n > 0 {
+				s.acct.add(p.Record.Segment, -n, 0)
+			}
+		}
 		if p.Extent.Off < e.Off {
 			head := p
 			head.Extent.Len = e.Off - p.Extent.Off
@@ -399,7 +458,8 @@ func (s *heldSet) cut(e core.Extent) {
 }
 
 // coalesce merges the piece starting at off into the one ending there, when
-// it continues it as one piece of one record.
+// it continues it as one piece of one record. The two pieces are of one record,
+// so the merge moves no bytes between segments and needs no accounting.
 func (s *heldSet) coalesce(off int64) {
 	if off <= 0 {
 		return

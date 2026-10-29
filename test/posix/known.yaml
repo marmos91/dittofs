@@ -1,0 +1,138 @@
+- test: open/etxtbsy
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'ETXTBSY cannot be enforced over NFS: server has no execution visibility'
+  where: {nfs: ["3", "4", "4.1"]}
+- test: open::etxtbsy
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'ETXTBSY cannot be enforced over NFS: server has no execution visibility'
+  where: {nfs: ["3", "4", "4.1"]}
+- test: flock/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: 'NLM protocol not implemented: no file locking over NFSv3'
+  where: {nfs: ["3"]}
+- test: fcntl/lock*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: 'NLM protocol not implemented: no record locking'
+  where: {nfs: ["3"]}
+- test: lockf/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NLM protocol not implemented
+  where: {nfs: ["3"]}
+- test: xattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: Extended attributes not supported in NFSv3
+  where: {nfs: ["3"]}
+- test: getxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: Extended attributes not supported
+  where: {nfs: ["3"]}
+- test: setxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: Extended attributes not supported
+  where: {nfs: ["3"]}
+- test: listxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: Extended attributes not supported
+  where: {nfs: ["3"]}
+- test: removexattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: Extended attributes not supported
+  where: {nfs: ["3"]}
+- test: lchflags/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: BSD-specific file flags, not in POSIX
+  where: {nfs: ["3", "4", "4.1"]}
+- test: acl/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: ACLs require NFSv4; NFSv3 mount has no ACL support
+  where: {nfs: ["3"]}
+- test: getfacl/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: ACLs require NFSv4
+  where: {nfs: ["3"]}
+- test: setfacl/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: ACLs require NFSv4
+  where: {nfs: ["3"]}
+- test: fallocate/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: No ALLOCATE procedure in NFSv3
+  where: {nfs: ["3"]}
+- test: utimensat/09.t
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'NFSv3 nfstime3 uses uint32 seconds: cannot represent values >= 2^32 (year 2106)'
+  where: {nfs: ["3"]}
+- test: fallocate/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: No ALLOCATE operation in NFSv4.0 (requires NFSv4.2)
+  where: {nfs: ["4", "4.1"]}
+- test: xattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NFSv4 named attributes (OPENATTR) not implemented
+  where: {nfs: ["4", "4.1"]}
+- test: getxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NFSv4 named attributes not implemented
+  where: {nfs: ["4", "4.1"]}
+- test: setxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NFSv4 named attributes not implemented
+  where: {nfs: ["4", "4.1"]}
+- test: listxattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NFSv4 named attributes not implemented
+  where: {nfs: ["4", "4.1"]}
+- test: removexattr/*
+  status: fail
+  fix: wontfix
+  category: feature
+  reason: NFSv4 named attributes not implemented
+  where: {nfs: ["4", "4.1"]}
+- test: unlink/14.t
+  status: fail
+  fix: wontfix
+  category: proto
+  reason: 'NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1 (same as Linux knfsd)'
+  where: {nfs: ["4", "4.1"]}

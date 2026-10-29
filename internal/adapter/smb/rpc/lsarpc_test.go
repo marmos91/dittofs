@@ -470,7 +470,7 @@ func TestPipeManager_CreateLSARPCPipe(t *testing.T) {
 	pm.SetSIDMapper(mapper)
 
 	fileID := [16]byte{1, 2, 3, 4}
-	pipe := pm.CreatePipe(fileID, "lsarpc")
+	pipe := pm.CreatePipe(fileID, "lsarpc", nil)
 
 	if pipe == nil {
 		t.Fatal("CreatePipe returned nil")
@@ -497,7 +497,7 @@ func TestPipeManager_CreateSRVSVCPipe(t *testing.T) {
 	pm.SetShares([]ShareInfo1{{Name: "test", Type: STYPE_DISKTREE}})
 
 	fileID := [16]byte{5, 6, 7, 8}
-	pipe := pm.CreatePipe(fileID, "srvsvc")
+	pipe := pm.CreatePipe(fileID, "srvsvc", nil)
 
 	if pipe == nil {
 		t.Fatal("CreatePipe returned nil")
@@ -656,7 +656,7 @@ func TestPipeManager_IdentityResolver(t *testing.T) {
 	pm.SetIdentityResolver(resolver)
 
 	fileID := [16]byte{10, 11, 12}
-	pipe := pm.CreatePipe(fileID, "lsarpc")
+	pipe := pm.CreatePipe(fileID, "lsarpc", nil)
 	if pipe == nil {
 		t.Fatal("CreatePipe returned nil")
 	}

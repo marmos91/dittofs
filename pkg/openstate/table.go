@@ -1,17 +1,14 @@
 package openstate
 
 import (
+	"context"
 	"errors"
-	"io"
+	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
-
-// Deps is what the table is built over.
-type Deps struct {
-	Rand io.Reader // every random bit of a token; crypto/rand in production
-}
 
 // Table is the open state of every file this node is the primary of. Each
 // file's state lives in its own entry, created with the file's first piece of
@@ -28,6 +25,27 @@ type Table struct {
 	// never before one, and only to add, remove or look up a reference.
 	idx  sync.Mutex
 	refs map[refKey]holder
+
+	// cstep is the client step: every change to a client record, and every
+	// lease armed from one, runs under it, so a confirm, an expiry and a
+	// renewal that reads the record never interleave. It is never taken
+	// under a file's step.
+	//
+	// ponytail: one step for every client, held across its record write, so
+	// confirms and expiries of all clients serialise on the store. Stripe it
+	// by client name and ID when mounts or expiries queue on it.
+	cstep sync.Mutex
+
+	// cmu guards the client area: the clients this node serves, the
+	// proposals it answered and the lifecycle. It is held only to read or
+	// change those maps, never across a store call or a Sink call.
+	cmu     sync.Mutex
+	leases  map[entity.ClientID]time.Duration // the Elapsed reading each client's lease ends at; zero: no lease
+	pending map[nameKey]pending
+	sources map[netip.Prefix]int // pending proposals per source
+	sink    Sink                 // nil before Start and after Stop
+	stopped bool
+	stop    func()
 }
 
 type fileStripe struct {
@@ -44,12 +62,15 @@ type entry struct {
 	states int // pieces of state held, guarded by mu
 }
 
-// New builds an empty table. It starts nothing.
+// New builds an empty table. It starts nothing: Start does.
 func New(d Deps) (*Table, error) {
-	if d.Rand == nil {
-		return nil, errors.New("openstate: a table needs a source of random bits")
+	if d.Records == nil || d.Clock == nil || d.Rand == nil {
+		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
-	t := &Table{d: d, refs: map[refKey]holder{}}
+	t := &Table{
+		d: d, refs: map[refKey]holder{},
+		leases: map[entity.ClientID]time.Duration{}, pending: map[nameKey]pending{}, sources: map[netip.Prefix]int{},
+	}
 	for i := range t.files {
 		t.files[i].entries = map[entity.FileID]*entry{}
 	}
@@ -86,4 +107,78 @@ func (t *Table) step(f entity.FileID, fn func(e *entry) error) error {
 	}
 	e.mu.Unlock()
 	return err
+}
+
+// Clients is the view of client records and leases.
+func (t *Table) Clients() Clients { return clients{t} }
+
+// sweepEvery is how often lapsed leases and proposals are looked for.
+//
+// ponytail: each sweep scans every lease and proposal, O(clients), and a
+// client is expired up to one interval after its lease ends. Replace it with
+// the deadline heap, one (kind, ref, generation) entry per deadline, when a
+// profile shows the sweep or a deadline must fire on the instant.
+const sweepEvery = 10 * time.Second
+
+// Start starts the lease timer and takes the service's Sink and admission
+// lock. Before Start and after Stop every mutating call is ErrStopped, and a
+// table starts once. The timer outlives ctx: only Stop ends it.
+//
+// ponytail: Start arms no lease, so after a restart an NFSv4 client that
+// never renews keeps its record, its name and its shard marks until it
+// renews, which may be never; one that renews is adopted with a full period.
+// Arm a lease for every NFSv4 record this node owns here instead, which
+// needs a store call listing a node's clients, added as a store follow-up
+// before stage 2's service calls Start.
+func (t *Table) Start(ctx context.Context, sink Sink, _ Order) error {
+	if sink == nil {
+		return errors.New("openstate: Start needs a Sink")
+	}
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if t.sink != nil || t.stopped {
+		return errors.New("openstate: table already started")
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.d.Clock.After(sweepEvery):
+				t.sweep(ctx)
+			}
+		}
+	})
+	t.sink, t.stop = sink, func() { cancel(); wg.Wait() }
+	return nil
+}
+
+// Stop stops the lease timer. Open state is left as it is, for the next
+// start's grace.
+//
+// decision: Stop waits for the timer, not for calls already past running():
+// such a call still finishes and may raise ClientEnded after Stop returns.
+// It holds because the node stops the service, the table's only caller,
+// first. Count in-flight calls and wait for them if a caller is found that
+// outlives the service.
+func (t *Table) Stop() {
+	t.cmu.Lock()
+	stop := t.stop
+	t.sink, t.stop, t.stopped = nil, nil, true
+	t.cmu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// running is the Sink, or ErrStopped before Start and after Stop.
+func (t *Table) running() (Sink, error) {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if t.sink == nil {
+		return nil, ErrStopped
+	}
+	return t.sink, nil
 }

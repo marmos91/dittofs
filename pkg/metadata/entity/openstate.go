@@ -43,6 +43,21 @@ type ShardID uint32
 
 const ShardLimit ShardID = 1 << 24
 
+// Shard is a shard's durable record, of which only two fields are built: the
+// shard incarnation, raised each time a node or journal begins serving the
+// shard as primary, which the write verifier and open state read, and the
+// grace instance, the incarnation the shard was first served under after it
+// last lost its open state. A stateid carries the grace instance's low 5 bits.
+//
+// ponytail: the record's cluster fields (primary, replicas, placement) are
+// not built, so codec v1 holds these two alone. Add them, as a v2 decoding
+// v1, when the first cluster code reads one.
+type Shard struct {
+	ID            ShardID
+	Incarnation   uint64
+	GraceInstance uint64
+}
+
 // ClientRecord is a client's durable record: one per client instance, found
 // by ID and by its protocol and name. Each field is one open state decides
 // on; protocol detail it never interprets is the adapter's, in Adapter. The
@@ -149,10 +164,10 @@ const (
 	TimeAccess
 )
 
-// Open is a durable open record. Only three opens are stored: one that
+// OpenRecord is a durable open record. Only three opens are stored: one that
 // keeps a file with no entry alive, an SMB persistent open, and a clone's
 // hold on its source. Every other open lives only at the file's primary.
-type Open struct {
+type OpenRecord struct {
 	ID            OpenID
 	Client        ClientID // zero for a clone's source open, which no client holds
 	Principal     Principal
@@ -166,6 +181,7 @@ type Open struct {
 	Lease         *Lease    // the SMB lease covering a persistent open; nil: none
 	Suspended     TimeMask
 	Via           FileID // the directory it was opened through; zero: none named
+	Name          []byte // its entry in Via, which delete on close unlinks; nil: opened by handle
 	StateSeq      uint32 // NFSv4: its stateid's seqid
 	Nonce         uint64 // NFSv4: its stateid's random bits
 	LossSeen      uint64 // SMB: the file's loss sequence it last reported
@@ -189,6 +205,7 @@ type Lease struct {
 	Key, ParentKey [16]byte
 	State          uint8 // the lease's read, handle and write bits, as SMB numbers them
 	Epoch          uint16
+	V2             bool // a v2 lease, whose Epoch is counted
 }
 
 // SessionRef names the session that opened or last reconnected an open: a
@@ -200,14 +217,14 @@ type SessionRef struct {
 	ID        uint64
 }
 
-// Lock is a durable byte-range lock: only one under a persistent open is
+// LockRecord is a durable byte-range lock: only one under a persistent open is
 // stored, beneath it, so closing the open drops it.
-type Lock struct {
+type LockRecord struct {
 	ID        LockID
 	Open      OpenID
 	Owner     LockOwner
-	Offset    int64
-	Length    int64 // to the end of file when EndOfFile
+	Offset    uint64
+	Length    uint64 // a zero length included; all ones reaches the last byte
 	Exclusive bool
 }
 
@@ -218,9 +235,9 @@ type LockOwner struct {
 	Owner  []byte
 }
 
-// DeletePending is a file a persistent open marked for deletion at its last
+// DeleteRecord is a file a persistent open marked for deletion at its last
 // close: the entry the unlink removes, and as whom and with what it runs.
-type DeletePending struct {
+type DeleteRecord struct {
 	Parent     FileID
 	Name       []byte
 	By         Principal

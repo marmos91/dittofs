@@ -2,8 +2,7 @@
   "_comment": [
     "Every conformance suite, described once. test/conformance/run.sh dispatches",
     "from this file, .github/workflows/conformance.yml builds its matrix from it,",
-    "ci-health.yml derives the workflows it monitors from it, and",
-    "test/conformance/check-docs.sh keeps the documentation tables honest against it.",
+    "and ci-health.yml derives the workflows it monitors from it.",
     "Adding a suite means adding an entry here, not a workflow plus four tables.",
     "",
     "JSON rather than YAML so GitHub Actions can fromJSON() it directly and the",
@@ -26,9 +25,9 @@
     "                 against the wrong build. Docker-only suites publish no",
     "                 host port and must not be failed by a listener on it.",
     "  steps          ordered steps. Each declares its own privilege need, per",
-    "                 step on purpose: pynfs speaks NFSv4 itself and must stay",
-    "                 runnable with no mount and no root, so nothing may hoist",
-    "                 a root precondition to the whole run."
+    "                 step on purpose, so a step that needs no root stays",
+    "                 runnable without it: nothing may hoist a root",
+    "                 precondition to the whole run."
   ],
 
   "defaults": {
@@ -36,108 +35,10 @@
   },
 
   "suites": {
-    "wpts": {
-      "description": "Windows Protocol Test Suites FileServer BVT",
-      "protocol": "SMB",
-      "profiles": ["memory", "badger", "badger-s3"],
-      "known_failures": "smb-conformance/KNOWN_FAILURES.md",
-      "tiers": { "pull_request": ["memory", "badger-s3"] },
-      "timeout_minutes": 30,
-      "steps": [
-        {
-          "name": "run",
-          "cmd": "smb-conformance/run.sh",
-          "args": ["--profile", "{profile}", "--verbose"],
-          "root": false
-        }
-      ]
-    },
-
-    "smbtorture": {
-      "description": "Samba smbtorture SMB2/3 protocol suite",
-      "protocol": "SMB",
-      "profiles": ["memory", "badger"],
-      "known_failures": "smb-conformance/smbtorture/KNOWN_FAILURES.md",
-      "tiers": { "pull_request": ["memory", "badger"] },
-      "timeout_minutes": 45,
-      "steps": [
-        {
-          "name": "run",
-          "cmd": "smb-conformance/smbtorture/run.sh",
-          "args": ["--profile", "{profile}", "--verbose"],
-          "root": false
-        }
-      ]
-    },
-
-    "pjdfstest": {
-      "description": "pjdfstest POSIX filesystem semantics over NFS",
-      "host_adapter": true,
-      "protocol": "NFS",
-      "profiles": ["memory", "badger", "badger-s3"],
-      "variant": {
-        "name": "nfs-version",
-        "values": ["3", "4", "4.1"]
-      },
-      "known_failures": {
-        "3": "posix/KNOWN_FAILURES.md",
-        "4": "posix/KNOWN_FAILURES_V4.md",
-        "4.1": "posix/KNOWN_FAILURES_V4.md"
-      },
-      "tiers": { "pull_request": ["memory", "badger-s3"] },
-      "timeout_minutes": 60,
-      "steps": [
-        {
-          "name": "setup",
-          "cmd": "posix/setup-posix.sh",
-          "args": ["{profile}", "--nfs-version", "{variant}"],
-          "root": true
-        },
-        {
-          "name": "run",
-          "cmd": "posix/run-posix.sh",
-          "args": ["--nfs-version", "{variant}", "--grade"],
-          "root": true
-        },
-        {
-          "name": "teardown",
-          "cmd": "posix/teardown-posix.sh",
-          "args": [],
-          "root": true,
-          "always": true
-        }
-      ]
-    },
-
-    "pynfs": {
-      "description": "pynfs NFSv4.0/4.1 protocol conformance",
-      "host_adapter": true,
-      "protocol": "NFS",
-      "profiles": ["memory", "badger", "badger-s3"],
-      "variant": {
-        "name": "minor-version",
-        "values": ["4.0", "4.1"]
-      },
-      "known_failures": {
-        "4.0": "nfs-conformance/pynfs/KNOWN_FAILURES_V40.md",
-        "4.1": "nfs-conformance/pynfs/KNOWN_FAILURES_V41.md"
-      },
-      "tiers": { "pull_request": ["memory", "badger-s3"] },
-      "timeout_minutes": 45,
-      "steps": [
-        {
-          "name": "run",
-          "cmd": "nfs-conformance/pynfs/run-pynfs.sh",
-          "args": ["--profile", "{profile}", "--minor-version", "{variant}"],
-          "root": false
-        }
-      ]
-    },
     "cthon04": {
       "description": "Connectathon basic/general/special/lock over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
-      "profiles": ["memory", "badger", "badger-s3"],
+      "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",
         "values": ["default", "v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
@@ -150,7 +51,7 @@
         "v4.1-noac": "nfs-mount/cthon04/KNOWN_FAILURES.md",
         "v4.1-smallio": "nfs-mount/cthon04/KNOWN_FAILURES.md"
       },
-      "tiers": { "pull_request": ["memory"], "push": [] },
+      "tiers": { "push": [] },
       "timeout_minutes": 30,
       "steps": [
         {
@@ -177,8 +78,7 @@
     "nfstest": {
       "description": "NetApp nfstest modules over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
-      "profiles": ["memory"],
+      "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",
         "values": ["default", "v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
@@ -224,7 +124,7 @@
   ],
   "workflows": {
     "conformance.yml": "Conformance Suites",
-    "nfs-pynfs.yml": "NFS Protocol Conformance",
-    "e2e-tests.yml": "E2E Tests"
+    "e2e-tests.yml": "E2E Tests",
+    "tests.yml": "Tests"
   }
 }

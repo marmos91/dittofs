@@ -43,7 +43,7 @@ func (r Run) Show(w io.Writer, format string, failures bool) error {
 		if failures {
 			r = r.onlyNewFailures()
 		}
-		data, err := r.JSON()
+		data, err := r.json()
 		if err != nil {
 			return err
 		}

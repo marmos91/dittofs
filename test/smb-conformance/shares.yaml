@@ -1,0 +1,10 @@
+# The shares WPTS and smbtorture run on: each share's name and the dfsctl share create flags it
+# takes, as bootstrap.sh's share_create_args gives them. The first is the default share.
+- name: /smbbasic
+- { name: /smbencrypted, encrypt-data: true }
+- name: /fileshare
+- { name: /hideunread, access-based-enumeration: true }
+- { name: /change_notify_disabled, change-notify-disabled: true }
+- { name: /smbnoncanon, acl-canonicalize-inherited: false }
+- { name: /create_no_streams, streams-disabled: true }
+- { name: /smbpersistent, continuous-availability: true }

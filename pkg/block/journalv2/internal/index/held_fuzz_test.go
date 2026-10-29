@@ -89,6 +89,10 @@ func (o *byteOracle) span(e core.Extent) (held []Placed, missing []core.Extent) 
 func heldOps(t *testing.T, data []byte) {
 	var s heldSet
 	var o byteOracle
+	// The set feeds the per-segment table while it runs, so every step can
+	// compare the counters against the pieces it holds: the same paths a real
+	// file's set accounts on.
+	s.acct = new(segments)
 	next := uint32(0)
 	fresh := func() RecordAt { next++; return rec(core.SegmentID(next), next%4*1024) }
 	take := func() byte {
@@ -211,6 +215,19 @@ func heldOps(t *testing.T, data []byte) {
 		}
 		if s.len() != len(want) {
 			t.Fatalf("step %d: len() = %d, oracle %d", step, s.len(), len(want))
+		}
+		// The per-segment counters must equal the walk of the pieces: a hook
+		// missing on the op this step ran, or a split counted to the wrong
+		// length, shows here as a mismatch for a segment another piece of the
+		// same record shares.
+		walk := map[core.SegmentID]int64{}
+		for _, p := range want {
+			walk[p.Record.Segment] += p.Extent.Len
+		}
+		for seg := core.SegmentID(1); seg <= core.SegmentID(next); seg++ {
+			if b := s.acct.bytes(seg); b.Held != walk[seg] || b.Retained != 0 {
+				t.Fatalf("step %d: segment %d counts %+v, pieces hold %d", step, seg, b, walk[seg])
+			}
 		}
 	}
 }

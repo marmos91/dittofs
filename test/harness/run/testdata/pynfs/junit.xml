@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<testsuite tests="7" errors="0" timestamp="2026-10-19 22:21:57.804864" name="all" failures="2" skipped="2" time="0.2685">
+  <testcase code="LOOK1" name="testDir" classname="st_lookup" time="0.0125">
+    <failure message="OP_LOOKUP should return NFS4ERR_NOENT, instead got NFS4ERR_INVAL : FAILURE of the whole compound"><![CDATA[Traceback (most recent call last):
+  File "<stdin>", line 12, in failed
+testmod.FailureException: OP_LOOKUP should return NFS4ERR_NOENT, instead got NFS4ERR_INVAL : FAILURE of the whole compound
+]]></failure>
+  </testcase>
+  <testcase code="LAYOUTGET1" name="testGet" classname="st_layout" time="0.003">
+    <failure message="LAYOUTGET returned NFS4ERR_NOTSUPP"><![CDATA[Traceback (most recent call last):
+  File "<stdin>", line 12, in failed
+testmod.FailureException: LAYOUTGET returned NFS4ERR_NOTSUPP
+]]></failure>
+  </testcase>
+  <testcase code="ACC1a" name="testReadable" classname="st_access" time="0.25"/>
+  <testcase code="OPENAT1" name="testOpenattr" classname="st_openattr" time="0.001"/>
+  <testcase code="SEC2" name="testNoName" classname="st_secinfo" time="0.002"/>
+  <testcase code="DELEG1" name="testRead" classname="st_delegation" time="0">
+    <skipped/>
+  </testcase>
+  <testcase code="LOCK20" name="testLockMerge" classname="st_lock" time="0">
+    <skipped/>
+  </testcase>
+</testsuite>

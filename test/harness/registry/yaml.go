@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -46,10 +47,13 @@ func (t Tests) Set() bool { return t.Glob != "" || t.File != "" || len(t.Names) 
 // only a running cell fills, so only it finds them.
 func (t Tests) Deferred() bool { return len(Placeholders(t.Glob)) > 0 }
 
-// Axis is one matrix axis and its values.
+// Axis is one matrix axis and its values. A named value, NAME: VALUE, names
+// its cells NAME and fills {axis} with VALUE, or with a mapping fills each of
+// its keys' placeholders; Fill holds what each named value fills.
 type Axis struct {
 	Name   string
 	Values []string
+	Fill   map[string]map[string]string
 }
 
 // Matrix keeps its axes in the file's order, which names each cell.
@@ -62,16 +66,28 @@ type Selection struct {
 	Values map[string][]string
 }
 
-// NFS is a version to mount at, or a version with mount options.
+// NFS is a version to mount at, or a version with mount options. In the
+// mapping form the version may be left out, and FromOptions says so: the
+// options' vers= gives it, and without one the kernel negotiates it.
 type NFS struct {
-	Version string `yaml:"version"`
-	Options string `yaml:"options"`
+	Version     string `yaml:"version"`
+	Options     string `yaml:"options"`
+	FromOptions bool   `yaml:"-"`
 }
 
-// SMB enables the SMB adapter, optionally with encryption or a mount.
+// Serves reports whether the fixture serves NFS.
+func (v NFS) Serves() bool { return v.Version != "" || v.FromOptions }
+
+// Mounts reports whether the fixture mounts the share; export serves it
+// without a mount.
+func (v NFS) Mounts() bool { return v.Serves() && v.Version != "export" }
+
+// SMB enables the SMB adapter, optionally with encryption, on a set port, or
+// with a mount.
 type SMB struct {
 	Enabled    bool   `yaml:"-"`
 	Encryption string `yaml:"encryption"`
+	Port       int    `yaml:"port"`
 	Mount      bool   `yaml:"mount"`
 }
 
@@ -201,12 +217,47 @@ func (m *Matrix) UnmarshalYAML(n *yaml.Node) error {
 	*m = Matrix{}
 	for i := 0; i < len(n.Content); i += 2 {
 		axis := Axis{Name: n.Content[i].Value}
-		if err := n.Content[i+1].Decode(&axis.Values); err != nil {
-			return err
+		values := n.Content[i+1]
+		if values.Kind != yaml.SequenceNode {
+			return fmt.Errorf("line %d: axis %s is a list of values", values.Line, axis.Name)
+		}
+		for _, v := range values.Content {
+			if v.Kind == yaml.ScalarNode {
+				axis.Values = append(axis.Values, v.Value)
+				continue
+			}
+			if v.Kind != yaml.MappingNode || len(v.Content) != 2 {
+				return fmt.Errorf("line %d: a value of axis %s is a scalar or NAME: VALUE", v.Line, axis.Name)
+			}
+			name, fill := v.Content[0].Value, map[string]string{axis.Name: v.Content[1].Value}
+			if v.Content[1].Kind != yaml.ScalarNode {
+				fill = nil
+				if err := v.Content[1].Decode(&fill); err != nil {
+					return err
+				}
+			}
+			if axis.Fill == nil {
+				axis.Fill = map[string]map[string]string{}
+			}
+			axis.Values, axis.Fill[name] = append(axis.Values, name), fill
 		}
 		*m = append(*m, axis)
 	}
 	return nil
+}
+
+// Fill gives the placeholders of a cell at values, a value per axis by
+// name: each axis's value, or what its named value fills.
+func (m Matrix) Fill(values map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, a := range m {
+		if fill, named := a.Fill[values[a.Name]]; named {
+			maps.Copy(out, fill)
+		} else if v, ok := values[a.Name]; ok {
+			out[a.Name] = v
+		}
+	}
+	return out
 }
 
 func (s *Selection) UnmarshalYAML(n *yaml.Node) error {
@@ -223,7 +274,9 @@ func (v *NFS) UnmarshalYAML(n *yaml.Node) error {
 		return nil
 	}
 	type plain NFS
-	return decodeStrict(n, (*plain)(v))
+	err := decodeStrict(n, (*plain)(v))
+	v.FromOptions = v.Version == ""
+	return err
 }
 
 func (v *SMB) UnmarshalYAML(n *yaml.Node) error {

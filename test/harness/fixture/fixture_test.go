@@ -42,27 +42,48 @@ func TestAddress(t *testing.T) {
 
 var realInterfaces = interfaces
 
+// The network is the one the fixture's server is on: the host's, or, for dt
+// in a dtc container on a bridge network, that container's.
+func TestNetwork(t *testing.T) {
+	for _, c := range []struct{ in, hostnet, want string }{
+		{"", "", "host"},
+		{"1", "1", "host"},
+		{"1", "", "container:dtc-1"},
+	} {
+		t.Setenv("DT_IN_CONTAINER", c.in)
+		t.Setenv("DT_HOSTNET", c.hostnet)
+		t.Setenv("DT_CONTAINER_NAME", "dtc-1")
+		if got := Network(); got != c.want {
+			t.Errorf("in %q, hostnet %q: %s, want %s", c.in, c.hostnet, got, c.want)
+		}
+	}
+}
+
 // What dt sets up in fixtures, and what it doesn't yet.
 func TestUnsupported(t *testing.T) {
-	mountsHere := "only on Linux"
+	mountsHere, kerberosHere := "only on Linux", "Kerberos only for SMB on Linux"
 	if runtime.GOOS == "linux" {
-		mountsHere = ""
+		mountsHere, kerberosHere = "", ""
 	}
 	for _, tc := range []struct {
 		f    registry.Fixture
 		want string
 	}{
-		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []int{1}, Lease: "30s"}, ""},
+		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []string{"1"}, Lease: "30s"}, ""},
 		{registry.Fixture{Profile: "{profile}", NFS: registry.NFS{Version: "{nfs}"}}, ""},
 		{registry.Fixture{Profile: "badger-s3"}, ""},
 		{registry.Fixture{Profile: "postgres-s3"}, `the "postgres-s3" profile`},
-		{registry.Fixture{Profile: "memory", Server: "knfsd"}, "knfsd fixture"},
+		{registry.Fixture{Server: "knfsd", NFS: registry.NFS{Version: "export"}, Squash: "none", Lease: "30s"}, ""},
+		{registry.Fixture{Profile: "memory", Server: "ganesha"}, "ganesha fixture"},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}, mountsHere},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.2"}}, "mount NFS 4.2"},
-		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}}, "SMB"},
-		{registry.Fixture{Profile: "memory", Shares: "s.yaml"}, "shares file"},
-		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos"},
-		{registry.Fixture{Profile: "memory", Reset: "each"}, "reset"},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred", Port: 445}, Shares: "s.yaml", Reset: "each"}, ""},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "{enc}"}, Reset: "{reset}"}, ""},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "required"}}, `SMB encryption "required"`},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Mount: true}}, "mount SMB"},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, kerberosHere},
+		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos only for SMB"},
+		{registry.Fixture{Profile: "memory", Reset: "once"}, `reset shares "once"`},
 	} {
 		if got := Unsupported(&tc.f); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)
