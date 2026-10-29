@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 416" width="900" height="416" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 431" width="900" height="431" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
@@ -24,7 +24,7 @@
       .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
     </style>
   </defs>
-  <rect width="900" height="416" fill="#ffffff"/>
+  <rect width="900" height="431" fill="#ffffff"/>
   <text x="16" y="26" class="t">A lock that waits leaves a waiter in the file's table, not a waiting worker, and ends only as listed.</text>
 
   <rect x="24" y="56" width="214" height="56" rx="6" class="pr"/>
@@ -53,7 +53,7 @@
   <text x="312" y="109" class="s">poll (e.g. NFSv4): LockedError; it asks again</text>
   <text x="312" y="124" class="s">callback (e.g. NLM, SMB): Waiting</text>
   <text x="312" y="142" class="s">one per owner per file; a repeat keeps</text>
-  <text x="312" y="157" class="s">Arrived; a replaced callback one is answered</text>
+  <text x="312" y="157" class="s">its place; a replaced callback one is answered</text>
 
   <path d="M562,90 L656,78" class="ln"/><path d="M562,130 L656,162" class="ln"/>
   <text x="572" y="114" class="s">range frees:</text>
@@ -61,8 +61,8 @@
 
   <rect x="660" y="44" width="216" height="76" rx="6" class="sv"/>
   <text x="672" y="63" class="h">callback: granted</text>
-  <text x="672" y="80" class="s">in the freeing step; LockWaitOver</text>
-  <text x="672" y="95" class="s">repeated until WaitAnswered</text>
+  <text x="672" y="80" class="s">under the admission lock;</text>
+  <text x="672" y="95" class="s">LockWaitOver until WaitAnswered</text>
   <text x="672" y="110" class="s">(NLM_GRANTED is one spelling)</text>
   <rect x="660" y="132" width="216" height="76" rx="6" class="dr"/>
   <text x="672" y="151" class="h">poll: reserved until Deadline</text>
@@ -72,21 +72,22 @@
 
   <path d="M430,170 L430,228" class="ln"/>
   <text x="438" y="204" class="s">ends</text>
-  <rect x="300" y="230" width="260" height="110" rx="6" class="bad"/>
+  <rect x="300" y="230" width="260" height="125" rx="6" class="bad"/>
   <text x="312" y="249" class="no">dropped, and nothing else ends it</text>
   <text x="312" y="267" class="s">cancelled: CancelLock, ordered with grant</text>
   <text x="312" y="282" class="s">its open closes, or its session's last channel</text>
   <text x="312" y="297" class="s">its client expires or is revoked</text>
   <text x="312" y="312" class="s">its NLM host restarts; DropShare</text>
   <text x="312" y="327" class="s">a poll waiter misses its Deadline</text>
+  <text x="312" y="342" class="s">a callback grant past its client's range cap</text>
   <path d="M768,210 L768,285 L562,285" class="ln"/>
   <text x="578" y="302" class="s">Deadline missed:</text>
   <text x="578" y="317" class="s">next considered</text>
   <path d="M876,82 L888,82 L888,334 L562,334" class="ex"/>
-  <text x="690" y="302" class="e">refused or cancelled (WaitAnswered):</text>
-  <text x="690" y="317" class="e">released, next waiter considered</text>
+  <text x="680" y="302" class="e">refused or cancelled (WaitAnswered):</text>
+  <text x="680" y="317" class="e">released, next waiter considered</text>
 
-  <text x="16" y="370" class="s">First in, first out per range: while a waiter waits, no request from another owner is granted a lock that conflicts</text>
-  <text x="16" y="385" class="s">with it over a range that blocks it, so shared locks cannot starve it there. No adapter imposes a timeout,</text>
-  <text x="16" y="400" class="s">and an adapter that must answer a waiting request other than as granted calls CancelLock first (§2.10).</text>
+  <text x="16" y="385" class="s">First in, first out per range: while a waiter waits, no request from another owner is granted a lock that conflicts</text>
+  <text x="16" y="400" class="s">with it over a range that blocks it, so shared locks cannot starve it there. No adapter imposes a timeout,</text>
+  <text x="16" y="415" class="s">and an adapter that must answer a waiting request other than as granted calls CancelLock first (§2.10).</text>
 </svg>

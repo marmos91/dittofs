@@ -871,7 +871,7 @@ file open locally, until the server takes the promise back.
   other as oplocks always have; a lease's grant is keyed by its lease key, so
   they do not.
 - The lease key, parent lease key and lease epoch are carried on the grant
-  (`Key` and `Epoch`, the parent lease key in the grant's `Adapter`,
+  (`Key`, `Parent` and `Epoch`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
   every open of a file by one client under one key; a key already naming a
   grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
@@ -1092,6 +1092,11 @@ failing; it is offered only on continuously available shares.
 | durable v1 (`DHnQ`) | a batch oplock or a lease with handle caching is granted | durable, 60 s |
 | durable v2 (`DH2Q`), not persistent | as v1 | durable; the client's timeout, 60 s if zero, at most 300 s |
 | durable v2 with `PERSISTENT` | the share is continuously available | persistent, same timeout bound |
+
+A persistent request on a named stream is granted durable, as MS-SMB2
+3.3.5.9.10 lets a server grant durable without the persistent flag: open
+state refuses a persistent open of a stream
+([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 
 **Reconnect** (`DHnC`, `DH2C`) is a `CREATE` that **MUST** be routed by the
 FileId's persistent half, which names the open and its shard (§6.1), to that
@@ -2245,7 +2250,8 @@ mapping it needs is here.
 | `Open.LossSeen` | nothing on the wire | — | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
 | `CachingGrant.Key` | the lease key | — | an oplock has none and covers its one open |
 | `CachingGrant.Epoch`, `V2` | the v2 lease epoch, starting from the create context's | — | unsent for a v1 lease and an oplock |
-| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | the parent lease key, written with a persistent open's lease | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
+| `CachingGrant.Parent` | the v2 lease's parent lease key, as its first request named it | — | written with a persistent open's lease; never read by RFC 14 |
+| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | — | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
 | `LockOwner.Name`; `LockOwner.Stack` true | the `OpenID` | — | SMB locks stack and two opens of one client conflict (§7) |
 | `Lock` (`LockReq.Ranges`) | every `LOCK` element, in order, in one call | — | all or none; an unlock list stops at the first range not held (MS-SMB2 3.3.5.14.1) |
 | `LockReq.Wait` | callback when `SMB2_LOCKFLAG_FAIL_IMMEDIATELY` is clear; none when set | — | only a single-element `LOCK` waits (§7) |
@@ -2263,7 +2269,7 @@ owner and sets `Stack`.
 
 **The `Adapter` bytes** start with an adapter-defined version, so a node of
 another version refuses what it cannot read rather than misreading it, and
-RFC 14 never reads them. Today only a grant's carry anything.
+RFC 14 never reads them. Today no SMB record's carry anything.
 
 **Topology on the wire.** Clients of a continuously available share learn where
 to move through Witness (§14); a by-reference copy across shards is §16.5's
@@ -2347,6 +2353,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. Once it has so answered a FileId, the adapter calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`; a later use is `ErrState` (`BadState`) |
 | `ErrState` (`BadState`) — a FileId whose open is gone: closed, a removed share's, or never issued ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`; a durable reconnect naming it is `ErrState` (`NoReclaim`), below |
 | `ErrState` (`StaleClient`) — the client's record expired, or was marked by a loss of a shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | `STATUS_FILE_CLOSED` for an open of that client |
+| `ErrState` (`CreateInUse`) — a create naming a create ID another open of the client holds, not marked as a replay, a replay of a disconnected open, or a replay on another session than the open's ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) | `STATUS_DUPLICATE_OBJECTID` |
 | `ErrPerm` — an immutable or append-only file, or a change of owner, group or flags only a privileged caller or the owner may make ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)) | `STATUS_ACCESS_DENIED` |
 | `ErrWrongSecurity` — the share's policy does not admit the session's authentication ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_ACCESS_DENIED`, at tree connect and on any later request |
 | `ErrState` (`NotYours`) | `STATUS_FILE_CLOSED`: the FileId names no open of this session |
@@ -2717,7 +2724,7 @@ What each method then calls below is
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 | `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` | |
-| `LOGOFF` | `Disconnect` | |
+| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
 | `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |

@@ -993,7 +993,7 @@ from here. The inventory, from the socket down:
 | the writer's queue | the connection's flow-control bound | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
 | held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), §4.3 | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter |
-| blocked lock waiters | the open-state pool | [RFC 14](rfc-14-open-state.md), §4.6 | `DelayResources` |
+| blocked lock waiters | 1,024 per client per primary, charged to the open-state pool | [RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded), §4.6 | `DelayResources` |
 | directory watches, and the changes each holds undelivered | 1,024 watches per client per primary, charged to the open-state pool; 64 changes or 64 KiB per watch | [RFC 14 §2.5](rfc-14-open-state.md#2.5%20Watch) | a new watch `DelayResources`; past a watch's bound its changes collapse to one rescan |
 | recalls not yet sent (the open-state outbox) | 4,096 per primary | [RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays) | a request that would start another recall `DelayResources`; no deadline runs while a recall waits |
 | callbacks to clients | the writer's queue, the callback deadline | [RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver) | the client is not answering |
