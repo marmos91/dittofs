@@ -154,8 +154,8 @@ runtime soft limit is set in the environment.
    it, so the collector works harder as the heap nears the limit rather than
    letting it pass.
 3. It derives every pool (§2.3) and the defaults that follow from them: the
-   journal's index bound, 1 GiB at 51 bytes an entry for its one journal, about
-   19 million entries with their excess (§7.1); the syncer's worker counts, reduced from 128 so
+   journal's index bound, 1 GiB at 65 bytes an entry for its one journal, about
+   14.7 million entries with their excess (§7.1); the syncer's worker counts, reduced from 128 so
    both halves and their staging fit 1 GiB (§7.2); the connection limit (§4.4).
 4. It logs each pool, its fraction and its source, and exports them as gauges
    (§10).
@@ -1129,15 +1129,15 @@ anyway is a failed accept or a failed transfer, counted, never a crash.
 ### 7.1 The journal's index
 
 [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)
-bounds each journal's index by `ExtentLimit` entries of about 51 bytes. This RFC
-gives the index pool's ceiling to the node's journals in proportion to each
-journal's maximum footprint
+bounds each journal's index by `ExtentLimit` entries of about 65 bytes, the cost
+of extents written in random order. This RFC gives the index pool's ceiling to
+the node's journals in proportion to each journal's maximum footprint
 ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)):
 
 - `ExtentLimit`'s default is the journal's part of the index pool divided by the
   entry cost and by nine eighths, so the bound and its excess together fit: on a
-  64 GiB node with one journal, 8 GiB, about 150 million entries; on an 8 GiB
-  node, about 19 million;
+  64 GiB node with one journal, 8 GiB, about 117 million entries; on an 8 GiB
+  node, about 14.7 million;
 - an `ExtentLimit` set so that the node's journals together exceed the pool —
   the bound plus its eighth of excess
   ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)),
