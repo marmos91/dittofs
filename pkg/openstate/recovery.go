@@ -406,7 +406,7 @@ func (t *Table) noteMarkLocked(c entity.ClientID, m entity.ShardMark) {
 	if !ok {
 		return
 	}
-	k.shards = slices.Clone(k.shards)
+	k.shards = slices.Clone(k.shards) // know keeps the record's own slice, which its other holders still read
 	if i := slices.IndexFunc(k.shards, func(x entity.ShardMark) bool { return x.Shard == m.Shard }); i >= 0 {
 		k.shards[i] = m
 	} else {

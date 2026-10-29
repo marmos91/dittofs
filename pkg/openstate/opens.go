@@ -552,7 +552,7 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	inst, _ := t.instance(s)
 	m := entity.ShardMark{Shard: s, Done: inst}
 	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
-		m = rec.Shards[i]
+		m = rec.Shards[i] // the record's own mark: one Done at this instance would forgive a reclaim the client still owes here
 	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {
 		return staleIfGone(err)
 	}
