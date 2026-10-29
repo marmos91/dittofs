@@ -66,6 +66,9 @@ func retainedOps(t *testing.T, data []byte) {
 	var f file
 	var o byteOracle
 	var kept []rbyte
+	// The file's sets feed the per-segment table, so every step can compare
+	// the counters against the pieces both sides hold.
+	f = *newFile(new(segments))
 	next, version := uint32(0), uint64(100)
 	fresh := func() RecordAt { next++; return rec(core.SegmentID(next), next%4*1024) }
 	take := func() byte {
@@ -279,6 +282,17 @@ func retainedOps(t *testing.T, data []byte) {
 		slices.SortFunc(kept, compareRbyte)
 		if got := rbytes(list); !slices.Equal(got, kept) {
 			t.Fatalf("step %d (op %d over %+v): retained\n got  %+v\n want %+v", step, op, e, got, kept)
+		}
+		// The per-segment counters must equal a walk of both sets: retained
+		// bytes count toward the record's own segment, so a supersede counted
+		// against the superseder's segment, or a re-hold that kept them
+		// retained, shows here.
+		walk := map[core.SegmentID]SegmentBytes{}
+		walkFile(&f, walk)
+		for seg := core.SegmentID(1); seg <= core.SegmentID(next); seg++ {
+			if b := f.held.acct.bytes(seg); b != walk[seg] {
+				t.Fatalf("step %d (op %d over %+v): segment %d counts %+v, walk says %+v", step, op, e, seg, b, walk[seg])
+			}
 		}
 	}
 }

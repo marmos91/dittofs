@@ -46,8 +46,30 @@ type WindowRecord struct {
 // version) with an index by superseder when a hold over a large dirty file
 // shows these scans in a profile.
 type retainedSet struct {
+	// acct are the per-segment counters this set feeds: every piece kept adds
+	// to its record's segment — retained bytes count toward the record's own
+	// segment, never the superseder's — and every piece removed by an edit
+	// subtracts, wherever the edit sends it next. Nil keeps the set
+	// unaccounted, as the standalone sets of tests are.
+	acct   *segments
 	pieces []Retained
 	parts  []Retained // the pieces an edit puts back
+	// gone collects the (segment, length) of the pieces an edit matched, whose
+	// full length leaves the counters once the parts are back in: the
+	// subtraction happens after the re-add, so a reader between the two never
+	// sees less than the set holds.
+	gone []goneLen
+	// holdGone, set for the span of failWindow, keeps the subtractions a
+	// matched piece's edit collected pending: the pass re-holds or re-retains
+	// those bytes before flushGone applies them, so a concurrent reader of a
+	// segment the pass never writes to sees no dip.
+	holdGone bool
+}
+
+// goneLen is one matched piece's segment and the length that leaves it.
+type goneLen struct {
+	seg core.SegmentID
+	n   int64
 }
 
 func compareRetained(a, b Retained) int {
@@ -64,10 +86,13 @@ func compareRetained(a, b Retained) int {
 // len returns the number of retained pieces.
 func (s *retainedSet) len() int { return len(s.pieces) }
 
-// add retains r. An empty piece is not kept.
+// add retains r. An empty piece is not kept, so it is not accounted either.
 func (s *retainedSet) add(r Retained) {
 	if r.Extent.Len <= 0 {
 		return
+	}
+	if s.acct != nil {
+		s.acct.add(r.Record.Segment, 0, r.Extent.Len)
 	}
 	i, _ := slices.BinarySearchFunc(s.pieces, r, compareRetained)
 	s.pieces = slices.Insert(s.pieces, i, r)
@@ -130,12 +155,18 @@ func (s *retainedSet) edit(e core.Extent, match func(Retained) bool, fn func(Ret
 	}
 	end := e.Off + e.Len
 	s.parts = s.parts[:0]
+	// gone is not reset here: under holdGone the pending subtractions of an
+	// earlier edit of the window must survive this one, since only flushGone
+	// clears them; otherwise each is cleared when applied below.
 	kept := s.pieces[:0]
 	for _, r := range s.pieces {
 		rend := r.Extent.Off + r.Extent.Len
 		if rend <= e.Off || r.Extent.Off >= end || !match(r) {
 			kept = append(kept, r)
 			continue
+		}
+		if s.acct != nil {
+			s.gone = append(s.gone, goneLen{r.Record.Segment, r.Extent.Len})
 		}
 		if r.Extent.Off < e.Off {
 			head := r
@@ -151,9 +182,31 @@ func (s *retainedSet) edit(e core.Extent, match func(Retained) bool, fn func(Ret
 	}
 	clear(s.pieces[len(kept):])
 	s.pieces = kept
+	// A matched piece leaves pieces whole, however its part inside e was cut
+	// up, so its whole length leaves its segment's counters. The parts go back
+	// through add before that subtraction, so the counters — read with no lock —
+	// never dip below what the set holds mid-edit, where a zero would name a
+	// live segment for reclamation. Under holdGone the subtraction waits until
+	// failWindow has re-held and re-retained everything, and flushGone applies
+	// it; nothing flushes here, so a later edit's gone entries keep theirs.
 	for _, q := range s.parts {
 		s.add(q)
 	}
+	if !s.holdGone {
+		s.flushGone()
+	}
+}
+
+// flushGone applies the pending subtractions of the pieces edits matched, and
+// clears them. An unaccounted set has none; a holding set keeps stacking them
+// until failWindow releases it.
+func (s *retainedSet) flushGone() {
+	if s.acct != nil {
+		for _, sub := range s.gone {
+			s.acct.add(sub.seg, 0, -sub.n)
+		}
+	}
+	s.gone = s.gone[:0]
 }
 
 // whole is every offset a file can hold.
@@ -226,6 +279,19 @@ func (f *file) writeRetain(p Placed) {
 // extent with it, and index the window's versions, when a failed window over
 // files with many extents shows these in a profile.
 func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []core.Version) {
+	// Failing a window moves superseded bytes between retained and held across
+	// several edits. The subtractions those edits collect stay pending until
+	// the pass has re-held and re-retained everything, so a concurrent reader
+	// of a segment the pass never writes to — one whose only role is holding
+	// what a failed record superseded — sees no dip on it, whatever order the
+	// steps land in. The failed record's own segment does dip when its pieces
+	// are cut, which is fine: reclamation cannot take it until this window
+	// resolves.
+	f.retained.holdGone = true
+	defer func() {
+		f.retained.holdGone = false
+		f.retained.flushGone()
+	}()
 	order := slices.Clone(window)
 	slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })
 	var was []core.Extent
@@ -266,6 +332,12 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	// What is left superseded by a record of the window is settled once every
 	// record has failed: a part one record's pass leaves can be a piece of an
 	// older record of the window, which that record's own pass drops.
+	//
+	// The subtractions of this settle edit stay pending like the rest — its
+	// pieces are re-retained through add below, inside this same hold, so the
+	// window's promise holds uniformly across the pass. The settle pass's own
+	// never-below bound is what TestFailWindowSettleNeverDipsASegmentItDoesNotWrite
+	// pins.
 	back = back[:0]
 	f.retained.edit(whole, func(r Retained) bool {
 		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == r.By })
