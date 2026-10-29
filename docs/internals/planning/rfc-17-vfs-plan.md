@@ -16,9 +16,9 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 
 - **The store** (`pkg/metadata/kvstore`, merged): the server calls only `Namespace`, `Files` and
   `Capacity` (RFC 7), short of the calls listed in plan §5 Q3.
-- **Open state** (`pkg/openstate`): stage 1 piece 1 merged (#3256), pieces 2–7 in review (#3330,
-  #3336, #3341, #3344, #3363, #3400), piece 8 planned in #3202. `vfs.New` takes
-  `*openstate.Table` in `Deps.Open` but keeps only its seven views (§2.3).
+- **Open state** (`pkg/openstate`): stage 1 piece 1 merged (#3256), pieces 2–8 in review (#3330,
+  #3336, #3341, #3344, #3363, #3400, #3417); #3417 (piece 8) is being split into four PRs.
+  `vfs.New` takes `*openstate.Table` in `Deps.Open` but keeps only its seven views (§2.3).
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
 - **Today's server** on `develop`: `pkg/metadata.Service`, the protocol handlers that each order
@@ -72,11 +72,18 @@ in-memory store, the fake `Content` and the real open-state table on `sim.TestCl
 engine, so it starts with stage 3; until then its cases, and so the V-rows, run against the fake.
 
 **D7. The RFC moves with the code** (§9): a piece that needs a signature change edits the RFC in
-the same PR. Three are known:
+the same PR. Known now, and more will come as pieces are built:
 - §2.3's `Deps.Meta` becomes `*kvstore.Store` (D1, piece 2);
 - RFC 7 §11.1's `Capacity` gains `Quota`, the read view the server already uses (piece 9);
 - §3.5 gains `Watches.Changed` after each change committed in a directory (RFC 14 §2.5), and
-  §2.3 gives `Names`, `Attributes`, `Open` and `Data` the `Watches` view (piece 10).
+  §2.3 gives `Names`, `Attributes` and `Data` the `Watches` view (piece 10);
+- from piece 1's build: §3.4's `DecodeStateID` returns `(OpenRef, error)`, and every encoder
+  returns an error for a value that doesn't fit;
+- from piece 1's build: §3.0's `Protocol` aliases `entity.Protocol`, `GrantKind` and
+  `RevokeReason` alias open state's, and RFC 18's `Service` is `SignInService` beside
+  `vfs.Service`.
+
+The questions piece 1's build left open, which may add more, are plan §5 Q4.
 
 ## 3. Pieces, in build order
 
@@ -96,9 +103,10 @@ the same PR. Three are known:
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
-beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's. Of the rows outside the V-list:
-RFC 14's L1 is piece 10's and L20 piece 8's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2
-rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
+beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's; V19, V20 and V25 complete in
+stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 is piece 10's
+and L20 piece 8's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
+its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
 1. **Contract:** `pkg/vfs`'s value types and the aliases §3.0 lists from the metadata store and
    open state (`StateRef`, `Revocation`, `RevokeReason`, `ClientStatus`, `LockRange`,
@@ -106,10 +114,14 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    `Delay`, `StateError`, `CrossError`, `AccessError` and `QuotaError`, `vfs.Errors()` and
    `vfs.Mutates`; the codecs of every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
    shard, 5 grace-instance bits, a 40-bit `OpenID`, §10.3); `Service` as its seven areas;
-   `vfstest`'s `Record`, `Null`, `RecordingCallbacks` and `suite.Run`.
-   Done when: every codec matches RFC 21's and RFC 22's golden bytes, and `vfs.Errors()` holds
-   every sentinel and typed kind of §4.3.
-2. **Server skeleton:** `Deps` and `New`; the four states (built, serving, draining, closed) and
+   `vfstest`'s `Record`, `Null`, `RecordingCallbacks` and `suite.Run`; §8's fuzz targets for
+   every ID decoder.
+   Done when: every codec matches bytes written out by hand from §3.4's layout and RFC 14 §2.11's
+   widths (no RFC carries vectors yet, plan §5 Q4), and `vfs.Errors()` holds every sentinel and
+   typed kind of §4.3.
+2. **Server skeleton:** `Deps` and `New`; `Deps.Events`, the null sink by default, its queue
+   started at `Start` and flushed at `Close`, its drops counted in `vfs_events_dropped_total`;
+   the four states (built, serving, draining, closed) and
    the `Start`, `Drain` and `Close` transitions; the server's RFC 14
    [`Sink`](../rfcs/rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring), every
    method stubbed, which the node hands to `Table.Start` with the server's admission lock, since
@@ -117,9 +129,10 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
    ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
    and its fake; the architecture test (imports and call sites).
-   Done when: V29 (→11), V32, V33 (→3), V34 (→10) pass.
+   Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
-   admission on every call, uncached; `authz` as the one caller of `Authorize` and `Granted`.
+   admission on every call, uncached; `authz` as the one caller of `Authorize` and `Granted`,
+   emitting the `AccessEvent`s the audit policy selects; §8's fuzz target for handles.
    - The pseudo-filesystem is ported from `internal/adapter/nfs/v4/pseudofs`, already rebuilt
      from the share list, to `internal/vfs/pseudofs`, with §3.4's digest, and file IDs and change
      attributes derived from the path and the share list's version, not counters; today's copy
@@ -138,7 +151,8 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
      // profile shows them.
      ```
 
-     §8's cache-key unit case and its cached-against-uncached benchmark wait with the cache.
+     §8's cache-key unit case, its cached-against-uncached benchmark, and V9's and V12's cached
+     cases wait with the cache.
    Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
@@ -146,18 +160,20 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    release.
    Done when: V36 passes.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
-   store's `Namespace`, with open state's `CheckChange` before each change.
+   store's `Namespace`, with open state's `CheckChange` before each change; §8's fuzz targets
+   for cursors and names.
    Done when: V3 (→8), V28 (→7), V31 (→8), V40 pass.
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams and `Access`,
    each returning the `WCC` its reply needs.
    Done when: V22 (→8), V31 (→8) pass.
 7. **Open, close and release recovery:** `Start`'s step 1, `Recovery.ServeShard` for each shard
    (RFC 14 §11.3); opens, deny modes, delete on close and the four moments of release; the pending
-   releases a shard holds run when its grace ends (`Sink.GraceEnded`).
-   Done when: V8 (→10), V17, V21, V28, V35 (→10), V38 pass: open then close, and delete on close,
-   run in the unit tier, and each open meeting a deny mode held only in a handle cache gets
-   `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes only
-   after handle caching is broken (§4.3).
+   releases a shard holds run when its grace ends (`Sink.GraceEnded`);
+   `vfs_deferred_unlink_refusals_total`.
+   Done when: V8 (→10), V9, V17, V21, V28, V33, V35 (→10), V38 pass: open then close, and delete
+   on close, run in the unit tier, and each open meeting a deny mode held only in a handle cache
+   gets `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes
+   only after handle caching is broken (§4.3).
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, and the write
    verifier. `WriteOpts.Done` is a no-op until piece 9:
 
@@ -165,18 +181,21 @@ rows piece 10's; its §5.9 row (an `Incomplete` source) waits for RFC 12's snaps
    // ponytail: Done releases nothing, as no quota is reserved yet; once writes
    // reserve quota, Done releases the reservation here.
    ```
-   Done when: V3 (→9), V7 (→10), V16, V18, V19 (→stage 3), V20 (→9), V22 (→11), V25, V31 (→11)
-   pass.
+   Done when: V3 (→9), V7 (→10), V16, V18, V19 (→stage 3), V20 (→9), V22 (→11), V25 (→stage 3),
+   V31 (→11) pass. V20's and V25's remaining cases (a retry that succeeds once offload frees space,
+   a shard handed away and back) are engine and cluster behaviour that the fake can only agree
+   with; the server's own part, passing `DelayCapacity` through rather than mapping it to
+   `ErrNoSpace`, is tested here.
 9. **Quota:** reservations and their release through `WriteOpts.Done`, a create charged to the
-   new file's owner.
-   Done when: V10, V20, V37 pass.
+   new file's owner; `QuotaEvent`s where the quota is enforced.
+   Done when: V3, V10, V20 (→stage 3), V37 pass.
 10. **Locks, grants, watches:** byte-range locks with waiters, `AckRecall`, `Watch`/`Unwatch`, and
-    `Watches.Changed` after each change committed in a directory, from `Names`, `Attributes`,
-    `Open` and `Data` (D7).
-    Done when: V6, V8, V23, V24 pass.
+    `Watches.Changed` after each change committed in a directory, from `Names`, `Attributes` and
+    `Data` (D7).
+    Done when: V6, V7, V8, V12, V23, V24, V34, V35 pass.
 11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after stage 3:
     against the fake, `Copy` is a memcpy whose tests can only pass.
-    Done when: V26, V30 pass.
+    Done when: V22, V26, V29, V30, V31 pass.
 
 ## 4. The engine contract
 
@@ -224,6 +243,13 @@ which are the node's, a removal's or a cut's.
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 3, admission's steps 1–3 | a read view of the share list, path index, export policy, client rules and netgroups |
    | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2) |
+
+4. **Piece 1's open questions** (posted on #3264): RFC 21's stateid type tags; the byte order
+   inside `other` and `FileId`'s bit layout; when a `FileId` is stale; `ErrLocked`'s holder; one
+   hex vector per ID in RFC 21; whether `Record` and `Spell`, which change nothing, belong on
+   `Mutates`' read-only list, and where `Find`, which can mint, goes; whether `vfs.ErrLost` aliases `openstate.ErrLost`; and §4.3
+   answers for `ErrCreateInUse`, `ErrStopped`, `ErrLost` and `DelayFrozen`. Until §4.3 answers
+   `ErrCreateInUse` and `ErrStopped`, the server's mapping of open state's errors is not total.
 
 ## 6. What sets the pace
 
