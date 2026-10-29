@@ -218,7 +218,7 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 	out.raise(sink)
 	if err == nil && r.Seqs.Owner != nil {
 		t.smu.Lock()
-		res.Confirm = !t.seqs[owner].Confirmed
+		res.Confirm = t.seqs.Unconfirmed(owner)
 		t.smu.Unlock()
 	}
 	return res, err
