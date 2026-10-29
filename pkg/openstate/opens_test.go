@@ -635,3 +635,28 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 		t.Errorf("a write to y through a lock state of x: %v, want ErrBadState", err)
 	}
 }
+
+// A named stream's open neither deletes on close nor sets a disposition:
+// either would make the base file delete pending and unlink the base's
+// name. The base stays open to others, and the stream's close unlinks
+// nothing.
+func TestStreamOpenDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
+	base, stream, dir := anyFile(), entity.NewFileID(), entity.NewFileID()
+	req := OpenRequest{Stream: stream, Via: dir, Name: []byte("foo"), Access: rd | del}
+	if _, err := f.open(s, base, OpenRequest{Stream: stream, Via: dir, Name: []byte("foo"), Access: rd | del, DeleteOnClose: true}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("delete on close through a named stream: %v, want ErrInvalid", err)
+	}
+	o := f.mustOpen(t, s, base, req)
+	yes := true
+	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a disposition set through a named stream's open: %v, want ErrInvalid", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
+		t.Errorf("an open of the base beside the stream's open: %v", err)
+	}
+	if r := f.close(t, s, o); r.Unlink != nil {
+		t.Errorf("the stream open's close: unlink %+v, want none", r.Unlink)
+	}
+}

@@ -163,7 +163,9 @@ type Opens interface {
 	// the owner's requests and I/O through its opens are refused.
 	ConfirmOpen(ctx context.Context, who Caller, o OpenRef, q Seqs) (seq uint32, err error)
 	// Update sets or clears the file's delete pending, through an open
-	// holding delete access, and suspends or resumes the open's times.
+	// holding delete access, and suspends or resumes the open's times. A
+	// named stream's open sets no delete pending, ErrInvalid, as it asks no
+	// delete on close.
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
@@ -248,6 +250,13 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 // with is recalled; either answers ErrDelay until it ends.
 func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequest, out *outbox) (OpenResult, error) {
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
+		return OpenResult{}, ErrInvalid
+	}
+	// decision: a named stream's open may not delete on close. Its delete pending
+	// would land in the base's entry and unlink the base's name, where MS-FSA
+	// deletes only the stream. Allow it once DeleteRecord names a stream and the
+	// service can unlink one.
+	if r.DeleteOnClose && !r.Stream.IsZero() {
 		return OpenResult{}, ErrInvalid
 	}
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
@@ -746,6 +755,9 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	}
 	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
 		if u.Delete != nil {
+			if !o.Stream.IsZero() {
+				return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
+			}
 			if o.Mode.Access&entity.Delete == 0 {
 				return ErrAccess
 			}
