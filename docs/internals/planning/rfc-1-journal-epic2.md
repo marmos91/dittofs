@@ -435,8 +435,9 @@ Every conformance subtask also:
     undone. It then closes every handle, so the journal can be reopened on the same
     directory;
   - supports the variants RFC 28 §4.4 names: *lost writes* (the default), *torn* (the
-    last unsynced write kept up to byte n), and *reordered* (unsynced writes kept in a
-    seeded order other than the one issued, where the filesystem allows it);
+    last unsynced write kept up to byte n), and *reordered* (a seeded subset of the
+    unsynced writes survives; any subset is allowed, since outside data-journaling modes
+    a filesystem gives unsynced writes no order);
   - counts calls per operation and per file, and exposes the durable image of a file
     (what a crash would leave) for stale-read checks;
   - can serve reads of a named file from its durable image instead of the page cache
@@ -444,8 +445,8 @@ Every conformance subtask also:
 - **Done when:**
   - its unit tests, on a real temporary directory, show each discard rule: a synced write
     survives a crash, an unsynced one does not, a renamed file's directory entry survives
-    only after `SyncDir`, a torn write keeps exactly n bytes, and a reordering never
-    produces an order the filesystem cannot;
+    only after `SyncDir`, a torn write keeps exactly n bytes, a reordering can keep a
+    later unsynced write without an earlier one, and no variant loses a synced write;
   - each test reverts the matching rule in the seam and watches the test fail.
 - **Rules:**
   - 1, 10: the seam is fully implemented and its tests can fail.
@@ -466,9 +467,10 @@ Every conformance subtask also:
     - `Schedule`: seeded, rule-driven, implementing `Fault`; `Delay` waits on the
       schedule's clock.
   - **The seam consults its `Fault`** before every operation and applies the action:
-    `Fail` returns the error (`EIO`, `ENOSPC` or any given), `Drop` reports success and
-    discards the effect, `Tear` keeps the first n bytes, `Delay` waits, `Reorder` marks the
-    write for 2.1's reordering.
+    `Fail` returns the error (`EIO`, `ENOSPC` or any given); `Drop` reports success, a
+    dropped write staying readable but never durable and a dropped sync leaving what was
+    pending still pending; `Tear` keeps the first n bytes; `Delay` waits; `Reorder` marks
+    the write for 2.1's reordering.
   - **Holds** (D6): `Hold`, `Reached`, `Waiting`, `Release`.
 - **Done when:**
   - the same seed and rules give the same actions over the same calls, and a different
@@ -515,8 +517,9 @@ Every conformance subtask also:
     (a no-op on content), `Crash` with the set of operations a returned `Sync` covered,
     and `Reopen`;
   - after a crash, the model holds exactly what RFC 28 §4.4 allows: everything a returned
-    `Sync` covered, and for every other write either all of it or none of it, as a set of
-    acceptable states the comparison accepts;
+    `Sync` covered, and for every other write all of it or none of it, a write split at
+    a segment cap a prefix of its bytes cut anywhere, as a set of acceptable states the
+    comparison accepts;
   - `Compare(j)`: reads every file of the model through a journal handle and reports the
     first difference in bytes, `missing` extents, offloaded bits or `Since` output.
 - **Done when:**
@@ -654,12 +657,12 @@ Every conformance subtask also:
 ### 2.10 RFC 1 Group B, part 2: reclamation, bounds and concurrency
 
 - **Owner:** B. **Depends on:** 2.5a.
-- **Deliverables:** thirteen checks of RFC 1 §9.4 Group B: descriptors, coalescing, index
+- **Deliverables:** fourteen checks of RFC 1 §9.4 Group B: descriptors, coalescing, index
   bound refuses, pinned segments bounded, pins bounded across offers, a failed window does
-  not wedge, sync failure, reclaim not starved, removals do not wait on offload, no
-  deadlock (the public half: concurrent readers, writers, fills, repack and release finish
-  under `-race` with no call blocked past a bound of virtual time), background joined,
-  removal records dropped per extent, repack aimed at a share.
+  not wedge, sync failure, read-only stops the drain, reclaim not starved, removals do not
+  wait on offload, no deadlock (the public half: concurrent readers, writers, fills,
+  repack and release finish under `-race` with no call blocked past a bound of virtual
+  time), background joined, removal records dropped per extent, repack aimed at a share.
 - **Not here:** "bounds" (comparison counts per lookup, epic 4) and the lock-order recorder
   half of "no deadlock" (epic 8). Both need internal instrumentation (§6).
 - **Done when:** as 2.7. Checks at 10⁴–10⁶ extents or 1,000 segments use the 1 MiB cap
@@ -667,6 +670,8 @@ Every conformance subtask also:
 - **Rules:**
   - 4: the descriptor bound is read from `Stats` and from the profiler's descriptor count.
   - 5: concurrency runs under `-race`.
+  - 12: the seam's schedule gets an `EROFS`-from-call-n rule in the same change as
+    "read-only stops the drain", its first user.
 
 ### 2.11 RFC 1 Group C: recovery
 
@@ -706,7 +711,11 @@ Every conformance subtask also:
     over, against the share and the journal; `ENOSPC` from the filesystem below the
     journal's maximum, distinct from `ErrNoSpace`; a sync that fails then succeeds on the
     same stream; truncate, delete, release, mark and seal at the maximum; one segment
-    retired by eviction and by repack, footprint falling once and never below zero;
+    retired by eviction and by repack, footprint falling once and never below zero; a
+    file deleted and settled by `Settle(id, deleteVersion)` while its old bytes lie in
+    segment S, S retired with every unlink of it failing with `EIO`, then the segment
+    holding the delete repacked (RFC 28 §2.2, RFC 1 §7.2): after a crash and reopen the
+    file still does not exist;
   - **opening:** an empty directory, one holding only a `format` file, one from an older
     format, and `Init` on each.
 - **Done when:** as 2.7. Each test's name says its case (`TestEdge_ThreeWaySplit`).
@@ -732,8 +741,8 @@ Every conformance subtask also:
 - **Deliverables:**
   - **RFC 28 §4.2 Group A**, nine checks: corrupt dirty, corrupt offloaded, directory
     entry survives, footer is not authoritative, unmark clears, write carries its mtime,
-    unproven tail verified at open, failed directory sync is a failed window, a zero slot
-    is not the end. (Directory flush on NTFS is epic 3's.)
+    unproven tail verified at open, a zero slot is not the end, a failed read is not
+    damage. (Directory flush on NTFS is epic 3's.)
   - **Group B**: segment reclaimable.
   - **Group C**, the 22 rows that need no encoder, plus the refusal halves of three
     split rows (D9): rebuild, sources agree, synced damage is not a torn tail, bits
@@ -750,9 +759,12 @@ Every conformance subtask also:
   - **RFC 28 §4.4, injected systematically:** a bit flipped in turn in every region (record
     header and payload, catalog entry, footer, trailer, segment header, seal marker,
     `format`), each with its required outcome; lost writes at every sync point of every
-    operation that syncs; torn writes cut at every byte of the final record and of the
-    trailer; reordered unsynced writes. After each, the reopened journal is compared with
-    the reference model. Plus the table of edits from outside, one test per row.
+    operation that syncs, `Open`'s own included; torn writes cut at every byte of the
+    final record and of the trailer; reordered unsynced writes. After each, the reopened
+    journal is compared with the model's acceptable states and a second clean reopen
+    holds the same index as the first; after each lost, torn or reordered write it also
+    reports no damaged segment and no loss the model does not expect (RFC 28 §3.3). Plus
+    the table of edits from outside, one test per row.
 - **Done when:** as 2.7.
 - **Rules:**
   - 8: every flipped bit and every crash is applied to a real file.
@@ -812,6 +824,11 @@ Every other row in D3's scope lands as a test in this epic (§5). These do not, 
 | RFC 1 §9.7 "report cost" | epic 9 | needs offload over the index's counters |
 | RFC 8 §15 "one clock", node half | epic 11 | two `TestClock`s across every component of a node; the journal's half is 2.5b |
 | RFC 0 §1.4 "clock bound" | epic 11 | a wait on another clock's timeout; the journal has none (2.5b) |
+
+**A known limit, not a row:** the seam simulates a crash above the filesystem, so a
+filesystem's own bug after a rename or a directory sync never shows. RFC 1 §9.3 asks for
+every supported filesystem, and CI runs ext4 only; no tier provisions another yet
+(parked, #3491).
 
 ---
 
@@ -940,7 +957,7 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 | 2.7 Group A part 1 | M | seventeen checks |
 | 2.8 Group A part 2, counted | M | nineteen checks, two counted checks |
 | 2.9 Group B part 1 | M | fifteen checks |
-| 2.10 Group B part 2 | M | thirteen checks, some at 10⁶ extents |
+| 2.10 Group B part 2 | M | fourteen checks, some at 10⁶ extents |
 | 2.11 Group C | M | eighteen checks |
 | 2.12 edge cases | L | about thirty cases |
 | 2.13a `raw` | S | byte builders and their field tests |
@@ -976,3 +993,16 @@ test/journalv2 ──► standard library (reads the RFCs and the conformance so
   budget needs it.
 - **The `e2e` known file.** The system tests of epics 10 and 11 need the `e2e` suite to
   have opted in to a known file (RFC 29 §9). If it has not by then, epic 10 creates it.
+- **Failure modes waiting on a decision.** Each test below is written once its rule is
+  decided, in the subtask named. Each has an issue.
+  - *Zeros with no later record.*
+    - Problem: a disk that loses a confirmed write at the tail of a stream leaves zeros
+      that nothing proves were written.
+    - Today: RFC 28 §3.3 reads them as the end of what was written.
+    - Decision: open (#3405); the current proposal is not a header marker.
+    - Subtask: 2.13b.
+  - *A record header that does not verify in a scanned segment.*
+    - Problem: no field of the header can be trusted, so nothing names the file or extent.
+    - Today: RFC 28 §4.4 reports a loss naming the extent; §3.3 only resynchronises.
+    - Decision: open (#3449), with #3405.
+    - Subtask: 2.13b.
