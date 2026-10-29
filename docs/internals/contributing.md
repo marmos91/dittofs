@@ -190,8 +190,8 @@ access to download the scanner and query the Go vulnerability database, and
 can use several GiB of memory. Results depend on the active Go toolchain,
 platform, build settings, and current database; tests are not included in the
 scan. Check `go version` when a report identifies standard-library issues.
-The initial Go 1.26.0 baseline reports standard-library vulnerabilities, so a
-nonzero result is expected until the compiler is updated and findings reviewed.
+Both modules' `toolchain` line selects Go 1.26.10, so a report of
+standard-library issues usually means an older toolchain is active.
 
 ## Testing
 
@@ -560,17 +560,20 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
-| `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
-| `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
+| `conformance.yml` | PR, push, nightly | cthon04, nfstest, Kerberos smbtorture | ~45 min |
+| `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pjdfstest, pynfs, WPTS and smbtorture so far, decided by one `gate` check | ~20 min |
+| `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
 ### Conformance suites
 
-Every suite's profiles, variants and per-event tiering live in
-[`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
-[testing.md](testing.md#conformance-test-suites).
+Every suite's profiles, variants, tier and known file live in the test registry,
+[`test/suites.yaml`](../../test/suites.yaml). `test/harness/bin/dt docs` renders them as the table
+in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale. Until
+a suite moves to `dt`, CI runs it as
+[`test/conformance/suites.json`](../../test/conformance/suites.json) describes.
 
 ### Combined-tree checks
 
@@ -601,8 +604,8 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **lint.yml** -- Go formatting, vetting, and linting
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
-- **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + badger-s3)
+- **conformance.yml** -- cthon04, through its scripts (see the table above)
+- **tests.yml** -- pjdfstest, pynfs, WPTS and smbtorture (over two runners), on badger-s3, through `dt`
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)
@@ -610,13 +613,13 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- Every profile of every suite
-- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
+- **conformance.yml** -- Kerberos smbtorture
+- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 - **integration-tests.yml** -- Backend-specific integration tests
 
 ### What Runs Weekly (Full Matrix)
 
-The weekly cron runs the complete test matrix (Monday mornings UTC):
+The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
 - **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
@@ -630,7 +633,8 @@ All workflows support `workflow_dispatch` for manual triggering:
 ```bash
 # Trigger via GitHub CLI
 gh workflow run conformance.yml
-gh workflow run conformance.yml -f suite=smbtorture
+gh workflow run conformance.yml -f suite=cthon04
+gh workflow run tests.yml -f tier=nightly
 gh workflow run smb-client-compat.yml
 gh workflow run e2e-tests.yml
 ```
@@ -641,11 +645,11 @@ Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", an
 
 When a conformance test fails in CI:
 
-1. **Check the step summary** -- GitHub Actions provides a table with pass/fail/known counts
-2. **Download artifacts** -- TRX files (WPTS) and log files (smbtorture) are uploaded as artifacts
-3. **Check KNOWN_FAILURES.md** -- If the failing test is in the known failures list, it was expected
+1. **Check the step summary** -- `dt report` gives each cell's new and known failures and unexpected skips
+2. **Download artifacts** -- each cell's results, with its tool's own output (WPTS's TRX, smbtorture's log), are uploaded as artifacts
+3. **Check the suite's known file** -- the `known` file `test/suites.yaml` names; a test listed there was expected to fail
 4. **For new failures:**
-   - If the failure is in a genuinely unimplemented feature, add it to `KNOWN_FAILURES.md`
+   - If the failure is in a genuinely unimplemented feature, add it to the suite's known file, with its reason
    - If the failure is in an implemented feature, it is a regression and needs fixing
    - Use `--keep` flag locally to leave containers running for debugging
 
@@ -661,12 +665,7 @@ Follow this template pattern for new workflow jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: >-
-          ${{
-            github.event_name == 'pull_request'
-              && fromJson('["memory"]')
-            || fromJson('["memory", "badger"]')
-          }}
+        profile: [badger-s3]
     steps:
       - uses: actions/checkout@v4
       - name: Run tests
@@ -681,7 +680,7 @@ Follow this template pattern for new workflow jobs:
 ```
 
 Key guidelines:
-- Use matrix strategy with tiered profiles (memory-only on PR, all on push/weekly)
+- Use a matrix strategy; conformance runs the production profile, `badger-s3`, in every tier
 - Always set `timeout-minutes` to prevent runaway jobs
 - Use `fail-fast: false` so one profile failure does not cancel others
 - Upload artifacts with `if: always()` so results are available even on failure

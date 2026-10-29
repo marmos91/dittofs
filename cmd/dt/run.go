@@ -23,13 +23,14 @@ func newRun() *cobra.Command {
 	var tier, results string
 	var only, skip []string
 	var ci bool
+	var retry int
 	options := map[string]bool{}
 	cmd := &cobra.Command{
 		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...]",
 		Short: "Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
@@ -42,20 +43,19 @@ func newRun() *cobra.Command {
 			if len(option) > 1 {
 				return fmt.Errorf("one option at a time, not --%s and --%s", option[0], option[1])
 			}
-			root, _ := repoRoot()
 			cells, err := run.Select(root, r, args[0], first(option), tier, only, skip, args[1:])
 			if err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
+			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry})
 			if rep.Dir == "" {
 				return err // the run couldn't start
 			}
 			rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
 			for _, o := range rep.Outcomes {
-				rows = append(rows, []string{o.Cell, o.Result, o.Took.String(), o.Note})
+				rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
 			}
 			if err := table(cmd.OutOrStdout(), rows); err != nil {
 				return err
@@ -74,9 +74,10 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
+	cmd.Flags().IntVar(&retry, "retry", 0, "run each test that failed new again, up to N times: a pass on a retry is flaky")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
-	if r, err := load(); err == nil {
+	if _, r, err := load(); err == nil {
 		for _, s := range r.Suites {
 			for _, o := range s.Options {
 				if cmd.Flags().Lookup(o.Name) == nil {

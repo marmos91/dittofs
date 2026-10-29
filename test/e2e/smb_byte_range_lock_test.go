@@ -203,6 +203,11 @@ func setupSMBByteRangeLockTest(t *testing.T) (mount1, mount2 *framework.Mount) {
 	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
+	// The admin is UID 0, which the default squash maps to the anonymous
+	// identity on SMB as on NFS; that identity cannot write the root-owned
+	// share root. Keep root as root here, as these tests are about locking.
+	_, err = cli.Run("share", "nfs-config", "set", shareName, "--squash", "root_to_admin")
+	require.NoError(t, err, "Should keep root unsquashed on the share")
 
 	smbCreds := framework.SMBCredentials{
 		Username: "admin",

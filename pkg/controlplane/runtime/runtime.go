@@ -119,6 +119,10 @@ type Runtime struct {
 	// is successfully added or removed. Guarded by mu.
 	skippedShares map[string]string
 
+	// removing holds the names of the shares being removed, from before each
+	// leaves the registry until its row is deleted. See BeginShareRemoval.
+	removing sync.Map // share name -> struct{}
+
 	// shareIntegrity maps a share name to the outcome of the most recent
 	// structural manifest scan for it. Empty until the scheduled scan has
 	// run, and process-local: a restart clears it, which reads honestly as
@@ -599,6 +603,25 @@ func (r *Runtime) ApplyShareDurability(name string, requireDurableCommit, relaxe
 	return r.sharesSvc.ApplyDurability(name, requireDurableCommit, relaxedMetadataCommit, r.GetMetadataService())
 }
 
+// AddShareFromStore loads a persisted share row into the runtime, building its
+// config with the same builder a startup load uses. A share created through the
+// API goes through here, so nothing it persisted can be missing from what it
+// serves until the next restart.
+func (r *Runtime) AddShareFromStore(ctx context.Context, name string) error {
+	share, err := r.store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to load share %q: %w", name, err)
+	}
+	cfg, err := buildShareConfig(ctx, r.store, share)
+	if err != nil {
+		return fmt.Errorf("failed to build share config for %q: %w", name, err)
+	}
+	if cfg == nil {
+		return fmt.Errorf("share %q references an unknown metadata store", name)
+	}
+	return r.AddShare(ctx, cfg)
+}
+
 // RebindShareBlockStore hot-reloads a running share's per-share BlockStore after
 // its local/remote block-store binding changed, so the change takes effect
 // without a server restart (#1532). It rebuilds the new ShareConfig from the
@@ -676,6 +699,66 @@ func (r *Runtime) RemoveShare(name string) error {
 	defer cancel()
 	r.PurgeDefaultUserGrace(ctx, name)
 	return rmErr
+}
+
+// BeginShareRemoval holds name for a removal until end is called, and fails
+// while another removal holds it. The share leaves the registry before its
+// block store closes and its data is purged, so from then on only this hold
+// keeps a second removal from purging it too and deleting its row, which
+// would free the name while the first removal can still purge it.
+func (r *Runtime) BeginShareRemoval(name string) (end func(), err error) {
+	if _, held := r.removing.LoadOrStore(name, struct{}{}); held {
+		return nil, fmt.Errorf("share %q is being removed", name)
+	}
+	return func() { r.removing.Delete(name) }, nil
+}
+
+// PurgeShare deletes what a removed share leaves on this server: its records
+// in its metadata store and its journal directory, which holds its local
+// blocks.
+//
+// It resolves the share's metadata store from the share's row, so it runs
+// after RemoveShare, once the share's block store is closed and nothing writes
+// to what it deletes, and before the row goes. A share created again under the
+// name then starts empty instead of attaching the old root. Each step tolerates
+// what an earlier purge already deleted, so it can be repeated.
+//
+// decision: blocks the share synced to a remote store stay there, since other
+// shares on that store may reference the same chunks, and are left to garbage
+// collection. That sweeps a remote only through the shares still registered on
+// it, so a share that was alone on its remote, or on its metadata store, leaves
+// its blocks there. Delete them here once a removed share's blocks can be told
+// apart from every other share's.
+func (r *Runtime) PurgeShare(ctx context.Context, name string) error {
+	share, err := r.store.GetShare(ctx, name)
+	if err != nil {
+		return err
+	}
+	cfg, err := buildShareConfig(ctx, r.store, share)
+	if err != nil {
+		return err
+	}
+	// decision: a row naming no configured metadata store has no records this
+	// server can reach, so there are none to delete. A configured store that is
+	// not loaded is different: it holds the share's records and may load
+	// again, so that purge fails.
+	if cfg != nil {
+		metaStore, err := r.storesSvc.GetMetadataStore(cfg.MetadataStore)
+		if err != nil {
+			return err
+		}
+		if err := metaStore.DeleteShare(ctx, name); err != nil && !metadata.IsNotFoundError(err) {
+			return fmt.Errorf("delete the metadata of share %q: %w", name, err)
+		}
+	}
+
+	r.mu.RLock()
+	defaults := r.localStoreDefaults
+	r.mu.RUnlock()
+	if err := shares.RemoveShareJournal(name, defaults); err != nil {
+		return fmt.Errorf("remove the journal of share %q: %w", name, err)
+	}
+	return nil
 }
 
 func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {

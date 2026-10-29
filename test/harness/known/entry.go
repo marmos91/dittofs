@@ -19,10 +19,12 @@ type Entry struct {
 	Fix          string              `yaml:"fix"`      // planned or wontfix
 	Category     string              `yaml:"category"` // bug, feature, env, proto or permanent
 	Reason       string              `yaml:"reason"`
-	Issue        string              `yaml:"issue"`        // its issue, as "#N"; a planned entry names one
-	Where        map[string][]string `yaml:"where"`        // where it applies; everywhere when empty
-	Intermittent bool                `yaml:"intermittent"` // it fails on some runs only, so a pass isn't unexpected
-	Line         int                 `yaml:"-"`            // its line in the file
+	Issue        string              `yaml:"issue,omitempty"`        // its issue, as "#N"; a planned entry names one
+	Where        map[string][]string `yaml:"where,omitempty"`        // where it applies; everywhere when empty
+	Intermittent bool                `yaml:"intermittent,omitempty"` // it fails on some runs only, so a pass isn't unexpected
+	Message      string              `yaml:"message,omitempty"`      // what the result's message must contain for the entry to describe it
+	Line         int                 `yaml:"-"`                      // its line in the file
+	quarantined  bool                // it comes from the quarantine list, so it grades a failure quarantined
 }
 
 // The values an entry's fields take.
@@ -34,7 +36,7 @@ var (
 )
 
 // fields are the keys an entry may have.
-var fields = []string{"test", "status", "fix", "category", "reason", "issue", "where", "intermittent"}
+var fields = []string{"test", "status", "fix", "category", "reason", "issue", "where", "intermittent", "message"}
 
 // Parse reads a known file, named name in its errors: a list of entries,
 // each with a test, a status, a fix, a category and a reason, and an issue
@@ -132,4 +134,21 @@ func (e Entry) applies(at map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// covers reports whether the entry describes a result with this message: any
+// message, unless the entry names text the message must contain, so a test
+// that fails or skips for another reason than the one listed is graded as if
+// it had no entry.
+func (e Entry) covers(message string) bool {
+	return strings.Contains(message, e.Message)
+}
+
+// matches reports whether the entry stands for the result named name: as
+// Match has it, or, for a quarantine entry, which names one test, exactly.
+func (e Entry) matches(name string) bool {
+	if e.quarantined {
+		return e.Test == name
+	}
+	return Match(e.Test, name)
 }

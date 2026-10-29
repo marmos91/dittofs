@@ -407,7 +407,7 @@ func (h *Handler) closeFilesWithFilter(
 		// for them. The target was snapshotted by the election, so a rename
 		// landing since cannot redirect it.
 		if decision == docDecisionDelete && len(docDelete.ParentHandle) > 0 && docDelete.FileName != "" {
-			h.handleDeleteOnClose(ctx, sess, openFile, docDelete, caller)
+			h.handleDeleteOnClose(ctx, openFile, docDelete, caller)
 		}
 
 		// Queue this handle's per-open lease/oplock record for release in the
@@ -591,9 +591,13 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 // would deadlock — the holder can only ack after the triggering request
 // returns.
 
-func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, target docTarget, caller string) {
+func (h *Handler) handleDeleteOnClose(ctx context.Context, openFile *OpenFile, target docTarget, caller string) {
 	name := target.Name
-	authCtx := h.buildCleanupAuthContext(ctx, sess)
+	// The open's own session, not the teardown's: an AppInstanceId failover
+	// closes another client's opens with no session of its own, and the delete
+	// must run as the principal that opened the file.
+	sess, _ := h.GetSession(openFile.SessionID)
+	authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the Samba `dirlease_should_break` parent-key
 	// suppression rule on the parent dir lease. Suppression applies only when
@@ -951,10 +955,19 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.
 // This is used during session/tree cleanup when we need to perform file operations
 // (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session user's UID/GID.
-// Otherwise, it falls back to root credentials for cleanup operations.
+// A session with a user acts as that user's UID/GID, squashed by shareName's
+// mode as every other op is. Anything else (a guest or null session, or an
+// open whose session is already gone) acts as the unprivileged nobody
+// identity, as BuildAuthContext does for guests.
+//
+// decision: never root. The delete was authorized when the open was granted
+// DELETE, but the metadata layer still re-checks the sticky bit and, without
+// HasDeleteAccess, write on the parent; root would skip both and complete a
+// delete the opener could not. A sessionless open whose delete nobody cannot
+// perform is left in place rather than escalated; record the opener's identity on
+// the open if such deletes must complete.
 
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, shareName string) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:                ctx,
 		Identity:               &metadata.Identity{},
@@ -967,31 +980,17 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 		// while SESSION_SETUP re-authentication and the authorization re-check
 		// both replace this pointer under the session mutex.
 		user = sess.CurrentUser()
-	}
-	if user != nil {
-		// Use session user's UID/GID from User object
-		uid, gid := uidGIDFromSessionUser(user)
-		authCtx.Identity.UID = &uid
-		authCtx.Identity.GID = &gid
-		authCtx.Identity.Username = user.Username
 		authCtx.ClientAddr = sess.ClientAddr
-	} else {
-		// Fallback to root for cleanup operations when session info is unavailable.
-		//
-		// SECURITY NOTE: Using root credentials bypasses normal permission checks.
-		// This is acceptable because:
-		// 1. Delete-on-close can only be set via SET_INFO with FileDispositionInformation,
-		//    which requires the file to have been opened with DELETE access.
-		// 2. The cleanup is completing an operation the user was already authorized
-		//    to perform when they opened the file.
-		// 3. Without this fallback, files marked for deletion during ungraceful
-		//    disconnect would remain orphaned in the metadata store.
-		rootUID := uint32(0)
-		rootGID := uint32(0)
-		authCtx.Identity.UID = &rootUID
-		authCtx.Identity.GID = &rootGID
 	}
-
+	if user == nil {
+		setUnprivilegedIdentity(authCtx)
+		return authCtx
+	}
+	uid, gid := uidGIDFromSessionUser(user)
+	authCtx.Identity.UID = &uid
+	authCtx.Identity.GID = &gid
+	authCtx.Identity.Username = user.Username
+	authCtx.Identity = squashIdentity(h.Registry, shareName, authCtx.Identity)
 	return authCtx
 }
 
@@ -1026,11 +1025,14 @@ func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, use
 // before StoreSession to avoid a data race window where a concurrent reader
 // could observe a zero ExpiresAt on the published session and skip the
 // per-request expiry check in prepareDispatch (see #341 A1). A zero
-// expiresAt is treated as "no expiry" by session.IsExpired.
+// expiresAt is treated as "no expiry" by session.IsExpired. Only Kerberos
+// creates such a session, so it is marked Kerberos-authenticated here, before
+// anything else can read it.
 
 func (h *Handler) CreateSessionWithUserAndExpiry(sessionID uint64, clientAddr string, user *models.User, domain string, expiresAt time.Time) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
 	sess.SetExpiry(expiresAt)
+	sess.MarkKerberos()
 	h.SessionManager.StoreSession(sess)
 	return sess
 }

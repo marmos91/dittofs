@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // goModule is a module with tests that pass, fail, skip and fail in a
@@ -36,7 +38,7 @@ func TestParent(t *testing.T) {
 
 // goRun runs target of a go-json registry y in a module of files, choosing
 // tests, and returns the outcome and what the run printed.
-func goRun(t *testing.T, y string, files map[string]string, tests ...string) (Outcome, string, string) {
+func goRun(t *testing.T, y string, files map[string]string, tests ...string) (report.Cell, string, string) {
 	t.Helper()
 	root, r := anyRepo(t, y, files)
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, tests)
@@ -57,7 +59,7 @@ func goRun(t *testing.T, y string, files map[string]string, tests ...string) (Ou
 // the events stay in a file.
 func TestGoJSONGradesEachTest(t *testing.T) {
 	o, out, dir := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule)
-	if want := "2 passed, 3 failed, 1 skipped: TestFail, TestParent/bad"; o.Result != Failed || o.Note != want {
+	if want := "2 passed, 3 failed, 1 skipped: TestFail, TestParent/bad"; o.Result != report.Failed || o.Note != want {
 		t.Errorf("outcome %+v, want failed with %q", o, want)
 	}
 	if !strings.Contains(out, "--- FAIL: TestFail") || strings.Contains(out, `"Action"`) {
@@ -91,10 +93,10 @@ func TestGoJSONNeverReplaysTheCache(t *testing.T) {
 // run of only skips passes, since skips aren't graded.
 func TestGoJSONNothingRanAndSkips(t *testing.T) {
 	y := "suites:\n  g: { cmd: go test ./..., format: go-json }\n"
-	if o, _, _ := goRun(t, "suites:\n  g: { cmd: go test -run NoSuchTest ./..., format: go-json }\n", goModule); o.Result != NotRun || o.Note != "no tests ran" {
+	if o, _, _ := goRun(t, "suites:\n  g: { cmd: go test -run NoSuchTest ./..., format: go-json }\n", goModule); o.Result != report.NotRun || o.Note != "no tests ran" {
 		t.Errorf("-run matching nothing: %+v", o)
 	}
-	if o, _, _ := goRun(t, y, goModule, "TestPass", "TestSkip"); o.Result != Passed || o.Note != "1 passed, 0 failed, 1 skipped" {
+	if o, _, _ := goRun(t, y, goModule, "TestPass", "TestSkip"); o.Result != report.Passed || o.Note != "1 passed, 0 failed, 1 skipped" {
 		t.Errorf("named tests, one a skip: %+v", o)
 	}
 }
@@ -108,9 +110,9 @@ func TestGoJSONNamedTestsThatDidntRun(t *testing.T) {
 		names        []string
 		result, note string
 	}{
-		{[]string{"TestPass", "TestTypo"}, NotRun, "1 passed, 0 failed, 0 skipped; TestTypo didn't run"},
-		{[]string{"TestParent/typo"}, NotRun, "1 passed, 0 failed, 0 skipped; TestParent/typo didn't run"},
-		{[]string{"TestFail", "TestTypo"}, Failed, "0 passed, 1 failed, 0 skipped: TestFail; TestTypo didn't run"},
+		{[]string{"TestPass", "TestTypo"}, report.NotRun, "1 passed, 0 failed, 0 skipped; TestTypo didn't run"},
+		{[]string{"TestParent/typo"}, report.NotRun, "1 passed, 0 failed, 0 skipped; TestParent/typo didn't run"},
+		{[]string{"TestFail", "TestTypo"}, report.Failed, "0 passed, 1 failed, 0 skipped: TestFail; TestTypo didn't run"},
 	} {
 		if o, _, _ := goRun(t, y, goModule, c.names...); o.Result != c.result || o.Note != c.note {
 			t.Errorf("%s: %+v, want %s with %q", strings.Join(c.names, " "), o, c.result, c.note)
@@ -136,19 +138,8 @@ func TestFlip(t *testing.T) {
 }
 `}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: [go test ./..., go test ./...], format: go-json }\n", files)
-	if want := "0 passed, 1 failed, 0 skipped: TestFlip"; o.Result != Failed || o.Note != want {
+	if want := "0 passed, 1 failed, 0 skipped: TestFlip"; o.Result != report.Failed || o.Note != want {
 		t.Errorf("outcome %+v, want failed with %q", o, want)
-	}
-}
-
-// TEST names go before an -args, after which go test passes everything to
-// the test binaries as it is, so they still select the tests.
-func TestGoJSONNamesBeforeArgs(t *testing.T) {
-	for _, args := range []string{"-args", "--args"} {
-		o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./... "+args+" extra, format: go-json }\n", goModule, "TestPass")
-		if want := "1 passed, 0 failed, 0 skipped"; o.Result != Passed || o.Note != want {
-			t.Errorf("%s: outcome %+v, want passed with %q", args, o, want)
-		}
 	}
 }
 
@@ -156,7 +147,7 @@ func TestGoJSONNamesBeforeArgs(t *testing.T) {
 func TestGoJSONBuildFailure(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "b/b_test.go": "package b\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { undefined() }\n"}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", files)
-	if o.Result != Failed || !strings.Contains(o.Note, "example.com/m/b: build failed") {
+	if o.Result != report.Failed || !strings.Contains(o.Note, "example.com/m/b: build failed") {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -232,18 +223,21 @@ func TestGoPackages(t *testing.T) {
 // fakeSudo puts a sudo on the PATH that drops -n, resets the environment as
 // sudo does, marks it, and runs the rest as the user, so the root path runs
 // without real sudo. As root, dt takes the plain path, so there's nothing to
-// test.
-func fakeSudo(t *testing.T) {
+// test. It returns the file where each call writes the directory it started
+// in and its arguments, a line each, and then an empty line.
+func fakeSudo(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("the root path runs through sudo, as a user that isn't root")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = -n ] && shift\nexec env -i DT_FAKE_SUDO=1 \"$@\"\n"
+	calls := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\" ''; } >> '" + calls + "'\n[ \"$1\" = -n ] && shift\nexec env -i DT_FAKE_SUDO=1 \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
 }
 
 // withBins adds the dfs and dfsctl a root suite needs built, as stubs.
@@ -310,7 +304,7 @@ func TestRootPath(t *testing.T) {
 	fakeSudo(t)
 	t.Setenv("DITTOFS_E2E_SKIP_KERBEROS", "1")
 	o, out, dir := goRun(t, rootSuite, rootModule)
-	if o.Result != Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
+	if o.Result != report.Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 	if strings.Contains(out, "two words") || !strings.Contains(out, "DT_SPACES=$DT_SPACES") {
@@ -319,7 +313,7 @@ func TestRootPath(t *testing.T) {
 	if left, _ := os.ReadDir(filepath.Join(dir, "g")); len(left) != 1 || left[0].Name() != "go-test-1.json" {
 		t.Errorf("left in the cell's results: %v", left)
 	}
-	if o, _, _ := goRun(t, rootSuite, rootModule, "TestHow", "TestV3"); o.Result != Passed || o.Note != "2 passed, 0 failed, 0 skipped" {
+	if o, _, _ := goRun(t, rootSuite, rootModule, "TestHow", "TestV3"); o.Result != report.Passed || o.Note != "2 passed, 0 failed, 0 skipped" {
 		t.Errorf("with TEST names: %+v", o)
 	}
 }
@@ -378,7 +372,7 @@ func TestWait(t *testing.T) {
 	if _, err := os.Stat(cleaned); err != nil {
 		t.Error("the tests' cleanup didn't run: they weren't interrupted")
 	}
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "interrupted") || rep.Status() != 2 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "interrupted") || rep.Status() != 2 {
 		t.Errorf("outcome %+v, status %d", o, rep.Status())
 	}
 }
@@ -392,7 +386,7 @@ func TestGoJSONCellLimit(t *testing.T) {
 	t.Cleanup(func() { minute = time.Minute })
 	files := map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": "package w\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestWait(t *testing.T) { time.Sleep(time.Minute) }\n"}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", files)
-	if o.Result != Failed || !strings.Contains(o.Note, "stopped at the cell's limit") {
+	if o.Result != report.Failed || !strings.Contains(o.Note, "stopped at the cell's limit") {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -411,7 +405,7 @@ func TestOutsideAnyTest(t *testing.T) {
 	check := func(t *testing.T, needs string) {
 		o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: ["+needs+"] }\n", files)
 		for _, want := range []string{"TestExit0", "example.com/m/gp: failed outside any test", "example.com/m/tm: failed outside any test"} {
-			if o.Result != Failed || !strings.Contains(o.Note, want) {
+			if o.Result != report.Failed || !strings.Contains(o.Note, want) {
 				t.Errorf("note %q lacks %q\n%s", o.Note, want, out)
 			}
 		}
@@ -437,7 +431,7 @@ func TestRunPatternSubtests(t *testing.T) {
 		t.Errorf("a subtest among other names: %v", err)
 	}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule, "TestParent/bad")
-	if o.Result != Failed || o.Note != "0 passed, 2 failed, 0 skipped: TestParent/bad" {
+	if o.Result != report.Failed || o.Note != "0 passed, 2 failed, 0 skipped: TestParent/bad" {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -484,7 +478,7 @@ func TestEndpoint(t *testing.T) {
 `,
 	}
 	o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [\"service:kmip\"] }\n", files)
-	if o.Result != Passed {
+	if o.Result != report.Passed {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }
@@ -517,20 +511,7 @@ func TestBinBuildFailure(t *testing.T) {
 	files["cmd/dfs/main.go"] = "package main\n\nfunc main() { notDefined() }\n"
 	o, _, dir := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root] }\n", files)
 	log, _ := os.ReadFile(filepath.Join(dir, "logs", "g.log"))
-	if o.Result != NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
+	if o.Result != report.NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
 		t.Errorf("outcome %+v\nlog:\n%s", o, log)
-	}
-}
-
-// {bin} is there for a root cell's commands; elsewhere dt doesn't provide it,
-// and a command it can't fill leaves the cell not run.
-func TestBinPlaceholder(t *testing.T) {
-	fakeSudo(t)
-	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"})
-	if o, out, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json, needs: [root] }\n", files); o.Result != Passed {
-		t.Errorf("root cell: %+v\n%s", o, out)
-	}
-	if o, _, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json }\n", files); o.Result != NotRun || !strings.Contains(o.Note, "{bin}") {
-		t.Errorf("a cell that doesn't run as root: %+v", o)
 	}
 }

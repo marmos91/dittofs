@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 860" width="900" height="860" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+    </style>
+  </defs>
+  <rect width="900" height="860" fill="#ffffff"/>
+  <text x="16" y="26" class="t">One request: the gateway carries the Identity unread; the primary admits, resolves, then authorises.</text>
+
+  <rect x="96" y="38" width="226" height="76" rx="8" class="zone"/>
+  <text x="108" y="54" class="z">GATEWAY NODE</text>
+  <rect x="340" y="38" width="352" height="76" rx="8" class="zone"/>
+  <text x="352" y="54" class="z">THE FILE'S PRIMARY</text>
+
+  <rect x="8" y="62" width="80" height="44" rx="5" class="pr"/><text x="18" y="80" class="h">client</text><text x="18" y="98" class="s">NFS, SMB</text>
+  <rect x="104" y="62" width="94" height="44" rx="5" class="pr"/><text x="114" y="80" class="h">adapter</text><text x="114" y="98" class="s">wire only</text>
+  <rect x="208" y="62" width="108" height="44" rx="5" class="dr"/><text x="216" y="80" class="m">vfs.Gateway</text><text x="216" y="98" class="s">routes, no auth</text>
+  <rect x="348" y="62" width="104" height="44" rx="5" class="dr"/><text x="358" y="80" class="m">vfs.Serve</text><text x="358" y="98" class="s">fence, dedup</text>
+  <rect x="460" y="62" width="110" height="44" rx="5" class="sv"/><text x="470" y="80" class="m">*vfs.Server</text><text x="470" y="98" class="s">decides</text>
+  <rect x="578" y="62" width="106" height="44" rx="5" class="sv"/><text x="588" y="80" class="m">Resolver</text><text x="588" y="98" class="s">identity §6.1</text>
+  <rect x="700" y="62" width="94" height="44" rx="5" class="st"/><text x="710" y="80" class="h">store</text><text x="710" y="98" class="s">directory</text>
+  <rect x="802" y="62" width="92" height="44" rx="5" class="st"/><text x="810" y="80" class="m">Authorize</text><text x="810" y="98" class="s">chokepoint</text>
+
+  <line x1="47" y1="116" x2="47" y2="790" class="lane"/>
+  <line x1="151" y1="116" x2="151" y2="790" class="lane"/>
+  <line x1="262" y1="116" x2="262" y2="790" class="lane"/>
+  <line x1="400" y1="116" x2="400" y2="790" class="lane"/>
+  <line x1="515" y1="116" x2="515" y2="790" class="lane"/>
+  <line x1="631" y1="116" x2="631" y2="790" class="lane"/>
+  <line x1="748" y1="116" x2="748" y2="790" class="lane"/>
+  <line x1="848" y1="116" x2="848" y2="790" class="lane"/>
+
+  <path d="M49,146 L147,146" class="ln"/>
+  <text x="53" y="140" class="s">1 a request</text>
+  <rect x="52" y="154" width="92" height="34" rx="5" class="rd"/>
+  <text x="58" y="168" class="e">past Expires:</text><text x="58" y="182" class="e">refused here</text>
+
+  <path d="M153,212 L258,212" class="ln"/>
+  <text x="157" y="206" class="m">2 call(id, …)</text>
+  <text x="157" y="226" class="s">same Identity,</text><text x="157" y="240" class="s">every call</text>
+
+  <path d="M264,262 L396,262" class="gl"/>
+  <text x="268" y="256" class="s">3 envelope: Identity</text>
+  <text x="268" y="276" class="s">as a value, on an</text><text x="268" y="290" class="s">authenticated channel</text>
+
+  <rect x="340" y="302" width="120" height="38" rx="5" class="dr"/>
+  <text x="348" y="318" class="s">4 node, shard epoch,</text><text x="348" y="333" class="s">hop 0; dedup</text>
+  <rect x="340" y="346" width="120" height="22" rx="5" class="rd"/>
+  <text x="348" y="361" class="e">stale → refused</text>
+
+  <path d="M402,386 L511,386" class="ln"/>
+  <text x="406" y="380" class="s">5 checked call</text>
+
+  <rect x="446" y="396" width="148" height="52" rx="5" class="sv"/>
+  <text x="454" y="412" class="s">6 admit: share state,</text><text x="454" y="427" class="s">MinProof, MinProtection,</text><text x="454" y="442" class="s">client rules</text>
+  <rect x="446" y="454" width="148" height="22" rx="5" class="rd"/>
+  <text x="454" y="469" class="e">minimum unmet: refused</text>
+
+  <rect x="606" y="396" width="286" height="80" rx="5" class="st"/>
+  <text x="616" y="414" class="h">the one caller cache (§7.1)</text>
+  <text x="616" y="432" class="s">a hit on Key(), share, policy and grant-list</text>
+  <text x="616" y="448" class="s">versions, principals generation, and the client</text>
+  <text x="616" y="464" class="s">when a client rule decided, skips 7 to 10</text>
+  <path d="M508,482 C 462,530 462,680 510,716" class="cb"/>
+  <text x="452" y="604" class="s">hit</text>
+
+  <path d="M517,510 L627,510" class="ln"/>
+  <text x="521" y="504" class="m">7 Resolve</text><text x="521" y="524" class="s">(id, policy)</text>
+
+  <path d="M633,544 L744,544" class="ln"/>
+  <text x="637" y="538" class="s">8 record, index,</text><text x="637" y="558" class="s">groups, grants</text>
+
+  <rect x="578" y="572" width="180" height="38" rx="5" class="sv"/>
+  <text x="586" y="588" class="s">9 map · squash · groups</text><text x="586" y="603" class="s">· grant · flags (§6.1)</text>
+  <rect x="578" y="616" width="310" height="52" rx="5" class="rd"/>
+  <text x="586" y="632" class="e">store or directory error, disabled, deleted</text>
+  <text x="586" y="647" class="e">Anonymous, over the group cap: refused,</text>
+  <text x="586" y="662" class="e">never guest, never anonymous</text>
+
+  <path d="M629,690 L519,690" class="ln"/>
+  <text x="525" y="684" class="m">10 Caller</text>
+
+  <path d="M517,722 L844,722" class="ln"/>
+  <text x="640" y="716" class="m">11 Files.Authorize(caller, h)</text>
+  <text x="640" y="736" class="s">RFC 19 decides the file</text>
+
+  <rect x="400" y="740" width="150" height="24" rx="5" class="sv"/>
+  <text x="408" y="756" class="s">12 open state, engine</text>
+
+  <path d="M513,782 L153,782" class="cb"/>
+  <text x="160" y="776" class="s">13 the answer, via Serve and Gateway</text>
+  <path d="M149,782 L51,782" class="ln"/>
+  <text x="53" y="776" class="s">14 wire</text>
+
+  <text x="16" y="818" class="s">A call whose primary is the gateway node goes to its own Serve through the checked vfs.Service, fenced the same. On a single node</text>
+  <text x="16" y="836" class="s">there is no gateway and no Serve: the adapter calls the *vfs.Server, which runs 6 to 12 itself. Adapters map, squash and grant nothing.</text>
+</svg>

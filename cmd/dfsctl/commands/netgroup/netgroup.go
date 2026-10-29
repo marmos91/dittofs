@@ -14,11 +14,10 @@ is a named set of IP addresses, CIDR ranges, or hostnames that can be referenced
 from share security policies to allow or restrict which network endpoints can
 access a share. All subcommands require admin privileges.
 
-Netgroups are part of a share's NFS export policy: they are attached with
-"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT)
-and on NFSv4 (on every operation that resolves the share). They do NOT apply to
-SMB — restrict SMB access with share permissions and user authentication
-instead.
+Netgroups are part of a share's access policy: they are attached with
+"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT),
+on NFSv4 (on every operation that resolves the share) and on SMB (at
+TREE_CONNECT and on every request on the tree).
 
 Examples:
   # List all netgroups

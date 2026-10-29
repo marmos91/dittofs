@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -21,13 +22,14 @@ import (
 var Tiers = []string{"pr", "merge", "nightly", "manual"}
 
 var (
-	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx")
+	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx", "nfstest")
 	metrics    = set("fio-json", "dfsbench-json")
-	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
+	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "fio", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "user", "user2", "password", "realm")
+	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
 
-	// runFlags are dt run's own flags, which no option may share a name with.
+	// runFlags are dt run's flags, the planned ones included, which no option
+	// may share a name with.
 	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -53,8 +55,8 @@ func (r *Registry) check(root string) []error {
 	var errs []error
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
-	if r.Version < 1 || r.Version > Version {
-		fail("version %d: this dt reads version %d", r.Version, Version)
+	if r.Version < 1 || r.Version > version {
+		fail("version %d: this dt reads version %d", r.Version, version)
 	}
 	seen := map[string]bool{}
 	wheres := map[string]map[string][]string{} // what each known file's where may hold
@@ -94,6 +96,10 @@ func (r *Registry) check(root string) []error {
 		}
 		r.Known[path] = entries
 	}
+	var err error
+	if r.Quarantine, r.Expired, err = loadQuarantine(root, seen); err != nil {
+		errs = append(errs, err)
+	}
 	for g, members := range r.Groups {
 		if !nameRE.MatchString(g) {
 			fail("group %q: a name is [a-z0-9-]+", g)
@@ -113,7 +119,7 @@ func checkUnit(root string, u *Suite) []error {
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
 	if !formats[u.Format] {
-		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx", u.Format)
+		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx, nfstest", u.Format)
 	}
 	if u.Metrics != "" && !metrics[u.Metrics] {
 		fail("metrics %q is not fio-json or dfsbench-json", u.Metrics)
@@ -164,11 +170,10 @@ func checkUnit(root string, u *Suite) []error {
 			}
 		}
 	}
-	for _, m := range []map[string]bool{tierKeys(u.Select), tierKeys(u.Args), tierKeys(u.Env.ByTier), tierKeys(u.Blocking.ByTier)} {
-		for t := range m {
-			if !isTier(t) {
-				fail("%q is not a tier", t)
-			}
+	// Env's own decoding refuses a mapping under a name that isn't a tier.
+	for _, t := range slices.Concat(slices.Collect(maps.Keys(u.Select)), slices.Collect(maps.Keys(u.Args)), slices.Collect(maps.Keys(u.Blocking.ByTier))) {
+		if !isTier(t) {
+			fail("%q is not a tier", t)
 		}
 	}
 	for _, g := range u.Paths {
@@ -176,26 +181,38 @@ func checkUnit(root string, u *Suite) []error {
 			fail("paths %q: %v", g, err)
 		}
 	}
-	if u.Shards < 0 {
-		fail("shards is at least 1")
-	}
 
+	// Paths the suite reads must exist.
+	paths := []string{u.Known}
 	if f := u.Fixture; f != nil {
 		if f.Profile == "" && (f.Server == "" || f.Server == "dfs") {
 			fail("fixture: a dfs fixture names its profile")
 		}
-		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
-		// squash decides, not a user to create, and the fixture's own test
-		// user takes the first UID above that range, so none shares it.
-		for _, uid := range f.Users {
-			if uid < 1 || uid > 65534 {
-				fail("fixture users: %d is not a UID from 1 to 65534", uid)
+		if f.Server == "knfsd" {
+			only := Fixture{Server: "knfsd", NFS: NFS{Version: "export"}, Squash: f.Squash, Lease: f.Lease}
+			if !reflect.DeepEqual(*f, only) || f.Squash != "" && f.Squash != "none" {
+				fail("fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease")
 			}
 		}
+		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
+		// squash decides, not a user to create, and the fixture's own test
+		// users take the first two UIDs above that range, so none shares one.
+		for _, u := range f.Users {
+			if uid, err := strconv.Atoi(u); u != "self" && (err != nil || uid < 1 || uid > 65534) {
+				fail("fixture users: %s is not self or a UID from 1 to 65534", u)
+			}
+		}
+		switch {
+		case f.Client != "" && f.Client != "namespace":
+			fail("fixture client: %q is not namespace", f.Client)
+		case f.Clients != 0 && (f.Clients != 2 || f.Client == ""):
+			fail("fixture clients: 2 adds a second client beside the namespaced one, and is the only value")
+		case f.RPCBind != "" && f.RPCBind != "host":
+			fail("fixture rpcbind: %q is not host", f.RPCBind)
+		}
+		paths = append(paths, f.Shares)
 	}
-
-	// Paths the suite reads must exist.
-	for _, p := range []string{u.Known, fixtureShares(u.Fixture)} {
+	for _, p := range paths {
 		if p != "" {
 			if _, err := os.Stat(filepath.Join(root, p)); err != nil {
 				fail("%s does not exist", p)
@@ -220,6 +237,11 @@ func checkUnit(root string, u *Suite) []error {
 			fail("matrix axis %q has no values", a.Name)
 		}
 		axes[a.Name] = true
+		for _, v := range a.Values[min(1, len(a.Values)):] {
+			if len(a.Fill) > 0 && !slices.Equal(slices.Sorted(maps.Keys(a.Fill[v])), a.fillNames()) {
+				fail("matrix axis %q: value %s fills other placeholders than %s does", a.Name, v, a.Values[0])
+			}
+		}
 	}
 	// A template takes the same placeholders as a command.
 	for _, f := range templates {
@@ -232,7 +254,7 @@ func checkUnit(root string, u *Suite) []error {
 			switch {
 			case p == "test":
 				fail("template %s: {test} has no value before the first test, when templates are filled in", filepath.Base(f))
-			case !placeholders[p] && !axes[p]:
+			case len(u.Unknown("{"+p+"}")) > 0:
 				fail("template %s: unknown placeholder {%s}", filepath.Base(f), p)
 			}
 		}
@@ -241,48 +263,36 @@ func checkUnit(root string, u *Suite) []error {
 	for _, s := range u.allStrings() {
 		for _, p := range Placeholders(s) {
 			used[p] = true
-			if !placeholders[p] && !axes[p] {
-				fail("unknown placeholder {%s}", p)
-			}
+		}
+		for _, p := range u.Unknown(s) {
+			fail("unknown placeholder {%s}", p)
 		}
 		for _, name := range toolRefs(s) {
-			if _, ok := ToolDirs[name]; ok {
-				continue
-			}
-			known := strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", ")
-			if name == "" {
-				fail("{tools} names no tool: write {tools}/NAME, NAME one of %s", known)
-			} else {
-				fail("{tools}/%s: no such tool; {tools} holds %s", name, known)
+			if _, ok := ToolDirs[name]; !ok {
+				fail("{tools}/%s: no such tool; write {tools}/NAME, NAME one of %s", name, strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", "))
 			}
 		}
 	}
 	// dt fills {test} again for each test only in cmd and volumes, and
-	// everything else before the first test, when it has no value.
+	// {test-args} in cmd, and everything else before the first test, when
+	// they have no value.
 	fields := u.fields()
 	for _, field := range slices.Sorted(maps.Keys(fields)) {
-		if field == "cmd" || field == "volumes" {
-			continue
+		holds := func(p string) bool {
+			return slices.ContainsFunc(fields[field], func(s string) bool { return slices.Contains(Placeholders(s), p) })
 		}
-		if slices.ContainsFunc(fields[field], func(s string) bool { return slices.Contains(Placeholders(s), "test") }) {
+		if field != "cmd" && field != "volumes" && holds("test") {
 			fail("%s holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test", field)
+		}
+		if field != "cmd" && holds("test-args") {
+			fail("%s holds {test-args}, which has a value only in cmd: the rest is filled in before the first test", field)
 		}
 	}
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
 	}
-	// Only a running cell finds the tests of a glob holding a placeholder, so
-	// nothing that needs them when the cell is planned can have them.
-	if u.Tests.Deferred() {
-		planned := map[string]bool{"shards": u.Shards > 1, "needs_by_test": len(u.NeedsByTest) > 0, "timeout.test: size": u.Timeout.Test == "size"}
-		for t, sel := range u.Select {
-			planned["select."+t] = sel.Glob != ""
-		}
-		for _, field := range slices.Sorted(maps.Keys(planned)) {
-			if planned[field] {
-				fail("%s needs the tests when the cell is planned, but tests %s holds a placeholder, which only a running cell fills", field, u.Tests.Glob)
-			}
-		}
+	if used["test-args"] && u.Tests.File == "" {
+		fail("{test-args} is used, but the suite's tests aren't a .txt list, whose lines give them")
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
@@ -291,8 +301,10 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 	for _, a := range u.Matrix {
-		if !inCell[a.Name] {
-			fail("matrix axis %q is used by no command, fixture or env", a.Name)
+		for _, p := range a.fillNames() {
+			if !inCell[p] {
+				fail("matrix axis %q is used by no command, fixture or env: {%s} is in none", a.Name, p)
+			}
 		}
 	}
 	for t, sel := range u.Select {
@@ -382,6 +394,53 @@ func loadKnown(root, path string, where map[string][]string) ([]known.Entry, err
 	return entries, errors.Join(errs...)
 }
 
+// now is a variable so the tests can set the day.
+var now = time.Now
+
+// quarantineDays is how far ahead an entry of the quarantine list may expire,
+// so an entry can't stay forever: it is renewed while its issue is open.
+const quarantineDays = 90
+
+// loadQuarantine reads and checks the quarantine list, and returns the
+// entries that hold for each suite, each naming one of suites, and why each
+// expired one excuses nothing. A missing list has no entries.
+//
+// decision: an entry expires at the start of its date, in UTC, so every
+// machine agrees on the day its test fails as new again. An expired entry
+// doesn't stop the registry loading, so every other command still runs: dt
+// doctor reports it, and lint-repo runs dt doctor. An entry names a suite and covers the
+// suite's options too, since its test's name already narrows it; give it a
+// where, as a known entry has, when a test is flaky in one option or on one
+// OS only.
+func loadQuarantine(root string, suites map[string]bool) (map[string][]known.Entry, []string, error) {
+	data, err := os.ReadFile(filepath.Join(root, QuarantinePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	list, err := known.ParseQuarantine(QuarantinePath, data)
+	errs := []error{err}
+	today := now().UTC()
+	last := today.AddDate(0, 0, quarantineDays).Format(time.DateOnly)
+	entries := map[string][]known.Entry{}
+	var expired []string
+	for _, q := range list {
+		switch {
+		case !suites[q.Suite]:
+			errs = append(errs, fmt.Errorf("%s:%d: no suite %q", QuarantinePath, q.Line, q.Suite))
+		case q.Expires > last:
+			errs = append(errs, fmt.Errorf("%s:%d: expires %s is more than %d days away: give it %s at the latest, and renew it while %s is open", QuarantinePath, q.Line, q.Expires, quarantineDays, last, q.Issue))
+		case q.Expires <= today.Format(time.DateOnly):
+			expired = append(expired, fmt.Sprintf("%s:%d: %s expired on %s, so it fails as new: fix it (%s) and remove the entry, or give it a later date", QuarantinePath, q.Line, q.Test, q.Expires, q.Issue))
+		default:
+			entries[q.Suite] = append(entries[q.Suite], q.Entry())
+		}
+	}
+	return entries, expired, errors.Join(errs...)
+}
+
 // Placeholders returns the {name} placeholders in s, leaving out a shell
 // ${VAR} in an sh command.
 func Placeholders(s string) []string {
@@ -392,6 +451,26 @@ func Placeholders(s string) []string {
 		}
 	}
 	return out
+}
+
+// Unknown returns the placeholders in s that no cell of the suite fills.
+func (u *Suite) Unknown(s string) []string {
+	var out []string
+	for _, p := range Placeholders(s) {
+		if !placeholders[p] && !slices.ContainsFunc(u.Matrix, func(a Axis) bool { return slices.Contains(a.fillNames(), p) }) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// fillNames names the placeholders the axis fills: its own, or those its
+// named values fill.
+func (a Axis) fillNames() []string {
+	if len(a.Fill) == 0 || len(a.Values) == 0 {
+		return []string{a.Name}
+	}
+	return slices.Sorted(maps.Keys(a.Fill[a.Values[0]]))
 }
 
 // Tools returns the test tools the suite names, as {tools}/NAME in any of its
@@ -427,9 +506,9 @@ func toolRefs(s string) []string {
 }
 
 func checkNeed(n string) error {
-	kind, arg, hasArg := strings.Cut(n, ":")
+	kind, arg, _ := strings.Cut(n, ":")
 	switch {
-	case !hasArg && plainNeeds[n], n == "host:dedicated":
+	case plainNeeds[n]:
 		return nil
 	case kind == "disk" || kind == "port":
 		if _, err := strconv.Atoi(arg); err == nil {
@@ -495,19 +574,4 @@ func (m Matrix) values(axis string) []string {
 		}
 	}
 	return nil
-}
-
-func fixtureShares(f *Fixture) string {
-	if f == nil {
-		return ""
-	}
-	return f.Shares
-}
-
-func tierKeys[V any](m map[string]V) map[string]bool {
-	out := map[string]bool{}
-	for k := range m {
-		out[k] = true
-	}
-	return out
 }

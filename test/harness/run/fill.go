@@ -71,11 +71,6 @@ func replace(s string, vals map[string]string, lists map[string][]string, quote 
 	return out, nil
 }
 
-// uses reports whether the command holds the placeholder name.
-func uses(c registry.Command, name string) bool {
-	return slices.Contains(registry.Placeholders(c.Line+" "+c.Sh), name)
-}
-
 // shellQuote quotes v as one word for sh.
 func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"

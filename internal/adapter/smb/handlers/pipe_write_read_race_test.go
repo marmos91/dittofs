@@ -88,7 +88,7 @@ func TestHandlePipe_WriteReadRace_DeliversResponseOnce(t *testing.T) {
 
 		// Register and bind the pipe, then drain the bind_ack so the buffer is
 		// empty before the racing LookupSids2 exchange.
-		pipe := h.PipeManager.CreatePipe(fileID, "lsarpc")
+		pipe := h.PipeManager.CreatePipe(fileID, "lsarpc", nil)
 		if err := pipe.ProcessWrite(buildRaceBindPDU(1)); err != nil {
 			t.Fatalf("iter %d: bind: %v", i, err)
 		}

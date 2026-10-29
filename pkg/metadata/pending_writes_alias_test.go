@@ -43,12 +43,14 @@ func TestPendingWritesHandleAliasesShareState(t *testing.T) {
 
 			frozen := stamp.Add(time.Second)
 			require.True(t, tr.UpdatePendingMtime(aliases[2], frozen))
-			pending, ok := tr.PopPending(aliases[1])
+			pending, ok := tr.GetPending(aliases[1])
 			require.True(t, ok)
 			require.Equal(t, frozen, pending.LastMtime)
-			require.Zero(t, tr.Count())
-			tr.RestorePending(aliases[2], pending)
+			tr.FinishFlush(aliases[2], pending, 0)
 			require.Equal(t, []FileHandle{aliases[0]}, tr.PendingHandles())
+			pending, ok = tr.GetPending(aliases[1])
+			require.True(t, ok)
+			require.Zero(t, pending.LastMtime, "the flushed mtime must leave the pending state")
 
 			tr.InvalidateCache(aliases[1])
 			for _, reader := range aliases {

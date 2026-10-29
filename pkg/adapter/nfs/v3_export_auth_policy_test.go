@@ -53,7 +53,7 @@ func newV3PolicyFixture(t *testing.T) (*NFSConnection, *runtime.Runtime, metadat
 // the given handle, carrying an AUTH_UNIX credential.
 func getattrCall(handle metadata.FileHandle) (*rpc.RPCCallMessage, []byte) {
 	// AUTH_UNIX body: stamp, machine name (empty), uid, gid, ngids.
-	authBody := make([]byte, 24)
+	authBody := make([]byte, 20)
 	binary.BigEndian.PutUint32(authBody[8:12], 1000)  // uid
 	binary.BigEndian.PutUint32(authBody[12:16], 1000) // gid
 
