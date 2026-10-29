@@ -86,7 +86,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "none", "Default permission for unmapped UIDs (none|read|read-write|admin)")
-	createCmd.Flags().StringVar(&createSquash, "squash", "", "NFS export squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a root-mounted client is not squashed to guest.")
+	createCmd.Flags().StringVar(&createSquash, "squash", "", "Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.")
 	createCmd.Flags().StringVar(&createOwner, "owner", "", "Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")

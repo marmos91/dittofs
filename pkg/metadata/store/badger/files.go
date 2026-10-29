@@ -203,24 +203,27 @@ func (tx *badgerTransaction) putManifest(id uuid.UUID, blocks []block.ChunkRef) 
 
 	// Drop segments the list no longer reaches — a truncate, a deallocate, or
 	// any rewrite that shortened it.
-	return deleteManifestSegmentsFrom(tx.txn, id, segments)
+	_, err := deleteManifestSegmentsFrom(tx.txn, id, segments)
+	return err
 }
 
 // deleteManifestSegmentsFrom removes every manifest segment of id at sequence
-// seq and above. Walking forward stops at the first missing sequence, which is
-// the end of the list: putManifest writes segments from zero without holes
-// (see loadManifest, which reads them back on the same assumption).
-func deleteManifestSegmentsFrom(txn *badgerdb.Txn, id uuid.UUID, seq int) error {
-	for ; ; seq++ {
+// seq and above, and returns how many it removed. Walking forward stops at the
+// first missing sequence, which is the end of the list: putManifest writes
+// segments from zero without holes (see loadManifest, which reads them back on
+// the same assumption).
+func deleteManifestSegmentsFrom(txn *badgerdb.Txn, id uuid.UUID, seq int) (int, error) {
+	for n := 0; ; seq++ {
 		key := keyFileManifestSegment(id, seq)
 		if _, err := txn.Get(key); errors.Is(err, badgerdb.ErrKeyNotFound) {
-			return nil
+			return n, nil
 		} else if err != nil {
-			return err
+			return n, err
 		}
 		if err := txn.Delete(key); err != nil {
-			return err
+			return n, err
 		}
+		n++
 	}
 }
 

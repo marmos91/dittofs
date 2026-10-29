@@ -236,7 +236,7 @@ func (h *Handler) reauthKerberosSession(
 	// request resolving its identity between two writes would pair the new
 	// ticket's user record with the old ticket's groups.
 	if !h.admitSessionTransition(sess, func() {
-		sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false, authResult.GroupSIDs, authResult.UserSID)
+		sess.UpdateKerberosIdentity(user.Username, h.sessionDomain(authResult.Realm), user, authResult.GroupSIDs, authResult.UserSID)
 		sess.SetExpiry(ticketEndTime)
 	}) {
 		logger.Info("Kerberos re-authentication refused: session logged off",

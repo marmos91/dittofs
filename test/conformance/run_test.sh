@@ -250,15 +250,6 @@ cat >"$FAKE_MANIFEST" <<'EOF'
         { "name": "run", "cmd": "fake/earlyfail.sh", "args": [], "root": false }
       ]
     },
-    "wpts": {
-      "description": "a suite whose parser writes no verdict; its exit IS the failure count",
-      "runner_dir": "fake",
-      "profiles": ["memory"],
-      "tiers": { "pull_request": "all", "push": "all" },
-      "steps": [
-        { "name": "run", "cmd": "fake/earlyfail.sh", "args": [], "root": false }
-      ]
-    },
     "graded125": {
       "description": "graded 125 new failures, which collides with the docker exit range",
       "runner_dir": "fake",
@@ -351,7 +342,7 @@ run_fake() {
 # The real manifest describes the repo it ships with.
 # ---------------------------------------------------------------------------
 REAL_LIST="$("$RUNNER" --list 2>&1)"
-for suite in wpts smbtorture pjdfstest pynfs; do
+for suite in cthon04 nfstest; do
     assert_contains "manifest lists ${suite}" "$suite" "$REAL_LIST"
 done
 
@@ -362,32 +353,6 @@ while IFS= read -r cmd; do
     [[ -x "${SCRIPT_DIR}/../${cmd}" ]] || MISSING="${MISSING} ${cmd}"
 done < <(jq -r '.suites[].steps[].cmd' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared step command is executable" "" "$MISSING"
-
-# suite_writes_verdict names suites that LACK the sidecar contract, and anything
-# it does not name is assumed to write one. A misspelt or stale name therefore
-# falls through to that default arm and claims the contract the suite does not
-# have — the direction that turns a real regression into "no test was graded".
-# The name has to be a suite the manifest actually defines.
-KNOWN_SUITES="$(jq -r '.suites | keys[]' "${SCRIPT_DIR}/suites.json")"
-PREDICATE_SUITES="$(sed -n '/^suite_writes_verdict()/,/^}/p' "$RUNNER" \
-    | sed -n 's/^ *\([a-z0-9|_-]*\)) return 1 ;;/\1/p' | tr '|' ' ')"
-UNKNOWN=""
-for s in $PREDICATE_SUITES; do
-    grep -qx "$s" <<<"$KNOWN_SUITES" || UNKNOWN="${UNKNOWN} ${s}"
-done
-assert_eq "every suite named in suite_writes_verdict exists in the manifest" "" "$UNKNOWN"
-
-# And the claim itself has to hold: a suite listed here whose graded step does
-# write a sidecar has its failure count thrown away. Every suite hands off to a
-# parse-results.sh beside its own run script, so that file is where the sidecar
-# would be written.
-HAS_VERDICT=""
-for s in $PREDICATE_SUITES; do
-    cmd="$(jq -r --arg s "$s" '.suites[$s].steps[] | select(.name == "run") | .cmd' "${SCRIPT_DIR}/suites.json")"
-    parser="${SCRIPT_DIR}/../$(dirname "$cmd")/parse-results.sh"
-    grep -q 'verdict"' "$parser" 2>/dev/null && HAS_VERDICT="${HAS_VERDICT} ${s}"
-done
-assert_eq "no suite listed as verdict-less writes a verdict" "" "$HAS_VERDICT"
 
 # The runner tells a graded failure from an infrastructure one by the step's
 # name, so a suite with no step called "run" would have every failure reported
@@ -416,43 +381,6 @@ done < <(jq -r '[.suites[].known_failures | select(. != null)
     | if type == "array" then .[] else . end] | unique[]' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared blacklist exists" "" "$MISSING"
 
-# A profile the manifest declares but bootstrap.sh's case arms do not match
-# falls straight through to its error arm, and the suite dies at provisioning
-# with the profile looking perfectly valid everywhere else.
-SMB_PROFILES="$(jq -r '.suites | to_entries[]
-                       | select(.key == "wpts" or .key == "smbtorture")
-                       | .value.profiles[]' "${SCRIPT_DIR}/suites.json" | sort -u)"
-BOOTSTRAP="${SCRIPT_DIR}/../smb-conformance/bootstrap.sh"
-UNMATCHED=""
-for fn in create_metadata_store create_block_stores; do
-    arms=()
-    while IFS= read -r arm; do
-        [[ "$arm" == "*" ]] || arms+=("$arm")
-    done < <(sed -n "/^${fn}()/,/^}/p" "$BOOTSTRAP" | sed -n 's/^ *\([A-Za-z0-9*|_-]*\))$/\1/p')
-    for profile in $SMB_PROFILES; do
-        matched=false
-        for arm in "${arms[@]}"; do
-            IFS='|' read -ra globs <<<"$arm"
-            for glob in "${globs[@]}"; do
-                # shellcheck disable=SC2053  # glob match is the point
-                if [[ "$profile" == $glob ]]; then
-                    matched=true
-                    break 2
-                fi
-            done
-        done
-        [[ "$matched" == true ]] || UNMATCHED="${UNMATCHED} ${fn}:${profile}"
-    done
-done
-assert_eq "every SMB profile hits a bootstrap case arm" "" "$UNMATCHED"
-
-MISSING=""
-for profile in $SMB_PROFILES; do
-    [[ -f "${SCRIPT_DIR}/../smb-conformance/configs/${profile}.yaml" ]] \
-        || MISSING="${MISSING} ${profile}"
-done
-assert_eq "every SMB profile has a config file" "" "$MISSING"
-
 # The common runner tees each step to <step>.log in the results directory. A
 # suite runner that writes the same name races it: two non-appending tees on
 # one path interleave and truncate, and the grader then reads a partial log.
@@ -467,7 +395,7 @@ assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
 # Only the suites that put a dfs on the host may be failed by a listener on the
 # adapter port. A suite that runs entirely in Docker publishes no host port, so
 # this keys off `host_adapter`, not `protocol`.
-assert_eq "suites owning the host adapter port" "pjdfstest pynfs cthon04 nfstest" \
+assert_eq "suites owning the host adapter port" "cthon04 nfstest" \
     "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
 # The CI matrix is the manifest's cross product, not a hand-kept list.
@@ -479,7 +407,7 @@ assert_eq "presubmit matrix size" \
                     | if $t == "all" then (.value.profiles | length) else ($t | length) end)
                    * (.value.variant.values // [""] | length)] | add' "${SCRIPT_DIR}/suites.json")" \
     "$(jq -r '.include | length' <<<"$PR_MATRIX")"
-assert_contains "presubmit matrix carries the variant axis" '"variant":"4.1"' "$PR_MATRIX"
+assert_contains "presubmit matrix carries the variant axis" '"variant":"v4.1"' "$PR_MATRIX"
 
 # The workflow reads its per-job timeout from the cell, so every cell needs one.
 assert_eq "every matrix cell carries a timeout" "0" \
@@ -497,6 +425,7 @@ assert_contains "profile placeholder is substituted" "args: --profile memory" "$
 OUT="$(run_fake --suite graded --profile memory --variant 4.0)"
 rc=$?
 assert_eq "a grader's failure count survives to the caller" "3" "$rc"
+assert_eq "the exit status is saved beside the results" "3" "$(cat "${WORK}/results/graded/memory-4.0/status")"
 assert_contains "teardown runs after a failed step" "TEARDOWN RAN" "$OUT"
 assert_not_contains "steps after a failure are skipped" "ran pass.sh" "$OUT"
 
@@ -559,16 +488,6 @@ assert_not_contains "and is not a failure count" "new failure(s)" "$OUT"
 OUT="$(run_fake --suite earlyfail --profile memory)"
 assert_not_contains "a pre-parser failure is not called a new failure" "new failure(s)" "$OUT"
 
-# The absent sidecar only means "the parser never ran" for a suite whose parser
-# writes one. For a suite that never does, reading the absence that way turns
-# every real regression into "no test was graded" — the false-negative twin of
-# the false "N new failure(s)" the sidecar removed.
-OUT="$(run_fake --suite wpts --profile memory)"
-assert_contains "a suite that writes no verdict still reports its failure count" \
-    "new failure(s)" "$OUT"
-assert_not_contains "and a real regression there is not called ungraded" \
-    "no test was graded" "$OUT"
-
 # 125 is also a legitimate failure COUNT, and that run graded something — so the
 # sidecar decides, not the numeric status.
 OUT="$(run_fake --suite graded125 --profile memory)"
@@ -623,16 +542,12 @@ assert_contains "a missing table in a list is refused" \
     "blacklist declared but missing: test/fake/KNOWN_FAILURES_NONE.md" "$OUT"
 
 # ---------------------------------------------------------------------------
-# Privilege is a property of a step, not of a run. pynfs is its own NFSv4
-# client and has to stay runnable with no mount and no root.
+# Privilege is a property of a step, not of a run: a step that needs no root
+# stays runnable without it.
 # ---------------------------------------------------------------------------
 OUT="$(run_fake --suite privileged --profile memory --dry-run)"
 assert_contains "a root step is elevated" "setup: sudo -E" "$OUT"
 assert_not_contains "a non-root step is not" "run: sudo -E" "$OUT"
-
-OUT="$("$RUNNER" --suite pynfs --profile memory --variant 4.1 --dry-run 2>&1)"
-assert_not_contains "no step of pynfs asks for root" "sudo" "$OUT"
-assert_contains "pynfs pins its minor version" "--minor-version 4.1" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Refusals

@@ -28,15 +28,15 @@ order: each part builds on the ones before it.
 | [RFC 6](rfc-6-block-metadata.md) | block metadata | draft | FileData, holes, refs, chunks, blocks, refcounts |
 | [RFC 16](rfc-16-metadata-store.md) | metadata store | draft | the entity model and its Go package, the rules that keep it honest, interfaces by consumer and how they are assembled, control-plane and identity entities, the KV contract, key layout, codecs, counters, store format; testing, benchmarks and observability of the store |
 | [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | draft | files, directories, handles, permissions, what keeps a file alive |
-| [RFC 14](rfc-14-open-state.md) | open state and locks | draft | client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), pNFS layouts, grace and per-shard reclaim, conflicts across protocols |
+| [RFC 14](rfc-14-open-state.md) | open state and locks | draft | client leases, opens and deny modes, byte-range locks and lock waiters, caching grants (delegations, oplocks, leases) and their budget, watches, SMB durable and persistent opens, delete on close, open-unlinked files, NFSv4.0 owner sequences and unconfirmed clients, NLM/NSM restart, grace and per-shard reclaim, conflicts across protocols; pNFS layouts reserved |
 | **Composition** | | | |
 | [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | draft | the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one primary, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
-| [RFC 8](rfc-8-engine.md) | engine | draft | the content data path: the facade over journal, carver, syncer and block metadata, and its policy |
+| [RFC 8](rfc-8-engine.md) | engine | draft | the content data path: one concrete engine over journal, carver, syncer and block metadata — its interface, composition, lifecycle and policy |
 | [RFC 9](rfc-9-gc.md) | GC | draft | retirement and resurrection, trash, verified remote deletion, compaction policy, audit against the reverse ref index |
 | **Cluster**, deferred past the first release ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) | | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | deferred | a primary and its replicas, fencing, seal, joining learners, catch-up, reads |
 | [RFC 11](rfc-11-ownership.md) | shards | deferred | shards (a share by default, subtree and automatic per-child shards; per-file and range shards deferred), the primary of each, node leases, handover, batched moves, cross-shard operations, failover, forwarding |
-| [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one primary per shard, the route envelope, routing calls to the primary that serves them, split and collocated deployments, pNFS metadata and data servers |
+| [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one node type that runs everything, `node.New`'s build order, the gateway forwarding to the primary and the server deciding, one primary per shard, the route envelope, pNFS metadata and data servers |
 | **Data management** | | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots and clones | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention, subtree snapshots); a snapshot's deletion honours the use records [RFC 26](rfc-26-catalog-backups.md) defines |
 | [RFC 26](rfc-26-catalog-backups.md) | catalog backups | draft | catalog and copying backups, backup locations, the use records that hold a snapshot while it is read, restore to a new share, recovery import, the export format and staged import |
@@ -44,16 +44,16 @@ order: each part builds on the ones before it.
 | **Configuration** | | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | draft | what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | | |
-| RFC 18 | identity and authentication | planned | principals, authentication flavours, identity mapping, squashing |
-| RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
+| [RFC 18](rfc-18-identity.md) | identity and authentication | draft | principals and their stable IDs, the authentication interface and flavours, identity mapping in both directions and owner strings, directory integration and its cache, squashing, groups and share-grant resolution, identity cache keys |
+| [RFC 19](rfc-19-authorization.md) | authorization | draft | one ACL model: entries, principals, rights, flags; the order of a decision, share ceiling, maximum allowed, audit selection; mode↔ACL functions and inheritance; the shared translation to security descriptors and NFSv4 ACLs |
 | **Protocols** | | | |
-| RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
+| [RFC 20](rfc-20-adapters.md) | adapter model | draft | what an adapter may hold and import, the adapter and sidecar interfaces, the common lifecycle, live settings, health and probes, the dispatch pipeline, one auth package for both protocols, reaching a share, codecs, NFS over TLS, connection concurrency, metrics and spans, boundary tests and wire tests against reference servers |
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
-| RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
-| RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
-| RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
+| [RFC 23](rfc-23-control-plane.md) | control plane | draft | the node that builds its components and applies records; resource lifecycles, shares above all; the management API — concurrency, idempotency, long-running operations, errors, versioning; API accounts, roles, tokens and the bootstrap administrator; the management audit; the CLI as an API client |
+| [RFC 24](rfc-24-resources.md) | resources and concurrency | draft | the node memory budget: one process memory limit divided into fixed pools with floors and ceiling rules, request and reply buffer classes and where they are charged, fairness across clients and shares, the queue inventory and backpressure chain, goroutine, CPU and file-descriptor bounds |
+| [RFC 25](rfc-25-observability.md) | observability | draft | metric naming, units, labels and cardinality; the condition registry and health derivation; liveness and readiness; the access, quota, logon and admin event streams' delivery, retention, export and access; logs; tracing; alerting |
 | **Testing** | | | |
 | [RFC 29](rfc-29-test-harness.md) | test harness | reviewed | the `dt` runner, the suite registry, fixtures, tiers, grading against known failures, the result format and how red is reported |
 | [RFC 30](rfc-30-kubernetes.md) | deployment on Kubernetes | draft | the operator's cluster resource with protocol and storage pools, tiers mapped to Deployment and StatefulSet, storage identity on its volume, drain before removal, autoscaling the protocol pool and operator-paced storage, service or floating-IP addressing |
@@ -66,8 +66,6 @@ RFC 29 was written for the repository's test tooling before it joined the set, s
 its own layout: it has no `## Start here`, and it names the tools and files it is about,
 which the naming convention below allows only of an appendix elsewhere. It builds on no
 other RFC, RFC 0 included, so it is `reviewed` while the storage RFCs are still `draft`.
-
-[The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
 ## Dependencies
 
@@ -92,12 +90,18 @@ graph LR
   R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16 & R28
   R12["12 snapshots"] --> R1 & R2 & R4 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16 & R17 & R26 & R27
   R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27 & R28
-  R14["14 open state"] --> R7 & R11 & R15 & R16
+  R14["14 open state"] --> R7 & R11 & R15 & R16 & R17 & R24 & R27
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
-  R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
-  R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
+  R18["18 identity"] --> R7 & R13 & R14 & R16 & R17 & R19 & R20 & R21 & R22 & R23 & R24 & R25 & R26
+  R19["19 authorization"] --> R7 & R13 & R14 & R16 & R17 & R18 & R20 & R21 & R22 & R25
+  R20["20 adapters"] --> R7 & R13 & R14 & R15 & R17 & R18 & R19 & R21 & R22 & R23 & R24 & R25 & R27 & R29
+  R21["21 nfs"] --> R7 & R8 & R11 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R22 & R24 & R25 & R27 & R28
+  R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R21 & R24 & R25 & R27 & R28
+  R23["23 control plane"] --> R8 & R9 & R11 & R12 & R13 & R15 & R16 & R17 & R18 & R19 & R20 & R24 & R25 & R26 & R27 & R30
+  R24["24 resources"] --> R1 & R3 & R8 & R9 & R13 & R14 & R15 & R17 & R20 & R21 & R22 & R23 & R25 & R29
+  R25["25 observability"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R21 & R22 & R23 & R24 & R26 & R27 & R29 & R30
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
   R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R14
@@ -107,7 +111,7 @@ graph LR
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 12 ↔ RFC 26, RFC 12 ↔ RFC 27, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 21 ↔ RFC 22, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 12 ↔ RFC 26, RFC 12 ↔ RFC 27, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 14 ↔ RFC 17, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 18 ↔ RFC 19, RFC 18 ↔ RFC 20, RFC 18 ↔ RFC 21, RFC 18 ↔ RFC 22, RFC 19 ↔ RFC 20, RFC 19 ↔ RFC 21, RFC 19 ↔ RFC 22, RFC 20 ↔ RFC 21, RFC 20 ↔ RFC 22, RFC 20 ↔ RFC 23, RFC 20 ↔ RFC 24, RFC 20 ↔ RFC 25, RFC 21 ↔ RFC 22, RFC 21 ↔ RFC 24, RFC 22 ↔ RFC 24, RFC 23 ↔ RFC 25, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -123,7 +127,7 @@ every RFC of this set are to be interpreted as in RFC 2119.
   `reviewed` (an external review's findings are closed in the normative text);
   `frozen` (reviewed, and a change to it is made only together with every RFC
   that cites the changed rule); `deferred` (not built in the first release; its
-  rules bind only once a second storage node can serve a share,
+  rules bind only once a second node can serve a share,
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). An RFC is never marked `reviewed` or `frozen` while an RFC
   it builds on is `draft`: a reviewed rule resting on a moving one is not
   reviewed. The pairwise cycles under the graph join into one strongly
@@ -131,11 +135,16 @@ every RFC of this set are to be interpreted as in RFC 2119.
   inside it, so that component is reviewed as one: none of its members is marked
   `reviewed` before all of its non-deferred members are. A deferred member holds
   the review back only through the rules a first-release RFC cites from it; one
-  cited only by **(cluster)** rules is reviewed with the cluster. RFC 21 and
-  RFC 22, which live on the protocol branch stacked on this set, cite each other
-  and so form a second component of their own; that is intended — each adapter
-  states where it meets the other — and the two are reviewed together, after the
-  storage component they build on and never before it.
+  cited only by **(cluster)** rules is reviewed with the cluster. RFC 18, 19
+  and 23 to 25, together with RFC 20 to RFC 22, cite each other and so form the
+  second component; that is intended — RFC 20 states the shape both adapters
+  share, each adapter states where it meets the other, and identity,
+  authorization, the control plane, resources and observability each state
+  what the adapters hand them and take from them — and its members are
+  reviewed together, after the storage component they build on and never
+  before it. The storage
+  RFCs name the protocol RFCs only in text, never as a link, so that no edge
+  runs from the storage component into this one.
 - A rule that binds only in a cluster is marked **(cluster)** where it is
   stated, and links the single-node profile.
 - Normative text names no product, package or file. Products appear only in
@@ -301,7 +310,9 @@ than a private one per RFC.
    Every fault seam implements one fault interface: fail, delay, drop, tear or
    reorder a named operation, on a seeded schedule read from that clock. The
    interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
-   component takes them from there rather than defining a private clock. The
+   component declares the subset of them it uses in its own package, in
+   standard-library types, so the node's one clock satisfies each as it is; none
+   defines a private clock. The
    seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fake store
    ([RFC 3 §1.4](rfc-3-syncer.md#1.4%20It%20is%20testable%20on%20its%20own)), the fault transport under a real store client
    ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)) and the fault-injecting store wrappers
@@ -309,7 +320,7 @@ than a private one per RFC.
    check that skews time across components, such as RFC 0's clock made 5% fast.
 2. **One composed single-node harness.** The production composition root
    ([RFC 8 §2](rfc-8-engine.md#2.%20Composition), which a first-release node follows without the deferred
-   [RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role)) builds the node, with the journal's
+   [RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) builds the node, with the journal's
    storage seam, the fault-injecting metadata store and the fault transport put
    in place of the device, the store and the network, and nothing else swapped.
    Every first-release check that crosses components runs on it:

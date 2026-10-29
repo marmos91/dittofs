@@ -410,6 +410,13 @@ func (s *Service) GetFileForRead(ctx context.Context, handle FileHandle) (*File,
 // No-op for a nil attr. Takes *FileAttr so it also serves READDIR entry attrs,
 // not just whole *File reads: a listing that skipped the overlay would report a
 // file as shorter than every handle read of the same file says it is.
+//
+// decision: a read whose store read comes before a flush's commit and whose
+// pending read comes after the flush finishes sees neither, and reports the file
+// as it was before the flushed writes. Reading the pending state first would
+// close that window but open one on a truncate, which drops the pending state
+// under the flush lock: a read that took the pending state before the truncate
+// and the store after it would lay a stale size over the new one.
 func (s *Service) mergePendingWrites(handle FileHandle, attr *FileAttr) {
 	if attr == nil {
 		return

@@ -84,8 +84,10 @@ status=0
 
 for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
 	# First physical line only. %s folds a subject that wraps before the
-	# first blank line into one line, which would hide a second line.
-	subject=$(git show -s --format=%B "$sha" | head -1)
+	# first blank line into one line, which would hide a second line. sed
+	# rather than head: head closes the pipe early, and on a long message
+	# pipefail turns git's SIGPIPE into exit 141.
+	subject=$(git show -s --format=%B "$sha" | sed -n 1p)
 
 	# Conventional type and optional scope: "type(scope)!: summary".
 	if [[ ! "$subject" =~ ^([a-z]+)(\(([^\)]*)\))?!?: ]]; then

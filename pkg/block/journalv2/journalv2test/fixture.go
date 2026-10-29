@@ -179,7 +179,11 @@ func (f *Fixture) open() {
 
 	// The journal issues no version until its first limit.
 	f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
-	f.J.SetVersionLimit(f.limit)
+	if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
+		f.tb.Fatalf("stub: SetVersionLimit")
+	} else if err != nil {
+		f.tb.Fatalf("fixture: set version limit: %v", err)
+	}
 
 	for i := range f.handles {
 		f.handles[i] = f.attach(i)

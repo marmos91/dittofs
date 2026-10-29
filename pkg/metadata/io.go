@@ -388,7 +388,12 @@ func (s *Service) flushPendingWriteForFile(ctx *AuthContext, handle FileHandle, 
 	mu.Lock()
 	defer mu.Unlock()
 
-	state, exists := s.pendingWrites.PopPending(handle)
+	// Copied, not taken out: reads overlay the pending state on the stored
+	// attributes, so it stays until the store holds what it carries. Taken out
+	// first, a read before the commit lands would find neither and report the
+	// file as it was before the writes, with their size, mtime and ctime gone. A
+	// failed flush leaves it for a later flush or COMMIT to retry.
+	state, exists := s.pendingWrites.GetPending(handle)
 	if !exists {
 		return false, nil
 	}
@@ -399,30 +404,10 @@ func (s *Service) flushPendingWriteForFile(ctx *AuthContext, handle FileHandle, 
 	// would be a no-op at best, or could overwrite valid timestamps at worst.
 	hasWriteData := state.MaxSize > 0 || !state.LastMtime.IsZero() || state.ClearSetuidSetgid
 	if !hasWriteData {
-		// Re-cache without flushing
-		if state.CachedFile != nil {
-			s.pendingWrites.SetCachedFile(handle, state.CachedFile)
-		}
 		return false, nil
 	}
 
-	if err := s.flushPendingWrite(ctx, handle, state, durable); err != nil {
-		// The state was popped before the flush; a caller that treats this error
-		// as non-fatal would otherwise permanently lose the size/mtime update and
-		// leave metadata stale until the next share-start reconcile. Restore it so
-		// a later flush or COMMIT retries, merging with any write that raced in.
-		s.pendingWrites.RestorePending(handle, state)
-		return true, err
-	}
-
-	// Re-cache the flushed file so the next PrepareWrite/GetFileCached avoids
-	// a BadgerDB read. The CachedFile was cleared by PopPending; reconstruct
-	// it from the state we just flushed.
-	if state.CachedFile != nil {
-		s.pendingWrites.SetCachedFile(handle, state.CachedFile)
-	}
-
-	return true, nil
+	return true, s.flushPendingWrite(ctx, handle, state, durable)
 }
 
 // flushPendingWrite applies a single pending write to the store.
@@ -502,22 +487,18 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		return err
 	}
 
-	// Anything held back above is still uncommitted, so put the state back: the
-	// next flush retries it once the data behind it is durable. RestorePending
-	// merges, so a write that raced in keeps the larger size.
+	// Anything held back above is still uncommitted, so it stays pending: the
+	// next flush retries it once the data behind it is durable. So does whatever
+	// a write recorded after this flush read the state.
 	//
-	// Only the size was held back. The mtime went to the store unconditionally
-	// above, so the restored state must not carry it: a live pending mtime means
-	// "a write session is in flight, reuse its frozen timestamp" to PrepareWrite,
-	// which would hand every later write the timestamp of this one and leave the
-	// file's write time stuck at the first write of the session. Dropping it
-	// leaves the committed value authoritative — the merge overlay skips a zero
-	// mtime and the next write takes a fresh one.
-	if size < state.MaxSize {
-		withheld := *state
-		withheld.LastMtime = time.Time{}
-		s.pendingWrites.RestorePending(handle, &withheld)
-	}
+	// Only the size can be held back. The mtime went to the store unconditionally
+	// above, so it leaves the pending state: a live pending mtime means "a write
+	// session is in flight, reuse its frozen timestamp" to PrepareWrite, which
+	// would hand every later write the timestamp of this one and leave the file's
+	// write time stuck at the first write of the session. Dropping it leaves the
+	// committed value authoritative: the merge overlay skips a zero mtime and the
+	// next write takes a fresh one.
+	s.pendingWrites.FinishFlush(handle, state, size)
 	return nil
 }
 

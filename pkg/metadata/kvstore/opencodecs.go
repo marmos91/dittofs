@@ -7,41 +7,37 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
 )
 
-func encodeClient(c entity.Client) []byte {
-	w := codec.NewWriter(v1).Uint8(uint8(c.Protocol)).Bytes(c.Owner).Fixed(c.Verifier[:])
-	putPrincipal(w, c.Principal).Bool(c.MachCred != nil)
-	if m := c.MachCred; m != nil {
-		putPrincipal(w, m.Principal).Bytes(m.Ops)
+func encodeClient(c entity.ClientRecord) []byte {
+	w := codec.NewWriter(v1).Uint8(uint8(c.Protocol)).Bytes(c.Name).Fixed(c.Boot[:])
+	putPrincipal(w, c.Owner).Bool(c.Protect).Uint8(uint8(c.Recovery)).
+		Fixed(c.Lease.Node[:]).Fixed(c.Reach.Callback[:]).Bool(c.Reach.Down).Len(len(c.Reach.Sessions))
+	for _, n := range c.Reach.Sessions {
+		w.Fixed(n[:])
 	}
-	return w.Uint32(c.CSSeq).Bytes(c.CSReply).Bool(c.Revoked).Encode()
+	return w.Bool(c.Ended).Bytes(c.Adapter).Encode()
 }
 
-func decodeClient(id entity.ClientID, b []byte) (entity.Client, error) {
+// decodeClient reads a client record's value; its shard marks are keys of
+// their own, which the caller adds.
+func decodeClient(id entity.ClientID, b []byte) (entity.ClientRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Client{}, err
+		return entity.ClientRecord{}, err
 	}
-	c := entity.Client{ID: id, Protocol: entity.Protocol(r.Uint8()), Owner: r.Bytes()}
-	copy(c.Verifier[:], r.Fixed(8))
-	c.Principal = readPrincipal(r)
-	if r.Bool() {
-		c.MachCred = &entity.MachCred{Principal: readPrincipal(r), Ops: r.Bytes()}
+	c := entity.ClientRecord{ID: id, Protocol: entity.Protocol(r.Uint8()), Name: r.Bytes()}
+	copy(c.Boot[:], r.Fixed(8))
+	c.Owner, c.Protect, c.Recovery = readPrincipal(r), r.Bool(), entity.RecoveryKind(r.Uint8())
+	copy(c.Lease.Node[:], r.Fixed(16))
+	copy(c.Reach.Callback[:], r.Fixed(16))
+	c.Reach.Down = r.Bool()
+	if n := r.Len(); n > 0 {
+		c.Reach.Sessions = make([]entity.NodeID, n)
+		for i := range c.Reach.Sessions {
+			copy(c.Reach.Sessions[i][:], r.Fixed(16))
+		}
 	}
-	c.CSSeq, c.CSReply, c.Revoked = r.Uint32(), r.Bytes(), r.Bool()
+	c.Ended, c.Adapter = r.Bool(), r.Bytes()
 	return c, r.Done()
-}
-
-func encodeClientShard(s entity.ClientShard) []byte {
-	return codec.NewWriter(v1).Uint32(s.Reclaimed).Bool(s.LossPending).Bool(s.Revoked).Bytes(s.Notify).Encode()
-}
-
-func decodeClientShard(shard uint64, b []byte) (entity.ClientShard, error) {
-	r, err := open(b)
-	if err != nil {
-		return entity.ClientShard{}, err
-	}
-	s := entity.ClientShard{Shard: shard, Reclaimed: r.Uint32(), LossPending: r.Bool(), Revoked: r.Bool(), Notify: r.Bytes()}
-	return s, r.Done()
 }
 
 func encodeClientID(id entity.ClientID) []byte {
@@ -57,15 +53,15 @@ func decodeClientID(b []byte) (entity.ClientID, error) {
 	return id, r.Done()
 }
 
-func encodeOpen(o entity.Open) []byte {
+func encodeOpen(o entity.OpenRecord) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(o.Client))
 	putPrincipal(w, o.Principal).Uint32(uint32(o.Access)).Bool(o.Privileged).Uint32(uint32(o.Deny)).
 		Uint8(uint8(o.Durability)).Bool(o.DeleteOnClose)
 	putPrincipal(w, o.DeleteBy).Bool(o.Lease != nil)
 	if l := o.Lease; l != nil {
-		w.Fixed(l.Key[:]).Fixed(l.ParentKey[:]).Uint8(l.State).Uint32(uint32(l.Epoch))
+		w.Fixed(l.Key[:]).Fixed(l.ParentKey[:]).Uint8(l.State).Uint32(uint32(l.Epoch)).Bool(l.V2)
 	}
-	w.Uint8(uint8(o.Suspended)).Fixed(o.Via[:]).Uint32(o.StateSeq).Uint64(o.Nonce).Uint64(o.LossSeen).
+	w.Uint8(uint8(o.Suspended)).Fixed(o.Via[:]).Bytes(o.Name).Uint32(o.StateSeq).Uint64(o.Nonce).Uint64(o.LossSeen).
 		Uint64(o.Session.Node).Uint64(o.Session.NodeEpoch).Uint64(o.Session.ID).
 		Uint8(uint8(o.Kind)).Fixed(o.CloneDst[:]).Fixed(o.CloneVersion[:]).
 		Fixed(o.CreateGUID[:]).Fixed(o.AppInstance[:]).Uint64(o.AppVersion[0]).Uint64(o.AppVersion[1]).
@@ -73,12 +69,12 @@ func encodeOpen(o entity.Open) []byte {
 	return w.Encode()
 }
 
-func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, error) {
+func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.OpenRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Open{}, err
+		return entity.OpenRecord{}, err
 	}
-	o := entity.Open{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
+	o := entity.OpenRecord{ID: id, File: file, Client: entity.ClientID(r.Uint64())}
 	o.Principal = readPrincipal(r)
 	o.Access, o.Privileged, o.Deny = entity.AccessMask(r.Uint32()), r.Bool(), entity.AccessMask(r.Uint32())
 	o.Durability, o.DeleteOnClose = entity.Durability(r.Uint8()), r.Bool()
@@ -87,10 +83,13 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, er
 		l := &entity.Lease{}
 		copy(l.Key[:], r.Fixed(16))
 		copy(l.ParentKey[:], r.Fixed(16))
-		l.State, l.Epoch = r.Uint8(), uint16(r.Uint32())
+		l.State, l.Epoch, l.V2 = r.Uint8(), uint16(r.Uint32()), r.Bool()
 		o.Lease = l
 	}
 	o.Suspended, o.Via = entity.TimeMask(r.Uint8()), readFileID(r)
+	if n := r.Bytes(); len(n) > 0 {
+		o.Name = n // nil: opened by handle
+	}
 	o.StateSeq, o.Nonce, o.LossSeen = r.Uint32(), r.Uint64(), r.Uint64()
 	o.Session = entity.SessionRef{Node: r.Uint64(), NodeEpoch: r.Uint64(), ID: r.Uint64()}
 	o.Kind, o.CloneDst, o.CloneVersion = entity.OpenKind(r.Uint8()), readFileID(r), readVersion(r)
@@ -103,32 +102,32 @@ func decodeOpen(file entity.FileID, id entity.OpenID, b []byte) (entity.Open, er
 	return o, r.Done()
 }
 
-func encodeLock(l entity.Lock) []byte {
-	return codec.NewWriter(v1).Uint64(uint64(l.Owner.Client)).Bytes(l.Owner.Owner).Uint64(uint64(l.Length)).Bool(l.Exclusive).Encode()
+func encodeLock(l entity.LockRecord) []byte {
+	return codec.NewWriter(v1).Uint64(uint64(l.Owner.Client)).Bytes(l.Owner.Owner).Uint64(l.Length).Bool(l.Exclusive).Encode()
 }
 
-func decodeLock(o entity.OpenID, offset int64, id entity.LockID, b []byte) (entity.Lock, error) {
+func decodeLock(o entity.OpenID, offset uint64, id entity.LockID, b []byte) (entity.LockRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Lock{}, err
+		return entity.LockRecord{}, err
 	}
-	l := entity.Lock{ID: id, Open: o, Offset: offset}
+	l := entity.LockRecord{ID: id, Open: o, Offset: offset}
 	l.Owner = entity.LockOwner{Client: entity.ClientID(r.Uint64()), Owner: r.Bytes()}
-	l.Length, l.Exclusive = int64(r.Uint64()), r.Bool()
+	l.Length, l.Exclusive = r.Uint64(), r.Bool()
 	return l, r.Done()
 }
 
-func encodeDeletePending(d entity.DeletePending) []byte {
+func encodeDeletePending(d entity.DeleteRecord) []byte {
 	w := codec.NewWriter(v1).Fixed(d.Parent[:]).Bytes(d.Name)
 	return putPrincipal(w, d.By).Uint32(uint32(d.Access)).Bool(d.Privileged).Encode()
 }
 
-func decodeDeletePending(b []byte) (entity.DeletePending, error) {
+func decodeDeletePending(b []byte) (entity.DeleteRecord, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.DeletePending{}, err
+		return entity.DeleteRecord{}, err
 	}
-	d := entity.DeletePending{Parent: readFileID(r), Name: r.Bytes(), By: readPrincipal(r)}
+	d := entity.DeleteRecord{Parent: readFileID(r), Name: r.Bytes(), By: readPrincipal(r)}
 	d.Access, d.Privileged = entity.AccessMask(r.Uint32()), r.Bool()
 	return d, r.Done()
 }

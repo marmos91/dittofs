@@ -619,6 +619,13 @@ func MakeAuthErrorReply(xid uint32, authStat uint32) ([]byte, error) {
 	return result, nil
 }
 
+// AuthOK is the RFC 5531 auth_stat for a credential that was accepted.
+const AuthOK uint32 = 0
+
+// AuthBadCred is the RFC 5531 auth_stat for a credential the server cannot
+// decode or whose flavor it does not implement.
+const AuthBadCred uint32 = 1
+
 // AuthTooWeak is the RFC 5531 auth_stat for a credential the server cannot
 // accept because it does not support the flavor — as opposed to a credential it
 // supports but rejects. Returned for an RPCSEC_GSS call when no GSS processor is

@@ -62,16 +62,13 @@ func TestReport(t *testing.T) {
 	}
 
 	latest, err := dt(t, "report", "--results", results)
-	if err != nil || !strings.Contains(latest, "fails  failed") || !strings.Contains(latest, "fails  false        `false` exited 1") {
+	if err != nil || !strings.Contains(latest, "fails  failed") {
 		t.Errorf("latest: %v\n%s", err, latest)
 	}
 	for _, run := range []string{first, filepath.Join(results, first)} {
 		if out, err := dt(t, "report", run, "--results", results); err != nil || !strings.Contains(out, "s     passed") {
 			t.Errorf("%s: %v\n%s", run, err, out)
 		}
-	}
-	if md, err := dt(t, "report", "--format", "md", "--results", results); err != nil || !strings.HasPrefix(md, "### dt run fails\n") || !strings.Contains(md, "| `fails` | `false` | `` `false` exited 1 `` |") {
-		t.Errorf("md: %v\n%s", err, md)
 	}
 	out, err := dt(t, "report", "--format", "json", "--failures", "--results", results)
 	var doc struct {

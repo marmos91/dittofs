@@ -85,6 +85,60 @@ func TestHeldBackSizeDoesNotFreezeTheWriteTime(t *testing.T) {
 		"the store must carry the second write's mtime, not the first's: got %v, the first write was %v", f.Mtime, first)
 }
 
+// TestWriteDuringAHeldBackFlushKeepsItsTime covers a write that lands while a
+// flush commits a size an earlier flush held back. That earlier flush committed
+// the mtime and dropped it from the pending state, so this flush commits no
+// mtime, and the write takes a fresh one. Finishing the flush must leave that
+// mtime pending: dropped with the committed state, a read reports the earlier
+// write's time and no later flush commits the new one.
+func TestWriteDuringAHeldBackFlushKeepsItsTime(t *testing.T) {
+	svc, store, rootHandle, ctx := newHoldbackFixture(t)
+
+	_, _, err := svc.CreateFile(ctx, rootHandle, "w.bin", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	handle, err := store.GetChild(ctx.Context, rootHandle, "w.bin")
+	require.NoError(t, err)
+
+	write := func(size uint64) time.Time {
+		intent, err := svc.PrepareWrite(ctx, handle, size)
+		require.NoError(t, err)
+		_, err = svc.CommitWrite(ctx, intent)
+		require.NoError(t, err)
+		return intent.NewMtime
+	}
+
+	first := write(1)
+	_, err = svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	var during time.Time
+	svc.SetDurableExtentResolver(func(string, metadata.PayloadID) (int64, bool) {
+		if during.IsZero() {
+			during = write(1)
+		}
+		return 0, true
+	})
+	flushed, err := svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	require.True(t, flushed, "the held-back size must still be pending")
+	require.True(t, during.After(first),
+		"the write during the flush must take a fresh mtime, or this test checks nothing: got %v, the first was %v", during, first)
+
+	seen, err := svc.GetFile(ctx.Context, handle)
+	require.NoError(t, err)
+	require.True(t, seen.Mtime.Equal(during),
+		"a read after the flush must report the write's mtime: got %v, the write's is %v", seen.Mtime, during)
+
+	svc.SetDurableExtentResolver(func(string, metadata.PayloadID) (int64, bool) { return 1, true })
+	_, err = svc.FlushPendingWriteForFile(ctx, handle, false)
+	require.NoError(t, err)
+	f, err := store.GetFile(ctx.Context, handle)
+	require.NoError(t, err)
+	require.True(t, f.Mtime.After(first),
+		"the next flush must commit the write's mtime: got %v, the first write was %v", f.Mtime, first)
+}
+
 // TestReadDirectoryReportsTheAckedSize covers a directory listing of a file
 // whose size is held back from the store for durability. Every other read path
 // (GETATTR, QUERY_INFO, READ) reports the acknowledged size by merging the

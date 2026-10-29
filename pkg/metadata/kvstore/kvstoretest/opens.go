@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
@@ -14,11 +15,11 @@ func (f *fs) release(file entity.FileID, v uint64) error {
 	return f.s.Existence().Remove(ctx, f.share.ID, file, 0, kvstore.RemoveOp{Version: entity.VersionOf(v), Kind: entity.RemoveRelease}, nil)
 }
 
-func (f *fs) newOpen(file entity.FileID) entity.Open {
+func (f *fs) newOpen(file entity.FileID) entity.OpenRecord {
 	f.t.Helper()
-	id, err := f.s.NextOpenID(ctx)
+	id, err := f.s.NextID(ctx, kvstore.IDOpen)
 	must(f.t, err)
-	return entity.Open{ID: id, File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
+	return entity.OpenRecord{ID: entity.OpenID(id), File: file, Client: 1, Principal: f.admin.Principal, Access: 0x3}
 }
 
 func (f *fs) durable(shard uint64) []kvstore.DurableOpen {
@@ -64,14 +65,14 @@ func testDurableOpens(t *testing.T, kvo Opener) {
 	if err := f.release(file.ID, 1); !errors.Is(err, kvstore.ErrHeld) {
 		t.Fatalf("release with two durable opens: %v", err)
 	}
-	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); err != nil || orphan {
-		t.Fatalf("first close: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); err != nil || orphan != (kvstore.Orphaned{}) {
+		t.Fatalf("first close: orphaned %v, %v", orphan, err)
 	}
 	if err := f.release(file.ID, 1); !errors.Is(err, kvstore.ErrHeld) {
 		t.Fatalf("release with one durable open: %v", err)
 	}
-	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); err != nil || !orphan {
-		t.Fatalf("last close: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); err != nil || orphan != (kvstore.Orphaned{File: file.ID}) {
+		t.Fatalf("last close: orphaned %v, %v", orphan, err)
 	}
 	if d := f.durable(file.Shard); len(d) != 0 {
 		t.Errorf("index after both closes %+v", d)
@@ -101,8 +102,8 @@ func testDurableOpens(t *testing.T, kvo Opener) {
 	r := f.newOpen(rootID)
 	r.Durability = entity.DurabilityPersistent
 	must(t, opens.Put(ctx, f.share.ID, r))
-	if orphan, err := opens.Delete(ctx, f.share.ID, rootID, r.ID); err != nil || orphan {
-		t.Errorf("close of the root's open: orphan %v, %v", orphan, err)
+	if orphan, err := opens.Delete(ctx, f.share.ID, rootID, r.ID); err != nil || orphan != (kvstore.Orphaned{}) {
+		t.Errorf("close of the root's open: orphaned %v, %v", orphan, err)
 	}
 }
 
@@ -129,6 +130,28 @@ func testOpenRacesRelease(t *testing.T, kvo Opener) {
 				t.Errorf("release first: release %v, open %v", inner, outer)
 			}
 		}
+	}
+}
+
+// Two last closes of an unlinked file, committing concurrently: one of
+// them names the file orphaned. The opens are persistent, so neither close
+// writes a key the other reads.
+func testLastClosesRace(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	a, b := f.newOpen(file.ID), f.newOpen(file.ID)
+	a.Durability, b.Durability = entity.DurabilityPersistent, entity.DurabilityPersistent
+	_, err := f.s.Namespace().Unlink(ctx, f.admin, f.root, []byte("a"), a, b)
+	must(t, err)
+	var oa, ob kvstore.Orphaned
+	ea, eb := race(h,
+		func() (err error) { oa, err = opens.Delete(ctx, f.share.ID, file.ID, a.ID); return },
+		func() (err error) { ob, err = opens.Delete(ctx, f.share.ID, file.ID, b.ID); return })
+	must(t, ea)
+	must(t, eb)
+	if oa == (kvstore.Orphaned{}) && ob == (kvstore.Orphaned{}) {
+		t.Fatal("neither last close named the file orphaned")
 	}
 }
 
@@ -168,9 +191,13 @@ func testCloneHold(t *testing.T, kvo Opener) {
 	}
 }
 
-// RFC 14 §8: a lock is stored only beneath a persistent open, in offset
-// order, two at one offset being two keys; closing the open drops them.
-func testDurableLocks(t *testing.T, kvo Opener) {
+// A change to an open's locks lands whole in one transaction: its deletes,
+// its writes and the open's new record together, nothing for an open that is
+// missing or not persistent, and nothing for one past the backend's limits.
+// Locks list in offset order, two at one offset being two keys, any 64-bit
+// offset and a zero length kept as asked; they never read as opens, and
+// closing the open drops them.
+func testDurableLockChanges(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	opens := f.s.Opens()
 	_, file := f.create(f.admin, f.root, "a", regular(0o644))
@@ -179,40 +206,130 @@ func testDurableLocks(t *testing.T, kvo Opener) {
 	must(t, opens.Put(ctx, f.share.ID, p))
 	plain := f.newOpen(file.ID)
 	must(t, opens.Put(ctx, f.share.ID, plain))
-	lock := func(open entity.OpenID, off int64, owner string) entity.Lock {
-		id, err := f.s.NextLockID(ctx)
+	lock := func(id entity.LockID, off, length uint64) entity.LockRecord {
+		return entity.LockRecord{ID: id, Owner: entity.LockOwner{Client: 1, Owner: []byte("x")}, Offset: off, Length: length}
+	}
+	locks := func(open entity.OpenID) []entity.LockRecord {
+		got, err := opens.Locks(ctx, f.share.ID, file.ID, open)
 		must(t, err)
-		return entity.Lock{ID: id, Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
+		return got
 	}
-	if err := opens.PutLock(ctx, f.share.ID, file.ID, lock(plain.ID, 0, "x")); err == nil {
-		t.Error("a lock stored under an open that is not persistent")
+	record := func() entity.OpenRecord {
+		ops, err := opens.Of(ctx, f.share.ID, file.ID)
+		must(t, err)
+		for _, op := range ops {
+			if op.ID == p.ID {
+				return op
+			}
+		}
+		t.Fatalf("p is not stored: %+v", ops)
+		return entity.OpenRecord{}
 	}
-	l1, l2, l3 := lock(p.ID, 100, "x"), lock(p.ID, 0, "x"), lock(p.ID, 100, "y")
-	for _, l := range []entity.Lock{l1, l2, l3} {
-		must(t, opens.PutLock(ctx, f.share.ID, file.ID, l))
+
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{lock(0, 0, 1)}, nil); err == nil {
+		t.Error("a lock with no ID was stored")
 	}
-	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
-	must(t, err)
-	if len(got) != 3 || got[0].ID != l2.ID || got[1].ID != l1.ID || got[2].ID != l3.ID || string(got[2].Owner.Owner) != "y" {
-		t.Fatalf("locks %+v", got)
+	a, b := lock(1, 100, 10), lock(1, 0, 10)
+	a.Open = plain.ID // a record's Open is not read: it is stored under p
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{a, b}, nil))
+	b2, c := lock(1, 0, 20), lock(2, 0, 5)
+	far := lock(3, 1<<63, 0)      // an SMB lock past 2^63, of zero length
+	top := lock(4, ^uint64(0), 0) // at the last byte offset
+	rec := p
+	rec.LockSeq[0] = 0x13
+	f.c.Take()
+	must(t, opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec, []entity.LockRecord{b2, c, far, top}, []entity.LockRecord{a, b}))
+	if n := f.c.Take(); n.Sets != 5 || n.Deletes != 2 {
+		t.Errorf("the change wrote %+v, want the record, 4 locks and 2 deletes", n)
+	}
+	got := locks(p.ID)
+	if len(got) != 4 || got[0].ID != 1 || got[0].Length != 20 || got[1].ID != 2 || got[2].ID != 3 || got[2].Offset != 1<<63 || got[2].Length != 0 ||
+		got[3].ID != 4 || got[3].Offset != ^uint64(0) {
+		t.Fatalf("locks after the change %+v, want b rewritten and c added in offset order, a gone, the far locks as asked", got)
+	}
+	if r := record(); r.LockSeq[0] != 0x13 {
+		t.Errorf("the open's record after the change: LockSeq[0] = %#x, want 0x13", r.LockSeq[0])
 	}
 	if ops, err := opens.Of(ctx, f.share.ID, file.ID); err != nil || len(ops) != 2 {
 		t.Errorf("the locks read as opens: %+v, %v", ops, err)
 	}
-	must(t, opens.DeleteLock(ctx, f.share.ID, file.ID, l1))
-	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 2 {
-		t.Errorf("locks after one unlock %+v, %v", got, err)
+
+	other := rec
+	other.ID = plain.ID
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &other, nil, []entity.LockRecord{c}); err == nil {
+		t.Error("another open's record written with p's locks")
 	}
-	_, err = opens.Delete(ctx, f.share.ID, file.ID, p.ID)
+	demoted := rec
+	demoted.Durability = entity.DurabilityDurable
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &demoted, nil, []entity.LockRecord{c}); err == nil {
+		t.Error("p's record rewritten as not persistent with its locks")
+	}
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID, nil, []entity.LockRecord{b}, nil); err == nil {
+		t.Error("locks stored under an open that is not persistent")
+	}
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID+1000, nil, []entity.LockRecord{b}, nil); !merrs.IsNotFoundError(err) {
+		t.Errorf("locks under an open with no record: %v, want not found", err)
+	}
+	if got := locks(plain.ID); len(got) != 0 {
+		t.Errorf("a refused change stored %+v", got)
+	}
+
+	// Writes past the transaction's byte limit, with a delete and a new
+	// record: none of them lands.
+	l := f.c.Limits()
+	owner := min(l.Value/2, 1<<16)
+	var big []entity.LockRecord
+	for i := range l.TxnBytes/owner + 1 {
+		r := lock(entity.LockID(i+10), 1000, 1)
+		r.Owner.Owner = make([]byte, owner)
+		big = append(big, r)
+	}
+	rec2 := rec
+	rec2.LockSeq[0] = 0x14
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &rec2, big, []entity.LockRecord{c}); !errors.Is(err, kv.ErrTooLarge) {
+		t.Fatalf("a change past the limits: %v, want kv.ErrTooLarge", err)
+	}
+	if got := locks(p.ID); len(got) != 4 || got[1].ID != 2 {
+		t.Errorf("locks after a change past the limits %+v, want them as they were", got)
+	}
+	if r := record(); r.LockSeq[0] != 0x13 {
+		t.Errorf("the open's record after a change past the limits: LockSeq[0] = %#x, want 0x13", r.LockSeq[0])
+	}
+
+	_, err := opens.Delete(ctx, f.share.ID, file.ID, p.ID)
 	must(t, err)
-	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 0 {
-		t.Errorf("locks after their open closed %+v, %v", got, err)
+	if got := locks(p.ID); len(got) != 0 {
+		t.Errorf("locks after their open closed %+v", got)
+	}
+}
+
+// A lock change committing inside a close leaves no lock row beneath the
+// closed open: the close retries or fails, and the open and its locks go
+// together.
+func testCloseRacesLockChange(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	p := f.newOpen(file.ID)
+	p.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, p))
+	l := entity.LockRecord{ID: 1, Owner: entity.LockOwner{Client: 1, Owner: []byte("x")}, Length: 10}
+	closeErr, lockErr := race(h,
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, p.ID); return err },
+		func() error { return opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, nil, []entity.LockRecord{l}, nil) })
+	must(t, lockErr)
+	must(t, closeErr)
+	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
+	must(t, err)
+	if len(got) != 0 {
+		t.Fatalf("locks left beneath the closed open: %+v", got)
 	}
 }
 
 // RFC 14 §9.4: delete pending is stored only while the file has a
 // persistent open, and goes with the unlink of the entry it names, not
-// with the unlink of another name of the file.
+// with the unlink of another name of the file, and with the close of the
+// file's last persistent open.
 func testDeletePending(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, opens := f.s.Namespace(), f.s.Opens()
@@ -222,7 +339,7 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	must(t, opens.Put(ctx, f.share.ID, plain))
 	_, rootID, err := f.root.Parse()
 	must(t, err)
-	dp := entity.DeletePending{Parent: rootID, Name: []byte("a"), By: f.admin.Principal, Access: 0x10000}
+	dp := entity.DeleteRecord{Parent: rootID, Name: []byte("a"), By: f.admin.Principal, Access: 0x10000}
 	if err := opens.SetDeletePending(ctx, f.share.ID, file.ID, plain.ID, dp); err == nil {
 		t.Error("delete pending stored for an open that is not persistent")
 	}
@@ -248,10 +365,51 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	q := f.newOpen(other.ID)
 	q.Durability = entity.DurabilityPersistent
 	must(t, opens.Put(ctx, f.share.ID, q))
-	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeletePending{Parent: rootID, Name: []byte("c")}))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("c")}))
 	must(t, opens.ClearDeletePending(ctx, f.share.ID, other.ID))
 	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
 		t.Errorf("after a clear: %v, %v", ok, err)
+	}
+
+	// It goes with the file's last persistent open, a volatile one left or
+	// not: nothing durable holds the promise past that close.
+	q2 := f.newOpen(other.ID)
+	q2.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, q2))
+	must(t, opens.Put(ctx, f.share.ID, f.newOpen(other.ID)))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("c")}))
+	_, err = opens.Delete(ctx, f.share.ID, other.ID, q.ID)
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || !ok {
+		t.Errorf("a close while another persistent open holds the file dropped it: %v, %v", ok, err)
+	}
+	_, err = opens.Delete(ctx, f.share.ID, other.ID, q2.ID)
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
+		t.Errorf("the last persistent open's close kept it: %v, %v", ok, err)
+	}
+}
+
+// Two last persistent closes of a file with delete pending, committing
+// concurrently: delete pending goes with whichever commits second.
+func testDeletePendingRace(t *testing.T, kvo Opener) {
+	f, h := newHeldFS(t, kvo.backends()[0], entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	_, rootID, err := f.root.Parse()
+	must(t, err)
+	a, b := f.newOpen(file.ID), f.newOpen(file.ID)
+	a.Durability, b.Durability = entity.DurabilityPersistent, entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, a))
+	must(t, opens.Put(ctx, f.share.ID, b))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, file.ID, a.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("a")}))
+	ea, eb := race(h,
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, a.ID); return err },
+		func() error { _, err := opens.Delete(ctx, f.share.ID, file.ID, b.ID); return err })
+	must(t, ea)
+	must(t, eb)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, file.ID); err != nil || ok {
+		t.Fatalf("delete pending outlived both persistent opens: %v, %v", ok, err)
 	}
 }
 
@@ -272,5 +430,39 @@ func testNSMState(t *testing.T, kvo Opener) {
 	must(t, err)
 	if n, err := again.NSMState(ctx); err != nil || n != 3 {
 		t.Errorf("after a restart: %d, %v", n, err)
+	}
+}
+
+// RFC 14 §2.11: a client, open or lock ID from NextID is never zero and never
+// issued twice, by this process or a later one over the same store, which
+// may abandon a reserved range but never reissue it. A kind with no
+// allocator is refused.
+func testNextID(t *testing.T, kvo Opener) {
+	s, c := newStore(t, kvo)
+	kinds := []kvstore.IDKind{kvstore.IDClient, kvstore.IDOpen, kvstore.IDLock}
+	seen := map[kvstore.IDKind]map[uint64]bool{}
+	draw := func(s *kvstore.Store, n int) {
+		t.Helper()
+		for _, k := range kinds {
+			if seen[k] == nil {
+				seen[k] = map[uint64]bool{}
+			}
+			for range n {
+				id, err := s.NextID(ctx, k)
+				if err != nil || id == 0 || seen[k][id] {
+					t.Fatalf("kind %d: id %d, %v", k, id, err)
+				}
+				seen[k][id] = true
+			}
+		}
+	}
+	draw(s, 1100) // past one reserved range
+	again, err := kvstore.Open(ctx, c)
+	must(t, err)
+	draw(again, 3)
+	for _, k := range []kvstore.IDKind{0, 4} {
+		if _, err := s.NextID(ctx, k); !isCode(err, merrs.ErrInvalidArgument) {
+			t.Errorf("kind %d: %v", k, err)
+		}
 	}
 }

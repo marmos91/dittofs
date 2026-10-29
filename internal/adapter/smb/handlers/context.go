@@ -162,6 +162,11 @@ type SMBHandlerContext struct {
 	// falls back to constructing the identity fresh).
 	session *session.Session
 
+	// identityMapper applies the request's share squash mode to the identity
+	// BuildAuthContextFromUser derives. Set by primeAuthContext together with
+	// User, from the handler's runtime.
+	identityMapper identityMapper
+
 	// PACGroupSIDs carries the Kerberos PAC group SIDs of the request's
 	// session (when it authenticated via Kerberos against AD). Populated from
 	// Session.PACGroupSIDs by primeAuthContext and the Kerberos SESSION_SETUP

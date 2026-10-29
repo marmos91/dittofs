@@ -44,10 +44,16 @@ Access to a file is decided by **two independent layers**, both of which must al
 
 **Effective access = share gate AND filesystem permission.** Both must allow.
 
-> **Before either layer runs, NFS may *remap the caller's identity*** via
-> per-share squashing (`root_squash` and friends). Squashing decides *who you
-> are* — e.g. mapping a remote `root` to an anonymous user — and the two layers
-> above then apply to that effective identity. See
+> **The share may also *remap the caller's identity*** (NFS and SMB alike) via
+> per-share squashing (`root_squash` and friends) — e.g. mapping a remote `root`
+> to an anonymous user. The two layers see different identities: the **share
+> gate** resolves grants for the identity the client authenticated as (SMB) or
+> claimed (NFS), *before* squashing, while **filesystem permissions** apply to
+> the squashed identity. So on an `all_to_guest` share, alice still needs a
+> share grant of her own (or a non-`none` `default_permission`) to get in, and
+> once in she reads and writes files as the anonymous UID/GID. Configure share
+> grants against the real users, and file ownership/modes against the squashed
+> identity. See
 > [NFS § Identity Squashing](nfs.md#identity-squashing-root_squash-and-friends).
 
 ### Share owner

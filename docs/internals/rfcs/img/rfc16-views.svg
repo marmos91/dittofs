@@ -23,44 +23,51 @@
   <text x="16" y="26" class="t">Each consumer holds a narrow view; one store maps every view onto one small KV interface.</text>
 
   <rect x="24" y="44" width="168" height="34" rx="5" class="pr"/><text x="38" y="65" class="h">NFS · SMB adapters</text>
-  <path d="M108,78 L108,104" class="ln"/><text x="116" y="96" class="s">vfs.Service only (RFC 17)</text>
+  <path d="M86,78 L86,104" class="ln"/><text x="94" y="96" class="s">vfs.Service only (RFC 17)</text>
   <text x="220" y="58" class="s">Adapters never receive a store view. Inspect reads by ID without authorisation,</text>
   <text x="220" y="72" class="s">so it goes only to trusted internal consumers.</text>
 
-  <rect x="24" y="106" width="168" height="96" rx="6" class="sv"/>
-  <text x="34" y="126" class="h">Filesystem service</text>
-  <text x="34" y="146" class="m">Namespace, Files,</text><text x="34" y="162" class="m">Capacity, OpenState</text>
-  <text x="34" y="190" class="s">RFC 7 · RFC 14</text>
+  <rect x="24" y="106" width="124" height="96" rx="6" class="sv"/>
+  <text x="33" y="126" class="h">Filesystem service</text>
+  <text x="33" y="146" class="m">Namespace,</text><text x="33" y="162" class="m">Files, Capacity</text>
+  <text x="33" y="190" class="s">RFC 7</text>
 
-  <rect x="204" y="106" width="128" height="96" rx="6" class="sv"/>
-  <text x="214" y="126" class="h">Engine</text>
-  <text x="214" y="146" class="m">Existence,</text><text x="214" y="162" class="m">Content</text>
-  <text x="214" y="190" class="s">RFC 6</text>
+  <rect x="158" y="106" width="118" height="96" rx="6" class="sv"/>
+  <text x="168" y="126" class="h">Open state</text>
+  <text x="168" y="146" class="m">OpenRecords</text>
+  <text x="168" y="164" class="s">the service reaches it</text><text x="168" y="178" class="s">through the table</text>
+  <text x="168" y="194" class="s">RFC 14</text>
 
-  <rect x="344" y="106" width="104" height="96" rx="6" class="sv"/>
-  <text x="354" y="126" class="h">GC</text>
-  <text x="354" y="146" class="m">Blocks</text>
-  <text x="354" y="190" class="s">RFC 6</text>
+  <rect x="286" y="106" width="112" height="96" rx="6" class="sv"/>
+  <text x="296" y="126" class="h">Engine</text>
+  <text x="296" y="146" class="m">Existence,</text><text x="296" y="162" class="m">Content</text>
+  <text x="296" y="190" class="s">RFC 6</text>
 
-  <rect x="460" y="106" width="128" height="96" rx="6" class="sv"/>
-  <text x="470" y="126" class="h">Authentication</text>
-  <text x="470" y="146" class="m">Principals</text>
-  <text x="470" y="190" class="s">this RFC</text>
+  <rect x="408" y="106" width="80" height="96" rx="6" class="sv"/>
+  <text x="418" y="126" class="h">GC</text>
+  <text x="418" y="146" class="m">Blocks</text>
+  <text x="418" y="190" class="s">RFC 6</text>
 
-  <rect x="600" y="106" width="128" height="96" rx="6" class="sv"/>
-  <text x="610" y="126" class="h">Management API</text>
-  <text x="610" y="146" class="m">ControlPlane</text>
-  <text x="610" y="190" class="s">this RFC</text>
+  <rect x="498" y="106" width="112" height="96" rx="6" class="sv"/>
+  <text x="508" y="126" class="h">Authentication</text>
+  <text x="508" y="146" class="m">Principals</text>
+  <text x="508" y="190" class="s">this RFC</text>
 
-  <rect x="740" y="106" width="136" height="96" rx="6" class="sv"/>
-  <text x="750" y="126" class="h">Internal tools</text>
-  <text x="750" y="146" class="m">Inspect</text>
-  <text x="750" y="164" class="s">snapshots, export,</text><text x="750" y="178" class="s">audit, repair, dump</text>
-  <text x="750" y="194" class="s">this RFC</text>
+  <rect x="620" y="106" width="116" height="96" rx="6" class="sv"/>
+  <text x="630" y="126" class="h">Management API</text>
+  <text x="630" y="146" class="m">ControlPlane</text>
+  <text x="630" y="190" class="s">this RFC</text>
 
-  <path d="M108,202 L108,238" class="ln"/><path d="M268,202 L268,238" class="ln"/>
-  <path d="M396,202 L396,238" class="ln"/><path d="M524,202 L524,238" class="ln"/>
-  <path d="M664,202 L664,238" class="ln"/><path d="M808,202 L808,238" class="ln"/>
+  <rect x="746" y="106" width="130" height="96" rx="6" class="sv"/>
+  <text x="756" y="126" class="h">Internal tools</text>
+  <text x="756" y="146" class="m">Inspect</text>
+  <text x="756" y="164" class="s">snapshots, export,</text><text x="756" y="178" class="s">audit, repair, dump</text>
+  <text x="756" y="194" class="s">this RFC</text>
+
+  <path d="M86,202 L86,238" class="ln"/><path d="M217,202 L217,238" class="ln"/>
+  <path d="M342,202 L342,238" class="ln"/><path d="M448,202 L448,238" class="ln"/>
+  <path d="M554,202 L554,238" class="ln"/><path d="M678,202 L678,238" class="ln"/>
+  <path d="M811,202 L811,238" class="ln"/>
 
   <rect x="24" y="240" width="852" height="84" rx="6" class="st"/>
   <text x="38" y="262" class="h">One metadata store: metadata.Open(ctx, kv) builds it once, and the composition root hands each consumer its view</text>
