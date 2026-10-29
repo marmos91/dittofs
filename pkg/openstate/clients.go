@@ -216,8 +216,9 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
 	known := false
 	cur, found, err := t.byName(ctx, rec)
-	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 {
-		// a record no serve listed holds no lease here until now
+	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 && len(cur.Shards) == 0 {
+		// a record with no shard mark, which no serve lists, holds no lease
+		// here until now; one with a mark is leased by its shard's serve
 		if err = t.adopt(ctx, cur.ID); errors.Is(err, ErrStaleClient) {
 			found, err = false, nil // gone since it was read
 		}
@@ -306,8 +307,8 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	}
 
 	cur, found, err := t.byName(ctx, *rec)
-	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 {
-		t.leaseIfUnleased(cur) // a record no serve listed holds no lease here until now
+	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 && len(cur.Shards) == 0 {
+		t.leaseIfUnleased(cur) // a record with no shard mark, which no serve lists, holds no lease here until now
 	}
 	var ended *entity.ClientRecord
 	if found && t.lapsed(cur.ID) {

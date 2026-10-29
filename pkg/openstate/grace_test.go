@@ -1283,6 +1283,31 @@ func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
 	}
 }
 
+// Another principal's collision with the name of an NFSv4 client holding
+// state, after a restart and before its shard is served, leases nothing: the
+// client's lease starts at its shard's grace, so it is not expired first.
+func TestCollisionBeforeServeLeavesAStatefulClient(t *testing.T) {
+	for name, take := range map[string]func(f *fixture, c Client) error{
+		"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
+		"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+			f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+			f.Stop()
+			g := unstarted(t, f.fs, f.clock)
+			g.start(t, nil)
+			_ = take(g, nfs("a", 2, entity.NewUser())) // refused: the name is a's
+			g.clock.advance(leasePeriod + sweepEvery)
+			g.sweep(ctx)
+			if got := g.sink.endedOf(a.Client); len(got) != 0 {
+				t.Errorf("a client whose shard is not served yet was expired by another principal's %s: ended %v", name, got)
+			}
+		})
+	}
+}
+
 // A silent NFSv4 client that held nothing, so no serve listed it, frees its
 // name to another principal after a restart as it does without one: the
 // collision arms its lease, and the name lapses a lease period later.
