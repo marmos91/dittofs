@@ -183,14 +183,15 @@ func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool 
 // recallOthers recalls each grant on e that own does not claim, under e's
 // step, to what keeps leaves it, a grant that covers no open to none, and is
 // ErrDelay with DelayRecall while any of them holds more than that: its recall
-// started here or already in flight, and not ended as it was sent. A request that would start recalls past
-// maxUnsent is ErrDelay with DelayResources, and starts and narrows none.
+// started here or already in flight, and not ended as it was sent. A request
+// that would start recalls past maxUnsent is ErrDelay with DelayResources, and
+// starts and narrows none.
 //
 // A grant covering only disconnected durable opens that are not persistent
 // is not recalled: no session is left to answer, so those opens close
-// instead, as a close does. A recall that raises a lease's epoch is written
-// with the persistent opens it covers before it is started, and a refused
-// write starts none.
+// instead, as a close does. A recall that changes a lease's epoch, or its
+// kind as it is sent, is written with the persistent opens it covers before
+// it is started, and a refused write starts none.
 func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
 	type recall struct {
 		g       *grant
@@ -259,8 +260,8 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 		r := &hit[i]
 		r.next = cloneFSM(r.g.fsm)
 		r.started = r.next.Break(r.allowed)
-		if r.started && r.next.Epoch != r.g.fsm.Epoch {
-			if err := t.persistLeaseAs(ctx, e, r.g, r.next); err != nil {
+		if w := r.g.sentAs(r.next); r.started && (w.Epoch != r.g.fsm.Epoch || w.Kind != r.g.fsm.Kind) {
+			if err := t.persistLeaseAs(ctx, e, r.g, w); err != nil {
 				t.idx.Lock()
 				t.unsent -= starts
 				t.idx.Unlock()
@@ -281,17 +282,27 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 	return &DelayError{DelayRecall}
 }
 
-// queueRecall adds g's recall in flight, already counted in unsent, to out.
-// An SMB break of read caching alone asks no acknowledgement (MS-SMB2
-// 3.3.4.6, 3.3.4.7): it ends as it is queued, and nothing waits on it.
+// queueRecall adds g's recall in flight, already counted in unsent, to out,
+// and ends it there if it ends as it is sent.
 func (t *Table) queueRecall(e *entry, g *grant, out *outbox) {
 	g.gen++
 	g.sent = 0
 	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), gen: g.gen})
-	if g.covers() && g.fsm.Kind&(GrantWrite|GrantHandle) == 0 {
-		_, _ = g.fsm.Ack(g.fsm.Recall.To)
-		t.recount(g)
+	g.fsm = g.sentAs(g.fsm)
+	t.recount(g)
+}
+
+// sentAs is f, g's state machine with a recall in flight, as it stands once
+// the recall is sent: an SMB break of read caching alone asks no
+// acknowledgement (MS-SMB2 3.3.4.6, 3.3.4.7), so it ends there and nothing
+// waits on it. What is written before a recall is sent is f as sentAs leaves
+// it.
+func (g *grant) sentAs(f grantfsm.Grant) grantfsm.Grant {
+	if g.covers() && f.Recall != nil && f.Kind&(GrantWrite|GrantHandle) == 0 {
+		f = cloneFSM(f)
+		_, _ = f.Ack(f.Recall.To)
 	}
+	return f
 }
 
 // arm starts the deadline of the recall r handed to the Sink, if it is still
@@ -415,8 +426,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 // on e: none to a client fenced, at its budget or with its back channel down,
 // on a file with a recall in flight, recalled within a recall deadline, with
 // a lock waiter or another holder's byte-range lock, with a record not yet
-// written again, or under 16 grants
-// already; and no caching another holder's
+// written again, or under 16 grants already; and no caching another holder's
 // open or grant refuses. The budget is checked where the grant is minted: a
 // client at it keeps the grants it holds, and was asked through RecallAny,
 // when it reached it, to return some.
@@ -640,8 +650,8 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			f.Timeout()
 			err = ErrInvalid
 		}
-		if f.Kind != g.fsm.Kind || f.Epoch != g.fsm.Epoch {
-			if perr := t.persistLeaseAs(ctx, e, g, f); perr != nil {
+		if w := g.sentAs(f); w.Kind != g.fsm.Kind || w.Epoch != g.fsm.Epoch {
+			if perr := t.persistLeaseAs(ctx, e, g, w); perr != nil {
 				return perr
 			}
 		}

@@ -976,3 +976,27 @@ func TestLockRenamedInPlaceIsRewritten(t *testing.T) {
 		t.Errorf("stored after the first of two stacked locks went: %+v, want the second alone", got)
 	}
 }
+
+// A break of read caching alone ends as it is sent, and is written as it
+// ends, a v1 lease's as a v2's: the stored lease holds no caching, as the
+// client was told.
+func TestReadOnlyBreakIsWrittenAsItEnds(t *testing.T) {
+	for _, epoch := range []*uint16{ptr[uint16](3), nil} {
+		f := newFixture(t)
+		a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+		file, r := f.fileIn(t, "doc")
+		r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{5}, epoch, GrantRead
+		f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+		if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
+			t.Fatalf("a writer beside an R lease: %v", err)
+		}
+		sent := f.sink.takeRecalls()
+		recs := f.stored(t, file)
+		if len(sent) != 1 || len(recs) != 1 {
+			t.Fatalf("stored %+v after the break %+v, want one record and one break", recs, sent)
+		}
+		if l := recs[0].Lease; l == nil || l.State != 0 || l.Epoch != sent[0].g.Epoch {
+			t.Errorf("v2 %v: stored lease %+v, want it at none, at the break's epoch %d", epoch != nil, l, sent[0].g.Epoch)
+		}
+	}
+}
