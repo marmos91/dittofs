@@ -308,7 +308,7 @@ than a private one per RFC.
 1. **One clock and one fault interface.** Every component that reads time —
    the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
    from one clock interface (now, timers, and, under test, advance and skew).
-   Every fault seam implements one fault interface: fail, delay, drop, tear or
+   Every fault seam consults one fault interface: fail, delay, drop, tear or
    reorder a named operation, on a seeded schedule read from that clock. The
    interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
    component declares the subset of them it uses in its own package, in
