@@ -503,3 +503,21 @@ func TestUnversionedCreateKeepsAVersionedOpen(t *testing.T) {
 		t.Error("the versioned open was closed")
 	}
 }
+
+// A replayed create naming another lease key than its open's is refused; one
+// carrying no lease context is still the open's replay.
+func TestCreateReplayUnderAnotherLeaseKey(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smbMachine("pc-a"))
+	file := anyFile()
+	r := keep(OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh}, entity.DurabilityDurable, s1, time.Minute, 7)
+	first := f.mustOpen(t, a, file, r)
+	r.Replay, r.Lease = true, LeaseKey{2}
+	if res, err := f.Opens().Open(ctx, a, file, r); err == nil {
+		t.Errorf("a replay under another lease key: Replayed %v, %v; want it refused", res.Replayed, err)
+	}
+	r.Lease, r.Want = LeaseKey{}, 0
+	if res, err := f.Opens().Open(ctx, a, file, r); err != nil || !res.Replayed || res.Open.ID != first.ID {
+		t.Errorf("a replay with no lease context: %+v, %v; want the open, Replayed", res, err)
+	}
+}

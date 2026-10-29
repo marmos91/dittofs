@@ -509,7 +509,8 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 
 // sameCreate answers, under e's step, a create naming by its create ID an
 // open of who's client on e: a replay of that open, on the session it is
-// attached to and usable by who, with the open, Replayed; any other, a create
+// attached to and usable by who, with the open, Replayed, unless it names
+// another lease key than the open's, ErrNotYours; any other, a create
 // that is no replay, one of an open disconnected or one on another session,
 // ErrCreateInUse. done is false when no open is
 // named, and the create is made as any other.
@@ -534,7 +535,7 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 		switch {
 		case !r.Replay || o.parked != 0 || o.Session != r.Session:
 			return true, ErrCreateInUse
-		case !t.mayUse(o, who):
+		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease:
 			return true, ErrNotYours
 		}
 		*res = OpenResult{Open: o.Open, Grant: e.grantOf(o), Replayed: true}
