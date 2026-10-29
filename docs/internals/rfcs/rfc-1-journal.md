@@ -1846,8 +1846,8 @@ extra: each is due a sync within the bound anyway, and a sync only writes it
 sooner. A `Sync` touches one segment only, the stream's active one: the stream
 makes a segment durable when it rolls to the next, because the seal marker
 **MUST** be durable before a successor naming the segment exists
-([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs a
-segment sync, the spare it takes having had its entry synced when it was made
+([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs
+the seal's syncs ([RFC 28 §2.5](rfc-28-journal-format.md#2.5%20Catalog%20layout)), the spare it takes having had its entry synced when it was made
 ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and a `Sync` otherwise costs one: an append overwrites blocks
 already allocated and written ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), so a data-only sync commits no
 filesystem metadata with it.
@@ -1906,7 +1906,9 @@ sync can succeed without having written them, and a read of those pages can
 return what the device held before rather than what was written. So after a
 failed sync of a segment, **everything written to that segment since its last
 successful sync is not durable**, the segment takes no further append — not
-even a seal marker: **a failed segment is never sealed** — and the stream
+even a seal marker: **a failed segment is never sealed** (a seal whose own sync
+failed may leave a durable seal marker and catalog, but no successor names the
+segment, so recovery does not treat it as sealed) — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
 failed segment stays accounted at its cap to the journal until it is unlinked
 ([§7.3](#7.3%20Accounting)), and is a repack candidate once its window is resolved, not before:
