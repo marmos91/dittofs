@@ -52,6 +52,22 @@ var debian = map[string]string{
 // inDtc are the tools the dtc image installs.
 var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "smbclient": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true, "fio": true}
 
+// InContainer reports whether dtc, the dev container, meets need n: its own
+// platform need, root, Docker's socket, which meets podman too, and the tools
+// its image installs. It reaches the host's services, so it has only those the
+// host has.
+//
+// decision: not rpcbind, which the image installs but nothing in the
+// container starts, so the need, a running rpcbind, is unmet there too.
+func InContainer(n string) bool {
+	kind, _, _ := strings.Cut(n, ":")
+	switch kind {
+	case "linux", "root", "docker", "podman":
+		return true
+	}
+	return inDtc[n]
+}
+
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{
 	"linux":   "run it on Linux, or in dtc",
