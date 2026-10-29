@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,8 +21,16 @@ import (
 )
 
 // TestMain runs this test binary as dt when a test starts it so, to stop a
-// real dt process.
+// real dt process. Either way dt sees no Docker, so --in auto keeps each run
+// here whatever the machine has; the tests of --in set need themselves.
 func TestMain(m *testing.M) {
+	check := need
+	need = func(root, n string) error {
+		if n == "docker" {
+			return errors.New("no Docker in these tests")
+		}
+		return check(root, n)
+	}
 	if os.Getenv("DT_TEST_AS_DT") == "1" {
 		main()
 		os.Exit(0)
