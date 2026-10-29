@@ -1312,6 +1312,10 @@ older content served as newer.
 - Pending existence of one journal that is due together — every file synced
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
   be committed in one transaction, not one per write or per file.
+- The transaction also records the journal's sync marks (`Stats.SyncMarks`,
+  [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read after the batch's sync, one key per append stream
+  ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A mark is never lowered, and `Open` is handed the recorded
+  marks ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
   of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
   proposal: 256), overturned by B5's transactions per stability point rising at
