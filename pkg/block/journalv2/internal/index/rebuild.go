@@ -147,10 +147,10 @@ func newRebuilder(fs *files, ctr *Counters) *rebuilder {
 // Feed buffers one record found on disk. A header that verified but names
 // an impossible shape — an extent its kind cannot carry, an unknown kind, a
 // spec that disagrees with its extent — is damage or another writer, so it
-// is refused and nothing is buffered; the counters move only once the whole
-// record has passed, so a refused record never raises them. After a Finish
-// that succeeded it returns errRebuilt and changes nothing, whatever the
-// record's shape.
+// is refused and nothing is buffered; the same is true of a record whose
+// shard Finish has drained. The counters move only once the shard's buffer
+// has taken the record, so a refused one raises neither. After Finish has
+// begun it returns errRebuilt, whatever the record's shape.
 func (b *rebuilder) Feed(r Record) error {
 	// The finished check runs before the validation, so a caller racing a
 	// Finish hears the rebuild is over rather than a validation error the
@@ -187,14 +187,18 @@ func (b *rebuilder) Feed(r Record) error {
 	if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 		return fmt.Errorf("%w: record extent [%d, +%d)", core.ErrUnknownFormat, r.Off, r.Len)
 	}
-	if err := b.ctr.Observe(r.Numbers); err != nil {
-		return err
-	}
 	s := b.shards[hashID(r.File)>>(64-6)]
 	s.mu.Lock()
 	if s.drained {
 		s.mu.Unlock()
 		return errRebuilt
+	}
+	// The record's numbers are observed only once its buffer has taken it:
+	// a refused record raises no counter, so a caller draining after Finish
+	// leaves the journal's next issue where the taken records left it.
+	if err := b.ctr.Observe(r.Numbers); err != nil {
+		s.mu.Unlock()
+		return err
 	}
 	if s.bufs == nil {
 		s.bufs = make(map[core.FileID][]bufRec)
@@ -298,8 +302,6 @@ func (b *rebuilder) replayShard(s *rebuildShard) error {
 	// Drained before the lock drops: a feeder arriving now is refused under
 	// the same lock rather than appended to a buffer nobody replays.
 	s.drained = true
-	// Drained before the lock drops: a feeder arriving now is refused under
-	// the same lock rather than appended to a buffer nobody replays.
 	s.mu.Unlock()
 
 	byFile := make(map[core.FileID][]Retained)

@@ -877,8 +877,9 @@ func TestRebuildRivalled(t *testing.T) {
 // raced Finish into a drained shard would lose its record and see success.
 func TestRebuildRefusesAfterADrainedShard(t *testing.T) {
 	var fs files
+	ctr := &Counters{}
 	id := fid(1)
-	b := newRebuilder(&fs, &Counters{})
+	b := newRebuilder(&fs, ctr)
 	if err := b.Feed(recd(RecWrite, id, 1, 1, 1, 0, 0, 4)); err != nil {
 		t.Fatal(err)
 	}
@@ -897,10 +898,14 @@ func TestRebuildRefusesAfterADrainedShard(t *testing.T) {
 	if err := b.Retain(id, Retained{Piece: Piece{Extent: ext(0, 4), Version: ver(1)}, By: ver(1)}); !errors.Is(err, errRebuilt) {
 		t.Fatalf("Retain into a drained shard = %v, want errRebuilt", err)
 	}
-	// The refused record raised no counter: Observe happens only where the
-	// buffer takes the record.
-	if got := fs.asOf(id); got != ver(1) {
-		t.Fatalf("asOf = %v, want 1: a refused feed raised the counters", got)
+	// The refused record moved no counter of either kind: the numbers were
+	// never observed, so the journal's next issue still exceeds only what
+	// the taken record carried.
+	if got := ctr.NextVersion(); got != ver(2) {
+		t.Fatalf("NextVersion() = %v after the refused feed, want 2", got)
+	}
+	if seq, err := ctr.NextSeq(); err != nil || seq != 2 {
+		t.Fatalf("NextSeq() = %d, %v after the refused feed, want 2", seq, err)
 	}
 	// A record for a file of another shard still feeds, and its shard
 	// replays at the coming Finish.
