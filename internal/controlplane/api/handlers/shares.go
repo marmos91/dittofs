@@ -589,44 +589,11 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add share to runtime if runtime is available
+	// Load the share from the row just written, through the same builder a
+	// startup load uses, so a setting is in force from creation rather than from
+	// the first edit or restart that happens to re-read the row.
 	if h.runtime != nil {
-		shareConfig := &runtime.ShareConfig{
-			Name:                             req.Name,
-			MetadataStore:                    metaStore.Name,
-			RootAttr:                         rootAttr,
-			ReadOnly:                         req.ReadOnly,
-			Enabled:                          share.Enabled,
-			EncryptData:                      req.EncryptData,
-			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
-			AccessBasedEnumeration:           share.AccessBasedEnumeration,
-			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
-			StreamsDisabled:                  share.StreamsDisabled,
-			ContinuousAvailability:           share.ContinuousAvailability,
-			AllowMFsymlink:                   share.AllowMFsymlink,
-			TrashEnabled:                     share.TrashEnabled,
-			TrashRetentionDays:               share.TrashRetentionDays,
-			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
-			TrashMaxBytes:                    share.TrashMaxBytes,
-			TrashExcludePatterns:             share.GetTrashExcludePatterns(),
-			DefaultPermission:                defaultPerm,
-			Squash:                           nfsOpts.GetSquashMode(),
-			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
-			AnonymousGID:                     nfsOpts.GetAnonymousGID(),
-			AllowAuthSys:                     nfsOpts.AllowAuthSys,
-			AllowAuthSysSet:                  true,
-			RequireKerberos:                  nfsOpts.RequireKerberos,
-			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
-			BlockedOperations:                share.GetBlockedOps(),
-			JournalSize:                      journalSize,
-			ReadBufferSize:                   readBufferSize,
-			QuotaBytes:                       quotaBytes,
-			BlockStoreID:                     blockStore.ID,
-			RetentionPolicy:                  retPolicy,
-			RetentionTTL:                     retTTL,
-		}
-
-		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {
+		if err := h.runtime.AddShareFromStore(r.Context(), share.Name); err != nil {
 			// Share created in DB but failed to load into runtime
 			// Log but don't fail the request - share can be loaded on restart
 			logger.Warn("Share created but failed to add to runtime",
@@ -1009,22 +976,78 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Remove handles DELETE /api/v1/shares/{name}.
-// Deletes a share (admin only).
+// Remove handles DELETE /api/v1/shares/{name}, where {name} is the share's
+// name or its ID. Deletes a share (admin only).
 func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
-	if name == "/" {
+	ref := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
+	if ref == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
 
+	// The runtime, the metadata store and the journal know a share by its
+	// name alone, so an ID is resolved to the name before anything else.
+	share, err := h.store.GetShare(r.Context(), ref)
+	if err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			NotFound(w, "Share not found")
+			return
+		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+	name := share.Name
+
 	// Remove from runtime first (if runtime is available)
 	removedFromRuntime := false
 	if h.runtime != nil {
+		// decision: the name stays taken until the share's row is gone,
+		// rather than freed as the removal begins: the share's records and
+		// journal are keyed by its name, so a share created under it before
+		// the purge ends could be purged with them. A second removal meanwhile
+		// is refused. Free the name at once when a share's data is keyed by
+		// something no later share can hold.
+		end, err := h.runtime.BeginShareRemoval(name)
+		if err != nil {
+			Conflict(w, "Share is being removed")
+			return
+		}
+		defer end()
+		// A removal that held the name while this one resolved it may have
+		// deleted the share since, and a share created under the name after
+		// that is not the one this request named.
+		if _, err := h.store.GetShareByID(r.Context(), share.ID); err != nil {
+			if errors.Is(err, models.ErrShareNotFound) {
+				NotFound(w, "Share not found")
+				return
+			}
+			InternalServerError(w, "Failed to get share")
+			return
+		}
+
 		// A share absent from the registry is not an error here — the DB row is
 		// authoritative — but whether it was there decides who raises the
 		// invalidation below.
 		removedFromRuntime = h.runtime.RemoveShare(name) == nil
+
+		// decision: a purge that fails fails the removal and keeps the row. The
+		// share stays out of the runtime until a restart loads it from the row
+		// again, but its name stays taken, so no share can be created over what
+		// is left of it, and repeating the removal repeats the purge. Freeing
+		// the name instead would let a share created under it attach the old
+		// root and serve its files. The cost is that a share on a metadata store
+		// that is not loaded cannot be removed until the store loads. Revisit
+		// once the server records a removal and finishes it on its own.
+		if err := h.runtime.PurgeShare(r.Context(), name); err != nil {
+			if errors.Is(err, models.ErrShareNotFound) {
+				NotFound(w, "Share not found")
+				return
+			}
+			logger.Error("Failed to delete share data; the share is kept so its removal can be repeated",
+				"share", name, "error", err)
+			InternalServerError(w, "Failed to delete share data; repeat the removal")
+			return
+		}
 	}
 
 	if err := h.store.DeleteShare(r.Context(), name); err != nil {

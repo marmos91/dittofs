@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -191,5 +192,55 @@ func TestStopUnmountsFirst(t *testing.T) {
 	}
 	if got := calls(); !strings.Contains(strings.Join(got, "\n"), "umount "+s.mount+"\ndfs runs") || alive(cmd.Process.Pid) {
 		t.Errorf("calls %q; dfs runs after Stop: %t", got, alive(cmd.Process.Pid))
+	}
+}
+
+// With a namespaced client the client mounts the share, as dt does there:
+// root's mount and umount enter its namespaces, and the check reads its
+// mount table, not this machine's.
+func TestMountShareOnClient(t *testing.T) {
+	calls := fakeMounts(t)
+	dir := t.TempDir()
+	nsenter := `echo "nsenter $*" >> "$DT_FAKE_LOG"
+while [ "$1" != -- ]; do shift; done; shift
+[ "$*" = "cat /proc/self/mountinfo" ] && exec cat "$DT_FAKE_MOUNTINFO"
+exec "$@"`
+	if err := os.WriteFile(filepath.Join(dir, "nsenter"), []byte("#!/bin/sh\n"+nsenter+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	mountinfo = "/nonexistent" // only the client's table holds the mount
+	t.Setenv("DT_FAKE_VERS", "3")
+	s := &Server{nfsPort: 40001, out: &bytes.Buffer{}, clients: &clients{bridge: "dtnfs7", dir: "/c"}}
+	if err := s.mountShare(context.Background(), "10.51.7.1", registry.NFS{Options: "vers=3,tcp,mountproto=tcp", FromOptions: true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(s.mount) })
+	s.unmount()
+	enter := "nsenter --net=/run/netns/dtnfs7-1 --mount=/c/ns/1.mnt --uts=/c/ns/1.uts -- "
+	got := calls()
+	for _, call := range []string{
+		"sudo -n " + enter + "mount -t nfs -o vers=3,tcp,mountproto=tcp,port=40001,mountport=40001 10.51.7.1:/export " + s.mount,
+		"sudo -n " + enter + "cat /proc/self/mountinfo",
+		"sudo -n " + enter + "umount " + s.mount,
+	} {
+		if !slices.Contains(got, call) {
+			t.Errorf("no %q in:\n%s", call, strings.Join(got, "\n"))
+		}
+	}
+	if _, err := os.Stat(s.mount); !os.IsNotExist(err) {
+		t.Errorf("{mount} stays: %v", err)
+	}
+}
+
+// users: self runs the tests as the user dt runs as, which dt running as
+// root can't give: the fixture doesn't start.
+func TestSelfNeedsAnOrdinaryUser(t *testing.T) {
+	realEuid := geteuid
+	t.Cleanup(func() { geteuid = realEuid })
+	geteuid = func() int { return 0 }
+	_, err := Start(context.Background(), registry.Fixture{Profile: "memory", Users: []string{"self"}}, nil, t.TempDir(), t.TempDir(), &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "dt runs as root here") {
+		t.Errorf("got %v", err)
 	}
 }

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 410" width="900" height="410" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="410" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Both writes take the same six steps in the same order; build01's stops at step 4.</text>
+
+  <rect x="24" y="44" width="300" height="44" rx="5" class="pr"/>
+  <text x="36" y="62" class="h">alice-pc (SMB)</text><text x="36" y="79" class="s">WRITE 64 KiB through her own open</text>
+  <rect x="576" y="44" width="300" height="44" rx="5" class="pr"/>
+  <text x="588" y="62" class="h">build01 (NFSv3)</text><text x="588" y="79" class="s">WRITE to the same file, no open</text>
+  <path d="M174,90 L174,102" class="ln"/><path d="M726,90 L726,102" class="ln"/>
+  <rect x="24" y="104" width="300" height="44" rx="5" class="pr"/>
+  <text x="36" y="122" class="m">SMB adapter: decode</text><text x="36" y="139" class="s">SMB file ID → alice's open</text>
+  <rect x="576" y="104" width="300" height="44" rx="5" class="pr"/>
+  <text x="588" y="122" class="m">NFS adapter: decode</text><text x="588" y="139" class="s">an anonymous open: identity, no state</text>
+  <path d="M174,150 L174,164" class="ln"/><path d="M726,150 L726,164" class="ln"/>
+
+  <rect x="16" y="166" width="868" height="214" rx="8" class="zone"/>
+  <text x="340" y="182" class="s">filesystem service — one path for both protocols; steps 2–6 in the server</text>
+
+  <rect x="24" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="34" y="208" class="h">1 route</text><text x="34" y="226" class="s">the gateway sends it</text><text x="34" y="241" class="s">to the file's primary;</text><text x="34" y="256" class="s">none on one node</text>
+  <rect x="168" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="178" y="208" class="h">2 admit</text><text x="178" y="226" class="s">to share profiles:</text><text x="178" y="241" class="s">state, flavour,</text><text x="178" y="256" class="s">client rules, squash</text>
+  <rect x="312" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="322" y="208" class="h">3 authorise</text><text x="322" y="226" class="s">through the metadata</text><text x="322" y="241" class="s">store's one</text><text x="322" y="256" class="s">chokepoint</text>
+  <rect x="456" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="466" y="208" class="h">4 open state</text><text x="466" y="226" class="s">locks, deny modes,</text><text x="466" y="241" class="s">caching grants,</text><text x="466" y="256" class="s">grace</text>
+  <rect x="600" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="610" y="208" class="h">5 quota</text><text x="610" y="226" class="s">reserve it if the</text><text x="610" y="241" class="s">file grows</text>
+  <rect x="744" y="190" width="130" height="86" rx="5" class="sv"/>
+  <text x="754" y="208" class="h">6 engine</text><text x="754" y="226" class="s">stage the bytes in</text><text x="754" y="241" class="s">the journal, return</text><text x="754" y="256" class="s">the write verifier</text>
+  <path d="M155,233 L166,233" class="ln"/><path d="M299,233 L310,233" class="ln"/><path d="M443,233 L454,233" class="ln"/>
+  <path d="M587,233 L598,233" class="ln"/><path d="M731,233 L742,233" class="ln"/>
+
+  <text x="36" y="302" class="ok">alice-pc's write passes all six</text>
+  <path d="M36,312 L860,312" class="gl"/>
+  <text x="36" y="342" class="e">build01's write</text>
+  <path d="M36,352 L512,352" class="ex"/>
+  <text x="514" y="357" class="no">✕</text>
+  <text x="530" y="342" class="e">refused at step 4: alice's deny mode forbids</text>
+  <text x="530" y="357" class="e">other writers — ErrShareViolation, which the</text>
+  <text x="530" y="372" class="e">NFS adapter turns into an NFS error</text>
+
+  <text x="16" y="400" class="s">alice-pc gets OK. Neither adapter checks a deny mode itself: the rule is written once, in the service.</text>
+</svg>

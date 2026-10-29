@@ -25,14 +25,16 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    - cron: '43 4 * * *'  # Nightly 04:43 UTC, staggered from the protocol suites.
+    - cron: '43 22 * * *'  # Nightly 22:43 UTC, staggered from the protocol suites.
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ad-dc-${{ github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ad-dc-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   # No pull_request trigger, so there is nothing to supersede: every run is a
   # push, a schedule or a manual dispatch, and each is a distinct commit
   # someone wants tested. This protects a run that is already executing, not

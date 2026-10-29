@@ -34,7 +34,8 @@ type PendingWritesTracker struct {
 	mu      sync.RWMutex
 	pending map[string]*PendingWriteState // handleKey -> state
 
-	// Stable, bounded stripes serialize pop -> metadata commit -> restore/cache.
+	// Stable, bounded stripes serialize each flush's read -> metadata commit ->
+	// finish, and the pops that discard pending state.
 	// Removing a lock when its pending entry is popped would let a new flush
 	// overtake the still-running commit that owns the old lock.
 	flushLocks [256]sync.Mutex
@@ -216,17 +217,12 @@ func (t *PendingWritesTracker) PopPending(handle FileHandle) (*PendingWriteState
 	return state, true
 }
 
-// RestorePending merges a previously popped state back into the tracker after a
-// flush failed, so a later flush retries it instead of the size/mtime update
-// being lost. If a write arrived after the pop (RecordWrite runs without the
-// flush lock), the popped state is merged into that newer entry rather than
-// overwriting it: the size grows to the max, the setuid-clear latches on, and
-// the restored mtime/pre-write attrs/cache fill in only where the newer entry
-// has none. If nothing is present, the popped state is reinstated as-is.
-func (t *PendingWritesTracker) RestorePending(handle FileHandle, state *PendingWriteState) {
-	if state == nil {
-		return
-	}
+// FinishFlush drops from a handle's pending state what a flush of flushed has
+// committed: its mtime, its setuid/setgid clearing, and the size up to
+// committedSize. A write recorded after the flush copied the state may have
+// moved it on, and whatever that write moved stays for the next flush. With
+// nothing left to commit, the entry only caches the file again.
+func (t *PendingWritesTracker) FinishFlush(handle FileHandle, flushed *PendingWriteState, committedSize uint64) {
 	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
@@ -234,24 +230,27 @@ func (t *PendingWritesTracker) RestorePending(handle FileHandle, state *PendingW
 
 	cur, exists := t.pending[key]
 	if !exists {
-		t.pending[key] = state
 		return
 	}
-	if state.MaxSize > cur.MaxSize {
-		cur.MaxSize = state.MaxSize
+	if cur.MaxSize <= committedSize {
+		cur.MaxSize = 0
 	}
-	if cur.LastMtime.IsZero() && !state.LastMtime.IsZero() {
-		cur.LastMtime = state.LastMtime
+	// A later write reuses the frozen mtime, so an equal one is the one just
+	// committed; any other was set since and has yet to reach the store.
+	if cur.LastMtime.Equal(flushed.LastMtime) {
+		cur.LastMtime = time.Time{}
 	}
-	if state.ClearSetuidSetgid {
-		cur.ClearSetuidSetgid = true
+	if flushed.ClearSetuidSetgid {
+		cur.ClearSetuidSetgid = false
 	}
-	if cur.PreWriteAttr == nil {
-		cur.PreWriteAttr = state.PreWriteAttr
+	if cur.MaxSize > 0 || !cur.LastMtime.IsZero() || cur.ClearSetuidSetgid {
+		return
 	}
 	if cur.CachedFile == nil {
-		cur.CachedFile = state.CachedFile
+		delete(t.pending, key)
+		return
 	}
+	t.pending[key] = &PendingWriteState{CachedFile: cur.CachedFile}
 }
 
 // PendingEntry pairs a handle with its pending state.

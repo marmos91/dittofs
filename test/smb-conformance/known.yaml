@@ -1,0 +1,378 @@
+- test: BVT_ApplySnapshot
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared VHD snapshot apply: block-level VHD storage not implemented'
+- test: BVT_ChangeTracking
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD block change tracking: block-level VHD storage not implemented'
+- test: BVT_Convert_VHDFile_to_VHDSetFile
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD → VHDSet conversion: block-level VHD storage not implemented'
+- test: BVT_Create_Delete_Checkpoint
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD checkpoint lifecycle: block-level VHD storage not implemented'
+- test: BVT_Extract_VHDSet
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet extraction: block-level VHD storage not implemented'
+- test: BVT_OpenCloseSharedVHD_V1
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD v1 shared-VHD open/close: block-level VHD storage not implemented'
+- test: BVT_OpenCloseSharedVHD_V2
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD v2 shared-VHD open/close: block-level VHD storage not implemented'
+- test: BVT_OpenSharedVHDSetByTargetSpecifier
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet target-specifier open: block-level VHD storage not implemented'
+- test: BVT_Optimize
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD optimize: block-level VHD storage not implemented'
+- test: BVT_QuerySharedVirtualDiskSupport
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD support query: block-level VHD storage not implemented'
+- test: BVT_QueryVirtualDiskChanges
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD changed-block tracking: block-level VHD storage not implemented'
+- test: BVT_Query_VHDSet_FileInfo_SnapshotEntry
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet snapshot entry query: block-level VHD storage not implemented'
+- test: BVT_Query_VHDSet_FileInfo_SnapshotList
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet snapshot list query: block-level VHD storage not implemented'
+- test: BVT_ReadSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD read: block-level VHD storage not implemented'
+- test: BVT_Resize
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD resize: block-level VHD storage not implemented'
+- test: BVT_TunnelCheckConnectionStatusToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelGetDiskInfoToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelGetFileInfoToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_Preempt
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_RegisterAndReserve
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_ReserveAndRelease
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_ReserveConflict
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelSRBStatusToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI SRB status tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelValidateDiskToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI disk validation tunnel: block-level VHD storage not implemented'
+- test: BVT_WriteSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD write: block-level VHD storage not implemented'
+- test: BVT_SWNGetInterfaceList_ClusterSingleNode
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_SWNGetInterfaceList_ScaleOutSingleNode
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_SWN_CheckProtocolVersion
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegister_SWNAsyncNotification_ClientMove
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegisterEx_SWNAsyncNotification_ClientMove
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegisterEx_SWNAsyncNotification_IPChange
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_Sqos_ProbePolicy
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_Sqos_SetPolicy
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_Sqos_UpdateCounters
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_RootAndLinkReferralDomainV4ToDFSServer
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'DFS namespace referrals: AD-integrated namespace not implemented'
+- test: BVT_RootAndLinkReferralStandaloneV4ToDFSServer
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'DFS namespace referrals: AD-integrated namespace not implemented'
+- test: BVT_FileAccess_OpenNamedPipe
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate)
+- test: BVT_FileAccess_OpenNamedPipe_InvalidPathName
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate)
+# The skips the runs give that no row of the Markdown list holds.
+- test: BVT_SMB2Compression_*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'SUT does not support compression!: DittoFS has no SMB2 compression, and the config lists no compression algorithm'
+- test: BVT_Negotiate_SMB311_Compression*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'SUT does not support compression!: DittoFS has no SMB2 compression, and the config lists no compression algorithm'
+- test: BVT_AppInstance*
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Test case is applicable in servers that implement Create Context SMB2_CREATE_APP_INSTANCE_ID: the config lists it as unsupported, though DittoFS implements it'
+  issue: '#2995'
+- test: BVT_Replay_*
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Test case is applicable in servers that support GLOBAL_CAP_MULTI_CHANNEL: the config sets IsMultiChannelCapable false, though DittoFS advertises it'
+  issue: '#2995'
+- test: BVT_NetworkInterfaceInfo_QuerySuccessful
+  status: skip
+  fix: planned
+  category: env
+  reason: 'ClientNic2IPAddress should be a valid IP address: the config gives no second client address, so DittoFS''s FSCTL_QUERY_NETWORK_INTERFACE_INFO goes untested here'
+  issue: '#2995'
+- test: BVT_MultipleChannel_NicRedundantOnBoth
+  status: skip
+  fix: planned
+  category: env
+  reason: 'ClientNic2IPAddress should be a valid IP address: the config gives no second client address, so DittoFS''s multichannel goes untested here'
+  issue: '#2995'
+- test: BVT_SMBDialect
+  status: skip
+  fix: planned
+  category: env
+  reason: 'The property SharePath does not existed: the config has no HVRS group; the test checks SMB 3.0 negotiation, which DittoFS supports'
+  issue: '#2995'
+- test: BVT_SetZeroData
+  status: skip
+  fix: planned
+  category: env
+  reason: 'The property IsSetZeroDataImplemented does not existed: the config has no HVRS group, though DittoFS implements FSCTL_SET_ZERO_DATA'
+  issue: '#2995'
+- test: BVT_EnumerateSnapShots
+  status: skip
+  fix: planned
+  category: env
+  reason: 'The property NumberOfPreviousVersions does not existed: the config doesn''t give it; DittoFS answers FSCTL_SRV_ENUMERATE_SNAPSHOTS with no snapshots'
+  issue: '#2995'
+- test: BVT_PersistentHandle*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Test case is applicable in servers that support persistent handles: DittoFS doesn''t advertise SMB2_GLOBAL_CAP_PERSISTENT_HANDLES'
+- test: BVT_ResilientHandle_*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Test case is applicable in servers that implement IOCTL FSCTL_LMR_REQUEST_RESILIENCY: DittoFS doesn''t implement it'
+- test: BVT_Resiliency
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'The property SharePath does not existed: the config has no HVRS group; the test checks FSCTL_LMR_REQUEST_RESILIENCY, which DittoFS doesn''t implement'
+- test: BVT_FileLevelTrim
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Test case is applicable in servers that implement IOCTL FSCTL_FILE_LEVEL_TRIM: DittoFS doesn''t implement it'
+- test: BVT_CopyOffload
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Test case is applicable in servers that implement IOCTL FSCTL_OFFLOAD_READ: DittoFS doesn''t implement offloaded data transfer'
+- test: BVT_OffloadReadWrite
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'The property IsOffLoadImplemented does not existed: the config has no HVRS group; DittoFS doesn''t implement FSCTL_OFFLOAD_READ or FSCTL_OFFLOAD_WRITE either'
+- test: BVT_DuplicateExtentsToFile
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'The property VolumnClusterSize does not existed: the config has no HVRS group; DittoFS doesn''t implement FSCTL_DUPLICATE_EXTENTS_TO_FILE either'
+- test: BVT_SetGetIntegrityInfo
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'The property FileShareSupportingIntegrityInfo does not existed: the config names no share with integrity streams, which DittoFS doesn''t support (its integrity FSCTLs answer STATUS_INVALID_DEVICE_REQUEST)'
+- test: FsCtl_Set_IntegrityInformation_Ex_*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'FSCTL_SET_INTEGRITY_INFORMATION_EX is supported only by Windows Server 2022 and Windows 11 22H2 and later, so WPTS doesn''t run it against another server'
+- test: FsCtl_Get_REFS_Volume_Data_*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'The case is only applicable for REFS, and WPTS sees NTFS'
+- test: BVT_FsCtl_DuplicateExtentsToFileEx_*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'File system should be REFS, and WPTS sees NTFS'
+- test: BVT_QueryDirectory_FileId*Extd*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'WPTS sends this information class only to Windows 11 and Windows Server 2022 23H2 and later, and DittoFS doesn''t implement it either'
+- test: FileInfo_Query_FileIdGlobalTxDirectoryInformation_Dir_CreationTime
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: FileIdGlobalTxDirectoryInformation MUST NOT be implemented for file systems that do not return the FILE_SUPPORTS_TRANSACTIONS flag, and DittoFS doesn't return it
+- test: Algorithm_NotingFileModified_Dir_Archive
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: NTFS, REFS and FAT32 are inconclusive for FILE_ATTRIBUTE_ARCHIVE on a directory, so WPTS has no result to expect
+- test: BVT_VSS*
+  status: skip
+  fix: wontfix
+  category: permanent
+  reason: 'MS-FSRVP shadow copy tests, which WPTS runs only in a domain and from a Windows driver computer: DittoFS has no shadow copies'
+- test: BVT_*ToDC*
+  status: skip
+  fix: wontfix
+  category: permanent
+  reason: 'DFS referrals to a domain controller, which WPTS runs only in a domain: DFS namespace referrals are out of scope, as the appendix''s DFS rows say'
+- test: BVT_FilePermission_AccessAllow_UserSid
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Authentication test cases are not applicable in non-domain environment: the config is a workgroup, with no domain controller'
+- test: BVT_FolderPermission_AccessAllow_UserSid
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Authentication test cases are not applicable in non-domain environment: the config is a workgroup, with no domain controller'
+- test: BVT_CBAC_CountryCodeEquals156Policy
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Authentication test cases are not applicable in non-domain environment: the config is a workgroup, with no domain controller'
+- test: BVT_SMB2Basic_Query_Quota_Info
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Authentication test cases are not applicable in non-domain environment: the config is a workgroup, with no domain controller'
+- test: BVT_KerbAuth_Success
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Kerberos Authentication test cases are not applicable in non-domain environment: the config is a workgroup, with no domain controller'
+- test: BVT_SharePermission_AccessAllow_UserSid
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'This test is not yet supported on Non-Windows Driver Computers: it needs Netlogon (NRPC) on the computer WPTS runs on, which only Windows gives'
+- test: BVT_Negotiate_SMB311_RdmaTransformCapabilities_IsSupported
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'This test case is only applicable when SUT supports RDMA transform capabilities: DittoFS has no SMB Direct (RDMA) transport'
+- test: BVT_SMB2Basic_QuicTransport_OpenNamedPipe
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Underlying transport must be QUIC: DittoFS serves SMB over TCP only'
+- test: Negotiate_SMB311_IsServerToClientNotificationsSupported
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'WPTS runs it only when the config says the server supports notifications, and DittoFS doesn''t implement SMB2_SERVER_TO_CLIENT_NOTIFICATION'
+- test: BVT_OpLockBreak_Lease
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'OpLock request not succeeded: the test asks for the lease oplock level without a lease context, and DittoFS then grants no oplock'

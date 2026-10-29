@@ -248,21 +248,6 @@ func (d *QuotaDelta) Add(share string, uid, gid uint32, bytes, files int64) {
 	d.m[gk] = g
 }
 
-// AddKeyed merges a single pre-keyed usage change (used when folding the
-// per-identity totals freed by a share delete). A no-op change is dropped.
-func (d *QuotaDelta) AddKeyed(k QuotaKey, s metadata.UsageStat) {
-	if s.Bytes == 0 && s.Files == 0 {
-		return
-	}
-	if d.m == nil {
-		d.m = make(map[QuotaKey]metadata.UsageStat)
-	}
-	cur := d.m[k]
-	cur.Bytes += s.Bytes
-	cur.Files += s.Files
-	d.m[k] = cur
-}
-
 // Map returns the accumulated per-identity deltas for folding into a QuotaCache.
 // It may be nil when nothing was accumulated.
 func (d *QuotaDelta) Map() map[QuotaKey]metadata.UsageStat {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -34,8 +35,8 @@ func buildVNEGRequest(capabilities uint32, guid [16]byte, securityMode uint16, d
 	w.WriteUint32(0)                          // MaxInputResponse
 	w.WriteUint32(0)                          // OutputOffset
 	w.WriteUint32(0)                          // OutputCount
-	w.WriteUint32(0)                          // MaxOutputResponse
-	w.WriteUint32(0)                          // Flags
+	w.WriteUint32(vnegResponseSize)           // MaxOutputResponse
+	w.WriteUint32(ioctlFlagIsFSCTL)           // Flags
 	w.WriteUint32(0)                          // Reserved2
 	w.WriteBytes(payloadBytes)                // Buffer (VNEG payload)
 
@@ -381,13 +382,10 @@ func TestIoctlDispatchTable_RoutesCorrectly(t *testing.T) {
 		ClientAddr: "127.0.0.1:9999",
 	}
 
-	// Test that unsupported IOCTL codes return StatusNotSupported
-	w := smbenc.NewWriter(16)
-	w.WriteUint16(57)             // StructureSize
-	w.WriteUint16(0)              // Reserved
-	w.WriteUint32(0x00FFFFFF)     // Unknown CtlCode
-	w.WriteBytes(make([]byte, 4)) // Padding to make minimum size
-	body := w.Bytes()
+	// Test that unsupported IOCTL codes on an open handle return StatusNotSupported
+	fileID := [16]byte{7, 7, 7, 7}
+	h.StoreOpenFile(&OpenFile{FileID: fileID})
+	body := buildIoctlRequestBody(0x00FFFFFF, fileID, nil, 0)
 
 	result, err := h.Ioctl(ctx, body)
 	if err != nil {
@@ -403,12 +401,7 @@ func TestIoctlDispatchTable_RoutesCorrectly(t *testing.T) {
 	// must yield StatusInvalidParameter per MS-SMB2 §3.3.5.15.13; the
 	// generic path would return StatusNotSupported. This asserts dispatch
 	// routing independent of host interface enumerability.
-	w2 := smbenc.NewWriter(24)
-	w2.WriteUint16(57)
-	w2.WriteUint16(0)
-	w2.WriteUint32(FsctlQueryNetworkInterfInfo)
-	w2.WriteBytes(make([]byte, 16)) // zero FileID — not the 0xFF sentinel
-	body2 := w2.Bytes()
+	body2 := buildQueryNetworkInterfaceInfoRequestWithMaxOutput(make([]byte, 16), 0) // zero FileID, not the sentinel
 
 	result2, err := h.Ioctl(ctx, body2)
 	if err != nil {
@@ -487,5 +480,82 @@ func TestValidateNegotiateInfo_ResponseContainsCryptoStateValues(t *testing.T) {
 	}
 	if respDialect != types.Dialect0300 {
 		t.Errorf("dialect: got %v, want %v", respDialect, types.Dialect0300)
+	}
+}
+
+// validVNEGRequest returns a handler, a 3.0 connection context and a
+// VALIDATE_NEGOTIATE_INFO request matching that connection's NEGOTIATE values,
+// so the request succeeds unless a gate refuses it.
+func validVNEGRequest() (*Handler, *SMBHandlerContext, []byte) {
+	h := NewHandler()
+	h.MinDialect = types.Dialect0202
+	h.MaxDialect = types.Dialect0311
+	clientGUID := [16]byte{0x10, 0x20, 0x30, 0x40}
+	ctx := &SMBHandlerContext{
+		Context:    context.Background(),
+		ClientAddr: "192.168.1.100:12345",
+		ConnCryptoState: &mockCryptoState{
+			dialect:            types.Dialect0300,
+			clientGUID:         clientGUID,
+			clientCapabilities: types.Capabilities(0x7F),
+			clientSecurityMode: types.NegSigningEnabled,
+		},
+	}
+	body := buildVNEGRequest(0x7F, clientGUID, uint16(types.NegSigningEnabled),
+		[]uint16{uint16(types.Dialect0202), uint16(types.Dialect0210), uint16(types.Dialect0300)})
+	return h, ctx, body
+}
+
+// TestIoctl_FlagsNotIsFSCTLNotSupported sends IOCTL requests whose Flags is
+// not exactly SMB2_0_IOCTL_IS_FSCTL. Each fails with STATUS_NOT_SUPPORTED, and
+// one naming a handle that is not open does too: Flags is checked before the
+// FileId.
+func TestIoctl_FlagsNotIsFSCTLNotSupported(t *testing.T) {
+	withFlags := func(body []byte, flags uint32) []byte {
+		binary.LittleEndian.PutUint32(body[48:], flags)
+		return body
+	}
+	vneg := func() []byte { _, _, body := validVNEGRequest(); return body }
+	closedHandle := buildIoctlRequestBody(FsctlSetSparse, [16]byte{1}, nil, 0)
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want types.Status
+	}{
+		{"is_fsctl", withFlags(vneg(), 1), types.StatusSuccess},
+		{"ioctl", withFlags(vneg(), 0), types.StatusNotSupported},
+		{"is_fsctl_and_undefined_bit", withFlags(vneg(), 3), types.StatusNotSupported},
+		{"ioctl_on_closed_handle", withFlags(closedHandle, 0), types.StatusNotSupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ctx, _ := validVNEGRequest()
+			result, err := h.Ioctl(ctx, tc.body)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Status != tc.want {
+				t.Errorf("status = %v, want %v", result.Status, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateNegotiateInfo_MaxOutputBelowResponseDropsConnection sends a
+// valid request whose MaxOutputResponse cannot hold the 24-byte response. The
+// server drops the connection instead of replying.
+func TestValidateNegotiateInfo_MaxOutputBelowResponseDropsConnection(t *testing.T) {
+	for _, maxOutput := range []uint32{0, 1, 23} {
+		h, ctx, body := validVNEGRequest()
+		binary.LittleEndian.PutUint32(body[44:], maxOutput)
+
+		result, err := h.Ioctl(ctx, body)
+		if err != nil {
+			t.Fatalf("MaxOutputResponse=%d: unexpected error: %v", maxOutput, err)
+		}
+		if !result.DropConnection {
+			t.Errorf("MaxOutputResponse=%d: status %v with %d response bytes, want the connection dropped",
+				maxOutput, result.Status, len(result.Data))
+		}
 	}
 }

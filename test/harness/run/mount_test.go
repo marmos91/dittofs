@@ -5,11 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // A fixture that mounts the share gives {mount} to its cell's commands, and
-// they can run there; where dt doesn't mount NFS yet, the cell doesn't run.
+// they can run there, as the user: the root need the mount implies is the
+// fixture's own. Where dt doesn't mount NFS yet, the cell doesn't run.
 func TestFixtureMount(t *testing.T) {
 	// What meets the root and nfs-client needs the mount implies.
 	met := t.TempDir()
@@ -31,11 +35,11 @@ func TestFixtureMount(t *testing.T) {
     fixture: { profile: memory, nfs: "4.1" }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, out := runTarget(t, root, r, "m", false)
-	want, note := Passed, ""
+	want, note := report.Passed, ""
 	if runtime.GOOS != "linux" {
-		want, note = NotRun, "dt mounts NFS only on Linux yet"
+		want, note = report.NotRun, "dt mounts NFS only on Linux yet"
 	}
-	if o := rep.Outcomes[0]; o.Result != want || o.Note != note {
+	if o := rep.Outcomes[0]; o.Result != want || o.Note != note || want == report.Passed && !strings.Contains(out, "[dt] $ test -f marker\n") {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

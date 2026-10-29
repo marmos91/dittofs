@@ -1,4 +1,4 @@
-.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all test-unit test-e2e test-posix test-smb-conformance test-all
+.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all test-unit test-e2e test-all
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -95,22 +95,9 @@ test-unit:
 test-e2e:
 	test/e2e/run-e2e.sh $(ARGS)
 
-# POSIX compliance suite. Requires root (mounts a DittoFS export; see the
-# script header), so invoke under sudo: `sudo make test-posix ARGS=chmod`.
-test-posix:
-	test/posix/run-posix.sh $(ARGS)
-
-# SMB conformance suite (WPTS FileServer BVT). Pass flags via ARGS,
-# e.g. `make test-smb-conformance ARGS="--profile badger"`.
-test-smb-conformance:
-	test/smb-conformance/run.sh $(ARGS)
-
-# Run unit tests followed by all three protocol suites. Uses a recipe
-# (not prerequisites) with $(MAKE) so the suites run strictly in order
-# even under `make -j` — the protocol suites share ports/mounts and must
-# not run concurrently. Requires root for the e2e/posix stages.
+# Run unit tests followed by the e2e suite. Uses a recipe (not
+# prerequisites) with $(MAKE) so the suites run strictly in order even under
+# `make -j`. Requires root for the e2e stage.
 test-all:
 	$(MAKE) test-unit
 	$(MAKE) test-e2e
-	$(MAKE) test-posix
-	$(MAKE) test-smb-conformance

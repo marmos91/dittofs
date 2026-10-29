@@ -9,6 +9,4 @@ Names are as the grader prints them: `<module>/<subtest>: <message>`, and for a 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | posix/read: file st_atime should be updated | semantics | reading a file does not update its atime; may be deliberate | [#2982](https://github.com/marmos91/dittofs/issues/2982) |
-| posix/seekdir: traceback: ValueError: NULL pointer access | semantics | readdir() after seekdir() to a saved cookie returns nothing (NULL), the same failure as cthon04 special/telldir | [#2979](https://github.com/marmos91/dittofs/issues/2979) |
-| posix/telldir: traceback: ValueError: NULL pointer access | semantics | as posix/seekdir: the cookie from telldir() does not seek back | [#2979](https://github.com/marmos91/dittofs/issues/2979) |
 | dio/*: WRITEs should be cached for buffered I/O | suite | buffered writes reach the server before close under `v4.1-noac`, where the client writes through; knfsd fails 16 of 20 there on the same kernel and DittoFS passes them on every other set (`baseline-knfsd.md`, `6.17.0-1022-azure`) | - |
