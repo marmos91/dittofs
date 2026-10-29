@@ -1,8 +1,11 @@
-# The project check fails only when total coverage drops by more than 0.5%:
-# the unit profile moves by up to about 0.1% between runs of the same code.
+# decision: no coverage status, comment or annotation while the code moves fast,
+# since they were noise on every PR. Uploads continue, so the coverage history is
+# there when the checks come back on. Revisit when the version is being
+# stabilized.
 coverage:
   status:
-    project:
-      default:
-        target: auto
-        threshold: 0.5%
+    project: off
+    patch: off
+comment: false
+github_checks:
+  annotations: false
