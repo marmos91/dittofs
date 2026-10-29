@@ -405,6 +405,8 @@ func (t *Table) serve(e *entry, out *outbox) {
 			e.waiters = slices.Delete(e.waiters, i, i+1)
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				ls.add(w.Range)
+				// the newer grant answers its range for the older offers
+				ls.dropOffers(w.Range.ByteRange)
 				ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 			}
 			out.over = append(out.over, waitOver{*w, true})

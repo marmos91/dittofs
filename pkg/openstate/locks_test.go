@@ -799,6 +799,46 @@ func TestRefusalsOfOverlappingGrants(t *testing.T) {
 	}
 }
 
+// Refusing one callback grant releases nothing a newer grant to the same owner
+// covers, whether the newer grant is accepted before the refusal or after it.
+func TestRefusalSparesANewerGrant(t *testing.T) {
+	for name, acceptFirst := range map[string]bool{"accepted, then other refused": true, "refused, then other accepted": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a, b, h := f.host(t, "a", 1), f.host(t, "b", 1), f.host(t, "h", 1)
+			file := anyFile()
+			grant := func(blocker Caller, held ByteRange, r LockRange) LockWaiter {
+				t.Helper()
+				f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+				f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{r}, Wait: WaitCallback})
+				f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
+				ws := f.sink.takeWaits()
+				if g := granted(t, ws); len(g) != 1 {
+					t.Fatalf("granted %v, want h", g)
+				}
+				return ws[0].w
+			}
+			w1, w2 := grant(a, br(0, 15), x(0, 15)), grant(b, br(15, 5), x(10, 10))
+			answers := []struct {
+				w       LockWaiter
+				refused bool
+			}{{w2, false}, {w1, true}}
+			if !acceptFirst {
+				answers[0], answers[1] = answers[1], answers[0]
+			}
+			for _, an := range answers {
+				if err := f.Locks().WaitAnswered(ctx, h, an.w, an.refused); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := f.host(t, "o", 1)
+			if _, err := f.lock(o, file, LockReq{Owner: owner(o, "o"), Ranges: []LockRange{x(10, 5)}}); err == nil {
+				t.Errorf("h accepted the grant of [10,20), yet o was granted [10,15)")
+			}
+		})
+	}
+}
+
 // A callback grant the host leaves unanswered for ten minutes is still held,
 // and its refusal then releases it.
 func TestUnansweredGrantOutlivesSilence(t *testing.T) {
