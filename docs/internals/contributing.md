@@ -534,6 +534,8 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 Every suite's profiles, variants, tier and known file live in the test registry,
 [`test/suites.yaml`](../../test/suites.yaml). `test/harness/bin/dt docs` renders them as the table
 in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale.
+A suite runs beside others under `dt run --parallel` only once it says `parallel: true`, and
+[testing-parallel.md](testing-parallel.md) says how to check whether it may.
 
 ### Combined-tree checks
 

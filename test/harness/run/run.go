@@ -115,6 +115,11 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	if len(cells) == 0 {
 		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
 	}
+	// Cells that run at once would build the run's {bin} and lay out its
+	// {tools} at once: do both before any starts, outside every cell's limits.
+	if o.Parallel > 1 {
+		prepare(ctx, cells, o, rep.Dir)
+	}
 	// mu guards what the cells share: running, done, rep, sum and o.Out.
 	var mu sync.Mutex
 	freed := sync.NewCond(&mu)
@@ -185,19 +190,51 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	return rep, writeErr
 }
 
-// conflict reports whether cells a and b can't run at once: either is
-// exclusive, their fixtures set the same SMB port, or both use the host's
-// rpcbind, as a knfsd fixture's kernel server does too.
+// conflict reports whether cells a and b can't run at once: either's suite
+// doesn't say parallel, either needs free disk, which nothing reserves, both
+// need the host's rpcbind, as a knfsd server does too, or both need the same port.
+// The needs are the cell's, its fixture's among them.
+//
+// decision: a suite says parallel only once someone has checked that it
+// holds nothing else of the host's: no fixed port outside its needs, no
+// container with a fixed name, no lock, mount or service of the host's but
+// rpcbind, nothing it measures (docs/internals/testing-parallel.md).
 func conflict(a, b Cell) bool {
-	if a.Unit.Exclusive || b.Unit.Exclusive {
+	if !a.Unit.Parallel || !b.Unit.Parallel {
 		return true
 	}
-	fa, fb := a.Unit.Fixture, b.Unit.Fixture
-	if fa == nil || fb == nil {
-		return false
+	disk := func(n string) bool { return strings.HasPrefix(n, "disk:") }
+	if slices.ContainsFunc(a.Needs, disk) || slices.ContainsFunc(b.Needs, disk) {
+		return true
 	}
-	hostRPC := func(f *registry.Fixture) bool { return f.RPCBind == "host" || f.Server == "knfsd" }
-	return fa.SMB.Port != 0 && fa.SMB.Port == fb.SMB.Port || hostRPC(fa) && hostRPC(fb)
+	hostRPC := func(c Cell) bool { return slices.Contains(c.Needs, "rpcbind") || slices.Contains(c.Needs, "knfsd") }
+	if hostRPC(a) && hostRPC(b) {
+		return true
+	}
+	return slices.ContainsFunc(a.Needs, func(n string) bool { return strings.HasPrefix(n, "port:") && slices.Contains(b.Needs, n) })
+}
+
+// prepare builds the run's {bin} and lays out its {tools} once, for cells
+// that run at once. A step that fails is said here and left to the cells,
+// which try it again and report it as their own.
+func prepare(ctx context.Context, cells []Cell, o Options, dir string) {
+	var tools []string
+	bin := false
+	for _, c := range cells {
+		tools = append(tools, c.Unit.Tools()...)
+		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c)
+	}
+	if bin {
+		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), os.Environ(), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] dfs and dfsctl didn't build: %v\n", err)
+		}
+	}
+	if len(tools) > 0 {
+		slices.Sort(tools)
+		if err := layOutTools(ctx, o.Root, filepath.Join(dir, "tools"), slices.Compact(tools), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] the tools weren't laid out: %v\n", err)
+		}
+	}
 }
 
 // prefixed passes a cell's output on with each line led by the cell's name, a

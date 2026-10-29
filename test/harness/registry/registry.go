@@ -91,7 +91,7 @@ type Suite struct {
 	Known       string               `yaml:"known"`
 	Shards      int                  `yaml:"shards"`
 	Job         string               `yaml:"job"`
-	Exclusive   bool                 `yaml:"exclusive"` // with --parallel, nothing runs beside its cells
+	Parallel    bool                 `yaml:"parallel"` // with --parallel, its cells may run beside others
 }
 
 // Fixture is the DittoFS server a suite's tests run against.

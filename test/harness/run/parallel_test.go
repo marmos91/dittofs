@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,8 +42,8 @@ rm "marks/$1"
 func TestParallelCellsRunAtOnce(t *testing.T) {
 	root, r := repo(t, `groups: { g: [a, b] }
 suites:
-  a: { cmd: "sh t/meet.sh a" }
-  b: { cmd: "sh t/meet.sh b" }
+  a: { cmd: "sh t/meet.sh a", parallel: true }
+  b: { cmd: "sh t/meet.sh b", parallel: true }
 `, map[string]string{"t/meet.sh": `mkdir -p marks && : > "marks/$1" && echo "hello from $1"
 i=0
 while [ "$(ls marks | wc -l)" -lt 2 ]; do
@@ -65,52 +66,80 @@ done
 func TestParallelHoldsToN(t *testing.T) {
 	root, r := repo(t, `groups: { g: [a, b, c] }
 suites:
-  a: { cmd: "sh t/count.sh a 2" }
-  b: { cmd: "sh t/count.sh b 2" }
-  c: { cmd: "sh t/count.sh c 2" }
+  a: { cmd: "sh t/count.sh a 2", parallel: true }
+  b: { cmd: "sh t/count.sh b 2", parallel: true }
+  c: { cmd: "sh t/count.sh c 2", parallel: true }
 `, map[string]string{"t/count.sh": count})
 	if rep, out := at(t, root, r, 2); rep.Status() != 0 {
 		t.Errorf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
 }
 
-// Cells that conflict run one at a time, whatever --parallel allows.
+// Cells that conflict run one at a time, whatever --parallel allows: here a
+// suite that doesn't say parallel.
 func TestConflictingCellsRunApart(t *testing.T) {
 	root, r := repo(t, `groups: { g: [a, b] }
 suites:
-  a: { cmd: "sh t/count.sh a 1", exclusive: true }
-  b: { cmd: "sh t/count.sh b 1" }
+  a: { cmd: "sh t/count.sh a 1" }
+  b: { cmd: "sh t/count.sh b 1", parallel: true }
 `, map[string]string{"t/count.sh": count})
 	if rep, out := at(t, root, r, 2); rep.Status() != 0 {
 		t.Errorf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
 }
 
-// Two cells conflict when either is exclusive, when their fixtures set the
-// same port, or when both use the host's rpcbind, as a knfsd server does.
+// Two cells conflict when either's suite doesn't say parallel, either needs
+// free disk, both need the host's rpcbind, as knfsd does too, or both need
+// the same port; their needs hold their fixtures'.
 func TestConflict(t *testing.T) {
-	cell := func(u registry.Suite) Cell { return Cell{Unit: &u} }
-	smb := func(port int) registry.Suite {
-		return registry.Suite{Fixture: &registry.Fixture{SMB: registry.SMB{Port: port}}}
+	cell := func(parallel bool, needs ...string) Cell {
+		c := Cell{Unit: &registry.Suite{Parallel: parallel}}
+		c.Needs = needs
+		return c
 	}
-	rpc := registry.Suite{Fixture: &registry.Fixture{RPCBind: "host"}}
-	knfsd := registry.Suite{Fixture: &registry.Fixture{Server: "knfsd"}}
-	plain := registry.Suite{Fixture: &registry.Fixture{}}
 	for _, c := range []struct {
 		name string
-		a, b registry.Suite
+		a, b Cell
 		want bool
 	}{
-		{"exclusive", registry.Suite{Exclusive: true}, plain, true},
-		{"same port", smb(445), smb(445), true},
-		{"port and free ports", smb(445), smb(0), false},
-		{"both on the host's rpcbind", rpc, rpc, true},
-		{"knfsd and the host's rpcbind", knfsd, rpc, true},
-		{"the host's rpcbind and its own", rpc, plain, false},
-		{"no fixture", registry.Suite{}, registry.Suite{}, false},
+		{"a suite that doesn't say parallel", cell(false), cell(true), true},
+		{"both say parallel", cell(true, "linux", "root"), cell(true, "linux", "nfs-client"), false},
+		{"free disk", cell(true, "disk:110"), cell(true), true},
+		{"both on the host's rpcbind", cell(true, "rpcbind"), cell(true, "linux", "rpcbind"), true},
+		{"knfsd and the host's rpcbind", cell(true, "root", "knfsd", "port:2049"), cell(true, "rpcbind"), true},
+		{"the host's rpcbind beside none", cell(true, "rpcbind"), cell(true, "root"), false},
+		{"the same port", cell(true, "port:445"), cell(true, "root", "port:445"), true},
+		{"other ports", cell(true, "port:445"), cell(true, "port:2049"), false},
 	} {
-		if got := conflict(cell(c.a), cell(c.b)); got != c.want {
+		if got := conflict(c.a, c.b); got != c.want {
 			t.Errorf("%s: conflict %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// With --parallel, the run's {bin} is built once, before any cell starts,
+// not by each fixture cell at once into the same directory.
+func TestParallelBuildsBinOnce(t *testing.T) {
+	fakeFixture(t, func(context.Context) (fixtureServer, error) { return &fakeServer{}, nil })
+	root, r := repo(t, `groups: { g: [a, b] }
+suites:
+  a: { cmd: "true", parallel: true, fixture: { profile: memory, nfs: export } }
+  b: { cmd: "true", parallel: true, fixture: { profile: memory, nfs: export } }
+`, map[string]string{"fake/go": `#!/bin/sh
+mkdir "$GO_LOCK" 2>/dev/null || echo overlap >>"$GO_LOG"
+echo build >>"$GO_LOG"
+while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+sleep 0.3
+mkdir -p "$out" && : >"$out/dfs" && : >"$out/dfsctl"
+rmdir "$GO_LOCK" 2>/dev/null
+exit 0
+`})
+	t.Setenv("PATH", filepath.Join(root, "fake")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GO_LOCK", filepath.Join(root, "go.lock"))
+	t.Setenv("GO_LOG", filepath.Join(root, "go.log"))
+	rep, out := at(t, root, r, 2)
+	log, _ := os.ReadFile(filepath.Join(root, "go.log"))
+	if rep.Status() != 0 || string(log) != "build\n" {
+		t.Errorf("go build ran %q, outcomes %+v\n%s", log, rep.Outcomes, out)
 	}
 }

@@ -1,5 +1,6 @@
 # test/suites.yaml: every test suite, one entry each. `dt list` prints it; `dt plan` expands it.
-# Format and rules: docs/internals/rfcs/rfc-29-test-harness.md.
+# Format and rules: docs/internals/rfcs/rfc-29-test-harness.md. A suite runs beside others under
+# dt run --parallel only with parallel: true, set once checked: docs/internals/testing-parallel.md.
 version: 1
 
 defaults:            # any suite field; a suite's own value wins
@@ -18,6 +19,7 @@ suites:
   # runs even after one fails, so a red job reports every check that failed.
   lint-go:
     job: Go Checks
+    parallel: true
     tier: pr
     cmd:
       - go mod verify                         # the module cache still matches go.sum
@@ -33,6 +35,7 @@ suites:
       - golangci-lint run --timeout=5m
   lint-repo:
     job: Repo Checks
+    parallel: true
     tier: pr
     cmd:
       - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
@@ -49,6 +52,7 @@ suites:
   # line is a shell's shebang.
   shellcheck:
     job: ShellCheck
+    parallel: true
     tier: pr
     cmd:
       sh: |
@@ -63,6 +67,7 @@ suites:
         done | xargs -0 shellcheck --severity=warning
   unit:
     job: Unit Tests (1.26.x)
+    parallel: true
     format: go-json
     # Its coverage profile goes beside the cell's results, for the coverage report.
     cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...
@@ -152,6 +157,7 @@ suites:
     known: test/posix/known.yaml
     tier: pr
     needs: [linux, root, nfs-client]
+    parallel: true   # each cell has its own ports, S3 prefix and mount point: three at once checked
   pynfs:
     format: junit
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
@@ -336,7 +342,6 @@ suites:
     # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
     # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
     timeout: { test: 3h }
-    exclusive: true   # it measures a host with nothing else running
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.
@@ -350,7 +355,6 @@ suites:
     needs_by_test:
       "9?-*.sh": ["host:dedicated", "disk:110"]
     timeout: { test: size, cell: 90m }
-    exclusive: true   # setup.sh takes the scenarios' lock, and a second run beside it exits, not waits
     shards: 4
     # decision: reported, never failing the gate, until a week of develop runs has no apt stall:
     # setup.sh ran apt-get update for every scenario, which stalled for minutes on hosted runners,
