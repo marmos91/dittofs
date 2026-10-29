@@ -47,36 +47,43 @@ func overlap(a, b journalv2.Extent) int64 {
 	return max(0, min(a.Off+a.Len, b.Off+b.Len)-max(a.Off, b.Off))
 }
 
-// joined returns es sorted by offset with touching extents joined, so a
-// check compares the bytes named, whatever pieces a journal cut them into.
-func joined(es []journalv2.Extent) []journalv2.Extent {
-	out := slices.SortedFunc(slices.Values(es), func(a, b journalv2.Extent) int { return cmp.Compare(a.Off, b.Off) })
+// mergeAdjacent returns xs sorted by order, each element that merge folds
+// into the one kept before it dropped, so a check compares what was named
+// whatever pieces a journal cut it into.
+func mergeAdjacent[T any](xs []T, order func(a, b T) int, merge func(last *T, next T) bool) []T {
+	out := slices.SortedFunc(slices.Values(xs), order)
 	j := 0
-	for i, e := range out {
-		if i > 0 && out[j-1].Off+out[j-1].Len == e.Off {
-			out[j-1].Len += e.Len
+	for i, x := range out {
+		if i > 0 && merge(&out[j-1], x) {
 			continue
 		}
-		out[j] = e
+		out[j] = x
 		j++
 	}
 	return out[:j]
 }
 
+// joinExtent extends last by next when next starts where last ends.
+func joinExtent(last *journalv2.Extent, next journalv2.Extent) bool {
+	if last.Off+last.Len != next.Off {
+		return false
+	}
+	last.Len += next.Len
+	return true
+}
+
+// joined returns es sorted by offset with touching extents joined.
+func joined(es []journalv2.Extent) []journalv2.Extent {
+	return mergeAdjacent(es, func(a, b journalv2.Extent) int { return cmp.Compare(a.Off, b.Off) }, joinExtent)
+}
+
 // joinedHeld is joined for served extents, joining only those of one
 // version.
 func joinedHeld(hs []journalv2.Held) []journalv2.Held {
-	out := slices.SortedFunc(slices.Values(hs), func(a, b journalv2.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
-	j := 0
-	for i, h := range out {
-		if i > 0 && out[j-1].Extent.Off+out[j-1].Extent.Len == h.Extent.Off && out[j-1].Version == h.Version {
-			out[j-1].Extent.Len += h.Extent.Len
-			continue
-		}
-		out[j] = h
-		j++
-	}
-	return out[:j]
+	return mergeAdjacent(hs, func(a, b journalv2.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) },
+		func(last *journalv2.Held, next journalv2.Held) bool {
+			return last.Version == next.Version && joinExtent(&last.Extent, next.Extent)
+		})
 }
 
 // covered returns how many bytes of e the extents in es cover, counting a
@@ -102,14 +109,20 @@ type readOut struct {
 	asOf    journalv2.Version
 }
 
-// read reads n bytes at off of file id through h into a buffer of sentinel
-// bytes.
+// readErr reads n bytes at off of file id through h into a buffer of
+// sentinel bytes, for a goroutine or callback that cannot fail the test.
+func readErr(ctx context.Context, h *journalv2.Handle, id journalv2.FileID, off, n int64) (readOut, error) {
+	r := readOut{p: sentinels(n)}
+	var err error
+	r.n, r.missing, r.held, r.asOf, err = h.ReadAt(ctx, id, off, r.p)
+	return r, err
+}
+
+// read is readErr failing the test on an error.
 func read(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off, n int64) readOut {
 	t.Helper()
 
-	r := readOut{p: sentinels(n)}
-	var err error
-	r.n, r.missing, r.held, r.asOf, err = h.ReadAt(t.Context(), id, off, r.p)
+	r, err := readErr(t.Context(), h, id, off, n)
 	stub(t, "ReadAt", err)
 	if err != nil {
 		t.Fatalf("read %d bytes at %d: %v", n, off, err)
@@ -323,22 +336,10 @@ func offloaded(t *testing.T, err error) {
 // version and stamp joined, so a check compares what was offered whatever
 // records it was cut into.
 func coalesce(offered []journalv2.OfferedExtent) []journalv2.OfferedExtent {
-	out := slices.SortedFunc(slices.Values(offered), func(a, b journalv2.OfferedExtent) int {
-		return cmp.Compare(a.Extent.Off, b.Extent.Off)
-	})
-	j := 0
-	for i, o := range out {
-		if i > 0 {
-			last := &out[j-1]
-			if last.Extent.Off+last.Extent.Len == o.Extent.Off && last.Version == o.Version && last.Cut == o.Cut && last.Stamped == o.Stamped {
-				last.Extent.Len += o.Extent.Len
-				continue
-			}
-		}
-		out[j] = o
-		j++
-	}
-	return out[:j]
+	return mergeAdjacent(offered, func(a, b journalv2.OfferedExtent) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) },
+		func(last *journalv2.OfferedExtent, o journalv2.OfferedExtent) bool {
+			return last.Version == o.Version && last.Cut == o.Cut && last.Stamped == o.Stamped && joinExtent(&last.Extent, o.Extent)
+		})
 }
 
 // extentsOf returns the extents of offered.
@@ -892,7 +893,8 @@ func TestRFC1A_ReleaseFreesNothingInsideSegment(t *testing.T) {
 // the segment, since retirement runs on the journal's own goroutines. Its
 // ceiling: a journal that retires without waiting for readers, but later than
 // 200 ms after the release is durable, passes; the retirement after the read
-// is waited for up to 2 s. Overturned if retirement becomes part of the sync
+// is waited for up to 2 s, so a correct journal slower than that to retire
+// fails. Overturned if retirement becomes part of the sync
 // that makes the release durable, when no wait is needed.
 func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 	f := journalv2test.New(t)
@@ -927,9 +929,7 @@ func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 		}
 		done := make(chan result, 1)
 		go func() {
-			r := readOut{p: sentinels(e.Extent.Len)}
-			var err error
-			r.n, r.missing, r.held, r.asOf, err = h.ReadAt(t.Context(), id, e.Extent.Off, r.p)
+			r, err := readErr(t.Context(), h, id, e.Extent.Off, e.Extent.Len)
 			done <- result{r, err}
 		}()
 		select {
@@ -1003,22 +1003,11 @@ func since(t *testing.T, h *journalv2.Handle, id journalv2.FileID, from journalv
 // extents of one kind and version joined, so a check compares what changed
 // whatever pieces a journal cut it into.
 func joinedChanges(cs []change) []change {
-	out := slices.SortedFunc(slices.Values(cs), func(a, b change) int {
+	return mergeAdjacent(cs, func(a, b change) int {
 		return cmp.Or(a.Version.Compare(b.Version), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Extent.Off, b.Extent.Off))
+	}, func(last *change, c change) bool {
+		return last.Kind == c.Kind && last.Version == c.Version && joinExtent(&last.Extent, c.Extent)
 	})
-	j := 0
-	for i, c := range out {
-		if i > 0 {
-			last := &out[j-1]
-			if last.Kind == c.Kind && last.Version == c.Version && last.Extent.Off+last.Extent.Len == c.Extent.Off {
-				last.Extent.Len += c.Extent.Len
-				continue
-			}
-		}
-		out[j] = c
-		j++
-	}
-	return out[:j]
 }
 
 // sameChanges reports whether got and want hold the same changes, whatever
@@ -1194,9 +1183,8 @@ func TestRFC1A_RemovalDuringOffload(t *testing.T) {
 			if !bytes.Equal(buf, p) {
 				return errors.New("the offer's reader returned other bytes than were offered, after a removal")
 			}
-			r := readOut{p: sentinels(e.Len)}
-			var err error
-			if r.n, r.missing, r.held, r.asOf, err = h.ReadAt(t.Context(), id, 0, r.p); err != nil {
+			r, err := readErr(t.Context(), h, id, 0, e.Len)
+			if err != nil {
 				return called("ReadAt", err)
 			}
 			if !slices.Equal(joined(r.missing), []journalv2.Extent{e}) || !bytes.Equal(r.p, sentinels(e.Len)) {
@@ -1367,7 +1355,7 @@ const recordCap = 4 << 20
 // decision: each offer made against the parked pass is given 5 s of real
 // time, so a journal whose offer waits on the pass fails rather than hanging
 // to the suite's timeout. Its ceiling: an offer slower than that on a loaded
-// runner fails without being wrong. Overturned by a journal that documents
+// machine fails without being wrong. Overturned by a journal that documents
 // offers waiting on repack, which this check would then have to release.
 func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 	f := journalv2test.New(t)
