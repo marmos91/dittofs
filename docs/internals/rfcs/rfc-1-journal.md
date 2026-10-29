@@ -1117,7 +1117,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 ```go
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss record
-Stats() Stats                              // journal-wide, with a per-share breakdown
+Stats() Stats                              // the Journal's, not the Handle's (§3): journal-wide, with a per-share breakdown
 DirtyFiles() iter.Seq2[FileID, time.Time]  // files with a held or retained extent whose offloaded bit is unset, each with its oldest dirty byte's write time
 ```
 
@@ -2770,7 +2770,7 @@ A check here fails by **leaving an operator unable to tell which of two opposite
 | [§3.7](#3.7%20State%20introspection) wedge is visible | Drive the journal to capacity with nothing evictable; assert one `Stats` call shows both, and which share holds the dirty bytes. Drive it to capacity with everything released but unrepacked; assert `UnreclaimedBytes` names it, per share. |
 | [§7.3](#7.3%20Accounting) accounting follows the cap | On every supported filesystem, including one that allocates speculatively past the end of a growing file ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), write records into a segment in small appends; assert `UsedBytes` equals the sum of the segments' accounted sizes — the cap for each unsealed one, its size after seal for each sealed one — throughout, and the filesystem's allocated size never exceeds it. |
 | [§3.8](#3.8%20Loss%20events) generation never repeats | Raise the loss generation to 3, close the journal and open it again in the same process; assert it reads at least 3, and that the next dirty loss raises it to 4. |
-| [§3.7](#3.7%20State%20introspection) stats are cheap | Poll `Stats` under concurrent write load; assert it takes no lock a write needs and its cost does not grow with held extents. |
+| [§3.7](#3.7%20State%20introspection) stats are cheap | Poll `Stats` under concurrent write load; assert it takes no lock a write needs and its cost does not grow with extents or segments. |
 | [§3.7](#3.7%20State%20introspection) named inequalities hold | Poll `Stats` in a tight loop under concurrent writes, releases, truncates and repack; assert every sample keeps `DirtyBytes` ≤ `HeldBytes`, `ReservedBytes` ≥ 0 and `UsedBytes` ≥ the storage the seam reports allocated. |
 | [§3.7](#3.7%20State%20introspection) backlog age | Write, advance the virtual clock, offload part; assert `OldestDirty` is the write time of the oldest extent still dirty. |
 | [§3.7](#3.7%20State%20introspection) clean bytes count as occupancy | Fill the journal to its maximum with filled, offloaded content and nothing dirty or released. Assert `UsedBytes` is at the maximum while `DirtyBytes` and `UnreclaimedBytes` are zero, so a trigger on allocated occupancy fires and one on dirty plus unreclaimed bytes does not. |
