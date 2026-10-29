@@ -607,7 +607,9 @@ func TestRFC1A_FillSafety(t *testing.T) {
 
 		held := f.Seam.HoldFirst(t, journalv2test.OpWrite, "*.seg")
 		filled := make(chan error, 1)
-		go func() { filled <- h.Fill(t.Context(), id, 0, distinct(k, 64<<10), r.asOf, v) }()
+		go func() {
+			filled <- journalv2test.RetrySpare(func() error { return h.Fill(t.Context(), id, 0, distinct(k, 64<<10), r.asOf, v) })
+		}()
 		select {
 		case <-held.Reached():
 		case err := <-filled:
@@ -866,7 +868,9 @@ func TestRFC1A_ReleaseFreesNothingInsideSegment(t *testing.T) {
 				t.Fatalf("segment %d, still held, took %d %s calls during releases", s.ID, a.calls[i]-b.calls[i], op)
 			}
 		}
-		if !bytes.HasPrefix(a.durable, b.durable) {
+		// The baseline's zero tail is the segment's allocation not yet
+		// written, where a release's record may legitimately be appended.
+		if !bytes.HasPrefix(a.durable, bytes.TrimRight(b.durable, "\x00")) {
 			t.Fatalf("segment %d, still held, had bytes it held before the releases changed", s.ID)
 		}
 		if a.allocated != b.allocated {
@@ -1232,7 +1236,9 @@ func TestRFC1A_NeighboursAreFrozen(t *testing.T) {
 		mark(t, h, id, right, vr)
 		vm := write(t, h, id, middle.Off, distinct(10*k+2, 64<<10))
 
+		offered := false
 		offload(t, h, id, vm, 1<<20, 64<<10, func(o journalv2.Offer, report func([]journalv2.Extent) error) error {
+			offered = true
 			want := []journalv2.Held{{Extent: left, Version: vl}, {Extent: right, Version: vr}}
 			if got := joinedHeld(o.Neighbours); !slices.Equal(got, want) {
 				return fmt.Errorf("the offer carried neighbours %+v, want %+v", o.Neighbours, want)
@@ -1276,6 +1282,9 @@ func TestRFC1A_NeighboursAreFrozen(t *testing.T) {
 			}
 			return nil
 		})
+		if !offered {
+			t.Fatalf("share %d: an offload of a file with a dirty extent never called its callback", k)
+		}
 	}
 }
 
@@ -1347,11 +1356,13 @@ const recordCap = 4 << 20
 // it takes an extent already copied from its new place and leaves the rest,
 // and the pass still completes and unlinks the segment.
 //
-// decision: the pass is taken to be past its first copy once it makes its
-// second write into a segment, the first being that copy; a pass that writes
-// every copy in one call is checked only before it, where nothing of the
-// segment may be offered either. Overturned if repack reports its own points
-// to the seam, when a hold can stop it after a named copy instead.
+// decision: the pass is parked twice: at its first write into a segment,
+// before any copy can be in the index, and at the segment's unlink or rename,
+// which a pass makes only after every copy is durable and repointed. The
+// second park is where copied extents are checked, so a pass that repoints
+// one record at a time is not checked between two of its copies. Overturned
+// if repack reports its own points to the seam, when a hold can stop it after
+// a named copy instead.
 //
 // decision: each offer made against the parked pass is given 5 s of real
 // time, so a journal whose offer waits on the pass fails rather than hanging
@@ -1420,13 +1431,22 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 					if !copied {
 						return nil
 					}
+					var moved, total int64
+					for _, e := range inSeg {
+						total += e.Len
+					}
 					for _, en := range now {
 						if en.Kind != journalv2.EntryHeld || en.Offloaded || en.Location.Segment == seg {
 							continue
 						}
-						if want := covered(inSeg, en.Extent); covered(offered, en.Extent) < want {
+						want := covered(inSeg, en.Extent)
+						moved += want
+						if covered(offered, en.Extent) < want {
 							return fmt.Errorf("extent %+v, already copied out of the segment under repack, was not offered whole", en.Extent)
 						}
+					}
+					if moved != total {
+						return fmt.Errorf("%d of the segment's %d dirty bytes are indexed elsewhere when it is unlinked, want all of them", moved, total)
 					}
 					return nil
 				})
@@ -1460,17 +1480,21 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 		}
 		againstPass(false)
 
-		second := f.Seam.Hold(t, journalv2test.OpWrite, "*.seg")
+		name := segmentName(seg)
+		unlink := f.Seam.Hold(t, journalv2test.OpRemove, name)
+		rename := f.Seam.Hold(t, journalv2test.OpRename, name)
 		first.Release()
 		select {
-		case <-second.Reached():
-			againstPass(true)
-			second.Release()
-			passDone(<-repacked)
+		case <-unlink.Reached():
+		case <-rename.Reached():
 		case err := <-repacked:
-			second.Release()
 			passDone(err)
+			t.Fatalf("share %d: the repack returned without unlinking or renaming segment %d", k, seg)
 		}
+		againstPass(true)
+		unlink.Release()
+		rename.Release()
+		passDone(<-repacked)
 		if listed(t, f, segmentName(seg)) {
 			t.Fatalf("share %d: segment %d is still in the directory after its repack completed", k, seg)
 		}
