@@ -147,6 +147,10 @@ type offer struct {
 // lockSeq is the index r names in op's lock replay and the value a lock
 // granted under it stores there; ok is false for a request naming none, or
 // an open keeping none.
+//
+// decision: the lock replay kept on the open replaces the SMB adapter's
+// pending.LockDRC once the adapter moves onto the table; until then that
+// cache is the live one. Delete it with the move.
 func lockSeq(op *open, r *LockSequence) (i int, v uint8, ok bool) {
 	if r == nil || op == nil || op.Durability == entity.DurabilityNone || r.Index < 1 || r.Index > 64 {
 		return 0, 0, false

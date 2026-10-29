@@ -518,6 +518,11 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 // names, not the client's every open, as the table finds opens by file;
 // an ID reused on another file is not refused. Index opens by create ID
 // if a client is seen reusing one across files.
+//
+// decision: this replaces the SMB adapter's create replay cache,
+// pending.CreateDRC behind handlers/replay_store.go, once the adapter moves
+// onto the table; until then that cache is the live one. Delete it with the
+// move.
 func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult) (done bool, err error) {
 	if r.Durable.Create == ([16]byte{}) {
 		return false, nil
@@ -554,6 +559,12 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 // leaves it closed: its application moved to the caller's machine and does
 // not use it again. Close it only once the create is granted if a client is
 // seen depending on the earlier open after such a refusal.
+//
+// decision: this replaces the SMB adapter's handlers.ProcessAppInstanceId
+// once the adapter moves onto the table; until then that is the live copy.
+// It displaces only the open of the file the create names, where the
+// adapter's displaces every open of the instance its caller can read.
+// Delete the adapter's with the move.
 func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenRequest, out *outbox) error {
 	k := r.Durable
 	if k.Instance.ID == ([16]byte{}) || !r.MaxRead {
