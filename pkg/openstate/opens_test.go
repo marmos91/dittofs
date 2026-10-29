@@ -674,3 +674,20 @@ func TestStatOpenDenyDeleteRefusesNoRemove(t *testing.T) {
 		}
 	}
 }
+
+// An SMB rename replacing a file another client holds open is refused, as
+// the renamer's own open covers only its source; one replacing a file
+// nobody holds open is not.
+func TestSMBRenameOverAnOpenTargetIsRefused(t *testing.T) {
+	f := newFixture(t)
+	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
+	target := anyFile()
+	held := f.mustOpen(t, q, target, OpenRequest{Access: rd, Deny: del})
+	if err := f.Checks().CheckChange(ctx, s, target, nil, ChangeRename|ChangeReplace); !errors.Is(err, ErrAccess) {
+		t.Errorf("an SMB rename over a target held open denying delete: %v, want ErrAccess", err)
+	}
+	f.close(t, q, held)
+	if err := f.Checks().CheckChange(ctx, s, target, nil, ChangeRename|ChangeReplace); err != nil {
+		t.Errorf("an SMB rename over a target nobody holds open: %v", err)
+	}
+}

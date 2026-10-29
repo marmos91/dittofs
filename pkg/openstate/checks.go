@@ -22,6 +22,11 @@ const (
 	ChangeAddEntry                        // a name is added to the directory
 	ChangeAttrs                           // the file's attributes are set
 	ChangeSetID                           // a mode change sets the setuid or setgid bit
+	// ChangeReplace: a rename replaces the file. An SMB adapter passes it,
+	// with ChangeRename, for the target of a rename asking ReplaceIfExists,
+	// which the renamer holds no open of; an NFS one need not, as ChangeRename
+	// already judges an NFS caller against every open.
+	ChangeReplace
 )
 
 // Checks is the view the service asks before I/O and before a change.
@@ -170,12 +175,15 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 //
 // decision: only a caller that is not SMB is refused a remove or rename
 // against a deny-delete, and only an SMB caller is refused one of a
-// directory an open was made through. An SMB client removes and renames
-// through an open holding delete access, whose own deny modes were judged at
-// open, so judging its own open's deny-delete again would refuse a rename
-// through an exclusive handle; and POSIX allows an NFS rename of a directory
-// with open children. Judge every caller if a protocol is served that
-// removes a name without an open of its own.
+// directory an open was made through. An SMB client removes and renames the
+// source through an open holding delete access, whose own deny modes were
+// judged at open, so judging its own open's deny-delete again would refuse a
+// rename through an exclusive handle; and POSIX allows an NFS rename of a
+// directory with open children. That covers the source only: the target an
+// SMB rename replaces, ChangeReplace, was never opened by the renamer, and is
+// refused ErrAccess while any open of it is held, as Windows refuses it.
+// Judge every caller if a protocol is served that removes a name without an
+// open of its own.
 func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error {
 	t := v.t
 	sink, err := t.running()
@@ -209,6 +217,9 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 		// create in a directory an SMB client has marked.
 		if what&(ChangeRename|ChangeAddEntry) != 0 && e.pending != nil {
 			return ErrDeletePending
+		}
+		if smb && what&ChangeReplace != 0 && len(e.opens) > 0 {
+			return ErrAccess
 		}
 		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
 			var hs []*open
