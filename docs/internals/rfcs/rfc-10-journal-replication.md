@@ -782,8 +782,8 @@ under. **The receiver enforces it:**
   install record, the lowest version it lost for the shard, its **loss point**,
   and report it with its committed point in every answer from then on. A loss
   that names no record ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) names no shard or version, so it sets a loss
-  point on every shard the journal holds, at the lowest version a write can carry.
-  A gather therefore counts no point for that replica until it rejoins. A replica
+  point on every shard the journal holds, at the lowest version a write can carry,
+  so a gather counts it below every point until it rejoins. A replica
   with a loss point is lagging: the primary removes it ([§7.2](#7.2%20Removal)), and a gather
   counts it at no point above its loss point ([§9.2](#9.2%20Takeover)). It is cleared only by
   rejoining ([§7.3](#7.3%20Joining)), which discards first;

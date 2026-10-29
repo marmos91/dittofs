@@ -567,7 +567,7 @@ gives as 0 is written as zero.
 | 7 | `clone target` | the destination | `DstOff`, `Len` | its version | 56 bytes: source `ShareID`, source `FileID`, source offset, `AsOf` (16 bytes, epoch then counter) |
 | 8 | `offloaded` | the file | one extent marked; one record per extent | the newest version marked | none |
 | 9 | `unmark` | the file | one extent unmarked; one record per extent | the version of the content unmarked | none |
-| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window; the rest zero |
+| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window, 4 superseded ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)'s `DropOlder`); the rest zero |
 | 11 | `hold` | the file | 0, 0 | the hold mark | 8 bytes: the cut number ([RFC 6](rfc-6-block-metadata.md)'s `SnapshotCut`) |
 | 12 | `unhold` | zero | 0, 0 | zero | 8 bytes: the cut number |
 | 13 | `stamp` | the file | 0, 0 | `through` | 8 bytes: the cut number |
@@ -1255,9 +1255,8 @@ each region has its own required outcome:
 
 - a record header or payload: caught at open by a scan, otherwise on the read
   that would serve it; the extent is dropped and reported as data loss or as
-  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The exception is a header that §3.3's scan
-  finds corrupt. It names no record, so the engine's reconcile drops whatever it
-  had superseded;
+  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), or, for a header §3.3's scan finds corrupt,
+  reconciled by the engine ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header: the segment is reported as damaged and its records are still

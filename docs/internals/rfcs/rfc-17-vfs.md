@@ -1256,7 +1256,7 @@ const (
 	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
 	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
 	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3)
+	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
