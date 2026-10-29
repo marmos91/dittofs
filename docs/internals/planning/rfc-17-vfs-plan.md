@@ -17,7 +17,7 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 - **The store** (`pkg/metadata/kvstore`, merged): the server calls only `Namespace`, `Files` and
   `Capacity` (RFC 7), short of the calls listed in plan §5 Q3.
 - **Open state** (`pkg/openstate`): stage 1 piece 1 merged (#3256), pieces 2–8 in review (#3330,
-  #3336, #3341, #3344, #3363, #3400, #3417); #3417 (piece 8) is being split into four PRs.
+  #3336, #3341, #3344, #3363, #3400; piece 8 as #3456, #3457, #3458, #3417 and #3459).
   `vfs.New` takes `*openstate.Table` in `Deps.Open` but keeps only its seven views (§2.3).
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
@@ -95,7 +95,7 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 | 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7 |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`) |
 | 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`) |
-| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`) |
+| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`); #3202 piece 0's follow-up (`RaiseIncarnations`) |
 | 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
@@ -105,7 +105,7 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 split: its first piece lands the cases it can reach, and the piece that completes it is named
 beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's; V19, V20 and V25 complete in
 stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 is piece 10's
-and L20 piece 8's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
+and L20 piece 8's, and L29's restart case piece 7's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
 its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
 1. **Contract:** `pkg/vfs`'s value types and the aliases §3.0 lists from the metadata store and
@@ -170,7 +170,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    (RFC 14 §11.3); opens, deny modes, delete on close and the four moments of release; the pending
    releases a shard holds run when its grace ends (`Sink.GraceEnded`);
    `vfs_deferred_unlink_refusals_total`.
-   Done when: V8 (→10), V9, V17, V21, V28, V33, V35 (→10), V38 pass: open then close, and delete
+   Done when: V8 (→10), V9, V17, V21, V28, V33, V35 (→10), V38, and RFC 14's L29 pass: open then close, and delete
    on close, run in the unit tier, and each open meeting a deny mode held only in a handle cache
    gets `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes
    only after handle caching is broken (§4.3).
@@ -182,10 +182,8 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    // reserve quota, Done releases the reservation here.
    ```
    Done when: V3 (→9), V7 (→10), V16, V18, V19 (→stage 3), V20 (→9), V22 (→11), V25 (→stage 3),
-   V31 (→11) pass. V20's and V25's remaining cases (a retry that succeeds once offload frees space,
-   a shard handed away and back) are engine and cluster behaviour that the fake can only agree
-   with; the server's own part, passing `DelayCapacity` through rather than mapping it to
-   `ErrNoSpace`, is tested here.
+   V31 (→11) pass; here V20 and V25 test only that `DelayCapacity` passes through, not mapped to
+   `ErrNoSpace`.
 9. **Quota:** reservations and their release through `WriteOpts.Done`, a create charged to the
    new file's owner; `QuotaEvent`s where the quota is enforced.
    Done when: V3, V10, V20 (→stage 3), V37 pass.
@@ -248,10 +246,10 @@ which are the node's, a removal's or a cut's.
    inside `other` and `FileId`'s bit layout; when a `FileId` is stale; `ErrLocked`'s holder; one
    hex vector per ID in RFC 21; whether `Record` and `Spell`, which change nothing, belong on
    `Mutates`' read-only list, and where `Find`, which can mint, goes; whether `vfs.ErrLost` aliases `openstate.ErrLost`; and §4.3
-   answers for `ErrCreateInUse`, `ErrStopped`, `ErrLost` and `DelayFrozen`. Until §4.3 answers
-   `ErrCreateInUse` and `ErrStopped`, the server's mapping of open state's errors is not total.
+   answers for `ErrStopped`, `ErrLost` and `DelayFrozen`. Until §4.3 answers `ErrStopped`, the
+   server's mapping of open state's errors is not total (#3414 maps `ErrCreateInUse` as
+   `StateError` `CreateInUse`).
 
 ## 6. What sets the pace
 
-About fifteen PRs, roughly one per piece and two for the larger ones (5, 8, 10). Review sets the
-pace, as for stage 1. What blocks what is the Needs column of plan §3.
+What blocks what is the Needs column of plan §3.
