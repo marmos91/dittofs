@@ -790,8 +790,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 
 func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) {
 	t := v.t
-	switch {
-	case o.Client != who.Client:
+	if o.Client != who.Client {
 		return nil, ErrNotYours
 	}
 	if err := t.staleClient(ctx, who.Client); err != nil {

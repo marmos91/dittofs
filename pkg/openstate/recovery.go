@@ -62,7 +62,7 @@ type served struct {
 
 // reclaimer is a client a grace waits for.
 type reclaimer struct {
-	kind entity.RecoveryKind // how it recovers
+	reconnect bool // it recovers by reconnecting
 	// deny is set when it can reclaim a deny mode or a mandatory lock: it is
 	// no NLM host, which holds neither, and does not recover by reconnecting,
 	// which reclaims nothing here.
@@ -86,7 +86,7 @@ func (sh *served) settle() {
 	done := true
 	for _, r := range sh.reclaim {
 		sh.guarded = sh.guarded || r.deny
-		done = done && r.kind == entity.RecoverReconnect
+		done = done && r.reconnect
 	}
 	if done {
 		sh.ends = 0
@@ -94,8 +94,11 @@ func (sh *served) settle() {
 }
 
 // ponytail: share is taken but not read, since nothing is installed from the
-// durable-open index yet, whose range of a shard is keyed by its share. Read
-// it once ServeShard installs the shard's persistent opens.
+// durable-open index yet, whose range of a shard is keyed by its share; and
+// grace's end raises no Sink.GraceEnded, so the service is not told when a
+// shard leaves grace. Read share once ServeShard installs the shard's
+// persistent opens, and add GraceEnded once the service has something to run
+// at grace's end.
 func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error {
 	t := v.t
 	sink, err := t.running()
@@ -148,8 +151,8 @@ func (t *Table) beginShard(ctx context.Context, s ShardID, instance uint64) ([]R
 		// once ServeShard installs persistent opens that are not yet
 		// reconnected.
 		sh.reclaim[rec.ID] = reclaimer{
-			kind: rec.Recovery,
-			deny: rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
+			reconnect: rec.Recovery == entity.RecoverReconnect,
+			deny:      rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
 		}
 		// A client the table does not know yet starts its lease at the
 		// grace's start, as its first call would: one silent through the
@@ -315,11 +318,8 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 
 // staleClient is ErrStaleClient for a client c that must connect again, as
 // mustConnectLocked judges it, adopting c first if this table has not yet
-// served it since a restart; a call naming no client is never stale.
+// served it since a restart.
 func (t *Table) staleClient(ctx context.Context, c entity.ClientID) error {
-	if c == 0 {
-		return nil
-	}
 	t.cmu.Lock()
 	_, ok := t.known[c]
 	t.cmu.Unlock()
