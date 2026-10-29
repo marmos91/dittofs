@@ -549,6 +549,7 @@ func TestStartAndStop(t *testing.T) {
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
 		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },
 		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
+		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
 	}
 	check := func(when string) {
 		for name, call := range calls {
