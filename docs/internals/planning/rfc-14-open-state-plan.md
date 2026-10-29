@@ -7,7 +7,8 @@ all of it when a client, a server or a node goes away. Its only caller is the fi
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
 **Status:** draft for review. Piece 1 has merged (#3256), and so has the store's first PR (#3329);
-pieces 2–8 are in review (#3330, #3336, #3341, #3344, #3363, #3400, #3417), with the store's side in
+pieces 2–8 are in review (#3330, #3336, #3341, #3344, #3363, #3400; piece 8 as #3456, #3457, #3458,
+#3417 and #3459), with the store's side in
 #3335, #3362 and #3399. The RFC 14, 17 and 22 edits this plan names go in #3414.
 The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
 before these links resolve to them.
@@ -40,9 +41,8 @@ nothing switches over until stage 5.
 - `*Table` exports `New`, `Start`, `Stop` and the seven view accessors, `Clients()`, `Opens()`,
   `Locks()`, `Grants()`, `Watches()`, `Recovery()` and `Checks()`, and nothing else, so each area
   of the service sees only the calls it makes (§11.3).
-- `Deps` are `Records`, the `*kvstore.Store`, reached through `Clients()` and `Opens()`:
-  §11.1's `OpenRecords` embeds both, whose `Put`, `Delete` and `ByShard` clash, so the RFC
-  takes the two accessors (piece 0); the `Clock`; and `Rand` for every random bit. `Metrics`
+- `Deps` are `Records`, the `*kvstore.Store`, reached through §11.1's `Clients()` and `Opens()`
+  accessors; the `Clock`; and `Rand` for every random bit. `Metrics`
   and `Logger` join with the first metric and log line.
 - RFC 24's `Budget` is not a dependency: its pool does not exist on `feat/storage-v2`, so
   `DelayResources` is answered at RFC 14's fixed caps alone (§5.5's per-client caps, §5.4's 4,096
@@ -128,8 +128,7 @@ Several files: their steps in `FileID` order, then fold admission, then accept l
   reply that triggered it (RFC 20 §6.2).
 
 The pure parts that port existing tests are leaf packages tested alone: `ranges`, `conflict`,
-`grantfsm` and `sequence`. §11.1's tree also lists `deadline/` and `grace/`: grace stays in the
-table, and there is no deadline heap: a 10 s sweep (`sweepEvery`'s `ponytail:`) fires each deadline
+`grantfsm` and `sequence`. `grace/` stays in the table, and there is no deadline heap: a 10 s sweep (`sweepEvery`'s `ponytail:`) fires each deadline
 up to one interval late, so stage 2's fake-clock cases advance past one interval.
 
 **D5. Open state reports to the service through RFC 14's `Sink`.**
@@ -141,7 +140,8 @@ up to one interval late, so stage 2's fake-clock cases advance past one interval
   since the table is built before the service. The table takes `order` itself wherever it may
   grant or revoke on a file the call does not name: in the timer's steps, and in `AckRecall`,
   `FreeState`, `Clients.Connect` (whose reboot or lapsed-lease release frees another client's
-  waiters), `Expire`, `Revoke` and `Disconnect`, which serve the waiters their releases free. The service must not hold it when making those calls:
+  waiters), `Expire`, `Revoke`, `Disconnect` and `Locks.ReleaseLockOwner`, which serve the waiters
+  their releases free. The service must not hold it when making those calls:
 
   ```go
   func New(d Deps) (*Table, error)                                       // starts nothing; open state takes no settings
@@ -192,7 +192,7 @@ carries #3329's, and so on to #3400 and #3399), so piece 0 lands beside pieces 2
 `Done`. An `Owner` that maps to the anonymous principal is recorded as zero with `Protect` false
 (§2.1, L25), and uid and gid 0 and 65534 are root's and anonymous's by rule (RFC 16 §2.2).
 
-RFC 14 §11.1 is edited to match:
+RFC 14 §11.1 matches (#3414):
 - `Records` is reached through `Clients()` and `Opens()` (D1);
 - `Opens.SetLocks(ctx, f, o, rec *OpenRecord, put, del)` replaces `PutLock` and `DeleteLock`: one
   transaction, only under a persistent open, never split, and `rec`, when set, writes the open's
@@ -230,7 +230,7 @@ it, capped per node and per source address (§2.9), and `Connect` confirms it; a
 restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and reply are the
 adapter's, kept in the record's opaque `Adapter` field and written through `AddSession` as a
 compare-and-swap.
-Done when: L25 (→7), L38 (→4), L41, L60 (→8), L64, L65 pass: `ErrStopped` before `Start` and
+Done when: L25 (→7), L38 (→4), L41 (→8), L60 (→8), L64, L65 pass: `ErrStopped` before `Start` and
 after `Stop`, and no `Sink` call under a lock.
 
 **Piece 3: Opens and deny modes** (§2.2, §6, §7, §9; #3336)
@@ -260,7 +260,7 @@ Builds: `Recovery.ServeShard/ReclaimComplete`, `Opens.Renamed`. The refusal of a
 (D2); grace per shard after a restart, reclaims only, early end; every client a shard's records
 name told to reclaim (`Clients.ByShard`); a rename keeps an open's name for its deferred unlink.
 Done when: L2, L3, L3b, L17, L22, L24 (→RFC 24's `Budget`, after stage 1: its pool case), L27,
-L29 (→stage 2: its restart case needs `RaiseIncarnations`), L29b, L47 (→7), L49, L50, L58 pass, L3b as a direct case of two reclaims rather than §12's model fuzzing.
+L29 (→#3264 piece 7: its restart case needs `RaiseIncarnations`), L29b, L47 (→7), L49, L50, L58 pass, L3b as a direct case of two reclaims rather than §12's model fuzzing.
 
 **Piece 7: SMB durable and persistent opens** (§8.1, §9.2; #3400)
 Builds: `Opens.Reconnect/Flushed`, `Clients.Disconnect`, the `GraceEnded` event. Timeouts,
@@ -270,19 +270,23 @@ durable record nobody reclaimed, then raises `GraceEnded`, and a new primary rel
 before.
 Done when: L7, L14, L15 (→8), L21, L25, L30, L30b (→8), L43, L47, L48 (→8) pass.
 
-**Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; four PRs, split from #3417)
+**Piece 8: The rest** (§2.5, §4.3, §5.5, §8.1, §9.2; five PRs, split from #3417)
 Builds: `Watches.Watch/Unwatch/Changed`, `Recovery.DropShare`, `Opens.CloneOpen/CloneClose`, the
 `Notify` event; §5.5's other per-client caps (opens, ranges, owners, waiters); channel sequence,
-create and lock replay and app instance. It lands as four PRs, each after the one before: (A) the
-per-client caps; (B) watches; (C) the SMB durable group: channel sequence, create and lock replay
-and app instance; (D) `DropShare` and the clone holds. The store's clone already writes the source's hold in its
+create and lock replay and app instance. It lands as five PRs, each after the one before:
+- #3456, the per-client caps, every `ErrDelay`'s cause, plan §4's fixture, fuzz targets and the
+  heap-per-state benchmark. Done when: L54, L56, L57, L60 pass.
+- #3457, watches. Done when: L55 passes.
+- #3458, channel sequence, create and lock replay and app instance. Done when: L15 passes.
+- #3417, `DropShare` and the clone holds. Done when: L30b, L48 pass.
+- #3459, a restart's serve leasing each NFSv4 client it lists. Done when: L41's restart case
+  passes, along with a silent client expiring one lease after it.
+
+The store's clone already writes the source's hold in its
 first phase (`clonePhase1`, `pkg/metadata/kvstore/clone.go`), so `CloneOpen` loads that record
-through piece 7's install path and `CloneClose` drops it. Three RFC 14 sentences are edited to
-match: §11.3's "written in its own transaction", §9.2's "the clone's first phase makes it with
-`Opens.CloneOpen`", and §11.1's statement that the table calls the store's methods, since the
-store's clone writes the hold itself. Also: every `ErrDelay` names its cause (D1), L60's fault
-case, and the fuzz targets (plan §4).
-Done when: L15, L30b, L48, L54, L55, L56, L57, L60 pass. L52 is not the table's: the table has no
+through piece 7's install path and `CloneClose` drops it. #3414 edits §9.2, §11.1 and §11.3 to
+match.
+Piece 8 is done when its five PRs are. L52 is not the table's: the table has no
 logoff call, since a `LOGOFF` is a `Close` of each of the session's opens (MS-SMB2 3.3.5.6; RFC 22
 Appendix G says so once #3414 lands), so its case lands with the SMB adapter in stage 5.
 
@@ -323,8 +327,8 @@ Ported test scenarios, rewritten to RFC 14's semantics (a recall answers `ErrDel
 `pkg/metadata/lock`'s lock and split tests (owners), lease key and epoch tests, progressive-break
 and late-ack tests (recall deadline), cross-protocol tests, and reconnect-matching tests.
 
-None of §13.3's benchmarks is built yet: heap per state (RFC 24 M6) needs only the table and is
-added with piece 8; the rest follow once the service can drive them.
+Of §13.3's benchmarks, heap per state (RFC 24 M6) is built (#3456); the rest follow once the
+service can drive them.
 
 ## 5. Open questions
 
@@ -337,6 +341,9 @@ added with piece 8; the rest follow once the service can drive them.
 3. **Behaviours today's code has and RFC 14 does not state:** courtesy clients (RFC 7530
    §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
    (RFC 8881 §18.51.3), and `RENEW`'s principal check. Should RFC 14 state them?
+4. **Client records no serve lists** (#3459): an NFSv4 client holding no shard mark keeps its
+   record after a restart until it renews. Leaked records, never state; closing it needs a store
+   call listing a node's client records, which RFC 14 §11.1 lacks.
 
 ## 6. What sets the pace
 
