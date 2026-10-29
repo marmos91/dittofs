@@ -702,21 +702,25 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - headroom and repack-reserve spares kept apart;
   - an immediate `spare` refusal and `spare_refusals`;
   - once making a spare has failed with `ENOSPC` and no full-size retired segment is to
-    hand, a roll is refused with `ENOSPC`, not `spare` (RFC 28 §2.2).
+    hand, a roll that finds no spare is refused with `ENOSPC`, not `spare`, until a spare
+    is made again (RFC 28 §2.2).
 - **Seal and catalog:**
-  - seal marker, footer and trailer, written durably and at most once;
-  - a sealed segment takes no further record, and its seal marker is durable before a
-    successor naming it is taken (RFC 28 §2.2);
-  - the footer is written after the records it describes are durable, and the trailer
-    only after the footer's entries are (RFC 28 §2.4, §2.5); how many syncs that takes:
-    pending #3450;
-  - an early seal truncates the free tail, a full seal keeps the cap;
+  - seal marker, footer and trailer, written durably and at most once; no record after
+    the seal marker, and the marker durable before a successor naming the segment is
+    taken (RFC 28 §2.2);
+  - the footer after its records are durable, the trailer after the footer's entries are
+    (RFC 28 §2.4, §2.5); how many syncs that takes: pending #3450;
+  - a footer for a segment an earlier process sealed, if written at all, only after a
+    scan verifies the segment, and never over a footer that verifies (RFC 28 §2.4);
+  - an early seal truncates the free tail, and its segment is unlinked when retired,
+    never recycled; a full seal keeps the cap;
   - idle seal.
 - **Retirement:**
   - recycle (close, rename to a fresh id, directory sync, zero the slots);
   - unlink, with descriptors closed first;
   - ending a segment after a failed append on a recycled segment, or a short write on a
-    fresh one, with the stream's synced-through offset never past the failed slot
+    fresh one: it is never sealed, the stream continues in a segment naming no
+    predecessor, and its synced-through offset never passes the failed slot
     (RFC 28 §2.2); whether it may pass a zero slot on a segment that continues: pending
     #3439;
   - a recycle whose rename fails: pending #3407.
@@ -767,28 +771,30 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
 - **Identity and attach rules:**
   - `Init` refuses a non-empty directory;
   - `Init` and `Open` refuse what epic 3's Appendix A probes reject;
-  - open fails on a `format` file that does not verify, an unrecognised format version,
-    a segment newer than its `format` file, and a verifying header of a kind its format
-    version does not define, in every range; none is upgraded, repaired or skipped
-    (RFC 28 §2.1–§2.3);
+  - open fails on a `format` file that does not verify or whose version it does not
+    recognise, a segment newer than its `format` file, and a verifying header of a kind
+    its format version does not define, in any range; none is upgraded, repaired or
+    skipped (RFC 28 §2.1–§2.3). A footer of an unrecognised version is only "no footer"
+    (RFC 28 §2.5);
   - a directory holding a segment but no `format` file fails with `ErrUnidentified`
     (RFC 28 §3.4);
-  - the directory is synced after the `format` file is created or replaced, before any
-    `Sync` covering a record returns (RFC 28 §2.2);
+  - `Init` and `Restamp` sync the directory after writing the `format` file, before they
+    return (RFC 28 §2.1);
   - `Open` never creates, and checks `expect`;
   - `expect` = 0 fails with a diagnosis naming the identity and installation ID;
   - `Restamp` rewrites only the matching identity;
-  - orphans are age-gated, and a name the journal could not have produced is never
-    unlinked; any other file it does not recognise is left alone, and a `.spare.tmp` is
-    unlinked (RFC 28 §2.1, §2.2, §3.4);
+  - an orphan is unlinked only if the journal is certain it wrote it, and only after the
+    age gate; a name it could not have produced is never unlinked, any other file it does
+    not recognise is left alone, and a `.spare.tmp` is unlinked (RFC 28 §2.1, §2.2,
+    §3.4);
   - foreign segments are reported and left alone;
   - a segment whose header does not verify is damaged, its records attached on their own
     checksums, and treated as one that could have been open at a crash (RFC 28 §3.1);
     which field reports it: pending #3452.
 - **Rebuild:**
   - by catalog or by scan, giving **identical** indexes, consulting nothing outside the
-    journal and not requiring a clean exit (RFC 28 §3.1);
-  - the active segments always scanned (RFC 28 §2.4);
+    journal, not requiring a clean exit, and always scanning the active segments
+    (RFC 28 §2.4, §3.1);
   - a record wholly covered by a release, a removal or a synced loss that outranks it, or
     of a forgotten tag, is not held, and recovery neither verifies nor reports its payload
     (RFC 28 §2.3);
@@ -800,35 +806,33 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   - loss records re-entered in the ring as "found at open";
   - forget records applied.
 - **Tail handling:**
-  - torn tail vs corruption: a bad record below a later verifying record's synced-through
-    offset is corruption, and so is a missing seal marker in a segment named as a
-    predecessor (RFC 28 §3.3); a bad seal marker on a segment no successor names:
-    pending #3451;
-  - a torn tail truncated, never below a verifying record, made durable and sealed; a
-    torn slot that is not zeros before a verifying record ends the segment instead
-    (RFC 28 §3.3);
-  - a zero slot stepped over only where a verifying header follows it (RFC 28 §3.3);
-    zeros at a stream's tail with no later record: pending #3405;
+  - torn tail vs corruption (RFC 28 §2.2, §3.3): a torn tail exists only in a segment
+    that could have been open at a crash (a stream's newest, or one no successor names),
+    and neither it nor a zero slot stepped over is reported as damage. A bad record
+    anywhere else, one below a later verifying record's synced-through offset, and
+    a missing seal marker in a segment named as a predecessor are corruption. Pending: a
+    bad seal marker on a segment no successor names (#3451), zeros at a stream's tail
+    with no later record (#3405);
+  - a torn tail truncated at its start, never below a verifying record, made durable and
+    sealed; a torn slot that is not zeros before a verifying record is truncated the same
+    way but left unsealed, as after a failed append (RFC 28 §3.3);
   - the unproven tail is fsynced, re-read with direct I/O, and re-appended from the repack
     reserve on failure.
-- **Corruption** (RFC 28 §3.3), at open and wherever a record is later found not to
-  verify:
-  - its extents are dropped from the index, never served and never replaced by zeros,
-    and reported as a loss event that tells an offloaded extent from a dirty one;
-  - the refusal is confined to the bad records where a catalog gives the boundaries, and
-    a scan resynchronises past them; whether a loss is named for a header that does not
-    verify: pending #3449;
-  - a bad copy whose sequence number another copy verifies under is damage to a dead
-    copy, not a loss;
-  - a read failing with `EIO`: pending #3440.
+- **Corruption** (RFC 28 §3.3): a record that does not verify has its extents dropped,
+  never served or replaced by zeros, and is a loss event telling an offloaded extent from
+  a dirty one, unless another copy with its sequence number verifies. The refusal is
+  confined by the catalog, or by resynchronising in a scan. Pending: the loss named for a
+  header that does not verify (#3449), a read failing with `EIO` (#3440).
 - **Offload state:** rebuilt from offloaded and unmark records only. The stale rule drops
   content older than the reported range.
 - **Counters:** the next sequence and version exceed everything on disk and the floor.
   Over-bound indexes still open.
-- **Spares:** empty segments are re-adopted as spares, never treated as orphans, with
-  the identity checked first so a foreign segment is never zeroed, their size and
-  allocation checked, and their header and trailer slots re-zeroed before a stream takes
-  one (RFC 28 §3.1).
+- **Spares** (RFC 28 §3.1): a segment is re-adopted as a spare, never as an orphan, only
+  under a name this journal produces, with no header naming another journal (checked
+  first, so a foreign segment is never zeroed) and no record header verifying anywhere in
+  it. Its size, and its allocation where the platform reports it, are checked, and one
+  that fails is unlinked and made again; its header and trailer slots are re-zeroed
+  before a stream takes it.
 - **Tag conflicts:** a `FileID` rebuilt under two tags is refused through either tag and
   named in `TagConflicts` until one of the tags is forgotten (RFC 1 §3).
 - **Inspection and verify** (RFC 1 §4.4): read out the index, per-segment accounting, and
@@ -860,7 +864,8 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`; a
     payload that fails its check is never served (RFC 28 §2.3), and the record header a
     read finds is checked against the catalog entry that sent it there (RFC 28 §2.4); a
-    record that fails either is handled by epic 7's corruption rule;
+    record that fails either has its extents dropped and is reported as a loss event
+    (RFC 28 §3.3);
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
@@ -870,7 +875,7 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
     change it did not see;
   - `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, with markers;
   - `Since` and `Settle`, with a write's modification time read from its record when
-    `Since` yields it (RFC 28 §2.3);
+    `Since` yields it (RFC 28 §2.3, §2.4);
   - `Extents`, `Files`, `DirtyFiles` (O(dirty files), no walk).
 - **Capacity:**
   - atomic reservation against the share limit and the journal maximum;
@@ -915,8 +920,9 @@ Epic 9 implements RFC 1 §3.3, §3.5, §3.11, §7.1–§7.2, and the tag lifecyc
   - copies get a new sequence number, carried header-only records keep theirs;
   - a segment holding unreadable records is not selected while it backs held extents it
     cannot produce (RFC 28 §3.3);
-  - a failed segment is unlinked, never recycled, once repack has carried forward what
-    was synced into it (RFC 28 §2.2);
+  - a failed segment is a repack candidate only once its window is resolved, and is
+    unlinked, never recycled, after repack carries forward what was synced into it
+    before the failure (RFC 28 §2.2, RFC 1 §5.3);
   - drop decisions per extent by version, decided after the pass's copies;
   - ordering: copy, then sync, then repoint, then unlink;
   - a removal record whose retention counted a segment is kept until that segment's
