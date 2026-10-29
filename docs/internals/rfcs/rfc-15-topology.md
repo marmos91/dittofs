@@ -303,11 +303,11 @@ can hold a client's connection, be a shard's primary, or be its replica:
 
 | Component | What it does on every node | Specified in |
 | --- | --- | --- |
-| adapters | speak the wire, hold sessions, and sign clients in through `vfs.Service`'s `SignIn` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); call `vfs.Service` and nothing else, identity included ([RFC 18](rfc-index.md)) | [RFC 20](rfc-20-adapters.md) |
+| adapters | speak the wire, hold sessions, and sign clients in through `vfs.Service`'s `SignIn` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); call `vfs.Service` and nothing else, identity included ([RFC 18](rfc-18-identity.md)) | [RFC 20](rfc-20-adapters.md) |
 | `vfs.Gateway` **(cluster)** | routes each call to the primary of its file's shard; decides nothing | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) |
 | `vfs.Serve` **(cluster)** | receives forwarded calls: fences and deduplicates them, then calls the local server | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides), [§4.3](#4.3%20The%20route%20envelope) |
 | `vfs.Server` | the filesystem: decides every call for the shards this node is primary of | [RFC 17](rfc-17-vfs.md) |
-| identity, open state | map identities per share; hold opens, locks, caching grants and layouts | [RFC 18](rfc-index.md), [RFC 14](rfc-14-open-state.md) |
+| identity, open state | map identities per share; hold opens, locks, caching grants and layouts | [RFC 18](rfc-18-identity.md), [RFC 14](rfc-14-open-state.md) |
 | content subsystem | engine, journals and their replication, syncer, GC | [RFC 8](rfc-8-engine.md), [RFC 10](rfc-10-journal-replication.md) |
 | client-address agent; **(cluster)** pNFS metadata-server and data-server endpoints | floating addresses and move notifications to clients; layouts | [§5](#5.%20Clients) |
 | control plane, management API | settings, shares, principals | [RFC 13](rfc-13-configuration.md) |
@@ -1058,7 +1058,7 @@ file or principal identifier is one.
 ## 11. Open questions
 
 1. **Forwarding bounds.** A forwarding gateway streams (item 3); how its
-   in-flight bytes are bounded is answered by RFC 24 §5.4: the payload is the
+   in-flight bytes are bounded is answered by [RFC 24 §5.3](rfc-24-resources.md#5.3%20Forwarding%20%2A%2A%28cluster%29%2A%2A): the payload is the
    request's receive buffer at the gateway node, and the primary charges a
    forwarded call to its own pools under the original client's key.
 2. **Striping one file across data servers** waits on per-file and range shards

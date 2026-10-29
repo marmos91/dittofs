@@ -1498,7 +1498,7 @@ and nothing else: every file may have holes, sparse or not, and holes are
   ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)),
   such a reply is held pending and re-driven up to `smb_pending_cap`, and only
   there answered `STATUS_UNEXPECTED_IO_ERROR`
-  ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks), §16.5).
+  ([§16.5](#16.5%20Errors), [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).
 - **A loss without a restart fails the next `FLUSH` of every open across it.**
   The journal can lose acknowledged, unoffloaded writes while the process runs —
   a record dropped as corrupt or a failed sync window, the loss events

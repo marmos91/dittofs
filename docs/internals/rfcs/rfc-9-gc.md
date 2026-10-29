@@ -442,7 +442,7 @@ checks the counts and never deletes.
 **One GC per node; a namespace is a context.** `node.New` ([RFC 23](rfc-23-control-plane.md)) builds
 one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node, as it
 builds one engine per node and a share is a storage binding there
-([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). The node adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
+([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). The node adds and removes contexts ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)): a
 context is one namespace with a remote store, holding that namespace's `View`.
 GC runs five sources — deleter, compactor, collector, auditor, recheck — on its
 one scheduler instance, whose tenants are the (namespace, partition) pairs this
@@ -463,7 +463,7 @@ from its index keys and cursors.
 | `Keys` | the transform layer's keys-object read-back ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) | RFC 5's key lock | the keys object | `View.Keys` | the root | called once per `Recheck` |
 | work scheduler | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s library, GC's own instance | — | the sources | `Deps.Sched` | the root; shared by every context | started by `Start`, drained by `Drain` |
 | clock, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
-| health evaluator | the node's ([RFC 25](rfc-index.md) §8.2) | — | `Conditions` on GC | nothing is injected: `*gc.GC` is a `health.Source` the node adds | the root | asks at each evaluation until the node removes GC |
+| health evaluator | the node's ([RFC 25 §8.2](rfc-25-observability.md#8.2%20The%20packages)) | — | `Conditions` on GC | nothing is injected: `*gc.GC` is a `health.Source` the node adds | the root | asks at each evaluation until the node removes GC |
 
 The engine is not a dependency: GC reaches neither its storage bindings nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
@@ -477,7 +477,7 @@ up to store time, and runs a first `Recheck`. No delete is issued until that
 `Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so starting needs no other gate.
 
 **Namespaces come and go while GC runs.** The node adds and removes contexts
-([RFC 23](rfc-index.md) §2.1). A namespace whose drain deletes its `NS‖ns` records
+([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)). A namespace whose drain deletes its `NS‖ns` records
 ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3) is removed. Its sources stop, and every transaction they still
 have in flight is conditional on records that are gone, so a late one does
 nothing. A share's removal changes nothing here: its refs drop through RFC 6, and
@@ -949,7 +949,7 @@ that finds another installation's nonce fences itself as
 The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
 claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
 store never recorded. That check runs before any storage binding serves or GC
-starts ([RFC 23](rfc-index.md) §2.2 step 4).
+starts ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 4).
 
 **An object is deleted only after a claim rewrite later than its `deleted`
 mark** ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 4). The nonce changes once per `Recheck`, so detection is
@@ -1668,7 +1668,7 @@ runner resumes it, so no crash leaves the hold set for good. The rebuild writes 
 history before deleting any key without a ref, and each batch guards the refs'
 file fences so a concurrent ref change serialises with it.
 
-Both rebuilds are exposed through the management API ([RFC 23](rfc-index.md)) and its
+Both rebuilds are exposed through the management API ([RFC 23](rfc-23-control-plane.md)) and its
 client, each with a check mode. A mismatch found by either, or by the audit,
 increments `gc_index_mismatches_total` and emits an event naming the key.
 
@@ -2086,7 +2086,7 @@ type Keys interface {
 
 The node adds a namespace's context when its records name a remote store, and
 removes it once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3). The two index
-rebuilds are block-metadata operations that [RFC 23](rfc-index.md)'s operation runner calls
+rebuilds are block-metadata operations that [RFC 23](rfc-23-control-plane.md)'s operation runner calls
 directly. GC is not on that path ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)).
 
 The batch-level errors `ErrHeld` and `ErrPaused` are declared in RFC 6's `var`
@@ -2152,7 +2152,7 @@ expiries — labelled by `source` (`gc_deleter`, `gc_compactor`, `gc_audit`,
 
 `gc_verify_refusals_total`, `gc_audit_mismatches_total` with `direction` = `low`
 or `lost`, and `gc_lost_refs_dropped_total` are exported at zero from start, so an
-alert on any nonzero value has a series to watch ([RFC 25](rfc-index.md) §2.3).
+alert on any nonzero value has a series to watch ([RFC 25 §2.3](rfc-25-observability.md#2.3%20Types)).
 
 **Spans.** Each pass opens a root span named `gc.delete`, `gc.compact`,
 `gc.collect`, `gc.audit` or `gc.recheck`, with the namespace, partition, batch size
@@ -2160,9 +2160,9 @@ and outcome as attributes; its log lines carry `component=gc` and the pass's
 trace ID.
 
 **Health conditions.** GC reports these as a `health.Source`
-([RFC 25](rfc-index.md) §8.2): the evaluator asks for them at each evaluation, and a
+([RFC 25 §8.2](rfc-25-observability.md#8.2%20The%20packages)): the evaluator asks for them at each evaluation, and a
 condition GC no longer returns is cleared. Each is registered in
-[RFC 25](rfc-index.md) §3.9.
+[RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry).
 
 | Condition | Scope | Raised when | Cleared when |
 | --- | --- | --- | --- |
