@@ -1572,6 +1572,17 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
    shard. Whether batched claims make 10⁴ shards writable fast enough is unmeasured.
 4. **Repair pacing defaults** — how many joins per node and per cluster, the
    gather interval, the lag trigger — have no measured values yet.
+5. **Replica scrub.** A replica's dirty copy is read mostly at a takeover, when
+   the primary that could repair it is gone; damage found while the primary
+   lives costs only a rejoin ([§6](#6.%20Fencing), [§7.3](#7.3%20Joining)). One node does not scrub
+   ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)). A replica pass would cover only dirty records older than
+   some age, so it reads nothing while offload keeps up and only the backlog of a
+   remote outage otherwise. The exposure it removes needs a primary lost during
+   that outage as well as decay of the same record: about 2×10⁻⁹ per replica for
+   a day's outage holding 100 GiB dirty on a 4 TB nearline disk, at a measured
+   latent-error rate of about 3% of disks a year and a 10⁻³ chance of losing the
+   primary that day. Whether that earns a pass, and its age and pace,
+   is unmeasured against outage lengths.
 
 Moves between shards and protocol state are [RFC 11](rfc-11-ownership.md)'s; per-file and range shards
 are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).

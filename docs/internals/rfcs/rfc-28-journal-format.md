@@ -1305,13 +1305,23 @@ directory is trusted with its content.
 
 ## 5. Open questions
 
-1. **Scrub.** Verification on read never checks content that is never read, so
-   long-held dirty content can decay unnoticed; whether a paced background pass,
-   taking the [§3.3](#3.3%20Torn%20and%20corrupt%20records) action on a failure, earns its disk bandwidth is undecided.
-   **(cluster)** Replication raises the stakes: a replica's copy is read mostly
-   at a takeover or a rejoin, so its decay is found exactly when it is the copy
-   that counts ([RFC 10 §9.1](rfc-10-journal-replication.md#9.1%20Why%20one%20replica%20suffices)). Mirrored disk arrays answer the same problem
-   with a paced patrol read.
+1. ~~**Scrub.**~~ Declined on one node: no background pass reads the journal to
+   verify it. No dirty record reaches the remote tier unread: an offload reads
+   and verifies it whole before any byte of it is uploaded
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and so does repack before carrying it ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). That holds
+   through a remote outage too, which only delays the read to when offload
+   resumes. Damage to offloaded content is refetched ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A pass would only
+   find damage to dirty content sooner, and one node holds no second copy to
+   repair it from, so the [§3.3](#3.3%20Torn%20and%20corrupt%20records) outcome is the same loss either way. Nor could a
+   pass get there first: at the proposed 5 s offload age a dirty record lives
+   seconds, while a pass over 1 TiB takes about 12 days at a block scanner's
+   1 MB/s and 17 minutes at a full 1 GB/s. Weak sectors are the device's own background media
+   scan to find.
+   **(cluster)** A replica can repair: a dirty record dropped there raises its
+   journal's loss generation, which sets the replica's loss point, so the
+   primary removes it and it rejoins ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)). Whether a replica scrubs
+   its dirty content, so that decay is found while the primary still lives
+   rather than at a takeover, is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.
 2. **Segment size** ([§2.2](#2.2%20Segments)). With descriptors bounded separately ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at
