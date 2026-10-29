@@ -159,7 +159,7 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	// The source's hold: a durable open of the clone-source kind, held by
 	// no client, which no grace end closes and only the clone's last batch
 	// does.
-	return putOpen(tx, sp.SrcShare, src.Shard, entity.Open{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
+	return putOpen(tx, sp.SrcShare, src.Shard, entity.OpenRecord{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
 		CloneDst: file, CloneVersion: op.Version})
 }
 

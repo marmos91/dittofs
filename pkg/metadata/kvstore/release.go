@@ -45,17 +45,9 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	} else if !ok {
 		return ErrHeld
 	}
-	var streams []entity.FileID
-	pre := streamsPrefix(share, file)
-	for row, err := range tx.Scan(pre, nil) {
-		if err != nil {
-			return err
-		}
-		id, _, err := keys.ReadID(row.Key[len(pre):], keys.IDLen)
-		if err != nil {
-			return err
-		}
-		streams = append(streams, entity.FileID(id))
+	streams, err := streamsOf(tx, share, file)
+	if err != nil {
+		return err
 	}
 	// An unfinished clone onto the file holds it, as an open does. Its
 	// removal records are found by scan, so their range is guarded: a clone
@@ -104,6 +96,23 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	m := entity.Removal{Version: op.Version, Extent: entity.ExtentOf(0, entity.EndOfFile), Kind: entity.RemoveRelease,
 		OvSpan: f.MaxOverwrite, FileVersion: f.Version, Shard: f.Shard}
 	return putRemoval(tx, share, file, m)
+}
+
+// streamsOf lists a file's named streams.
+func streamsOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.FileID, error) {
+	var out []entity.FileID
+	pre := streamsPrefix(share, file)
+	for row, err := range r.Scan(pre, nil) {
+		if err != nil {
+			return nil, err
+		}
+		id, _, err := keys.ReadID(row.Key[len(pre):], keys.IDLen)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entity.FileID(id))
+	}
+	return out, nil
 }
 
 // noDurableOpen refuses a file with a durable open, guarding the range of
