@@ -175,6 +175,12 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 
 // hold adds ch to w's pending changes; past their bound they collapse to one
 // ChangeEnumerate, and stay one.
+//
+// decision: this bound, with the per-client watch cap, replaces the SMB
+// adapter's changenotify.NotifyRegistry overflow, which caps watches at
+// MaxPendingWatches for the whole node and overflows a watch past its
+// request's MaxOutputLength, once the adapter moves onto the table; until
+// then the registry is the live one. Delete it with the move.
 func (w *watch) hold(ch Change) {
 	switch {
 	case len(w.pending) == 1 && w.pending[0].What == ChangeEnumerate:
