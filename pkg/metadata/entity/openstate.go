@@ -149,10 +149,10 @@ const (
 	TimeAccess
 )
 
-// Open is a durable open record. Only three opens are stored: one that
+// OpenRecord is a durable open record. Only three opens are stored: one that
 // keeps a file with no entry alive, an SMB persistent open, and a clone's
 // hold on its source. Every other open lives only at the file's primary.
-type Open struct {
+type OpenRecord struct {
 	ID            OpenID
 	Client        ClientID // zero for a clone's source open, which no client holds
 	Principal     Principal
@@ -200,9 +200,9 @@ type SessionRef struct {
 	ID        uint64
 }
 
-// Lock is a durable byte-range lock: only one under a persistent open is
+// LockRecord is a durable byte-range lock: only one under a persistent open is
 // stored, beneath it, so closing the open drops it.
-type Lock struct {
+type LockRecord struct {
 	ID        LockID
 	Open      OpenID
 	Owner     LockOwner
@@ -218,9 +218,9 @@ type LockOwner struct {
 	Owner  []byte
 }
 
-// DeletePending is a file a persistent open marked for deletion at its last
+// DeleteRecord is a file a persistent open marked for deletion at its last
 // close: the entry the unlink removes, and as whom and with what it runs.
-type DeletePending struct {
+type DeleteRecord struct {
 	Parent     FileID
 	Name       []byte
 	By         Principal
