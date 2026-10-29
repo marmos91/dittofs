@@ -484,8 +484,9 @@ func secret() string {
 
 // freePorts returns n different TCP ports that are free on every interface.
 func freePorts(n int) ([]int, error) {
-	// ponytail: a port is free when it's chosen, and another process can take
-	// it before dfs binds it; the setup then fails and the cell isn't run.
+	// ponytail: a port is free when it's chosen, and another process, a cell of
+	// the same dt run --parallel among them, can take it before dfs binds it;
+	// the setup then fails and the cell isn't run.
 	// Let dfs choose its own ports and report them if that shows up.
 	var ports []int
 	for range n {
