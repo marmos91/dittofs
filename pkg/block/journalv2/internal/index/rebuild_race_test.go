@@ -41,13 +41,15 @@ func collectKeeps(recs []Record) []keepEntry {
 	return keeps
 }
 
-// TestRebuildConcurrentFeeders: sixteen goroutines feed one builder — each a
-// shuffled slice of one history — interleaved with Retain calls, and after
-// every one has joined, Finish rebuilds a snapshot equal to the sequential
-// feed of the same records, drop ranges included: the result depends only
-// on the records, not on how they raced in. The race detector finds a feeder
-// appending under another file's shard lock, or a replay touching two
-// files' state. A Feed after Finish returns errRebuilt and changes nothing.
+// TestRebuildConcurrentFeeders: sixteen goroutines feed one builder — one
+// shuffled history split into sixteen disjoint slices, so every record
+// arrives exactly once and no duplicate can mask a lost append —
+// interleaved with Retain calls, and after every one has joined, Finish
+// rebuilds a snapshot equal to the sequential feed of the same records, drop
+// ranges included: the result depends only on the records, not on how they
+// raced in. The race detector finds a feeder appending under another file's
+// shard lock, or a replay touching two files' state. A Feed after Finish
+// returns errRebuilt and changes nothing.
 func TestRebuildConcurrentFeeders(t *testing.T) {
 	h := drive(t, 7, 200)
 	keeps := collectKeeps(h.recs)
@@ -63,7 +65,9 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 			}
 		}
 		for _, k := range keeps {
-			b.Retain(k.file, k.p)
+			if err := b.Retain(k.file, k.p); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := b.Finish(ver(0)); err != nil {
 			t.Fatal(err)
@@ -77,11 +81,15 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 		b := newRebuilder(fs, &Counters{})
 		var wg sync.WaitGroup
 		rng := rand.New(rand.NewPCG(uint64(round), 3375))
-		for range feeders {
-			order := slices.Clone(h.recs)
-			rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+		shuffled := slices.Clone(h.recs)
+		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		// Disjoint slices: a record fed by one goroutine but lost would be
+		// lost for the round, not rescued by another goroutine's copy.
+		per := (len(shuffled) + feeders - 1) / feeders
+		for i := range feeders {
+			part := shuffled[min(i*per, len(shuffled)):min((i+1)*per, len(shuffled))]
 			wg.Go(func() {
-				for _, r := range order {
+				for _, r := range part {
 					if err := b.Feed(r); err != nil {
 						t.Errorf("Feed: %v", err)
 						return
@@ -90,7 +98,11 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 			})
 		}
 		for _, k := range keeps {
-			wg.Go(func() { b.Retain(k.file, k.p) })
+			wg.Go(func() {
+				if err := b.Retain(k.file, k.p); err != nil {
+					t.Errorf("Retain: %v", err)
+				}
+			})
 		}
 		wg.Wait()
 		if err := b.Finish(ver(0)); err != nil {

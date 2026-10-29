@@ -152,12 +152,15 @@ func (s *retainedSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int
 // changed, like heldSet.markOffloaded. By, record and skip stay: the mark is
 // about the bytes, not the retention.
 //
-// decision: at run time a retained extent leaves the index when its offload
-// commit is reported, so nothing marks one; this setter exists for the
-// rebuild, where an offloaded record can cover retained content — and an
-// unmark can undo it. The caller of the rebuild decides afterwards which
-// retained pieces stay. Overturn it when the recovery code needs marks
-// reaching retained pieces by a rule of its own.
+// decision: neither mark reaches a retained piece. A mark names the bytes
+// its record offered or unmarked, which are held or filled; a retained piece
+// overlaps newer content by construction, so a mark's version window says
+// nothing about it, and a bit wrongly set would read as a commit the piece
+// never had. At run time a retained piece's bit is fixed at supersede time —
+// writeRetain copies the bit of the content it keeps — and nothing marks
+// one after. These setters exist for the recovery code and its tests, which
+// compute retained pieces' bits by their own rules; overturn them when a
+// journal rule ever must reach retained pieces directly.
 func (s *retainedSet) markOffloaded(e core.Extent, oldest, newest core.Version) int {
 	n := 0
 	s.edit(e, func(r Retained) bool {

@@ -192,9 +192,6 @@ type history struct {
 	pending *Record
 	// removals are the removal records fed, for a carried-forward copy.
 	removals []Record
-	// debug, when set, prints every record fed and every op's effect on
-	// file 0x0b. Temporary: only the debug test sets it.
-	debug bool
 	// cover tracks, per file and per 4 KiB cell of the generator's 256 KiB
 	// world, the newest version any record has committed over that cell.
 	// A fill draws its version from it: the remote tier's ref returns
@@ -291,7 +288,7 @@ func notedExtent(r Record) core.Extent {
 	}
 }
 
-// draw sorts a number as retention... no: draw issues the next version.
+// draw issues the next content version and records it among the past.
 func (h *history) draw() core.Version {
 	v, err := h.ctr.Draw()
 	if err != nil {
@@ -391,9 +388,6 @@ func (h *history) step() {
 		})
 		for _, p := range out {
 			r := h.note(RecRelease, id, p.Version, p.Extent)
-			if h.debug {
-				fmt.Printf("release of piece %v v=%d bits=%v\n", p.Extent, p.Version.Counter, p.Offloaded)
-			}
 			change(h.t, &h.fs, id, func(f *file) error {
 				_, err := f.held.release(p.Extent, nil)
 				return err

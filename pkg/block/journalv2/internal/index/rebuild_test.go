@@ -229,6 +229,14 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 		if !slices.Contains(segs, core.SegmentID(1)) || !slices.Contains(segs, core.SegmentID(3)) {
 			t.Fatalf("segments noted = %v, want both copies' segments 1 and 3", segs)
 		}
+		// The surviving placement is the run's greater (segment, offset),
+		// so a copied record reads from its newer home — the failed
+		// segment's copy must not be the one the piece names.
+		if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
+			{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7)},
+		}) {
+			t.Fatalf("held = %+v, want the piece read from the copy at (3, 200)", got)
+		}
 	})
 }
 
@@ -471,31 +479,51 @@ func TestRebuildOffloadedBits(t *testing.T) {
 }
 
 // TestRebuildRetainInjection: a retained piece fed through Retain appears in
-// the rebuilt file in offset order, an offloaded record covering it sets its
-// bit while the held piece beside it keeps its own, an empty piece is
-// ignored, and the per-segment retained bytes count it.
+// the rebuilt file in offset order, keeps the bit the caller gave it — a
+// mark of held content, offloaded record or fill alike, never sets or clears
+// it, because the mark is about the bytes the record offered, not the older
+// content it superseded — an empty piece is ignored, and the per-segment
+// retained bytes count it.
 func TestRebuildRetainInjection(t *testing.T) {
 	var fs files
 	id := fid(1)
 	b := newRebuilder(&fs, &Counters{})
-	retained := Retained{Piece: Piece{Extent: ext(4, 4), Record: rec(2, 0), Skip: 4, Version: ver(3)}, By: ver(7)}
+	retained := Retained{Piece: Piece{Extent: ext(4, 4), Record: rec(2, 0), Skip: 4, Version: ver(3), Offloaded: true}, By: ver(7)}
 	for _, r := range []Record{
 		recd(RecWrite, id, 7, 7, 2, 8, 0, 16),
 		recd(RecOffloaded, id, 8, 6, 3, 0, 0, 8),
+		recd(RecUnmark, id, 9, 9, 3, 64, 0, 8),
 	} {
 		if err := b.Feed(r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	b.Retain(id, retained)
-	b.Retain(id, Retained{Piece: Piece{Extent: ext(100, 0)}, By: ver(1)}) // ignored: empty
+	if err := b.Retain(id, retained); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Retain(id, Retained{Piece: Piece{Extent: ext(100, 0)}, By: ver(1)}); err != nil { // ignored: empty
+		t.Fatal(err)
+	}
+	// A retained piece for a file no record was fed for lands all the
+	// same: the recovery code can hold pieces of a file whose records
+	// went through another builder pass, and dropping them would lose the
+	// superseded versions an offload still has to offer.
+	kept := fid(4)
+	if err := b.Retain(kept, Retained{
+		Piece: Piece{Extent: ext(0, 8), Record: rec(9, 0), Version: ver(2)},
+		By:    ver(3),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.Finish(ver(0)); err != nil {
 		t.Fatal(err)
 	}
 	var got []Retained
 	fs.view(id, func(f *file) { got = f.retained.list(nil) })
-	// The offloaded record at v6 covers the retained v3 piece, so its bit is
-	// set; the held v7 piece is above it and stays dirty.
+	// The retained piece keeps the bit its caller gave it: the offloaded
+	// record at v6 and the unmark at v9 name the v6 content, not the v3
+	// piece under it, and neither may flip the piece's bit. The held v7
+	// piece is above the mark's version and stays dirty either way.
 	want := []Retained{{Piece: Piece{Extent: ext(4, 4), Record: rec(2, 0), Skip: 4, Version: ver(3), Offloaded: true}, By: ver(7)}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("retained = %+v, want %+v", got, want)
@@ -507,6 +535,73 @@ func TestRebuildRetainInjection(t *testing.T) {
 		t.Fatalf("segment 2 retains %d bytes, want 4", sb.Retained)
 	}
 	checkSegments(t, 0, &fs, 2, 3)
+
+	var lone []Retained
+	fs.view(kept, func(f *file) { lone = f.retained.list(nil) })
+	if want := []Retained{{Piece: Piece{Extent: ext(0, 8), Record: rec(9, 0), Version: ver(2)}, By: ver(3)}}; !slices.Equal(lone, want) {
+		t.Fatalf("retained for the recordless file = %+v, want %+v", lone, want)
+	}
+
+	// A Retain after the Finish is refused and changes nothing.
+	if err := b.Retain(fid(1), Retained{Piece: Piece{Extent: ext(0, 8), Version: ver(1)}, By: ver(1)}); !errors.Is(err, errRebuilt) {
+		t.Fatalf("Retain after Finish = %v, want errRebuilt", err)
+	}
+	if n := fs.len(); n != 2 {
+		t.Fatalf("a refused Retain left %d entries, want 2", n)
+	}
+}
+
+// TestRebuildMarksNeverTouchRetainedBits: a fill's synthetic mark and an
+// offloaded record's mark set no retained piece's bit, however far below the
+// mark's version the piece sits, and an unmark clears none. A retained piece
+// overlaps newer content by construction — the mark names the offered
+// bytes, which are held or filled, never the superseded ones under them.
+func TestRebuildMarksNeverTouchRetainedBits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mark Record
+	}{
+		{"an offloaded record", recd(RecOffloaded, fid(1), 8, 7, 2, 0, 0, 8)},
+		{"a fill", recd(RecFill, fid(1), 8, 8, 2, 0, 0, 8)},
+		{"an unmark", recd(RecUnmark, fid(1), 8, 7, 2, 0, 0, 8)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, bit := range []bool{false, true} {
+				var fs files
+				id := fid(1)
+				b := newRebuilder(&fs, &Counters{})
+				for _, r := range []Record{
+					recd(RecWrite, id, 1, 3, 2, 0, 0, 8),  // the v3 write superseded
+					recd(RecWrite, id, 7, 7, 3, 64, 0, 8), // the v7 write covering it
+				} {
+					if err := b.Feed(r); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := b.Feed(tc.mark); err != nil {
+					t.Fatal(err)
+				}
+				if err := b.Retain(id, Retained{
+					Piece: Piece{Extent: ext(0, 8), Record: rec(2, 0), Version: ver(3), Offloaded: bit},
+					By:    ver(7),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := b.Finish(ver(0)); err != nil {
+					t.Fatal(err)
+				}
+				var got []Retained
+				fs.view(id, func(f *file) { got = f.retained.list(nil) })
+				want := []Retained{{
+					Piece: Piece{Extent: ext(0, 8), Record: rec(2, 0), Version: ver(3), Offloaded: bit},
+					By:    ver(7),
+				}}
+				if !slices.Equal(got, want) {
+					t.Fatalf("bit %v: retained = %+v, want the piece's bit untouched %+v", bit, got, want)
+				}
+			}
+		})
+	}
 }
 
 // TestRebuildCountersAndBuckets: after a rebuild the counters issue above
@@ -550,6 +645,13 @@ func TestRebuildCountersAndBuckets(t *testing.T) {
 		// of the highest fed version and the floor, 5 here.
 		if got := fs.asOf(id); got != ver(5) {
 			t.Fatalf("asOf = %v, want 5, the bucket start", got)
+		}
+		// A file with no entry of its own reads the same start off its
+		// bucket: the highest fed version reached every bucket, not just
+		// the one the settle chanced to raise. A floor below the disk that
+		// the buckets ignored would serve a stale fill as fresh.
+		if got := fs.asOf(fid(5)); got != ver(5) {
+			t.Fatalf("asOf of a file with no entry = %v, want 5, the fed maximum", got)
 		}
 		if err := fs.fill(id, write(0, 4, rec(2, 0), 0), ver(4)); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("fill below the bucket start = %v, want ErrStaleFill", err)
@@ -765,6 +867,55 @@ func TestRebuildRivalled(t *testing.T) {
 				t.Fatalf("order %v: tags = %d, %d, want 7 owning and 9 the rival", order, f.tag, f.rival)
 			}
 		})
+	}
+}
+
+// TestRebuildRefusesAfterADrainedShard: Finish drains a shard under its lock
+// and marks it, so a feeder arriving after the drain — before the Finish
+// returning has even set finished — is refused with errRebuilt rather than
+// handed a nil for a record nobody replays. Without the mark, a feeder that
+// raced Finish into a drained shard would lose its record and see success.
+func TestRebuildRefusesAfterADrainedShard(t *testing.T) {
+	var fs files
+	id := fid(1)
+	b := newRebuilder(&fs, &Counters{})
+	if err := b.Feed(recd(RecWrite, id, 1, 1, 1, 0, 0, 4)); err != nil {
+		t.Fatal(err)
+	}
+	// Drain id's shard the way Finish's worker does, without ending the
+	// builder: the window a feeder racing Finish lands in.
+	s := b.shards[hashID(id)>>(64-6)]
+	if err := b.replayShard(s); err != nil {
+		t.Fatal(err)
+	}
+	if b.finished.Load() {
+		t.Fatal("the builder is finished before Finish returned")
+	}
+	if err := b.Feed(recd(RecWrite, id, 2, 2, 1, 64, 0, 4)); !errors.Is(err, errRebuilt) {
+		t.Fatalf("Feed into a drained shard = %v, want errRebuilt", err)
+	}
+	if err := b.Retain(id, Retained{Piece: Piece{Extent: ext(0, 4), Version: ver(1)}, By: ver(1)}); !errors.Is(err, errRebuilt) {
+		t.Fatalf("Retain into a drained shard = %v, want errRebuilt", err)
+	}
+	// The refused record raised no counter: Observe happens only where the
+	// buffer takes the record.
+	if got := fs.asOf(id); got != ver(1) {
+		t.Fatalf("asOf = %v, want 1: a refused feed raised the counters", got)
+	}
+	// A record for a file of another shard still feeds, and its shard
+	// replays at the coming Finish.
+	other := fid(9)
+	if fs.shard(other) == fs.shard(id) {
+		t.Skip("the ids share a shard; pick another")
+	}
+	if err := b.Feed(recd(RecWrite, other, 3, 3, 2, 0, 0, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Finish(ver(0)); err != nil {
+		t.Fatal(err)
+	}
+	if p := heldPieces(&fs, other); len(p) != 1 {
+		t.Fatalf("the other shard's record was lost: %+v", p)
 	}
 }
 

@@ -63,8 +63,10 @@ type Record struct {
 	Clone    *core.CloneSpec // RecCloneTarget only
 }
 
-// errRebuilt is returned by Feed and Retain after a Finish that succeeded:
-// the buffers were applied and freed, so the builder is not usable again.
+// errRebuilt is returned by Feed and Retain once Finish has begun: a shard
+// it drained will never replay a buffer again, so a record or piece fed
+// after it would be lost, and the call is refused rather than silently
+// dropped. It is returned whether Finish succeeds or a replay errors.
 var errRebuilt = errors.New("index: rebuild already finished")
 
 // bufRec is one buffered record, compact beside Record: what the replay and
@@ -90,9 +92,14 @@ type keepBuf struct {
 // files, behind one mutex held only to look up or append. Two shards never
 // touch the same file, so their buffers replay independently.
 type rebuildShard struct {
-	mu    sync.Mutex
-	bufs  map[core.FileID][]bufRec
-	keeps []keepBuf
+	mu sync.Mutex
+	// drained marks the shard Finish has taken the buffers of, under mu. A
+	// feeder arriving after that would append to a buffer nobody replays,
+	// so Feed and Retain refuse it under the same lock instead of losing
+	// the record with a nil.
+	drained bool
+	bufs    map[core.FileID][]bufRec
+	keeps   []keepBuf
 }
 
 // rebuilder turns the records recovery finds on disk into the index,
@@ -183,9 +190,12 @@ func (b *rebuilder) Feed(r Record) error {
 	if err := b.ctr.Observe(r.Numbers); err != nil {
 		return err
 	}
-	raise(&b.high, r.Numbers.Version.Counter)
 	s := b.shards[hashID(r.File)>>(64-6)]
 	s.mu.Lock()
+	if s.drained {
+		s.mu.Unlock()
+		return errRebuilt
+	}
 	if s.bufs == nil {
 		s.bufs = make(map[core.FileID][]bufRec)
 	}
@@ -194,10 +204,14 @@ func (b *rebuilder) Feed(r Record) error {
 		numbers: r.Numbers, clone: r.Clone,
 	})
 	s.mu.Unlock()
+	raise(&b.high, r.Numbers.Version.Counter)
 	return nil
 }
 
-// Retain buffers a retained piece the caller computed.
+// Retain buffers a retained piece the caller computed, with the offloaded
+// bit the caller's rules gave it: a mark of held content never sets or
+// clears it, because the mark names the offered bytes, which are held or
+// filled, and not the superseded ones under them.
 //
 // decision: retained extents enter the rebuild by injection, not by the
 // builder's interpreting hold, unhold and stamp records. Which cuts are
@@ -209,28 +223,32 @@ func (b *rebuilder) Feed(r Record) error {
 // rules land and need the superseded pieces the replay cuts, in which case
 // the replay grows a hook at the cut computing what a hold keeps.
 //
-// After a Finish that succeeded the piece is dropped: the builder is over,
-// and the pieces that came in after its buffers were freed would seed a
-// later file silently.
-func (b *rebuilder) Retain(id core.FileID, r Retained) {
+// Once Finish has begun the piece is refused with errRebuilt: a piece the
+// shard has already drained would never reach the file it names.
+func (b *rebuilder) Retain(id core.FileID, r Retained) error {
 	// An empty piece is ignored, as retainedSet.add ignores one.
-	if r.Extent.Len <= 0 || b.finished.Load() {
-		return
+	if r.Extent.Len <= 0 {
+		return nil
 	}
 	s := b.shards[hashID(id)>>(64-6)]
 	s.mu.Lock()
+	if s.drained || b.finished.Load() {
+		s.mu.Unlock()
+		return errRebuilt
+	}
 	s.keeps = append(s.keeps, keepBuf{file: id, p: r})
 	s.mu.Unlock()
+	return nil
 }
 
 // Finish applies everything fed, in the precedence of the records, and ends
 // the builder. floor is the version floor the journal was opened with: the
 // counters are raised above it, and every bucket starts at the higher of it
-// and the highest version on disk — before any file is applied, since
-// openBuckets stores while a settle's drop only raises, so storing after a
-// drop would lower a bucket. The shards replay in parallel; the first error
-// a replay returns is kept and returned, and the shard that returned it
-// stops while the others complete. A floor with a non-zero epoch is
+// and the highest version on disk, before any file is applied, so a file
+// that settles mid-replay drops its change-version entry against a bucket
+// already standing at the start. The shards replay in parallel; the first
+// error a replay returns is kept and returned, and the shard that returned
+// it stops while the others complete. A floor with a non-zero epoch is
 // refused with nothing else changed, and the builder stays usable for a
 // good floor, its buffers wherever the feeders left them.
 func (b *rebuilder) Finish(floor core.Version) error {
@@ -268,15 +286,20 @@ func (b *rebuilder) Finish(floor core.Version) error {
 	return first
 }
 
-// replayShard applies the buffers of every file in one shard. The buffers
-// leave the shard under its lock, so a feeder arriving mid-replay starts a
-// buffer the builder no longer knows about — Finish ending the feed is the
-// caller's to order.
+// replayShard applies the buffers of every file in one shard. The shard is
+// marked drained as its buffers leave, under the same lock the feeders
+// append under, so a feeder that races Finish is refused with errRebuilt
+// rather than left holding a record nobody replays.
 func (b *rebuilder) replayShard(s *rebuildShard) error {
 	s.mu.Lock()
 	bufs := s.bufs
 	keeps := s.keeps
 	s.bufs, s.keeps = nil, nil
+	// Drained before the lock drops: a feeder arriving now is refused under
+	// the same lock rather than appended to a buffer nobody replays.
+	s.drained = true
+	// Drained before the lock drops: a feeder arriving now is refused under
+	// the same lock rather than appended to a buffer nobody replays.
 	s.mu.Unlock()
 
 	byFile := make(map[core.FileID][]Retained)
@@ -397,14 +420,13 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 		case RecWrite:
 			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
 		case RecFill:
-			// decision: a fill replays as a plain put, not the runtime
-			// fill's only-where-absent and marker masking. A fill record
-			// covers exactly the extents that were absent when it was
-			// appended, and the rebuild has already decided every byte by
-			// precedence, so masking a fill against a marker above it would
-			// remove what this same order re-applies: the marker, replayed
-			// after the fill, cuts the fill's piece as it cuts any other
-			// content below it.
+			// decision: a fill replays as a plain put. A fill record
+			// covers exactly the extents that were absent when its journal
+			// appended it, so where the runtime fill's only-where-absent and
+			// marker masking decide the same bytes, the put is the simpler
+			// replay: nothing lower in precedence sits inside the fill's
+			// extent, and the markers above its version cut the put piece
+			// by the same rule they masked the runtime fill with.
 			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
 			// A fill's own mark, so an unmark's order against it matters
 			// exactly as against a real offloaded record: filled content
@@ -447,15 +469,24 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	slices.SortStableFunc(marks, func(a, c bufRec) int {
 		return cmp.Or(cmp.Compare(a.numbers.Seq, c.numbers.Seq), compareBufRec(a, c))
 	})
+	// decision: the marks reach the held set only, never the retained pieces.
+	// A mark names the bytes its record offered or unmarked, which are
+	// held or filled, and a retained piece overlaps newer content by
+	// construction: the v7 record says nothing about the v3 bytes it
+	// superseded, and setting the older piece's bit would be the unsafe
+	// direction — a later hold or offload reading the bit as a commit could
+	// drop the piece before its snapshot's upload happens. At run time a
+	// retained piece's bit is fixed at supersede time (writeRetain copies
+	// the bit of the content it keeps) and nothing marks one, so this is
+	// what the runtime holds too. The Retain caller sets the bits of the
+	// pieces it computes, whose rules read them.
 	for _, r := range marks {
 		e := core.Extent{Off: r.off, Len: r.n}
 		v := r.numbers.Version
 		if r.kind == RecUnmark {
 			f.held.unmark(e, v)
-			f.retained.unmark(e, v)
 		} else {
 			f.held.markOffloaded(e, core.Version{}, v)
-			f.retained.markOffloaded(e, core.Version{}, v)
 		}
 	}
 	return nil

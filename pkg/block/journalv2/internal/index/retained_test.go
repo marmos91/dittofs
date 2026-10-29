@@ -482,6 +482,21 @@ func TestRetainedMarkOffloaded(t *testing.T) {
 		if n := f.retained.markOffloaded(ext(0, 8), ver(4), ver(5)); n != 0 {
 			t.Fatalf("markOffloaded in a window between the pieces' versions changed %d pieces, want 0", n)
 		}
+		// A window whose oldest is above one piece and below the other
+		// changes the newer one only: marking content below the ref's
+		// oldest would mark a version the ref does not carry.
+		var g file
+		g.write(write(0, 8, rec(1, 0), 2))
+		g.writeRetain(write(0, 8, rec(2, 0), 5)) // retains the v2 piece
+		g.write(write(0, 8, rec(3, 0), 6))
+		g.writeRetain(write(0, 8, rec(3, 0), 9)) // retains the v6 piece
+		if n := g.retained.markOffloaded(ext(0, 8), ver(4), ver(7)); n != 1 {
+			t.Fatalf("markOffloaded with oldest 4 changed %d pieces, want the v6 one only", n)
+		}
+		assertRetained(t, &g,
+			kept(piece(0, 8, rec(1, 0), 0, 2, false), 5),
+			kept(piece(0, 8, rec(3, 0), 0, 6, true), 9),
+		)
 	})
 
 	// A piece straddling both ends of e is split in three: the middle part
