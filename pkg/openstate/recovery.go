@@ -97,9 +97,6 @@ func (sh *served) settle() {
 	}
 }
 
-// ponytail: grace's end raises no Sink.GraceEnded, so the service is not
-// told when a shard leaves grace. Add GraceEnded once the service has
-// something to run at grace's end.
 func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error {
 	t := v.t
 	sink, err := t.running()
