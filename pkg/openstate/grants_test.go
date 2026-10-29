@@ -324,8 +324,9 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 	release := make(chan struct{})
 	f.sink.onRecall = func(CachingGrant, GrantKind) { <-release }
 	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer close(release)
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }); wg.Wait() }
+	defer free()
 	for _, file := range files[:maxUnsent] {
 		wg.Go(func() { _, _ = f.open(b, file, OpenRequest{Access: wr}) })
 	}
@@ -357,6 +358,13 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	free()
+	f.idx.Lock()
+	n := f.unsent
+	f.idx.Unlock()
+	if n != 0 {
+		t.Errorf("%d recalls counted unsent once every one was handed over", n)
 	}
 }
 
