@@ -16,7 +16,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
-	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // The checks here fail by coming back up describing something other than
@@ -1240,7 +1239,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 			// A release at a full filesystem: the stream rolls into a
 			// re-adopted spare first, so the record lands in one.
 			fillSegment(t, f, 0, 0, size)
-			schedule(t, f, failing(journalv2test.OpCreate, "*", syscall.ENOSPC), failing(journalv2test.OpAllocate, "*", syscall.ENOSPC))
+			schedule(t, f, journalv2test.Failing(journalv2test.OpCreate, "*", 0, syscall.ENOSPC), journalv2test.Failing(journalv2test.OpAllocate, "*", 0, syscall.ENOSPC))
 			wantRelease(t, f.Share(1), a.id, a.extent, true)
 			f.Seam.SetFault(nil)
 		})
@@ -1647,7 +1646,7 @@ func recycledSegment(t *testing.T, f *journalv2test.Fixture) recycled {
 		stub(t, "Repack", err)
 		t.Fatalf("repack returned (%v) without renaming the segment", err)
 	}
-	schedule(t, f, sim.Rule{Op: journalv2test.OpWrite, Key: "*.seg", Action: sim.FaultAction{Kind: sim.Drop}})
+	schedule(t, f, journalv2test.Dropping(journalv2test.OpWrite, "*.seg", 0))
 	writes := f.Seam.Calls(journalv2test.OpWrite)
 	rename.Release()
 	err := <-done
@@ -1865,7 +1864,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	// A short write into a fresh segment: the one the stream moved to.
 	pre := writeSynced(t, h, 0, 2, off+3*size, size)
 	fresh := entryAt(t, h, pre.id, pre.extent.Off).Location.Segment
-	schedule(t, h, sim.Rule{Op: journalv2test.OpWrite, Key: segmentName(fresh), Count: 1, Action: sim.FaultAction{Kind: sim.Tear, N: 4096, Err: syscall.EIO}})
+	schedule(t, h, journalv2test.Tearing(journalv2test.OpWrite, segmentName(fresh), 1, 4096, syscall.EIO))
 	_, err = tryWrite(t, h.Share(0), id, off+4*size, pattern(fmtTag("z", 0, 2, off+4*size), size))
 	h.Seam.SetFault(nil)
 	stub(t, "WriteAt", err)
@@ -1879,7 +1878,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	k := journalv2test.NewUnwatched(t)
 	rc = recycledSegment(t, k)
 	off = rc.first.extent.Off + size
-	schedule(t, k, sim.Rule{Op: journalv2test.OpWrite, Key: rc.name, Count: 1, Action: sim.FaultAction{Kind: sim.Drop}})
+	schedule(t, k, journalv2test.Dropping(journalv2test.OpWrite, rc.name, 1))
 	w1 := writeRec(t, k, 0, 2, off, size)
 	w2 := writeRec(t, k, 0, 2, off+size, size)
 	k.Seam.SetFault(nil)
