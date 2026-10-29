@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -1222,5 +1223,120 @@ func TestDropShareWaitsForAServe(t *testing.T) {
 	a := f.caller(t, nfs("a", 1, entity.NewUser()))
 	if _, err := f.open(a, in(1), OpenRequest{Access: rd}); !errors.Is(err, ErrBadState) {
 		t.Errorf("an open in the shard once DropShare returned: %v, want ErrBadState", err)
+	}
+}
+
+// A restart's serve of a shard leases each NFSv4 client the shard's records
+// name: one silent for a lease period is expired, its record and its marks
+// gone and ClientEnded raised once, and one renewing within it is kept.
+func TestRestartLeasesListedClients(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfsAs("a", entity.RecoverStatus)), f.caller(t, nfsAs("b", entity.RecoverStatus))
+	f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, b, in(5), LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.pass(t, leasePeriod+sweepEvery, b.Client)
+	g.sweep(ctx)
+	g.sweep(ctx)
+	if _, err := f.fs.Store.Clients().Get(ctx, a.Client); err == nil {
+		t.Error("a client silent since the restart kept its record")
+	}
+	if got := g.sink.endedOf(a.Client); len(got) != 1 {
+		t.Errorf("ClientEnded for the silent client %v, want once", got)
+	}
+	if _, err := f.fs.Store.Clients().Get(ctx, b.Client); err != nil || len(g.sink.endedOf(b.Client)) != 0 {
+		t.Errorf("the renewing client: record %v, ended %v; want it kept", err, g.sink.endedOf(b.Client))
+	}
+}
+
+// The serve of a shard leases no NLM host or SMB client it lists, and leaves
+// a lease already held where it ends. The NLM and SMB half pins leaseEnd,
+// which gives either no end, rather than the serve's own protocol check.
+func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
+	f := newFixture(t)
+	h, s := f.host(t, "h", 1), f.caller(t, smb("pc"))
+	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	f.mustLock(t, h, in(5), LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+	f.mustOpen(t, s, in(5), OpenRequest{Access: rd})
+	f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.Stop()
+
+	g := unstarted(t, f.fs, f.clock)
+	g.start(t, nil)
+	g.renew(t, a)
+	g.clock.advance(leasePeriod / 2)
+	if err := g.Recovery().ServeShard(ctx, f.fs.Share.ID, 5, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	g.clock.advance(leasePeriod / 2)
+	g.sweep(ctx)
+	if got := g.sink.endedOf(a.Client); len(got) != 1 {
+		t.Errorf("a client leased before the serve, silent a period since: ended %v, want once", got)
+	}
+	g.pass(t, 3*leasePeriod)
+	g.sweep(ctx)
+	for _, c := range []Caller{h, s} {
+		if _, err := f.fs.Store.Clients().Get(ctx, c.Client); err != nil || len(g.sink.endedOf(c.Client)) != 0 {
+			t.Errorf("the NLM host or SMB client %d: record %v, ended %v; want it kept", c.Client, err, g.sink.endedOf(c.Client))
+		}
+	}
+}
+
+// Another principal's collision with the name of an NFSv4 client holding
+// state, after a restart and before its shard is served, leases nothing: the
+// client's lease starts at its shard's grace, so it is not expired first.
+func TestCollisionBeforeServeLeavesAStatefulClient(t *testing.T) {
+	for name, take := range map[string]func(f *fixture, c Client) error{
+		"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
+		"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+			f.mustLock(t, a, in(5), LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
+			f.Stop()
+			g := unstarted(t, f.fs, f.clock)
+			g.start(t, nil)
+			_ = take(g, nfs("a", 2, entity.NewUser())) // refused: the name is a's
+			g.clock.advance(leasePeriod + sweepEvery)
+			g.sweep(ctx)
+			if got := g.sink.endedOf(a.Client); len(got) != 0 {
+				t.Errorf("a client whose shard is not served yet was expired by another principal's %s: ended %v", name, got)
+			}
+		})
+	}
+}
+
+// A silent NFSv4 client that held nothing, so no serve listed it, frees its
+// name to another principal after a restart as it does without one: the
+// collision arms its lease, and the name lapses a lease period later.
+func TestSilentClientsNameLapsesAfterARestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		for name, take := range map[string]func(f *fixture, c Client) error{
+			"Propose": func(f *fixture, c Client) error { _, err := f.Propose(ctx, c, addr); return err },
+			"Connect": func(f *fixture, c Client) error { _, err := f.Connect(ctx, c, nil); return err },
+		} {
+			t.Run(fmt.Sprintf("%s restart=%v", name, restart), func(t *testing.T) {
+				f := newFixture(t)
+				f.caller(t, nfs("host-a", 1, entity.NewUser()))
+				if restart {
+					f = f.restart(t)
+				}
+				f.pass(t, 4*leasePeriod)
+				other := nfs("host-a", 2, entity.NewUser())
+				err := take(f, other)
+				if restart {
+					if !errors.Is(err, ErrClientInUse) {
+						t.Fatalf("another principal, at the name's first collision since the restart: %v, want ErrClientInUse", err)
+					}
+					f.pass(t, leasePeriod+sweepEvery)
+					err = take(f, other)
+				}
+				if err != nil {
+					t.Errorf("another principal, a lease period after the name went silent: %v", err)
+				}
+			})
+		}
 	}
 }
