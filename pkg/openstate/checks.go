@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
@@ -21,26 +22,38 @@ const (
 	ChangeAddEntry                        // a name is added to the directory
 	ChangeAttrs                           // the file's attributes are set
 	ChangeSetID                           // a mode change sets the setuid or setgid bit
+	// ChangeReplace: a rename replaces the file. An SMB adapter passes it,
+	// with ChangeRename, for the target of a rename asking ReplaceIfExists,
+	// which the renamer holds no open of; an NFS one need not, as ChangeRename
+	// already judges an NFS caller against every open.
+	ChangeReplace
 )
 
 // Checks is the view the service asks before I/O and before a change.
 type Checks interface {
-	// CheckIO admits I/O through o, an open, a lock state or a delegation.
+	// CheckIO admits I/O to f through o, an open, a lock state or a
+	// delegation. A reference that is not anonymous is ErrBadState when its
+	// shard or its file is not f's; an anonymous one with no f.ID is
+	// ErrBadState.
 	// A lock state is judged as the open it was taken under: a granted open
 	// is used only by its opener and only for the access it holds, ErrAccess
 	// otherwise, and its deny modes were judged once, at open. An anonymous
 	// read or write, and one through a delegation, is judged against every
 	// deny mode held, per operation; a delegation writes only with write
-	// caching. Any is refused ErrLocked across a range a mandatory lock
-	// forbids it, and recalls another holder's caching the I/O conflicts
-	// with, answering ErrDelay until the recall ends.
-	CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error
+	// caching. An anonymous one is ErrDelay while f's shard is not begun,
+	// and in grace ErrGrace while the grace still waits for a client that
+	// can reclaim a deny mode or a mandatory lock. Any is refused ErrLocked across a range a
+	// mandatory lock forbids it, and recalls another holder's caching the I/O
+	// conflicts with, answering ErrDelay until the recall ends.
+	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error
 	// CheckChange admits a change to f, made through via, an open of f, or
 	// through none: what the open state of f refuses. It recalls the caching
 	// grants the change conflicts with and never waits, answering ErrDelay
 	// until each recall ends. Only a grant under via's lease key, or the
 	// oplock over via, is the caller's own; with no via, every grant of the
-	// caller's client is.
+	// caller's client is. Any change is ErrDelay while f's shard is not
+	// begun, and in grace a remove or rename is ErrGrace while the grace
+	// still waits for a client that can reclaim a deny mode.
 	CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error
 }
 
@@ -52,7 +65,7 @@ func (t *Table) Checks() Checks { return checks{t} }
 // ponytail: an anonymous check on a file with no state still creates and
 // frees its entry, an allocation per NFSv3 read or write. Look the entry up
 // without creating it when CheckIO shows in a profile.
-func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange, write bool) error {
+func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -65,7 +78,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 	others := func(*grant) GrantKind { return keeps }
 	var out outbox
 	through := func(e *entry, op *open) error {
-		if !t.confirmed(op) {
+		if e.file != f.ID || !t.confirmed(op) {
 			return ErrBadState
 		}
 		if conflict.Of(want)&^conflict.Of(op.Mode.Access) != 0 {
@@ -79,6 +92,9 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 	// unopened is I/O through no open: anonymous, or through a delegation
 	// own holds, which its holder's own deny modes do not refuse.
 	unopened := func(e *entry, own func(*grant) bool) error {
+		if e.file != f.ID {
+			return ErrBadState
+		}
 		var hs []*open
 		for _, h := range e.opens {
 			if o.Kind == RefDelegated && h.Client == who.Client {
@@ -96,14 +112,19 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 		}
 		return t.recallOthers(e, own, others, &out)
 	}
+	if o.Kind != RefAnonymous && o.State.Shard != f.Shard {
+		return ErrBadState
+	}
 	switch o.Kind {
 	case RefAnonymous:
-		var f entity.FileID
-		if f, err = o.file(); err == nil && f.IsZero() {
+		if f.ID.IsZero() {
 			err = ErrBadState
 		}
 		if err == nil {
-			err = t.step(f, func(e *entry) error {
+			err = t.guarded(f.Shard)
+		}
+		if err == nil {
+			err = t.step(f.ID, func(e *entry) error {
 				return unopened(e, func(g *grant) bool { return g.heldBy(who.Client, LeaseKey{}, nil) })
 			})
 		}
@@ -154,16 +175,25 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 //
 // decision: only a caller that is not SMB is refused a remove or rename
 // against a deny-delete, and only an SMB caller is refused one of a
-// directory an open was made through. An SMB client removes and renames
-// through an open holding delete access, whose own deny modes were judged at
-// open, so judging its own open's deny-delete again would refuse a rename
-// through an exclusive handle; and POSIX allows an NFS rename of a directory
-// with open children. Judge every caller if a protocol is served that
-// removes a name without an open of its own.
+// directory an open was made through. An SMB client removes and renames the
+// source through an open holding delete access, whose own deny modes were
+// judged at open, so judging its own open's deny-delete again would refuse a
+// rename through an exclusive handle; and POSIX allows an NFS rename of a
+// directory with open children. That covers the source only: the target an
+// SMB rename replaces, ChangeReplace, was never opened by the renamer, and is
+// refused ErrAccess while any open of it is held, as Windows refuses it.
+// Judge every caller if a protocol is served that removes a name without an
+// open of its own.
 func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
+		return err
+	}
+	// A name may be held by a deny mode still to be reclaimed, or not yet
+	// known in a shard not begun.
+	switch err := t.guarded(f.Shard); {
+	case errors.Is(err, ErrDelay), err != nil && what&(ChangeRemove|ChangeRename) != 0:
 		return err
 	}
 	smb := who.Protocol == entity.ProtocolSMB
@@ -188,10 +218,13 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 		if what&(ChangeRename|ChangeAddEntry) != 0 && e.pending != nil {
 			return ErrDeletePending
 		}
+		if smb && what&ChangeReplace != 0 && len(e.opens) > 0 {
+			return ErrAccess
+		}
 		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
 			var hs []*open
 			for _, h := range e.opens {
-				if conflict.Of(h.Mode.Deny)&conflict.Delete != 0 {
+				if !conflict.Shares(entity.Delete, 0, h.Mode.Access, h.Mode.Deny) {
 					hs = append(hs, h)
 				}
 			}
@@ -230,7 +263,7 @@ func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, f, StateRef{Type: ref.State.Type, Shard: ref.State.Shard, Token: ref.State.Token})
+	h, err := t.resolve(who.Client, f, ref.State)
 	if err != nil {
 		return err
 	}

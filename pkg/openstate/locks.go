@@ -61,11 +61,12 @@ const (
 
 // LockReq is one lock request: every range in one step, all or none.
 type LockReq struct {
-	Owner  LockOwner
-	Open   OpenRef // the open, or the owner's lock state, it is taken under; RefAnonymous: none
-	Ranges []LockRange
-	Wait   WaitKind // only a single-range request waits
-	Seqs   Seqs
+	Owner   LockOwner
+	Open    OpenRef // the open, or the owner's lock state, it is taken under; RefAnonymous: none
+	Ranges  []LockRange
+	Wait    WaitKind // only a single-range request waits
+	Seqs    Seqs
+	Reclaim bool // locks the owner held before its shard lost its state; a reclaim never waits
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -91,7 +92,9 @@ type Locks interface {
 	// Lock grants every range of r or none. A conflict is a *LockedError
 	// naming the first holder found; a single-range request that waits
 	// records a waiter, by poll answered the conflict, by callback answered
-	// Waiting. Past 64 ranges it is ErrInvalid.
+	// Waiting. Past 64 ranges it is ErrInvalid. In grace only a reclaim is
+	// granted, judged against what was reclaimed before it; outside grace a
+	// reclaim is answered with the lock state holding every range asked.
 	Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (LockResult, error)
 	// CancelLock drops o's waiter on f for r, or reports that its lock was
 	// granted first.
@@ -101,7 +104,8 @@ type Locks interface {
 	// owner's own lock or unlock of them answered first, which it leaves.
 	WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refused bool) error
 	// TestLock is the lock that would refuse o's lock of r, or nil; it
-	// changes nothing. o is the caller's client's owner.
+	// changes nothing. o is the caller's client's owner. It is admitted as a
+	// lock that is no reclaim is, so in grace it is ErrGrace.
 	TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
@@ -357,7 +361,7 @@ func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
 		}
 		own := id != 0 && ls.openToken() == id
 		for _, l := range ls.locks {
-			if ranges.Overlap(l.ByteRange, r) && (write && !(own && l.Exclusive) || !write && l.Exclusive && !own) {
+			if ranges.Overlap(l.ByteRange, r) && (write && (!own || !l.Exclusive) || !write && l.Exclusive && !own) {
 				return ErrLocked
 			}
 		}
@@ -531,7 +535,7 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 	if r.Owner.Client != who.Client {
 		return LockResult{}, ErrNotYours
 	}
-	if len(r.Ranges) > 1 {
+	if len(r.Ranges) > 1 || r.Reclaim {
 		r.Wait = WaitNone
 	}
 	var res LockResult
@@ -561,16 +565,59 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			if op != nil && !t.confirmed(op) {
 				return ErrBadState // the owner's sequence refuses it only when numbered
 			}
-			if res, err = t.lock(ctx, e, f.Shard, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
+			// Admitted under the step, so grace is judged as it stands when
+			// the lock is decided, and a refusal answers the owner's number.
+			grace, err := t.admit(who, f.Shard, r.Reclaim)
+			switch {
+			case err != nil:
+				return err
+			case r.Reclaim && !grace:
+				err = reclaimHeld(e, r, op, &res)
+			default:
+				res, err = t.lock(ctx, e, f.Shard, r, op, &out)
+			}
+			if err == nil && introduces && r.Seqs.Owner != nil {
 				t.smu.Lock()
 				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
 				t.smu.Unlock()
+			}
+			if grace && errors.Is(err, ErrLocked) {
+				err = ErrReclaimConflict
 			}
 			return err
 		})
 	})
 	out.raise(t, sink)
 	return res, err
+}
+
+// reclaimHeld answers a reclaim of locks in a shard that lost nothing, under
+// e's step: the owner's lock state under op, when it holds every range of r
+// as asked, else ErrNoReclaim. Like a resend answered granted, it settles a
+// callback grant of the range still offered to a merging owner. A stacking
+// owner's reclaim answers none of its grants, as lock answers none for a
+// reclaim in grace: it names a lock of r, which need not be the grant's, and
+// removes none, so the grant stays whole for its refusal to release.
+func reclaimHeld(e *entry, r LockReq, op *open, res *LockResult) error {
+	ls := e.lockState(r.Owner, openToken(op))
+	if ls == nil {
+		return ErrNoReclaim
+	}
+	for _, rg := range r.Ranges {
+		if !slices.ContainsFunc(ls.locks, func(l LockRange) bool {
+			return l.Exclusive == rg.Exclusive && len(ranges.Minus(rg.ByteRange, l.ByteRange)) == 0
+		}) {
+			return ErrNoReclaim
+		}
+	}
+	for _, rg := range r.Ranges {
+		if ls.owner.Stack {
+			break
+		}
+		ls.dropOffers(rg.ByteRange) // the reclaim answers the callback granted: its refusal releases nothing
+	}
+	res.Ref = ls.ref
+	return nil
 }
 
 // lock decides r, under op (nil: none), on e under its step: every range
@@ -746,8 +793,16 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 	if o.Client != who.Client {
 		return nil, ErrNotYours
 	}
+	if err := t.staleClient(ctx, who.Client); err != nil {
+		return nil, err
+	}
 	var held *Lock
 	err := t.step(f.ID, func(e *entry) error {
+		// In grace the locks still to be reclaimed are not held yet, so a
+		// test is refused as a lock is.
+		if _, err := t.admit(who, f.Shard, false); err != nil {
+			return err
+		}
 		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
 		return nil
 	})
@@ -810,6 +865,9 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
+		return err
+	}
+	if err := t.staleClient(ctx, who.Client); err != nil {
 		return err
 	}
 	if o.Client != who.Client {
@@ -885,7 +943,14 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 // loop pays a record write, its Connect, and a delete per cycle, and each
 // lock after a delete is first refused ErrStaleClient for its adapter to
 // connect it again. Keep the record through a lease period of idleness,
-// swept by the timer, if NLM lock churn shows those writes in a profile.
+// swept by the timer, if NLM lock churn shows those writes in a profile. A
+// record outlives idleness while a grace still waits on the host's reclaim,
+// since the host holds nothing in a shard until it reclaims there. One left
+// idle when grace ends stays until a later call of the host's leaves it idle.
+// Until then each restart lists it in its shards: it is told again, the
+// restart-notice number is raised for it, it may reclaim there, and those
+// shards' graces run their full lease period for it. Drop the idle records a
+// grace listed once the grace ends, if NLM hosts are seen holding graces open.
 //
 // decision: the record is deleted without asking whether a restart notice to
 // the host is outstanding, since the table records none. A failed delete
@@ -898,8 +963,19 @@ func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
 	if !notice {
 		return
 	}
+	// The grace is judged under the client step, the order ServeShard takes
+	// it in, so a grace begun meanwhile is seen waiting on the host.
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
+	t.cmu.Lock()
+	now := t.d.Clock.Elapsed()
+	for _, sh := range t.shards {
+		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
+			t.cmu.Unlock()
+			return // a grace still waits on its reclaim
+		}
+	}
+	t.cmu.Unlock()
 	t.idx.Lock()
 	idle := !t.holdsAnyLocked(c)
 	if idle {

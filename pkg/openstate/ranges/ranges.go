@@ -18,10 +18,10 @@ type Range struct {
 // last is r's last byte; ok is false for a zero-length range at 0, which
 // ends before the first byte.
 func (r Range) last() (l uint64, ok bool) {
-	switch {
-	case r.Length == end:
+	switch r.Length {
+	case end:
 		return end, true
-	case r.Length == 0:
+	case 0:
 		return r.Offset - 1, r.Offset != 0
 	}
 	l = r.Offset + r.Length - 1

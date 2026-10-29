@@ -1,6 +1,7 @@
 package openstate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -69,6 +70,7 @@ type OpenRequest struct {
 	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
 	Want          GrantKind // the grant kind asked for; none: no grant
 	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
+	Reclaim       bool      // the open is one the client held before its shard lost its state
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -101,7 +103,7 @@ type OpenRef struct {
 	Kind   RefKind
 	State  StateRef      // NFS: the open, lock state or delegation; SMB: only the shard
 	Open   entity.OpenID // SMB: the open; zero for NFS
-	Handle entity.Handle // nil: none, which an anonymous open may not be
+	Handle entity.Handle // nil: none; an anonymous open's file is the FileKey's
 }
 
 // RefKind is what an OpenRef names.
@@ -142,8 +144,17 @@ type Opens interface {
 	// Open grants an open of f, or refuses it ErrShareViolation against a
 	// deny mode either way and ErrDeletePending on a delete-pending file; it
 	// never grants less than was asked. An owner of opens holds one open of
-	// a file: its second open of it upgrades the first.
+	// a file: its second open of it upgrades the first. In grace only a
+	// reclaim is granted, judged against what was reclaimed before it and
+	// with no grant offered, as the shard lost its grants; outside grace a
+	// reclaim is answered with the open, and the grant, the owner still
+	// holds, granting nothing new.
 	Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (OpenResult, error)
+	// Renamed moves every open of f made through the entry fromName in
+	// fromDir to toName in toDir, as a rename of that entry commits through
+	// any open or none, so a deferred unlink removes the entry's current
+	// name. The service calls it under f's admission lock.
+	Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
@@ -152,7 +163,9 @@ type Opens interface {
 	// the owner's requests and I/O through its opens are refused.
 	ConfirmOpen(ctx context.Context, who Caller, o OpenRef, q Seqs) (seq uint32, err error)
 	// Update sets or clears the file's delete pending, through an open
-	// holding delete access, and suspends or resumes the open's times.
+	// holding delete access, and suspends or resumes the open's times. A
+	// named stream's open sets no delete pending, ErrInvalid, as it asks no
+	// delete on close.
 	Update(ctx context.Context, who Caller, o entity.OpenID, u OpenUpdate) error
 	// Close ends an open, and reports what the service runs after it.
 	Close(ctx context.Context, who Caller, o OpenRef, q Seqs) (CloseResult, error)
@@ -176,6 +189,10 @@ type open struct {
 	share   entity.ShareID
 	lease   LeaseKey // the lease key it was opened under; zero: none
 	durable bool     // its record is in the store
+	// unlinking: an unlink's records list it, and its commit has yet to run;
+	// a close by the table meanwhile leaves late for the commit to raise.
+	unlinking bool
+	late      CloseResult
 }
 
 // opened is the file o opens: its named stream, or else its file.
@@ -223,6 +240,11 @@ func (v opens) Open(ctx context.Context, who Caller, f FileKey, r OpenRequest) (
 		return err
 	})
 	out.raise(t, sink)
+	if err == nil && r.Reclaim && r.Seqs.Owner != nil {
+		t.smu.Lock()
+		t.seqs.Confirm(owner) // a reclaimed owner confirmed itself before the loss
+		t.smu.Unlock()
+	}
 	return res, err
 }
 
@@ -234,13 +256,25 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.DeleteOnClose && r.Access&entity.Delete == 0 {
 		return OpenResult{}, ErrInvalid
 	}
+	// decision: a named stream's open may not delete on close. Its delete pending
+	// would land in the base's entry and unlink the base's name, where MS-FSA
+	// deletes only the stream. Allow it once DeleteRecord names a stream and the
+	// service can unlink one.
+	if r.DeleteOnClose && !r.Stream.IsZero() {
+		return OpenResult{}, ErrInvalid
+	}
 	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
 		return OpenResult{}, ErrInvalid // a lease key is SMB's
+	}
+	// Admitted before the open's ID is issued, so a refusal writes nothing,
+	// and again under the step, where grace is judged as it then stands.
+	grace, err := t.admit(who, f.Shard, r.Reclaim)
+	if err != nil {
+		return OpenResult{}, err
 	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
 		// An SMB FileId names the open across a reconnect.
-		var err error
 		if id, err = t.nextOpenID(ctx); err != nil {
 			return OpenResult{}, err
 		}
@@ -254,7 +288,13 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
 	var res OpenResult
-	err := t.step(f.ID, func(e *entry) error {
+	err = t.step(f.ID, func(e *entry) (err error) {
+		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+			return err
+		}
+		if r.Reclaim && !grace {
+			return t.reclaimHeld(e, who, r, &res)
+		}
 		if e.pending != nil {
 			return ErrDeletePending
 		}
@@ -295,16 +335,77 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
 		}
-		if res.Confirm = !t.ownerConfirmed(r); !res.Confirm {
+		confirmed := t.ownerConfirmed(r)
+		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
+		if !grace && confirmed {
 			res.Grant = t.offer(e, f, who, granted, r, out)
 		}
 		res.Open = granted.Open
 		return nil
 	})
+	if grace && errors.Is(err, ErrShareViolation) {
+		err = ErrReclaimConflict
+	}
 	if err != nil {
 		return OpenResult{}, err
 	}
 	return res, nil
+}
+
+// reclaimHeld answers a reclaim in a shard that lost nothing, under e's
+// step, with the open the owner still holds of e's file and the grant it
+// holds over it, granting nothing new.
+//
+// decision: a reclaim with no such open, or asking access or deny the open
+// does not hold, is ErrNoReclaim, the answer to a reclaim of state the
+// client did not hold. Answer the wider one ErrInvalid if a client is seen
+// reclaiming less than it holds and treating ErrNoReclaim as its state lost.
+func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult) error {
+	o := e.openOf(r.Owner, r.Stream)
+	switch {
+	case o == nil, r.Access&^o.Mode.Access != 0, r.Deny&^o.Mode.Deny != 0:
+		return ErrNoReclaim
+	case !t.mayUse(o, who):
+		return ErrNotYours
+	}
+	res.Open = o.Open
+	for _, g := range e.grants {
+		if g.heldBy(who.Client, o.lease, o) {
+			p := g.public(e.file)
+			res.Grant = &p
+		}
+	}
+	return nil
+}
+
+// decision: a durable open's record is not rewritten: only an open of a file
+// with no entry is durable, and such a file has no name a rename could move.
+// Rewrite the record's Via once persistent opens, of named files, are
+// durable.
+func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	return t.step(f.ID, func(e *entry) error {
+		for _, o := range e.opens {
+			if o.Via != fromDir || !bytes.Equal(o.Name, fromName) {
+				continue
+			}
+			o.Name = slices.Clone(toName)
+			if o.Via == toDir {
+				continue
+			}
+			t.idx.Lock()
+			if t.via[o.Via]--; t.via[o.Via] <= 0 {
+				delete(t.via, o.Via)
+			}
+			t.via[toDir]++
+			t.idx.Unlock()
+			o.Via = toDir
+		}
+		return nil
+	})
 }
 
 // addOpen adds o, a new open of f, to e under its step: its shard listed in
@@ -431,34 +532,33 @@ func (t *Table) dropOpen(e *entry, o *open) {
 }
 
 // markShard lists shard s in client c's record, once: it commits before the
-// answer granting c its first state there. Done is zero until the table
-// holds each shard's grace instance.
+// answer granting c its first state there. A client added to a shard takes
+// its grace instance as Done, so it owes no reclaim there.
 func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) error {
 	t.cmu.Lock()
 	k, ok := t.known[c]
-	listed := slices.Contains(k.shards, s)
+	listed := slices.ContainsFunc(k.shards, func(m entity.ShardMark) bool { return m.Shard == s })
 	t.cmu.Unlock()
-	if !ok {
+	switch {
+	case !ok:
 		return ErrStaleClient
-	}
-	if listed {
+	case listed:
 		return nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	if err != nil {
 		return staleIfGone(err)
 	}
-	if !slices.ContainsFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }) {
-		if err := t.d.Records.Clients().MarkShard(ctx, c, entity.ShardMark{Shard: s}); err != nil {
-			return staleIfGone(err)
-		}
+	inst, _ := t.instance(s)
+	m := entity.ShardMark{Shard: s, Done: inst}
+	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
+		m = rec.Shards[i] // the record's own mark: one Done at this instance would forgive a reclaim the client still owes here
+	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {
+		return staleIfGone(err)
 	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
-	if k, ok := t.known[c]; ok {
-		k.shards = append(k.shards, s)
-		t.known[c] = k
-	}
+	t.noteMarkLocked(c, m)
 	return nil
 }
 
@@ -659,6 +759,9 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 	}
 	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
 		if u.Delete != nil {
+			if !o.Stream.IsZero() {
+				return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
+			}
 			if o.Mode.Access&entity.Delete == 0 {
 				return ErrAccess
 			}
@@ -761,7 +864,8 @@ func (t *Table) closeOpen(e *entry, o *open, out *outbox) *entity.DeleteRecord {
 // decision: the step is released between the records' snapshot and the
 // commit. The service keeps the file's admission lock from Durable to
 // commit, so no call's open or close lands there; a timer step's close,
-// which takes no admission lock, can, and commit deletes that open's record.
+// which takes no admission lock, can, and commit deletes that open's record
+// and raises what the close left in the file's one Closed.
 // Run the unlink under the step, as a callback, if a caller is found that
 // unlinks without that lock.
 func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, func(bool), error) {
@@ -785,32 +889,52 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 			}
 			recs, held = append(recs, rec), append(held, o)
 		}
+		for _, o := range held {
+			o.unlinking = true
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	commit := func(committed bool) {
-		if !committed {
-			return
-		}
-		var orphan bool
+		// One Closed for the file: what a timer step's close since the
+		// snapshot left it, or, once the unlink took the last entry, the
+		// orphan alone, as the name a pending unlink would remove is gone.
+		var late CloseResult
 		_ = t.step(f.ID, func(e *entry) error {
 			for i, o := range held {
+				o.unlinking = false
 				if e.opens[o.Ref.Token] != o {
 					// Closed by a timer step since the snapshot, which takes
 					// no admission lock: its record is deleted here.
-					out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
-					orphan = orphan || !out.File.IsZero()
+					late.Orphan = late.Orphan || o.late.Orphan
+					if o.late.Unlink != nil {
+						late.Unlink = o.late.Unlink
+					}
+					if committed {
+						// decision: a failed delete is dropped, as releaseClient
+						// drops it: the record stays a holder of its file until
+						// the next start's grace end closes the records nobody
+						// reclaimed. Report it to the service if a store outage
+						// is shown to strand files.
+						out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
+						late.Orphan = late.Orphan || !out.File.IsZero()
+					}
 					continue
 				}
-				o.ID, o.durable = recs[i].ID, true
+				if committed {
+					o.ID, o.durable = recs[i].ID, true
+				}
 			}
-			e.unlinked = true
+			if committed {
+				e.unlinked = true
+				late.Unlink = nil
+			}
 			return nil
 		})
-		if sink, err := t.running(); orphan && err == nil {
-			sink.Closed(f.ID, CloseResult{Orphan: true})
+		if sink, err := t.running(); err == nil && (late.Orphan || late.Unlink != nil) {
+			sink.Closed(f.ID, late)
 		}
 	}
 	return recs, commit, nil
@@ -845,5 +969,9 @@ func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox
 	var r CloseResult
 	r.Orphan, _ = t.unrecord(ctx, o)
 	r.Unlink = t.closeOpen(e, o, out)
+	if o.unlinking {
+		o.late = r // the unlink's commit raises it, in its one Closed for the file
+		return
+	}
 	out.close(e.file, r)
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +96,7 @@ type recordingSink struct {
 	onEnded  func(c entity.ClientID)
 	onWait   func(w LockWaiter)
 	onRecall func(g CachingGrant, to GrantKind)
+	onRevoke func(r Revocation)
 }
 
 func (s *recordingSink) RecallGrant(g CachingGrant) {
@@ -110,8 +112,12 @@ func (s *recordingSink) RecallGrant(g CachingGrant) {
 
 func (s *recordingSink) Revoked(r Revocation) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.revoked = append(s.revoked, r)
+	fn := s.onRevoke
+	s.mu.Unlock()
+	if fn != nil {
+		fn(r)
+	}
 }
 
 type recallAny struct {
@@ -246,12 +252,31 @@ func newFixture(t *testing.T) *fixture {
 // the store keeps what is durable, and the table starts empty.
 func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()
+	return reopenServing(t, fs, clock, testShards)
+}
+
+// reopenServing is reopen beginning only shards: each begun shard scans every
+// client record, which a test restarting thousands of times can't afford.
+func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []ShardID) *fixture {
+	t.Helper()
 	f := unstarted(t, fs, clock)
 	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
+	for _, s := range shards {
+		if err := f.Recovery().ServeShard(ctx, entity.ShareID{}, s, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return f
 }
+
+// testShards are the shards the tests hold state in, each begun at every
+// start under a grace instance never used before.
+var (
+	testShards = []ShardID{0, 1, 5, 7}
+	instances  atomic.Uint64
+)
 
 func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()

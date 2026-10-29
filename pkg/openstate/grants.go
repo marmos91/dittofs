@@ -24,15 +24,19 @@ const (
 // key and file covers every open of the file under it.
 type LeaseKey [16]byte
 
-// GrantID names a caching grant by its shard and token, as a StateRef does,
-// so a call naming it with no file handle resolves from the ID alone. An NFS
+// GrantID names a caching grant by its shard, grace instance bits and token,
+// as a StateRef does, so a call naming it with no file handle resolves from
+// the ID alone, and one naming a grant a loss took is stale. An NFS
 // delegation's stateid is its reference, of type StateGrant.
 type GrantID struct {
-	Shard ShardID
-	Token uint64
+	Shard    ShardID
+	Instance uint8
+	Token    uint64
 }
 
-func (g GrantID) ref() StateRef { return StateRef{Type: StateGrant, Shard: g.Shard, Token: g.Token} }
+func (g GrantID) ref() StateRef {
+	return StateRef{Type: StateGrant, Shard: g.Shard, Instance: g.Instance, Token: g.Token}
+}
 
 // CachingGrant is a promise that no other holder is using the file in a way
 // that conflicts with its Kind, so its holder may cache. It covers every open
@@ -335,7 +339,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, epoch), counted: true}
+	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, epoch), counted: true}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}

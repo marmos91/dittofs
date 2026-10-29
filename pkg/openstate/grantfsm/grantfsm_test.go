@@ -86,8 +86,12 @@ func TestAck(t *testing.T) {
 	if _, err := g.Ack(rh); !errors.Is(err, ErrNotHeld) || g.Kind != rh || g.Recall.To != Read {
 		t.Errorf("the first stage's answer again: %v, %+v; want ErrNotHeld, nothing changed", err, g)
 	}
-	g.Ack(Read)
-	g.Ack(None)
+	if _, err := g.Ack(Read); err != nil {
+		t.Fatalf("ack to R: %v", err)
+	}
+	if _, err := g.Ack(None); err != nil {
+		t.Fatalf("ack to none: %v", err)
+	}
 	g = New(rh, nil)
 	if _, err := g.Ack(rw); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("unasked ack to caching not held: %v", err)

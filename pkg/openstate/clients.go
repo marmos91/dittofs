@@ -62,8 +62,10 @@ type Proposal struct {
 
 // ClientStatus is what a renewal reports beside the lease.
 type ClientStatus struct {
-	AdminRevoked      bool // a reference an administrator revoked is in the client's revoked set
-	RecallableRevoked bool // a grant revoked at its recall deadline is
+	AdminRevoked      bool       // a reference an administrator revoked is in the client's revoked set
+	RecallableRevoked bool       // a grant revoked at its recall deadline is
+	ReclaimNeeded     bool       // a shard of its state is in a grace instance it has not finished
+	Reclaim           []GraceRef // those instances, which the adapter keeps per session for ReclaimComplete
 }
 
 // Caller is the client a call acts for, as the adapter proved it, the
@@ -310,6 +312,11 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 			if cur, err = t.putAdapter(ctx, cur, rec.Adapter); err != nil {
 				return nil, err
 			}
+			if cur.Recovery == entity.RecoverRefusal {
+				if cur.Shards, err = t.markDone(ctx, cur); err != nil {
+					return nil, err
+				}
+			}
 		}
 		*rec = cur
 	default:
@@ -340,9 +347,30 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	t.know(*rec)
 	t.cmu.Unlock()
 	if ended != nil {
+		t.unreclaim(ended.ID)
 		t.releaseClient(ctx, ended.ID, out)
 	}
 	return ended, nil
+}
+
+// markDone sets rec's Done to each served shard's grace instance it is
+// below, as a client that recovers by connecting again does when it confirms
+// again, and returns the marks as written: it then reclaims.
+func (t *Table) markDone(ctx context.Context, rec entity.ClientRecord) ([]entity.ShardMark, error) {
+	marks := slices.Clone(rec.Shards)
+	for i, m := range marks {
+		t.cmu.Lock()
+		sh := t.shards[m.Shard]
+		t.cmu.Unlock()
+		if sh == nil || m.Done >= sh.instance {
+			continue
+		}
+		marks[i].Done = sh.instance
+		if err := t.d.Records.Clients().MarkShard(ctx, rec.ID, marks[i]); err != nil {
+			return nil, staleIfGone(err)
+		}
+	}
+	return marks, nil
 }
 
 // putAdapter writes a confirmed proposal's Adapter over the record's.
@@ -422,29 +450,38 @@ func (v clients) Renew(ctx context.Context, c entity.ClientID) (ClientStatus, er
 		if err := t.adopt(ctx, c); err != nil {
 			return ClientStatus{}, err
 		}
+		t.cmu.Lock()
+		stale := t.mustConnectLocked(c)
+		t.cmu.Unlock()
+		if stale {
+			return ClientStatus{}, ErrStaleClient
+		}
 		return t.status(c), nil
 	}
 	switch now := t.d.Clock.Elapsed(); {
-	case end == 0:
-	case now >= end:
+	case end != 0 && now >= end, t.mustConnectLocked(c):
 		t.cmu.Unlock()
 		return ClientStatus{}, ErrStaleClient
-	default:
+	case end != 0:
 		t.leases[c] = now + leasePeriod
 	}
 	t.cmu.Unlock()
 	return t.status(c), nil
 }
 
-// status is what c's revoked set reports.
+// status is what c's revoked set and the grace instances it owes report.
 //
 // ponytail: a scan of every revoked reference, O(revoked), per renewal; the
 // set is empty unless something was revoked and not yet freed. Count each
 // client's entries by cause if a renewal shows the scan in a profile.
 func (t *Table) status(c entity.ClientID) ClientStatus {
+	var s ClientStatus
+	t.cmu.Lock()
+	s.Reclaim = t.owedLocked(c)
+	t.cmu.Unlock()
+	s.ReclaimNeeded = len(s.Reclaim) > 0
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	var s ClientStatus
 	for _, r := range t.revoked {
 		if r.client == c {
 			s.AdminRevoked = s.AdminRevoked || r.cause == RevokedByAdmin
@@ -477,7 +514,7 @@ func (t *Table) adopt(ctx context.Context, c entity.ClientID) error {
 // know records what the table reads of rec while its client is current; the
 // caller holds cmu.
 func (t *Table) know(rec entity.ClientRecord) {
-	k := known{recovery: rec.Recovery, down: rec.Reach.Down}
+	k := known{recovery: rec.Recovery, down: rec.Reach.Down, shards: rec.Shards}
 	if rec.Protect {
 		k.owner = rec.Owner
 	}
@@ -549,6 +586,7 @@ func (t *Table) forget(ctx context.Context, c entity.ClientID, out *outbox) {
 	delete(t.known, c)
 	delete(t.fenced, c)
 	t.cmu.Unlock()
+	t.unreclaim(c)
 	t.releaseClient(ctx, c, out)
 	t.dropRevoked(c)
 }
@@ -618,6 +656,7 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
 		return err
 	}
+	t.unreclaim(c)
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	if k, ok := t.known[c]; ok {
@@ -706,6 +745,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	delete(t.leases, who.Client)
 	delete(t.known, who.Client)
 	t.cmu.Unlock()
+	t.unreclaim(who.Client)
 	t.dropRevoked(who.Client)
 	return nil
 }

@@ -71,11 +71,14 @@ func (f *fixture) unlock(t *testing.T, who Caller, file FileKey, o LockOwner, rs
 }
 
 // holder is the lock that refuses an exclusive lock of r by an owner holding
-// nothing, or nil.
+// nothing, or nil, read under the file's step so it answers in grace too.
 func (f *fixture) holder(t *testing.T, file FileKey, r ByteRange) *Lock {
 	t.Helper()
-	h, err := f.Locks().TestLock(ctx, Caller{}, file, LockOwner{Name: []byte("tester")}, r, true)
-	if err != nil {
+	var h *Lock
+	if err := f.step(file.ID, func(e *entry) error {
+		h = e.blocker(LockOwner{Name: []byte("tester")}, LockRange{r, true}, len(e.waiters))
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -299,7 +302,7 @@ func TestMandatoryLocksRefuseIO(t *testing.T) {
 
 	io := func(who Caller, o OpenRef, off uint64, write bool) error {
 		o.Handle = handle(file.ID)
-		return f.Checks().CheckIO(ctx, who, o, br(off, 1), write)
+		return f.Checks().CheckIO(ctx, who, file, o, br(off, 1), write)
 	}
 	for _, c := range []struct {
 		what  string
@@ -1252,7 +1255,7 @@ func TestReleaseLockOwner(t *testing.T) {
 	if h := f.holder(t, file, br(0, 10)); h == nil || string(h.Owner.Name) != "lo" {
 		t.Fatalf("the refused release left the range held by %v, want lo", h)
 	}
-	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefLocked, State: kept, Handle: handle(other.ID)}, br(0, 1), false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, other, OpenRef{Kind: RefLocked, State: kept, Handle: handle(other.ID)}, br(0, 1), false); err != nil {
 		t.Errorf("the refused release dropped lo's lock state on the other file: %v", err)
 	}
 
@@ -1487,7 +1490,7 @@ func TestCallsAnswerTheNewSequence(t *testing.T) {
 	if seq, err = f.Opens().Downgrade(ctx, a, opened(seq), num(3), rd, 0); err != nil {
 		t.Fatalf("a downgrade naming the sequence the confirm answered: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, opened(seq), br(0, 1), false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, opened(seq), br(0, 1), false); err != nil {
 		t.Errorf("a read naming the sequence the downgrade answered: %v", err)
 	}
 
@@ -1565,7 +1568,7 @@ func TestOwnerUpgradesItsOpen(t *testing.T) {
 	if up.Ref.Token != first.Ref.Token || up.Ref.Seq != first.Ref.Seq+1 || up.Mode.Access != rd|wr || up.Mode.Deny != wr {
 		t.Fatalf("the owner's second open: %+v, want the first upgraded to read and write, denying write", up)
 	}
-	if err := f.Checks().CheckIO(ctx, a, refOf(first), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, refOf(first), br(0, 1), true); err != nil {
 		t.Errorf("a write through the upgraded open: %v", err)
 	}
 	if _, err := f.open(s, file, OpenRequest{Access: rd}); err != nil {
@@ -1597,7 +1600,7 @@ func TestConfirmOpen(t *testing.T) {
 	}
 	o := res.Open
 	read := func(ref StateRef) error {
-		return f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefOpened, State: ref, Handle: handle(file.ID)}, br(0, 1), false)
+		return f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: ref, Handle: handle(file.ID)}, br(0, 1), false)
 	}
 	if err := read(o.Ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("a read before the confirm: %v, want ErrBadState", err)
@@ -1634,7 +1637,7 @@ func TestIOThroughALockState(t *testing.T) {
 	os := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
 	sres := f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(100, 10)}})
 	io := func(who Caller, st StateRef, off uint64, write bool) error {
-		return f.Checks().CheckIO(ctx, who, OpenRef{Kind: RefLocked, State: st, Handle: handle(file.ID)}, br(off, 1), write)
+		return f.Checks().CheckIO(ctx, who, file, OpenRef{Kind: RefLocked, State: st, Handle: handle(file.ID)}, br(off, 1), write)
 	}
 	if err := io(n, res.Ref, 5, false); err != nil {
 		t.Errorf("a read through the lock state: %v", err)

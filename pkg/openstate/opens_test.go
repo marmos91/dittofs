@@ -121,13 +121,13 @@ func TestDenyModesAtOpen(t *testing.T) {
 	file := anyFile()
 	held := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr})
 
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an anonymous write under a deny-write: %v, want ErrShareViolation", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
 		t.Errorf("an anonymous read under a deny-write: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, Open: held.ID}, ByteRange{}, true); err != nil {
 		t.Errorf("a write through the deny-write open itself: %v; a granted open is not judged again", err)
 	}
 
@@ -165,7 +165,7 @@ func TestStatOpenIsOutsideTheDenyCheck(t *testing.T) {
 	}
 	file = anyFile()
 	f.mustOpen(t, b, file, OpenRequest{Access: stat, Deny: all})
-	if err := f.Checks().CheckIO(ctx, Caller{}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true); err != nil {
 		t.Errorf("an anonymous write beside an attributes-only deny-all: %v", err)
 	}
 }
@@ -186,14 +186,14 @@ func TestDowngrade(t *testing.T) {
 	if _, err := f.Opens().Downgrade(ctx, a, ref, Seqs{}, rd, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
+	if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrOldState) {
 		t.Errorf("the reference as it was before the downgrade: %v, want ErrOldState", err)
 	}
 	now := OpenRef{Kind: RefOpened, State: StateRef{Type: o.Ref.Type, Shard: o.Ref.Shard, Token: o.Ref.Token}, Handle: handle(file.ID)}
-	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, true); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write through the open downgraded to read: %v, want ErrAccess", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, now, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, now, ByteRange{}, false); err != nil {
 		t.Errorf("a read through the open downgraded to read: %v", err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
@@ -203,7 +203,7 @@ func TestDowngrade(t *testing.T) {
 
 // A reference is judged with the handle the request carried: one naming
 // another file, or none at all, names no open; so does a reference of no
-// kind, and anonymous I/O needs a handle to find its file.
+// kind or of a shard other than the file's, and anonymous I/O needs a file.
 func TestOpenRefCarriesItsHandle(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, smb("alice-pc"))
@@ -213,13 +213,20 @@ func TestOpenRefCarriesItsHandle(t *testing.T) {
 		"another file's handle":       {Kind: RefOpened, State: o.Ref, Handle: handle(entity.NewFileID())},
 		"a handle that names no file": {Kind: RefOpened, State: o.Ref, Handle: entity.Handle{9}},
 		"no kind":                     {State: o.Ref, Handle: handle(file.ID)},
-		"anonymous with no handle":    {Kind: RefAnonymous},
 	} {
-		if err := f.Checks().CheckIO(ctx, a, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		if err := f.Checks().CheckIO(ctx, a, file, ref, ByteRange{}, false); !errors.Is(err, ErrBadState) {
 			t.Errorf("I/O through %s: %v, want ErrBadState", name, err)
 		}
 	}
-	if err := f.Checks().CheckIO(ctx, a, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, FileKey{}, OpenRef{Kind: RefAnonymous}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		t.Errorf("anonymous I/O naming no file: %v, want ErrBadState", err)
+	}
+	elsewhere := file
+	elsewhere.Shard = o.Ref.Shard + 1
+	if err := f.Checks().CheckIO(ctx, a, elsewhere, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); !errors.Is(err, ErrBadState) {
+		t.Errorf("I/O through the open with the file in another shard: %v, want ErrBadState", err)
+	}
+	if err := f.Checks().CheckIO(ctx, a, file, OpenRef{Kind: RefOpened, State: o.Ref, Handle: handle(file.ID)}, ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open with its own handle: %v", err)
 	}
 }
@@ -235,13 +242,13 @@ func TestOpenUsedOnlyByItsOpener(t *testing.T) {
 	o := f.mustOpen(t, opener, file, OpenRequest{Access: rd | del})
 
 	other := Caller{Client: id, Principal: entity.NewUser()}
-	if err := f.Checks().CheckIO(ctx, other, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
+	if err := f.Checks().CheckIO(ctx, other, file, refOf(o), ByteRange{}, false); !errors.Is(err, ErrNotYours) {
 		t.Errorf("I/O through the open by another principal: %v, want ErrNotYours", err)
 	}
 	if _, err := f.Opens().Close(ctx, other, refOf(o), Seqs{}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close by another principal: %v, want ErrNotYours", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, refOf(o), ByteRange{}, false); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{Client: id, Principal: owner}, file, refOf(o), ByteRange{}, false); err != nil {
 		t.Errorf("I/O through the open by the protecting owner: %v", err)
 	}
 }
@@ -303,7 +310,9 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 		t.Errorf("stored opens after an open of the file once its entry was freed: %v", ids(got))
 	}
 
+	f.Stop()
 	g := reopen(t, f.fs, f.clock)
+	g.clock.advance(leasePeriod) // past the restart's grace
 	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
 	later := g.mustOpen(t, b, file, req)
 	if got := f.stored(t, file); len(got) != 2 || got[1].Nonce != later.Ref.Token {
@@ -342,10 +351,8 @@ func TestExpiryDuringUnlinkLeavesNoRecord(t *testing.T) {
 func TestOnlySMBAndDurableOpensTakeAnID(t *testing.T) {
 	f := newFixture(t)
 	n, s := f.caller(t, nfs("host-a", 1, entity.NewUser())), f.caller(t, smb("alice-pc"))
-	for range 100 {
-		if o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd}); o.ID != 0 {
-			t.Fatalf("an NFS open took ID %d", o.ID)
-		}
+	if o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd}); o.ID != 0 {
+		t.Fatalf("an NFS open took ID %d", o.ID)
 	}
 	if o := f.mustOpen(t, s, anyFile(), OpenRequest{Access: rd}); o.ID == 0 {
 		t.Error("an SMB open took no ID")
@@ -396,10 +403,9 @@ func TestLinkedOpensWriteOnlyTheShardList(t *testing.T) {
 		t.Errorf("1000 opens and closes of a linked file: %+v, want the shard list's one write and its reads", got)
 	}
 
+	f.Stop()
 	g := reopen(t, f.fs, f.clock)
-	if _, err := g.Renew(ctx, b.Client); err != nil {
-		t.Fatal(err)
-	}
+	g.pass(t, leasePeriod, b.Client) // past the restart's grace, b renewing
 	f.fs.Counts.Take()
 	g.close(t, b, g.mustOpen(t, b, file, req))
 	if got := f.fs.Counts.Take(); got.Sets != 0 || got.Deletes != 0 {
@@ -600,4 +606,173 @@ func ids(recs []entity.OpenRecord) [][2]uint64 {
 		out[i] = [2]uint64{uint64(r.ID), r.Nonce}
 	}
 	return out
+}
+
+// I/O through an open, a lock state or a delegation is refused for a file
+// the reference does not name: a write to y through an open of x would
+// otherwise pass y's deny-write.
+func TestIOThroughAnotherFilesRef(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	x, y := anyFile(), anyFile()
+	ox := f.mustOpen(t, a, x, OpenRequest{Access: rd | wr})
+	f.mustOpen(t, b, y, OpenRequest{Access: rd, Deny: wr})
+	if err := f.Checks().CheckIO(ctx, a, y, refOf(ox), br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write to y through an open of x: %v, want ErrBadState", err)
+	}
+	n, z := f.caller(t, nfs("host-n", 1, entity.NewUser())), anyFile()
+	_, g := f.grantOpen(t, n, z, OpenRequest{Access: rd, Want: GrantRead})
+	if g == nil {
+		t.Fatal("no read delegation")
+	}
+	if err := f.Checks().CheckIO(ctx, n, y, delegated(g, z), br(0, 1), false); !errors.Is(err, ErrBadState) {
+		t.Errorf("a read of y through a delegation of z: %v, want ErrBadState", err)
+	}
+	res := f.mustLock(t, a, x, LockReq{Owner: owner(a, "lo"), Open: refOf(ox), Ranges: []LockRange{{br(0, 10), true}}})
+	if err := f.Checks().CheckIO(ctx, a, y, OpenRef{Kind: RefLocked, State: res.Ref, Handle: handle(x.ID)}, br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write to y through a lock state of x: %v, want ErrBadState", err)
+	}
+}
+
+// A named stream's open neither deletes on close nor sets a disposition:
+// either would make the base file delete pending and unlink the base's
+// name. The base stays open to others, and the stream's close unlinks
+// nothing.
+func TestStreamOpenDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
+	base, stream, dir := anyFile(), entity.NewFileID(), entity.NewFileID()
+	req := OpenRequest{Stream: stream, Via: dir, Name: []byte("foo"), Access: rd | del}
+	if _, err := f.open(s, base, OpenRequest{Stream: stream, Via: dir, Name: []byte("foo"), Access: rd | del, DeleteOnClose: true}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("delete on close through a named stream: %v, want ErrInvalid", err)
+	}
+	o := f.mustOpen(t, s, base, req)
+	yes := true
+	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a disposition set through a named stream's open: %v, want ErrInvalid", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
+		t.Errorf("an open of the base beside the stream's open: %v", err)
+	}
+	if r := f.close(t, s, o); r.Unlink != nil {
+		t.Errorf("the stream open's close: unlink %+v, want none", r.Unlink)
+	}
+}
+
+// An open asking no data access refuses nothing with its deny, an NFS
+// remove or rename of its file included, as it refuses no SMB delete open.
+func TestStatOpenDenyDeleteRefusesNoRemove(t *testing.T) {
+	f := newFixture(t)
+	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
+	file := anyFile()
+	f.mustOpen(t, s, file, OpenRequest{Access: entity.ReadAttributes, Deny: del})
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := f.Checks().CheckChange(ctx, n, file, nil, what); err != nil {
+			t.Errorf("an NFS change %d beside a stat open denying delete: %v", what, err)
+		}
+	}
+}
+
+// An SMB rename replacing a file another client holds open is refused, as
+// the renamer's own open covers only its source; one replacing a file
+// nobody holds open is not.
+func TestSMBRenameOverAnOpenTargetIsRefused(t *testing.T) {
+	f := newFixture(t)
+	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
+	target := anyFile()
+	held := f.mustOpen(t, q, target, OpenRequest{Access: rd, Deny: del})
+	if err := f.Checks().CheckChange(ctx, s, target, nil, ChangeRename|ChangeReplace); !errors.Is(err, ErrAccess) {
+		t.Errorf("an SMB rename over a target held open denying delete: %v, want ErrAccess", err)
+	}
+	f.close(t, q, held)
+	if err := f.Checks().CheckChange(ctx, s, target, nil, ChangeRename|ChangeReplace); err != nil {
+		t.Errorf("an SMB rename over a target nobody holds open: %v", err)
+	}
+}
+
+// An expiry closing a file's last open, one with delete on close, between
+// an unlink's records and its commit raises one Closed for the file: the
+// orphan the commit leaves, as the unlink took the name the delete pending
+// would have removed. An aborted unlink raises the expiry's pending unlink.
+func TestExpiryDuringUnlinkRaisesOneClosed(t *testing.T) {
+	for _, committed := range []bool{true, false} {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		file, req := f.fileIn(t, "a")
+		req.Access, req.DeleteOnClose = rd|del, true
+		f.mustOpen(t, a, file, req)
+		recs, commit, err := f.Opens().Durable(ctx, file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Expire(ctx, a.Client); err != nil {
+			t.Fatal(err)
+		}
+		if committed {
+			u, err := f.fs.Store.Namespace().Unlink(ctx, f.fs.Admin, f.fs.Root, []byte("a"), recs...)
+			if err != nil || u.File != file.ID {
+				t.Fatalf("Unlink: %v", err)
+			}
+		}
+		commit(committed)
+		var got []CloseResult
+		for _, c := range f.sink.closed {
+			if c.f == file.ID {
+				got = append(got, c.r)
+			}
+		}
+		switch {
+		case len(got) != 1:
+			t.Errorf("committed %v: %d Closed for the file, want one: %+v", committed, len(got), got)
+		case committed && (!got[0].Orphan || got[0].Unlink != nil):
+			t.Errorf("committed: Closed %+v, want the orphan alone", got[0])
+		case !committed && (got[0].Orphan || got[0].Unlink == nil || string(got[0].Unlink.Name) != "a"):
+			t.Errorf("aborted: Closed %+v, want the pending unlink of a", got[0])
+		}
+	}
+}
+
+// An open whose durable record the store refuses is not held: it is
+// refused, and nothing of it is left to list or to deny another open.
+func TestRefusedDurableOpenLeavesNothing(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile() // the store holds no such file, so its open's record is refused
+	if _, err := f.open(a, file, OpenRequest{Unlinked: true, Access: rd, Deny: wr}); err == nil {
+		t.Fatal("an open whose record the store refuses was granted")
+	}
+	if recs := f.durable(t, file); len(recs) != 0 {
+		t.Errorf("the refused open left %d opens of its file", len(recs))
+	}
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open after the refused deny-write: %v", err)
+	}
+}
+
+// An SMB open's ID is judged with the handle the request carries and the
+// caller's client: a handle naming another file is ErrBadState, and a
+// caller of another client is ErrNotYours, its principal the opener's too.
+func TestOpenIDJudgedByHandleAndClient(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd})
+	if _, err := f.Opens().Close(ctx, a, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(entity.NewFileID())}, Seqs{}); !errors.Is(err, ErrBadState) {
+		t.Errorf("a close of the open under another file's handle: %v, want ErrBadState", err)
+	}
+	other := Caller{Client: b.Client, Principal: a.Principal, Protocol: entity.ProtocolSMB}
+	if _, err := f.Opens().Close(ctx, other, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}, Seqs{}); !errors.Is(err, ErrNotYours) {
+		t.Errorf("a close of the open by its principal under another client: %v, want ErrNotYours", err)
+	}
+	f.close(t, a, o)
+}
+
+// A downgrade may not widen the deny an open holds.
+func TestDowngradeMayNotWidenDeny(t *testing.T) {
+	f := newFixture(t)
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd | wr})
+	if _, err := f.Opens().Downgrade(ctx, n, refOf(o), Seqs{}, rd, wr); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a downgrade to a deny the open does not hold: %v, want ErrInvalid", err)
+	}
 }

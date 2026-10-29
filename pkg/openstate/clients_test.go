@@ -432,7 +432,7 @@ func TestRebootRaceLeavesOneID(t *testing.T) {
 	for i := range 2000 {
 		name := fmt.Sprint("host-", i)
 		old := f.connect(t, nfs(name, 1, owner))
-		g := reopen(t, f.fs, f.clock)
+		g := reopenServing(t, f.fs, f.clock, nil)
 		file := entity.NewFileID()
 		ref := mintIn(t, g.Table, file, old, 0)
 		p, err := g.Propose(ctx, nfs(name, 2, owner), addr)
@@ -544,7 +544,7 @@ func TestStartAndStop(t *testing.T) {
 		"Rebind":           func() error { return g.Rebind(ctx, Caller{Client: id}, entity.NodeID{1}) },
 		"FreeState":        func() error { return g.Recovery().FreeState(ctx, Caller{Client: id}, StateRef{}) },
 		"CheckIO": func() error {
-			return g.Checks().CheckIO(ctx, Caller{Client: id}, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
+			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
 		},
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
 	}
@@ -682,5 +682,27 @@ func TestExpireIsNodeLocal(t *testing.T) {
 	}
 	if f.current(id) {
 		t.Error("Expire left the client current here, so it could still be granted an open")
+	}
+}
+
+// A reboot ends the old ID at once: it is granted no open, and the opens it
+// held are released, each file a close left to unlink raised Closed.
+func TestRebootEndsTheOldID(t *testing.T) {
+	f := newFixture(t)
+	c := nfs("host-a", 1, entity.NewUser())
+	old := f.caller(t, c)
+	marked, dir := anyFile(), entity.NewFileID()
+	f.mustOpen(t, old, marked, OpenRequest{Via: dir, Name: []byte("m"), Access: del, DeleteOnClose: true})
+	c.Boot = [8]byte{2}
+	f.connect(t, c)
+	if _, err := f.open(old, anyFile(), OpenRequest{Access: rd}); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("an open by the ID a reboot ended: %v, want ErrStaleClient", err)
+	}
+	var unlinked bool
+	for _, cl := range f.sink.closed {
+		unlinked = unlinked || cl.f == marked.ID && cl.r.Unlink != nil && cl.r.Unlink.Parent == dir
+	}
+	if !unlinked {
+		t.Errorf("Closed after the reboot: %+v, want the marked file's unlink", f.sink.closed)
 	}
 }
