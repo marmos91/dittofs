@@ -538,10 +538,11 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 // r's open is judged; a create whose version is not above the open's, both
 // versioned, is refused. What the close leaves the service goes to out.
 //
-// decision: a create refused for its version is ErrShareViolation, as no
-// neutral error names an app instance's; the adapter answers it
-// STATUS_FILE_FORCED_CLOSED, knowing it sent a version. Name one if a
-// protocol is served that answers it otherwise.
+// decision: a create refused for its version is ErrInstanceVersion, which
+// errors.Is ErrShareViolation, so the service maps it as a deny conflict
+// unless it tells the two apart, as the SMB adapter does to answer
+// STATUS_FILE_FORCED_CLOSED. Give it a neutral error of its own if another
+// protocol is served that names it.
 //
 // decision: the open replaced is closed first, as MS-SMB2 closes it, so a
 // create refused after it, for another open's deny mode or a failed write,
@@ -560,7 +561,7 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 		}
 		if v, was := k.Instance.Version, ok.Instance.Version; v != ([2]uint64{}) && was != ([2]uint64{}) &&
 			(v[0] < was[0] || v[0] == was[0] && v[1] <= was[1]) {
-			return ErrShareViolation
+			return ErrInstanceVersion
 		}
 		t.closeByTable(ctx, e, o, out)
 	}

@@ -189,8 +189,9 @@ func TestAppInstanceReplacesItsPredecessor(t *testing.T) {
 		"the open's own client":        {a, func() OpenRequest { q := as(a, 6, true); q.Durable.Create[1] = 1; return q }()},
 		"a version not above the open": {b, as(b, 5, true)},
 	} {
-		if _, err := f.open(q.who, file, q.r); !errors.Is(err, ErrShareViolation) {
-			t.Errorf("%s: %v, want ErrShareViolation", what, err)
+		_, err := f.open(q.who, file, q.r)
+		if !errors.Is(err, ErrShareViolation) || errors.Is(err, ErrInstanceVersion) != (what == "a version not above the open") {
+			t.Errorf("%s: %v, want ErrShareViolation, ErrInstanceVersion only for the version", what, err)
 		}
 	}
 	if n := len(f.entryOf(file.ID).opens); n != 1 {
