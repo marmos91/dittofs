@@ -77,10 +77,13 @@ func (v checks) CheckIO(ctx context.Context, who Caller, o OpenRef, r ByteRange,
 		return t.recallOthers(e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) }, others, &out)
 	}
 	// unopened is I/O through no open: anonymous, or through a delegation
-	// own holds.
+	// own holds, which its holder's own deny modes do not refuse.
 	unopened := func(e *entry, own func(*grant) bool) error {
 		var hs []*open
 		for _, h := range e.opens {
+			if o.Kind == RefDelegated && h.Client == who.Client {
+				continue
+			}
 			if !conflict.Shares(want, 0, h.Mode.Access, h.Mode.Deny) {
 				hs = append(hs, h)
 			}

@@ -1163,3 +1163,18 @@ func TestOplockBreaksToLevelIIOrNone(t *testing.T) {
 		t.Fatalf("recalls %+v, want the oplock to R", r)
 	}
 }
+
+// A delegation's I/O is not judged against its holder's own deny mode: a
+// client denying writes to others writes through its own write delegation.
+func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
+	f := newFixture(t)
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	file := anyFile()
+	_, g := f.grantOpen(t, n, file, OpenRequest{Access: rd | wr, Deny: wr, Want: rw})
+	if g == nil || g.Kind != rw {
+		t.Fatalf("a write delegation: %+v", g)
+	}
+	if err := f.Checks().CheckIO(ctx, n, delegated(g, file), br(0, 1), true); err != nil {
+		t.Errorf("a write through the holder's own delegation: %v", err)
+	}
+}
