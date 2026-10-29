@@ -328,7 +328,8 @@ func testCloseRacesLockChange(t *testing.T, kvo Opener) {
 
 // RFC 14 §9.4: delete pending is stored only while the file has a
 // persistent open, and goes with the unlink of the entry it names, not
-// with the unlink of another name of the file.
+// with the unlink of another name of the file, and with the close of the
+// file's last persistent open.
 func testDeletePending(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, opens := f.s.Namespace(), f.s.Opens()
@@ -368,6 +369,24 @@ func testDeletePending(t *testing.T, kvo Opener) {
 	must(t, opens.ClearDeletePending(ctx, f.share.ID, other.ID))
 	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
 		t.Errorf("after a clear: %v, %v", ok, err)
+	}
+
+	// It goes with the file's last persistent open, a volatile one left or
+	// not: nothing durable holds the promise past that close.
+	q2 := f.newOpen(other.ID)
+	q2.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, q2))
+	must(t, opens.Put(ctx, f.share.ID, f.newOpen(other.ID)))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeleteRecord{Parent: rootID, Name: []byte("c")}))
+	_, err = opens.Delete(ctx, f.share.ID, other.ID, q.ID)
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || !ok {
+		t.Errorf("a close while another persistent open holds the file dropped it: %v, %v", ok, err)
+	}
+	_, err = opens.Delete(ctx, f.share.ID, other.ID, q2.ID)
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
+		t.Errorf("the last persistent open's close kept it: %v, %v", ok, err)
 	}
 }
 
