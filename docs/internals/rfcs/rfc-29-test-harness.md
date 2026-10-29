@@ -578,7 +578,7 @@ suites:
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as pynfs's baseline-knfsd.sh sets knfsd up
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # the kernel's server, set up as pynfs needs it
         tier: manual
         blocking: false
   wpts:
@@ -1775,8 +1775,10 @@ file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
   failures are the tests both servers fail, its new failures those only the kernel's server fails,
   and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
-  results are a run's like any other's; pynfs's `baseline-knfsd.sh` and the `baseline-knfsd.md`
-  it writes go with `nfs-pynfs.yml`'s baseline job (§8 step 3).
+  results are a run's like any other's. In CI, a dispatch of `tests.yml` at the `manual` tier runs
+  it, its cells non-blocking, on a runner that installs the kernel's server and stops the one the
+  package starts. It replaced `nfs-pynfs.yml`, pynfs's `baseline-knfsd.sh` and the
+  `baseline-knfsd.md` it wrote (§8 step 3).
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
@@ -2032,9 +2034,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
      that keeps its check name can't report beside an old job of that name. So do AD-DC, the
      performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
-     with the mailbox job files' parse. When pynfs's cells move, `nfs-pynfs.yml` keeps only its
-     knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8), and leaves
-     `ci-health.yml`'s lists, since it no longer tests a commit.
+     with the mailbox job files' parse. When pynfs's cells moved, `nfs-pynfs.yml` kept only its
+     knfsd baseline, on dispatch, and left `ci-health.yml`'s lists, since it no longer tested a
+     commit, until `dt run pynfs --knfsd` replaced it (§4.8).
    - `ci-health.yml` watches `tests.yml` from its own list once `suites.json` goes (§4.1), and
      re-runs no workflow's failed jobs once `conformance.yml` goes, since `dt`'s retry replaces
      that.
