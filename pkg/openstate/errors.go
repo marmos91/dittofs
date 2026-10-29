@@ -55,9 +55,9 @@ type DelayError struct{ Cause DelayCause }
 //
 // decision: each cause is one RFC 17's service carries on, so the adapters
 // answer it as that one: DelayRecall as DelayRecall; DelayResources, a cap
-// reached, as DelayHoldBudget, answered at once (NFS4ERR_DELAY,
+// reached, as DelayResources, answered at once (NFS4ERR_DELAY,
 // STATUS_INSUFFICIENT_RESOURCES); DelayFrozen as DelayFrozen; DelayCommit,
-// a record the store has not landed, as DelayStoreStall; and DelayConflict
+// a record the store has not landed, as DelayCommit; and DelayConflict
 // as DelayConflict, which only a numbered NFSv4.0 owner's request meets, so
 // it is NFS's alone and answered NFS4ERR_DELAY.
 // Split a cause here if an adapter is found needing to answer two of its
