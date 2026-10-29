@@ -549,6 +549,9 @@ func TestStartAndStop(t *testing.T) {
 		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
 		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },
 		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
+		"DropShare":   func() error { return g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}) },
+		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
+		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
 		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
 	}
 	check := func(when string) {
