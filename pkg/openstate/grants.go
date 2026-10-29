@@ -187,11 +187,9 @@ func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool 
 // that would start recalls past maxUnsent is ErrDelay with DelayResources, and
 // starts and narrows none.
 //
-// A grant covering only disconnected durable opens that are not persistent
-// is not recalled: no session is left to answer, so those opens close
-// instead, as a close does. A recall that changes a lease's epoch, or its
-// kind as it is sent, is written with the persistent opens it covers before
-// it is started, and a refused write starts none.
+// A recall that changes a lease's epoch, or its kind as it is sent, is
+// written with the persistent opens it covers before it is started, and a
+// refused write starts none.
 func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
 	type recall struct {
 		g       *grant
@@ -215,7 +213,7 @@ func (t *Table) recallOthers(ctx context.Context, e *entry, own func(*grant) boo
 		// open with NONE, after which 3.3.5.9.7 refuses its reconnect, so
 		// keeping it would only hold its deny mode. Recall instead if a client
 		// with another live session is seen reconnecting such an open.
-		if len(hs) > 0 && !slices.ContainsFunc(hs, func(h *open) bool { return h.parked == 0 || h.persistent() }) {
+		if !slices.ContainsFunc(hs, func(h *open) bool { return h.parked == 0 || h.persistent() }) {
 			for _, h := range hs {
 				t.closeByTable(ctx, e, h, out)
 			}
@@ -401,10 +399,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, fsm: grantfsm.New(k, epoch), counted: true}
-	if r.Lease != (LeaseKey{}) {
-		g.parent = r.Parent
-	}
+	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
