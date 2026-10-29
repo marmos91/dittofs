@@ -1006,6 +1006,32 @@ func exitCode(err error) (int, error) {
 	return 0, nil
 }
 
+// Container reports whether dt run --in auto moves the run into dtc: a cell
+// that can't run here can there, as the container meets every need check
+// finds missing, and no cell needs what is met here but not in the container,
+// as another platform. A cell dt can't run anywhere yet counts for neither.
+func Container(cells []Cell, check func(need string) error) bool {
+	move := false
+	for _, c := range cells {
+		if unsupported(c.Unit) != "" {
+			continue
+		}
+		missing, there := false, true
+		for _, n := range c.Needs {
+			here := check(n) == nil
+			inside := needs.InContainer(n) || strings.HasPrefix(n, "service:") && here
+			if here && !inside {
+				return false
+			}
+			if !here {
+				missing, there = true, there && inside
+			}
+		}
+		move = move || missing && there
+	}
+	return move
+}
+
 // Blocked says why dt can't run a cell of suite u that needs list on this
 // machine, or returns "" when it can. What dt doesn't do yet comes first, and
 // then each need that check finds unmet, as "need: reason"; unmet names those

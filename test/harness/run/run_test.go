@@ -783,3 +783,43 @@ func TestFirstScenarioLimit(t *testing.T) {
 		}
 	}
 }
+
+// --in auto moves a run to dtc when a cell needs what is missing here and the
+// container gives, unless a cell needs what is met here and the container
+// lacks. A cell dt can't run anywhere yet doesn't move it.
+func TestContainer(t *testing.T) {
+	missing := func(unmet ...string) func(string) error {
+		return func(n string) error {
+			if slices.Contains(unmet, n) {
+				return errors.New("missing")
+			}
+			return nil
+		}
+	}
+	cell := func(needs ...string) Cell {
+		c := Cell{Unit: &registry.Suite{}}
+		c.Needs = needs
+		return c
+	}
+	both := cell("linux", "nfs-client", "smb-client")
+	both.Unit.Fixture = &registry.Fixture{NFS: registry.NFS{Version: "4.1"}, SMB: registry.SMB{Enabled: true, Mount: true}}
+	for _, c := range []struct {
+		name  string
+		cells []Cell
+		unmet []string
+		want  bool
+	}{
+		{"Linux missing", []Cell{cell("linux", "root")}, []string{"linux"}, true},
+		{"a tool the image installs", []Cell{cell("nfs-client", "service:localstack")}, []string{"nfs-client"}, true},
+		{"everything met", []Cell{cell("linux")}, nil, false},
+		{"a cell needs macOS, met here", []Cell{cell("linux"), cell("macos")}, []string{"linux"}, false},
+		{"missing in the container too", []Cell{cell("host:dedicated")}, []string{"host:dedicated"}, false},
+		{"a cell dt can't run anywhere", []Cell{both}, []string{"linux", "nfs-client", "smb-client"}, false},
+		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
+		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
+	} {
+		if got := Container(c.cells, missing(c.unmet...)); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
