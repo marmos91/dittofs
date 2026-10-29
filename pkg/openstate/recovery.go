@@ -27,7 +27,9 @@ type Recovery interface {
 	// reclaim, and every other request for state is ErrGrace. Grace ends
 	// early once every such client has finished reclaiming or has ended. The
 	// restart-notice number is raised before grace when an NLM host is
-	// named, and each client told by Revoked is told then.
+	// named, and each client told by Revoked is told then, shard by shard:
+	// the service answers no NLM request until it has begun every shard it
+	// serves.
 	ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error
 	// ReclaimComplete ends the caller's reclaim in the grace instances it
 	// was shown, and in no later one of the same shard. A client that does
@@ -53,7 +55,7 @@ type served struct {
 	// reclaim is the clients its records named when grace began: those that
 	// may reclaim here and have not finished.
 	reclaim map[entity.ClientID]reclaimer
-	// guarded is set while one of them can hold a deny mode or a mandatory
+	// guarded is set while one of them can reclaim a deny mode or a mandatory
 	// lock: anonymous I/O then waits for grace's end.
 	guarded bool
 }
@@ -71,7 +73,7 @@ type reclaimer struct {
 func (sh *served) inGrace(now time.Duration) bool { return sh.ends != 0 && now < sh.ends }
 
 // settle ends sh's grace early once no client it waits for is left, and
-// lifts the wait of anonymous I/O once none left can hold a deny mode; the
+// lifts the wait of anonymous I/O once none left can reclaim a deny mode; the
 // caller holds cmu.
 //
 // decision: a client that recovers by reconnecting counts as finished at
