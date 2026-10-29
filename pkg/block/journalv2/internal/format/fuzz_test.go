@@ -94,6 +94,19 @@ func FuzzSegmentHeader(f *testing.F) {
 	rechecksumHeader(foreignReserved)
 	f.Add(foreignReserved)
 
+	// This journal's own header with non-zero reserved bytes, and one with
+	// an id of zero: both verify their checksum, so both reach the field
+	// checks and are refused as damage, never as foreign.
+	ownReserved := AppendSegmentHeader(nil, testSegmentHeader)
+	copy(ownReserved[6:8], []byte{0xff, 0xff})
+	rechecksumHeader(ownReserved)
+	f.Add(ownReserved)
+
+	ownZero := AppendSegmentHeader(nil, testSegmentHeader)
+	clear(ownZero[24:32])
+	rechecksumHeader(ownZero)
+	f.Add(ownZero)
+
 	f.Add([]byte{})
 	f.Add(make([]byte, SegmentHeaderSize))
 
@@ -107,6 +120,14 @@ func FuzzSegmentHeader(f *testing.F) {
 			if got, want := binary.LittleEndian.Uint32(in[44:48]), wantCRC(in[0:44]); got != want {
 				t.Fatalf("decoded bytes whose checksum is 0x%08x, want the CRC32C of [0,44): 0x%08x", got, want)
 			}
+			// A clean decode is by construction this journal's own: the
+			// identity matched, and a header of no segment is damage.
+			if h.Identity != testIdentity {
+				t.Fatalf("decoded a header under identity % x, want the identity it was opened with % x", h.Identity, testIdentity)
+			}
+			if h.ID == 0 {
+				t.Fatalf("decoded a header with a segment id of 0, want 1 or more")
+			}
 			if got := AppendSegmentHeader(nil, h); !slices.Equal(got, in) {
 				t.Fatalf("AppendSegmentHeader =\n% x\nwant the input\n% x", got, in)
 			}
@@ -115,9 +136,11 @@ func FuzzSegmentHeader(f *testing.F) {
 
 		if errors.Is(err, ErrForeign) {
 			// A foreign header is returned filled, so recovery can report
-			// whose it is: every field must say what the bytes hold. The
-			// reserved bytes are not reproduced — the header has no field
-			// for them, and another journal's are not this one's to read.
+			// whose it is: every field must say what the bytes hold, and
+			// the identity it names is never the one it was opened with.
+			if h.Identity == testIdentity {
+				t.Fatalf("a header reported foreign under the identity it was opened with")
+			}
 			if h.Identity != core.JournalID(in[8:24]) {
 				t.Fatalf("a foreign header returned the identity % x, want the input's % x", h.Identity, in[8:24])
 			}

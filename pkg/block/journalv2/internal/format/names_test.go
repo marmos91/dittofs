@@ -19,14 +19,15 @@ func TestSegmentNameRoundTrips(t *testing.T) {
 		{"one", 1},
 		{"max", math.MaxUint64},
 	} {
-		if got := SegmentName(id.id); got != wantSegmentName(id.id, ".seg") {
-			t.Errorf("SegmentName(%s) = %q", id.name, got)
+		want := wantSegmentName(id.id, ".seg")
+		if got := SegmentName(id.id); got != want {
+			t.Errorf("SegmentName(%s) = %q, want %q", id.name, got, want)
 		}
 		if kind, got := ClassifyName(SegmentName(id.id)); kind != NameSegment || got != id.id {
-			t.Errorf("ClassifyName(SegmentName(%s)) = (%v, %d)", id.name, kind, got)
+			t.Errorf("ClassifyName(SegmentName(%s)) = (%v, %d), want (segment, %d)", id.name, kind, got, id.id)
 		}
 		if kind, got := ClassifyName(SpareName(id.id)); kind != NameSpare || got != id.id {
-			t.Errorf("ClassifyName(SpareName(%s)) = (%v, %d)", id.name, kind, got)
+			t.Errorf("ClassifyName(SpareName(%s)) = (%v, %d), want (spare, %d)", id.name, kind, got, id.id)
 		}
 	}
 
@@ -80,7 +81,13 @@ func TestClassifyNameRefusesANameItCouldNotHaveProduced(t *testing.T) {
 		"-0000000000000000001.seg",
 		"18446744073709551616.seg", // overflows uint64
 		"99999999999999999999.seg",
-		"0000000000000000000a.seg",     // not a digit
+		"0000000000000000000a.seg", // not a digit
+		"0x000000000000000001.seg", // a C prefix is not a digit
+		"0b000000000000000001.spare.tmp",
+		"0000000000_000000001.seg",     // an underscore
+		" 0000000000000000001.seg",     // a leading space
+		"0000000000000000001 .seg",     // a trailing space
+		"00000000000000000001.seg\x00", // a NUL
 		"00000000000000000001.SEG",     // case matters
 		"00000000000000000001.seg.tmp", // a suffix too many
 		"00000000000000000001.tmp",

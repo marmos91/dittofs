@@ -41,32 +41,49 @@ func AppendSegmentHeader(dst []byte, h SegmentHeader) []byte {
 
 // DecodeSegmentHeader reads a segment header, opened under journal's
 // identity. An error matching ErrDamaged means the bytes are not a
-// version-1 segment header; one matching ErrUnknownVersion means they name
-// a version this binary does not read; one matching ErrForeign means they
-// verify but belong to another journal, and it comes with the decoded
-// header, so the caller can report whose segment it is.
+// version-1 segment header; one matching ErrUnknownVersion means it verifies
+// but names a version this binary does not read; one matching ErrForeign
+// means it verifies and belongs to another journal, and it comes with the
+// decoded header, so the caller can report whose segment it is.
+//
+// The returned header's ID is not compared with the id in the segment's
+// file name: the caller must, and a mismatch is what an interrupted recycle
+// leaves — a file whose old header still names the segment it used to be.
 func DecodeSegmentHeader(b []byte, journal core.JournalID) (SegmentHeader, error) {
 	h := SegmentHeader{}
 
-	// decision: the version is read before length and checksum, as the
-	// format's rules order it, so a bit flipped in a version-1 header's
-	// version field reports an unknown version rather than damage; both
-	// fail the open. A later version may have another size, so its length
-	// and checksum are never judged by version 1's rules.
 	if len(b) < 6 {
 		return h, fmt.Errorf("%w: %d bytes, no version to read", ErrDamaged, len(b))
 	}
 	if string(b[0:4]) != "DJH1" {
 		return h, fmt.Errorf("%w: magic %q, want %q", ErrDamaged, b[0:4], "DJH1")
 	}
-	if version := binary.LittleEndian.Uint16(b[4:6]); version != FormatVersion {
-		return h, fmt.Errorf("%w: version %d, want %d", ErrUnknownVersion, version, FormatVersion)
-	}
 	if len(b) != SegmentHeaderSize {
+		// decision: a header of another length is judged for its version
+		// first, as the format's rules order it: a later version may change
+		// the size, so its length is never judged by version 1's rules.
+		version := binary.LittleEndian.Uint16(b[4:6])
+		if version != FormatVersion {
+			return h, fmt.Errorf("%w: version %d, want %d", ErrUnknownVersion, version, FormatVersion)
+		}
 		return h, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SegmentHeaderSize)
 	}
+	// decision: a header of version 1's size is judged by its checksum
+	// before its version field: a header whose checksum does not verify is
+	// damage whatever its version field says, because a damaged segment is
+	// reported and its records still attached while an unknown version
+	// fails the open; only a header that verifies can name a version this
+	// binary does not know.
 	if got, want := binary.LittleEndian.Uint32(b[44:48]), crc32c(b[0:44]); got != want {
 		return h, fmt.Errorf("%w: checksum 0x%08x, want the CRC32C of [0,44): 0x%08x", ErrDamaged, got, want)
+	}
+	// The comparison is against the one version this package reads, the
+	// same as "not newer than the format file's" while only version 1
+	// exists: the format file has named version 1 since the journal was
+	// created, so a header that verifies and reads version 1 is in step
+	// with any format file a version-1 binary could have written.
+	if version := binary.LittleEndian.Uint16(b[4:6]); version != FormatVersion {
+		return h, fmt.Errorf("%w: version %d, want %d", ErrUnknownVersion, version, FormatVersion)
 	}
 
 	h.Identity = core.JournalID(b[8:24])
