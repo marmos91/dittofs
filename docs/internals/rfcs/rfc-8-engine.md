@@ -420,7 +420,7 @@ type Clock interface {
 // done and makes nothing durable. A tear of any other operation, or a loss of
 // one or with err set, is a mistake in the check, which the seam refuses.
 type Fault interface {
-    At(op string, key []byte) (delay time.Duration, err error, tearAfter int)
+    At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
 ```
 
