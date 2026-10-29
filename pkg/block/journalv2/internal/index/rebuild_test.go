@@ -664,9 +664,19 @@ func TestRebuildCountersAndBuckets(t *testing.T) {
 	})
 
 	t.Run("a floor above every version lifts every bucket", func(t *testing.T) {
-		fs, _, b, id := mk()
+		fs, ctr, b, id := mk()
 		if err := b.Finish(ver(90)); err != nil {
 			t.Fatal(err)
+		}
+		// The floor half of the counters' rule: the next version exceeds
+		// the floor too, not only the fed versions. A rebuild that raised
+		// the counters past the disk alone would reissue a version the
+		// floor's files have already seen.
+		if next := ctr.NextVersion(); next.Compare(ver(90)) <= 0 {
+			t.Fatalf("NextVersion() = %v, want above the floor 90", next)
+		}
+		if seq, err := ctr.NextSeq(); err != nil || seq <= 5 {
+			t.Fatalf("NextSeq() = %d, %v, want above the fed seqs", seq, err)
 		}
 		if got := fs.asOf(id); got != ver(90) {
 			t.Fatalf("asOf = %v, want the floor's counter 90", got)

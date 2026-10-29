@@ -215,17 +215,20 @@ func (b *rebuilder) Feed(r Record) error {
 // Retain buffers a retained piece the caller computed, with the offloaded
 // bit the caller's rules gave it: a mark of held content never sets or
 // clears it, because the mark names the offered bytes, which are held or
-// filled, and not the superseded ones under them.
+// filled, and not the superseded ones under them. The caller owns the bits
+// of the pieces it hands over, offloaded and unmark records included: it
+// re-reads those records alongside the rest, since its rules — not the
+// replay's — decide which of them name kept content.
 //
 // decision: retained extents enter the rebuild by injection, not by the
-// builder's interpreting hold, unhold and stamp records. Which cuts are
-// live, which versions a stamp has committed and which supersedes keep
-// content are the snapshot-hold rules, and no requirement of the index
-// covers them, so the caller that has read those records decides what is
-// retained and hands the pieces over; the builder adds them and applies the
-// offloaded-bit pass to them like held pieces. Overturned when the hold
-// rules land and need the superseded pieces the replay cuts, in which case
-// the replay grows a hook at the cut computing what a hold keeps.
+// builder's interpreting hold, unhold, stamp, offloaded or unmark records.
+// Which cuts are live, which versions a stamp has committed, which
+// supersedes keep content and which offloaded record covers kept content
+// are the snapshot-hold rules, and no requirement of the index covers
+// them, so the caller that has read those records decides what is retained
+// and hands the pieces over with their bits. Overturned when the hold rules
+// land and need the superseded pieces the replay cuts, in which case the
+// replay grows a hook at the cut computing what a hold keeps.
 //
 // Once Finish has begun the piece is refused with errRebuilt: a piece the
 // shard has already drained would never reach the file it names.
@@ -466,8 +469,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// piece's version decides its bit, which is the fold of the format's
 	// recovery rule. A mark never touches content newer than its version,
 	// and a piece's own record seq plays no part: a repack copy keeps the
-	// bit its content had. Each mark reaches the retained pieces too, where
-	// an offloaded record can cover content a superseding record left.
+	// bit its content had.
 	slices.SortStableFunc(marks, func(a, c bufRec) int {
 		return cmp.Or(cmp.Compare(a.numbers.Seq, c.numbers.Seq), compareBufRec(a, c))
 	})
