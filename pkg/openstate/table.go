@@ -87,13 +87,12 @@ const (
 	cappedRanges
 	cappedOwners
 	cappedWaiters
-	cappedWatches
 )
 
 // perClient is the most of each capped kind one client holds here.
 //
-// decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024
-// waiters and 1,024 watches per client. BenchmarkHeapPerState measures about
+// decision: 16,384 opens, 65,536 lock ranges, 4,096 lock owners and 1,024
+// waiters per client. BenchmarkHeapPerState measures about
 // 865 B an open, 25 B a lock range and 166 B a client, so a client at its caps
 // holds about 14 MB of opens and 1.6 MB of ranges. A request past one is
 // refused ErrDelay before it changes anything, so one client cannot spend
@@ -104,7 +103,7 @@ const (
 // such opens, by the owner cap, before the open cap's 16,384 binds. Each
 // table starts from these in its caps field, which a case lowers. Make them
 // settings if a measured client is refused below them.
-var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024, cappedWatches: 1024}
+var perClient = [...]int{cappedOpens: 16384, cappedRanges: 65536, cappedOwners: 4096, cappedWaiters: 1024}
 
 type heldKey struct {
 	client entity.ClientID
