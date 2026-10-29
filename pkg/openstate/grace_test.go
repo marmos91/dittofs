@@ -848,3 +848,23 @@ func TestSilentThroughGraceExpires(t *testing.T) {
 		t.Errorf("the lock granted after the last grace, reclaimed: %v", err)
 	}
 }
+
+// A shard not begun yet refuses anonymous I/O and every change with ErrDelay,
+// as it refuses an open or a lock: a deny mode held there before the restart
+// is not yet known to judge them.
+func TestShardNotBegunDelaysIOAndChanges(t *testing.T) {
+	f := newFixture(t)
+	n := f.caller(t, nfsAs("n", entity.RecoverStatus))
+	file := in(5)
+	f.mustOpen(t, n, file, OpenRequest{Access: rd, Deny: wr})
+	f.Stop()
+	g := reopenServing(t, f.fs, f.clock, []ShardID{0})
+	if err := g.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); !errors.Is(err, ErrDelay) {
+		t.Errorf("an anonymous write in a shard not begun: %v, want ErrDelay", err)
+	}
+	for _, what := range []ChangeMask{ChangeRemove, ChangeAttrs} {
+		if err := g.Checks().CheckChange(ctx, Caller{}, file, nil, what); !errors.Is(err, ErrDelay) {
+			t.Errorf("a change %b in a shard not begun: %v, want ErrDelay", what, err)
+		}
+	}
+}

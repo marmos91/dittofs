@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
@@ -33,9 +34,9 @@ type Checks interface {
 	// otherwise, and its deny modes were judged once, at open. An anonymous
 	// read or write, and one through a delegation, is judged against every
 	// deny mode held, per operation; a delegation writes only with write
-	// caching. In grace, an anonymous one is ErrGrace while f's shard's
-	// records name a client that can hold a deny mode or a mandatory lock,
-	// which may still be reclaimed. Any is refused ErrLocked across a range a
+	// caching. An anonymous one is ErrDelay while f's shard is not begun,
+	// and in grace ErrGrace while the grace still waits for a client that
+	// can reclaim a deny mode or a mandatory lock. Any is refused ErrLocked across a range a
 	// mandatory lock forbids it, and recalls another holder's caching the I/O
 	// conflicts with, answering ErrDelay until the recall ends.
 	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error
@@ -44,8 +45,9 @@ type Checks interface {
 	// grants the change conflicts with and never waits, answering ErrDelay
 	// until each recall ends. Only a grant under via's lease key, or the
 	// oplock over via, is the caller's own; with no via, every grant of the
-	// caller's client is. In grace, a remove or rename in a shard whose
-	// records name a client that can hold a deny mode is ErrGrace.
+	// caller's client is. Any change is ErrDelay while f's shard is not
+	// begun, and in grace a remove or rename is ErrGrace while the grace
+	// still waits for a client that can reclaim a deny mode.
 	CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error
 }
 
@@ -109,8 +111,8 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if f.ID.IsZero() {
 			err = ErrBadState
 		}
-		if err == nil && t.guarded(f.Shard) {
-			err = ErrGrace
+		if err == nil {
+			err = t.guarded(f.Shard)
 		}
 		if err == nil {
 			err = t.step(f.ID, func(e *entry) error {
@@ -176,8 +178,10 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	if err != nil {
 		return err
 	}
-	if what&(ChangeRemove|ChangeRename) != 0 && t.guarded(f.Shard) {
-		return ErrGrace // a name may be held by a deny mode still to be reclaimed
+	// A name may be held by a deny mode still to be reclaimed, or not yet
+	// known in a shard not begun.
+	if err := t.guarded(f.Shard); errors.Is(err, ErrDelay) || err != nil && what&(ChangeRemove|ChangeRename) != 0 {
+		return err
 	}
 	smb := who.Protocol == entity.ProtocolSMB
 	var out outbox

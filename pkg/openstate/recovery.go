@@ -279,14 +279,20 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 	return grace, nil
 }
 
-// guarded reports whether anonymous I/O, and a change that removes or moves a
-// name, in shard s waits for grace's end: s is in grace, and a client it
-// still waits for can hold a deny mode or a mandatory lock.
-func (t *Table) guarded(s ShardID) bool {
+// guarded is why anonymous I/O, or a change that removes or moves a name, in
+// shard s waits: ErrDelay while s is not begun, as admit answers a mint
+// there, and ErrGrace while s is in grace and a client it still waits for can
+// reclaim a deny mode or a mandatory lock.
+func (t *Table) guarded(s ShardID) error {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
-	sh := t.shards[s]
-	return sh != nil && sh.guarded && sh.inGrace(t.d.Clock.Elapsed())
+	switch sh := t.shards[s]; {
+	case sh == nil:
+		return ErrDelay
+	case sh.guarded && sh.inGrace(t.d.Clock.Elapsed()):
+		return ErrGrace
+	}
+	return nil
 }
 
 // owedLocked is the grace instances client c has not finished, by the
