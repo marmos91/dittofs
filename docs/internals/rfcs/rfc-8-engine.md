@@ -698,6 +698,20 @@ attached, and `Stats` names it and its device.
    `engine_reseed_files_remaining` reports the held files it has yet to visit. A bit no ref justifies — metadata lost a commit the journal was told
    of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so
    the extent is offered again; `MarkOffloaded` only ever sets bits.
+
+   **After an open that found corruption naming no record, the reseed also
+   reconciles** ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). For every held extent of every file the journal
+   holds, the engine reads two versions from metadata: the overwrite record over
+   the extent ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)) and the covering ref's `newest`. It needs both,
+   because the primary prunes an overwrite record once a ref covers it. It then
+   calls `DropOlder` with the larger of the two ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The dropped
+   content resolves as **Remote** where a ref holds the newer bytes, and as
+   **Lost** where only the overwrite record knows of them. Until the reconcile has
+   visited every file, every read of the journal's content is answered
+   retry-later (`DelayCommit`). It never serves content that may be stale, and
+   never reports **Lost** for content that is fine. The reconcile runs once per
+   such open, and raises the loss sequence of each file whose content it drops
+   ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 8. **Serve.** No file is served before step 3 has run for it.
 
 **`Bind` attaches a share above its floor.** Before a journal serves a share
@@ -1188,7 +1202,8 @@ after a loss, each client resends its recent unstable writes once.
 - **Each file has a loss sequence.** The engine keeps, in memory and monotonic
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
-  corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). `Commit` returns it,
+  corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)) — and each time the reconcile
+  drops content of the file ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). `Commit` returns it,
   read after its sync, and `LossSeq` returns it without one, which the service
   reads before it records an open; the filesystem service hands each to open
   state, which fails one SMB flush per open that was open across the loss
