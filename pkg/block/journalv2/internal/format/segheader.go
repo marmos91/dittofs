@@ -69,11 +69,15 @@ func DecodeSegmentHeader(b []byte, journal core.JournalID) (SegmentHeader, error
 		return h, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SegmentHeaderSize)
 	}
 	// decision: a header of version 1's size is judged by its checksum
-	// before its version field: a header whose checksum does not verify is
-	// damage whatever its version field says, because a damaged segment is
-	// reported and its records still attached while an unknown version
-	// fails the open; only a header that verifies can name a version this
-	// binary does not know.
+	// before its version field. The format's own rules disagree here: its
+	// table of regions has a flipped bit in a segment header reported as
+	// damage with the segment's records still attached, while its segment
+	// rules have a header of an unrecognised version fail the open — and a
+	// header whose version field alone was flipped meets both. This reads
+	// it as damage, following the region table, so only a header whose
+	// checksum verifies can name a version this binary does not know. The
+	// order is one change if the format's owner rules the other way:
+	// judge the version first, as the format file does.
 	if got, want := binary.LittleEndian.Uint32(b[44:48]), crc32c(b[0:44]); got != want {
 		return h, fmt.Errorf("%w: checksum 0x%08x, want the CRC32C of [0,44): 0x%08x", ErrDamaged, got, want)
 	}
