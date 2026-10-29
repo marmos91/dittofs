@@ -135,20 +135,13 @@ type offer struct {
 	left  []ByteRange // what of it the owner's own lock or unlock has not answered
 }
 
-// dropOffers takes r out of every offer, and forgets an offer once nothing of
-// it is left: the owner's own lock or unlock of r answered the host first, so
-// a later refusal releases nothing of r. A stacking owner's grant is a lock
-// of its own, which only an unlock of exactly its range answers: any other
-// range leaves it whole.
+// dropOffers takes r out of every offer of a merging owner, and forgets an
+// offer once nothing of it is left: the owner's own lock or unlock of r
+// answered the host first, so a later refusal releases nothing of r. A
+// stacking owner's grants are answered by dropSurplusOffer instead.
 func (ls *lockState) dropOffers(r ByteRange) {
 	kept := ls.offers[:0]
 	for _, o := range ls.offers {
-		if ls.owner.Stack {
-			if o.asked.ByteRange != r {
-				kept = append(kept, o)
-			}
-			continue
-		}
 		var left []ByteRange
 		for _, l := range o.left {
 			left = append(left, ranges.Minus(l, r)...)
@@ -158,6 +151,29 @@ func (ls *lockState) dropOffers(r ByteRange) {
 		}
 	}
 	ls.offers = kept
+}
+
+// dropSurplusOffer is a stacking owner's unlock of exactly r answering one of
+// its grants of r, which happens only once its locks of r are fewer than those
+// grants: while another lock of r remains the unlock is taken as that lock's,
+// so each grant stays whole for its refusal to release. A grant is a lock of
+// its own, so an unlock of any other range leaves it whole.
+func (ls *lockState) dropSurplusOffer(r ByteRange) {
+	held, offered := 0, 0
+	for _, l := range ls.locks {
+		if l.ByteRange == r {
+			held++
+		}
+	}
+	for _, o := range ls.offers {
+		if o.asked.ByteRange == r {
+			offered++
+		}
+	}
+	if offered > held {
+		i := slices.IndexFunc(ls.offers, func(o offer) bool { return o.asked.ByteRange == r })
+		ls.offers = slices.Delete(ls.offers, i, i+1)
+	}
 }
 
 // unoffered is what of rs none of offers covers: that part another offer's
@@ -236,8 +252,8 @@ func (ls *lockState) cut(b ByteRange) {
 // unlock releases rs in order, as Unlock does.
 func (ls *lockState) unlock(rs []ByteRange) error {
 	for _, r := range rs {
-		ls.dropOffers(r)
 		if !ls.owner.Stack {
+			ls.dropOffers(r)
 			ls.cut(r)
 			continue
 		}
@@ -246,6 +262,7 @@ func (ls *lockState) unlock(rs []ByteRange) error {
 			return ErrRangeNotLocked
 		}
 		ls.locks = slices.Delete(ls.locks, i, i+1)
+		ls.dropSurplusOffer(r)
 	}
 	return nil
 }

@@ -999,6 +999,83 @@ func TestStackingLockLeavesItsGrantWholeToRefuse(t *testing.T) {
 	}
 }
 
+// regrant has ho of h, already holding r, granted r again by callback: host
+// d's shared lock of r keeps host c's exclusive waiter of r waiting, which
+// bars h's request until c cancels it. d then unlocks.
+func regrant(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, r LockRange) LockWaiter {
+	t.Helper()
+	d, c := f.host(t, "d", 1), f.host(t, "c", 1)
+	f.mustLock(t, d, file, LockReq{Owner: owner(d, "d"), Ranges: []LockRange{r}})
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{{r.ByteRange, true}}, Wait: WaitCallback})
+	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
+	if _, err := f.Locks().CancelLock(ctx, c, file, owner(c, "c"), r.ByteRange); err != nil {
+		t.Fatal(err)
+	}
+	ws := f.sink.takeWaits()
+	if g := granted(t, ws); len(g) != 1 {
+		t.Fatalf("granted %v, want h", g)
+	}
+	f.unlock(t, d, file, owner(d, "d"), r.ByteRange)
+	return ws[0].w
+}
+
+// A stacking owner's unlock of exactly a callback grant's range answers the
+// grant only once no other lock of that range is left, so every unlock and
+// every refusal releases one lock of it.
+func TestStackingUnlockAnswersAGrantOnlyOnceNoOtherLockOfItsRangeIsLeft(t *testing.T) {
+	r := sh(10, 10)
+	type step func(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, gs []LockWaiter)
+	unlock := func(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, _ []LockWaiter) {
+		f.unlock(t, h, file, ho, r.ByteRange)
+	}
+	relock := func(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, _ []LockWaiter) {
+		f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}})
+	}
+	answer := func(i int, refused bool) step {
+		return func(t *testing.T, f *fixture, _ FileKey, h Caller, _ LockOwner, gs []LockWaiter) {
+			if err := f.Locks().WaitAnswered(ctx, h, gs[i], refused); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		own    bool // h locks r itself after its first grant
+		grants int
+		steps  []step
+		held   bool
+	}{
+		{"an unlock of exactly the grant's range then its refusal leave nothing held", false, 1, []step{unlock, answer(0, true)}, false},
+		{"its own lock of the same range, an unlock and a refusal leave nothing held", true, 1, []step{unlock, answer(0, true)}, false},
+		{"two grants of one range, an unlock and a refusal leave nothing held", false, 2, []step{unlock, answer(1, true)}, false},
+		{"two grants of one range both refused leave nothing held", false, 2, []step{answer(0, true), answer(1, true)}, false},
+		{"two grants of one range, one refused and one accepted, leave one held", false, 2, []step{answer(0, true), answer(1, false)}, true},
+		{"an unlock, a relock and a late refusal leave the relock held", false, 1, []step{unlock, relock, answer(0, true)}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			h := f.host(t, "h", 1)
+			ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
+			file := anyFile()
+			// a lock past r keeps h's record when it holds no lock of r
+			f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{sh(30, 5)}})
+			gs := []LockWaiter{callbackGrant(t, f, file, h, ho, "b", r.ByteRange, r)}
+			if c.own {
+				f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}})
+			}
+			if c.grants == 2 {
+				gs = append(gs, regrant(t, f, file, h, ho, r))
+			}
+			for _, s := range c.steps {
+				s(t, f, file, h, ho, gs)
+			}
+			if l := f.holder(t, file, r.ByteRange); (l != nil) != c.held {
+				t.Errorf("held %+v, want held %v", l, c.held)
+			}
+		})
+	}
+}
+
 // A callback grant the host leaves unanswered for ten minutes is still held,
 // and its refusal then releases it.
 func TestUnansweredGrantOutlivesSilence(t *testing.T) {
