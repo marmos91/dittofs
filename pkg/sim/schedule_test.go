@@ -25,7 +25,7 @@ func newSchedule(t *testing.T, seed uint64, rules ...Rule) *Schedule {
 
 // at returns the results s gives one call of op on key, as an action.
 func at(s *Schedule, op, key string) FaultAction {
-	d, err, tear := s.At(op, []byte(key))
+	d, tear, err := s.At(op, []byte(key))
 	return FaultAction{Delay: d, Err: err, TearAfter: tear}
 }
 
@@ -294,6 +294,8 @@ func TestNewScheduleRefusesActionsASeamCannotApply(t *testing.T) {
 	cases := map[string]Rule{
 		"negative delay":      {Op: "*", Key: "*", Action: FaultAction{Delay: -1}},
 		"loss with an error":  {Op: "*", Key: "*", Action: FaultAction{Err: syscall.EIO, TearAfter: Lose}},
+		"empty action":        {Op: "*", Key: "*"},
+		"tear below Lose":     {Op: "*", Key: "*", Action: FaultAction{TearAfter: Lose - 1}},
 		"probability above 1": {Op: "*", Key: "*", Prob: 1.5, Action: eio},
 		"negative from":       {Op: "*", Key: "*", From: -1, Action: eio},
 		"negative count":      {Op: "*", Key: "*", Count: -1, Action: eio},

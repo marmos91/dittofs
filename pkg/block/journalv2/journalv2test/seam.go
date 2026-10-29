@@ -266,7 +266,7 @@ func (s *Seam) consult(op, key string) action {
 		return action{marked: marked}
 	}
 
-	_, err, tearAfter := f.At(op, []byte(key))
+	_, tearAfter, err := f.At(op, []byte(key))
 	switch {
 	case tearAfter > 0 && op != OpWrite:
 		panic(fmt.Sprintf("journalv2test: a tear on %s is not supported", op))

@@ -20,9 +20,9 @@ import (
 // faultFunc is a Fault written inline, deciding one action per call.
 type faultFunc func(op string, key []byte) sim.FaultAction
 
-func (f faultFunc) At(op string, key []byte) (time.Duration, error, int) { //nolint:staticcheck // ST1008: the order is sim.Fault's
+func (f faultFunc) At(op string, key []byte) (time.Duration, int, error) {
 	a := f(op, key)
-	return a.Delay, a.Err, a.TearAfter
+	return a.Delay, a.TearAfter, a.Err
 }
 
 var eio = sim.FaultAction{Err: syscall.EIO}
@@ -1422,6 +1422,37 @@ func TestMarksHaveNoEffectUnderCrashOrTorn(t *testing.T) {
 	crash(t, s, Torn(1))
 	if got := onDisk(t, s, "seg") + "," + onDisk(t, s, "plain"); got != ",u" {
 		t.Fatalf("Torn left seg,plain = %q, want the last write torn: %q", got, ",u")
+	}
+}
+
+func TestAHeldWriteIsMarkedByTheNameItsFaultSaw(t *testing.T) {
+	// The write is entered as "a", held, and the file renamed to "b" before
+	// it lands: the mark follows "a", the name the fault rules were asked
+	// about, not "b".
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := durableFile(t, s, "a", "")
+		g := durableFile(t, s, "plain", "")
+
+		h := s.Hold(t, OpWrite, "a")
+		done := make(chan error, 1)
+		go func() { _, err := f.WriteAt([]byte("mm"), 0); done <- err }()
+		waitingReaches(t, h, 1)
+
+		if err := s.Rename("a", "b"); err != nil {
+			t.Fatal(err)
+		}
+		s.MarkReorder("a")
+		h.Release()
+		if err := within(t, done, "the held write returning"); err != nil {
+			t.Fatal(err)
+		}
+		write(t, g, "uu", 0) // unmarked
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "plain"); got != "" {
+			t.Fatalf("seed %d kept the unmarked write %q: the held write was not marked", seed, got)
+		}
 	}
 }
 

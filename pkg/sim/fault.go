@@ -18,7 +18,7 @@ import "time"
 // Which unsynced writes a crash keeps, and in what order, is the seam's
 // simulated crash, never a call's fault.
 type Fault interface {
-	At(op string, key []byte) (delay time.Duration, err error, tearAfter int)
+	At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
 
 // Lose is the tearAfter that loses a write or a sync.
