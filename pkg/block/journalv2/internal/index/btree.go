@@ -17,7 +17,7 @@ import "sync/atomic"
 // a 40-byte value, so a leaf of 31 is 1,504 bytes, just inside the
 // allocator's 1,536-byte size class; a 32nd slot would round it up to 1,792.
 // Ascending keys cost about 53 bytes an entry, within the index's budget of
-// 56, and random ones about 63, inside the 72 the RFC holds random order to.
+// 56, and random ones about 68, inside the 72 the RFC holds random order to.
 // The rightmost child has no right sibling and keeps its biased split, so
 // runs of ascending keys still fill the right edge first.
 const (
