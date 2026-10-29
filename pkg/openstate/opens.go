@@ -520,6 +520,13 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 // an ID reused on another file is not refused. Index opens by create ID
 // if a client is seen reusing one across files.
 //
+// decision: replay eligibility is not kept. MS-SMB2 ends it on an open's
+// first LOCK and the other requests that clear IsReplayEligible, after which
+// a create under the same create ID is a new open; here it is still answered
+// Replayed or ErrCreateInUse. A client that follows the protocol never sends
+// one. Keep the flag on the open if a client is seen reusing a create ID
+// after such a request.
+//
 // decision: this replaces the SMB adapter's create replay cache,
 // pending.CreateDRC behind handlers/replay_store.go, once the adapter moves
 // onto the table; until then that cache is the live one. Delete it with the
