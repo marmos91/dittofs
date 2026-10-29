@@ -35,17 +35,35 @@ type Open struct {
 	Durability entity.Durability // none, durable, persistent: what it survives
 	Session    entity.SessionRef // the session that opened or last reconnected it; zero: none
 	Durable    DurableKeys       // what a reconnect matches; zero unless durable or persistent
+	Channel    Channel           // the order of its requests across channels; Outstanding is volatile
 }
 
-// DurableKeys is what a reconnect of a durable or persistent open matches.
-//
-// ponytail: no Instance, LockSeq or channel sequence yet, so an app-instance
-// takeover, a lock replay and a request on a stale channel are not
-// recognised, and a persistent open's record is written and installed
-// without them; all three arrive with create and lock replay.
+// Channel orders an open's requests across the channels they arrive on.
+type Channel struct {
+	Seq         uint16    // the newest channel sequence a request through it carried; an older one is stale
+	Outstanding [2]uint32 // requests in flight under Seq, and under the sequences before it
+}
+
+// DurableKeys is what a reconnect or a replay of a durable or persistent
+// open matches.
 type DurableKeys struct {
-	Timeout time.Duration // how long it is kept once its session ends
-	Create  [16]byte      // the create's own ID, which a reconnect must name; zero: none
+	Timeout  time.Duration // how long it is kept once its session ends
+	Create   [16]byte      // the create's own ID, which a reconnect or a replayed create must name; zero: none
+	Instance AppInstance   // an open of the same file under the same ID by another client replaces this one; zero: none
+	LockSeq  [64]uint8     // lock replay: per index, a valid bit (0x10) and a 4-bit sequence
+}
+
+// AppInstance names the application instance an open belongs to.
+type AppInstance struct {
+	ID      [16]byte
+	Version [2]uint64 // high, low; zero: unversioned
+}
+
+// LockSequence is a lock request's place in its open's lock replay: an index
+// from 1 to 64, any other naming none, and a 4-bit sequence.
+type LockSequence struct {
+	Index uint8
+	Seq   uint8
 }
 
 // ReconnectMatch is what a reconnect presents beside its Caller.
@@ -99,6 +117,9 @@ type OpenRequest struct {
 	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
 	Durable    DurableKeys
 	Session    entity.SessionRef // the opening session
+	Replay     bool              // a create marked as a replay: one naming the caller's client's open by Durable.Create answers that open
+	MaxRead    bool              // the caller's maximal access to the file includes read, so it may replace another client's open of its app instance
+	Channel    uint16            // the create's channel sequence, the open's first
 }
 
 // Seqs is the owner sequence numbers a request presents; zero where the
@@ -110,9 +131,10 @@ type Seqs struct {
 
 // OpenResult is what an open answers.
 type OpenResult struct {
-	Open    Open
-	Grant   *CachingGrant // the grant covering the open, or offered with it; nil: none
-	Confirm bool          // the open's owner is new: it must ConfirmOpen before any other request
+	Open     Open
+	Grant    *CachingGrant // the grant covering the open, or offered with it; nil: none
+	Confirm  bool          // the open's owner is new: it must ConfirmOpen before any other request
+	Replayed bool          // a replayed create, answered with the open it made
 }
 
 // OpenUpdate is a change made through an open; nil or zero fields change
@@ -219,6 +241,14 @@ type Opens interface {
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	// Channel admits a request through open o carrying channel sequence
+	// seq, flagged a replay or not, and counts it in flight until done is
+	// called as it leaves. A newer seq becomes the open's, written first for
+	// a persistent open. stale reports a request that is older than the
+	// open's sequence, or a replay while a request under an earlier one is
+	// in flight: it is not counted, and the caller refuses it if it
+	// changes the file, running it otherwise.
+	Channel(ctx context.Context, who Caller, o entity.OpenID, seq uint16, replay bool) (stale bool, done func(), err error)
 }
 
 type opens struct{ t *Table }
@@ -257,9 +287,10 @@ func (o *open) record() entity.OpenRecord {
 		ID: o.ID, Client: o.Client, Principal: o.Principal, File: o.opened(), Via: o.Via, Name: o.Name,
 		Access: o.Mode.Access, Deny: o.Mode.Deny, Privileged: o.Mode.Privileged,
 		DeleteOnClose: o.Delete.OnClose, DeleteBy: o.Delete.By, Suspended: o.Suspended,
-		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session,
+		Nonce: o.Ref.Token, StateSeq: o.Ref.Seq, Durability: o.Durability, Session: o.Session, ChannelSeq: o.Channel.Seq,
 	}
-	r.Timeout, r.CreateGUID = o.Durable.Timeout, o.Durable.Create
+	k := o.Durable
+	r.Timeout, r.CreateGUID, r.AppInstance, r.AppVersion, r.LockSeq = k.Timeout, k.Create, k.Instance.ID, k.Instance.Version, k.LockSeq
 	return r
 }
 
@@ -330,10 +361,14 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		return OpenResult{}, ErrInvalid
 	}
 	// Admitted before the open's ID is issued, so a refusal writes nothing,
-	// and again under the step, where grace is judged as it then stands.
-	grace, err := t.admit(who, f.Shard, r.Reclaim)
-	if err != nil {
-		return OpenResult{}, err
+	// and again under the step, where grace is judged as it then stands. A
+	// replay is judged only there, before grace: it creates no new state.
+	var grace bool
+	var err error
+	if !r.Replay {
+		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
+			return OpenResult{}, err
+		}
 	}
 	var id entity.OpenID
 	if who.Protocol == entity.ProtocolSMB {
@@ -346,13 +381,16 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	o := &open{share: f.Share, lease: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
-		Durability: r.Durability, Session: r.Session, Durable: r.Durable,
+		Durability: r.Durability, Session: r.Session, Durable: r.Durable, Channel: Channel{Seq: r.Channel},
 	}}
 	if r.DeleteOnClose {
 		o.Delete = DeleteMark{OnClose: true, By: who.Principal}
 	}
 	var res OpenResult
 	err = t.step(f.ID, func(e *entry) (err error) {
+		if done, err := t.sameCreate(e, who, r, &res); done {
+			return err
+		}
 		if grace, err = t.admit(who, f.Shard, r.Reclaim); err != nil {
 			return err
 		}
@@ -372,8 +410,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				return ErrInvalid // a key names one grant, on one file
 			}
 		}
-		// A new open past its client's cap is refused here, before a break
-		// closes a disconnected open or a recall is started. Its place under
+		// A new open past its client's cap, or whose shard its client's
+		// record cannot list, is refused here, before a predecessor or a
+		// disconnected open is closed or a recall started. Its place under
 		// the cap is taken at the check, so an open of the client racing it
 		// cannot take it between the check and the mint, and given back
 		// unless the open is minted into it.
@@ -386,6 +425,12 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 					_ = t.charge(who.Client, cappedOpens, -1, false)
 				}
 			}()
+			if err := t.markShard(ctx, who.Client, f.Shard); err != nil {
+				return err
+			}
+		}
+		if err := t.takeOver(ctx, e, who, r, out); err != nil {
+			return err
 		}
 		granted, access, deny := o, r.Access, r.Deny
 		if up := e.openOf(r.Owner, r.Stream); up != nil {
@@ -462,6 +507,96 @@ func (t *Table) reclaimHeld(e *entry, who Caller, r OpenRequest, res *OpenResult
 	return nil
 }
 
+// sameCreate answers, under e's step, a create naming by its create ID an
+// open of who's client on e: a replay of that open, on the session it is
+// attached to and usable by who, with the open, Replayed, unless it names
+// another lease key than the open's, ErrNotYours; any other, a create
+// that is no replay, one of an open disconnected or one on another session,
+// ErrCreateInUse. done is false when no open is
+// named, and the create is made as any other.
+//
+// decision: a create ID is matched among the opens of the file the create
+// names, not the client's every open, as the table finds opens by file;
+// an ID reused on another file is not refused. Index opens by create ID
+// if a client is seen reusing one across files.
+//
+// decision: replay eligibility is not kept. MS-SMB2 ends it on an open's
+// first LOCK and the other requests that clear IsReplayEligible, after which
+// a create under the same create ID is a new open; here it is still answered
+// Replayed or ErrCreateInUse. A client that follows the protocol never sends
+// one. Keep the flag on the open if a client is seen reusing a create ID
+// after such a request.
+//
+// decision: this replaces the SMB adapter's create replay cache,
+// pending.CreateDRC behind handlers/replay_store.go, once the adapter moves
+// onto the table; until then that cache is the live one. Delete it with the
+// move.
+func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult) (done bool, err error) {
+	if r.Durable.Create == ([16]byte{}) {
+		return false, nil
+	}
+	for _, o := range e.opens {
+		if o.Client != who.Client || o.Durable.Create != r.Durable.Create {
+			continue
+		}
+		switch {
+		case !r.Replay || o.parked != 0 || o.Session != r.Session:
+			return true, ErrCreateInUse
+		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease:
+			return true, ErrNotYours
+		}
+		*res = OpenResult{Open: o.Open, Grant: e.grantOf(o), Replayed: true}
+		return true, nil
+	}
+	return false, nil
+}
+
+// takeOver closes, under e's step, the open of e's file another client holds
+// under the app instance r names, for a caller who may read the file, before
+// r's open is judged; a create whose version is not above that of every such
+// open carrying one, a create carrying none included, is refused and closes
+// none. What the close leaves the
+// service goes to out.
+//
+// decision: a create refused for its version is ErrInstanceVersion, which
+// errors.Is ErrShareViolation, so the service maps it as a deny conflict
+// unless it tells the two apart, as the SMB adapter will to answer
+// STATUS_FILE_FORCED_CLOSED. Give it a neutral error of its own if another
+// protocol is served that names it.
+//
+// decision: the open replaced is closed first, as MS-SMB2 closes it, so a
+// create refused after it, for another open's deny mode or a failed write,
+// leaves it closed: its application moved to the caller's machine and does
+// not use it again. Close it only once the create is granted if a client is
+// seen depending on the earlier open after such a refusal.
+//
+// decision: this replaces the SMB adapter's handlers.ProcessAppInstanceId
+// once the adapter moves onto the table; until then that is the live copy.
+// It displaces only the open of the file the create names, where the
+// adapter's displaces every open of the instance its caller can read.
+// Delete the adapter's with the move.
+func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenRequest, out *outbox) error {
+	k := r.Durable
+	if k.Instance.ID == ([16]byte{}) || !r.MaxRead {
+		return nil
+	}
+	var olds []*open // every version is judged before any open is closed
+	for _, o := range e.opens {
+		ok := o.Durable
+		if ok.Instance.ID != k.Instance.ID || o.Client == who.Client || o.Stream != r.Stream {
+			continue
+		}
+		if v, was := k.Instance.Version, ok.Instance.Version; was != ([2]uint64{}) && slices.Compare(v[:], was[:]) <= 0 {
+			return ErrInstanceVersion
+		}
+		olds = append(olds, o)
+	}
+	for _, o := range olds {
+		t.closeByTable(ctx, e, o, out)
+	}
+	return nil
+}
+
 // decision: a persistent open's record is rewritten with its new entry in
 // Renamed's step, once the rename has committed, so the step answers the
 // move whatever the write does: a failed write leaves the open unsaved, the
@@ -497,13 +632,10 @@ func (v opens) Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fr
 	})
 }
 
-// addOpen adds o, a new open of f, to e under its step: its shard listed in
-// its client's record, its reference minted, and its record written durable
-// where the file has no entry.
+// addOpen adds o, a new open of f, to e under its step, its shard already
+// listed in its client's record: its reference minted, and its record
+// written durable where the file has no entry.
 func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r OpenRequest) error {
-	if err := t.markShard(ctx, o.Client, f.Shard); err != nil {
-		return err
-	}
 	if err := t.mintOpen(e, o, f.Shard); err != nil {
 		return err
 	}

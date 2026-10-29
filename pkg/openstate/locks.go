@@ -68,6 +68,11 @@ type LockReq struct {
 	Wait    WaitKind // only a single-range request waits
 	Seqs    Seqs
 	Reclaim bool // locks the owner held before its shard lost its state; a reclaim never waits
+	// Replay is its place in its open's lock replay; nil: none. The adapter
+	// sets it only where MS-SMB2 3.3.5.14 checks the lock sequence: for a
+	// durable or resilient open, or on a connection that negotiated
+	// multichannel. The table keeps the replay on any open it is given for.
+	Replay *LockSequence
 }
 
 // LockResult is a granted or waiting lock; a conflict is a *LockedError.
@@ -85,6 +90,7 @@ type LockWaiter struct {
 	Wait     WaitKind
 	Deadline time.Duration // poll only: one lease period after the owner's last poll, or after its range freed
 	Reserved bool          // poll only: the range is free and held for this owner until Deadline
+	Replay   *LockSequence // the request's place in its open's lock replay, stored when it is granted; nil: none
 }
 
 // Locks is the view of byte-range locks and their waiters; it runs at the
@@ -111,8 +117,9 @@ type Locks interface {
 	// Unlock releases rs in order. A stacking owner stops at the first range
 	// it holds no lock of exactly, with ErrRangeNotLocked, the ranges before
 	// it staying released; a merging owner releases whatever it holds of
-	// each. It returns the lock state's new reference sequence.
-	Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (seq uint32, err error)
+	// each. It returns the lock state's new reference sequence. replay is
+	// its place in its open's lock replay, as a lock's is; nil: none.
+	Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs, replay *LockSequence) (seq uint32, err error)
 	// ReleaseLockOwner drops o's lock states at this primary, with their
 	// waiters and o's sequence; while o holds a lock, on any file, it is
 	// ErrLocksHeld and changes nothing. The waiters the release frees are
@@ -139,6 +146,61 @@ type lockState struct {
 type offer struct {
 	asked LockRange   // the grant, which WaitAnswered matches
 	left  []ByteRange // what of it the owner's own lock or unlock has not answered
+}
+
+// lockSeq is the index r names in op's lock replay and the value a lock
+// granted under it stores there; ok is false for a request naming none. The
+// caller decides which requests carry one, so any open keeps a replay.
+//
+// decision: the lock replay kept on the open replaces the SMB adapter's
+// pending.LockDRC once the adapter moves onto the table; until then that
+// cache is the live one. Delete it with the move.
+func lockSeq(op *open, r *LockSequence) (i int, v uint8, ok bool) {
+	if r == nil || op == nil || r.Index < 1 || r.Index > 64 {
+		return 0, 0, false
+	}
+	return int(r.Index - 1), 0x10 | r.Seq&0xF, true
+}
+
+// lockSeqRecord is what a request under op naming q stores once it
+// succeeds: rec, the open's record with q's sequence set, for a persistent
+// open to write with its locks (nil otherwise), and stored, which sets it
+// in memory once the write is done and marks the open saved, as the record
+// written is the whole open.
+func (t *Table) lockSeqRecord(e *entry, op *open, q *LockSequence) (rec *entity.OpenRecord, stored func()) {
+	i, v, ok := lockSeq(op, q)
+	if !ok {
+		return nil, func() {}
+	}
+	if op.persistent() {
+		x := t.recordOf(e, op)
+		x.LockSeq[i] = v
+		rec = &x
+	}
+	return rec, func() {
+		op.Durable.LockSeq[i] = v
+		if rec != nil {
+			op.unsaved = false // the record just written carries every change
+		}
+	}
+}
+
+// resetLockSeq invalidates index i of op's lock replay, under e's step, for
+// a request under another sequence than the one stored there: the request
+// is then judged as a new one, and a later request wrapping round to the
+// old sequence is no replay. A persistent open's record follows by the
+// timer, the open unsaved until it is written.
+func (t *Table) resetLockSeq(e *entry, op *open, i int) {
+	if op.Durable.LockSeq[i] == 0 {
+		return
+	}
+	op.Durable.LockSeq[i] = 0
+	if op.persistent() {
+		op.unsaved = true
+		t.idx.Lock()
+		t.parked[e.file] = struct{}{}
+		t.idx.Unlock()
+	}
 }
 
 // dropOffers takes r out of every offer of a merging owner, and forgets an
@@ -496,12 +558,13 @@ func (t *Table) reserveLock(e *entry, r LockReq, op *open, key LeaseKey) (ranges
 // relock sets ls's locks to next, charging its client for the ranges next
 // adds, refused past the cap where capped, and writing them first where ls
 // is under a persistent open, so a refusal of either changes nothing.
-func (t *Table) relock(ctx context.Context, ls *lockState, next []LockRange, capped bool) error {
+// rec, when set, is the open's new record, written with the locks.
+func (t *Table) relock(ctx context.Context, ls *lockState, next []LockRange, capped bool, rec *entity.OpenRecord) error {
 	n := len(next) - len(ls.locks)
 	if err := t.charge(ls.owner.Client, cappedRanges, n, capped); err != nil {
 		return err
 	}
-	if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next); err != nil {
+	if err := t.keepLocks(ctx, ls.open, ls.owner, ls.locks, next, rec); err != nil {
 		_ = t.charge(ls.owner.Client, cappedRanges, -n, false)
 		return err
 	}
@@ -569,7 +632,9 @@ func (t *Table) serve(ctx context.Context, e *entry, out *outbox) {
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				// A refused write, or a lock past its client's ranges, is a
 				// lock not held, answered not granted.
-				if granted = t.relock(ctx, ls, ls.adding(w.Range), true) == nil; granted {
+				rec, stored := t.lockSeqRecord(e, ls.open, w.Replay)
+				if granted = t.relock(ctx, ls, ls.adding(w.Range), true, rec) == nil; granted {
+					stored()
 					ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 				}
 				t.tidy(e, ls)
@@ -676,6 +741,16 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			if op != nil && !t.confirmed(op) {
 				return ErrBadState // the owner's sequence refuses it only when numbered
 			}
+			if i, v, ok := lockSeq(op, r.Replay); ok {
+				if op.Durable.LockSeq[i] == v {
+					// A replay is answered, never applied again, in grace too.
+					if ls := e.lockState(r.Owner, openToken(op)); ls != nil {
+						res.Ref = ls.ref
+					}
+					return nil
+				}
+				t.resetLockSeq(e, op, i) // another sequence is no replay of the stored one
+			}
 			// Admitted under the step, so grace is judged as it stands when
 			// the lock is decided, and a refusal answers the owner's number.
 			grace, err := t.admit(who, f.Shard, r.Reclaim)
@@ -781,13 +856,17 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if ls, minted, err = t.lockStateFor(ctx, e, r.Owner, op, s); err != nil {
 			return LockResult{}, err
 		}
+		// The request's place in its open's lock replay is stored with its
+		// locks, once for every range, and only when they are granted.
+		rec, stored := t.lockSeqRecord(e, op, r.Replay)
 		// Held before the earlier waiter goes, so its drop keeps ls.
-		if err := t.relock(ctx, ls, ls.adding(r.Ranges...), false); err != nil {
+		if err := t.relock(ctx, ls, ls.adding(r.Ranges...), false, rec); err != nil {
 			if minted {
 				t.dropLockState(e, ls)
 			}
 			return LockResult{}, err
 		}
+		stored()
 	}
 	rangesBack() // charged by relock, or never added: serve must not count them twice
 	prev := e.waiterOf(r.Owner)
@@ -834,6 +913,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			return LockResult{}, err
 		}
 		w := &LockWaiter{File: e.file, Owner: ls.owner, Open: id, Range: r.Ranges[0], Wait: r.Wait}
+		if q := r.Replay; q != nil {
+			w.Replay = &LockSequence{q.Index, q.Seq}
+		}
 		if w.Wait == WaitPoll {
 			w.Deadline = now + leasePeriod
 			t.idx.Lock()
@@ -907,7 +989,7 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		if refused {
 			// An answer is never refused for the ranges a refusal splits.
 			next, _ := ls.removing(ls.unoffered(o.left, others))
-			if err := t.relock(ctx, ls, next.locks, false); err != nil {
+			if err := t.relock(ctx, ls, next.locks, false, nil); err != nil {
 				return err // the grant stays offered, for the client's answer again
 			}
 			ls.offers = others
@@ -949,7 +1031,7 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 	return held, err
 }
 
-func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) (uint32, error) {
+func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs, replay *LockSequence) (uint32, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -980,6 +1062,12 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			if op != nil && !t.mayUse(op, who) {
 				return ErrNotYours
 			}
+			if i, v, ok := lockSeq(op, replay); ok {
+				if op.Durable.LockSeq[i] == v {
+					return nil // a replay is answered, never applied again
+				}
+				t.resetLockSeq(e, op, i)
+			}
 			if ls == nil {
 				if o.Stack && len(rs) > 0 {
 					return ErrRangeNotLocked
@@ -988,10 +1076,17 @@ func (v locks) Unlock(ctx context.Context, who Caller, f FileKey, ref OpenRef, o
 			}
 			// An unlock splitting a range is refused past the client's
 			// ranges, as a lock is; one releasing nothing writes nothing.
+			// Its place in the open's lock replay is stored only when every
+			// range is released.
 			next, err := ls.removing(rs)
-			if werr := t.relock(ctx, ls, next.locks, true); werr != nil {
+			rec, stored := (*entity.OpenRecord)(nil), func() {}
+			if err == nil {
+				rec, stored = t.lockSeqRecord(e, op, replay)
+			}
+			if werr := t.relock(ctx, ls, next.locks, true, rec); werr != nil {
 				return werr
 			}
+			stored()
 			ls.offers = next.offers
 			if err == nil {
 				ls.ref.Seq, err = t.advance(e, ls.ref)

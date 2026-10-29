@@ -100,6 +100,15 @@ func cloneFSM(f grantfsm.Grant) grantfsm.Grant {
 	return f
 }
 
+// grantOf is the grant covering o on e, as its caller sees it; nil: none.
+func (e *entry) grantOf(o *open) *CachingGrant {
+	if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
+		p := g.public(e.file)
+		return &p
+	}
+	return nil
+}
+
 // handleCached reports whether o is covered by a grant holding handle
 // caching, the one under which a durable open is kept.
 func (e *entry) handleCached(o *open) bool {
@@ -295,11 +304,7 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		t.cmu.Lock()
 		delete(t.adopted, o.Client) // it came back: its installed state is its own again
 		t.cmu.Unlock()
-		res.Open = o.Open
-		if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
-			p := g.public(e.file)
-			res.Grant = &p
-		}
+		res.Open, res.Grant = o.Open, e.grantOf(o)
 		return nil
 	})
 	return res, err
@@ -446,7 +451,8 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 		Mode:       OpenMode{Access: rec.Access, Deny: rec.Deny, Privileged: rec.Privileged},
 		Delete:     DeleteMark{OnClose: rec.DeleteOnClose, By: rec.DeleteBy},
 		Suspended:  rec.Suspended,
-		Durability: rec.Durability, Session: rec.Session, Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID},
+		Durability: rec.Durability, Session: rec.Session, Channel: Channel{Seq: rec.ChannelSeq},
+		Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID, Instance: AppInstance{rec.AppInstance, rec.AppVersion}, LockSeq: rec.LockSeq},
 	}}
 	if cl.Recovery == entity.RecoverReconnect {
 		o.owedTo = sh
@@ -539,7 +545,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 // offset. SMB, the one protocol with persistent opens, names one owner per
 // open. Draw IDs from NextID if a protocol is served whose persistent opens
 // hold several owners' locks.
-func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now []LockRange) error {
+func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now []LockRange, rec *entity.OpenRecord) error {
 	if o == nil || !o.persistent() {
 		return nil
 	}
@@ -559,10 +565,10 @@ func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now [
 			del = append(del, record(k, l))
 		}
 	}
-	if len(put)+len(del) == 0 {
+	if len(put)+len(del) == 0 && rec == nil {
 		return nil
 	}
-	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, nil, put, del)
+	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, rec, put, del)
 }
 
 // lockName is a stored lock's key under its owner: its offset and its place,
@@ -768,4 +774,80 @@ func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh 
 		}
 	}
 	return nil
+}
+
+// decision: a sequence exactly 0x8000 from the open's is stale on either
+// side, since MS-SMB2 takes the difference unsigned in 16 bits and steps
+// forward only up to 0x7FFF. This replaces the SMB adapter's
+// types.OpenFile.VerifyChannelSequence once the adapter moves onto the
+// table; until then that copy is the live one. It follows Samba and takes
+// a request wrapping round to 0x8000 behind as a step forward. Follow it
+// here too if a client is seen stepping its sequence by exactly half the
+// space.
+func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq uint16, replay bool) (bool, func(), error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return false, nil, err
+	}
+	stale, counted := false, false
+	err := t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
+		c := &o.Channel
+		switch d := seq - c.Seq; {
+		case d == 0:
+		case d <= 0x7fff:
+			if o.persistent() {
+				rec := t.recordOf(e, o)
+				rec.ChannelSeq = seq
+				if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
+					return err
+				}
+			}
+			c.Outstanding[1] += c.Outstanding[0]
+			c.Outstanding[0], c.Seq = 0, seq
+		default:
+			stale = true
+			return nil
+		}
+		if replay && c.Outstanding[1] > 0 {
+			stale = true // the request it repeats may still be in flight
+			return nil
+		}
+		c.Outstanding[0]++
+		counted = true
+		return nil
+	})
+	if err != nil || !counted {
+		return stale, func() {}, err
+	}
+	return false, func() { t.leaveChannel(id, seq) }, nil
+}
+
+// leaveChannel uncounts a request of open id counted under seq, once it
+// leaves: under the open's sequence if it is still seq, else under the ones
+// before it. It finds the open by its ID alone, so a request leaving while
+// its open is disconnected is uncounted too, and never takes a count below
+// zero.
+func (t *Table) leaveChannel(id entity.OpenID, seq uint16) {
+	t.idx.Lock()
+	k, ok := t.byID[id]
+	if !ok {
+		t.idx.Unlock()
+		return
+	}
+	f := t.refs[k].file
+	t.idx.Unlock()
+	_ = t.step(f, func(e *entry) error {
+		o := e.opens[k.token]
+		if o == nil || o.ID != id {
+			return nil
+		}
+		i := 0
+		if o.Channel.Seq != seq {
+			i = 1
+		}
+		if o.Channel.Outstanding[i] > 0 {
+			o.Channel.Outstanding[i]--
+		}
+		return nil
+	})
 }

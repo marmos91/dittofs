@@ -283,7 +283,7 @@ func TestPersistentOpenSurvivesARestart(t *testing.T) {
 	r.Access, r.Deny = rd|wr, wr
 	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, 300*time.Second, 1))
 	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10), x(20, 10)}})
-	if _, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{}); err != nil {
+	if _, err := f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(0, 10)}, Seqs{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Opens().Update(ctx, a, o.ID, OpenUpdate{Suspend: entity.TimeModify}); err != nil {
@@ -608,7 +608,7 @@ func TestRefusedWriteChangesNothing(t *testing.T) {
 	st.fail.Store(false)
 	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(20, 10)}})
 	st.fail.Store(true)
-	_, errs["Unlock"] = f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(20, 10)}, Seqs{})
+	_, errs["Unlock"] = f.Locks().Unlock(ctx, a, file, byID(o), smbOwner(a, o), []ByteRange{br(20, 10)}, Seqs{}, nil)
 	st.fail.Store(false)
 	for name, err := range errs {
 		if !errors.Is(err, errWrite) {

@@ -51,7 +51,7 @@ func TestPerClientCaps(t *testing.T) {
 		if h := f.holder(t, file, br(40, 10)); h != nil {
 			t.Errorf("a refused lock is held: %+v", h)
 		}
-		if _, err := f.Locks().Unlock(ctx, a, file, none, lo, []ByteRange{br(4, 2)}, Seqs{}); delayedFor(err) != DelayResources {
+		if _, err := f.Locks().Unlock(ctx, a, file, none, lo, []ByteRange{br(4, 2)}, Seqs{}, nil); delayedFor(err) != DelayResources {
 			t.Fatalf("an unlock splitting a range at the cap: %v, want ErrDelay (DelayResources)", err)
 		}
 		if h := f.holder(t, file, br(4, 2)); h == nil {
@@ -128,16 +128,31 @@ func TestPerClientCaps(t *testing.T) {
 	})
 }
 
-// A request refused for a cap changes nothing before the refusal: an open
-// or a lock starts no recall of another client's lease.
+// A request refused for a cap changes nothing before the refusal: an
+// app-instance create keeps its predecessor open, and an open or a lock
+// starts no recall of another client's lease.
 func TestCappedRequestChangesNothing(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	as := func(who Caller, v uint64) OpenRequest {
+		q := keep(r, entity.DurabilityPersistent, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: [2]uint64{1, v}}, true
+		return q
+	}
+	f.mustOpen(t, a, file, as(a, 5))
 	f.mustOpen(t, b, in(1), OpenRequest{Access: rd | wr})
 	leased := anyFile()
 	f.grantOpen(t, a, leased, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 
 	f.lower(cappedOpens, 1)
+	if _, err := f.open(b, file, as(b, 6)); delayedFor(err) != DelayResources {
+		t.Fatalf("an app-instance create past the cap: %v, want ErrDelay (DelayResources)", err)
+	}
+	if e := f.entryOf(file.ID); e == nil || len(e.opens) != 1 {
+		t.Error("an app-instance create its cap refuses closed its predecessor")
+	}
 	if _, err := f.open(b, leased, OpenRequest{Access: rd | wr}); delayedFor(err) != DelayResources {
 		t.Fatalf("an open past the cap: %v", err)
 	}
@@ -335,5 +350,41 @@ func TestCallbackWaiterPastTheRangeCapIsAnsweredNotGranted(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A new open holds its place under its client's cap from the check on: an
+// open of the client racing it past the check takes no place it counted on,
+// so an app-instance create the cap refuses has closed no predecessor.
+func TestOpenCapHoldsItsPlace(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd
+	as := func(who Caller, v uint64) OpenRequest {
+		q := keep(r, entity.DurabilityDurable, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: [2]uint64{1, v}}, true
+		return q
+	}
+	f.mustOpen(t, a, file, as(a, 5))
+	f.mustOpen(t, b, in(1), OpenRequest{Access: rd}) // b's shard listed, so its next opens write nothing
+	f.lower(cappedOpens, 2)
+	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+	f.d.Rand = rnd
+	rnd.armed.Store(true)
+	created := make(chan error)
+	go func() {
+		_, err := f.open(b, file, as(b, 6))
+		created <- err
+	}()
+	<-rnd.entered // past the cap check, minting its reference
+	_, other := f.open(b, in(1), OpenRequest{Access: rd})
+	close(rnd.released)
+	err := <-created
+	if e := f.entryOf(file.ID); err != nil && (e == nil || len(e.opens) == 0) {
+		t.Errorf("a create the cap refused closed its predecessor first: %v", err)
+	}
+	if (err == nil) == (other == nil) {
+		t.Errorf("the create %v and the open racing it %v: want one refused for the cap", err, other)
 	}
 }

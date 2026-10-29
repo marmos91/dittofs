@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
@@ -31,7 +32,13 @@ var (
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
 	ErrLocksHeld      = errors.New("openstate: the owner or lock state still holds locks")
+	ErrCreateInUse    = errors.New("openstate: create ID names another open of the client")                                          // an SMB create's CreateGuid, held by an open its create did not make
 	ErrRevoked        = errors.New("openstate: state revoked, by a recall past its deadline or an administrator, and not yet freed") // as *RevokedError, naming the cause
+
+	// ErrInstanceVersion is a create refused because the open of its app
+	// instance it would replace carries a version not below its own; it is
+	// a deny conflict too.
+	ErrInstanceVersion = fmt.Errorf("openstate: app instance version not above its open's: %w", ErrShareViolation)
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
