@@ -473,6 +473,11 @@ func (s *heldSet) cut(e core.Extent) {
 		}
 		if pend > end {
 			tail := clip(p, core.Extent{Off: end, Len: pend - end})
+			if plantSplitBug && p.Extent.Off < e.Off {
+				// The planted bug: the tail of a three-way split keeps the piece's
+				// first payload byte instead of advancing past the cut.
+				tail.Skip = p.Skip
+			}
 			s.tree.set(uint64(end), toHeld(tail))
 		}
 	}
