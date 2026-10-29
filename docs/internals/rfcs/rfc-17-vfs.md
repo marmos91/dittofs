@@ -1237,7 +1237,8 @@ record does not list, an administrator's revoke having emptied it included),
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
 it still holds locks; a live open or grant freed), `BadSeqID` (an
 NFSv4.0 owner sequence out of order), `NoRecall` (an acknowledgement of a lease
-or oplock with no recall in flight), `NotYours` (state another client or
+or oplock with no recall in flight), `CreateInUse` (an SMB create naming a create
+ID another open of its client holds, [RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)), `NotYours` (state another client or
 principal holds, §3.1) and `Revoked` (the call names state in its client's
 revoked set, not yet freed; `Admin` tells an administrator's revoke from a
 recall missed).

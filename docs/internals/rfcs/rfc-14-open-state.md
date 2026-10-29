@@ -872,8 +872,7 @@ type LockWaiter struct {
 	Owner    LockOwner
 	Open     uint64        // the open's Token; zero: the lock names no open
 	Range    LockRange     // {ByteRange; Exclusive}
-	Wait     WaitKind      // poll: the client asks again; callback: granted in the freeing step and reported
-	Arrived  time.Duration // Deps.Clock.Elapsed when it arrived: orders the waiters
+	Wait     WaitKind      // poll: the client asks again; callback: granted once the range frees, and reported
 	Deadline time.Duration // poll only: one lease period after the owner's last poll
 	Reserved bool          // poll only: the range is free and held for this owner until Deadline
 	Replay   *LockSequence // the request's SMB lock sequence (§8.1), stored when it is granted; nil: none
@@ -896,9 +895,9 @@ conflicts is answered with a `*LockedError` and leaves no waiter. One owner hold
 at most one waiter per file: its next request replaces it, and a replaced
 callback waiter is first reported `LockWaitOver(granted=false)`, so the request
 it stood for is answered. A repeat of the same request — same range and same
-lock type, as a poll is — keeps the waiter's `Arrived`, so a client that
-re-sends while it waits keeps its place; only a request for a different range or
-type takes a new arrival time.
+lock type, as a poll is — keeps the waiter's place, so a client that re-sends
+while it waits does not lose it; only a request for a different range or type
+joins at the back.
 
 **A lock that must wait for a recall waits as a waiter.** A lock request on a
 file whose caching grant another client holds starts the recall
@@ -917,10 +916,12 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
   frees, the waiter is `Reserved`: a conflicting request from anyone else is
   refused until the owner's next poll takes the lock or `Deadline` passes. An
   adapter may tell the client the range freed; the poll decides.
-- **Callback:** when the range frees, the primary grants the lock in the step
-  that frees it and calls `LockWaitOver`. The lock stays granted, and the
-  service **MUST** keep calling until the client answers — acknowledges,
-  refuses, cancels — or its state ends: its host restarts, an administrator
+- **Callback:** the primary grants the lock once the range frees, under the
+  file's admission lock
+  ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), and calls
+  `LockWaitOver`. The lock stays granted, and the service **MUST** keep calling
+  until the client answers — acknowledges, refuses, cancels — or its state ends:
+  its host restarts, an administrator
   revokes it ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
   or `DropShare` ends its share. `WaitAnswered` returns the client's answer
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): on an acknowledgement the
@@ -935,7 +936,7 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
 
 **First in, first out per range.** When an unlock, close, expiry or revocation
 frees a range, the primary considers the waiters whose ranges overlap it in
-`Arrived` order and grants, or for a poll waiter reserves, the earliest whose
+arrival order and grants, or for a poll waiter reserves, the earliest whose
 request no longer conflicts, then the next, until one conflicts. While a waiter
 waits, no later waiter and no new request from another owner is granted a lock
 that conflicts with the waiter's request *and* overlaps a held lock that blocks
@@ -1121,7 +1122,8 @@ and the only lock manager
    package ([RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order)), and exists
    whether or not the file has any state. The service holds it across a
    compound operation — a check and the I/O or namespace change it admits — and
-   makes every mutating table call, and every `Checks` call, on a file under it.
+   makes every mutating table call, and every `Checks` call, on a file under it,
+   except the calls §11.2 lists, which take it themselves.
    It is what orders a conflicting grant wholly before a check or wholly after
    the I/O ([RFC 17 §4.8](rfc-17-vfs.md#4.8%20One%20primary%20per%20file)). A
    file with no state is ordered by it too: a deny-write open and an anonymous
@@ -2440,10 +2442,10 @@ type Order func(f FileID) (unlock func())
 // Sink is how open state reaches clients and the service: every other call goes
 // into the table, and these come out of it. The service implements it.
 type Sink interface {
-	RecallGrant(c ClientID, g CachingGrant, to GrantKind)
+	RecallGrant(g CachingGrant)                          // to g.Recall.To, at g.Client
 	Notify(c ClientID, w WatchID, ch []Change) // may arrive after the Revoked or ClientEnded that ended w; the service drops it
 	Revoked(r Revocation)
-	LockWaitOver(c ClientID, w LockWaiter, granted bool) // the service forwards it and reports the client's answer through WaitAnswered
+	LockWaitOver(w LockWaiter, granted bool)             // to w.Owner.Client; the service reports the client's answer through WaitAnswered
 	Closed(f FileID, r CloseResult)                      // a close open state made itself; the service runs it, never forwarded
 	ClientEnded(c ClientID, shards []ShardID, why RevokeReason) // the lease owner ended a client: the service ends it at each shard's primary (§4.3)
 	RecallAny(c ClientID, keep int)                             // a client reached its grant budget: ask it to keep keep grants (§5.5)
@@ -2595,9 +2597,8 @@ and before the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
 `Close`, before the store's. `Start` starts the timer and nothing
 else; the service's `Start` then calls `Recovery.ServeShard` for each shard
-this node serves, which reads the shard's `GraceInstance` and incarnation,
-already raised by the node's start transaction
-([§4.4](#4.4%20Grace%20is%20per%20shard)), installs its persistent and clone
+this node serves, passing the shard's `GraceInstance`, which the node's start
+transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
 source opens, enters grace, and arms the shard's timers.
 
 There is no deadline heap. The timer is one goroutine that sweeps every 10 s
