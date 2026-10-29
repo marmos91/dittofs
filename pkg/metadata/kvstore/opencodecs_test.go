@@ -55,6 +55,9 @@ func openCodecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeOpen(fid, 9, b) }},
 		{"lock", lk, encodeLock(lk), "01" + hexU64(7) + "016f" + hexU64(uint64(entity.EndOfFile)) + "01",
 			func(b []byte) (any, error) { return decodeLock(9, 100, 4, b) }},
+		{"shard", entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}, encodeShard(entity.Shard{ID: 3, Incarnation: 5, GraceInstance: 4}),
+			"01" + hexU64(5) + hexU64(4),
+			func(b []byte) (any, error) { return decodeShard(3, b) }},
 		{"delete pending", dp, encodeDeletePending(dp), "01" + f16(1) + "0161" + ph + hexU32(0x10000) + "01",
 			func(b []byte) (any, error) { return decodeDeletePending(b) }},
 	}
@@ -101,6 +104,7 @@ func TestOpenKeyGolden(t *testing.T) {
 		{"client name", clientNameKey(entity.ProtocolSMB, []byte{0x11, 0x00}), "36" + "04" + "1100ff" + "0001"},
 		{"nsm", nsmKey(), "2a"},
 		{"ids", idKey(byte(IDOpen)), "3a02"},
+		{"shard", shardKey(3), "2d" + hexU64(3)},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
