@@ -848,6 +848,19 @@ func TestRefusalsOfOverlappingGrants(t *testing.T) {
 // Refusing one callback grant releases nothing a newer grant to the same owner
 // covers, whether the newer grant is accepted before the refusal or after it.
 func TestRefusalSparesANewerGrant(t *testing.T) {
+	refusalSparesTheOther(t, true)
+}
+
+// Refusing one callback grant releases nothing an older grant to the same owner
+// covers, whether the older grant is accepted before the refusal or after it.
+func TestRefusalSparesAnOlderGrant(t *testing.T) {
+	refusalSparesTheOther(t, false)
+}
+
+// refusalSparesTheOther grants h [0,15) and then [10,20), refuses the older
+// grant or the newer one and accepts the other, in either order, and checks
+// that the accepted grant still holds [10,15).
+func refusalSparesTheOther(t *testing.T, refuseOlder bool) {
 	for name, acceptFirst := range map[string]bool{"accepted, then other refused": true, "refused, then other accepted": false} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
@@ -864,11 +877,15 @@ func TestRefusalSparesANewerGrant(t *testing.T) {
 				}
 				return ws[0].w
 			}
-			w1, w2 := grant(a, br(0, 15), x(0, 15)), grant(b, br(15, 5), x(10, 10))
+			older, newer := grant(a, br(0, 15), x(0, 15)), grant(b, br(15, 5), x(10, 10))
+			accepted, refused := newer, older
+			if !refuseOlder {
+				accepted, refused = older, newer
+			}
 			answers := []struct {
 				w       LockWaiter
 				refused bool
-			}{{w2, false}, {w1, true}}
+			}{{accepted, false}, {refused, true}}
 			if !acceptFirst {
 				answers[0], answers[1] = answers[1], answers[0]
 			}
@@ -879,7 +896,7 @@ func TestRefusalSparesANewerGrant(t *testing.T) {
 			}
 			o := f.host(t, "o", 1)
 			if _, err := f.lock(o, file, LockReq{Owner: owner(o, "o"), Ranges: []LockRange{x(10, 5)}}); err == nil {
-				t.Errorf("h accepted the grant of [10,20), yet o was granted [10,15)")
+				t.Errorf("h accepted the grant of %v, yet o was granted [10,15)", accepted.Range.ByteRange)
 			}
 		})
 	}

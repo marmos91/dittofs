@@ -152,6 +152,21 @@ func (ls *lockState) dropOffers(r ByteRange) {
 	ls.offers = kept
 }
 
+// unoffered is what of rs none of offers covers: that part another offer's
+// own answer decides, so a refusal releases only the rest.
+func unoffered(rs []ByteRange, offers []offer) []ByteRange {
+	for _, o := range offers {
+		for _, ol := range o.left {
+			var rest []ByteRange
+			for _, r := range rs {
+				rest = append(rest, ranges.Minus(r, ol)...)
+			}
+			rs = rest
+		}
+	}
+	return rs
+}
+
 func (ls *lockState) openToken() uint64 { return openToken(ls.open) }
 
 // openToken is the token naming o; zero for none.
@@ -405,8 +420,6 @@ func (t *Table) serve(e *entry, out *outbox) {
 			e.waiters = slices.Delete(e.waiters, i, i+1)
 			if ls := e.lockState(w.Owner, w.Open); ls != nil {
 				ls.add(w.Range)
-				// the newer grant answers its range for the older offers
-				ls.dropOffers(w.Range.ByteRange)
 				ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
 			}
 			out.over = append(out.over, waitOver{*w, true})
@@ -650,8 +663,13 @@ func (v locks) WaitAnswered(ctx context.Context, who Caller, w LockWaiter, refus
 		}
 		o := ls.offers[i]
 		ls.offers = slices.Delete(ls.offers, i, i+1)
+		if !refused {
+			for _, l := range o.left {
+				ls.dropOffers(l) // what the owner accepted, no other refusal releases
+			}
+		}
 		if refused {
-			_ = ls.unlock(o.left)
+			_ = ls.unlock(unoffered(o.left, ls.offers))
 			t.tidy(e, ls)
 			t.serve(e, &out)
 		}
