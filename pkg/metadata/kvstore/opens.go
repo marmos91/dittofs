@@ -212,12 +212,11 @@ func (o Opens) SetLocks(ctx context.Context, share entity.ShareID, file entity.F
 		}
 	}
 	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
-		cur, err := persistentOpen(tx, share, file, open)
-		if err != nil {
+		if _, err := persistentOpen(tx, share, file, open); err != nil {
 			return err
 		}
 		if rec != nil {
-			if rec.ID != open || rec.Durability != cur.Durability {
+			if rec.ID != open || rec.Durability != entity.DurabilityPersistent {
 				return merrs.NewInvalidArgumentError("rec is not this open")
 			}
 			if err := tx.Set(openKey(share, file, open), encodeOpen(*rec)); err != nil {

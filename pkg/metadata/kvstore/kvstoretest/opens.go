@@ -257,6 +257,11 @@ func testDurableLockChanges(t *testing.T, kvo Opener) {
 	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &other, nil, []entity.LockRecord{c}); err == nil {
 		t.Error("another open's record written with p's locks")
 	}
+	demoted := rec
+	demoted.Durability = entity.DurabilityDurable
+	if err := opens.SetLocks(ctx, f.share.ID, file.ID, p.ID, &demoted, nil, []entity.LockRecord{c}); err == nil {
+		t.Error("p's record rewritten as not persistent with its locks")
+	}
 	if err := opens.SetLocks(ctx, f.share.ID, file.ID, plain.ID, nil, []entity.LockRecord{b}, nil); err == nil {
 		t.Error("locks stored under an open that is not persistent")
 	}
