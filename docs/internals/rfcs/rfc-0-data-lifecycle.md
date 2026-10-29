@@ -1119,9 +1119,10 @@ extent and the version dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20even
 **Lost** — never as zeros, and never as older content, since it replaced none.
 A stop commits every pending existence before the journal closes, so a clean
 stop leaves none to re-apply. Only a lost journal device, which takes the loss
-record with it, leaves an acknowledged append or hole fill with no trace: the
-file reads as it did before the write — shorter, or a hole — and the shares the
-device served are refused until the loss is acknowledged ([§10](#10.%20Failure%20model)).
+record with it, or a device that loses acknowledged syncs ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), leaves
+an acknowledged append or hole fill with no trace: the file reads as it did before
+the write, shorter or with a hole. A lost device's shares are refused until the loss
+is acknowledged ([§10](#10.%20Failure%20model)). After lost syncs, nothing refuses them.
 
 > decision: appends and hole fills are not committed before a stability reply,
 > so a flush of them costs one journal sync and no metadata transaction. The

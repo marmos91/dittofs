@@ -377,7 +377,13 @@ derived from its identifier.
 
 ```go
 Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
-Open(ctx context.Context, dir string, floor Version, expect JournalID) (*Journal, error)
+Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark) (*Journal, error)
+
+type SyncMark struct {
+    Segment  uint64 // the segment id the stream's last recorded sync reached
+    Offset   int64  // its synced-through offset in that segment
+    Sequence uint64 // the highest sequence number that sync covered
+}
 Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
 (*Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error)
 (*Journal) Forget(ctx context.Context, tag ShareTag) error
@@ -396,7 +402,8 @@ One journal serves several shares. Each share's engine works through its own
 written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), so recovery rebuilds each
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
-this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
+this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)); `marks` are the per-stream sync marks the caller recorded,
+which recovery checks the scanned tails against ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
 
 **A call that does I/O or can wait takes a context first.** Those are the calls
 that append a record, read a segment, sync, or wait on another operation: `Init`,
@@ -1168,6 +1175,7 @@ walk can produce is omitted.
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
+| `SyncMarks` | value | per append stream, the `SyncMark` its last completed sync reached; the group commit records them ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -1679,7 +1687,8 @@ keeps its original numbers, which is the same record copied, not a number issued
 again. A re-append given new numbers would outrank records appended after the
 original — a release, a removal, a later write's loss record — and a crash would
 then bring back what those had covered. On recovery the next of each **MUST** exceed
-every one found on disk, and the next content version the floor too, taken from
+every one found on disk, the next sequence number every sync mark's too
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and the next content version the floor too, taken from
 the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).
