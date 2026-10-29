@@ -352,3 +352,39 @@ func TestCallbackWaiterPastTheRangeCapIsAnsweredNotGranted(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A new open holds its place under its client's cap from the check on: an
+// open of the client racing it past the check takes no place it counted on,
+// so an app-instance create the cap refuses has closed no predecessor.
+func TestOpenCapHoldsItsPlace(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd
+	as := func(who Caller, v uint64) OpenRequest {
+		q := keep(r, entity.DurabilityDurable, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: [2]uint64{1, v}}, true
+		return q
+	}
+	f.mustOpen(t, a, file, as(a, 5))
+	f.mustOpen(t, b, in(1), OpenRequest{Access: rd}) // b's shard listed, so its next opens write nothing
+	f.lower(cappedOpens, 2)
+	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
+	f.d.Rand = rnd
+	rnd.armed.Store(true)
+	created := make(chan error)
+	go func() {
+		_, err := f.open(b, file, as(b, 6))
+		created <- err
+	}()
+	<-rnd.entered // past the cap check, minting its reference
+	_, other := f.open(b, in(1), OpenRequest{Access: rd})
+	close(rnd.released)
+	err := <-created
+	if e := f.entryOf(file.ID); err != nil && (e == nil || len(e.opens) == 0) {
+		t.Errorf("a create the cap refused closed its predecessor first: %v", err)
+	}
+	if (err == nil) == (other == nil) {
+		t.Errorf("the create %v and the open racing it %v: want one refused for the cap", err, other)
+	}
+}
