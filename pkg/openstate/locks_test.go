@@ -1194,7 +1194,8 @@ func errOf2(_ uint32, err error) error { return err }
 func ptr[T any](v T) *T { return &v }
 
 // Until its confirm, an owner's one open is usable by nothing else: a
-// close, a downgrade or a lock under it is ErrBadState and advances nothing,
+// close, a downgrade or a lock under it, a lock numbered or not, is
+// ErrBadState and advances nothing,
 // and a new open from the owner, whatever its number, replaces it, the first
 // released and the confirm asked again.
 func TestUnconfirmedOwner(t *testing.T) {
@@ -1216,6 +1217,10 @@ func TestUnconfirmedOwner(t *testing.T) {
 	lock := LockReq{Owner: owner(a, "lo"), Open: refOf(first), Ranges: []LockRange{x(0, 10)}, Seqs: Seqs{Owner: ptr(uint32(2)), NewOwner: 1}}
 	if _, err := f.lock(a, file, lock); !errors.Is(err, ErrBadState) {
 		t.Errorf("a lock under the unconfirmed owner: %v, want ErrBadState", err)
+	}
+	lock.Seqs = Seqs{}
+	if _, err := f.lock(a, file, lock); !errors.Is(err, ErrBadState) {
+		t.Errorf("an unnumbered lock under the unconfirmed owner: %v, want ErrBadState", err)
 	}
 
 	res, err = f.Opens().Open(ctx, a, anyFile(), OpenRequest{Access: rd, Owner: oo, Seqs: num(40)})

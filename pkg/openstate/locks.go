@@ -502,6 +502,9 @@ func (v locks) Lock(ctx context.Context, who Caller, f FileKey, r LockReq) (Lock
 			if op != nil && !t.mayUse(op, who) {
 				return ErrNotYours
 			}
+			if op != nil && !t.confirmed(op) {
+				return ErrBadState // the owner's sequence refuses it only when numbered
+			}
 			if res, err = t.lock(ctx, e, f.Shard, r, op, &out); err == nil && introduces && r.Seqs.Owner != nil {
 				t.smu.Lock()
 				t.seqs.Answer(locksOwner(r.Owner), r.Seqs.NewOwner, sequence.Granted)
