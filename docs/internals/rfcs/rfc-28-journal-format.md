@@ -1083,7 +1083,7 @@ certain it wrote, **MUST** age-gate that decision, and **MUST NOT** unlink a
 file whose name it could not itself have produced.
 
 A directory that holds a segment file but no `format` file ([§2.1](#2.1%20Layout)) is not a journal
-this implementation can identify, and open **MUST** fail on it. An
+this implementation can identify, and open **MUST** fail on it with `ErrUnidentified`. An
 implementation **MUST NOT** treat such a directory as an empty journal: that
 turns data it cannot read into data it silently no longer holds, and the first
 write then mixes its own segments into the unknown ones. A directory with neither

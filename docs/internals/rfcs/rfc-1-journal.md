@@ -508,7 +508,8 @@ device's mount root, which may hold `lost+found`. It writes into the new journal
 ([RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)) a fresh journal identity and the **installation ID** it is given — the
 one the same initialisation step writes into the metadata store's Installation
 record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) — and returns the identity for the caller to record. `Open` never
-creates one ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). So a start that finds a journal and no metadata store, or
+creates one, and fails with `ErrUnidentified` on a directory that holds a segment
+and no `format` file ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). So a start that finds a journal and no metadata store, or
 a metadata store and no journal, can tell which side is missing instead of
 taking either for a first start. `Restamp` is the one change to an existing
 journal's `format` file this RFC makes: after a recovery import rebuilt the
