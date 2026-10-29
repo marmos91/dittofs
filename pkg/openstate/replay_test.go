@@ -363,10 +363,12 @@ func TestLockSequenceMismatchInvalidates(t *testing.T) {
 	if err := lockAs(1, x(100, 10)); !errors.Is(err, ErrLocked) {
 		t.Errorf("a new lock whose index wrapped to a stale sequence: %v; want the conflict, not a replay's success", err)
 	}
-	f.step(file.ID, func(e *entry) error {
+	if err := f.step(file.ID, func(e *entry) error {
 		f.timeouts(ctx, e, &outbox{}) // the timer writes the open's record again
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if got := f.stored(t, file); len(got) != 1 || got[0].LockSeq[2] != 0 {
 		t.Errorf("stored %+v, want the reset index written", got)
 	}
