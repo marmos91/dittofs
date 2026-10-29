@@ -1237,7 +1237,8 @@ record does not list, an administrator's revoke having emptied it included),
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
 it still holds locks; a live open or grant freed), `BadSeqID` (an
 NFSv4.0 owner sequence out of order), `NoRecall` (an acknowledgement of a lease
-or oplock with no recall in flight), `NotYours` (state another client or
+or oplock with no recall in flight), `CreateInUse` (an SMB create naming a create
+ID another open of its client holds, [RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)), `NotYours` (state another client or
 principal holds, §3.1) and `Revoked` (the call names state in its client's
 revoked set, not yet freed; `Admin` tells an administrator's revoke from a
 recall missed).
@@ -1254,8 +1255,8 @@ type DelayCause uint8
 const (
 	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
 	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
-	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away
+	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
+	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
@@ -1542,9 +1543,13 @@ admits. The table's own entry mutex is a leaf inside one table call or one
 timer step, and is never held when a call returns. Timer-driven table changes
 take the entry mutex alone, so one can land between a `CheckIO` and the write it
 admits; each only removes or relaxes state, which no admitted write depends on.
-The one timer step that adds state, granting a callback waiter, takes the file's
-admission lock through the `order` function the node hands the table at
-`Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)). Every table
+Wherever the table may grant or revoke on a file the call does not name —
+serving a file's waiters in the timer's steps, and after `AckRecall`,
+`FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect` and
+`Locks.ReleaseLockOwner` — it takes that file's admission lock itself, through
+the `order` function the node hands the table at `Start`
+([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the service calls
+those holding no admission lock. Every table
 call in the sketches below passes `c.Who()`: the call's client, mapped
 principal and protocol, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`.
@@ -1684,7 +1689,7 @@ it. `Close` drops the open after checking that the named client holds it.
 
 ```go
 func (s *Server) openAt(ctx context.Context, c Caller, r OpenRequest) (OpenResult, error) {
-	if r.Reconnect != nil { // SMB DHnC, DH2C: RFC 14 §8.1, matched on client, principal, create GUID, lease key
+	if r.Reconnect != nil { // SMB DHnC, DH2C: RFC 14 §8.1, matched on client, principal, share, create GUID, lease key
 		return s.reconnect(ctx, c, r)
 	}
 	for {
