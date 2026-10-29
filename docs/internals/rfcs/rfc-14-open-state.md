@@ -929,8 +929,7 @@ leaves no waiter, and its client retries. A recall is not a conflict: a
   stays offered until the client answers, and its owner keeps a list of those
   offers: the owner's own lock or unlock of a range answers first for every
   offer the range overlaps and drops it, so a refusal arriving later releases
-  nothing, as Linux lockd ignores a `GRANTED` reply for a block it has
-  already unlinked. The schedule is the adapter's; the resending is a timer
+  nothing. The schedule is the adapter's; the resending is a timer
   and holds no worker. An unanswered grant is never released for a silence
   ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)'s `decision:`).
 
@@ -1299,13 +1298,13 @@ it, it **MUST** refuse every request for open state that is not a reclaim — a
 new lock, a new open, a deny mode, a grant — whether or not it appears to
 conflict: the state it would be checked against is what was lost, so a conflict
 cannot be decided. For the same reason, in a shard whose records name any
-client that can hold a deny mode or a mandatory lock (an NFSv4 client; an SMB
-client reconnects rather than reclaims, so it holds none grace waits for: its
-persistent opens are installed with their deny modes and locks when
-`ServeShard` begins serving the shard, and anonymous I/O is judged against
-them as against any open, §8.1), it **MUST** refuse, with `ErrGrace`, every
+client that can reclaim a deny mode or a mandatory lock (an NFSv4 client), it
+**MUST** refuse, with `ErrGrace`, every
 read or write through an anonymous or unreclaimed open; without that, an NFSv3
-write lands in an extent a client is about to reclaim a lock on. In the same
+write lands in an extent a client is about to reclaim a lock on. An SMB client
+reconnects rather than reclaims: its persistent opens are installed with their
+deny modes and locks when `ServeShard` begins serving the shard, and anonymous
+I/O is judged against them as against any open (§8.1). In the same
 shards `CheckChange` refuses a
 remove or a rename of a file (`ChangeRemove`, `ChangeRename`) with `ErrGrace`,
 as an NFSv4 server refuses `REMOVE` and `RENAME` in grace: either can conflict
@@ -2216,9 +2215,10 @@ report each file left with no entry and no holder to the filesystem service,
 which runs its release. A persistent open not reconnected is closed the same way
 once its `Timeout` has passed since the primary began serving (§8.1). A clone's
 source open is held by no client: the clone's first phase writes it, and
-`Opens.CloneOpen` holds it, a new primary rebuilds it from the destination's
-`Removal` record, it is kept through grace, and only the clone's last batch
-closes it, with `Opens.CloneClose`
+`Opens.CloneOpen` holds it, a new primary rebuilds it from its own open
+record (an `OpenCloneSource`, naming the destination and version), it is
+kept through grace, and only the clone's last batch closes it, with
+`Opens.CloneClose`
 ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally),
 which also refuses a clone across shards at admission). Swept at grace end, it
 would let an unlinked source be released mid-clone and carry `Lost` into the
@@ -2549,7 +2549,7 @@ type Opens interface {
 	Delete(ctx, f FileID, o OpenID) error                       // the record, its locks and its index entry
 	ByFile(ctx, f FileID) ([]OpenRecord, error)                 // the file's and its streams' durable opens
 	ByShard(ctx, share ShareID, s ShardID) iter.Seq2[OpenRecord, error] // the shard's range of S‖id‖do: ServeShard installs from it, grace end closes from it (§9.2)
-	SetLocks(ctx, f FileID, o OpenID, rec *OpenRecord, put, del []LockRecord) error // one transaction, only under a persistent open (§8); rec: the open's new record, nil: unchanged; never split, kv.ErrTooLarge past the limits
+	SetLocks(ctx, f FileID, o OpenID, rec *OpenRecord, put, del []LockRecord) error // one transaction, only under a persistent open (§8); rec: the open's new record, nil: unchanged; never split, refused past the store's transaction limits (RFC 16 §4.1)
 	SetDeletePending(ctx, f FileID, d *DeleteRecord) error       // nil clears it; written only while the file has a persistent open (§9.4)
 }
 ```
@@ -2936,7 +2936,7 @@ Deleted numbers are not reused.
 | # | Invariant | Test |
 | --- | --- | --- |
 | L1 | All open state is keyed by file, held in one table per file at the file's primary, and visible to every adapter; that primary also runs the file's I/O. A grant is broken by exactly what §5.2's table names. | Service layer, cross-protocol: for every row of [§7](#7.%20Conflicts%20across%20protocols)'s table and §5.2's, assert the stated outcome with one protocol holding and the other requesting; a read delegation is recalled before an SMB open that denies read is granted. A single-adapter rig cannot fail this. |
-| L2 | After a loss of open state, every non-reclaim request, and every anonymous or unreclaimed I/O in a shard whose records name a client that can hold a deny mode or a mandatory lock, is refused `ErrGrace` until grace ends, and grace ends on its own. | Grant a lock, restart, have a different client request the conflicting lock at once: assert refused for the lease period; a lock on a file nobody held is refused too, and a reclaim is granted. Hold an NFSv4 deny-write open, fail over, write the file anonymously before the reclaim: assert `ErrGrace`; remove or rename the file over NFSv3 then: `ErrGrace`, and a mode change passes. An SMB client holds no deny mode grace waits for: with its deny-write open and an NLM host's lock in one shard, after the restart an anonymous write to the SMB client's file passes while a lock that is no reclaim is `ErrGrace`. |
+| L2 | After a loss of open state, every non-reclaim request, and every anonymous or unreclaimed I/O in a shard whose records name a client that can reclaim a deny mode or a mandatory lock, is refused `ErrGrace` until grace ends, and grace ends on its own. | Grant a lock, restart, have a different client request the conflicting lock at once: assert refused for the lease period; a lock on a file nobody held is refused too, and a reclaim is granted. Hold an NFSv4 deny-write open, fail over, write the file anonymously before the reclaim: assert `ErrGrace`; remove or rename the file over NFSv3 then: `ErrGrace`, and a mode change passes. An SMB client holds no deny mode grace waits for: with its deny-write open and an NLM host's lock in one shard, after the restart an anonymous write to the SMB client's file passes while a lock that is no reclaim is `ErrGrace`. |
 | L3 | A reclaim is accepted only from a client whose durable record names the shard, and every client so named is told to reclaim. | Lose the client records, restart, reclaim: assert `ErrNoReclaim`. Client C holds state only in shard U1, D a lock in U2; fail U2 over: assert C's reclaim of D's lock is refused. |
 | L3b | Two reclaims never both hold conflicting state. | Clients C and D both have records in a shard; both reclaim an exclusive lock on one range: the second is `ErrReclaimConflict` and one holder remains. Model fuzzing holds it as an invariant over every reclaim sequence. |
 | L5 | A recall ends within its deadline, by acknowledgement or revocation, and no worker waits on it. | Hold grants on 10⁴ files with a client that never answers; send conflicting opens from another. Assert each gets `ErrDelay` at once, unrelated `CheckIO` p99 stays within 2× its idle value, and no goroutine is blocked on a recall (counted). |
@@ -3205,8 +3205,8 @@ registry:
    (§2.9's second `decision:`). Recommendation: decide with question 5, since
    both need the proof level at `Propose`.
 7. **Which anonymous I/O grace refuses.** §4.2 refuses every anonymous or
-   unreclaimed I/O in a shard whose records name a client that can hold a deny
-   mode or a mandatory lock; a shard where such a client held nothing on the
+   unreclaimed I/O in a shard whose records name a client that can reclaim a
+   deny mode or a mandatory lock; a shard where such a client held nothing on the
    written file pays the refusal anyway. Recommendation: keep it until a durable
    per-file hint is shown to be worth one write per first open of a file.
 

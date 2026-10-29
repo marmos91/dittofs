@@ -871,7 +871,7 @@ file open locally, until the server takes the promise back.
   other as oplocks always have; a lease's grant is keyed by its lease key, so
   they do not.
 - The lease key, parent lease key and lease epoch are carried on the grant
-  (`Key` and `Epoch`, the parent lease key in the grant's `Adapter`,
+  (`Key`, `Parent` and `Epoch`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
   every open of a file by one client under one key; a key already naming a
   grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
@@ -2250,7 +2250,8 @@ mapping it needs is here.
 | `Open.LossSeen` | nothing on the wire | — | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
 | `CachingGrant.Key` | the lease key | — | an oplock has none and covers its one open |
 | `CachingGrant.Epoch`, `V2` | the v2 lease epoch, starting from the create context's | — | unsent for a v1 lease and an oplock |
-| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | the parent lease key, written with a persistent open's lease | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
+| `CachingGrant.Parent` | the v2 lease's parent lease key, as its first request named it | — | written with a persistent open's lease; never read by RFC 14 |
+| `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | — | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
 | `LockOwner.Name`; `LockOwner.Stack` true | the `OpenID` | — | SMB locks stack and two opens of one client conflict (§7) |
 | `Lock` (`LockReq.Ranges`) | every `LOCK` element, in order, in one call | — | all or none; an unlock list stops at the first range not held (MS-SMB2 3.3.5.14.1) |
 | `LockReq.Wait` | callback when `SMB2_LOCKFLAG_FAIL_IMMEDIATELY` is clear; none when set | — | only a single-element `LOCK` waits (§7) |
@@ -2268,7 +2269,7 @@ owner and sets `Stack`.
 
 **The `Adapter` bytes** start with an adapter-defined version, so a node of
 another version refuses what it cannot read rather than misreading it, and
-RFC 14 never reads them. Today only a grant's carry anything.
+RFC 14 never reads them. Today no SMB record's carry anything.
 
 **Topology on the wire.** Clients of a continuously available share learn where
 to move through Witness (§14); a by-reference copy across shards is §16.5's

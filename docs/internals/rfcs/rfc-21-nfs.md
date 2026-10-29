@@ -2289,8 +2289,6 @@ with a version byte, and hold:
 - for an NLM host, where its restart notice goes: `mon_name` and the `priv`
   cookie (§6.2).
 
-A caching grant carries no `Adapter` bytes for NFS.
-
 The `Reach.Sessions` row is cluster-only: on one node the list is local. Without it,
 a node asked to destroy a client would see none of the client's sessions on
 other nodes and release state they still use. The `Shards` row binds on one
