@@ -571,14 +571,11 @@ func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 			g.fsm.Timeout()
 			t.recount(g)
 			for _, h := range e.opens {
-				switch {
-				case h.Grant != g.id:
-				case h.persistent():
+				if h.Grant == g.id && h.persistent() {
 					t.save(ctx, e, h) // the cut is the timer's, with no caller to refuse
-				case h.parked != 0:
-					t.closeByTable(ctx, e, h, out) // a durable open is kept only under handle caching
 				}
 			}
+			t.closeUncached(ctx, e, g, out)
 			continue
 		}
 		t.idx.Lock()
@@ -595,6 +592,17 @@ func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 	t.idx.Lock()
 	delete(t.recalling, e.file)
 	t.idx.Unlock()
+}
+
+// closeUncached closes each disconnected durable open g covers that is not
+// persistent, once g holds no handle caching: such an open is kept only under
+// it, and a reconnect of it is refused without it.
+func (t *Table) closeUncached(ctx context.Context, e *entry, g *grant, out *outbox) {
+	for _, h := range e.opens {
+		if h.Grant == g.id && h.parked != 0 && !h.persistent() {
+			t.closeByTable(ctx, e, h, out)
+		}
+	}
 }
 
 // cachedByOther reports whether a grant with read or write caching that
@@ -676,6 +684,9 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 			t.dropGrant(e, g)
 		} else {
 			t.recount(g)
+		}
+		if g.fsm.Kind&GrantHandle == 0 {
+			t.closeUncached(ctx, e, g, &out)
 		}
 		t.serve(ctx, e, &out)
 		return err

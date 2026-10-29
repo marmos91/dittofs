@@ -1084,3 +1084,32 @@ func TestTableCloseWritesPendingFirst(t *testing.T) {
 		t.Errorf("the last close after the restart: %+v, want the unlink of doc", res)
 	}
 }
+
+// A parked durable open whose lease an acknowledgement leaves without handle
+// caching is closed then, its deny mode with it, and cannot reconnect: the
+// lease's open on another session answered the break for it.
+func TestParkedOpenGoesWithAnAckedHandle(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file := anyFile()
+	req := OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh}
+	o1, g := f.grantOpen(t, a, file, keep(req, entity.DurabilityDurable, s1, time.Minute, 1))
+	o2 := f.mustOpen(t, a, file, keep(req, entity.DurabilityDurable, s2, time.Minute, 2))
+	if g == nil || g.Kind != rwh {
+		t.Fatalf("the lease: %+v", g)
+	}
+	f.disconnect(t, a, s1)
+	if _, err := f.open(b, file, OpenRequest{Access: rd, Deny: rd}); delayedFor(err) != DelayRecall {
+		t.Fatalf("a deny-read open: %v, want a recall of handle caching", err)
+	}
+	if err := f.ack(a, g, rw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reconnect(a, o1, ReconnectMatch{Share: file.Share, Create: [16]byte{1}, Lease: LeaseKey{1}}, s3); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("the reconnect of an open whose lease lost handle caching: %v, want ErrNoReclaim", err)
+	}
+	f.close(t, a, o2)
+	if _, err := f.open(b, file, OpenRequest{Access: rd, Deny: rd}); err != nil {
+		t.Errorf("a deny-read open once the live open closed: %v", err)
+	}
+}
