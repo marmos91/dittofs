@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +80,39 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 	for _, c := range cells {
 		if slices.Contains(conformance, c.Suite) && !slices.Contains(c.Needs, "service:localstack") {
 			t.Errorf("%s doesn't run badger-s3: needs %v", c.Name, c.Needs)
+		}
+	}
+}
+
+// The dedicated host's nightly is the performance night, then the long
+// scenarios, on a host quiet for the first: those two cells, in that order,
+// and no tier before nightly sends a cell there. The night stops itself
+// before dt's limit, which kills it with no cleanup and no post.
+func TestDedicatedNight(t *testing.T) {
+	r := repo(t)
+	for _, tier := range []string{"pr", "merge", "nightly"} {
+		cells, err := Plan("../../..", r, tier, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got, want []string
+		for _, c := range cells {
+			if c.Place == "dedicated" {
+				got = append(got, c.Name)
+			}
+			if c.Name == "perf-night" {
+				limit, _ := time.ParseDuration(c.TestTimeout)
+				stop, _ := strconv.Atoi(r.Suite("perf-night").Env.All["STOP_AFTER"])
+				if stop == 0 || time.Duration(stop)*time.Second >= limit {
+					t.Errorf("perf-night stops after %ds, but dt's limit is %s", stop, c.TestTimeout)
+				}
+			}
+		}
+		if tier == "nightly" {
+			want = []string{"perf-night", "system/dedicated"}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: the dedicated host's cells %v, want %v", tier, got, want)
 		}
 	}
 }

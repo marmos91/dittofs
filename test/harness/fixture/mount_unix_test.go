@@ -4,6 +4,7 @@ package fixture
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -30,7 +31,9 @@ import (
 // a share at DT_FAKE_VERS or none, a powershell that logs the share it maps
 // and whether its command line holds the password, fails as the mount does,
 // and prints drive Z: at DT_FAKE_VERS, and a net that logs. It returns a
-// function giving the calls so far.
+// function giving the calls so far. The unmount keeps its own waits, which a
+// fake that doesn't hang never reaches however slowly it starts; a test of a
+// hang shortens them itself.
 func fakeMounts(t *testing.T) func() []string {
 	t.Helper()
 	dir := t.TempDir()
@@ -71,7 +74,6 @@ echo "Z: $DT_FAKE_VERS"`,
 	t.Setenv("DT_FAKE_MOUNTINFO", table)
 	realInfo, realEuid, realWaits, realGOOS := mountinfo, geteuid, unmountWaits, goos
 	mountinfo, geteuid, goos = table, func() int { return 1000 }, "linux"
-	unmountWaits = [2]time.Duration{time.Second, time.Second}
 	t.Cleanup(func() { mountinfo, geteuid, unmountWaits, goos = realInfo, realEuid, realWaits, realGOOS })
 	return func() []string {
 		data, _ := os.ReadFile(log)
@@ -137,21 +139,23 @@ func TestMountShare(t *testing.T) {
 // Stop removes it.
 func TestMountSMB(t *testing.T) {
 	for _, tc := range []struct {
-		name, goos, vers, fail string
-		want, wantErr          string // the client's call, {mount} and {data} filled in, or the error
+		name, goos, dialect, vers, fail string
+		want, wantErr                   string // the client's call, {mount} and {data} filled in, or the error
 	}{
-		{"cifs", "linux", "3.1.1", "", "sudo -n mount -t cifs -o vers=3.1.1,port=40002,credentials={data}/smb-credentials //10.0.0.9/smbbasic {mount}", ""},
-		{"cifs at another dialect", "linux", "3.0", "", "", "is mounted at SMB 3.0, not 3.1.1"},
-		{"cifs mounts nothing", "linux", "", "", "", "mount exited 0, but nothing is mounted at"},
-		{"cifs fails", "linux", "", "mount error(13): Permission denied", "", "mount error(13): Permission denied"},
-		{"smbfs", "darwin", "3.1.1", "", "mount_smbfs -N -o nobrowse //dt-user:s3cret@10.0.0.9:40002/smbbasic {mount}", ""},
-		{"smbfs at another dialect", "darwin", "3.0.2", "", "", "is mounted at SMB 3.0.2, not 3.1.1"},
-		{"smbfs mounts nothing", "darwin", "", "", "", "smbutil statshares lists 0 shares mounted there"},
-		{"smbfs fails", "darwin", "", "mount_smbfs: server rejected the connection: Authentication error", "", "Authentication error"},
-		{"mapping", "windows", "3.1.1", "", `powershell \\10.0.0.9\smbbasic 40002 dt-user 10.0.0.9 smbbasic`, ""},
-		{"mapping at another dialect", "windows", "3.0.2", "", "", "Z: is mounted at SMB 3.0.2, not 3.1.1"},
-		{"mapping prints no dialect", "windows", "", "", "", "printed no drive and dialect"},
-		{"mapping fails", "windows", "", "New-SmbMapping : The network path was not found.", "", "The network path was not found"},
+		{"cifs", "linux", "", "3.1.1", "", "sudo -n mount -t cifs -o vers=3.1.1,port=40002,credentials={data}/smb-credentials //10.0.0.9/smbbasic {mount}", ""},
+		{"cifs at another dialect", "linux", "", "3.0", "", "", "is mounted at SMB 3.0, not 3.1.1"},
+		{"cifs mounts nothing", "linux", "", "", "", "", "mount exited 0, but nothing is mounted at"},
+		{"cifs fails", "linux", "", "", "mount error(13): Permission denied", "", "mount error(13): Permission denied"},
+		{"cifs at the fixture's dialect", "linux", "2.1", "2.1", "", "sudo -n mount -t cifs -o vers=2.1,port=40002,credentials={data}/smb-credentials //10.0.0.9/smbbasic {mount}", ""},
+		{"cifs not at the fixture's dialect", "linux", "2.1", "3.1.1", "", "", "is mounted at SMB 3.1.1, not 2.1"},
+		{"smbfs", "darwin", "", "3.1.1", "", "mount_smbfs -N -o nobrowse //dt-user:s3cret@10.0.0.9:40002/smbbasic {mount}", ""},
+		{"smbfs at another dialect", "darwin", "", "3.0.2", "", "", "is mounted at SMB 3.0.2, not 3.1.1"},
+		{"smbfs mounts nothing", "darwin", "", "", "", "", "smbutil statshares lists 0 shares mounted there"},
+		{"smbfs fails", "darwin", "", "", "mount_smbfs: server rejected the connection: Authentication error", "", "Authentication error"},
+		{"mapping", "windows", "", "3.1.1", "", `powershell \\10.0.0.9\smbbasic 40002 dt-user 10.0.0.9 smbbasic`, ""},
+		{"mapping at another dialect", "windows", "", "3.0.2", "", "", "Z: is mounted at SMB 3.0.2, not 3.1.1"},
+		{"mapping prints no dialect", "windows", "", "", "", "", "printed no drive and dialect"},
+		{"mapping fails", "windows", "", "", "New-SmbMapping : The network path was not found.", "", "The network path was not found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := fakeMounts(t)
@@ -159,7 +163,7 @@ func TestMountSMB(t *testing.T) {
 			t.Setenv("DT_FAKE_VERS", tc.vers)
 			t.Setenv("DT_FAKE_MOUNT_FAIL", tc.fail)
 			var w bytes.Buffer
-			s := &Server{smbPort: 40002, data: t.TempDir(), shares: []apiclient.CreateShareRequest{{Name: "/smbbasic"}, {Name: "/other"}}, out: &w}
+			s := &Server{f: registry.Fixture{SMB: registry.SMB{Dialect: tc.dialect}}, smbPort: 40002, data: t.TempDir(), shares: []apiclient.CreateShareRequest{{Name: "/smbbasic"}, {Name: "/other"}}, out: &w}
 			err := s.mountSMB(context.Background(), "10.0.0.9", "s3cret")
 			if tc.goos != "windows" {
 				t.Cleanup(func() { _ = os.Remove(s.mount) })
@@ -186,7 +190,7 @@ func TestMountSMB(t *testing.T) {
 			if creds, _ := os.ReadFile(filepath.Join(s.data, "smb-credentials")); tc.goos == "linux" && string(creds) != "username=dt-user\npassword=s3cret\n" {
 				t.Errorf("credentials %q", creds)
 			}
-			if mount := map[string]string{"windows": "Z:"}[tc.goos]; mount != "" && s.mount != mount || !strings.Contains(w.String(), "SMB 3.1.1 mounted at "+s.mount+", as dt-user") {
+			if mount := map[string]string{"windows": "Z:"}[tc.goos]; mount != "" && s.mount != mount || !strings.Contains(w.String(), "SMB "+cmp.Or(tc.dialect, "3.1.1")+" mounted at "+s.mount+", as dt-user") {
 				t.Errorf("{mount} %q; dt's lines:\n%s", s.mount, w.String())
 			}
 		})
@@ -273,6 +277,10 @@ func TestUnmount(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := fakeMounts(t)
+			if tc.umount == "hang" {
+				// the fake sleeps 5 s; shorter waits make unmount give up on it
+				unmountWaits = [2]time.Duration{time.Second, time.Second}
+			}
 			t.Setenv("DT_FAKE_VERS", "4.1")
 			t.Setenv("DT_FAKE_UMOUNT", tc.umount)
 			var w bytes.Buffer

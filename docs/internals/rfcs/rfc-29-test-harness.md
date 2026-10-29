@@ -463,7 +463,7 @@ suites:
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...   # tagged tests compile
       - go run ./test/spec-citations
       - test/required-tests.sh
-      - golangci-lint run --timeout=5m          # the version lint.yml pins
+      - golangci-lint run --timeout=5m          # the version tests.yml pins
   lint-repo:
     job: Repo Checks
     tier: pr
@@ -578,7 +578,7 @@ suites:
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as pynfs's baseline-knfsd.sh sets knfsd up
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # the kernel's server, set up as pynfs needs it
         tier: manual
         blocking: false
   wpts:
@@ -672,28 +672,31 @@ suites:
     tier: nightly
     needs: [linux]
 
-  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount:
-  # on each OS, the checks of smb-client-compat.yml's job there, which this replaces once its
-  # results match. The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
+  # Each OS's own client mounts the fixture's share over SMB, and the workloads run over the mount.
+  # The suite itself is the Linux run; macOS and Windows run a smoke test (§9).
   clients:
     tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
     cmd: "{test} {mount} {bucket}"     # s3.sh sees a block reach the bucket; the others take the mount alone
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
-    tier: nightly
-    blocking: false                     # until the three cells match smb-client-compat.yml; blocking when it goes
+    tier: merge                         # after each merge, on every branch tests.yml runs; macOS and Windows nightly
     options:                            # hosted macOS runners have no Docker, and Windows runners run Windows containers only, so no S3 there
+      smb21:                            # SMB 2.1, Windows 7's newest, from a real client: Linux's, asked for it
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
         cmd: "{test} {mount}"
         env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
         needs: [macos]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
       windows:                          # a script isn't a program there: PowerShell runs it
         tests: [test/clients/files.ps1]
         cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
         needs: [windows]
         fixture: { profile: memory, smb: { mount: true } }   # New-SmbMapping -TcpPort, no port 445
+        tier: nightly
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
@@ -880,7 +883,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison: the kernel's NFS server, serving NFSv4.0, 4.1 and 4.2 over TCP on 2049, its `{nfs-port}`, and not NFSv3. `rpc.nfsd` still reads the host's `/etc/nfs.conf` for the rest, so a listener it adds there, such as RDMA's, is the host's. It exports a tmpfs of its own to `{server}` alone, as the NFSv4 root, with `/export` in it, since the kernel won't export the overlay file system a container's `/tmp` is. Where the kernel's tmpfs has no POSIX ACLs, as Docker Desktop's, the server has none either, and pynfs's ACL tests skip, which the cell reports. A `knfsd` fixture sets `nfs: export`, and at most `squash: none` and `lease`; it gives `{server}` and `{nfs-port}`, and no `{bin}`. It implies `root`, `knfsd` and `port:2049` (below), so the kernel's server that `dt` starts and stops is its own. It fails when the kernel's list of versions lacks one of the three, since `rpc.nfsd` only logs a version the kernel refuses. It sets the server's grace period to 10 seconds, the least, and waits it out before the first test. The lease and grace times are the kernel's for every server on that network stack, so `dt` restores them when it stops the server |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. In the mapping the version may be left out, for options that name it: their `vers=` gives it, and with none the kernel negotiates it, as cthon04's `default` set does. `export` exports the share without a mount, for pynfs and nfstest, which mounts by itself |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1`, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the first share at `{mount}` as `{user}`, on the fixture's SMB port, with the machine's own SMB client, which must then report it mounted at SMB 3.1.1, or at `{ dialect: ... }` when the fixture sets one, the dialect `dt` prints, as an NFS mount's version is: `mount.cifs` on Linux, as root, asked for `vers=3.1.1` or that dialect, the only client that can be asked for one, with `{password}` in a credentials file; `mount_smbfs` on macOS, as the user `dt` runs as, whose mount it then is, with `{password}` in the share's URL, the only way it takes one but a terminal's prompt, so on its command line while it runs, and its dialect from `smbutil statshares`; and on Windows `New-SmbMapping -TcpPort`, as that user, on the last free drive letter, then `{mount}`, with `{password}` from the environment, and its dialect from `Get-SmbConnection`. A fixture mounts its share over NFS or over SMB, not both |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -1190,7 +1193,8 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
-- **hosts:** `host:dedicated`, met only by the dedicated test host;
+- **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
+  `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
 
@@ -1244,13 +1248,14 @@ them. The host runs `dt run --tier nightly --place dedicated` from cron, on deve
 only: just the cells hosted runners can't take, so it doesn't repeat the hosted nightly. It
 publishes its summary to the develop-status issue (§4.8) with a token that can only write issues.
 
-**Versions come from one place.** Today Go is `1.26.0` in `go.mod`, `1.26.x` in the workflows,
-`1.26.8` in the `dtc` image, and a floating `1.26` in the e2e-linux image. The pjdfstest and pynfs
-revisions are copied into Dockerfiles from `flake.lock`, and CI builds the tools with
-`nix build .#pjdfstest` and `.#pynfs`. Proposed: one Go pin (a `toolchain` line in `go.mod`), read
-by the workflows and the images. The test tools stay pinned in `flake.lock`: CI and laptops with
-Nix build them from it, as today, and `lint-repo` fails a Dockerfile whose copied revision differs
-from it. Only Linux cells use the tools, so no macOS or Windows cell needs Nix.
+**Versions come from one place.** Go is one pin, the `toolchain` line of `go.mod`: the workflows
+read it (`go-version-file`), and `lint-repo` fails an image whose `golang` tag (the root, operator
+and dtc Dockerfiles), or the operator's module whose `toolchain` line, names another release. The
+`go` line stays the oldest release the module builds with. golangci-lint is one version too:
+`lint-repo` fails a pin in `tests.yml` or the operator's Makefile other than the dtc image's.
+The test tools stay pinned in `flake.lock`: CI and laptops with Nix build them
+from it, and `lint-repo` fails a Dockerfile whose copied revision differs from it. Only Linux
+cells use the tools, so no macOS or Windows cell needs Nix.
 
 ### 4.6 Results
 
@@ -1315,7 +1320,9 @@ podman runs `setup.sh` keeps the logs in its own cache.
 ```
 
 The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
-kernel the run was on, as `uname -r` gives it. A cell's `result` is `passed`, `failed`, `skipped`
+kernel the run was on, as `uname -r` gives it. `place` is the place `--place` named, and is left
+out of a run without one, so the dedicated host's nightly run reads apart from one run by hand.
+A cell's `result` is `passed`, `failed`, `skipped`
 or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
 stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
 come from the interrupt itself.
@@ -1403,7 +1410,9 @@ nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as n
 doesn't take the lock itself, so `setup.sh` stays the lock's only owner. The suite's `env` sets
 `SLACK_DIR` to a directory that doesn't exist, so `setup.sh` posts nothing to the scenarios' Slack
 channel from a run through `dt`, which reports its results itself; its own runs, such as the
-dedicated host's schedule, keep their messages.
+scenario cron on the dedicated host, keep their messages. The dedicated host's nightly is a `dt`
+run too, and its `perf-night` cell posts the night's figure: its `env` gives `SLACK_DIR` the bot's
+directory (§4.10).
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
@@ -1716,7 +1725,9 @@ One workflow, `tests.yml`, runs every registered suite:
   `integration`'s Kerberos and portmap options as steps after the suite, each even when one
   before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
-  the unit job did, unless a retry rewrote it with the retried tests' alone. A fixed job's
+  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov's project
+  check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
+  profile moves by up to about 0.1% between runs of the same code. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
@@ -1767,8 +1778,10 @@ file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
   failures are the tests both servers fail, its new failures those only the kernel's server fails,
   and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
-  results are a run's like any other's; pynfs's `baseline-knfsd.sh` and the `baseline-knfsd.md`
-  it writes go with `nfs-pynfs.yml`'s baseline job (§8 step 3).
+  results are a run's like any other's. In CI, a dispatch of `tests.yml` at the `manual` tier runs
+  it, its cells non-blocking, on a runner that installs the kernel's server and stops the one the
+  package starts. It replaced `nfs-pynfs.yml`, pynfs's `baseline-knfsd.sh` and the
+  `baseline-knfsd.md` it wrote (§8 step 3).
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
@@ -1785,7 +1798,7 @@ Four things stay outside the registry:
 - **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
 - **nfstest's knfsd baseline,** `nfs-knfsd-baseline.yml`, a dispatch-only evidence job (§3).
 
-`smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
+`smb-client-compat.yml` went once the `clients` suite's results matched it on each OS.
 
 **Develop goes red.** `tests.yml`'s `post` job does this for `tests.yml`, and the dedicated host for
 its own cells (§4.5). A workflow still outside `tests.yml` runs no `dt`, so it has no failing set
@@ -1855,8 +1868,14 @@ a percentage.
   (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
-- **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
-  below its 7-day median for three nights in a row adds a note to the develop-status issue.
+- **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
+  `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
+  point, an area or the night's figure that falls below its 7-day median by more than its noise
+  band, which a calibration week's repeats set. Slack gets the night by the scenarios' rules. The
+  night ends five minutes before `dt`'s limit (`STOP_AFTER`), so one that overruns still cleans
+  up and posts: `dt` kills at its limit with no cleanup. The
+  cell fails when a step fails or times out, or the night can't be scored, and so reaches the
+  develop-status issue (§4.5); a flag fails nothing.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
   only) and the journal simulation (many small files against large segments under heavy writes).
   They use the same result format, so runs compare over time.
@@ -2024,9 +2043,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      These move without running beside their old jobs: those ran the commands `dt` runs, and a job
      that keeps its check name can't report beside an old job of that name. So do AD-DC, the
      performance gates and `bench-smoke.yml`, whose jobs ran `go test` and `dfsbench run --smoke`
-     with the mailbox job files' parse. When pynfs's cells move, `nfs-pynfs.yml` keeps only its
-     knfsd baseline, on dispatch, until `dt run pynfs --knfsd` replaces it (§4.8), and leaves
-     `ci-health.yml`'s lists, since it no longer tests a commit.
+     with the mailbox job files' parse. When pynfs's cells moved, `nfs-pynfs.yml` kept only its
+     knfsd baseline, on dispatch, and left `ci-health.yml`'s lists, since it no longer tested a
+     commit, until `dt run pynfs --knfsd` replaced it (§4.8).
    - `ci-health.yml` watches `tests.yml` from its own list once `suites.json` goes (§4.1), and
      re-runs no workflow's failed jobs once `conformance.yml` goes, since `dt`'s retry replaces
      that.

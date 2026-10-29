@@ -1,5 +1,6 @@
-# Assign Reviewers: request two random maintainers on every new PR, never its
-# author, so the two-approval ruleset always has someone asked.
+# Assign Reviewers: request one maintainer on every new PR, picked at random
+# from the author's own reviewer pool. An author outside the table, or a pool
+# emptied by an exclusion, falls back to any maintainer but the author.
 #
 # pull_request_target runs the copy of this file on the PR's base branch, so it
 # must live on every branch listed below. It is safe for fork PRs because it
@@ -24,9 +25,25 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
-        # Maintainers are the repo's collaborators with write access.
         run: |
-          picks=$(gh api "repos/$REPO/collaborators" --paginate \
-            --jq '.[] | select(.permissions.push) | .login' \
-            | grep -vx "$AUTHOR" | shuf -n 2 | paste -sd, -)
-          gh pr edit "$PR" --repo "$REPO" --add-reviewer "$picks"
+          case "$AUTHOR" in
+            didimelli)      pool="rif viquitorreis marmos91" ;;
+            llucian-iws)    pool="rif viquitorreis simonebaracchi" ;;
+            rif)            pool="llucian-iws viquitorreis marmos91" ;;
+            viquitorreis)   pool="rif simonebaracchi llucian-iws" ;;
+            marmos91)       pool="simonebaracchi llucian-iws didimelli" ;;
+            simonebaracchi) pool="marmos91 llucian-iws viquitorreis" ;;
+          esac
+
+          # Lucian does not review Radu's journal changes.
+          # The files API, unlike gh pr diff, lists PRs past 300 files.
+          if [ "$AUTHOR" = rif ] && gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' | grep -qE '^pkg/block/journal(v2)?/'; then
+            pool="${pool/llucian-iws/}"
+          fi
+
+          # Maintainers are the repo's collaborators with write access.
+          [ -n "${pool// /}" ] || pool=$(gh api "repos/$REPO/collaborators" --paginate \
+            --jq '.[] | select(.permissions.push) | .login' | grep -vx "$AUTHOR")
+
+          pick=$(printf '%s\n' $pool | shuf -n 1)
+          gh pr edit "$PR" --repo "$REPO" --add-reviewer "$pick"

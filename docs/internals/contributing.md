@@ -38,7 +38,7 @@ go build -o dfs cmd/dfs/main.go
 ```
 
 The Nix flake provides:
-- Go 1.26 with gopls, delve debugger
+- Go 1.27 with gopls, delve debugger
 - golangci-lint for code quality
 - NFS utilities for E2E testing (Linux)
 - ACL libraries for POSIX compliance testing
@@ -61,7 +61,7 @@ If you prefer not to use Nix, install dependencies manually:
 
 #### Prerequisites
 
-- Go 1.26 or higher
+- Go 1.26 or higher; format with Go 1.27.3's gofmt, since an older one indents some code differently and the lint checks fail
 - NFS client tools (for E2E testing)
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client
@@ -161,7 +161,7 @@ access to download the scanner and query the Go vulnerability database, and
 can use several GiB of memory. Results depend on the active Go toolchain,
 platform, build settings, and current database; tests are not included in the
 scan. Check `go version` when a report identifies standard-library issues.
-Both modules' `toolchain` line selects Go 1.26.10, so a report of
+Both modules' `toolchain` line selects Go 1.27.3, so a report of
 standard-library issues usually means an older toolchain is active.
 
 ## Testing
@@ -526,9 +526,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 | ---------- | --------- | --------- | ---------- |
-| `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), and e2e (non-blocking on PRs) so far | ~20 min |
-| `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
+| `tests.yml` | PR, push, nightly, manual | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), the SMB clients of Linux, macOS and Windows, and e2e (non-blocking on PRs) so far. Dispatched at the `manual` tier with suite `pynfs`, it also runs pynfs against Linux knfsd, the evidence for pynfs's known failures | ~20 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
 ### Conformance suites
@@ -572,7 +570,6 @@ These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
 - **tests.yml** -- the `merge` tier, with smbtorture's Kerberos option
-- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 
 ### What Runs Weekly (Full Matrix)
 
@@ -590,7 +587,6 @@ All workflows support `workflow_dispatch` for manual triggering:
 gh workflow run tests.yml -f tier=merge
 gh workflow run tests.yml -f tier=nightly
 gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref my-branch   # one suite's cells
-gh workflow run smb-client-compat.yml
 ```
 
 Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.

@@ -388,12 +388,12 @@ the recovery import ([RFC 26](rfc-26-catalog-backups.md)) call them ([§2.5](#2.
 Its four methods are the engine's only store access outside block metadata's
 views and `Refs`.
 
-**One clock and one fault interface, declared here.** The root composes the
-node, so it declares the two interfaces every component takes at construction
+**One clock and one fault interface, fixed here.** This section fixes the
+signatures of the two interfaces every component takes at construction
 ([the index's test harness](rfc-index.md#Test%20tiers), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
 seam — the journal's storage seam, the fake store, the fault transport, the
-fault-injecting metadata store — implements `Fault`. A component with a private
+fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
 **The clock is written in standard-library types only.** Each component declares
@@ -422,6 +422,10 @@ type Fault interface {
 The test clock is a concrete type the harness builds; production never builds
 one. It satisfies `Clock` and adds `Advance(d)` and `SetRate(r)`, where 1.05
 runs it 5 % fast against every other clock.
+
+Their home is `pkg/sim`: the test clock, and `Schedule`, the seeded `Fault`. Every
+check and every test of a fault-injecting seam imports them from there; production
+code never does.
 
 ### 2.2 Capabilities are parameters, never assertions
 

@@ -11,7 +11,7 @@ groups:              # `dt run GROUP` runs every suite in it
   lint: [lint-go, lint-repo, shellcheck]
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
-  perf: [fio-verify, bench-smoke]
+  perf: [fio-verify, bench-smoke, perf-night]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -289,33 +289,53 @@ suites:
     needs: [linux]
 
   # Each platform's own client mounts the fixture's share over SMB, and the workloads run over the
-  # mount: on each, the checks of smb-client-compat.yml's job there, which this replaces once its
-  # results match. The suite itself runs on linux, and also sees its blocks reach the bucket.
+  # mount. The suite itself runs on linux, and also sees its blocks reach the bucket.
   clients:
     tests: [test/clients/files.sh, test/clients/rename.sh, test/clients/s3.sh]
     cmd: "{test} {mount} {bucket}"   # s3.sh reads the bucket's listing; the others take the mount alone
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
-    tier: nightly
-    # decision: reported, never failing the gate, until the three cells' results match
-    # smb-client-compat.yml's; they become blocking in the change that removes that workflow.
-    blocking: false
+    # decision: Linux runs after each merge, as the SMB client workflow this replaces ran on SMB
+    # changes, and on feat/storage-v2 too, which has no nightly; macOS and Windows, on scarcer
+    # runners, run nightly on develop only.
+    tier: merge
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
     # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
+      # decision: SMB 2.1, the newest dialect of Windows 7 and Server 2008 R2, keeps a real client:
+      # the Linux one asked for it, against the server as it ships. Nightly, as WPTS already checks
+      # its negotiation on every pull request.
+      smb21:
+        fixture: { profile: badger-s3, smb: { mount: true, dialect: "2.1" } }
+        tier: nightly
       macos:
         tests: [test/clients/files.sh, test/clients/xattr.sh]
         cmd: "{test} {mount}"
         env: { SMB_URL: "//{user}:{password}@{server}:{smb-port}/{share}" }   # xattr.sh mounts the share again
         needs: [macos]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
       windows:
         tests: [test/clients/files.ps1]
         cmd: powershell -NoProfile -ExecutionPolicy Bypass -File {test} {mount}
         needs: [windows]
         fixture: { profile: memory, smb: { mount: true } }
+        tier: nightly
 
+  # The nightly performance run on the dedicated host: DittoFS against Samba over SMB, scored
+  # against the night's 7-day medians (bench/ditto). It posts to the scenarios' Slack channel by
+  # their rules; dt keeps its exit status, its summary and slack.txt.
+  # decision: before system, so the dedicated host's nightly runs it first, on a quiet host, and
+  # the long scenarios after it.
+  perf-night:
+    cmd: bench/ditto/night.sh
+    env: { DT_OUT: "{out}", SLACK_DIR: /etc/dittofs-perf, SCENARIO_HOST: ditto, STOP_AFTER: "10500" }
+    tier: nightly
+    needs: [linux, root, host:dedicated]
+    # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
+    # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
+    timeout: { test: 3h }
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.

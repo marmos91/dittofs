@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/marmos91/dittofs/test/harness/plan"
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/run"
 )
 
@@ -20,19 +24,40 @@ type exitStatus int
 func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
 func newRun() *cobra.Command {
-	var tier, results string
+	var tier, results, place string
 	var only, skip []string
 	var ci bool
 	var retry int
 	options := map[string]bool{}
 	cmd := &cobra.Command{
-		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...]",
+		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P",
 		Short: "Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
-		Args:  cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if place != "" {
+				var bad []string
+				cmd.Flags().Visit(func(f *pflag.Flag) {
+					if f.Name == "only" || f.Name == "skip" || options[f.Name] {
+						bad = append(bad, "--"+f.Name)
+					}
+				})
+				if len(bad) > 0 {
+					return fmt.Errorf("--place runs what dt plan gives the place: it takes no %s", strings.Join(bad, ", "))
+				}
+				return cobra.NoArgs(cmd, args)
+			}
+			return cobra.MinimumNArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, r, err := load()
 			if err != nil {
 				return err
+			}
+			if place != "" {
+				cells, err := placeCells(root, r, tier, place)
+				if err != nil {
+					return err
+				}
+				return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place})
 			}
 			var option []string
 			cmd.Flags().Visit(func(f *pflag.Flag) {
@@ -47,27 +72,7 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry})
-			if rep.Dir == "" {
-				return err // the run couldn't start
-			}
-			rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
-			for _, o := range rep.Outcomes {
-				rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
-			}
-			if err := table(cmd.OutOrStdout(), rows); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
-			if err != nil {
-				return err // after the outcomes: summary.json couldn't be written
-			}
-			if s := rep.Status(); s != 0 {
-				return exitStatus(s)
-			}
-			return nil
+			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry})
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
@@ -76,6 +81,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
 	cmd.Flags().IntVar(&retry, "retry", 0, "run each test that failed new again, up to N times: a pass on a retry is flaky")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
+	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {
 		for _, s := range r.Suites {
@@ -88,6 +94,65 @@ func newRun() *cobra.Command {
 		}
 	}
 	return cmd
+}
+
+// runCells runs the cells, prints their outcomes and where the results went,
+// and returns the run's exit status.
+func runCells(cmd *cobra.Command, root string, cells []run.Cell, o run.Options) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	rep, err := run.Run(ctx, cells, o)
+	if rep.Dir == "" {
+		return err // the run couldn't start
+	}
+	rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
+	for _, o := range rep.Outcomes {
+		rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
+	}
+	if err := table(cmd.OutOrStdout(), rows); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
+	if err != nil {
+		return err // after the outcomes: summary.json couldn't be written
+	}
+	if s := rep.Status(); s != 0 {
+		return exitStatus(s)
+	}
+	return nil
+}
+
+// placeCells selects the cells of tier that dt plan gives place. An option's
+// cells are named SUITE/OPTION/..., which Select takes as the suite, the
+// option apart, and the rest.
+func placeCells(root string, r *registry.Registry, tier, place string) ([]run.Cell, error) {
+	planned, err := plan.Plan(root, r, tier, nil)
+	if err != nil {
+		return nil, err
+	}
+	var cells []run.Cell
+	for _, c := range planned {
+		if c.Place != place {
+			continue
+		}
+		target := c.Name
+		if c.Option != "" {
+			target = c.Suite + strings.TrimPrefix(c.Name, c.Suite+"/"+c.Option)
+		}
+		selected, err := run.Select(root, r, target, c.Option, tier, nil, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range selected {
+			if s.Name == c.Name {
+				cells = append(cells, s)
+			}
+		}
+	}
+	if len(cells) == 0 {
+		return nil, errors.New("tier " + tier + " plans no cell on place " + place)
+	}
+	return cells, nil
 }
 
 // resultsDir is where runs go: results, relative to the checkout's root, else
