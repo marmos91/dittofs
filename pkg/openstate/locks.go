@@ -545,7 +545,9 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		if w := t.dropWaiter(e, prev); w.Wait == WaitCallback {
 			out.over = append(out.over, waitOver{*w, false})
 		}
-		t.serve(e, out) // the waiter it replaced may have barred the ones behind it
+		if held != nil { // a grant serves them after its ranges are added, below
+			t.serve(e, out) // the waiter it replaced may have barred the ones behind it
+		}
 	}
 	switch {
 	case held == nil:

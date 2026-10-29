@@ -476,6 +476,26 @@ func TestReplacedWaiterWakesTheNext(t *testing.T) {
 	}
 }
 
+// An owner's granted request that replaces its waiter serves the waiters its
+// old one barred only once its own ranges are held, so none is granted over them.
+func TestReplacingAGrantedRequestKeepsExclusion(t *testing.T) {
+	f := newFixture(t)
+	z, p, q := f.host(t, "z", 1), f.host(t, "p", 1), f.host(t, "q", 1)
+	file := anyFile()
+	f.mustLock(t, z, file, LockReq{Owner: owner(z, "z"), Ranges: []LockRange{sh(0, 5)}})
+	f.mustLock(t, p, file, LockReq{Owner: owner(p, "p"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, q, file, LockReq{Owner: owner(q, "q"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
+	f.sink.takeWaits()
+	if _, err := f.lock(p, file, LockReq{Owner: owner(p, "p"), Ranges: []LockRange{x(5, 5)}}); err != nil {
+		t.Fatalf("p's [5,10): %v", err)
+	}
+	for _, w := range f.sink.takeWaits() {
+		if w.granted && string(w.w.Owner.Name) == "q" {
+			t.Errorf("q was granted shared [0,10) while p holds exclusive [5,10)")
+		}
+	}
+}
+
 // A poll waiter's freed range is reserved for it, refusing everyone else,
 // until it polls or a lease period passes; then the timer drops it and, taking
 // the file's admission lock first, grants the callback waiter behind it.
