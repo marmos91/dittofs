@@ -438,3 +438,28 @@ func TestChannelSequenceHalfSpaceIsStale(t *testing.T) {
 		}
 	}
 }
+
+// An app-instance create refused for the version of one open of its
+// instance closes none of the others: every version is judged first.
+func TestAppInstanceJudgesEveryVersionFirst(t *testing.T) {
+	f := newFixture(t)
+	a, b, c := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b")), f.caller(t, smbMachine("pc-c"))
+	as := func(who Caller, version uint64, read bool) OpenRequest {
+		q := keep(OpenRequest{Access: rd}, entity.DurabilityDurable, s1, time.Hour, byte(who.Client))
+		q.Durable.Instance, q.MaxRead = AppInstance{ID: [16]byte{9}, Version: [2]uint64{1, version}}, read
+		return q
+	}
+	// The opens are met in the map's order, so several files make a close
+	// before the refusal all but certain where it can happen.
+	for range 16 {
+		file := anyFile()
+		f.mustOpen(t, a, file, as(a, 5, true))
+		f.mustOpen(t, c, file, as(c, 7, false)) // one that may not read replaces nothing
+		if _, err := f.open(b, file, as(b, 6, true)); !errors.Is(err, ErrInstanceVersion) {
+			t.Fatalf("a create below one open's version: %v, want ErrInstanceVersion", err)
+		}
+		if n := len(f.entryOf(file.ID).opens); n != 2 {
+			t.Fatalf("%d opens, want the refused create to have closed none", n)
+		}
+	}
+}

@@ -545,8 +545,9 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 
 // takeOver closes, under e's step, the open of e's file another client holds
 // under the app instance r names, for a caller who may read the file, before
-// r's open is judged; a create whose version is not above the open's, both
-// versioned, is refused. What the close leaves the service goes to out.
+// r's open is judged; a create whose version is not above every such open's,
+// each pair versioned, is refused and closes none. What the close leaves the
+// service goes to out.
 //
 // decision: a create refused for its version is ErrInstanceVersion, which
 // errors.Is ErrShareViolation, so the service maps it as a deny conflict
@@ -570,15 +571,18 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 	if k.Instance.ID == ([16]byte{}) || !r.MaxRead {
 		return nil
 	}
+	var olds []*open // every version is judged before any open is closed
 	for _, o := range e.opens {
 		ok := o.Durable
 		if ok.Instance.ID != k.Instance.ID || o.Client == who.Client || o.Stream != r.Stream {
 			continue
 		}
-		if v, was := k.Instance.Version, ok.Instance.Version; v != ([2]uint64{}) && was != ([2]uint64{}) &&
-			(v[0] < was[0] || v[0] == was[0] && v[1] <= was[1]) {
+		if v, was := k.Instance.Version, ok.Instance.Version; v != ([2]uint64{}) && was != ([2]uint64{}) && slices.Compare(v[:], was[:]) <= 0 {
 			return ErrInstanceVersion
 		}
+		olds = append(olds, o)
+	}
+	for _, o := range olds {
 		t.closeByTable(ctx, e, o, out)
 	}
 	return nil
