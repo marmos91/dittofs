@@ -244,7 +244,8 @@ type Opens interface {
 	Flushed(ctx context.Context, who Caller, o entity.OpenID, loss uint64) error
 	// Durable is the records of f's opens, for the unlink that may take
 	// f's last entry to write in its transaction; an open with no ID is
-	// issued one for its record. The service calls commit once, true when
+	// issued one for its record. A clone's hold is left out: its record is
+	// the clone's own. The service calls commit once, true when
 	// that transaction committed and took the last entry, so it wrote the
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
@@ -1164,6 +1165,9 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 	var held []*open
 	err := t.step(f.ID, func(e *entry) error {
 		for _, o := range e.opens {
+			if o.Clone != nil {
+				continue // the clone wrote its hold's record, and only its last batch deletes it
+			}
 			rec := t.recordOf(e, o)
 			if rec.ID == 0 {
 				// An NFS open's record is keyed by an ID it takes now; an

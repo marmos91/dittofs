@@ -116,3 +116,32 @@ func TestCloneHoldOutlivesGrace(t *testing.T) {
 		t.Errorf("CloneClose after a restart: %v", err)
 	}
 }
+
+// An unlink of the source between the clone's last batch and CloneClose does
+// not write the hold's record back: the hold's record is the clone's, and
+// nothing holds the unlinked source after CloneClose, nor after a restart.
+func TestUnlinkAfterLastBatchLeavesNoHold(t *testing.T) {
+	f := newFixture(t)
+	src, _ := f.fileIn(t, "src")
+	dst, _ := f.fileIn(t, "dst")
+	id, err := f.Opens().CloneOpen(ctx, src, f.cloned(t, src, dst))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.lastBatch(t, dst)
+	f.unlink(t, src, "src")
+	if _, err := f.Opens().CloneClose(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.stored(t, src); len(got) != 0 {
+		t.Errorf("the unlinked source's records after CloneClose: %+v, want none", got)
+	}
+	g := f.restart(t)
+	g.clock.mu.Lock()
+	g.clock.now += leasePeriod + time.Second
+	g.clock.mu.Unlock()
+	g.closeUnreclaimed(ctx, g.sink)
+	if got := g.stored(t, src); len(got) != 0 {
+		t.Errorf("after a restart and grace's end: %d records still hold the unlinked source", len(got))
+	}
+}
