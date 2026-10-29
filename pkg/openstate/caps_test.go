@@ -111,12 +111,14 @@ func TestPerClientCaps(t *testing.T) {
 		if _, err := f.lock(a, two, LockReq{Owner: owner(a, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); delayedFor(err) != DelayResources {
 			t.Fatalf("a waiter past the cap: %v, want ErrDelay (DelayResources)", err)
 		}
-		f.step(two.ID, func(e *entry) error {
+		if err := f.step(two.ID, func(e *entry) error {
 			if len(e.waiters) != 0 || len(e.lstates) != 1 {
 				t.Errorf("a refused waiter left %d waiters and %d lock states", len(e.waiters), len(e.lstates))
 			}
 			return nil
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := f.Locks().CancelLock(ctx, a, one, owner(a, "w"), br(0, 10)); err != nil {
 			t.Fatal(err)
 		}
@@ -324,12 +326,14 @@ func TestCallbackWaiterPastTheRangeCapIsAnsweredNotGranted(t *testing.T) {
 	if l := f.holder(t, file, br(0, 10)); l == nil || l.Owner.Client != n.Client {
 		t.Errorf("after w was refused: holder %+v, want n", l)
 	}
-	f.step(file.ID, func(e *entry) error {
+	if err := f.step(file.ID, func(e *entry) error {
 		for _, ls := range e.lstates {
 			if ls.owner.Client == h.Client {
 				t.Errorf("w was answered not granted, yet holds %v", ls.locks)
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

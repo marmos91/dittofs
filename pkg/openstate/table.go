@@ -135,14 +135,8 @@ func (t *Table) chargeLocked(c entity.ClientID, k capped, n int, refuse bool) er
 	return nil
 }
 
-// full reports whether n more of kind k would take client c past its cap.
-func (t *Table) full(c entity.ClientID, k capped, n int) bool {
-	t.idx.Lock()
-	defer t.idx.Unlock()
-	return t.overLocked(c, k, n)
-}
-
-// overLocked is full, its caller holding idx.
+// overLocked reports whether n more of kind k would take client c past its
+// cap; the caller holds idx.
 func (t *Table) overLocked(c entity.ClientID, k capped, n int) bool {
 	return c != 0 && n > 0 && t.held[heldKey{c, k}]+n > t.caps[k]
 }
