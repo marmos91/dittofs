@@ -59,3 +59,67 @@ func FuzzFormatFile(f *testing.F) {
 		}
 	})
 }
+
+// FuzzSegmentHeader drives the decoder with any bytes. Whatever arrives, it
+// either decodes or matches exactly one outcome class, never a panic; and
+// whatever decodes is exactly what the bytes contain, so encoding it again
+// reproduces the input — even a foreign one, whose identity the decoder
+// returns so recovery can tell whose it is.
+func FuzzSegmentHeader(f *testing.F) {
+	pred := readGolden(f, "segheader_pred")
+	nopred := readGolden(f, "segheader_nopred")
+
+	f.Add(pred)
+	f.Add(nopred)
+	f.Add(slices.Clone(pred[:47]))
+	f.Add(append(slices.Clone(pred), 0x00))
+
+	v2 := slices.Clone(pred)
+	binary.LittleEndian.PutUint16(v2[4:6], 2)
+	f.Add(v2)
+
+	other := testSegmentHeader
+	other.Identity = otherIdentity
+	f.Add(AppendSegmentHeader(nil, other))
+
+	f.Add([]byte{})
+	f.Add(make([]byte, SegmentHeaderSize))
+
+	f.Fuzz(func(t *testing.T, in []byte) {
+		h, err := DecodeSegmentHeader(in, testIdentity)
+
+		if err == nil {
+			if len(in) != SegmentHeaderSize {
+				t.Fatalf("decoded %d bytes, want %d", len(in), SegmentHeaderSize)
+			}
+			if got, want := binary.LittleEndian.Uint32(in[44:48]), wantCRC(in[0:44]); got != want {
+				t.Fatalf("decoded bytes whose checksum is 0x%08x, want the CRC32C of [0,44): 0x%08x", got, want)
+			}
+			if got := AppendSegmentHeader(nil, h); !slices.Equal(got, in) {
+				t.Fatalf("AppendSegmentHeader =\n% x\nwant the input\n% x", got, in)
+			}
+			return
+		}
+
+		if errors.Is(err, ErrForeign) {
+			// A foreign header is returned whole, so recovery can report
+			// whose it is; its bytes still reproduce.
+			if h.Identity == testIdentity {
+				t.Fatalf("decoded a foreign header under the identity it was opened with")
+			}
+			if got := AppendSegmentHeader(nil, h); !slices.Equal(got, in) {
+				t.Fatalf("AppendSegmentHeader of a foreign header =\n% x\nwant the input\n% x", got, in)
+			}
+		}
+
+		matched := 0
+		for _, class := range []error{ErrDamaged, ErrUnknownVersion, ErrForeign} {
+			if errors.Is(err, class) {
+				matched++
+			}
+		}
+		if matched != 1 {
+			t.Fatalf("DecodeSegmentHeader = %v, want an error matching exactly one of ErrDamaged, ErrUnknownVersion and ErrForeign", err)
+		}
+	})
+}
