@@ -391,6 +391,12 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
   issue: '#3378'
+- test: TestRFC28C_UnidentifiedDirectory
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a directory it cannot identify, Init refusing a directory that is not empty, and the format file.'
+  issue: '#3378'
 - test: TestRFC28C_InterruptedInit
   status: fail
   fix: planned
