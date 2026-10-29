@@ -1007,19 +1007,21 @@ func retire(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) ret
 // the journal has made the spare that replaces it: it waits at the directory
 // sync that follows the new spare's rename into place, the one directory
 // sync a take leads to, and checks that the directory gained a segment file
-// by then.
+// by then. The hold is released however it returns, a failure included, so
+// a fixture whose lifetime ends before the test's never closes on it.
 func awaitSpare(t *testing.T, f *journalv2test.Fixture, roll func()) {
 	t.Helper()
 
 	before := segmentFiles(t, f)
 	held := f.Seam.Hold(t, journalv2test.OpSyncDir, "*")
+	defer held.Release()
+
 	roll()
 	<-held.Reached()
 
 	if after := segmentFiles(t, f); len(after) != len(before)+1 {
 		t.Fatalf("the directory sync was reached with %d segment files, want one more than %d: not the sync after a spare's rename", len(after), len(before))
 	}
-	held.Release()
 }
 
 // pool is what the spare pool and the reserves look like from outside: the
