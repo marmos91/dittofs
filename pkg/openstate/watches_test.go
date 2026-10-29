@@ -142,7 +142,9 @@ func TestWatchesAreBounded(t *testing.T) {
 	w := f.watch(t, b, dir, false, names)
 	held := func() []Change {
 		var p []Change
-		f.step(dir.ID, func(e *entry) error { p = slices.Clone(e.watches[w.Token].pending); return nil })
+		if err := f.step(dir.ID, func(e *entry) error { p = slices.Clone(e.watches[w.Token].pending); return nil }); err != nil {
+			t.Fatal(err)
+		}
 		return p
 	}
 
