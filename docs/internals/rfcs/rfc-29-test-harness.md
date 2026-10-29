@@ -1174,10 +1174,12 @@ the tracker as #1705's alarm did:
 
 **Commit status.** `dt report RUN --commit-status NAME` sets the commit status NAME on the run's
 commit: `success` for exit status 0, `failure` for 1, `error` for any other, described by the
-counts of passed tests, new failures and known ones, and of cells not run, and linked to the
-workflow run when there is one. It takes one run, refuses the same runs `--post` does, and uses
-the same token. The dedicated host passes it for the cells it runs after a merge (§4.5), so a
-develop commit shows their result next to the workflow's.
+counts of passed tests, new failures and known ones, of cells that failed with no test to name,
+and of cells not run, and linked to the workflow run when there is one. It takes one run of the
+merge or nightly tier on develop, `main` or `feat/storage-v2`, the branches whose pushes run the
+merge tier, where `--post` takes develop's alone, and uses the same token. The dedicated host
+passes it for the cells it runs after a merge (§4.5), so a commit shows their result next to the
+workflow's.
 
 | Flag | Effect |
 |---|---|
@@ -1264,11 +1266,12 @@ runners until a week of develop runs has no apt stall.
 should almost never be used for public repositories", because any pull request could run code on
 them. The host runs `dt run --tier nightly --place dedicated` from cron, on develop's latest commit
 only: just the cells hosted runners don't take, so it doesn't repeat the hosted nightly. It
-publishes its summary to the develop-status issue (§4.8). Between nightly runs it checks develop
-every 10 minutes, and when the head has moved and nothing else runs on the host, it runs
-`dt run --tier merge --place dedicated --ci` on that commit, the system scenarios, and sets the
-commit status `system (dedicated)` with `dt report --commit-status` (§4.4). Merges that land during
-a run are taken together by the next one, at the newest. The status isn't required, as the
+publishes its summary to the develop-status issue (§4.8). Between nightly runs it checks the heads
+of develop, `main` and `feat/storage-v2` every 10 minutes, and when one has moved and nothing else
+runs on the host, it runs `dt run --tier merge --place dedicated --ci` on that commit, the system
+scenarios, and sets the commit status `system (dedicated)` with `dt report --commit-status`
+(§4.4); only develop's new failures go to the develop-status issue. Merges that land during a run
+are taken together by the next one, at the newest. The status isn't required, as the
 workflow's merge run isn't: both come after the merge. Its token can write issues and commit
 statuses, and nothing else.
 
@@ -1492,7 +1495,8 @@ CTRF is at version 0.1.0, so `dt` writes one pinned version (§7).
 **In CI**, a step after `dt run` that runs even when it failed or was stopped (`if: always()`)
 appends `dt report --format md` to the job summary. It is the summary's only writer: `dt run --ci`
 writes none, and `dt` rewrites `summary.json` after every cell, so a run that a timeout or a cancel
-stops still reports the cells it finished. This one shared step replaces the ten inline summary
+stops still reports the cells it finished. Until its last cell is done, its exit status counts the
+cells still to run as not run, so a run stopped or killed partway never reads as passed. This one shared step replaces the ten inline summary
 steps, including the two that always print green. `summary.json` and `junit/` are uploaded
 as artifacts. `dt history --ci` reads the last N develop runs' artifacts through the GitHub API;
 the default 90-day retention covers flake rates. Benchmark trends need longer, and can move to a

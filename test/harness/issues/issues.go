@@ -84,15 +84,20 @@ func FromEnv() (Client, error) {
 	return c, nil
 }
 
+// statusBranches are the branches whose merge and nightly runs set a commit
+// status: those a push to runs the merge tier on. Only develop's post.
+var statusBranches = []string{"develop", "main", "feat/storage-v2"}
+
 // Check sets the commit status name on r's commit, whose full hash is sha, as
 // the API takes no shorter one: success when r passed, failure when a test or
 // a cell failed, and error when r couldn't run, as dt's exit statuses 0, 1
 // and any other say. Its description counts the tests that passed, those that
-// turned the run red, known failures, and the cells not run. Like Post, it
-// refuses any run but develop's merge and nightly runs.
+// turned the run red, known failures, the cells that failed with no test to
+// name, and the cells not run. It refuses any run but the merge and nightly
+// runs of statusBranches.
 func (c Client) Check(ctx context.Context, r report.Run, sha, name string, out io.Writer) error {
-	if r.Branch != "develop" || r.Tier != "merge" && r.Tier != "nightly" {
-		return fmt.Errorf("run %s is %s's %s run: only develop's merge and nightly runs set a commit status", r.Name, cmp.Or(r.Branch, "a detached checkout"), r.Tier)
+	if !slices.Contains(statusBranches, r.Branch) || r.Tier != "merge" && r.Tier != "nightly" {
+		return fmt.Errorf("run %s is %s's %s run: only the merge and nightly runs of %s set a commit status", r.Name, cmp.Or(r.Branch, "a detached checkout"), r.Tier, strings.Join(statusBranches, ", "))
 	}
 	state := "error"
 	switch r.Exit {
@@ -101,12 +106,15 @@ func (c Client) Check(ctx context.Context, r report.Run, sha, name string, out i
 	case 1:
 		state = "failure"
 	}
-	var passed, red, known, notRun int
+	var passed, red, known, failed, notRun int
 	for _, cell := range r.Cells {
-		tests, _ := cell.Red()
+		tests, alone := cell.Red()
 		red += len(tests)
-		if cell.Result == report.NotRun {
+		switch {
+		case cell.Result == report.NotRun:
 			notRun++
+		case alone:
+			failed++
 		}
 		for _, t := range cell.Tests {
 			switch {
@@ -118,6 +126,9 @@ func (c Client) Check(ctx context.Context, r report.Run, sha, name string, out i
 		}
 	}
 	description := fmt.Sprintf("%d passed, %d new failures, %d known", passed, red, known)
+	if failed > 0 {
+		description += fmt.Sprintf(", %d cells failed", failed)
+	}
 	if notRun > 0 {
 		description += fmt.Sprintf(", %d cells not run", notRun)
 	}

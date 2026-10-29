@@ -456,7 +456,8 @@ func TestFromEnv(t *testing.T) {
 
 // A run's commit status is success, failure or error as dt's exit status
 // says, under the name asked for, on the commit's full hash, with the run's
-// test counts and its log; only develop's merge and nightly runs set one.
+// test counts and its log; only the merge and nightly runs of develop, main
+// and feat/storage-v2 set one.
 func TestCheck(t *testing.T) {
 	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -484,6 +485,7 @@ func TestCheck(t *testing.T) {
 			{Name: "04-e.sh", Status: report.Failed, RawStatus: report.Passed, Grade: report.UnexpectedPass},
 			{Name: "05-f.sh", Status: report.Other, Grade: report.Incomplete},
 		}},
+		{Name: "system/setup", Result: report.Failed},
 		{Name: "system/other", Result: report.NotRun},
 	}
 	for exit, state := range map[int]string{0: "success", 1: "failure", 2: "error"} {
@@ -493,9 +495,17 @@ func TestCheck(t *testing.T) {
 		if err := c.Check(context.Background(), r, sha, "system (dedicated)", io.Discard); err != nil {
 			t.Fatal(err)
 		}
-		want := "POST /repos/o/r/statuses/" + sha + " " + state + "|system (dedicated)|2 passed, 2 new failures, 1 known, 1 cells not run|https://ci.example/runs/7"
+		want := "POST /repos/o/r/statuses/" + sha + " " + state + "|system (dedicated)|2 passed, 2 new failures, 1 known, 1 cells failed, 1 cells not run|https://ci.example/runs/7"
 		if !slices.Equal(got, []string{want}) {
 			t.Errorf("exit %d: %q, want %q", exit, got, want)
+		}
+	}
+	for _, b := range []string{"main", "feat/storage-v2"} {
+		got = nil
+		r := run("20261028T100000Z-abababab", "merge")
+		r.Branch = b
+		if err := c.Check(context.Background(), r, sha, "system (dedicated)", io.Discard); err != nil || len(got) != 1 {
+			t.Errorf("%s's merge run: %v, %q", b, err, got)
 		}
 	}
 	got = nil
