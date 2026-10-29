@@ -90,6 +90,15 @@ func New(tb testing.TB) *Fixture {
 	return newFixture(tb, nil, true, FixtureSegmentCap)
 }
 
+// NewWithSegmentCap is New with segments of segmentCap bytes, for a check
+// whose record must fit whole in one segment beside others: a write larger
+// than what its segment has left is split into records. The journal's
+// maximum stays FixtureMaxBytes.
+func NewWithSegmentCap(tb testing.TB, segmentCap int64) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, segmentCap)
+}
+
 // NewUnwatched is New without the profiler, for a second journal in a test
 // that already has one: two watches active at once both fail. Called after
 // New, as it must be, this journal is closed before the first fixture's
