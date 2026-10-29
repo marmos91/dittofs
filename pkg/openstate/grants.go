@@ -171,7 +171,7 @@ func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool 
 // recallOthers recalls each grant on e that own does not claim, under e's
 // step, to what keeps leaves it, a grant that covers no open to none, and is
 // ErrDelay with DelayRecall while any of them holds more than that: its recall
-// started here or already in flight. A request that would start recalls past
+// started here or already in flight, and not ended as it was sent. A request that would start recalls past
 // maxUnsent is ErrDelay with DelayResources, and starts and narrows none.
 func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant) GrantKind, out *outbox) error {
 	type recall struct {
@@ -210,19 +210,30 @@ func (t *Table) recallOthers(e *entry, own func(*grant) bool, keeps func(*grant)
 			return &DelayError{DelayResources}
 		}
 	}
+	delay := false
 	for _, r := range hit {
 		if r.g.fsm.Break(r.allowed) {
 			t.queueRecall(e, r.g, out)
 		}
+		delay = delay || r.g.fsm.Recall != nil
+	}
+	if !delay {
+		return nil
 	}
 	return &DelayError{DelayRecall}
 }
 
 // queueRecall adds g's recall in flight, already counted in unsent, to out.
+// An SMB break of read caching alone asks no acknowledgement (MS-SMB2
+// 3.3.4.6, 3.3.4.7): it ends as it is queued, and nothing waits on it.
 func (t *Table) queueRecall(e *entry, g *grant, out *outbox) {
 	g.gen++
 	g.sent = 0
 	out.recalls = append(out.recalls, recallOut{g: g.public(e.file), gen: g.gen})
+	if g.covers() && g.fsm.Kind&(GrantWrite|GrantHandle) == 0 {
+		_, _ = g.fsm.Ack(g.fsm.Recall.To)
+		t.recount(g)
+	}
 }
 
 // arm starts the deadline of the recall r handed to the Sink, if it is still

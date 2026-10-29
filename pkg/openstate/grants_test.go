@@ -792,7 +792,7 @@ func TestOfferedBesideOthers(t *testing.T) {
 	// A recall in flight on the file holds back every new grant, even one
 	// it would not conflict with.
 	file = anyFile()
-	f.grantOpen(t, c0, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: GrantRead})
+	f.grantOpen(t, c0, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh})
 	if _, err := f.open(f.caller(t, smb("pc-x")), file, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
@@ -874,8 +874,8 @@ func TestOnlyASentRecallLapses(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
 	file := anyFile()
-	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead})
-	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead})
+	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
 	release, held := make(chan struct{}), make(chan entity.ClientID, 1)
 	calls := 0
 	f.sink.onRecall = func(g CachingGrant, _ GrantKind) {
@@ -1065,5 +1065,45 @@ func TestLeaseKeyHeldWithoutAGrant(t *testing.T) {
 	f.close(t, a, o)
 	if _, err := f.open(a, second, OpenRequest{Access: rd, Lease: k, Want: rwh}); err != nil {
 		t.Errorf("the key on a second file once its last open closed: %v", err)
+	}
+}
+
+// An SMB break of read caching alone ends as it is sent: a writer opening
+// beside an R lease or a Level II oplock is not delayed, and the holder is
+// not fenced for the ack it never sends. A read delegation is still waited
+// for, as its holder returns it.
+func TestReadOnlyBreakEndsAsSent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		holder Client
+		r      OpenRequest
+		waits  bool
+	}{
+		{"R lease", smb("pc-a"), OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: GrantRead}, false},
+		{"Level II oplock", smb("pc-a"), OpenRequest{Access: rd, Want: GrantRead}, false},
+		{"read delegation", nfs("host-a", 1, entity.NewUser()), OpenRequest{Access: rd, Want: GrantRead}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			a := f.caller(t, c.holder)
+			file := anyFile()
+			if _, g := f.grantOpen(t, a, file, c.r); g == nil || g.Kind != GrantRead {
+				t.Fatalf("the holder's grant %+v, want R", g)
+			}
+			_, err := f.open(f.caller(t, smb("pc-b")), file, OpenRequest{Access: wr})
+			if c.waits != (delayedFor(err) == DelayRecall) || !c.waits && err != nil {
+				t.Fatalf("a writer's open: %v, want a recall waited for: %v", err, c.waits)
+			}
+			if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantNone {
+				t.Fatalf("recalls %+v, want one to none", r)
+			}
+			f.pass(t, 2*leasePeriod, a.Client)
+			f.cmu.Lock()
+			fenced := f.fenced[a.Client] != 0
+			f.cmu.Unlock()
+			if fenced != c.waits {
+				t.Errorf("holder fenced %v, want %v", fenced, c.waits)
+			}
+		})
 	}
 }
