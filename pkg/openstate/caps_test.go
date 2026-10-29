@@ -297,3 +297,39 @@ func TestLockOwnerKeepsItsPlaceWhileItsLastStateDrops(t *testing.T) {
 		t.Errorf("o's lock: %v, p's lock: %v; the client holds %d owners past its cap of 2", err, perr, n)
 	}
 }
+
+// A callback waiter whose grant would take its client past the range cap is
+// answered not granted when its range frees: it holds nothing, and the
+// waiter behind it is considered and granted.
+func TestCallbackWaiterPastTheRangeCapIsAnsweredNotGranted(t *testing.T) {
+	f := newFixture(t)
+	a, h, n := f.host(t, "a", 1), f.host(t, "h", 1), f.host(t, "n", 1)
+	file, other := anyFile(), anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, h, other, LockReq{Owner: owner(h, "held"), Ranges: []LockRange{x(0, 10)}})
+	for _, w := range []struct {
+		who  Caller
+		name string
+	}{{h, "w"}, {n, "n"}} {
+		if res := f.mustLock(t, w.who, file, LockReq{Owner: owner(w.who, w.name), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+			t.Fatalf("%s's lock: want waiting", w.name)
+		}
+	}
+	f.lower(cappedRanges, 1) // h holds its one range on other
+	f.unlock(t, a, file, owner(a, "a"), br(0, 10))
+	ws := f.sink.takeWaits()
+	if len(ws) != 2 || string(ws[0].w.Owner.Name) != "w" || ws[0].granted || string(ws[1].w.Owner.Name) != "n" || !ws[1].granted {
+		t.Fatalf("answers %+v, want w not granted, then n granted", ws)
+	}
+	if l := f.holder(t, file, br(0, 10)); l == nil || l.Owner.Client != n.Client {
+		t.Errorf("after w was refused: holder %+v, want n", l)
+	}
+	f.step(file.ID, func(e *entry) error {
+		for _, ls := range e.lstates {
+			if ls.owner.Client == h.Client {
+				t.Errorf("w was answered not granted, yet holds %v", ls.locks)
+			}
+		}
+		return nil
+	})
+}
