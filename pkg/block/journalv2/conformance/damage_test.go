@@ -321,6 +321,17 @@ func crashParked(t *testing.T, d *driven, p parked) {
 // waitParked waits until the operation reaches its hold, failing the test
 // if it returns first; an operation that reached it already is not waited
 // for.
+//
+// decision: an operation of the journal's own, with no done channel, is
+// waited for with no deadline, so a journal that never reaches the hold
+// stops the test at its timeout, whose goroutine dump names this wait. What
+// moves such an operation to its hold is the journal's goroutines doing real
+// file I/O, while the fixture's clock moves only when the test advances it,
+// so a deadline on that clock would have to be advanced from this wait and
+// would run out while a correct journal's sync is still in the device; only
+// real time tells a slow sync from one that never comes, and no check here
+// waits on it. Give the operation a done channel, or a seam call that marks
+// it giving up, if the timeout proves too coarse.
 func waitParked(t *testing.T, p parked, what string) {
 	t.Helper()
 
