@@ -806,8 +806,12 @@ names a journal identity other than the one in `format` **MUST NOT** contribute
 to the index; it is reported and left alone ([§3.4](#3.4%20Unattachable%20files)). Content from another journal
 never enters this format version's journal.
 
-A header that does not verify is damage, not evidence of a foreign segment: the
-segment is reported as damaged ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)'s `DamagedSegments`), its records are attached on their own checksums
+A header that does not verify is not evidence of a foreign segment. It is damage
+where it is proven synced — a verifying record in the segment names a synced-through
+offset past it, a verifying seal marker follows it, or a successor names the
+segment — and the segment is then reported as
+damaged ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)'s `DamagedSegments`); otherwise it is torn, as an unsynced take
+is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Either way its records are attached on their own checksums
 ([§2.3](#2.3%20Records)), and with its predecessor unknown it is treated as one that could have
 been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
@@ -1247,7 +1251,7 @@ each region has its own required outcome:
   repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
-- a segment header: the segment is reported as damaged and its records are still
+- a segment header proven synced: the segment is reported as damaged and its records are still
   attached ([§3.1](#3.1%20Rebuilding));
 - a seal marker: the segment is reported as damaged if a successor names it ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - the `format` file: its checksum fails, and so does the open.
