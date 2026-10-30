@@ -1030,7 +1030,7 @@ Entity methods defined elsewhere:
 
 Two things are deliberately **not** methods. Permission evaluation — "may this
 identity do this to this file" — needs the principal's groups and the share's
-grant, so it is `Files.Authorize` behind the one chokepoint ([RFC 7](rfc-7-namespace-metadata.md) §7.1), never
+grant, so it is `Files.Authorize` behind the one chokepoint ([RFC 7 §7.1](rfc-7-namespace-metadata.md#7.1%20One%20chokepoint)), never
 `acl.Allows`. And no entity has `Save`, `Reload` or a back-pointer to the store:
 entities are values, freely copied, compared and printed.
 
@@ -1038,7 +1038,7 @@ entities are values, freely copied, compared and printed.
 
 Adapters hold one thing: `vfs.Service` ([RFC 17](rfc-17-vfs.md)). Everything below is held by
 the filesystem service or by internal consumers. Every namespace call takes a
-resolved identity and a handle and is authorised inside the layer ([RFC 7](rfc-7-namespace-metadata.md) §7.1);
+resolved identity and a handle and is authorised inside the layer ([RFC 7 §7.1](rfc-7-namespace-metadata.md#7.1%20One%20chokepoint));
 the content calls take a `FileID`, because only the namespace ever sees a name.
 
 The views are defined where their semantics are:
