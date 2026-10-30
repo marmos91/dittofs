@@ -83,6 +83,9 @@ const (
 	// ruleCopyOnWrite: on Btrfs, the directory or a file in it does not have
 	// copy-on-write disabled.
 	ruleCopyOnWrite
+	// ruleCachePolicy: on Windows, the directory's volume has write-cache
+	// buffer flushing turned off by policy.
+	ruleCachePolicy
 )
 
 // refusal is a directory refused by a rule of RFC 28 Appendix A.
@@ -90,12 +93,14 @@ type refusal struct {
 	rule refusalRule
 	// dir is the journal directory.
 	dir string
-	// mount is the mount point holding dir, for ruleBarrier.
+	// mount is the mount point holding dir, for ruleBarrier, or the root of
+	// dir's volume, for ruleCachePolicy.
 	mount string
 	// option is the refused mount option, for ruleBarrier.
 	option string
 	// path is what the rule refused: the directory for ruleSubvolume, the
-	// directory or the file without the attribute for ruleCopyOnWrite.
+	// directory or the file without the attribute for ruleCopyOnWrite, the
+	// volume GUID path for ruleCachePolicy.
 	path string
 }
 
@@ -116,6 +121,17 @@ func (r *refusal) Error() string {
 			"copy it into a new file created in the directory, which inherits the attribute, and rename that over it, "+
 			"or recreate the journal in a directory that had chattr +C set while empty",
 			r.dir, r.path)
+	case ruleCachePolicy:
+		// The action uses Microsoft's words: Device Manager, the disk's
+		// Policies tab (How to manually turn disk write caching on or off,
+		// https://learn.microsoft.com/previous-versions/troubleshoot/windows-server/turn-disk-write-caching-on-off),
+		// and the check box "Turn off Windows write-cache buffer flushing on
+		// the device" (Performance Tuning Remote Desktop Session Hosts,
+		// https://learn.microsoft.com/windows-server/administration/performance-tuning/role/remote-desktop/session-hosts).
+		return fmt.Sprintf("journal: directory %s refused: volume %s (%s) has Windows write-cache buffer flushing turned off by policy, "+
+			"so no sync reaches the device; in Device Manager, open the disk's Policies tab and clear "+
+			"\"Turn off Windows write-cache buffer flushing on the device\"",
+			r.dir, r.mount, r.path)
 	}
 	return fmt.Sprintf("journal: directory %s refused", r.dir)
 }
