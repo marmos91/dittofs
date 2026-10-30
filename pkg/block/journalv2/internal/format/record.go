@@ -69,12 +69,17 @@ func (h RecordHeader) Size() int64 {
 //
 // It panics — caller bugs, refused at the call and never encoded onto disk —
 // on: an unknown kind; a negative own offset, one above MaxUint32 or one not
-// a multiple of 8; a negative file offset, length or synced-through offset;
-// a write or fill whose payload is not the length in bytes; another kind
-// carrying a payload; a non-zero epoch in the version or in the clone's
-// AsOf; a loss reason outside 1–4. It does not enforce the kinds table's
-// zero-field rules, which no writer of this package can express: a record
-// that breaks them is refused at the API before AppendRecord is reached.
+// a multiple of 8; a negative file offset, length or synced-through offset; a
+// file offset that overflows with the length, and a length that leaves the
+// record no room for itself at its own offset; a write or fill whose payload
+// is not the length in bytes; another kind carrying a payload; a non-zero
+// epoch in the version or in the clone's AsOf; a clone source offset that
+// overflows with the length; a loss reason outside 1–4. It does not enforce
+// the kinds table's zero-field rules, which no writer of this package can
+// express: a record that breaks them is refused at the API before
+// AppendRecord is reached. Nor does it police a body's fields against the
+// wrong kind — a fill's modification time, a write's cut — which encode
+// nothing: what the layout does not write cannot reach the disk.
 func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body RecordBody) []byte {
 	if !h.Kind.known() {
 		panic(fmt.Sprintf("format: unknown kind %d", uint8(h.Kind)))
@@ -97,6 +102,14 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	if h.SyncedThrough < 0 {
 		panic(fmt.Sprintf("format: synced-through offset %d is below 0", h.SyncedThrough))
 	}
+	// The bounds the decoder refuses as damage are panics here too: a header
+	// no reader of this format could take back never reaches the disk.
+	if h.Extent.Off+h.Extent.Len < 0 {
+		panic(fmt.Sprintf("format: file offset %d plus the length %d overflows", h.Extent.Off, h.Extent.Len))
+	}
+	if h.Offset+h.Size() < 0 {
+		panic(fmt.Sprintf("format: the record's size %d leaves no room for itself at %d", h.Size(), h.Offset))
+	}
 	if h.Version.Epoch != 0 {
 		panic(fmt.Sprintf("format: version epoch %d is above 0", h.Version.Epoch))
 	}
@@ -106,20 +119,26 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		if int64(len(body.Payload)) != h.Extent.Len {
 			panic(fmt.Sprintf("format: payload of %d bytes, want the length %d", len(body.Payload), h.Extent.Len))
 		}
-	default:
+	case KindLoss:
+		if !body.Loss.Reason.known() {
+			panic(fmt.Sprintf("format: loss reason %d is outside 1-4", uint8(body.Loss.Reason)))
+		}
+	case KindCloneTarget:
 		if len(body.Payload) != 0 {
 			panic(fmt.Sprintf("format: kind %d carries a payload, want none", uint8(h.Kind)))
 		}
 		if body.Clone.AsOf.Epoch != 0 {
 			panic(fmt.Sprintf("format: clone AsOf epoch %d is above 0", body.Clone.AsOf.Epoch))
 		}
-		if !body.Loss.Reason.known() {
-			if h.Kind != KindLoss && body.Loss.Reason != 0 {
-				panic(fmt.Sprintf("format: kind %d carries a loss reason, want none", uint8(h.Kind)))
-			}
-			if h.Kind == KindLoss {
-				panic(fmt.Sprintf("format: loss reason %d is outside 1-4", uint8(body.Loss.Reason)))
-			}
+		if body.Clone.Off < 0 {
+			panic(fmt.Sprintf("format: clone source offset %d is below 0", body.Clone.Off))
+		}
+		if body.Clone.Off+h.Extent.Len < 0 {
+			panic(fmt.Sprintf("format: clone source offset %d plus the length %d overflows", body.Clone.Off, h.Extent.Len))
+		}
+	default:
+		if len(body.Payload) != 0 {
+			panic(fmt.Sprintf("format: kind %d carries a payload, want none", uint8(h.Kind)))
 		}
 	}
 

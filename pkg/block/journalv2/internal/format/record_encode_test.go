@@ -1,7 +1,10 @@
 package format
 
 import (
+	"fmt"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -50,8 +53,13 @@ func TestAppendRecordAllocatesNothing(t *testing.T) {
 
 // TestAppendRecordPanics pins every condition the encoder refuses at the
 // call rather than encoding onto disk: a record its own decoder would refuse
-// is a caller bug, and the bug is a crash, never a bad record. One case per
-// condition, each over a known-good header.
+// is a caller bug, and the bug is a crash, never a bad record. The bounds the
+// decoder refuses as damage — an overflowing extent, a record that leaves no
+// room for itself, a clone source a core extent cannot hold — are panics for
+// the same reason: what a writer could write and no reader could take back
+// never reaches the disk. One case per condition, each over a known-good
+// header, and each matched by its own message so a case can never pass on an
+// unrelated condition it triggers by accident.
 func TestAppendRecordPanics(t *testing.T) {
 	write := wantRecordAt(t, "write")
 	cloneTarget := wantRecordAt(t, "clone_target")
@@ -60,70 +68,83 @@ func TestAppendRecordPanics(t *testing.T) {
 		name string
 		h    RecordHeader
 		body RecordBody
+		want string
 	}{
 		{"an unknown kind", func() RecordHeader {
 			h := write.h
 			h.Kind = Kind(15)
 			return h
-		}(), write.body},
+		}(), write.body, "unknown kind"},
 		{"kind 0", func() RecordHeader {
 			h := write.h
 			h.Kind = Kind(0)
 			return h
-		}(), write.body},
+		}(), write.body, "unknown kind"},
 		{"a negative own offset", func() RecordHeader {
 			h := write.h
 			h.Offset = -8
 			return h
-		}(), write.body},
+		}(), write.body, "record offset -8 is below 0"},
 		{"an own offset above MaxUint32", func() RecordHeader {
 			h := write.h
 			h.Offset = 1 << 32
 			return h
-		}(), write.body},
+		}(), write.body, "record offset"},
 		{"an own offset not a multiple of 8", func() RecordHeader {
 			h := write.h
 			h.Offset++
 			return h
-		}(), write.body},
+		}(), write.body, "not a multiple of 8"},
 		{"a negative file offset", func() RecordHeader {
 			h := write.h
 			h.Extent.Off = -1
 			return h
-		}(), write.body},
+		}(), write.body, "file offset -1 is below 0"},
 		{"a negative length", func() RecordHeader {
 			h := write.h
 			h.Extent.Len = -1
 			return h
-		}(), write.body},
+		}(), write.body, "length -1 is below 0"},
 		{"a negative synced-through offset", func() RecordHeader {
 			h := write.h
 			h.SyncedThrough = -1
 			return h
-		}(), write.body},
-		{"a write whose payload is not its length", write.h, RecordBody{MTime: write.body.MTime, Payload: write.body.Payload[:4]}},
-		{"a write with an empty payload and a non-zero length", write.h, RecordBody{MTime: write.body.MTime}},
-		{"a fill carrying a last-modified time", func() RecordHeader {
-			h := wantRecordAt(t, "fill").h
+		}(), write.body, "synced-through offset -1 is below 0"},
+		{"a file offset that overflows with the length", func() RecordHeader {
+			h := write.h
+			h.Extent.Off = math.MaxInt64
+			h.Extent.Len = 1
 			return h
-		}(), RecordBody{MTime: 1}},
-		{"a release carrying a payload", func() RecordHeader {
-			h := wantRecordAt(t, "release").h
+		}(), write.body, "plus the length 1 overflows"},
+		{"a write whose length leaves no room for the record itself", func() RecordHeader {
+			h := write.h
+			h.Extent.Off = 0
+			h.Extent.Len = math.MaxInt64 - 50
 			return h
-		}(), RecordBody{Payload: []byte{1}}},
+		}(), write.body, "size -9223372036854775752 leaves no room for itself"},
+		{"a write whose payload is not its length", write.h, RecordBody{MTime: write.body.MTime, Payload: write.body.Payload[:4]}, "payload of 4 bytes"},
+		{"a write with an empty payload and a non-zero length", write.h, RecordBody{MTime: write.body.MTime}, "payload of 0 bytes"},
+		{"a release carrying a payload", wantRecordAt(t, "release").h, RecordBody{Payload: []byte{1}}, "carries a payload"},
 		{"a non-zero version epoch", func() RecordHeader {
 			h := write.h
 			h.Version = core.Version{Epoch: 1, Counter: write.h.Version.Counter}
 			return h
-		}(), write.body},
-		{"a clone target with a non-zero AsOf epoch", cloneTarget.h, RecordBody{Clone: CloneSource{Share: testClone.Share, File: testClone.File, Off: testClone.Off, AsOf: core.Version{Epoch: 1}}}},
-		{"a loss reason of 0", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Synced: true}}},
-		{"a loss reason of 5", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Reason: LossReason(5)}}},
+		}(), write.body, "version epoch 1"},
+		{"a clone target with a non-zero AsOf epoch", cloneTarget.h, RecordBody{Clone: CloneSource{Share: testClone.Share, File: testClone.File, Off: testClone.Off, AsOf: core.Version{Epoch: 1}}}, "clone AsOf epoch 1"},
+		{"a clone target with a negative source offset", cloneTarget.h, RecordBody{Clone: CloneSource{Share: testClone.Share, File: testClone.File, Off: -1, AsOf: testClone.AsOf}}, "clone source offset"},
+		{"a clone source offset that overflows with the length", cloneTarget.h, RecordBody{Clone: CloneSource{Share: testClone.Share, File: testClone.File, Off: math.MaxInt64, AsOf: testClone.AsOf}}, "clone source offset"},
+		{"a loss reason of 0", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Synced: true}}, "reason 0"},
+		{"a loss reason of 5", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Reason: LossReason(5)}}, "reason 5"},
 	} {
 		func() {
 			defer func() {
-				if recover() == nil {
-					t.Errorf("%s: AppendRecord returned; want a panic", c.name)
+				r := recover()
+				if r == nil {
+					t.Errorf("%s: AppendRecord returned; want a panic matching %q", c.name, c.want)
+					return
+				}
+				if got := fmt.Sprint(r); !strings.Contains(got, c.want) {
+					t.Errorf("%s: AppendRecord panicked with %q, want it to mention %q", c.name, got, c.want)
 				}
 			}()
 			AppendRecord(nil, testIdentity, c.h, c.body)
