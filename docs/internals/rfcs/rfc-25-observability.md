@@ -703,7 +703,7 @@ row.
 | `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
 | `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) | journal | unhealthy: acknowledged writes lost | page at once |
 | `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | journal | unhealthy; waits for an operator | page at once |
-| `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served, until the device takes a write again | page at once |
+| `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served while the journal is open, until a spare is made, the storage checks pass and the reopen succeeds | page at once |
 | `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `node_fenced` | [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | node | unhealthy: writes answer retry-later | page at once — it already waited 30 s |
 | `metadata_store_unhealthy`, `metadata_store_degraded` | [RFC 16 §8.3](rfc-16-metadata-store.md#8.3%20Health%20and%20debugging) | node | as named | page at 5 min; ticket |

@@ -2018,7 +2018,15 @@ once one is made, it
 reports the device writable again, and its caller closes and reopens it
 ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), so the state resolves on its own once the cause is removed
 ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A reopen before then would fail at recovery's first write and
-serve nothing, so the caller does not attempt one.
+serve nothing, so the caller does not attempt one. The probe also runs the
+checks open makes of the mount and the directory ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), not
+recovery, so a device that takes writes again but that open would refuse —
+remounted without cache flushes, say — stays read-only, with
+`journal_read_only` naming the failed check. A reopen refused anyway by one of
+those checks leaves the journal closed: its shares answer writes, and reads of
+content only it held, retry-later, `journal_read_only` names the refusal, and
+the caller retries the open at the same interval. A reopen refused by recovery
+is any failed open's ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 > ponytail: read-only is left only by a reopen, and the probe is a fixed 30 s,
 > so a device that fails now and then can cycle through read-only and reopen,
