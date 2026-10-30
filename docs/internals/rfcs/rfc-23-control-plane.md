@@ -522,22 +522,23 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    every component holds the records' values before any of them starts.
 5. **The content side and the state the server reads**, in build order:
    **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the remote
-   stores; then GC's `Claim` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) for every namespace GC will hold,
-   which reads the namespace's claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and decides that namespace's
+   stores; then GC's `Claim` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) for every namespace a share this node
+   serves names, and every one the node adds to GC without a share, which reads the namespace's claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and decides that namespace's
    shares before the engine serves any of them or GC starts on it:
    - **held**: they serve;
    - **copy** — the claim names this installation with a nonce it never
-     recorded: they are bound `Fenced`, serving reads and refusing writes as
+     recorded, or this start minted a new instance part: they are bound `Fenced`, serving reads and refusing writes as
      [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, until an operator accepts the copy;
    - **foreign** — the claim names another installation, is `released`, or is
      missing on a namespace whose claim this installation wrote — and
      **pending** — a namespace still being created — and a `Claim` that failed:
-     they are not attached, and `Stats` names them. Reconcile runs `Claim`
-     again and attaches them once it answers held.
+     they are not attached, and the health condition `namespace_unclaimed` names the
+     namespace and the answer. Reconcile runs `Claim` again and attaches them
+     once it answers held.
 
    None of these fails the start. Then the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of attached shares in
-   one call; GC, with each namespace `Claim` answered held or copy; open state for the shards
+   one call; GC, with each namespace `Claim` answered held, and no other; open state for the shards
    this node acquires, handed the built server as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
    created while the node serves is attached alone, decided by its namespace's
