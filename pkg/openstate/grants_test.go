@@ -470,6 +470,7 @@ func TestLockRecallsGrants(t *testing.T) {
 	if !f.ordered(file) {
 		t.Error("the return granted a waiter without the file's admission lock")
 	}
+	f.unlock(t, h2, file, owner(h2, "r"), br(30, 5)) // so only the waiter can refuse the grant
 	f.pass(t, 2*leasePeriod, a.Client)
 	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead}); g != nil {
 		t.Fatalf("a grant on a file with a lock waiter: %+v", g)
