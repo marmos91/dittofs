@@ -245,7 +245,7 @@ operator's acknowledgement lets S1 claim A alone.
 **A read is served by a replica (deferred).** The gateway forwards every read to
 the primary today ([RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes)); once a path delivers one to a replica:
 
-1. A read of a file in A reaches S2's server ([§8](#8.%20Reads)).
+1. A read of a file in A reaches S2's filesystem ([§8](#8.%20Reads)).
 2. S2 asks S1 for the newest version of each extent the read covers. The
    answer carries no bytes ([§8](#8.%20Reads)).
 3. S2 serves its own bytes only if each extent carries exactly that version,
