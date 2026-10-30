@@ -143,7 +143,7 @@ package and import paths only.**
 v1 keeps `pkg/block/journal` until the cutover deletes it with the rest of v1 (stage 7 of
 #3119). A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
 stage-3 engine (epic 11), so no v1 caller is ported, and v1 and v2 never run in one binary.
-Renaming the package afterwards is out of scope.
+The cutover PR that deletes v1 renames `journalv2` to `journal`, and `enginev2` to `engine` (RFC 8 §2.8).
 
 - *Why the suffix stops at the package:* renaming a Go package later is cheap, because it
   touches only import paths inside this repository. Names users see are not. Metric
