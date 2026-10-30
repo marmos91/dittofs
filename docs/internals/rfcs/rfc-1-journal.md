@@ -1033,8 +1033,10 @@ bytes: still allocated in their segment, backing nothing. Storage returns only
 when a segment is retired — unlinked, or recycled as a spare ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) — by
 repack ([§7.2](#7.2%20Repack)), or because the segment is left holding nothing live, which the
 journal retires on its own once the release records are durable ([§7.1](#7.1%20Releasing%20storage)). `Release` therefore reports nothing freed;
-`UnreclaimedBytes` rises by what it released ([§3.7](#3.7%20State%20introspection)), and `UsedBytes` falls
-only when that retirement has happened, never earlier. An engine that reads space free
+`UnreclaimedBytes` rises by what it released ([§3.7](#3.7%20State%20introspection)), and the storage in use,
+`UsedBytes` − `Spares` × the segment cap, falls only when that retirement has
+happened, never earlier: an unlink lowers `UsedBytes`, while a recycle leaves it
+where it was and adds a spare. An engine that reads space free
 before it is and retries a refused write gets the refusal again ([§6](#6.%20Capacity)).
 
 **A release is recorded.** `Release` appends one **release record** per released
@@ -1316,7 +1318,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `filled_bytes` | remote bytes placed by `Fill`; with written, the cold-read share of local writes |
 | `fill_refused` | fills refused as older than the file ([§3.4](#3.4%20Fill)) |
 | `offered_bytes`, `marked_bytes` | bytes offered at offload and bytes marked offloaded; the lag between them is offload falling behind |
-| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by unlinking segments ([§7.1](#7.1%20Releasing%20storage)) |
+| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by retiring segments: to the filesystem by an unlink, or to the spare pool by a recycle, as `Repack`'s `freed` counts it ([§7.1](#7.1%20Releasing%20storage), [§7.2](#7.2%20Repack)) |
 | `repacked_bytes` | bytes moved by repack; the write amplification reclamation adds |
 | `reservation_refused` | writes refused at capacity ([§6](#6.%20Capacity)) |
 | `syncs`, `sync_failures` | syncs issued, and failed ([§5.2](#5.2%20Syncing)); syncs against writes shows whether group commit works |
@@ -2180,7 +2182,11 @@ loop to be fast, the journal owes it three things:
   and `UsedBytes` from counters ([§3.7](#3.7%20State%20introspection)), so the engine sees pressure, and what
   repack could recover, before it is refused;
 - a `Repack` that reports the storage it returned, only once it is returned
-  ([§7.2](#7.2%20Repack)), so the engine knows when a retry can succeed without polling.
+  ([§7.2](#7.2%20Repack)), so the engine knows when a retry can succeed without polling. At the
+  journal's maximum, `freed` alone does not say so: a recycle counts in it but
+  leaves `UsedBytes` where it was, so a retry there succeeds only once `UsedBytes`
+  has fallen by the missing bytes, and one refused before that costs no I/O; what
+  the engine does next is [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s.
 
 ## 7. Reclamation mechanisms
 
@@ -2257,7 +2263,8 @@ journal choose from every segment. Segment IDs come from the per-segment
 accounting of [§4.4](#4.4%20Inspection). A pass that could only pick journal-wide would spend
 its budget on the sparsest segments anywhere, and return nothing to the share or
 the segments the refusal was about.
-`UsedBytes` falls at the same moment, never earlier.
+The storage in use, `UsedBytes` − `Spares` × the segment cap, falls at the same
+moment, never earlier.
 
 It is how released storage returns to the filesystem ([§7.1](#7.1%20Releasing%20storage)), retires fragmented segments that still
 cost a descriptor ([§7.4](#7.4%20Open%20descriptors)), and coalesces index entries ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)).
@@ -2426,7 +2433,8 @@ and is compacted only at open grows without bound for as long as the process
 runs, and is compacted by a restart nobody scheduled.
 
 **Retiring a segment is idempotent.** A segment's bytes **MUST** leave the
-accounted footprint exactly once, in the step that removes the segment from the
+storage in use exactly once, out of the accounted footprint by an unlink or into
+the spare pool by a recycle, in the step that removes the segment from the
 set of segments the journal owns, and only if that step found it there. Two
 reclamation paths that can each select a segment — the unlink of a segment a
 release left not held, and repack, say —
@@ -2436,8 +2444,9 @@ A claim taken on a segment **MUST NOT** be released after the segment is retired
 since a released claim on a retired segment is an invitation to retire it again.
 A retire that subtracts nothing **MUST** be counted and logged at `Warn`: it is
 harmless, but it means two paths selected one segment, which is the race this rule
-exists for. The accounted footprint **SHOULD** be checked against the sum of the
-segment set's sizes by verification ([§4.4](#4.4%20Inspection)), and a mismatch reported.
+exists for. Spares are not in the segment set, so the accounted footprint
+**SHOULD** be checked against the sum of the segment set's sizes plus every
+spare at the segment cap by verification ([§4.4](#4.4%20Inspection)), and a mismatch reported.
 
 ### 7.4 Open descriptors
 
