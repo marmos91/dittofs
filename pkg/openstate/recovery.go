@@ -1,0 +1,539 @@
+package openstate
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"slices"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+)
+
+// GraceRef names one grace instance of one shard.
+type GraceRef struct {
+	Shard    ShardID
+	Instance uint64
+}
+
+// Recovery is the view of the shards this table serves, their grace after a
+// loss, and a client's references with no file handle; it runs at the
+// primary of the shard each names.
+type Recovery interface {
+	// ServeShard begins serving s, a shard of share, under its grace
+	// instance: a call minting state in a shard not begun is refused. Unless
+	// s is already served under instance, its state was lost, so s enters
+	// grace for one lease period: only the clients its records name may
+	// reclaim, and every other request for state is ErrGrace. Grace ends
+	// early once every such client has finished reclaiming or has ended. The
+	// restart-notice number is raised before grace when an NLM host is
+	// named, and each client told by Revoked is told then, shard by shard:
+	// the service answers no NLM request until it has begun every shard it
+	// serves.
+	ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error
+	// ReclaimComplete ends the caller's reclaim in the grace instances it
+	// was shown, and in no later one of the same shard. A client that does
+	// not recover by status never finishes this way: its call ends nothing.
+	ReclaimComplete(ctx context.Context, who Caller, shown []GraceRef) error
+	// TestState answers each reference as a call naming it would be
+	// answered: nil, or why it is refused. It changes nothing.
+	TestState(ctx context.Context, who Caller, s []StateRef) []error
+	// FreeState frees a revoked reference from the client's revoked set, or
+	// drops a lock state holding no locks. A lock state holding some, a live
+	// open or a live grant is ErrLocksHeld. The waiters a drop frees are
+	// served under the file's admission lock, which the table takes itself:
+	// the service must not hold it when calling.
+	FreeState(ctx context.Context, who Caller, s StateRef) error
+	// DropShare ends every open, lock, waiter, grant and watch of share
+	// here, as its removal or move does, with no recall and no wait, in
+	// grace or not: each client that held any is told by Revoked
+	// (RevokedShare, naming moved for a move), and nothing enters a revoked
+	// set, so a reference to it is ErrBadState. The share's shards stay
+	// served with their grace ended, since nothing is left there to reclaim.
+	DropShare(ctx context.Context, share entity.ShareID, moved netip.Addr) error
+}
+
+type recovery struct{ t *Table }
+
+// served is a shard this table serves.
+type served struct {
+	instance uint64         // the grace instance its references are minted under
+	share    entity.ShareID // the share it belongs to, whose durable-open index holds its records
+	// unclosed is set from a grace's start until, once the grace has ended,
+	// the sweep has closed the durable records nobody reclaimed.
+	unclosed bool
+	ends     time.Duration // the Elapsed reading its grace ends at; zero: not in grace
+	// reclaim is the clients its records named when grace began: those that
+	// may reclaim here and have not finished.
+	reclaim map[entity.ClientID]reclaimer
+	// guarded is set while one of them can reclaim a deny mode or a mandatory
+	// lock: anonymous I/O then waits for grace's end.
+	guarded bool
+	// dropped is set once DropShare ended its share's state: nothing is
+	// granted or reclaimed there again until it is served anew.
+	dropped bool
+	// owed is, per client that recovers by reconnecting, the persistent
+	// opens installed for it that it has not reconnected and that have not
+	// closed.
+	owed map[entity.ClientID]int
+}
+
+// reclaimer is a client a grace waits for.
+type reclaimer struct {
+	reconnect bool // it recovers by reconnecting
+	// deny is set when it can reclaim a deny mode or a mandatory lock: it is
+	// no NLM host, which holds neither, and does not recover by reconnecting,
+	// which reclaims nothing here.
+	deny bool
+}
+
+// inGrace reports whether sh is in grace at now.
+func (sh *served) inGrace(now time.Duration) bool { return sh.ends != 0 && now < sh.ends }
+
+// settle ends sh's grace early once no client it waits for is left, and
+// lifts the wait of anonymous I/O once none left can reclaim a deny mode: a
+// client that recovers by reconnecting is finished once each persistent open
+// installed for it has reconnected or closed, its Timeout passed included,
+// as its volatile state is never reclaimed. The caller holds cmu.
+func (sh *served) settle() {
+	sh.guarded = false
+	done := true
+	for c, r := range sh.reclaim {
+		sh.guarded = sh.guarded || r.deny
+		done = done && r.reconnect && sh.owed[c] == 0
+	}
+	if done {
+		sh.ends = 0
+	}
+}
+
+func (v recovery) ServeShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	// The client step is held from the scan to the install, so a revoke, an
+	// expiry or a reboot either lands before the scan, and the client is
+	// not listed, or after the install, and unreclaims it.
+	var out outbox
+	t.cstep.Lock()
+	err = t.beginShard(ctx, share, s, instance, &out)
+	t.cstep.Unlock()
+	if err != nil {
+		return err
+	}
+	out.raise(t, sink)
+	return nil
+}
+
+// beginShard is ServeShard under the client step; the clients to tell, and
+// what the installed leases raise, go to out.
+func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID, instance uint64, out *outbox) error {
+	t.cmu.Lock()
+	cur := t.shards[s]
+	kept := cur != nil && cur.instance == instance && !cur.dropped
+	if cur != nil && !kept {
+		delete(t.shards, s) // admission refuses while the old state goes
+	}
+	t.cmu.Unlock()
+	switch {
+	case kept:
+		return nil // a handover of the table: nothing was lost
+	case cur != nil:
+		t.lose(func(x ShardID) bool { return x == s })
+	}
+	sh := &served{instance: instance, share: share, unclosed: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
+	var told []Revocation
+	notice := false
+	named := map[entity.ClientID]entity.ClientRecord{}
+	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
+		if err != nil {
+			return err
+		}
+		if rec.Ended {
+			continue // its state is being released everywhere: nothing to reclaim
+		}
+		named[rec.ID] = rec
+		// decision: a client that recovers by reconnecting holds no deny mode
+		// grace waits for, though an SMB client can hold one: its volatile
+		// opens are never reclaimed, and its persistent ones are installed
+		// here with their deny modes, which anonymous I/O is judged against
+		// as against any open. Set deny for it if an open of it is ever
+		// reclaimed rather than installed.
+		sh.reclaim[rec.ID] = reclaimer{
+			reconnect: rec.Recovery == entity.RecoverReconnect,
+			deny:      rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
+		}
+		// A client the table does not know yet starts its lease at the
+		// grace's start, as its first call would: one silent through the
+		// whole grace then expires, and no later grace names it again.
+		//
+		// ponytail: a restart in the last sweep interval of that lease, before
+		// the sweep expires it, lists the client once more. Expire it as the
+		// grace is begun if a lease ended before a restart is seen reclaiming.
+		//
+		// decision: an NLM host or an SMB client holds no lease, so it is
+		// neither made known nor expired for silence here: an NLM host's
+		// state goes with its restart notice, and an SMB client's with its
+		// opens' Timeouts. An NLM host silent through a whole grace therefore
+		// keeps its shard mark and reclaims in the next grace, even over a
+		// lock granted in between. That takes a partition through one grace
+		// plus a second restart. A lease is no fix, as NLM hosts never renew.
+		// Clear the mark of each host the grace listed that did not reclaim
+		// once the grace ends, if NLM is served where restarts are routine.
+		t.cmu.Lock()
+		if _, ok := t.leases[rec.ID]; !ok && rec.Protocol == entity.ProtocolNFSv4 {
+			t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+			t.know(rec)
+		}
+		t.cmu.Unlock()
+		if rec.Recovery == entity.RecoverReconnect || rec.Recovery == entity.RecoverNotice {
+			told = append(told, Revocation{Client: rec.ID, Shard: s, Reason: RevokedShardState, Adapter: rec.Adapter})
+			notice = notice || rec.Recovery == entity.RecoverNotice
+		}
+	}
+	if notice {
+		if err := t.raiseNotice(ctx); err != nil {
+			return err
+		}
+	}
+	if err := t.install(ctx, share, s, sh, named, out); err != nil {
+		t.lose(func(x ShardID) bool { return x == s }) // what was installed goes, so a retry installs each open once
+		return err
+	}
+	t.cmu.Lock()
+	sh.ends = t.d.Clock.Elapsed() + leasePeriod
+	sh.settle()
+	t.shards[s] = sh
+	t.cmu.Unlock()
+	out.revoked = append(out.revoked, told...)
+	return nil
+}
+
+// lose drops every piece of state held in the shards in reports, as a loss of
+// their open state does: nothing is told and nothing closed, since the state
+// is gone rather than ended, and its references then miss. It returns the
+// clients that held any. A file's state is all of its shard, so no waiter is
+// left to serve.
+//
+// decision: a call admitted under the old instance, on a file holding no
+// state of s, that mints after the old state is dropped keeps its state,
+// stamped with the instance installed by then, or zero while none is, though
+// it was admitted outside the new grace. Only a failover onto a node already
+// serving the shard opens that window, which a single node never does. Mark
+// a shard swapping and refuse its mints if shards are found to move.
+func (t *Table) lose(in func(ShardID) bool) map[entity.ClientID]struct{} {
+	t.idx.Lock()
+	files := map[entity.FileID]struct{}{}
+	holders := map[entity.ClientID]struct{}{}
+	for k, h := range t.refs {
+		if in(k.shard) {
+			files[h.file] = struct{}{}
+			if h.client != 0 {
+				holders[h.client] = struct{}{}
+			}
+		}
+	}
+	for k := range t.revoked {
+		if in(k.shard) {
+			delete(t.revoked, k)
+		}
+	}
+	t.idx.Unlock()
+	for f := range files {
+		_ = t.step(f, func(e *entry) error {
+			for _, ls := range e.lstates {
+				if in(ls.ref.Shard) {
+					t.dropLockState(e, ls)
+				}
+			}
+			for _, g := range e.grants {
+				if in(g.id.Shard) {
+					t.dropGrant(e, g)
+				}
+			}
+			for _, o := range e.opens {
+				if in(o.Ref.Shard) {
+					t.dropOpen(e, o)
+				}
+			}
+			for _, w := range e.watches {
+				if in(w.id.Shard) {
+					t.dropWatch(e, w)
+				}
+			}
+			if len(e.opens) == 0 {
+				e.pending = nil
+			}
+			return nil
+		})
+	}
+	return holders
+}
+
+// decision: a call naming a dropped share's shard is ErrBadState, a reclaim
+// ErrNoReclaim, as a reference there is: the service answers the share's
+// handles stale before it calls, so only a call racing the drop meets it,
+// and a retry would never be served. Name the moved-share error here if
+// shards are found to move with calls in flight.
+//
+// decision: DropShare writes nothing to the store: a removed share's
+// records go with its keys, a moved share's move carries them, and its
+// shards run no grace-end pass, which would close records the move still
+// carries, nor raise GraceEnded, as the share has no pending release here
+// left to run. Close them here if a share is found removed with its records
+// left behind.
+func (v recovery) DropShare(ctx context.Context, share entity.ShareID, moved netip.Addr) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	// Each shard is served anew, dropped, before its state goes: a grace-end
+	// pass already under way then finds it served again and stops, and a
+	// call minting there once the state is listed is refused. The client
+	// step orders the drop with a serve of the share's shards, which holds
+	// it while a shard is out of the served set: the drop finds the shard
+	// once installed, and a serve after it finds it dropped.
+	t.cstep.Lock()
+	t.cmu.Lock()
+	dropped := map[ShardID]bool{}
+	for s, sh := range t.shards {
+		if sh.share == share {
+			dropped[s] = true
+			t.shards[s] = &served{instance: sh.instance, share: share, dropped: true, reclaim: map[entity.ClientID]reclaimer{}, owed: map[entity.ClientID]int{}}
+		}
+	}
+	t.cmu.Unlock()
+	holders := t.lose(func(s ShardID) bool { return dropped[s] })
+	t.cstep.Unlock()
+	for c := range holders {
+		sink.Revoked(Revocation{Client: c, Share: share, Addr: moved, Reason: RevokedShare})
+	}
+	return nil
+}
+
+// raiseNotice raises the restart-notice number durably, so every NLM host
+// sees the loss.
+func (t *Table) raiseNotice(ctx context.Context) error {
+	for {
+		n, err := t.d.Records.NSMState(ctx)
+		if err != nil {
+			return err
+		}
+		if err = t.d.Records.RaiseNSMState(ctx, n+1); !errors.Is(err, kvstore.ErrNSMNotRaised) {
+			return err
+		}
+	}
+}
+
+// admit admits a request of who for state in shard s, a reclaim or not, and
+// reports whether s is in grace. A shard not begun is ErrDelay; a client
+// that owes a reclaim it must connect again for is ErrStaleClient; in grace
+// a request that is no reclaim is ErrGrace, and a reclaim by a client the
+// shard's records did not name, or that finished, ErrNoReclaim.
+//
+// decision: a shard not begun answers ErrDelay, a retry, since the service
+// begins every shard it serves before it answers, so a request there races a
+// takeover. Answer the error a moved shard's request gets once shards move.
+func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	sh := t.shards[s]
+	switch {
+	case sh == nil:
+		return false, &DelayError{DelayFrozen}
+	case sh.dropped && reclaim:
+		return false, ErrNoReclaim
+	case sh.dropped:
+		return false, ErrBadState
+	}
+	if t.mustConnectLocked(who.Client) {
+		return false, ErrStaleClient
+	}
+	grace := sh.inGrace(t.d.Clock.Elapsed())
+	_, may := sh.reclaim[who.Client]
+	switch {
+	case grace && !reclaim:
+		return true, ErrGrace
+	case grace && !may:
+		return true, ErrNoReclaim
+	}
+	return grace, nil
+}
+
+// guarded is why anonymous I/O, or a change that removes or moves a name, in
+// shard s waits: ErrDelay while s is not begun, as admit answers a mint
+// there, and ErrGrace while s is in grace and a client it still waits for can
+// reclaim a deny mode or a mandatory lock.
+func (t *Table) guarded(s ShardID) error {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	switch sh := t.shards[s]; {
+	case sh == nil:
+		return &DelayError{DelayFrozen}
+	case sh.guarded && sh.inGrace(t.d.Clock.Elapsed()):
+		return ErrGrace
+	}
+	return nil
+}
+
+// owedLocked is the grace instances client c has not finished, by the
+// marks the table holds of its record; the caller holds cmu.
+func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
+	var owed []GraceRef
+	for _, m := range t.known[c].shards {
+		if sh := t.shards[m.Shard]; sh != nil && m.Done < sh.instance {
+			owed = append(owed, GraceRef{m.Shard, sh.instance})
+		}
+	}
+	return owed
+}
+
+// staleClient is ErrStaleClient for a client c that must connect again, as
+// mustConnectLocked judges it, adopting c first if this table has not yet
+// served it since a restart.
+func (t *Table) staleClient(ctx context.Context, c entity.ClientID) error {
+	t.cmu.Lock()
+	_, ok := t.known[c]
+	t.cmu.Unlock()
+	if !ok {
+		if err := t.adopt(ctx, c); err != nil {
+			return err
+		}
+	}
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if t.mustConnectLocked(c) {
+		return ErrStaleClient
+	}
+	return nil
+}
+
+// mustConnectLocked reports whether c recovers by connecting again and owes
+// a reclaim: every call naming it is then ErrStaleClient until it does. The
+// caller holds cmu.
+func (t *Table) mustConnectLocked(c entity.ClientID) bool {
+	return t.known[c].recovery == entity.RecoverRefusal && len(t.owedLocked(c)) > 0
+}
+
+// unreclaim drops c from every grace waiting on it: it ended, or was
+// replaced by a reboot.
+func (t *Table) unreclaim(c entity.ClientID) {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	for _, sh := range t.shards {
+		if _, ok := sh.reclaim[c]; ok {
+			delete(sh.reclaim, c)
+			sh.settle()
+		}
+	}
+}
+
+// decision: a pair whose shard this table does not serve, or whose instance
+// is not above the client's Done or is above the shard's own, is skipped: the
+// client was shown nothing it may end there. Answer it ErrInvalid if an
+// adapter is found naming pairs it was never shown.
+func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []GraceRef) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	switch {
+	case err != nil:
+		return staleIfGone(err)
+	case rec.Protect && who.Principal != rec.Owner:
+		return ErrNotYours
+	case rec.Recovery != entity.RecoverStatus:
+		return nil
+	}
+	for _, g := range shown {
+		i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == g.Shard })
+		t.cmu.Lock()
+		sh := t.shards[g.Shard]
+		t.cmu.Unlock()
+		if i < 0 || sh == nil || g.Instance <= rec.Shards[i].Done || g.Instance > sh.instance {
+			continue
+		}
+		m := entity.ShardMark{Shard: g.Shard, Done: g.Instance}
+		if err := t.d.Records.Clients().MarkShard(ctx, who.Client, m); err != nil {
+			return staleIfGone(err)
+		}
+		t.cmu.Lock()
+		t.noteMarkLocked(who.Client, m)
+		if sh.instance == g.Instance {
+			delete(sh.reclaim, who.Client)
+			sh.settle()
+		}
+		t.cmu.Unlock()
+	}
+	return nil
+}
+
+// noteMarkLocked records m in what the table holds of c's record; the caller
+// holds cmu.
+func (t *Table) noteMarkLocked(c entity.ClientID, m entity.ShardMark) {
+	k, ok := t.known[c]
+	if !ok {
+		return
+	}
+	k.shards = slices.Clone(k.shards) // know keeps the record's own slice, which its other holders still read
+	if i := slices.IndexFunc(k.shards, func(x entity.ShardMark) bool { return x.Shard == m.Shard }); i >= 0 {
+		k.shards[i] = m
+	} else {
+		k.shards = append(k.shards, m)
+	}
+	t.known[c] = k
+}
+
+func (v recovery) TestState(ctx context.Context, who Caller, s []StateRef) []error {
+	errs := make([]error, len(s))
+	for i, ref := range s {
+		_, errs[i] = v.t.resolve(who.Client, entity.FileID{}, ref)
+	}
+	return errs
+}
+
+func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return err
+	}
+	k := refKey{s.Shard, s.Token}
+	t.idx.Lock()
+	h, err := t.resolveLocked(who.Client, entity.FileID{}, s)
+	if _, ok := err.(*RevokedError); ok {
+		delete(t.revoked, k)
+		t.idx.Unlock()
+		return nil
+	}
+	t.idx.Unlock()
+	switch {
+	case err != nil:
+		return err
+	case h.typ != StateLock:
+		return ErrLocksHeld
+	}
+	out := outbox{timer: true}
+	err = t.step(h.file, func(e *entry) error {
+		ls := e.lstates[s.Token]
+		switch {
+		case ls == nil || ls.ref.Shard != s.Shard:
+			return ErrBadState
+		case len(ls.locks) > 0:
+			return ErrLocksHeld
+		}
+		t.dropLockState(e, ls)
+		t.serve(ctx, e, &out)
+		return nil
+	})
+	out.raise(t, sink)
+	t.serveFiles(ctx, sink, out.serve)
+	return err
+}

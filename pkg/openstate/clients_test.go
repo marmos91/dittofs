@@ -432,7 +432,7 @@ func TestRebootRaceLeavesOneID(t *testing.T) {
 	for i := range 2000 {
 		name := fmt.Sprint("host-", i)
 		old := f.connect(t, nfs(name, 1, owner))
-		g := reopen(t, f.fs, f.clock)
+		g := reopenServing(t, f.fs, f.clock, nil)
 		file := entity.NewFileID()
 		ref := mintIn(t, g.Table, file, old, 0)
 		p, err := g.Propose(ctx, nfs(name, 2, owner), addr)
@@ -500,6 +500,7 @@ func TestStartAndStop(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
 	g := unstarted(t, f.fs, f.clock)
+	file := anyFile()
 	calls := map[string]func() error{
 		"Propose":    func() error { _, err := g.Propose(ctx, nfs("host-b", 1, entity.NewUser()), addr); return err },
 		"Connect":    func() error { _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },
@@ -507,6 +508,61 @@ func TestStartAndStop(t *testing.T) {
 		"Renew":      func() error { _, err := g.Renew(ctx, id); return err },
 		"Expire":     func() error { return g.Expire(ctx, id) },
 		"Destroy":    func() error { return g.Destroy(ctx, Caller{Client: id}) },
+		"Open":       func() error { _, err := g.Opens().Open(ctx, Caller{Client: id}, file, OpenRequest{}); return err },
+		"Downgrade": func() error {
+			_, err := g.Opens().Downgrade(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{}, 0, 0)
+			return err
+		},
+		"Update": func() error { return g.Opens().Update(ctx, Caller{Client: id}, 1, OpenUpdate{}) },
+		"Close": func() error {
+			_, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
+			return err
+		},
+		"Durable": func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
+		"ConfirmOpen": func() error {
+			_, err := g.Opens().ConfirmOpen(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
+			return err
+		},
+		"Lock": func() error {
+			_, err := g.Locks().Lock(ctx, Caller{Client: id}, file, LockReq{Owner: LockOwner{Client: id}, Ranges: []LockRange{{}}})
+			return err
+		},
+		"CancelLock": func() error {
+			_, err := g.Locks().CancelLock(ctx, Caller{Client: id}, file, LockOwner{Client: id}, ByteRange{})
+			return err
+		},
+		"WaitAnswered": func() error {
+			return g.Locks().WaitAnswered(ctx, Caller{Client: id}, LockWaiter{File: file.ID, Owner: LockOwner{Client: id}}, true)
+		},
+		"Unlock": func() error {
+			_, err := g.Locks().Unlock(ctx, Caller{Client: id}, file, OpenRef{}, LockOwner{Client: id}, nil, Seqs{}, nil)
+			return err
+		},
+		"ReleaseLockOwner": func() error { return g.Locks().ReleaseLockOwner(ctx, Caller{Client: id}, LockOwner{Client: id}) },
+		"AckRecall":        func() error { return g.Grants().AckRecall(ctx, Caller{Client: id}, GrantID{}, GrantNone) },
+		"Revoke":           func() error { return g.Revoke(ctx, id) },
+		"Rebind":           func() error { return g.Rebind(ctx, Caller{Client: id}, entity.NodeID{1}) },
+		"FreeState":        func() error { return g.Recovery().FreeState(ctx, Caller{Client: id}, StateRef{}) },
+		"CheckIO": func() error {
+			return g.Checks().CheckIO(ctx, Caller{Client: id}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, ByteRange{}, true)
+		},
+		"CheckChange": func() error { return g.Checks().CheckChange(ctx, Caller{Client: id}, file, nil, ChangeAttrs) },
+		"Watch":       func() error { _, err := g.Watches().Watch(ctx, Caller{Client: id}, file, false, names); return err },
+		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
+		"DropShare":   func() error { return g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}) },
+		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
+		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
+		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
+		"Disconnect":  func() error { return g.Disconnect(ctx, id, entity.SessionRef{}) },
+		"ChannelDown": func() error { return g.ChannelDown(ctx, id) },
+		"Reconnect": func() error {
+			_, err := g.Opens().Reconnect(ctx, Caller{Client: id}, 1, ReconnectMatch{}, entity.SessionRef{})
+			return err
+		},
+		"Flushed":         func() error { return g.Opens().Flushed(ctx, Caller{Client: id}, 1, 0) },
+		"Renamed":         func() error { return g.Opens().Renamed(ctx, file, entity.FileID{}, nil, entity.FileID{}, nil) },
+		"ServeShard":      func() error { return g.Recovery().ServeShard(ctx, f.fs.Share.ID, 0, 1) },
+		"ReclaimComplete": func() error { return g.Recovery().ReclaimComplete(ctx, Caller{Client: id}, nil) },
 	}
 	check := func(when string) {
 		for name, call := range calls {
@@ -516,13 +572,19 @@ func TestStartAndStop(t *testing.T) {
 		}
 	}
 	check("before Start")
-	if err := g.Start(ctx, g.sink, nil); err != nil {
+	if err := g.Start(ctx, g.sink, nil); err == nil {
+		t.Error("a Start with no Order was accepted")
+	}
+	if err := g.Start(ctx, g.sink, g.order.order); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(ctx, g.sink, nil); err == nil {
+	if err := g.Start(ctx, g.sink, g.order.order); err == nil {
 		t.Error("a second Start was accepted")
 	}
 	g.Stop()
+	if err := g.Start(ctx, g.sink, g.order.order); err == nil {
+		t.Error("a Start after Stop was accepted")
+	}
 	check("after Stop")
 	if _, err := f.Record(ctx, id); err != nil {
 		t.Fatalf("calls on a stopped table changed the store: %v", err)
@@ -546,7 +608,7 @@ func TestStartContextDoesNotStopTheTimer(t *testing.T) {
 	f0 := newFixture(t)
 	f := unstarted(t, f0.fs, f0.clock)
 	sctx, cancel := context.WithCancel(ctx)
-	if err := f.Start(sctx, f.sink, nil); err != nil {
+	if err := f.Start(sctx, f.sink, f.order.order); err != nil {
 		t.Fatal(err)
 	}
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
@@ -612,8 +674,8 @@ func TestSinkMayCallBack(t *testing.T) {
 }
 
 // Expire is node-local: it releases the client's state here and drops its
-// lease here, but deletes no record and raises no ClientEnded, which are the
-// lease timer's.
+// lease here, so it is granted nothing more here, but deletes no record and
+// raises no ClientEnded, which are the lease timer's.
 func TestExpireIsNodeLocal(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, nfs("host-a", 1, entity.NewUser()))
@@ -636,5 +698,96 @@ func TestExpireIsNodeLocal(t *testing.T) {
 	f.cmu.Unlock()
 	if leased {
 		t.Error("Expire kept the lease")
+	}
+	if f.current(id) {
+		t.Error("Expire left the client current here, so it could still be granted an open")
+	}
+}
+
+// A reboot ends the old ID at once: it is granted no open, and the opens it
+// held are released, each file a close left to unlink raised Closed.
+func TestRebootEndsTheOldID(t *testing.T) {
+	f := newFixture(t)
+	c := nfs("host-a", 1, entity.NewUser())
+	old := f.caller(t, c)
+	marked, dir := anyFile(), entity.NewFileID()
+	f.mustOpen(t, old, marked, OpenRequest{Via: dir, Name: []byte("m"), Access: del, DeleteOnClose: true})
+	c.Boot = [8]byte{2}
+	f.connect(t, c)
+	if _, err := f.open(old, anyFile(), OpenRequest{Access: rd}); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("an open by the ID a reboot ended: %v, want ErrStaleClient", err)
+	}
+	var unlinked bool
+	for _, cl := range f.sink.closed {
+		unlinked = unlinked || cl.f == marked.ID && cl.r.Unlink != nil && cl.r.Unlink.Parent == dir
+	}
+	if !unlinked {
+		t.Errorf("Closed after the reboot: %+v, want the marked file's unlink", f.sink.closed)
+	}
+}
+
+// After Expire the client is in none of the indexes: no reference, count,
+// lease key or grant budget names it, as the rebuild from the entries
+// agrees.
+func TestExpiredClientLeavesNoIndex(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, nfs("a", 1, entity.NewUser())), f.caller(t, nfs("b", 1, entity.NewUser()))
+	file, held := in(1), in(1)
+	o, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Via: entity.NewFileID(), Owner: owner(a, "oo"), Want: GrantRead})
+	if g == nil {
+		t.Fatal("no grant offered")
+	}
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "lo"), Open: refOf(o), Ranges: []LockRange{sh(0, 10)}})
+	f.mustLock(t, b, held, LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 10)}})
+	if _, err := f.lock(a, held, LockReq{Owner: owner(a, "w"), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); lockedBy(err) != "lo" {
+		t.Fatalf("waiter: %v", err)
+	}
+	f.watch(t, a, in(1), false, names)
+
+	if err := f.Expire(ctx, a.Client); err != nil {
+		t.Fatal(err)
+	}
+	x := f.kept()
+	for k, h := range x.refs {
+		if h.client == a.Client {
+			t.Errorf("reference %+v still names the client", k)
+		}
+	}
+	for k := range x.held {
+		if k.client == a.Client {
+			t.Errorf("count %+v still names the client", k)
+		}
+	}
+	for k := range x.owners {
+		if k.client == a.Client {
+			t.Errorf("owner %+v still names the client", k)
+		}
+	}
+	if _, ok := x.granted[a.Client]; ok || len(x.keys) > 0 || len(x.via) > 0 {
+		t.Errorf("grant budget %v, lease keys %v, counts per Via %v after the expiry", x.granted, x.keys, x.via)
+	}
+}
+
+// A confirm the store refuses leaves its proposal: another principal's
+// confirm of it is refused, and the same confirm retried connects the client.
+func TestRefusedConfirmMayBeRetried(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	c := nfs("host-a", 1, entity.NewUser())
+	p, err := f.Propose(ctx, c, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.fail.Store(true)
+	_, err = f.Connect(ctx, c, &p)
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a confirm over a refusing store: %v, want its error", err)
+	}
+	if _, err := f.Connect(ctx, nfs("host-a", 1, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
+		t.Errorf("another principal's confirm of the name: %v, want ErrClientInUse", err)
+	}
+	if id, err := f.Connect(ctx, c, &p); err != nil || id != p.Client {
+		t.Errorf("the same confirm retried: %d, %v; want %d", id, err, p.Client)
 	}
 }
