@@ -1199,13 +1199,19 @@ func TestRefusedFloorsClaimNothing(t *testing.T) {
 		// A hot feeder, spinning until the good floor at the end finally
 		// closes the shards. Only errRebuilt received during the refused
 		// floors below counts: once the good floor claims, errRebuilt is
-		// the contract.
+		// the contract. The feeder signals once its first record is taken,
+		// so the refused phase cannot begin — and end — before the feeder
+		// has been scheduled, which on a loaded runner under -race could
+		// silence the whole race this test exists to catch.
 		var refusedPhase atomic.Bool
 		refusedPhase.Store(true)
+		var fedDuringRefusal atomic.Int64
+		started := make(chan struct{})
 		refusedErrs := make(chan error, 1)
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			v := 0
+			var once sync.Once
 			for {
 				v++
 				if err := b.Feed(recd(RecWrite, id, uint64(v), uint64(v), core.SegmentID(1+v/100), uint32(v)*8, int64(v)*8, 8)); err != nil {
@@ -1217,8 +1223,13 @@ func TestRefusedFloorsClaimNothing(t *testing.T) {
 					}
 					return
 				}
+				if refusedPhase.Load() {
+					fedDuringRefusal.Add(1)
+				}
+				once.Do(func() { close(started) })
 			}
 		})
+		<-started
 		// Two hundred refused floors, each refusing before the claim in
 		// turn: any of them telling the feeder errRebuilt is the defect.
 		bad := core.Version{Epoch: 1, Counter: 99}
@@ -1238,6 +1249,12 @@ func TestRefusedFloorsClaimNothing(t *testing.T) {
 		case err := <-refusedErrs:
 			t.Fatalf("a refused floor told the feeder %v: the rebuild went on", err)
 		default:
+		}
+		// The feeder fed at least one record before the refused phase
+		// ended — the handshake guarantees it ran first, and this checks
+		// it was not refused before starting.
+		if fed := fedDuringRefusal.Load(); fed == 0 {
+			t.Fatal("the feeder fed nothing during the refused floors")
 		}
 		held := heldPieces(&fs, id)
 		if len(held) == 0 {
