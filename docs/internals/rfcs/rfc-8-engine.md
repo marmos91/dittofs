@@ -1337,7 +1337,7 @@ older content served as newer.
   files at once and retries the failing ones alone. When it does not, the engine
   splits the batch in halves and resubmits each, until every failing file stands
   alone. A file that still fails alone is backed off by itself, as O6 backs off
-  an offload ([§6.3](#6.3%20The%20offload%20pipeline)), and raises a health condition naming it
+  an offload ([§6.3](#6.3%20The%20offload%20pipeline)), and raises `existence_commit_failing` naming it
   ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its stability points answer `ErrDelay` meanwhile, and no other
   file's flush or offer waits on it.
 
@@ -2914,10 +2914,16 @@ Share health adds what only the engine sees:
   ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)), distinguishable from the remote being unreachable — an offload
   that fails on metadata with the remote healthy is a wedge a probe cannot see;
 - a file the pipeline has backed off as failing ([§6.3](#6.3%20The%20offload%20pipeline), O6) is a condition
-  naming the file.
+  naming the file;
+- a file the group commit has backed off as failing alone ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) is a
+  condition naming the file, unhealthy rather than degraded: its stability
+  points answer `ErrDelay` until its existence commits, so a client's `fsync`
+  on it never succeeds meanwhile, as with a stalled clone ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)). It clears
+  at the file's next existence commit.
 
 The engine raises these [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry) conditions: `offload_stalled` (share),
-`file_offload_failing` (share, naming the file), `offload_age_exceeded` (share,
+`file_offload_failing` (share, naming the file), `existence_commit_failing`
+(share, naming the file, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), `offload_age_exceeded` (share,
 [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)), `removal_stalled` (share, naming the file, [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)),
 `work_queue_stalled` (journal, naming the source and tenant, [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)) and
 `node_fenced` (node, [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)). `Stats` reports them, per share and for the
