@@ -732,6 +732,29 @@ func TestRefusedOpenLeavesItsLeaseUnwidened(t *testing.T) {
 	}
 }
 
+// A widening open whose lease write lands an earlier open's record and fails
+// on its own puts the lease back, and that record with it.
+func TestRefusedWideningOpenPutsTheLeaseRecordsBack(t *testing.T) {
+	for range 20 { // the lease's records are written in map order: the earlier open's is first about half the time
+		fs, st := failingFS(t)
+		f := reopen(t, fs, &fakeClock{})
+		a := f.caller(t, smbMachine("pc-a"))
+		file, r := f.fileIn(t, "disk")
+		r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{1}, ptr[uint16](1), GrantRead
+		f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+		r.Want = rwh
+		st.updateAt.Store(st.updates.Load() + 2)
+		_, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 2))
+		st.updateAt.Store(0)
+		if err == nil {
+			t.Fatal("the widening open whose write failed was granted")
+		}
+		if err := f.check(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // A disconnect that parks an open serves the waiters its own waiter held
 // back, in that step: the open's waiter goes, and the one behind it is
 // granted.

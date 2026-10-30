@@ -485,7 +485,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 		confirmed := t.ownerConfirmed(r)
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
-		// The lease the offer may widen, put back when o's write fails.
+		// The lease the offer may widen, put back when o's write fails, and
+		// its other opens' records saved again.
 		var mine *grant
 		var was grantfsm.Grant
 		if !grace && confirmed {
@@ -501,6 +502,11 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 				if mine != nil && e.grants[mine.id.Token] == mine {
 					mine.fsm = was
 					t.recount(mine)
+					for _, h := range e.opens {
+						if h.persistent() && h.Grant == mine.id {
+							t.save(ctx, e, h) // the failed write may have widened its record
+						}
+					}
 				}
 				return err
 			}
