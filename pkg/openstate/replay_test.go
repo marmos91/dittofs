@@ -531,9 +531,11 @@ func TestLockReplayOnAPlainOpen(t *testing.T) {
 	a := f.caller(t, smbMachine("pc-a"))
 	file := anyFile()
 	o := f.mustOpen(t, a, file, OpenRequest{Access: rd | wr})
-	q := LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}, Replay: &LockSequence{Index: 2, Seq: 1}}
-	f.mustLock(t, a, file, q)
-	if _, err := f.lock(a, file, q); err != nil {
-		t.Errorf("the replay of a lock on a non-durable open: %v; want it answered", err)
+	for _, i := range []uint8{2, 64} { // 64: the last index MS-SMB2 keeps
+		q := LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(uint64(i)*10, 10)}, Replay: &LockSequence{Index: i, Seq: 1}}
+		f.mustLock(t, a, file, q)
+		if _, err := f.lock(a, file, q); err != nil {
+			t.Errorf("the replay of a lock on index %d of a non-durable open: %v; want it answered", i, err)
+		}
 	}
 }
