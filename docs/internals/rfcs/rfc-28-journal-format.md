@@ -1099,8 +1099,10 @@ still reads nothing outside the journal ([§3.1](#3.1%20Rebuilding)).
 acknowledge a sync and then lose the last records it covered. No later record then
 proves them, so the scan alone reads the loss as a torn tail. The group commit
 records each stream's sync mark in metadata ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and `Open` is handed
-the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A mark's tail is lost when two things hold
-after recovery's own re-appends: its segment is on disk with its verifying records
+the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The check runs after §3.1 has verified every
+unproven tail and before recovery empties any segment it ends, so a segment the
+emptying would unlink is still there to check. A mark's tail is lost when two things hold
+after recovery's own tail re-appends: its segment is on disk with its verifying records
 ending below the mark's offset, and no copy of the record carrying the mark's
 sequence number verifies anywhere. A lost synced tail is a corrupt range that names
 no record, and is reconciled as above. The next sequence number and the next
