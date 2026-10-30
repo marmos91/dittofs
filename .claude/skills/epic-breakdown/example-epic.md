@@ -102,7 +102,9 @@ subtasks and tests can cite them.
   the shard table names the ceiling: two hot principals in one shard still contend; move
   to per-entry locks if a profile shows it.
 - **D2, soft-limit clock.** The grace period runs on the injected clock, so tests drive it.
-  A `decision:` marker says a restart resets it, because RFC 90 does not persist it.
+  A `decision:` marker says a restart resets it, because RFC 90 does not persist it, and
+  that it should be withdrawn if RFC 90 starts persisting the grace period, or if restarts
+  ever let a principal stay over its soft limit unreported for longer than one period.
 
 ## 5. Target tree
 
@@ -129,7 +131,7 @@ pkg/quotav2/internal/usage/
   - `Get` and `Add` cost O(1) and allocate nothing.
   - Readers and writers of different principals run in parallel.
 - **Tests:** a test that holds one principal's shard lock through a test hook and checks
-  that `Check` for a principal in another shard still returns (catches a global lock, which
+  that `Add` for a principal in another shard still returns (catches a global lock, which
   would block it); the `-race` run with writers on 64 principals (catches a data race); a
   memory check at 10⁶ entries that fails when one field is added (catches R10).
 
@@ -203,10 +205,10 @@ pkg/quotav2/internal/usage/
 
 ```mermaid
 flowchart TD
-  S2(["S2 red suite in CI"]):::sync --> T1["T3.1 Usage table"]
-  T1 --> T2["T3.2 Accounting"] --> T3["T3.3 Hard-limit check"]
-  T3 --> C1(["after T3.3: Check usable by epic 5"]):::sync
-  T3 --> T4["T3.4 Transaction hook"] & T5["T3.5 Soft limits"] & T6["T3.6 Refusal message"]
+  S2(["S2 red suite in CI"]):::sync --> T3_1["T3.1 Usage table"]
+  T3_1 --> T3_2["T3.2 Accounting"] --> T3_3["T3.3 Hard-limit check"]
+  T3_3 --> C1(["after T3.3: Check usable by epic 5"]):::sync
+  T3_3 --> T3_4["T3.4 Transaction hook"] & T3_5["T3.5 Soft limits"] & T3_6["T3.6 Refusal message"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 

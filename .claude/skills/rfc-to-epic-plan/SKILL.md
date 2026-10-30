@@ -354,7 +354,9 @@ Put these rules in §1.5. Make each one concrete for this RFC: name its parsers,
 paths, its counters, its v1 package. Drop a rule only by writing that it does not apply,
 and why. Write each rule so that it stands alone once copied into an epic: no references
 to sections of the plan ("§3.1", "§1.4"), only to the RFC, to `CLAUDE.md` or to other
-rules by number.
+rules by number, and never "this plan", "the plan" or "see the plan", which become false
+once the rule sits in an epic document. Name the thing itself instead: not "this plan's
+simplifications carry theirs" but "each simplification carries its own marker: …".
 
 Open §1.5 with this instruction, verbatim. It is written **into the plan itself**, so that
 whoever later asks for an epic to be created from the plan, in any session, finds the rule to
@@ -436,9 +438,13 @@ use `epic-breakdown` in the document they are reading:
    check about what the real thing does: a real disk for durability, a real object store or
    Localstack for remote semantics, a real kernel client for protocol behaviour. Fakes are
    for pure logic only.
-9. **Code comment conventions** (`CLAUDE.md`). No epic, issue or plan IDs in source. Use
-   `ponytail:` and `decision:` markers. Where the RFC carries such a note, its marker goes
-   at the code site that implements it.
+9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
+   the code's behaviour and references nothing outside it: no issue or pull request
+   numbers, no CI, runner or OS names, no epic, subtask, plan, phase or decision ids. A
+   `ponytail:` marker records a knowingly simple implementation, naming its ceiling and the
+   upgrade path. A `decision:` marker records deliberate behaviour, naming the rule, why it
+   holds and the evidence that would overturn it. Where the RFC carries such a note, its
+   marker goes at the code site that implements it.
 10. **A test must be able to fail.** Keep a test only if a plausible change would make it
     fail and nothing else would catch that change: not the compiler, not the diff, not a
     later epic's tests. A review rule that no test can check, such as "stubs never panic",
@@ -469,7 +475,10 @@ use `epic-breakdown` in the document they are reading:
 - The integration epic follows the programme's stages, and an epic waiting on someone
   else's interface says "planned after Sx" and names the point.
 - There is a dashboards epic only if the RFC or the user asked for one.
-- The §1.5 rules cite no section of the plan.
+- The §1.5 rules cite no section of the plan and never name the plan. This prints the
+  numbered rules' lines that do, skipping the opening instruction, and must print nothing
+  ("plan ids" in rule 9 is a kind of id, not a reference, and does not match):
+  `awk '/^### 1\.5 /{f=1; next} /^##/{f=0} f && !/^>/' <plan> | rg -n -i "\b(this|the) plan\b|\bplan's\b"`
 - Every Step 0 default and every divergence from an existing plan is listed in the header
   or in §6.
 - No graph is in ASCII art.

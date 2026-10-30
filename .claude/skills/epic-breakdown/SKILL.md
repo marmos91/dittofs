@@ -426,8 +426,10 @@ Before handing over, check:
   grouping is only a suggestion.
 - `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <epic-doc>` finds
   nothing naming this epic's units.
-- The document never refers to the plan, has no checkboxes or status, and its graphs are
-  Mermaid.
+- The document never refers to the plan (`rg -n -i "\b(this|the) plan\b|\bplan's\b"
+  <epic-doc>` prints nothing), has no checkboxes or status, and its graphs are Mermaid. A copied rule that
+  names the plan is a defect of the plan: copy it word for word, and report it so the plan
+  is fixed.
 - §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
 - §1.3 explains every `E<n>` and `S<n>` the document uses, the copied rules included. This
   prints the ones missing from it, and must print nothing. A token that names something
