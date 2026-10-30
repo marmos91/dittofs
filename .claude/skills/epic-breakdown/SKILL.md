@@ -282,6 +282,10 @@ Header, one field per line: **Sources:** the RFC sections owned, with links.
 ## 1. Goal                     — what exists at the end; "at the end of the epic" bullets
 ### 1.1 In scope
 ### 1.2 Out of scope           — and which epic owns each item
+### 1.3 Names used here        — a legend, one line each, of the plan's names the document
+                                 and its copied rules use: every `E<n>` and `S<n>`, and
+                                 role names such as "the integration epic", with what each
+                                 is (from the plan's §2 and §3.2)
 ## 2. General rules for each epic — the plan's numbered §1.5 rules, copied word for word;
                                     not the instruction that opens §1.5, which speaks
                                     of "this plan"
@@ -418,6 +422,14 @@ Before handing over, check:
 - The document never refers to the plan, has no checkboxes or status, and its graphs are
   Mermaid.
 - §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
+- §1.3 explains every `E<n>` and `S<n>` the document uses, the copied rules included. This
+  prints the ones missing from it, and must print nothing:
+
+  ```bash
+  rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' <epic-doc> | sort -u |
+    comm -23 - <(awk '/^### 1\.3 /{f=1; next} /^#/{f=0} f' <epic-doc> |
+                 rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' | sort -u)
+  ```
 - No GitHub issue was created, or offered, unless the user asked, and then with the labels
   and sub-issue links above.
 

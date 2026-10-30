@@ -364,7 +364,8 @@ use `epic-breakdown` in the document they are reading:
 >   of "this plan". The epic document must not refer to this plan, link to it,
 >   or say "see the plan". Everything a reader needs to do the epic is in the epic
 >   document itself: the RFC sections it implements, the interfaces it builds on, the
->   rules, and the subtasks.
+>   rules, the subtasks, and a short legend of the names the rules borrow from this plan
+>   (E1, E2, S1, the integration epic, …).
 > - **The epic document records decisions, not progress, like this plan.** It has no
 >   status fields, no checkboxes to tick and no sections to keep up to date as the work
 >   goes on. It is revised through a pull request only when a decision changes.

@@ -42,6 +42,17 @@ the refusal error; the memory bound per entry.
 - The API and CLI that set limits (RFC 90 §5): epic 7.
 - Group quotas (RFC 90 §3.6): deferred by the RFC.
 
+### 1.3 Names used here
+
+- **E1**, epic 1, interfaces: the public surface, including `quotav2.Checker` and the error
+  set.
+- **E2**, epic 2, red e2e suite and test foundations: the registered suite with every test
+  listed as a known failure, the fake clock and the reference model.
+- **S1**, interfaces frozen: E1's exported surface no longer changes.
+- **S2**, red suite in CI: E2's suite runs in CI from every pull request.
+- **The integration epic**, epic 7: wires quota v2 into the node, including the API and
+  CLI that set limits.
+
 ## 2. General rules for each epic
 
 <!-- The general rules, copied here word for word. Shortened in this example. -->
