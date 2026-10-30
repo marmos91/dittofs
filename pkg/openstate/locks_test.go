@@ -133,6 +133,10 @@ func TestLockOwners(t *testing.T) {
 	if !errors.As(err, &le) || string(le.Holder.Owner.Name) != "lo1" || le.Holder.Range != x(0, 20) || le.Holder.Open != o.Ref.Token {
 		t.Fatalf("a second owner of the client: %v %+v, want refused by lo1's merged [0, 20) under the open", err, le)
 	}
+	f.mustLock(t, a, file, LockReq{Owner: lo1, Open: under, Ranges: []LockRange{sh(20, 10)}})
+	if _, err := f.lock(a, file, LockReq{Owner: lo2, Open: under, Ranges: []LockRange{sh(15, 1)}}); lockedBy(err) != "lo1" {
+		t.Errorf("a shared lock under lo1's exclusive [0, 20), beside its shared [20, 30): %s, want refused", lockedBy(err))
+	}
 
 	h := f.host(t, "nlm-host", 1)
 	name := []byte("svid")
