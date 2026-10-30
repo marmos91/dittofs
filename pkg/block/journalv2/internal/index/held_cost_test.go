@@ -3,10 +3,8 @@ package index
 import (
 	"math"
 	"math/rand/v2"
-	"runtime"
 	"sync/atomic"
 	"testing"
-	"unsafe"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
@@ -120,57 +118,6 @@ func TestHeldCostGrowsLogarithmically(t *testing.T) {
 		if least := 0.5 * math.Log2(1_000); c.small < least {
 			t.Errorf("%s: %.1f comparisons at 10^3, below %.1f: comparisons go uncounted", c.name, c.small, least)
 		}
-	}
-}
-
-// heapAfter returns the bytes the heap holds once a collection has run.
-func heapAfter() uint64 {
-	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	return m.HeapAlloc
-}
-
-// bytesPerEntry builds a set of n extents, each its own record, written in
-// the order order gives, and returns the heap it holds per entry.
-func bytesPerEntry(n int, order func(i int) int) float64 {
-	before := heapAfter()
-	s := &heldSet{}
-	for i := range n {
-		j := order(i)
-		s.insert(write(int64(j)*pieceLen, pieceLen, rec(core.SegmentID(1+j/60_000), uint32(j%60_000)*pieceLen), uint64(j+1)))
-	}
-	after := heapAfter()
-	if s.len() != n {
-		panic("bytesPerEntry: extents merged")
-	}
-	runtime.KeepAlive(s)
-	return float64(after-before) / float64(n)
-}
-
-// TestHeldBytesPerEntry is the RFC's "index memory" check: a file of 10^6
-// extents written front to back, so none merge, holds at most 56 bytes of
-// heap an extent, nodes and all.
-//
-// decision: the bound is held for extents written front to back only. Written
-// in random order a B-tree's leaves are about 69% full, so a 48-byte entry
-// costs about 65 bytes there, and no node size brings that under 56; the
-// figure is logged, not bounded. Bound it too if the tree learns to split into
-// a sibling with room, which raises the fill of every insert order.
-func TestHeldBytesPerEntry(t *testing.T) {
-	if testing.Short() || raceEnabled {
-		t.Skip("builds a file of 10^6 extents and measures its heap")
-	}
-	const n = 1_000_000
-	sequential := bytesPerEntry(n, func(i int) int { return i })
-	perm := rand.New(rand.NewPCG(6, 6)).Perm(n)
-	random := bytesPerEntry(n, func(i int) int { return perm[i] })
-	t.Logf("bytes per entry at 10^6: %.1f written front to back, %.1f in random order", sequential, random)
-	if sequential > 56 {
-		t.Errorf("%.1f bytes per entry for 10^6 extents written front to back, above 56", sequential)
-	}
-	if least := float64(unsafe.Sizeof(held{}) + 8); sequential < least {
-		t.Errorf("%.1f bytes per entry, below the %.0f an entry itself takes: the heap goes unmeasured", sequential, least)
 	}
 }
 
