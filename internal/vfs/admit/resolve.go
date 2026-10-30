@@ -68,21 +68,8 @@ type Principals interface {
 // holds a well-known root principal for uid 0 to map to.
 func Resolve(ctx context.Context, pr Principals, id vfs.Identity, share entity.ShareID, p entity.ExportPolicy, ro entity.ReadOnlyCause) (c entity.Identity, mapped entity.Principal, err error) {
 	proven := id.Proof >= vfs.ProofSecret
-	root := false
-	var group entity.Principal
-	switch {
-	case proven:
-		mapped = id.Evidence.Principal
-	case id.Proof == vfs.ProofClaimed:
-		root = id.Claims.UID == 0
-		if mapped, _, err = pr.ByID(ctx, entity.SchemeUID, id.Claims.UID); err != nil {
-			return c, mapped, err
-		}
-		if group, _, err = pr.ByID(ctx, entity.SchemeGID, id.Claims.GID); err != nil {
-			return c, mapped, err
-		}
-	}
-	u, err := live(ctx, pr, mapped)
+	root := id.Proof == vfs.ProofClaimed && id.Claims.UID == 0
+	mapped, group, u, err := mapID(ctx, pr, id)
 	if err != nil {
 		return c, mapped, err
 	}
@@ -139,4 +126,32 @@ func live(ctx context.Context, pr Principals, p entity.Principal) (entity.User, 
 		return u, vfs.ErrAccess
 	}
 	return u, nil
+}
+
+// Mapped is the principal id maps to under no share's policy, never
+// squashed: the one a call naming no share acts as, and a client record's
+// Owner. A caller mapped to none answers the zero principal; a disabled or
+// deleted user is refused.
+func Mapped(ctx context.Context, pr Principals, id vfs.Identity) (entity.Principal, error) {
+	p, _, _, err := mapID(ctx, pr, id)
+	return p, err
+}
+
+// mapID is the principal id maps to before any squash, the group a claimed
+// caller's gid names, and the mapped principal's user record; a disabled or
+// deleted user is refused.
+func mapID(ctx context.Context, pr Principals, id vfs.Identity) (mapped, group entity.Principal, u entity.User, err error) {
+	switch {
+	case id.Proof >= vfs.ProofSecret:
+		mapped = id.Evidence.Principal
+	case id.Proof == vfs.ProofClaimed:
+		if mapped, _, err = pr.ByID(ctx, entity.SchemeUID, id.Claims.UID); err != nil {
+			return mapped, group, u, err
+		}
+		if group, _, err = pr.ByID(ctx, entity.SchemeGID, id.Claims.GID); err != nil {
+			return mapped, group, u, err
+		}
+	}
+	u, err = live(ctx, pr, mapped)
+	return mapped, group, u, err
 }

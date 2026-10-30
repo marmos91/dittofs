@@ -121,6 +121,13 @@ type Filesystem struct {
 	pseudo atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
 	build  chan struct{}                 // holds a token while one call rebuilds pseudo
 
+	clients   openstate.Clients
+	recovery  openstate.Recovery
+	lockState openstate.Locks
+	grants    openstate.Grants
+	reg       *registry      // each client's callback paths
+	sending   sync.WaitGroup // the callbacks being delivered
+
 	mu     sync.Mutex
 	state  state
 	calls  sync.WaitGroup  // the admitted calls not yet answered
@@ -149,12 +156,17 @@ func New(d Deps) (*Filesystem, error) {
 		return nil, errors.New("vfs: a filesystem needs a metadata store, open state and an engine")
 	}
 	fs := &Filesystem{
-		meta:    d.Meta,
-		open:    d.Open,
-		build:   make(chan struct{}, 1),
-		joins:   map[entity.ShareID]*join{},
-		removed: map[entity.ShareID]bool{},
-		events:  d.Events,
+		meta:      d.Meta,
+		open:      d.Open,
+		clients:   d.Open.Clients(),
+		recovery:  d.Open.Recovery(),
+		lockState: d.Open.Locks(),
+		grants:    d.Open.Grants(),
+		reg:       newRegistry(),
+		build:     make(chan struct{}, 1),
+		joins:     map[entity.ShareID]*join{},
+		removed:   map[entity.ShareID]bool{},
+		events:    d.Events,
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",
@@ -225,24 +237,27 @@ func (fs *Filesystem) Drain(ctx context.Context) error {
 }
 
 // Stop ends the filesystem: it is called once, on a drained filesystem, or on
-// a built one whose Start was never called or failed. With no queue and no
-// goroutine of its own, it has nothing to flush or join. It closes nothing it
-// was handed: the node stops open state, then the engine, the event sink and
-// the store, after it.
+// a built one whose Start was never called or failed. It ends the callbacks
+// being delivered and waits for them to return, and keeps no queue to flush.
+// It closes nothing it was handed: the node stops open state, then the
+// engine, the event sink and the store, after it.
 //
 // decision: the lifecycle's close is named Stop, since Close is the Data
 // area's close of an open, and *Filesystem carries both.
 func (fs *Filesystem) Stop() error {
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	if fs.state != built && fs.state != draining {
+		defer fs.mu.Unlock()
 		return fmt.Errorf("vfs: Stop of a %s filesystem", fs.state)
 	}
 	if fs.active > 0 {
+		defer fs.mu.Unlock()
 		return fmt.Errorf("vfs: Stop with %d calls admitted: Drain has not returned", fs.active)
 	}
 	fs.state = stopped
 	fs.cancel()
+	fs.mu.Unlock()
+	fs.sending.Wait()
 	return nil
 }
 
@@ -300,13 +315,3 @@ type noEvents struct{}
 
 func (noEvents) Quota(context.Context, vfs.QuotaEvent)   {}
 func (noEvents) Access(context.Context, vfs.AccessEvent) {}
-
-// unbuiltEach is unbuilt for a call answering one error per reference.
-func (fs *Filesystem) unbuiltEach(ctx context.Context, n int) []error {
-	err := fs.unbuilt(ctx)
-	errs := make([]error, n)
-	for i := range errs {
-		errs[i] = err
-	}
-	return errs
-}
