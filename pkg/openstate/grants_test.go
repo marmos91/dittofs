@@ -960,6 +960,45 @@ func TestOnlyASentRecallLapses(t *testing.T) {
 	}
 }
 
+// A recall's hand-off arms only that recall's deadline: one returning from
+// the Sink after its recall was answered and another recall of the grant
+// began arms nothing, so the later recall, not yet sent, never lapses.
+func TestStaleHandOffArmsNoLaterRecall(t *testing.T) {
+	f := newFixture(t)
+	a, b, c := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b")), f.caller(t, smb("pc-c"))
+	file := anyFile()
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
+	first, second := make(chan struct{}), make(chan struct{})
+	gates, handed := make(chan chan struct{}, 2), make(chan struct{})
+	gates <- first
+	gates <- second
+	f.sink.onRecall = func(CachingGrant, GrantKind) {
+		gate := <-gates
+		handed <- struct{}{}
+		<-gate
+	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	done := make(chan struct{})
+	go func() { _, _ = f.open(b, file, OpenRequest{Access: rd}); close(done) }() // recalls write caching
+	<-handed
+	if err := f.ack(a, g, GrantRead|GrantHandle); err != nil {
+		t.Fatal(err)
+	}
+	wg.Go(func() { _, _ = f.open(c, file, OpenRequest{Access: wr}) }) // recalls the rest
+	<-handed
+	close(first) // the first hand-off returns while the second recall is still unsent
+	<-done
+	f.pass(t, 2*coversDeadline)
+	f.cmu.Lock()
+	fenced := f.fenced[a.Client] != 0
+	f.cmu.Unlock()
+	if fenced {
+		t.Error("the holder was fenced for a recall the Sink was not yet handed")
+	}
+	close(second)
+}
+
 // grantNow is the grant id names on file, as the table holds it now.
 func (f *fixture) grantNow(t *testing.T, file FileKey, id GrantID) CachingGrant {
 	t.Helper()
