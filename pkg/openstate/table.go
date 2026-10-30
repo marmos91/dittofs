@@ -3,6 +3,7 @@ package openstate
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -188,6 +189,9 @@ type known struct {
 func New(d Deps) (*Table, error) {
 	if d.Records == nil || d.Clock == nil || d.Rand == nil {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
+	}
+	if d.Logger == nil {
+		d.Logger = slog.Default()
 	}
 	t := &Table{
 		d: d, refs: map[refKey]holder{}, byID: map[entity.OpenID]refKey{}, via: map[entity.FileID]int{}, polls: map[entity.FileID]struct{}{},

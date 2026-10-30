@@ -10,7 +10,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
@@ -826,7 +825,7 @@ func (t *Table) sweep(ctx context.Context) {
 		// lapsed, so the client is already refused.
 		files, err := t.expireLapsed(ctx, sink, c)
 		if err != nil {
-			logger.Error("openstate: lease expiry failed, retried at the next sweep", "client", c, "error", err)
+			t.d.Logger.Error("openstate: lease expiry failed, retried at the next sweep", "client", c, "error", err)
 		}
 		for _, f := range files {
 			if !slices.Contains(serve, f) {

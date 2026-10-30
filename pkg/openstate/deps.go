@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
@@ -14,7 +15,8 @@ type Deps struct {
 	// its open-state views have no interface of their own.
 	Records *kvstore.Store
 	Clock   Clock
-	Rand    io.Reader // every random bit of a token or confirm; crypto/rand in production
+	Rand    io.Reader    // every random bit of a token or confirm; crypto/rand in production
+	Logger  *slog.Logger // slog.Default() when nil
 }
 
 // Clock is the part of the node's clock open state reads. Every lease and
