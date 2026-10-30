@@ -20,7 +20,11 @@ const dirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
 func (f *file) Sync() error {
 	rc, err := f.f.SyscallConn()
 	if err != nil {
-		return &fs.PathError{Op: "fdatasync", Path: f.name, Err: err}
+		return &fs.PathError{
+			Op:   "fdatasync",
+			Path: f.name,
+			Err:  err,
+		}
 	}
 
 	// The only error Control returns for a non-nil *os.File is the one for a
@@ -29,12 +33,22 @@ func (f *file) Sync() error {
 	// fs.ErrClosed, the form the file's other methods return. It is a misuse,
 	// not a failed sync.
 	var serr error
-	if err := rc.Control(func(fd uintptr) { serr = retryInterrupted(f.calls.fdatasync, int(fd)) }); err != nil {
-		return &fs.PathError{Op: "fdatasync", Path: f.name, Err: fs.ErrClosed}
+	if err := rc.Control(func(fd uintptr) {
+		serr = retryInterrupted(f.calls.fdatasync, int(fd))
+	}); err != nil {
+		return &fs.PathError{
+			Op:   "fdatasync",
+			Path: f.name,
+			Err:  fs.ErrClosed,
+		}
 	}
 
 	if serr != nil {
-		return &fs.PathError{Op: "fdatasync", Path: f.name, Err: serr}
+		return &fs.PathError{
+			Op:   "fdatasync",
+			Path: f.name,
+			Err:  serr,
+		}
 	}
 
 	return nil
@@ -47,18 +61,30 @@ func (f *file) Sync() error {
 func (o *OS) SyncDir() error {
 	fd, err := o.calls.open(o.dir, dirFlags, 0)
 	if err != nil {
-		return &fs.PathError{Op: "open", Path: o.dir, Err: err}
+		return &fs.PathError{
+			Op:   "open",
+			Path: o.dir,
+			Err:  err,
+		}
 	}
 
 	var errs []error
 	if err := retryInterrupted(o.calls.fsync, fd); err != nil {
-		errs = append(errs, &fs.PathError{Op: "fsync", Path: o.dir, Err: err})
+		errs = append(errs, &fs.PathError{
+			Op:   "fsync",
+			Path: o.dir,
+			Err:  err,
+		})
 	}
 
 	// The close is never repeated: Linux releases the descriptor even when
 	// close reports EINTR, so a second close could close another file's.
 	if err := o.calls.close(fd); err != nil {
-		errs = append(errs, &fs.PathError{Op: "close", Path: o.dir, Err: err})
+		errs = append(errs, &fs.PathError{
+			Op:   "close",
+			Path: o.dir,
+			Err:  err,
+		})
 	}
 
 	return errors.Join(errs...)

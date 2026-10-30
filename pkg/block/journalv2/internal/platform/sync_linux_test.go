@@ -55,6 +55,7 @@ func (r *recorder) failNext(op string, errs ...error) {
 	if r.fail == nil {
 		r.fail = map[string][]error{}
 	}
+
 	r.fail[op] = append(r.fail[op], errs...)
 }
 
@@ -95,14 +96,25 @@ func (r *recorder) table() calls {
 	return calls{
 		open: func(path string, mode int, perm uint32) (int, error) {
 			if r.queued("open") {
-				return -1, r.add(call{op: "open", fd: -1, path: path, mode: mode})
+				return -1, r.add(call{
+					op:   "open",
+					fd:   -1,
+					path: path,
+					mode: mode,
+				})
 			}
 
 			fd, err := unix.Open(path, mode, perm)
 			if err != nil {
 				fd = -1
 			}
-			_ = r.add(call{op: "open", fd: fd, path: path, mode: mode})
+
+			_ = r.add(call{
+				op:   "open",
+				fd:   fd,
+				path: path,
+				mode: mode,
+			})
 
 			return fd, err
 		},
@@ -113,7 +125,10 @@ func (r *recorder) table() calls {
 			return r.sync("fdatasync", fd, unix.Fdatasync)
 		},
 		close: func(fd int) error {
-			queued := r.add(call{op: "close", fd: fd})
+			queued := r.add(call{
+				op: "close",
+				fd: fd,
+			})
 			err := unix.Close(fd)
 			if queued != nil {
 				return queued
@@ -125,7 +140,10 @@ func (r *recorder) table() calls {
 }
 
 func (r *recorder) sync(op string, fd int, real func(int) error) error {
-	c := call{op: op, fd: fd}
+	c := call{
+		op: op,
+		fd: fd,
+	}
 
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) == nil {
@@ -161,7 +179,9 @@ func openOn(t *testing.T, o *OS, name string) *file {
 	}
 
 	sf := o.newFile(f, name)
-	t.Cleanup(func() { _ = f.Close() })
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
 
 	return sf
 }
@@ -276,6 +296,7 @@ func TestSyncCalls(t *testing.T) {
 
 		err := step.f.Sync()
 		expectSync(t, r.take(), "fdatasync", filepath.Join(dir, step.name), 1)
+
 		if err != nil {
 			t.Fatalf("Sync %s: %v", step.name, err)
 		}
@@ -284,6 +305,7 @@ func TestSyncCalls(t *testing.T) {
 	for range 2 {
 		err := o.SyncDir()
 		expectSyncDir(t, r.take(), dir, 1)
+
 		if err != nil {
 			t.Fatalf("SyncDir: %v", err)
 		}
@@ -308,6 +330,7 @@ func TestSyncError(t *testing.T) {
 
 	err = a.Sync()
 	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 1)
+
 	if err != nil {
 		t.Fatalf("second Sync: %v", err)
 	}
@@ -325,6 +348,7 @@ func TestSyncInterrupted(t *testing.T) {
 	r.failNext("fdatasync", syscall.EINTR)
 	err := a.Sync()
 	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 2)
+
 	if err != nil {
 		t.Fatalf("Sync interrupted once: %v", err)
 	}
@@ -373,6 +397,7 @@ func TestSyncDirError(t *testing.T) {
 
 	err = o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
+
 	if err != nil {
 		t.Fatalf("second SyncDir: %v", err)
 	}
@@ -382,6 +407,7 @@ func TestSyncDirError(t *testing.T) {
 	if log := r.take(); len(log) != 1 || log[0].op != "open" {
 		t.Fatalf("want only the failed open, got %v", log)
 	}
+
 	expectPathError(t, err, syscall.EMFILE)
 }
 
@@ -415,6 +441,7 @@ func TestSyncDirInterrupted(t *testing.T) {
 	r.failNext("fsync", syscall.EINTR)
 	err := o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 2)
+
 	if err != nil {
 		t.Fatalf("SyncDir interrupted once: %v", err)
 	}

@@ -12,6 +12,8 @@ import (
 func init() {
 	targets = append(targets, target{
 		name: "platform.OS",
-		open: func(t *testing.T, dir string) storage.FS { return platform.NewOS(dir) },
+		open: func(t *testing.T, dir string) storage.FS {
+			return platform.NewOS(dir)
+		},
 	})
 }

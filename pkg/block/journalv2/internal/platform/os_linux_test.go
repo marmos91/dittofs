@@ -43,6 +43,7 @@ func TestConcurrentWriteAt(t *testing.T) {
 			}
 		})
 	}
+
 	wg.Wait()
 
 	got := make([]byte, writers*rounds*chunk)
@@ -65,7 +66,9 @@ func TestConcurrentWriteAt(t *testing.T) {
 // finalizer cannot close a leaked descriptor first and hide the leak.
 func TestClosedFile(t *testing.T) {
 	var f storage.File
-	t.Cleanup(func() { runtime.KeepAlive(f) })
+	t.Cleanup(func() {
+		runtime.KeepAlive(f)
+	})
 	prof.Watch(t, prof.Options{})
 
 	r := &recorder{}
@@ -86,11 +89,24 @@ func TestClosedFile(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"ReadAt", func() error { _, err := f.ReadAt(make([]byte, 1), 0); return err }},
-		{"WriteAt", func() error { _, err := f.WriteAt([]byte{1}, 0); return err }},
-		{"Truncate", func() error { return f.Truncate(1) }},
-		{"Size", func() error { _, err := f.Size(); return err }},
-		{"Allocate", func() error { return f.Allocate(0, 1) }},
+		{"ReadAt", func() error {
+			_, err := f.ReadAt(make([]byte, 1), 0)
+			return err
+		}},
+		{"WriteAt", func() error {
+			_, err := f.WriteAt([]byte{1}, 0)
+			return err
+		}},
+		{"Truncate", func() error {
+			return f.Truncate(1)
+		}},
+		{"Size", func() error {
+			_, err := f.Size()
+			return err
+		}},
+		{"Allocate", func() error {
+			return f.Allocate(0, 1)
+		}},
 		{"Sync", f.Sync},
 	} {
 		err := op.call()
@@ -113,11 +129,15 @@ func TestClosedFile(t *testing.T) {
 // no test in this package runs in parallel.
 func TestCreatePermission(t *testing.T) {
 	var f storage.File
-	t.Cleanup(func() { runtime.KeepAlive(f) })
+	t.Cleanup(func() {
+		runtime.KeepAlive(f)
+	})
 	prof.Watch(t, prof.Options{})
 
 	old := unix.Umask(0o022)
-	t.Cleanup(func() { unix.Umask(old) })
+	t.Cleanup(func() {
+		unix.Umask(old)
+	})
 
 	dir := t.TempDir()
 	f, err := NewOS(dir).Create("a")

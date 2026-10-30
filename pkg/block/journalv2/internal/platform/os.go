@@ -25,12 +25,21 @@ type OS struct {
 var _ storage.FS = (*OS)(nil)
 
 // NewOS returns the storage over the existing directory dir.
-func NewOS(dir string) *OS { return newOS(dir, realTable) }
+func NewOS(dir string) *OS {
+	return newOS(dir, realTable)
+}
 
 // newOS returns the storage over dir, making its system calls through c.
-func newOS(dir string, c calls) *OS { return &OS{dir: dir, calls: c} }
+func newOS(dir string, c calls) *OS {
+	return &OS{
+		dir:   dir,
+		calls: c,
+	}
+}
 
-func (o *OS) path(name string) string { return filepath.Join(o.dir, name) }
+func (o *OS) path(name string) string {
+	return filepath.Join(o.dir, name)
+}
 
 func (o *OS) Create(name string) (storage.File, error) {
 	f, err := os.OpenFile(o.path(name), os.O_RDWR|os.O_CREATE|os.O_EXCL, filePerm)
@@ -54,7 +63,9 @@ func (o *OS) Rename(oldName, newName string) error {
 	return os.Rename(o.path(oldName), o.path(newName))
 }
 
-func (o *OS) Remove(name string) error { return os.Remove(o.path(name)) }
+func (o *OS) Remove(name string) error {
+	return os.Remove(o.path(name))
+}
 
 func (o *OS) List() ([]string, error) {
 	entries, err := os.ReadDir(o.dir)
@@ -81,17 +92,27 @@ var _ storage.File = (*file)(nil)
 
 // newFile wraps f, opened under name, as a file of o.
 func (o *OS) newFile(f *os.File, name string) *file {
-	return &file{f: f, name: name, calls: o.calls}
+	return &file{
+		f:     f,
+		name:  name,
+		calls: o.calls,
+	}
 }
 
-func (f *file) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+func (f *file) ReadAt(p []byte, off int64) (int, error) {
+	return f.f.ReadAt(p, off)
+}
 
 // ponytail: reads through the page cache; O_DIRECT, F_NOCACHE and
 // FILE_FLAG_NO_BUFFERING arrive with the open-time tail check, the first
 // caller that must not trust the cache.
-func (f *file) ReadAtDirect(p []byte, off int64) (int, error) { return f.ReadAt(p, off) }
+func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
+	return f.ReadAt(p, off)
+}
 
-func (f *file) WriteAt(p []byte, off int64) (int, error) { return f.f.WriteAt(p, off) }
+func (f *file) WriteAt(p []byte, off int64) (int, error) {
+	return f.f.WriteAt(p, off)
+}
 
 // Allocate is not implemented yet: allocation on the operating system
 // (RFC 28 Appendix A, "Allocation, per platform") is still to be written. A
@@ -101,17 +122,31 @@ func (f *file) WriteAt(p []byte, off int64) (int, error) { return f.f.WriteAt(p,
 func (f *file) Allocate(off, n int64) error {
 	rc, err := f.f.SyscallConn()
 	if err != nil {
-		return &fs.PathError{Op: "allocate", Path: f.name, Err: err}
+		return &fs.PathError{
+			Op:   "allocate",
+			Path: f.name,
+			Err:  err,
+		}
 	}
 
 	if err := rc.Control(func(uintptr) {}); err != nil {
-		return &fs.PathError{Op: "allocate", Path: f.name, Err: fs.ErrClosed}
+		return &fs.PathError{
+			Op:   "allocate",
+			Path: f.name,
+			Err:  fs.ErrClosed,
+		}
 	}
 
-	return &fs.PathError{Op: "allocate", Path: f.name, Err: fmt.Errorf("%w: allocation", core.ErrNotImplemented)}
+	return &fs.PathError{
+		Op:   "allocate",
+		Path: f.name,
+		Err:  fmt.Errorf("%w: allocation", core.ErrNotImplemented),
+	}
 }
 
-func (f *file) Truncate(size int64) error { return f.f.Truncate(size) }
+func (f *file) Truncate(size int64) error {
+	return f.f.Truncate(size)
+}
 
 func (f *file) Size() (int64, error) {
 	fi, err := f.f.Stat()
@@ -122,6 +157,10 @@ func (f *file) Size() (int64, error) {
 	return fi.Size(), nil
 }
 
-func (f *file) Close() error { return f.f.Close() }
+func (f *file) Close() error {
+	return f.f.Close()
+}
 
-func (f *file) Name() string { return f.name }
+func (f *file) Name() string {
+	return f.name
+}

@@ -73,7 +73,11 @@ func TestContract(t *testing.T) {
 		for _, cc := range contract {
 			t.Run(tgt.name+"/"+cc.sentence, func(t *testing.T) {
 				dir := t.TempDir()
-				cc.run(t, env{fs: tgt.open(t, dir), dir: dir, tgt: tgt})
+				cc.run(t, env{
+					fs:  tgt.open(t, dir),
+					dir: dir,
+					tgt: tgt,
+				})
 			})
 		}
 	}
@@ -121,12 +125,15 @@ var contract = []contractCase{
 		f := create(t, c.fs, "a")
 		write(t, f, "record", 0)
 		closeFile(t, f)
+
 		if g, err := c.fs.Create("a"); !errors.Is(err, fs.ErrExist) {
 			if g != nil {
 				_ = g.Close()
 			}
+
 			t.Fatalf("second Create: %v, want fs.ErrExist", err)
 		}
+
 		f = open(t, c.fs, "a")
 		defer closeFile(t, f)
 		expectRead(t, f, "record", 0)
@@ -146,6 +153,7 @@ var contract = []contractCase{
 			if f != nil {
 				_ = f.Close()
 			}
+
 			t.Fatalf("Open: %v, want fs.ErrNotExist", err)
 		}
 	}},
@@ -157,12 +165,15 @@ var contract = []contractCase{
 		g := open(t, c.fs, "b")
 		defer closeFile(t, g)
 		write(t, f, "record", 0)
+
 		if err := c.fs.Rename("a", "c"); err != nil {
 			t.Fatalf("Rename of an open file: %v", err)
 		}
+
 		if err := c.fs.Remove("b"); err != nil {
 			t.Fatalf("Remove of an open file: %v", err)
 		}
+
 		expectRead(t, f, "record", 0)
 		expectNames(t, c.fs, "c")
 	}},
@@ -173,9 +184,11 @@ var contract = []contractCase{
 		g := create(t, c.fs, "b")
 		write(t, g, "old bytes", 0)
 		closeFile(t, g)
+
 		if err := c.fs.Rename("a", "b"); err != nil {
 			t.Fatalf("Rename: %v", err)
 		}
+
 		expectNames(t, c.fs, "b")
 		f = open(t, c.fs, "b")
 		defer closeFile(t, f)
@@ -185,39 +198,55 @@ var contract = []contractCase{
 	{"Remove unlinks name", func(t *testing.T, c env) {
 		closeFile(t, create(t, c.fs, "a"))
 		closeFile(t, create(t, c.fs, "b"))
+
 		if err := c.fs.Remove("a"); err != nil {
 			t.Fatalf("Remove: %v", err)
 		}
+
 		expectNames(t, c.fs, "b")
+
 		if _, err := os.Stat(filepath.Join(c.dir, "a")); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("a is still in the directory: %v", err)
 		}
 	}},
 	{"List returns the names of the files in the directory, including those the journal does not recognise", func(t *testing.T, c env) {
 		closeFile(t, create(t, c.fs, "00000000000000000001.seg"))
+
 		if err := os.WriteFile(filepath.Join(c.dir, "not the journal's"), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
+
 		expectNames(t, c.fs, "00000000000000000001.seg", "not the journal's")
 	}},
 	{"SyncDir makes every Create, Rename and Remove that returned before it durable", func(t *testing.T, c env) {
 		closeFile(t, create(t, c.fs, "a"))
 		closeFile(t, create(t, c.fs, "b"))
 		closeFile(t, create(t, c.fs, "c"))
+
 		if err := c.fs.Rename("b", "d"); err != nil {
 			t.Fatal(err)
 		}
+
 		if err := c.fs.Remove("c"); err != nil {
 			t.Fatal(err)
 		}
+
 		if err := c.fs.SyncDir(); err != nil {
 			t.Fatalf("SyncDir: %v", err)
 		}
+
 		expectNames(t, c.fs, "a", "d")
+
 		if c.tgt.durable == nil {
 			return // platform's TestSyncCalls checks the call; survival takes a power cut
 		}
-		for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": true} {
+
+		for name, want := range map[string]bool{
+			"a": true,
+			"b": false,
+			"c": false,
+			"d": true,
+		} {
 			if _, err := c.tgt.durable(c.fs, name); (err == nil) != want {
 				t.Errorf("%s durable: %v, want %v", name, err, want)
 			}
@@ -244,23 +273,30 @@ var contract = []contractCase{
 		if err := c.fs.SyncDir(); err != nil {
 			t.Fatal(err)
 		}
+
 		write(t, f, "record and more", 0)
+
 		if err := f.Truncate(6); err != nil {
 			t.Fatal(err)
 		}
+
 		if c.tgt.durable != nil {
 			if got, _ := c.tgt.durable(c.fs, "a"); len(got) != 0 {
 				t.Fatalf("durable before Sync: %q, want nothing", got)
 			}
 		}
+
 		if err := f.Sync(); err != nil {
 			t.Fatalf("Sync: %v", err)
 		}
+
 		expectSize(t, f, 6)
 		expectRead(t, f, "record", 0)
+
 		if c.tgt.durable == nil {
 			return // platform's TestSyncCalls checks the call; survival takes a power cut
 		}
+
 		if got, err := c.tgt.durable(c.fs, "a"); err != nil || string(got) != "record" {
 			t.Fatalf("durable after Sync: %q, %v; want %q", got, err, "record")
 		}
@@ -269,14 +305,18 @@ var contract = []contractCase{
 		f := create(t, c.fs, "a")
 		defer closeFile(t, f)
 		write(t, f, "record", 0)
+
 		if err := f.Truncate(3); err != nil {
 			t.Fatal(err)
 		}
+
 		expectSize(t, f, 3)
 		expectRead(t, f, "rec", 0)
+
 		if err := f.Truncate(5); err != nil {
 			t.Fatal(err)
 		}
+
 		expectSize(t, f, 5)
 		expectRead(t, f, "rec\x00\x00", 0)
 	}},
@@ -302,6 +342,7 @@ var contract = []contractCase{
 		if err := c.fs.Rename("a", "b"); err != nil {
 			t.Fatal(err)
 		}
+
 		g := open(t, c.fs, "b")
 		defer closeFile(t, g)
 		if f.Name() != "a" || g.Name() != "b" {
@@ -319,6 +360,7 @@ func expectReaderAt(t *testing.T, c env, read func(storage.File, []byte, int64) 
 	f := create(t, c.fs, "a")
 	defer closeFile(t, f)
 	write(t, f, "record", 0)
+
 	if err := f.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -327,10 +369,12 @@ func expectReaderAt(t *testing.T, c env, read func(storage.File, []byte, int64) 
 	if n, err := read(f, p, 2); n != 3 || err != nil || string(p) != "cor" {
 		t.Fatalf("read of 3 at 2: %d, %v, %q; want 3, nil, %q", n, err, p, "cor")
 	}
+
 	p = make([]byte, 4)
 	if n, err := read(f, p, 4); n != 2 || !errors.Is(err, io.EOF) || string(p[:n]) != "rd" {
 		t.Fatalf("read of 4 at 4: %d, %v, %q; want 2, io.EOF, %q", n, err, p[:n], "rd")
 	}
+
 	if n, err := read(f, p, 6); n != 0 || !errors.Is(err, io.EOF) {
 		t.Fatalf("read at the end: %d, %v; want 0, io.EOF", n, err)
 	}
@@ -342,7 +386,9 @@ func create(t *testing.T, s storage.FS, name string) storage.File {
 	if err != nil {
 		t.Fatalf("Create %s: %v", name, err)
 	}
+
 	held = append(held, f)
+
 	return f
 }
 
@@ -352,12 +398,15 @@ func open(t *testing.T, s storage.FS, name string) storage.File {
 	if err != nil {
 		t.Fatalf("Open %s: %v", name, err)
 	}
+
 	held = append(held, f)
+
 	return f
 }
 
 func closeFile(t *testing.T, f storage.File) {
 	t.Helper()
+
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close %s: %v", f.Name(), err)
 	}
@@ -365,6 +414,7 @@ func closeFile(t *testing.T, f storage.File) {
 
 func write(t *testing.T, f storage.File, s string, off int64) {
 	t.Helper()
+
 	if n, err := f.WriteAt([]byte(s), off); n != len(s) || err != nil {
 		t.Fatalf("WriteAt %q at %d: %d, %v", s, off, n, err)
 	}
@@ -380,6 +430,7 @@ func expectRead(t *testing.T, f storage.File, want string, off int64) {
 
 func expectSize(t *testing.T, f storage.File, want int64) {
 	t.Helper()
+
 	if got, err := f.Size(); got != want || err != nil {
 		t.Fatalf("Size: %d, %v; want %d", got, err, want)
 	}
@@ -391,8 +442,10 @@ func expectNames(t *testing.T, s storage.FS, want ...string) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+
 	slices.Sort(got)
 	slices.Sort(want)
+
 	if !slices.Equal(got, want) {
 		t.Fatalf("List: %q, want %q", got, want)
 	}
