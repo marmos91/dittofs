@@ -1,11 +1,11 @@
 # Epic 5: journal v2 segments, streams and accounting
 
-**Sources:** [RFC 28](../rfcs/rfc-28-journal-format.md) §2.2, §2.4 and §2.5 (the writing side),
-§3.1 (idle seal) and Appendix A (allocation); [RFC 1](../rfcs/rfc-1-journal.md) §3.7, §3.9, §5.1,
+**Sources:** [RFC 28](../rfcs/rfc-28-journal-format.md) §2.2, §2.3 (the header's synced-through field), §2.4 and §2.5
+(the writing side), §3.1 (idle seal) and Appendix A (allocation); [RFC 1](../rfcs/rfc-1-journal.md) §3.7, §3.9, §5.1,
 §5.3, §6 (allocation, spares, refusals), §7.1, §7.3, §7.4 and §8.2–§8.7; the descriptor and
 stream settings of [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B.
 **Track:** A.
-**Epic 5 estimate: 10 subtasks, 30 man-days.**
+**Epic 5 estimate: 10 subtasks, 31.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types and settings, and its
 storage seam (`storage.FS`, `storage.File`); epic 2's crash-simulating seam, fixture and
 profiler; epic 3's segment header and names, record, seal marker, catalog entry and trailer
@@ -36,7 +36,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
   exactly once;
 - descriptors are bounded per process and reopened on a miss;
 - `Segments`, `Sealed`, `UsedBytes`, `HeadroomBytes`, `RepackReserveBytes`, `OpenDescriptors`,
-  `DescriptorLimit`, `spare_refusals`, `segment_reopens` and the double-retire count are
+  `DescriptorLimit`, `spare_refusals`, `segment_reopens`, `freed_bytes` and the double-retire count are
   served from maintained counters.
 
 ### 1.1 In scope
@@ -58,14 +58,22 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
   provides the stream's synced-through value, the end of a segment, and the records a window
   holds; epic 6 decides what a window does.
 - `Init`, `Open`, rebuild, torn tails, unlinking a stray `.spare.tmp`, re-adopting spares,
-  orphans and the footer's use at recovery: epic 7. This epic exposes how large the biggest
-  id in the directory is as an input it is given at open.
-- The file append serialisation point, reservations and `Reserve`, the share limit, the index
-  bound, the headroom half rule, the order in which refusals are named, `Stats` aggregation,
-  the five lock domains and their recorder, `Handle.Close`: epic 8.
+  orphans and the footer's use at recovery: epic 7. Sealing the newest segment of a stream at
+  recovery (RFC 28 §2.5, §3.1) is epic 7's too: it calls T5.7's seal writer on the entries it
+  scanned. The platform refusals of RFC 28 Appendix A (copy-on-write, subvolume, cache-flush
+  policy) are epic 3's probes, applied by epic 7 at `Init` and open. This epic takes the
+  largest id the directory names as an input at open, for its id allocator.
+- The file append serialisation point, reservations and `Reserve` (this epic's pool lets a
+  reservation hold spares, R80), the share limit, the index bound, the headroom half rule,
+  the order in which refusals are named, never evicting to satisfy a reservation, `Stats`
+  aggregation, publishing an extent only after its record is written and the other atomicity
+  rules of RFC 1 §8.4, the order of the six lock domains and its recorder (this epic owns two
+  of them: the segment append domain and the storage guard), `Handle.Close` and the
+  journal-level refusal of operations after close: epic 8.
 - When a segment is not held and when its removal records may be dropped, `Repack`, pins,
-  `Release`: epic 9. This epic provides what they call: the retirement executor, the claim and
-  the durable-unlink signal.
+  `Release`, and handing a segment over for retirement only once the records that left it not
+  held (its release records included) are durable: epic 9. This epic provides what they call:
+  the retirement executor, the claim and the durable-unlink signal.
 - Wiring the pool target, the stream count and the descriptor limit to configuration: epic 11.
 - A footer for a segment sealed by a previous process (a MAY): not taken (D4).
 - Compressing the `FileID` column of the footer (a MAY): not taken, the layout defines none.
@@ -152,13 +160,13 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 | --- | --- | --- |
 | 1 Unit tests | all | every R-number has a test that can fail. Subtasks use E3's codecs, E4's per-segment accounting and E2's crash-simulating seam, and fake nothing of their own |
 | 2 Fuzz | T5.1 | there is no parser of bytes here: the footer reader is E3's, and this epic only writes. T5.1 fuzz-drives sequences of create, shrink, claim and retire against an oracle of the footprint |
-| 3 Metrics and tracing | T5.1, T5.2, T5.5, T5.6, T5.9 | `Segments`, `Sealed`, `UsedBytes`, `HeadroomBytes`, `RepackReserveBytes`, `OpenDescriptors`, `DescriptorLimit`, `segment_reopens`, `spare_refusals` and the double-retire count are maintained at the event that changes them and read without a walk. The double retire logs at `Warn` through the injected logger. **No span:** a refused reservation, the one span-worthy operation near this area, is traced by E8, which names the limit that refused. A seal, a recycle and a spare's making are not on the list |
+| 3 Metrics and tracing | T5.1, T5.2, T5.5, T5.6, T5.9 | `Segments`, `Sealed`, `UsedBytes`, `HeadroomBytes`, `RepackReserveBytes`, `OpenDescriptors`, `DescriptorLimit`, `segment_reopens`, `spare_refusals`, `freed_bytes` and the double-retire count are maintained at the event that changes them and read without a walk. The double retire logs at `Warn` through the injected logger. **No span:** a refused reservation, the one span-worthy operation near this area, is traced by E8, which names the limit that refused. A seal, a recycle and a spare's making are not on the list |
 | 4 Profiling | all | every test runs under E2's profiler. T5.2, T5.8 and T5.9 are where descriptors and goroutines could leak (the cache, the idle sealer, the retirement worker). T5.4 asserts zero allocations per position reservation, outside `-race` |
 | 5 Public and internals, `-race` | T5.2, T5.3, T5.4, T5.6, T5.9 | internal API now: the public `WriteAt`, `ReadAt` and `Stats` behaviour is tested in E8, their consumer. Concurrency is exercised under `-race` where subtasks list it |
 | 6 Known failures | none | every conformance test needs `Open`, which E7 and E8 wire. This epic turns none green and adds none |
 | 7 v2 ignores v1 | all | enforced by the import test. Nothing of `pkg/block/journal` is read |
 | 8 Real storage | T5.2, T5.4–T5.10 | every test of a sync, a rename, an unlink or a crash runs on a real directory through E2's seam. T5.1 and T5.3 are pure logic and test in memory |
-| 9 Comment markers | T5.4, T5.5, T5.6, T5.7, T5.9 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` on the constant segment size goes at the cap in T5.6, and its `decision:` on zero-filling goes where T5.5 calls `Allocate` |
+| 9 Comment markers | T5.4, T5.5, T5.6, T5.7, T5.8, T5.9 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` on the constant segment size goes at the cap in T5.6, and its `decision:` on zero-filling goes where T5.5 calls `Allocate`. The `decision:` on the 30 s idle time and `journal.idle_seal_bytes` goes at the idle constants in T5.8 |
 | 10 A test can fail | all | each test in §6 names the bug it catches |
 | 11 Exports | all | `journalv2` gains no symbol: everything is in `internal/segment`, and the one exception, `core.DescriptorBudget`, is already declared by E1 |
 | 12 Created with its consumer | all | `internal/segment` lands with T5.1, and each file lands with the subtask that uses it. Until E8, tests are the only consumer: the package is logic over the storage seam tested on its own (rule 1), not a placeholder |
@@ -176,8 +184,8 @@ below or in §1.2.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | A sealed segment is never appended to again | MUST NOT | RFC 28 §2.2 | T5.7, T5.10 |
-| R2 | A write that does not fit what remains of the current segment is split at the cap into records, one per segment, each carrying its own file offset and the write's version. No record spans two segments | MUST | RFC 28 §2.2 | T5.4, T5.6 |
-| R3 | A segment is created at its cap and allocated whole, by the platform's allocation call or by writing zeros. The file never grows | MUST | RFC 28 §2.2, Appendix A | T5.5 |
+| R2 | A write that does not fit what remains of the current segment is split at the cap into records, one per segment, each carrying its own file offset and the write's version. No record spans two segments | invariant | RFC 28 §2.2 | T5.4, T5.6 |
+| R3 | A segment is created at its cap and allocated whole, by the platform's allocation call or by writing zeros. The file never grows | invariant | RFC 28 §2.2, Appendix A | T5.5 |
 | R4 | Bytes of an allocated segment that no record has reached read as zeros | invariant | RFC 28 §2.2 | T5.5 |
 | R5 | Concurrent appends to one stream write at positions reserved in order. A write that fails returns its error and is never acknowledged, and its slot is left as it is | invariant | RFC 28 §2.2 | T5.4 |
 | R6 | Appends of different `FileID`s proceed concurrently, on one stream and across streams. The number of independent streams is the configured stream count | MAY, adopted | RFC 28 §2.2, RFC 13 App. B | T5.4, T5.6 |
@@ -196,13 +204,14 @@ below or in §1.2.
 | R14 | A spare's id is drawn when it is made, and its header slot is zeros until a stream takes it | invariant | RFC 28 §2.2 | T5.5 |
 | R15 | Making a segment happens off the write path. A roll costs only the take | invariant | RFC 28 §2.2, RFC 1 §5.2 | T5.5, T5.6 |
 | R16 | The id of a new spare or of a recycle exceeds the id of every `.seg` and `.spare.tmp` file in the directory, those found at open included | MUST | RFC 28 §2.2 | T5.5, T5.9 |
-| R17 | The spares that back the headroom and the repack reserve are not in the content pool. A content roll and a `Reserve` never take one, and one that finds only those is refused `spare` | MUST NOT | RFC 1 §6 | T5.5, T5.6 |
+| R17 | The spares that back the headroom and the repack reserve are not in the content pool. A content roll and a `Reserve` never take one, and one that finds only those is refused `spare` | invariant | RFC 1 §6 | T5.5, T5.6 |
 | R18 | Creating a spare reserves its cap against the journal's maximum, atomically with every other reservation. The pool grows only at `Init`, when the maximum is raised, or when no full-size retired segment is to hand | MUST | RFC 1 §6, RFC 28 §2.2 | T5.5 |
-| R19 | A directory sync follows the creation of a segment before any `Sync` covering its records returns. A spare's entry is synced when it is made, so taking one needs none, and a failed directory sync means the spare does not exist | MUST | RFC 28 §2.2, RFC 1 §5.1 | T5.5 |
+| R19 | A directory sync follows the creation of a segment before any `Sync` covering its records returns. A spare's entry is synced when it is made, so taking one needs none | MUST | RFC 28 §2.2, RFC 1 §5.1 | T5.4, T5.5 |
 | R20 | A roll that finds no spare ready is refused at once, with no I/O and without waiting, as `ErrNoSpace` naming the limit `spare`, never the journal's maximum | MUST | RFC 28 §2.2, RFC 1 §6 | T5.6 |
 | R21 | Once making a spare has failed with `ENOSPC` and no full-size retired segment is to hand, a roll that finds no spare is refused with `ENOSPC`, until a spare is made again | MUST | RFC 28 §2.2 | T5.6 |
 | R22 | `spare_refusals` counts each refusal naming `spare` | MUST | RFC 28 §2.2, RFC 1 §3.9 | T5.6 |
 | R23 | Header-only records go on drawing on the allocated headroom when no spare is ready. The pool offers them the headroom's spares | invariant | RFC 28 §2.2, RFC 1 §6 | T5.5, T5.6 |
+| R80 | A reservation holds spares ahead of need: spares held for it are not available to unreserved rolls, a reserved roll takes one of them, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. So a reserved write never meets the no-spare refusal while the pool can be refilled | invariant | RFC 1 §6 | T5.5, T5.6 |
 
 **Seal, catalog and free tail**
 
@@ -211,7 +220,7 @@ below or in §1.2.
 | R24 | Sealing writes a seal marker at the slot just past the last record. It is durable before a successor naming the segment is taken | MUST | RFC 28 §2.2 | T5.6, T5.7 |
 | R25 | Bytes after a seal marker belong to the footer, never to records | invariant | RFC 28 §2.2 | T5.7 |
 | R26 | Seal order: every record durable first, then the marker, footer and trailer written and durable, then, for an early seal, the file truncated past the trailer and that made durable | MUST | RFC 28 §2.5 | T5.7 |
-| R27 | A full seal costs two syncs and an early seal three. A step may be split into more | bound | RFC 28 §2.5 | T5.7 |
+| R27 | A full seal needs as few as two syncs and an early seal three, and a step may be split into more. The RFC states a floor, not a count: D11 fixes what this epic issues | bound | RFC 28 §2.5 | T5.7 |
 | R28 | A sealed segment carries a catalog footer: one entry per record in it | SHOULD, adopted | RFC 28 §2.4 | T5.7 |
 | R29 | The footer is written and made durable after the records it describes | MUST | RFC 28 §2.4 | T5.7 |
 | R30 | The footer carries its own checksum and identifies the extent of the segment it describes. Epic 3 owns the bytes, this epic supplies the entries and the offsets | MUST | RFC 28 §2.4, §2.5 | T5.7 |
@@ -222,7 +231,7 @@ below or in §1.2.
 | R35 | A segment sealed full is never truncated and keeps its cap, so it can be recycled as a full-size spare. A segment sealed early always returns its free tail | MUST | RFC 28 §2.2, RFC 1 §7.3 | T5.7 |
 | R36 | The catalog is not placed in a separate file, and no second durable log of it is kept | MUST NOT | RFC 28 §2.4 | T5.7 |
 | R37 | An active segment that has taken no append for 30 s is sealed once the bytes it holds beyond its last catalogued point pass `journal.idle_seal_bytes`. Below the threshold it stays open | MUST | RFC 28 §3.1 | T5.8 |
-| R38 | No byte range inside a segment is freed, zeroed or deallocated while the segment remains, except the free tail at seal. (The torn tail cut at recovery is epic 7's.) A recycle's slot zeroing is part of retiring the whole segment, not of a segment that remains | MUST NOT | RFC 1 §7.1 | T5.7, T5.9 |
+| R38 | No byte range inside a segment is freed, zeroed or deallocated while the segment remains, except the free tail at seal. (The torn tail cut at recovery is epic 7's. A recycle's zeroing of two slots is RFC 28 §2.2's own step, and an open point in §9) | MUST NOT | RFC 1 §7.1 | T5.7, T5.9 |
 
 **Retirement: unlink and recycle**
 
@@ -233,8 +242,8 @@ below or in §1.2.
 | R41 | A recycle that fails at any step is an unlink, under whichever of its two names the journal finds. The segment is never a spare | MUST | RFC 28 §2.2 | T5.9 |
 | R42 | Whether a full-size segment is recycled is decided at its retirement: recycled while the pool is below its target then, unlinked otherwise. Never decided at seal | MUST | RFC 28 §2.2, RFC 1 §7.3 | T5.9 |
 | R43 | A segment sealed early is unlinked when retired, never recycled. A segment ended by a failed sync, by a failed append, or by recovery without a seal is unlinked, never recycled, and only once repack has carried its synced records forward | MUST | RFC 28 §2.2, RFC 1 §5.3 | T5.9, T5.10 |
-| R44 | A segment's records are durable before it is unlinked or recycled. A release record is durable before the segment holding the record it released is retired | MUST | RFC 1 §5.1 | T5.9 |
-| R45 | An unlink is made durable by a directory sync, and the retirement reports when it is. A removal record whose retention counted the segment is dropped only after (epic 9 applies the rule) | MUST | RFC 28 §2.2, RFC 1 §5.1 | T5.9 |
+| R44 | A segment's records are durable before it is unlinked or recycled: the executor refuses a segment with unsynced bytes, except one ended by a failure (R43), whose window the caller has resolved. That a release record is durable before the segment holding the record it released is retired is the caller's: epic 9 hands a segment over only once the records that left it not held are durable | MUST | RFC 1 §5.1 | T5.9 |
+| R45 | An unlink or a recycle is made durable by a directory sync, and the retirement reports when it is. A removal record whose retention counted the segment is dropped only after (epic 9 applies the rule) | MUST | RFC 28 §2.2, RFC 1 §5.1 | T5.9 |
 | R46 | A segment that is not held is retired by the journal on its own, once the records that left it not held are durable, without waiting for a repack to select it. This epic provides the executor and its background worker. Epic 9 decides when a segment is not held | MUST | RFC 1 §7.1 | T5.9 |
 | R47 | Unlink and recycle take the storage guard exclusively, and freeing storage is the last step, after no reader can hold the old resolution | MUST | RFC 1 §8.5 | T5.3, T5.9 |
 
@@ -260,6 +269,8 @@ below or in §1.2.
 | R58 | A retire that subtracts nothing is counted and logged at `Warn` | MUST | RFC 1 §7.3 | T5.1 |
 | R59 | The accounted footprint is checkable against the sum of the segment set's sizes, and a mismatch is reported (the check is called by epic 7's verification) | SHOULD, adopted | RFC 1 §7.3 | T5.1 |
 | R60 | The counters of this area are served from maintained state, never from a walk of the segment set | MUST | RFC 1 §3.7 | T5.1, T5.2, T5.5, T5.6 |
+| R78 | A recycle does not return the segment's cap: the recycled segment stays accounted at its cap, now as a spare under its new id, and only an unlink lowers the footprint | MUST | RFC 1 §6, §7.3 | T5.1, T5.9 |
+| R79 | `freed_bytes` counts storage actually returned by unlinking segments, raised only after the unlink has happened | invariant | RFC 1 §3.9, §6 | T5.9 |
 
 **Descriptors**
 
@@ -280,6 +291,7 @@ below or in §1.2.
 | R68 | Reclamation never holds a segment exclusively for longer than one unit of work | MUST NOT | RFC 1 §8.6 | T5.3, T5.9 |
 | R69 | The storage guard is the last lock in the order and nothing is acquired while it is held. Reclamation takes it only to unlink or recycle, holding no other lock. No two locks of one domain are held at once | MUST, MUST NOT | RFC 1 §8.3 | T5.3, T5.4 |
 | R70 | On close, background work (idle seal, the retirement worker) is stopped and joined before the segments it touches are closed, and no storage a reader may still hold is freed | MUST | RFC 1 §8.7 | T5.8, T5.9 |
+| R81 | After close, an append or a read through the segment set fails with the closed error, and in-flight ones complete or fail cleanly. The journal-level close and its refusal of new operations are epic 8's | MUST | RFC 1 §8.7 | T5.9 |
 
 **Test rows of the RFCs for this area**
 
@@ -313,7 +325,7 @@ below or in §1.2.
   `spare_refusals` shows it.
 - **D4, no footer for a segment sealed by a previous process.** RFC 28 §2.4 permits it
   (a MAY) and a segment sealed at a crash legitimately has none. This epic does not take
-  it: recovery scans such a segment. A `decision:` marker at the seal says the exemption
+  it: recovery scans such a segment. Sealing the newest segment of a stream at recovery (RFC 28 §2.5) is a different case: epic 7 does it through this epic's seal writer (T5.7). A `decision:` marker at the seal says the exemption
   holds while a scan of the tail is cheap, and what overturns it: a time to first read
   dominated by scans of such segments.
 - **D5, one retirement executor, two entry points.** `Retire` runs one retirement now.
@@ -322,8 +334,11 @@ below or in §1.2.
   decide it; it checks only what it owns (no unsynced bytes, nothing claimed).
 - **D6, a spare's directory entry is synced when it is made.** So taking one costs no
   directory sync (R19). A directory sync that fails while making a spare means the spare
-  does not exist and is made again: there is no window to re-append, because no record was
-  ever written to it.
+  is not usable: no record was ever written to it, so there is no window to re-append. The
+  file may still exist under `<id>.seg` after the rename, so it is unlinked under either name
+  and stays accounted until the unlink has happened. A file that cannot be unlinked stays in
+  the set, accounted, and the retirement worker retries it. The RFC does not say this: it is
+  this epic's reading of RFC 28 §2.2 and RFC 1 §7.3.
 - **D7, a file's appends go to one stream.** The stream is chosen by a hash of the
   `FileID`, so one file's records stay ordered on one stream and epic 8's file append
   serialisation needs no cross-stream order. A `ponytail:` marker names the ceiling: one hot
@@ -336,8 +351,13 @@ below or in §1.2.
   and never through a second constant, so every size check of this epic runs at the
   production code path.
 - **D10, the skeleton creates its first segment on the write path.** T5.4 makes a segment
-  at its cap on the spot so the minimal stream works before the pool exists. A `ponytail:`
+  at its cap on the spot, with its directory sync, so the minimal stream works before the pool
+  exists. A `ponytail:`
   marker says so, and T5.6 replaces it with the pool's take.
+- **D11, a seal issues the minimum syncs.** RFC 28 §2.5 gives a floor (two for a full seal,
+  three for an early one) and permits more. This epic issues exactly the floor, so a roll
+  costs no extra flush. The tests pin the floor as this epic's choice, and a merged step is
+  caught by the order assertions of T5.7, not by the count.
 
 ## 5. Target tree
 
@@ -365,15 +385,17 @@ pkg/block/journalv2/internal/
 
 ### T5.1 Segment set and footprint ledger
 
-**Subtask T5.1 estimate: 2.5 man-days.**
+**Subtask T5.1 estimate: 2.75 man-days.**
 
 - **Track:** A. **Depends on:** S2; E4's per-segment held and retained bytes.
-- **Covers:** R50–R60, R74, R75.
+- **Covers:** R50–R60, R74, R75, R78.
 - **Deliverables:** `internal/segment/set.go`: the set of segments the journal owns, each with
   an id, a state (spare, active, sealed, ended), the size it is accounted at and its record
   bytes per share tag; the footprint (`UsedBytes`), raised when a segment is created and
   lowered only after its unlink; `Retire(id)` that removes the segment from the set and
-  subtracts only if it found it there; `Claim` and its release, a no-op after retirement;
+  subtracts only if it found it there (an unlink); `Recycle(old, new)` that moves a
+  segment to its new id as a spare, footprint unchanged, releasing its per-tag record bytes;
+  `Claim` and its release, a no-op after retirement;
   `Check()` that compares the footprint with the sum of the set's sizes; the `Segments`,
   `Sealed` and double-retire counters; a `Warn` log on a retire that subtracts nothing. In
   `internal/index/segments.go`, the existing per-segment retire hook is exported for this
@@ -385,13 +407,16 @@ pkg/block/journalv2/internal/
   - `Check()` reports a mismatch when the footprint and the sum differ.
   - A segment shortened at seal is accounted at its new size; a failed or ended one keeps
     its cap.
+  - A recycle leaves the footprint unchanged: the old id is gone from the set and the new one
+    is in it at its cap.
   - Record bytes of one tag leave with the segment that held them.
 - **Tests:** a property test and a `testing.F` target of random create, shrink, claim and
   retire against an oracle of the footprint (catches a path that forgets to subtract, or
   subtracts twice); two goroutines retiring one segment under `-race` (catches a
   check-then-act retire); `Check()` after a deliberately skipped subtract (catches a check
   that compares the footprint with itself); a test that `UsedBytes` is raised before a
-  create's allocation and lowered only after its unlink, against a hook between the two.
+  create's allocation and lowered only after its unlink, against a hook between the two; a recycle's footprint before and after (catches a recycle
+  that returns the cap while the file stays allocated).
 
 ### T5.2 Descriptor cache and per-process budget
 
@@ -445,10 +470,11 @@ pkg/block/journalv2/internal/
 
 **Subtask T5.4 estimate: 4 man-days.**
 
-- **Track:** A. **Depends on:** T5.1, T5.2; E3's record codec and segment header.
-- **Covers:** R2, R5, R6, R8, R10–R12, R69.
+- **Track:** A. **Depends on:** T5.1, T5.2, T5.3; E3's record codec and segment header.
+- **Covers:** R2, R5, R6, R8, R10–R12, R19, R69.
 - **Deliverables:** `internal/segment/stream.go`: `Stream` with one active segment, created
-  on the write path (D10), the header written once when the stream takes it, and
+  on the write path (D10) with a directory sync before the first `Sync` of its records can
+  return, the header written once when the stream takes it, and
   `Append(record)` that reserves a position under the segment append lock without I/O (R12),
   writes the record outside it, and splits at the cap by reporting how many bytes fit so the
   caller continues in the next segment (T5.6). The ordered-completion tracker (D2) and the
@@ -462,26 +488,32 @@ pkg/block/journalv2/internal/
   - A write that fails returns its error and is never acknowledged. Records reserved after it
     carry a synced-through value below its slot.
   - The reservation allocates nothing, outside `-race`.
+  - A record that exactly fills what remains is one piece, and the next append rolls.
+  - `Append` returns a record's location only after its bytes are written, so a caller can
+    publish it as its last step.
   - The stream stops short of the cap by the room the seal still needs (R11).
 - **Tests:** the tracker with a later slot completing and syncing first while an earlier one
   is held (catches a "last synced offset" implementation, D2); the split at the cap with
-  the pieces' offsets and versions asserted; a failed write at the seam followed by two
+  the pieces' offsets and versions asserted; a record that exactly fills what remains of the
+  segment (the edge of RFC 1 §9.2: no empty piece, no early roll); a failed write at the seam followed by two
   appends, asserting both synced-through values; the allocation count of the reservation; a
   lock-held-during-I/O check on the segment append lock (catches R12); `-race` with 16
   appenders and a reader.
 
 ### T5.5 Making spares and the pool
 
-**Subtask T5.5 estimate: 3.5 man-days.**
+**Subtask T5.5 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T5.1, T5.2; E3's `Allocate` and names.
-- **Covers:** R3, R4, R9, R13–R19, R23, R52, R54, R60, R71, R75.
+- **Covers:** R3, R4, R9, R13–R19, R23, R52, R54, R60, R71, R75, R80.
 - **Deliverables:** `internal/segment/pool.go`: `Make(class)` that creates `<id>.spare.tmp`,
   allocates the cap, syncs, renames to `<id>.seg` and syncs the directory, reserving the cap
   against the journal's maximum atomically (through T5.1); the id allocator, seeded by the
   largest id the directory names (supplied at open, zero for a new journal) and drawing above
   it; the three classes (D3) with `Take(class)`; a refill worker that makes spares off the
-  write path when a class falls below its target and is joined at shutdown; the state "making
+  write path when a class falls below its target and is joined at shutdown; `Hold(n)` and its return, which
+  keep spares for a reservation ahead of need (R80); the `HeadroomBytes` and
+  `RepackReserveBytes` figures, each as allocated now; the state "making
   a spare failed with `ENOSPC`" that T5.6 reads.
 - **Acceptance criteria:**
   - After a crash at any step the durable directory holds no `<id>.seg`, or one at its cap and
@@ -491,42 +523,52 @@ pkg/block/journalv2/internal/
   - A content `Take` never returns a headroom or reserve spare.
   - Two concurrent `Make` calls near the maximum reserve atomically: together they never
     exceed it.
-  - A failed directory sync leaves no spare and one reservation returned.
+  - A failed directory sync after the rename leaves no usable spare: the file is unlinked
+    under either name, stays accounted until the unlink has happened, and the reservation is
+    then returned. A file that cannot be unlinked stays in the set and is retried.
+  - Spares held for a reservation are not taken by an unreserved roll, and `HeadroomBytes`
+    and `RepackReserveBytes` report the allocated size of their classes.
 - **Tests:** the crash seam at each of create, allocate, sync, rename and directory sync,
   listing the directory after each drop (the RFC 28 spare row, R71); an id allocator started
   from a directory holding a `.spare.tmp` with the highest id; concurrent `Make` calls at
   the maximum (catches a read-then-decide reservation); `Take(content)` with only headroom
-  spares ready (catches R17); the footprint after a failed `Make` (catches a leaked
-  reservation); `UsedBytes` unchanged by writes into the spare (R75).
+  spares ready (catches R17); the footprint after a failed `Make` at the directory sync, with the unlink succeeding
+  and failing (catches a leaked reservation, and an uncounted file left at its cap); a
+  `Hold` followed by an unreserved `Take` (catches R80); the two bytes figures after a
+  `Make`; `UsedBytes` unchanged by writes into the spare (R75).
 
 ### T5.6 Roll and several streams
 
-**Subtask T5.6 estimate: 4 man-days.**
+**Subtask T5.6 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T5.4, T5.5, T5.7.
-- **Covers:** R2, R6–R8, R15, R17, R20–R24, R60.
+- **Covers:** R2, R6–R8, R15, R17, R20–R24, R60, R80.
 - **Deliverables:** `internal/segment/roll.go`: when a record does not fit, seal the active
   segment (T5.7), take a content spare, write its header naming the predecessor it sealed,
   and continue the split write there; the configured number of streams, the stream of a file
   chosen by a hash of its `FileID` (D7); a content roll that finds no spare ready returns
   `ErrNoSpace` naming `spare` at once, or `ENOSPC` when making a spare has failed with it
   and no full-size retired segment is to hand, with `spare_refusals` counted; header-only
-  records are offered the headroom's spares. The skeleton's creation on the write path
+  records are offered the headroom's spares; an unreserved roll that would leave an open
+  reservation short of its spares is refused `spare` in its place (R80). The skeleton's creation on the write path
   (D10) is removed. A `ponytail:` marker at the cap states the RFC's note on the constant
   segment size.
 - **Acceptance criteria:**
   - A write straddling the cap lands in two segments, the second naming the first as its
-    predecessor, and the first is sealed durably before the second exists.
+    predecessor, and the first's seal is durable before the second is taken.
   - A refusal performs no I/O: the seam sees no call.
   - With no content spare but a headroom spare, a content roll is refused `spare` and a
     header-only record proceeds.
   - Two files whose hashes differ use two streams and never block each other.
   - `spare_refusals` rises by one per refused roll.
+  - With a reservation holding the last content spare, an unreserved roll is refused `spare`
+    and the reserved write's roll succeeds.
 - **Tests:** the straddling write across a roll, asserting the predecessor and the seal's
   order against the roll in the seam's call log (catches a successor taken before the seal is
   durable); a pool emptied, then the refusal with the seam's call count unchanged; the
   `ENOSPC` variant after a failed `Make`; `-race` with 16 appenders over 4 streams and a
-  refill; the spare-refusal counter.
+  refill; the spare-refusal counter; a reserved and an unreserved roll with one spare left
+  (catches R80).
 
 ### T5.7 Seal, catalog and free tail
 
@@ -535,7 +577,8 @@ pkg/block/journalv2/internal/
 - **Track:** A. **Depends on:** T5.4; E3's seal marker, catalog entry and trailer codecs.
 - **Covers:** R1, R11, R24–R36, R38, R53, R72.
 - **Deliverables:** `internal/segment/seal.go`: the stream keeps one catalog entry per
-  record it appended; `Seal(early)` makes every record durable, appends the marker, the
+  record it appended; `Seal(early)`, which takes its entries as data so that epic 7 can seal a
+  scanned segment through the same writer, makes every record durable, appends the marker, the
   footer and the trailer and makes them durable, then, for an early seal, truncates past the
   trailer and makes that durable; a full seal puts the trailer at the cap's last 32 bytes and
   returns no tail. A segment is sealed at most once and its footer written at most once.
@@ -544,13 +587,15 @@ pkg/block/journalv2/internal/
   - A full seal issues two syncs on the segment and an early seal three.
   - After a full seal the file is at its cap and its trailer is the last 32 bytes; after an
     early seal the file ends at its trailer and the ledger shows its new size.
-  - A failed sync in the first two steps leaves the segment unsealed and never accepts a
-    successor naming it; a failed truncation sync leaves it sealed and accounted at its cap.
+  - A failed sync in the first two steps leaves the segment unsealed and ended (the state T5.1
+    holds, so no append or seal follows; T5.10 adds the hand-off of its window), and no
+    successor names it; a failed truncation sync leaves it sealed and accounted at its cap.
   - A second `Seal` writes nothing.
   - The directory holds no file besides the format file and the segments.
   - E3's footer reader accepts the footer of a sealed segment, and reports "no footer" for the
     state after a crash that kept only part of the second step.
-- **Tests:** the seam's sync count for both seals (catches a merged or extra sync, R27); a
+- **Tests:** the seam's sync count for both seals (pins the floor D11 chose, and catches an extra
+  flush on the roll path; a merged step is caught by the order assertions that follow); a
   crash after each step and E3's reader on each durable state; the marker durable before the
   successor is taken, with the seam holding the marker's sync; a torn second step; the failure
   injections of both steps and of the truncation; a second seal's call log; a directory
@@ -566,7 +611,9 @@ pkg/block/journalv2/internal/
   clock, seals early a stream's active segment once it has taken no append for the idle time
   and holds more than the idle-seal bytes beyond its last catalogued point; the stream
   takes a spare only when its next append arrives. The worker is stopped and joined before
-  the segments close.
+  the segments close. A `decision:` marker at the idle time and the threshold says both are
+  unmeasured constants, and what overturns them: a time to first read dominated by scans of
+  active tails, or a trickle workload whose early seals show up in footer writes.
 - **Acceptance criteria:**
   - After 30 s of virtual time with more than the threshold written, the segment is sealed
     early and its tail returned.
@@ -579,36 +626,50 @@ pkg/block/journalv2/internal/
 
 ### T5.9 Retirement: unlink and recycle
 
-**Subtask T5.9 estimate: 4 man-days.**
+**Subtask T5.9 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T5.1, T5.3, T5.5, T5.7.
-- **Covers:** R16, R38–R47, R52, R56, R65, R68, R70, R72, R74, R76.
-- **Deliverables:** `internal/segment/retire.go`: `Retire(id, reason)` that refuses a segment
-  with unsynced bytes or a live claim; takes T5.3's guard exclusively as one unit of work,
-  closes the segment's descriptors (T5.2), and then either unlinks it or recycles it. The
-  choice is made now: a segment sealed full is recycled while the pool is below its target,
-  and every other segment is unlinked. A recycle renames to a fresh `.seg` name, syncs the
-  directory, zeroes the header slot and the trailer slot, syncs, and hands the segment to the
-  pool; any failed step is an unlink under whichever of the two names exists. After an unlink
-  the directory is synced and the retirement reports whether its unlink is durable. The
-  ledger subtracts once (T5.1). A queue and a worker retire the segments epic 9 hands over
-  (D5), joined at shutdown.
+- **Covers:** R16, R38–R47, R52, R56, R65, R68, R70, R72, R74, R76, R78, R79, R81.
+- **Deliverables:** `internal/segment/retire.go`: `Retire(id, reason)`. For a segment that is
+  not ended it refuses one with unsynced bytes or a live claim. That its release records are
+  durable is the caller's: epic 9 hands a segment over only once the records that left it
+  not held are durable (R44). A segment ended by a failure is retirable with the reason
+  `Ended`, once the caller says its window is resolved and repack has carried its synced
+  records forward; its unsynced bytes were then re-appended elsewhere or dropped. Retire takes
+  T5.3's guard exclusively as one unit of work, closes the segment's descriptors (T5.2), and
+  then unlinks it or recycles it. The choice is made now: a segment sealed full is recycled
+  while the pool is below its target, and every other segment is unlinked. A recycle renames
+  to a fresh `.seg` name, syncs the directory, zeroes the header slot and the trailer slot,
+  syncs, and hands the segment to the pool as a spare under its new id; the ledger moves it
+  without changing the footprint (T5.1, R78). Any failed step is an unlink under whichever of
+  the two names exists, and the footprint is lowered then. After an unlink, or after a
+  recycle's rename, the directory is synced and the retirement reports whether that is
+  durable. `freed_bytes` is raised after an unlink has happened. `Set.Close` stops accepting
+  appends and reads (the closed error), lets in-flight ones finish, and joins the idle,
+  refill and retirement workers before closing the segments. A queue and a worker retire the
+  segments epic 9 hands over (D5).
 - **Acceptance criteria:**
   - The seam sees, per recycle, a rename, a directory sync, two zero writes and one sync,
-    and no allocation and no zero-fill.
-  - A segment sealed early, ended by a failed append or by a failed sync, is unlinked and
-    never recycled.
+    and no allocation and no zero-fill. `UsedBytes` does not move across a recycle.
+  - A segment sealed early is unlinked and never recycled. A segment ended by a failed
+    append or a failed sync is retired only with `Ended`, is unlinked and never recycled.
+    An active segment with unsynced bytes is refused.
   - A failure injected at each of the four recycle steps leaves the file gone under both
     names, the pool unchanged and the footprint lowered once.
   - A crash between the rename and the zeroing leaves a file under the new name that holds
     the old life's bytes, and the old name absent.
   - Eviction and repack retiring one segment lower the footprint once and never below zero.
   - A reader holding the guard makes the retirement wait, and the reader returns its pattern.
-  - The unlink reports not-durable when its directory sync fails.
-- **Tests:** the seam's call log for a recycle (R72); the four failure injections; the pool
-  target moved across the retirement (catches a decision made at seal); a reader of a
-  segment while a retirement waits (R76); two goroutines retiring one segment (R74); a crash
-  at each durable state with the directory listing; the profiler after the worker joins.
+  - The retirement reports not-durable when its directory sync fails.
+  - After `Set.Close`, an append and a read fail with the closed error, and no worker
+    goroutine is left.
+- **Tests:** the seam's call log for a recycle, and the footprint around it (R72, R78); the
+  four failure injections; the pool target moved across the retirement (catches a decision
+  made at seal); a reader of a segment while a retirement waits (R76); two goroutines
+  retiring one segment (R74); an ended segment retired with and without `Ended`; `freed_bytes`
+  after an unlink and unchanged after a recycle (R79); a crash at each durable state with the
+  directory listing; an append and a read racing `Set.Close` under `-race`; the profiler
+  after the workers join.
 
 ### T5.10 Ending a segment after a failed append
 
@@ -617,13 +678,14 @@ pkg/block/journalv2/internal/
 - **Track:** A. **Depends on:** T5.6.
 - **Covers:** R1, R10, R43, R48–R50, R72, R77.
 - **Deliverables:** `internal/segment/end.go`: `End` marks the active segment ended after a
-  failed append, or at the request of the durability code after a failed sync: it accepts no
+  failed append (a short write, fewer bytes than asked with no error, is one), or at the request of the durability code after a failed sync: it accepts no
   further append and no seal, the stream's next roll takes a spare whose header names no
   predecessor, the synced-through value stays below the failed slot, and the records
   written since the last successful sync are handed to a registered consumer, which epic 6
-  fills in. The ledger keeps the segment at its cap, and T5.9 treats it as never recyclable.
+  fills in. The ledger keeps the segment at its cap, and T5.9 treats it as never recyclable. The ended state itself is T5.1's, and T5.7 already sets it on a failed seal sync: this subtask adds the append-failure trigger, the predecessor-free next segment and the hand-off.
 - **Acceptance criteria:**
   - After a failed append the segment takes no further append and no seal marker.
+  - A short write, with no error, ends the segment the same way.
   - The next append goes to a new segment whose predecessor is zero.
   - Every record reserved after the failed slot carries a synced-through value below it.
   - The unsynced records of the window reach the consumer exactly once, each with its
@@ -639,7 +701,7 @@ pkg/block/journalv2/internal/
 Two lanes can run side by side after the first three subtasks. **Lane 1**, the stream path:
 T5.1, T5.4, T5.7, T5.8, T5.6, T5.10. **Lane 2**, the file lifecycle: T5.2, T5.3, T5.5, T5.9.
 They meet at T5.6, which needs the spare pool, and at T5.9, which needs the seal. T5.4 reads
-through T5.2's cache, so T5.2 should land first in lane 2.
+through T5.2's cache under T5.3's guard, so both should land first in lane 2.
 
 ```mermaid
 flowchart TD
@@ -651,6 +713,7 @@ flowchart TD
   E3s(["E3 seal and catalog codecs"]):::sync --> T7
   T1 --> T4["T5.4 Minimal stream"]
   T2 --> T4
+  T3 --> T4
   T1 --> T5["T5.5 Spares and pool"]
   T2 --> T5
   T4 --> C1(["after T5.4: S3 minimal stream usable by E8"]):::sync
@@ -680,12 +743,12 @@ Checkpoints:
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2, T5.3 | 6.5 | | the ledger, the descriptor cache and the guard: pure logic over the storage seam that every later subtask uses, with no format dependency |
+| 1 | T5.1, T5.2, T5.3 | 6.75 | | the ledger, the descriptor cache and the guard: pure logic over the storage seam that every later subtask uses, with no format dependency |
 | 2 | T5.4 | 4 | PR 1, E3 records | the minimal stream, which is the S3 half this epic owes |
-| 3 | T5.5 | 3.5 | PR 1, E3 `Allocate` | making spares and the pool, which can be open beside PR 2 |
+| 3 | T5.5 | 4 | PR 1, E3 `Allocate` | making spares and the pool, which can be open beside PR 2 |
 | 4 | T5.7, T5.8 | 5.5 | PR 2, E3 seal and catalog | the seal and the idle seal, one logic, one crash matrix |
-| 5 | T5.6, T5.10 | 6.5 | PR 2, PR 3, PR 4 | the roll and the end of a segment, which share the stream's next-segment path |
-| 6 | T5.9 | 4 | PR 1, PR 3, PR 4 | retirement, which can be open beside PR 5 |
+| 5 | T5.6, T5.10 | 7 | PR 2, PR 3, PR 4 | the roll and the end of a segment, which share the stream's next-segment path |
+| 6 | T5.9 | 4.5 | PR 1, PR 3, PR 4 | retirement, which can be open beside PR 5 |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -720,3 +783,18 @@ A suggestion only: one pull request per subtask works as well.
 - **No conformance test turns green here.** They all need `Open`. The exit check of this epic
   is its own tests, and the S3 skeleton turns the first conformance tests green only with
   epic 8's `WriteAt` and `ReadAt`.
+- **A recycle zeroes two slots of a segment that remains.** RFC 1 §7.1 allows exactly two
+  exceptions to "no byte range inside a segment is freed, zeroed or deallocated" (the torn
+  tail and the free tail at seal), and RFC 28 §2.2 requires a recycle to overwrite the header
+  slot and the trailer slot with zeros. This epic reads the recycle as retiring one segment
+  and creating a spare, so the rule is not broken (R38). Confirm that reading with the RFC's
+  author, and say so in RFC 1 §7.1.
+- **A recycle keeps the cap accounted.** RFC 1 §6 returns a segment's cap only at its unlink,
+  and RFC 28 §2.2 turns a recycled segment into a spare. R78 follows both: the footprint does
+  not move across a recycle. Confirm that the RFC says so in one place.
+- **Two items an earlier outline of this epic carried have moved.** The file-append
+  serialisation point is epic 8's (the stream is safe under it). A failed or short append is
+  kept here: a failed one ends the segment, and a short write counts as failed (T5.10).
+- **Recovery's seal is epic 7's, through this epic's writer.** `Seal` takes its entries as
+  data (T5.7), so epic 7 can seal a scanned segment. Confirm with epic 7's owner that it will
+  call it rather than write its own.
