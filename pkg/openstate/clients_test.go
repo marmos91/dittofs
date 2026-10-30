@@ -553,6 +553,16 @@ func TestStartAndStop(t *testing.T) {
 		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
 		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
 		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
+		"Disconnect":  func() error { return g.Disconnect(ctx, id, entity.SessionRef{}) },
+		"ChannelDown": func() error { return g.ChannelDown(ctx, id) },
+		"Reconnect": func() error {
+			_, err := g.Opens().Reconnect(ctx, Caller{Client: id}, 1, ReconnectMatch{}, entity.SessionRef{})
+			return err
+		},
+		"Flushed":         func() error { return g.Opens().Flushed(ctx, Caller{Client: id}, 1, 0) },
+		"Renamed":         func() error { return g.Opens().Renamed(ctx, file, entity.FileID{}, nil, entity.FileID{}, nil) },
+		"ServeShard":      func() error { return g.Recovery().ServeShard(ctx, f.fs.Share.ID, 0, 1) },
+		"ReclaimComplete": func() error { return g.Recovery().ReclaimComplete(ctx, Caller{Client: id}, nil) },
 	}
 	check := func(when string) {
 		for name, call := range calls {
