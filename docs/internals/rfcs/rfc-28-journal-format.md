@@ -835,13 +835,8 @@ been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), unless a 
 sealed ([§2.2](#2.2%20Segments)). A segment whose header is torn is ended at recovery,
 not sealed, as one with a torn slot is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). If it were sealed,
 its own seal marker would prove the header synced at the next open and turn the
-crash into damage. Its records are re-appended, keeping their numbers, to a new
-segment that is then synced, as an unproven tail's are below. So none is left only
-in a segment nothing can prove synced, where later damage would read as torn. The
-re-append is done once. A later open skips a record whose copy with the same
-sequence number already verifies in a segment whose header verifies, and recovery
-uses that copy ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The ended segment then backs nothing, and is unlinked as
-any segment holding no live record is ([RFC 1 §7.1](rfc-1-journal.md#7.1%20Releasing%20storage)).
+crash into damage. Its records are then re-appended and the segment unlinked, as
+for any segment recovery ends ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 **A segment with no record is a spare again.** A segment under a name this
 journal produces whose header slot is zeros — a spare no stream took — or whose
@@ -1001,7 +996,8 @@ may have been answered: it is attached, never cut off with the slot, and a later
 may already have made it durable. A seal marker that verifies proves every record
 before it synced, as it proves the segment header ([§3.1](#3.1%20Rebuilding)): a seal makes its
 records durable before it writes the marker ([§2.5](#2.5%20Catalog%20layout)). So a bad record before
-such a marker is corruption, not a torn slot or torn tail. A seal marker that does not verify is part of the
+such a marker is corruption, not a torn slot or torn tail. A zero slot is not a bad
+record here, and the zero-slot rule below decides it. A seal marker that does not verify is part of the
 torn tail unless a successor names its segment, which proves the seal durable
 ([§2.2](#2.2%20Segments)). A named one is damage, and its segment is reported as damaged. An unnamed
 one cannot be told from a seal a crash cut short: the seal's marker, footer and
@@ -1018,13 +1014,21 @@ stream then continues in a new segment. Without it, the next append would land
 after bytes a scan cannot cross, and a second crash would lose acknowledged
 writes behind the first one's debris. This truncation and the seal's are the
 only storage inside a segment the journal ever frees ([RFC 1 §7.1](rfc-1-journal.md#7.1%20Releasing%20storage)). **A torn
-slot before a record that verifies, zeros included, ends the segment instead
+slot that is not zeros before a record that verifies ends the segment instead
 of sealing it.** Examples are a recycled segment whose later append persisted before an
-earlier one at a crash, or a fresh one after a short write. If it were sealed, its seal
+earlier one at a crash, or a fresh one after a short write. A record that fails the
+re-read of an unproven tail ([§3.1](#3.1%20Rebuilding)) is such a slot. If it were sealed, its seal
 marker would prove the slot synced at the next open and report the crash as corruption, so
 recovery truncates the tail as above but writes no seal marker, and the segment
 is left as after a failed append ([§2.2](#2.2%20Segments)). A segment whose header is torn is ended
-the same way ([§3.1](#3.1%20Rebuilding)).
+the same way ([§3.1](#3.1%20Rebuilding)). **A segment recovery ends is emptied before the journal serves.**
+Nothing can prove its records synced any more. Left in place, later damage to them would
+read as torn. So recovery re-appends each of its records that verifies, keeping its
+numbers, to a new segment synced with the directory. It skips a record whose copy
+with the same sequence number already verifies, payload included, in a segment whose
+header verifies. It then unlinks the ended segment and syncs the directory. A crash
+part way leaves copies that the next open skips, so the step runs to completion once
+and never appends a record twice.
 
 **Unless a later record proves it was synced.** Every record header carries the
 stream's synced-through offset ([§2.3](#2.3%20Records)). A bad record that lies below the
