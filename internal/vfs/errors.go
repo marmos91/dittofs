@@ -59,6 +59,12 @@ func storeErr(err error) error {
 		return err
 	case errors.Is(err, entity.ErrStale), errors.Is(err, entity.ErrWrongShare):
 		return fmt.Errorf("%w: %v", vfs.ErrStale, err)
+	case errors.Is(err, entity.ErrInvalidName):
+		return fmt.Errorf("%w: %v", vfs.ErrInvalid, err)
+	case errors.Is(err, entity.ErrNameTooLong):
+		return fmt.Errorf("%w: %v", vfs.ErrNameTooLong, err)
+	case errors.Is(err, entity.ErrCrossProject):
+		return &vfs.CrossError{Kind: vfs.CrossProject}
 	case errors.Is(err, entity.ErrDelay):
 		return &vfs.Delay{Cause: vfs.DelayFrozen}
 	case errors.Is(err, entity.ErrInconsistent), errors.Is(err, kvstore.ErrInconsistent):
