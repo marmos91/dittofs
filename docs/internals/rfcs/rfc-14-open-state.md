@@ -3112,8 +3112,9 @@ nfstest — run through `dt` as the end-to-end layer.
 
 **Suites.** §12's rows and §13.1's units, table suite, fault injection, model and fuzz seeds run
 in `unit`; the end-to-end layer is `pynfs`, `smbtorture`, `pjdfstest`, `wpts`, `cthon04` and
-`nfstest`, with the NLM driver in `e2e`. No suite runs yet the multi-node simulation, the rows
-marked cluster, or §13.3's benchmarks.
+`nfstest` — pynfs's reboot tests skipped on both minors, pjdfstest running with delegations
+off, so L51's delegation halves and the restart-notify driver are its rows no suite runs yet,
+alongside the multi-node simulation, the rows marked cluster, and §13.3's benchmarks.
 
 ## 14. Observability
 
