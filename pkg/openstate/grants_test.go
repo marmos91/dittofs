@@ -1187,6 +1187,14 @@ func TestLeaseKeyHeldWithoutAGrant(t *testing.T) {
 	if _, err := f.open(a, second, OpenRequest{Access: rd, Lease: k, Want: rwh}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("the key, held ungranted, on a second file: %v, want ErrInvalid", err)
 	}
+	third := anyFile()
+	f.grantOpen(t, b, third, OpenRequest{Access: rd, Lease: LeaseKey{8}, Want: rwh})
+	if _, err := f.open(a, third, OpenRequest{Access: wr, Lease: k}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("the key, held on another file, against a third file's lease: %v, want ErrInvalid", err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 0 {
+		t.Errorf("an open refused for its key recalled %+v", r)
+	}
 	f.close(t, a, o)
 	if _, err := f.open(a, second, OpenRequest{Access: rd, Lease: k, Want: rwh}); err != nil {
 		t.Errorf("the key on a second file once its last open closed: %v", err)
