@@ -44,6 +44,17 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 		return s, err
 	}
 	s.State = st.State
+	for row, err := range r.Scan(shardsPrefix(id), nil) {
+		if err != nil {
+			return s, err
+		}
+		shard, rest, err := keys.ReadUint64(row.Key[len(shardsPrefix(id)):])
+		if err != nil || len(rest) != 0 || shard >= uint64(entity.ShardLimit) {
+			return s, merrs.NewInvalidArgumentError("a share's shard row does not decode")
+		}
+		s.Shard = entity.ShardID(shard)
+		break
+	}
 	if b, ok, err := get(r, namespacesKey(id)); err != nil || !ok {
 		return s, err
 	} else if nss, err := decodeNamespaces(b); err != nil {
@@ -63,10 +74,6 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 // point read of each of the path's prefixes, a descendant by a guarded scan
 // of the rows below it, so two shares created at once on nested paths cannot
 // both commit, in either order.
-//
-// ponytail: a new share writes no shard list: every share has one shard,
-// zero, which callers name directly. Write the list in the transaction that
-// creates each shard once a share can have more than one.
 func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 	if s.ID.IsZero() || s.Root.IsZero() {
 		return merrs.NewInvalidArgumentError("a share needs an ID and a root")
@@ -129,9 +136,15 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 }
 
 // createShareRecords writes what a new share starts with besides its info:
-// its state, enabled; its root directory; its numeric file id allocator,
-// above the root's number; and a namespace of its own, generation 1, that its
-// content is counted in.
+// its state, enabled; its one shard, a number no share of the installation
+// has had, with its shard record and its row in the share's shard list; its
+// root directory, in that shard; its numeric file id allocator, above the
+// root's number; and a namespace of its own, generation 1, that its content
+// is counted in.
+//
+// ponytail: a share has exactly one shard, made with it. Write a row and a
+// record per shard, in the transaction that creates each, once a share can
+// have more than one.
 //
 // decision: every share gets a fresh namespace. Shares sharing one, so that
 // their content deduplicates and clones across them, is a choice the
@@ -144,6 +157,9 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 		return err
 	}
 	s.Tag = tag
+	if s.Shard, err = nextShard(tx); err != nil {
+		return err
+	}
 	root := fileKey(s.ID, s.Root)
 	rf := newRoot(tx, *s)
 	if _, ok, err := get(tx, root); err != nil {
@@ -153,6 +169,8 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 	}
 	for _, kvs := range [][2][]byte{
 		{shareKey(s.ID, keys.SSt), encodeState(shareState{State: entity.ShareEnabled})},
+		{keys.Uint64(shardsPrefix(s.ID), uint64(s.Shard)), encodeEmpty()},
+		{shardKey(uint64(s.Shard)), encodeShard(entity.Shard{ID: s.Shard})},
 		{root, encodeFile(rf)},
 		{floorKey(s.ID, s.Root, rf.Version), encodeEmpty()},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
@@ -186,6 +204,28 @@ func nextTag(tx kv.Txn) (uint32, error) {
 		return 0, ErrTagsExhausted
 	}
 	return uint32(v + 1), tx.Set(tagKey, encodeCounter(v+1))
+}
+
+// nextShard draws a shard number no shard of the installation has had: the
+// shard counter's next value, from 0, read and raised in the caller's
+// transaction. A number past the 24-bit shard space is refused, as a state
+// reference could not carry it.
+func nextShard(tx kv.Txn) (entity.ShardID, error) {
+	key := idKey(idShard)
+	b, ok, err := get(tx, key)
+	if err != nil {
+		return 0, err
+	}
+	var v uint64
+	if ok {
+		if v, err = decodeCounter(b); err != nil {
+			return 0, err
+		}
+	}
+	if v >= uint64(entity.ShardLimit) {
+		return 0, &merrs.StoreError{Code: merrs.ErrNoSpace, Message: "the installation has no shard numbers left"}
+	}
+	return entity.ShardID(v), tx.Set(key, encodeCounter(v+1))
 }
 
 // liveShare refuses a share being removed or retired, which is stale to

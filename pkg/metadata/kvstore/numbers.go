@@ -62,6 +62,10 @@ const (
 	IDLock   IDKind = 3
 )
 
+// idShard is the shard number allocator's kind. A share's creation reads and
+// raises it in its own transaction, never in ranges, so NextID refuses it.
+const idShard = 7
+
 // maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
 // SMB's 8-byte persistent FileId.
 //
