@@ -884,6 +884,27 @@ func TestLeaseClosedServesWaiter(t *testing.T) {
 	}
 }
 
+// A lease acknowledged down to none stays for the open it covers, caching
+// nothing: the callback lock waiter its recall held back is served at the
+// acknowledgement.
+func TestLeaseAckedToNoneServesWaiter(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	h := f.host(t, "nlm-b", 1)
+	file := anyFile()
+	file.Shard = 1
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh})
+	if res, err := f.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+		t.Fatalf("%+v, %v; want Waiting", res, err)
+	}
+	if err := f.ack(a, g, GrantNone); err != nil {
+		t.Fatal(err)
+	}
+	if w := granted(t, f.sink.takeWaits()); len(w) != 1 {
+		t.Errorf("waiters granted at the acknowledgement to none: %v, want p", w)
+	}
+}
+
 // A holder that answers a recall by closing and opening again is not granted
 // again ahead of the request the recall delayed.
 func TestRecallNotRacedByCloseAndReopen(t *testing.T) {
