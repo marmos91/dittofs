@@ -136,9 +136,8 @@ func (t *Table) endedLocked(c entity.ClientID, s entity.SessionRef) bool {
 
 // persistOpen writes o, just granted on e, where it is persistent, and the
 // persistent opens the lease covering it covers, whose kind the open may
-// have widened. A failed write takes o back out, as if it was refused; a
-// widened kind is left in memory, where it is wider than what the client was
-// told and what is stored.
+// have widened. A failed write takes o back out, as if it was refused; the
+// caller puts a widened lease back.
 //
 // decision: a failed write's record, which the store may still have
 // committed, is not deleted: the store is failing writes, and the next

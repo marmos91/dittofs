@@ -11,6 +11,7 @@ import (
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
+	"github.com/marmos91/dittofs/pkg/openstate/grantfsm"
 	"github.com/marmos91/dittofs/pkg/openstate/sequence"
 )
 
@@ -484,11 +485,22 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 		confirmed := t.ownerConfirmed(r)
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
+		var mine *grant // the lease the offer may widen, put back when o's write fails
+		var was grantfsm.Grant
 		if !grace && confirmed {
+			for _, g := range e.grants {
+				if g.key != (LeaseKey{}) && g.heldBy(who.Client, r.Lease, granted) {
+					mine, was = g, cloneFSM(g.fsm)
+				}
+			}
 			res.Grant = t.offer(e, f, who, granted, r, out)
 		}
 		if granted == o {
 			if err := t.persistOpen(ctx, e, o); err != nil {
+				if mine != nil && e.grants[mine.id.Token] == mine {
+					mine.fsm = was
+					t.recount(mine)
+				}
 				return err
 			}
 		}

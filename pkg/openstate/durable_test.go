@@ -706,3 +706,27 @@ func TestCloseRetriedAfterLandedDelete(t *testing.T) {
 		t.Errorf("another client's write open after the retried close: %v", err)
 	}
 }
+
+// An open that widens its lease and whose write is refused leaves the lease
+// as it was stored and as the client was told.
+func TestRefusedOpenLeavesItsLeaseUnwidened(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a := f.caller(t, smb("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{1}, ptr[uint16](2), GrantRead
+	_, g := f.grantOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	if g == nil {
+		t.Fatal("no lease offered")
+	}
+	r.Want = rwh
+	st.fail.Store(true)
+	_, err := f.open(a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a widening open over a refusing store: %v, want its error", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("after the refused widening open: %v", err)
+	}
+}
