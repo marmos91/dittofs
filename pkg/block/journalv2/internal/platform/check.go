@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,12 +44,22 @@ type linuxProbe struct {
 	// with uint32(st.Type) and the verdict sees the same value on every
 	// architecture.
 	fsType uint32
-	// dirFlags is FS_IOC_GETFLAGS's answer for dir.
+	// dirFlags is FS_IOC_GETFLAGS's answer for dir. The verdict reads it and
+	// files only on Btrfs, once dirIno is a subvolume root's, so the probe
+	// asks for them only there: the ioctl fails on the empty directory a
+	// snapshot leaves for a nested subvolume, and on some filesystems outside
+	// the list, which the verdict passes.
 	dirFlags uint32
 	// dirIno is dir's inode number.
 	dirIno uint64
 	// mountID is the ID of the mount holding dir, as statx reports it, or 0
-	// where the kernel does not report it.
+	// where the kernel does not report it. The probe must ask for
+	// STATX_MNT_ID, never STATX_MNT_ID_UNIQUE: statx fills the same field
+	// with mnt_id for the first and mnt_id_unique for the second
+	// (vfs_statx_path in fs/stat.c), mountinfo's first field is mnt_id
+	// (show_mountinfo in fs/proc_namespace.c), and unique IDs start above
+	// MNT_UNIQUE_ID_OFFSET, 1 << 31 (fs/namespace.c). With the second flag
+	// no ID would match the table, and every directory would be refused.
 	mountID uint64
 	// files is every file already in dir, with FS_IOC_GETFLAGS's answer for
 	// each.
@@ -112,10 +123,18 @@ func (r *refusal) Error() string {
 // The errors the verdict returns when its inputs do not describe the
 // directory. None is a refusal: each fails the check without naming a rule.
 var (
+	// errDirectoryNotClean: the directory path is not absolute and clean.
+	// The probe promises an absolute, cleaned path with its symbolic links
+	// resolved, and the walk reads it as text. Cleaning the text here would
+	// not help: after a symbolic link the kernel resolves ".." from the
+	// link's target, which the text does not show. So such a path does not
+	// describe the directory, and the check fails.
+	errDirectoryNotClean = errors.New("journal: the directory path is not absolute and clean")
 	// errMountTableMalformed: a line of the mount table does not parse.
 	errMountTableMalformed = errors.New("journal: mount table does not parse")
-	// errMountUnresolved: no visible mount holds the directory, or the
-	// directory's mount ID names no mount of the table.
+	// errMountUnresolved: the table has no single root mount, mounts at one
+	// point form a cycle or two of them are tied, or the directory's mount
+	// ID names no mount of the table.
 	errMountUnresolved = errors.New("journal: no mount of the table holds the directory")
 	// errMountIDDisagrees: the directory's mount ID names another mount than
 	// the one the table makes visible at its path.
@@ -165,9 +184,10 @@ var barrierRows = [...]struct {
 // checkLinuxProbe decides whether the directory p describes is suitable for a
 // journal under RFC 28 Appendix A. It returns a *refusal for the first rule
 // that fails, in the order mount options, subvolume root, directory
-// attribute, files; one of the errMount errors when the inputs do not
-// describe the directory; and nil otherwise. A filesystem outside the listed
-// ones, on a mount line of a type outside them too, is not refused.
+// attribute, files; errDirectoryNotClean or one of the errMount errors when
+// the inputs do not describe the directory; and nil otherwise. A filesystem
+// outside the listed ones, on a mount line of a type outside them too, is not
+// refused.
 func checkLinuxProbe(p linuxProbe) error {
 	mounts, err := parseMountinfo(p.mountinfo)
 	if err != nil {
@@ -200,6 +220,12 @@ func checkLinuxProbe(p linuxProbe) error {
 		if listedType(m.fsType) {
 			return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.fsType, m.point, m.fsType)
 		}
+
+		// decision: a filesystem outside the list passes: the RFC names the
+		// suitable ones but gives no MUST to refuse the rest, and test
+		// temporary directories are often tmpfs. Overlay hides a nobarrier or
+		// copy-on-write filesystem below it. Revisit if the RFC names an
+		// unlisted copy-on-write filesystem such as ZFS.
 		return nil
 	}
 	if !fs.reports(m.fsType) {
@@ -401,8 +427,8 @@ func hasMount(mounts []mountEntry, id uint64) bool {
 // whose parent is hidden is never reached, so neither line order nor the size
 // of a mount ID decides.
 func visibleMount(mounts []mountEntry, dir string) (mountEntry, error) {
-	if !strings.HasPrefix(dir, "/") {
-		return mountEntry{}, fmt.Errorf("%w: %s is not absolute", errMountUnresolved, dir)
+	if !strings.HasPrefix(dir, "/") || path.Clean(dir) != dir {
+		return mountEntry{}, fmt.Errorf("%w: %s", errDirectoryNotClean, dir)
 	}
 
 	at := make(map[string][]mountEntry)
@@ -411,7 +437,15 @@ func visibleMount(mounts []mountEntry, dir string) (mountEntry, error) {
 	}
 
 	// The root is the mount at "/" whose parent is no mount at "/": the
-	// process's root, whose parent lies outside it or is itself.
+	// process's root, whose parent lies outside it or is itself. A mount
+	// stacked on it is not climbed. A lookup of an absolute path starts at
+	// the process's root and does not follow a mount on it: nd_jump_root
+	// sets the path to the root that set_root took from the process
+	// (fs/namei.c), and mounts are followed only after each component, so
+	// that mount hides nothing from this process. The one lookup that does
+	// follow mounts on the root, LOOKUP_DOWN, is made when a process enters
+	// another mount namespace (fs/namespace.c); its root is then the upper
+	// mount, and the root below is outside it and not in its table.
 	var root []mountEntry
 	for _, m := range at["/"] {
 		if m.parent == m.id || !hasMount(at["/"], m.parent) {
@@ -421,10 +455,7 @@ func visibleMount(mounts []mountEntry, dir string) (mountEntry, error) {
 	if len(root) != 1 {
 		return mountEntry{}, fmt.Errorf("%w: %d root mounts", errMountUnresolved, len(root))
 	}
-	visible, err := climb(at["/"], root[0])
-	if err != nil {
-		return mountEntry{}, err
-	}
+	visible := root[0]
 
 	for i := 1; i < len(dir)+1; i++ {
 		if i < len(dir) && dir[i] != '/' {
