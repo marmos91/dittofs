@@ -1700,3 +1700,37 @@ func TestLockCallsNameTheirClient(t *testing.T) {
 		t.Error("lo's lock was released by a call that was refused")
 	}
 }
+
+// A grant that turns its merging owner's exclusive lock shared frees the
+// waiters behind that lock in the same step: a callback grant served after
+// another owner's unlock, and one served when a request replaces its owner's
+// earlier waiter.
+func TestDowngradeGrantServesTheWaitersItFrees(t *testing.T) {
+	f := newFixture(t)
+	file := in(1)
+	h1, h2, h3 := f.host(t, "h1", 1), f.host(t, "h2", 1), f.host(t, "h3", 1)
+	a, b, e := owner(h1, "a"), owner(h2, "b"), owner(h3, "e")
+	f.mustLock(t, h1, file, LockReq{Owner: a, Ranges: []LockRange{x(5, 1)}})
+	f.mustLock(t, h2, file, LockReq{Owner: b, Ranges: []LockRange{sh(3, 4)}, Wait: WaitCallback})
+	f.mustLock(t, h3, file, LockReq{Owner: e, Ranges: []LockRange{x(2, 1)}})
+	f.mustLock(t, h1, file, LockReq{Owner: a, Ranges: []LockRange{sh(1, 5)}, Wait: WaitCallback}) // behind e's byte 2
+	f.unlock(t, h3, file, e, br(2, 1))
+	if got := granted(t, f.sink.takeWaits()); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("e's unlock granted %v, want a, whose grant turns byte 5 shared, then b", got)
+	}
+
+	other, h4 := in(1), f.host(t, "h4", 1)
+	q, p := owner(h1, "q"), owner(h2, "p")
+	f.mustLock(t, h1, other, LockReq{Owner: q, Ranges: []LockRange{x(6, 1)}})
+	f.mustLock(t, h4, other, LockReq{Owner: owner(h4, "e"), Ranges: []LockRange{sh(1, 1)}})
+	f.mustLock(t, h2, other, LockReq{Owner: p, Ranges: []LockRange{x(0, 2)}, Wait: WaitCallback})  // behind e's byte 1
+	f.mustLock(t, h1, other, LockReq{Owner: q, Ranges: []LockRange{sh(1, 6)}, Wait: WaitCallback}) // behind p's waiter
+	f.mustLock(t, h2, other, LockReq{Owner: p, Ranges: []LockRange{sh(3, 4)}, Wait: WaitCallback}) // replaces p's waiter
+	var got []string
+	for _, w := range f.sink.takeWaits() {
+		got = append(got, fmt.Sprintf("%s %v", w.w.Owner.Name, w.granted))
+	}
+	if want := []string{"p false", "q true", "p true"}; !slices.Equal(got, want) {
+		t.Errorf("p's replacing request raised %v, want %v", got, want)
+	}
+}

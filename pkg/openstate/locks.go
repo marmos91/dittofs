@@ -633,9 +633,17 @@ func (t *Table) serve(ctx context.Context, e *entry, out *outbox) {
 				// A refused write, or a lock past its client's ranges, is a
 				// lock not held, answered not granted.
 				rec, stored := t.lockSeqRecord(e, ls.open, w.Replay)
+				// A merging owner's shared grant over its own exclusive lock
+				// turns that lock shared, which can free a waiter ahead of w.
+				downgrade := !ls.owner.Stack && !w.Range.Exclusive && slices.ContainsFunc(ls.locks, func(l LockRange) bool {
+					return l.Exclusive && ranges.Overlap(l.ByteRange, w.Range.ByteRange)
+				})
 				if granted = t.relock(ctx, ls, ls.adding(w.Range), true, rec) == nil; granted {
 					stored()
 					ls.offers = append(ls.offers, offer{w.Range, []ByteRange{w.Range.ByteRange}}) // only a callback waiter reaches here
+					if downgrade {
+						i = 0
+					}
 				}
 				t.tidy(e, ls)
 			}
@@ -923,11 +931,20 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 			t.idx.Unlock()
 		}
 		e.waiters = append(e.waiters, w)
+		if prev >= 0 {
+			// The serve that replaced the owner's earlier waiter may have
+			// freed r's range: a grant there can turn an exclusive lock shared.
+			t.serve(ctx, e, out)
+		}
 	}
 	if r.Wait == WaitPoll {
 		return LockResult{}, &LockedError{*held}
 	}
-	return LockResult{Waiting: true, Ref: e.lockState(r.Owner, id).ref}, nil
+	res := LockResult{Waiting: true}
+	if ls := e.lockState(r.Owner, id); ls != nil { // a grant just refused past the client's ranges drops it
+		res.Ref = ls.ref
+	}
+	return res, nil
 }
 
 func (v locks) CancelLock(ctx context.Context, who Caller, f FileKey, o LockOwner, r ByteRange) (bool, error) {
