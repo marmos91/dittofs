@@ -50,7 +50,7 @@ def frontmatter(path):
     status = field('status')
     if status not in STATUSES:
         sys.exit(f'{path.name}: unknown status {status!r}')
-    return field('component'), status, deps
+    return field('component'), status, deps, i is not None
 
 
 def main():
@@ -63,13 +63,17 @@ def main():
     stems = {p.stem: n for n, p in rfcs.items()}
     meta, edges, bad = {}, {}, []
     for n, p in sorted(rfcs.items()):
-        comp, status, deps = frontmatter(p)
+        comp, status, deps, has_key = frontmatter(p)
         meta[n] = (comp, status)
         for d in deps:
             if d not in stems:
                 bad.append(f'{p.name}: depends_on names unknown RFC [[{d}]]')
         if p.stem in deps:
             bad.append(f'{p.name}: depends_on names itself')
+        if n == 0 and deps:
+            bad.append(f'{p.name}: RFC 0 is the root and builds on nothing')
+        if n and not has_key:
+            bad.append(f'{p.name}: no depends_on (write depends_on: [] for none)')
         if deps and n and 'rfc-0-data-lifecycle' not in deps:
             bad.append(f'{p.name}: depends_on omits RFC 0, which every RFC that builds on another builds on')
         edges[n] = sorted({stems[d] for d in deps if d in stems} - {0, n})
