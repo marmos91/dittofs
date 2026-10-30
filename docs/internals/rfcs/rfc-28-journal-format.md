@@ -834,14 +834,16 @@ is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Either way its records are 
 been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A segment whose header is torn is ended at recovery,
 not sealed, as one with a torn slot that is not zeros is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). If it were sealed,
 its own seal marker would prove the header synced at the next open and turn the
-crash into damage.
+crash into damage. Its records are re-appended, keeping their numbers, to a new
+segment that is then synced, as an unproven tail's are below. So none is left only
+in a segment nothing can prove synced, where later damage would read as torn.
 
 **A segment with no record is a spare again.** A segment under a name this
 journal produces whose header slot is zeros — a spare no stream took — or whose
 header does not verify, or verifies and names this journal's identity, with the
 segment id of its file name or another — a recycle a crash interrupted after the
-rename (§2.2) — and in which no record header verifies anywhere — a take whose
-first records a crash lost — holds nothing that was ever durable: a take is made
+rename (§2.2) — and in which no record header verifies anywhere, no seal marker
+verifies and no successor names it — a take whose first records a crash lost — holds nothing that was ever durable: a take is made
 durable only with the records after it. A segment whose header verifies and
 names another journal is never one, whatever its records: it is foreign (above),
 and is left alone. The identity is checked first because no record of another
