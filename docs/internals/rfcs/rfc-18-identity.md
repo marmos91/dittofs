@@ -1947,7 +1947,7 @@ API's sign-in is tested against the real identity server, called directly
 
 **Suites.** Tier 1, identity alone with a fake directory, KDC and domain
 controller, and Tier 2, through both adapters on the composed single-node
-harness, run in `unit`, with the fuzz seeds and table tests — Tier 2 is the
+harness, run in `unit`, with the fuzz seeds and table tests. Tier 2 is the
 in-process layer, not RFC 17/19/20's kernel-client rows, which run in
 `e2e/cross-protocol`. The allocation rules are RFC 16's and the roles row
 RFC 23's; the forwarded-identity row's cluster half has no suite yet.
