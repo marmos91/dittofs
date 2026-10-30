@@ -1437,7 +1437,8 @@ func TestExpiryRetriedAfterLandedDeleteEndsTheClient(t *testing.T) {
 	}
 }
 
-// A revoke retried after its record delete landed but was answered an error
+// A revoke of an ownerless client whose record delete is refused releases
+// nothing; one retried after its delete landed but was answered an error
 // finds no record and still releases what the client holds.
 func TestRevokeRetriedAfterLandedDeleteReleases(t *testing.T) {
 	fs, st := failingFS(t)
@@ -1446,6 +1447,15 @@ func TestRevokeRetriedAfterLandedDeleteReleases(t *testing.T) {
 	file := in(5)
 	f.mustLock(t, h1, file, LockReq{Owner: owner(h1, "p"), Ranges: []LockRange{x(0, 10)}})
 
+	st.fail.Store(true)
+	err := f.Revoke(ctx, h1.Client)
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a revoke whose delete is refused: %v, want its error", err)
+	}
+	if _, err := f.lock(h2, file, LockReq{Owner: owner(h2, "p"), Ranges: []LockRange{x(0, 10)}}); lockedBy(err) != "p" {
+		t.Errorf("another host's lock after the refused revoke: %s, want refused by h1's", lockedBy(err))
+	}
 	st.lose.Store(true)
 	if err := f.Revoke(ctx, h1.Client); !errors.Is(err, errWrite) {
 		t.Fatalf("a revoke whose delete is answered an error: %v, want that error", err)
