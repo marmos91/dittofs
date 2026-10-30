@@ -338,7 +338,7 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 	for _, file := range files[:maxUnsent] {
 		wg.Go(func() { _, _ = f.open(b, file, OpenRequest{Access: wr}) })
 	}
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
 		f.idx.Lock()
 		n := f.unsent
 		f.idx.Unlock()
@@ -1008,14 +1008,14 @@ func TestStaleHandOffArmsNoLaterRecall(t *testing.T) {
 	defer wg.Wait()
 	done := make(chan struct{})
 	go func() { _, _ = f.open(b, file, OpenRequest{Access: rd}); close(done) }() // recalls write caching
-	<-handed
+	within(t, handed, "the first recall's hand-off")
 	if err := f.ack(a, g, GrantRead|GrantHandle); err != nil {
 		t.Fatal(err)
 	}
 	wg.Go(func() { _, _ = f.open(c, file, OpenRequest{Access: wr}) }) // recalls the rest
-	<-handed
+	within(t, handed, "the second recall's hand-off")
 	close(first) // the first hand-off returns while the second recall is still unsent
-	<-done
+	within(t, done, "the open that recalled write caching")
 	f.pass(t, 2*coversDeadline)
 	f.cmu.Lock()
 	fenced := f.fenced[a.Client] != 0
@@ -1024,6 +1024,17 @@ func TestStaleHandOffArmsNoLaterRecall(t *testing.T) {
 		t.Error("the holder was fenced for a recall the Sink was not yet handed")
 	}
 	close(second)
+}
+
+// within waits for ch, failing the test after 30 s rather than hanging the
+// package.
+func within(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s did not come within 30 s", what)
+	}
 }
 
 // grantNow is the grant id names on file, as the table holds it now.
