@@ -273,7 +273,11 @@ func TestFenceAfterAMissedRecall(t *testing.T) {
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{5}, Want: rwh}); g != nil {
 		t.Fatalf("at the first fence's end, after a second missed recall: offered %+v", g)
 	}
-	f.pass(t, leasePeriod-(leasePeriod/2-coversDeadline), a.Client, b.Client) // to the second fence's end
+	f.pass(t, leasePeriod-(leasePeriod/2-coversDeadline)-time.Second, a.Client, b.Client)
+	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rwh}); g != nil {
+		t.Fatalf("a second before the second fence's end: offered %+v", g)
+	}
+	f.pass(t, time.Second, a.Client, b.Client) // to the second fence's end
 	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{3}, Want: rwh}); g == nil {
 		t.Fatal("no grant once the fence ended")
 	}
