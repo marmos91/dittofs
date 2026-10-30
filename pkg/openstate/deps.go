@@ -17,6 +17,9 @@ type Deps struct {
 	Clock   Clock
 	Rand    io.Reader    // every random bit of a token or confirm; crypto/rand in production
 	Logger  *slog.Logger // slog.Default() when nil
+	// ponytail: grants, watches and recalls are refused at RFC 14's fixed caps
+	// alone; take RFC 24's Budget as a Dep once its pool exists, so a node-wide
+	// limit can refuse before a per-client cap is reached.
 }
 
 // Clock is the part of the node's clock open state reads. Every lease and
