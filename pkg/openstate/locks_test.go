@@ -546,7 +546,12 @@ func TestPollReservationLapses(t *testing.T) {
 		t.Errorf("a lock of the reserved range: %s, want refused by the reservation", lockedBy(err))
 	}
 
-	f.clock.advance(leasePeriod)
+	f.clock.advance(leasePeriod / 2)
+	if _, err := f.lock(r, file, LockReq{Owner: owner(r, "r"), Ranges: rg}); lockedBy(err) != "p" {
+		t.Errorf("half a lease period into the reservation: %s, want refused by it", lockedBy(err))
+	}
+
+	f.clock.advance(leasePeriod / 2)
 	f.sweep(ctx)
 	f.Stop() // waits for the steps the sweep started
 	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "q" {
