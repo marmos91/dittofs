@@ -244,15 +244,15 @@ func expectSyncDir(t *testing.T, log []call, dir string, fsyncs int) {
 	}
 }
 
-// expectPathError fails t unless err is itself an *fs.PathError wrapping
-// errno and naming path, the shape the platform's own errors take when one
-// thing failed.
+// expectPathError fails t unless err is itself an *fs.PathError whose Err is
+// errno itself, not wrapped again or joined, naming path: the shape the
+// platform's own errors take when one thing failed.
 func expectPathError(t *testing.T, err error, errno syscall.Errno, path string) {
 	t.Helper()
 
 	pe, ok := err.(*fs.PathError)
-	if !ok || !errors.Is(pe.Err, errno) {
-		t.Fatalf("got %v (%T), want an *fs.PathError wrapping %v", err, err, errno)
+	if !ok || pe.Err != errno {
+		t.Fatalf("got %v (%T), want an *fs.PathError of %v itself", err, err, errno)
 	}
 
 	if pe.Path != path {
@@ -462,8 +462,8 @@ func TestSyncDirCloseError(t *testing.T) {
 }
 
 // TestSyncDirInterrupted is TestSyncInterrupted for SyncDir's fsync, and
-// checks an interrupted open of the directory is made again. The close is
-// never repeated: Linux releases the descriptor even when close reports
+// checks an open of the directory interrupted twice is made again. The close
+// is never repeated: Linux releases the descriptor even when close reports
 // EINTR.
 func TestSyncDirInterrupted(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -490,14 +490,16 @@ func TestSyncDirInterrupted(t *testing.T) {
 	expectSyncDir(t, r.take(), dir, 1)
 	expectPathError(t, err, syscall.EINTR, dir)
 
-	r.failNext("open", syscall.EINTR)
+	r.failNext("open", syscall.EINTR, syscall.EINTR)
 	err = o.SyncDir()
 	log := r.take()
-	if len(log) == 0 || log[0].op != "open" || log[0].fd != -1 {
-		t.Fatalf("want the interrupted open first, got %v", log)
+
+	if len(log) < 2 || log[0].op != "open" || log[0].fd != -1 ||
+		log[1].op != "open" || log[1].fd != -1 {
+		t.Fatalf("want the two interrupted opens first, got %v", log)
 	}
 
-	expectSyncDir(t, log[1:], dir, 1)
+	expectSyncDir(t, log[2:], dir, 1)
 
 	if err != nil {
 		t.Fatalf("SyncDir with its open interrupted: %v", err)
