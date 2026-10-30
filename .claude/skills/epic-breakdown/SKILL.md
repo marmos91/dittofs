@@ -1,6 +1,6 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the "DittoFS v1.0" project with their estimates, once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the "DittoFS v1.0" project with their estimates, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
@@ -364,17 +364,21 @@ RFC and every subtask it delivers, one id per mention (`RFC 1, T4.1, T4.2`),
 and says when it finishes a subtask only in part, so that it can be mapped to the subtasks
 it delivers.
 
-## Step 6 — GitHub issues: pointers to the document
+## Step 6 — GitHub issues: only when asked, as pointers to the document
+
+**Do not create issues, and do not ask whether to.** They are created by hand, when the user
+asks, at the moment the team chooses to start assigning the epic's subtasks. Mention in the
+final report, in one line, that they can be created on request once the document has merged.
 
 Issues let the team assign and follow subtasks. They never copy the specification: an
 issue's body is a pointer to its section of the epic document, with a few lines of context,
 so revising the document never leaves an issue saying something else. The document stays the
 one place that says what to build.
 
-The links point at the document on `develop`, so the issues are created **once the epic
-document's pull request has merged**, not during the breakdown. The final report says so in
-one line. If the epic issue already exists (Step 0 #4), add only the missing subtask issues to
-it, and never create a second epic issue.
+The links point at the document on `develop`, so issues are created only **once the epic
+document's pull request has merged**, never during the breakdown. If the epic issue already
+exists (Step 0 #4), add only the missing subtask issues to it, and never create a second
+epic issue.
 
 1. **Labels.** The epic issue carries `epic`, the RFC's label (`rfc-<n>-<slug>`, for example
    `rfc-1-journal`) and the epic's label (`rfc-<n>-epic-<k>`). Subtask issues carry the
@@ -441,7 +445,7 @@ it, and never create a second epic issue.
 | "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section, then cross-check the key words and map every hit. |
 | "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim. |
 | "The estimate is close enough to the plan's" | Then the script will say so. Compute it; don't copy the plan's figure. |
-| "Let's create the issues now, it saves a step" | Their links point at the document on `develop`, which does not exist until its pull request merges. |
+| "Let's create the issues now, it saves a step" | They are created by hand when the team is ready to assign the subtasks, and only on request; their links point at the document on `develop`, which does not exist until its pull request merges. |
 | "The issue body could carry the acceptance criteria, it saves a click" | A copy goes stale at the first revision. The body points at the section; the document is the specification. |
 | "The old epic document is out of date, I'll replace it" | Someone may be working from it. Stop and ask. |
 
@@ -475,7 +479,8 @@ Before handing over, check:
     comm -23 - <(awk '/^### 1\.3 /{f=1; next} /^#/{f=0} f' <epic-doc> |
                  rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' | sort -u)
   ```
-- No GitHub issue was created before the document merged. Issues that were created carry
+- No GitHub issue was created, or offered, unless the user asked, and never before the
+  document merged. Issues that were created carry
   the labels, a pointer body with no copied specification, the sub-issue link, the project
   and, on subtasks only, the `Estimate` field.
 
@@ -483,4 +488,5 @@ Then report the output path, the requirement count, the subtask count and the ma
 (and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,
 the suggested pull requests, the subtasks whose
 estimate is least certain, and the open points, in a few lines. End with one line saying the
-GitHub issues are created with Step 6 once the document's pull request has merged.
+GitHub issues can be created on request, with Step 6, once the document's pull request has
+merged.

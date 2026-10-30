@@ -391,10 +391,11 @@ use `epic-breakdown` in the document they are reading:
 >   be named, not to hit a number.
 > - **Every subtask states how it meets each rule that applies to it.** A rule that does
 >   not apply is named, with the reason.
-> - **In the issue tracker, issues point at the epic document and copy nothing:** they
->   are created once the epic document has merged, and their bodies are a link to its
->   section with a line of context, so a revision of the document never leaves an issue
->   saying something else. The epic is one issue labelled `epic`. Each subtask is its own
+> - **In the issue tracker, only when someone asks for issues:** they are not created by
+>   default, but by hand when the team is ready to assign an epic's subtasks, and never
+>   before the epic document has merged. They point at the epic document and copy
+>   nothing: their bodies are a link to its section with a line of context, so a revision
+>   of the document never leaves an issue saying something else. The epic is one issue labelled `epic`. Each subtask is its own
 >   issue, created as a sub-issue of the epic issue rather than as a checklist in its body.
 >   All of them join the "DittoFS v1.0" project, each subtask with its man-days in the
 >   `Estimate` field.
@@ -494,8 +495,8 @@ use `epic-breakdown` in the document they are reading:
 - §1.5 opens with the verbatim instruction: epics are expanded with `epic-breakdown`, the
   rules are copied into each epic, the epic
   stands alone and records decisions rather than progress, subtasks are not pull requests,
-  and issues point at the epic document, with an `epic` label, sub-issues and the
-  project's `Estimate` field.
+  and issues, only when asked for, point at the epic document, with an `epic` label,
+  sub-issues and the project's `Estimate` field.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
