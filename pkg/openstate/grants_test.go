@@ -1310,3 +1310,38 @@ func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
 		t.Errorf("an anonymous write by the holder: %v, want ErrShareViolation", err)
 	}
 }
+
+// Openers lists the opens a lease covers, each with its session and opener,
+// and none of another key's; a delegation covers none, and a grant of
+// another client is not the caller's to read.
+func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	file := anyFile()
+	s1, s2 := entity.SessionRef{ID: 1}, entity.SessionRef{ID: 2}
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s1})
+	b := Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}
+	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s2})
+	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh, Session: s1})
+
+	opens, err := f.Grants().Openers(ctx, a, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[entity.SessionRef]entity.Principal{}
+	for _, o := range opens {
+		got[o.Session] = o.Principal
+	}
+	if want := map[entity.SessionRef]entity.Principal{s1: a.Principal, s2: b.Principal}; len(opens) != 2 || !reflect.DeepEqual(got, want) {
+		t.Errorf("the lease's openers %v, want %v", got, want)
+	}
+	if _, err := f.Grants().Openers(ctx, f.caller(t, smb("pc-b")), g.ID); !errors.Is(err, ErrNotYours) {
+		t.Errorf("another client's read: %v, want ErrNotYours", err)
+	}
+
+	n := f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	_, d := f.grantOpen(t, n, anyFile(), OpenRequest{Access: rd, Want: GrantRead})
+	if opens, err := f.Grants().Openers(ctx, n, d.ID); err != nil || len(opens) != 0 {
+		t.Errorf("a delegation's openers %v, %v; want none", opens, err)
+	}
+}
