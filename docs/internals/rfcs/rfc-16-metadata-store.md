@@ -1917,8 +1917,12 @@ check is totals + unfolded deltas + this primary's reservations against the
 limit — the principal's own quota or else the share's default for its kind, the project's, and the share-wide quota's
 (`S‖id‖qt` with the share tag), whose usage is the sum of the per-shard
 `S‖id‖ut‖shard` totals — and the reservation is released when the existence
-commit charging those bytes lands. A crash drops the reservations with the uncommitted writes they
-covered, and replay re-reserves what it replays.
+commit charging those bytes lands, or, charging nothing, when the engine drops
+the write before any commit ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A crash drops the reservations,
+and replay reserves nothing: recovery commits the existence of every write it
+re-applies, its charge included, before the file is served
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), so those bytes are in the committed totals before any new
+write is checked.
 
 > decision: quota fails open by a stated bound, not exactly. One primary sees
 > only its own reservations, so where one principal, project or share is written

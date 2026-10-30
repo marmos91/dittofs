@@ -1995,12 +1995,17 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 			return nil, &QuotaError{Scope: s}
 		}
 	}
-	return q.add(owner, f, bytes), nil // released by the existence commit that records the charge, or on failure
+	return q.add(owner, f, bytes), nil // released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
 }
 ```
 
 - A reservation is volatile, held in the primary's memory: after a crash the
-  journal re-applies the writes and their charge ([RFC 8](rfc-8-engine.md)).
+  journal re-applies the writes and their charge before the file is served, and
+  nothing is reserved again ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A write the engine accepted
+  releases its reservation exactly once, through `Done`, whether its existence
+  commits, is committed from a loss record, or is dropped uncommitted — with a
+  failed window, a journal device lost whole, or a shard this node stops
+  serving.
 - **Overshoot bound.** On one primary every reservation is seen, so a hard
   limit is exceeded by at most what transactions committing concurrently add.
 - **(cluster) Slack.** A primary sees its own reservations, not other

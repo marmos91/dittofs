@@ -627,7 +627,7 @@ attached, and `Stats` names it and its device.
    the operations above the file's `applied` version with `Since(id, applied)` —
    held extents and removal markers, each with its version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) —
    and apply them to existence in version order, with the modification time each
-   write's record carries: writes acknowledged and synced but not yet committed,
+   write's record carries, recording the usage they add ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)): writes acknowledged and synced but not yet committed,
    and removals whose metadata step a crash cut off
    ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). A clone marker — `CloneTarget`'s, yielded as `Change.Clone` —
    is a clone, never a plain removal: the engine rebuilds the clone from the spec — source extent
@@ -1129,12 +1129,35 @@ after a loss, each client resends its recent unstable writes once.
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
   an offer captures the file, before a removal's first transaction, before a size
   or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), and behind a snapshot cut's closed gate.
-- **The existence commit records usage, then releases the reservation.** The
+- **`Done` is called exactly once for every write `Write` accepted.** The
   existence commit that commits a write also records the usage it adds
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
   service releases its quota reservation only once the usage is visible
-  ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)). A recovery commit records the usage the same way;
-  nothing waits on a `Done` after a restart.
+  ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)). A write dropped before any existence commit — by a failed
+  window, by the share's `Forget`, or with a journal device lost whole
+  (below) — gets `Done` from the engine when it is dropped, with nothing
+  charged. A write whose existence is committed from its loss record (below)
+  gets it from that commit, which charges nothing either: the extent it commits
+  reads **Lost** and holds no content. A node that stops serving a shard —
+  moved, handed over, or its lease lost ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) — calls `Done` for every
+  write of that shard it accepted and has not committed, charging nothing, so
+  it keeps no reservation for writes the new primary commits; the new
+  primary's recovery charges them, as a restart's does. These paths are
+  exclusive: a write leaves the set of accepted, uncommitted writes under one
+  lock, and whichever path removes it calls `Done`; the commit claims the write
+  before its transaction, calls `Done` once it commits, and puts the write back
+  when it fails and [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) retries it, or calls `Done` charging nothing when it
+  fails because the shard is no longer served. The stop-serving sweep skips a
+  claimed write, so a lease lost while a commit is in flight calls it once. A dropped write that never
+  called it would hold its reservation for the life of the process: a principal
+  at 9.9 of 10 GiB whose 100 MiB write is lost with a window is refused every
+  later write for quota, its committed usage lower, and each failed window
+  adds more. A `Write` that fails calls none.
+- **After a restart nothing is reserved, and nothing waits on a `Done`.** The
+  reservations went with the process. Recovery commits the existence of every
+  write it re-applies, usage included, before the file is served ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing),
+  step 3), so those bytes are in the committed totals before any new write is
+  admitted, and a re-reservation would have no `Done` to release it.
 - **A cut closes the gate first, then sets a point per journal.** The pre-cut
   commit is [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)'s, which owns its steps — what is synced and committed
   with the gate still open, when, and what is left behind it. It reaches the
@@ -3027,7 +3050,7 @@ type ShareState uint8
 
 type WriteOpts struct {
 	Suspend TimeMask // Modify, Access: times this write leaves alone
-	Done    func()   // called once, by the existence commit that records the write's usage (RFC 17 §5.6); never if Write fails
+	Done    func()   // called exactly once per accepted write: by the existence commit that records its usage or the loss-record commit, or by the engine, charging nothing, when a failed window, Forget, a journal device lost whole or the node ceasing to serve its shard drops it uncommitted (§5.1, RFC 17 §5.6); never if Write fails
 }
 type Extent struct{ SrcOff, DstOff, Len int64 } // RFC 17's Extent is an alias of this
 type Overlay struct {
@@ -3339,10 +3362,6 @@ enough to exhaust the local device's write cache.
 7. **Who holds the cut gate** (`Deps.Gate`, [§2.6](#2.6%20Dependencies%20and%20wiring)): neither
    [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) nor [RFC 17](rfc-17-vfs.md) names the component that holds the per-shard
    cut gate every existence commit passes.
-8. **`WriteOpts.Done` or a byte count** ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)): whether the
-   engine computes the usage a write adds from the existence change and calls
-   `Done`, or is told the charge as a `Charge int64`, depends on how
-   [RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)'s counters are keyed by owner.
 
 ## Appendix A — where the current code differs
 
