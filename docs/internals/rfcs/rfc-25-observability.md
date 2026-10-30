@@ -626,6 +626,7 @@ listener clients are sent to is down.
 | self-fenced: no write transaction committed for 30 s ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | yes | yes — reads continue | unhealthy, `node_fenced` |
 | some shares refused: a journal device lost, a share's store denied | yes | yes | unhealthy for those shares |
 | started from a copied image | yes | yes — reads of offloaded content continue | unhealthy, `copied_image` |
+| a namespace's claim answered copy, foreign or pending, or could not be read ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) | yes | yes — the node's other shares serve | unhealthy for that namespace's shares, `namespace_unclaimed` naming it and the answer |
 | metadata store lost: no share served until a recovery import | yes | no | unhealthy, `metadata_store_lost` |
 | a listener lost (`adapter_listener_lost`) | yes | no — clients sent to it cannot connect | unhealthy |
 | an adapter refused at configured (`adapter_refused`) | yes | yes — every node refuses the same setting, and the API that fixes it must stay reachable | unhealthy |
