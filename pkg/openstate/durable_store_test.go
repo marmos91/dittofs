@@ -1233,6 +1233,12 @@ func TestLockWhoseRecallWriteFailsAnswersTheError(t *testing.T) {
 			if res, err := lock(w); !errors.Is(err, errWrite) {
 				t.Errorf("a lock whose break's write fails: %+v, %v; want the store's error", res, err)
 			}
+			f.idx.Lock()
+			n := f.unsent
+			f.idx.Unlock()
+			if n != 0 {
+				t.Errorf("%d recalls counted unsent after the break's write failed", n)
+			}
 			if _, err := lock(WaitNone); delayedFor(err) != DelayRecall {
 				t.Errorf("a lock once the store writes again: %v; want the recall in flight", err)
 			}
