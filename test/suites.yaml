@@ -140,6 +140,23 @@ suites:
           - "test/e2e/*kerberos*"
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
+      # The tests that reach one file through both protocols, on pull requests that can break
+      # them: a drift between NFS and SMB is invisible to every single-protocol suite. The
+      # Kerberos one runs in kerberos above.
+      # decision: no system scenarios beside them yet. They are the scenarios of the slices that
+      # move the adapters onto the VFS service, and none has landed.
+      cross-protocol:
+        cmd: go test -tags=e2e -run CrossProtocol -skip Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - internal/vfs/**
+          - pkg/vfs/**
+          - pkg/metadata/**
+          - "test/e2e/cross_protocol*"
+          - test/e2e/grace_period_test.go     # the reclaim across both protocols
+          - test/e2e/nfsv4_acl_test.go        # an NFSv4 ACL read back over SMB
 
   # Conformance runs the production profile, badger-s3, only.
   pjdfstest:

@@ -233,7 +233,7 @@ Every suite has its own entry point, its own setup and its own way of saying how
 | R8 | External-tool suites first, and green | pjdfstest, pynfs, WPTS, smbtorture, the system scenarios and fio report no new failures |
 | R9 | Adapt the harness; keep what's tested, replace what isn't | the graders' rules carry over with their tests; each suite's scripts give way to a fixture (§4.2) once its results match, and are deleted in the same change |
 | R10 | Not run is never passed | an unmet need, a fixture that fails its own check, a suite that ran no tests, or, in a suite with a `known` file, a test that skips without being an expected skip ends in exit 2 (§4.4, §4.7) |
-| R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a section naming its harness suites or groups (§4.9), once #2894 lands them there |
+| R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a paragraph naming its harness suites, groups or options, which `dt docs --check` checks against the registry (§4.9) |
 
 "Green" means no new failures, no unexpected skips and no unexpected passes (§4.7). Every failing
 test is either fixed or listed as a known failure, and in a suite that keeps a known-failure list
@@ -546,6 +546,10 @@ suites:
           - "test/e2e/*kerberos*"
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
+      cross-protocol:                   # one file through both protocols, on pull requests that can break it (§4.3)
+        cmd: go test -tags=e2e -run CrossProtocol -skip Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths: [internal/adapter/**, pkg/adapter/**, internal/vfs/**, pkg/vfs/**, pkg/metadata/**, ...]
 
   # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix`
   # replaces suites.json's profiles. Commands are shortened: the flags each tool needs are in its
@@ -1006,7 +1010,7 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 | `pr` | every pull request (and `merge_group`, if a merge queue is ever available) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
 | `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
-| `manual` | `dt run NAME`, or `workflow_dispatch` | benchmarks, comparisons, long simulations | none |
+| `manual` | `dt run NAME`, or `workflow_dispatch` | the benchmarks, comparisons and long simulations run by hand (§4.10) | none |
 
 Each tier contains the one below it: a quick run on every PR, the full set after every merge, and
 the long and heavy suites each night.
@@ -1066,7 +1070,7 @@ dt known prune SUITE [--ci] [--last N]         remove entries that matched no fa
 dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
-dt docs [--check]                              write the documentation's suite tables, or check them
+dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -1881,7 +1885,13 @@ only when the failing set changes.
 - **A component:** its RFC under `docs/internals/rfcs/` names the suites and groups that cover it
   (R11), so whoever implements the journal, say, knows which suite to extend and adds it to the
   `journal` group. Groups for the components (`journal`, `syncer`, `engine`) are added this way,
-  as their RFCs are revised.
+  as each gets a suite of its own. The names are in one paragraph that starts with **Suites.**,
+  at the end of the RFC's test section, and say which planned checks no suite runs yet.
+  `dt docs --check` fails on an RFC without one and on a name in it that isn't a suite, a group
+  or an option (`suite/option`) of the registry, so a renamed suite can't leave an RFC behind.
+
+**Suites.** `lint-repo` runs dt's own tests and its docs check, which holds every RFC's suites
+paragraph to the registry; `unit` runs the tests of the command, under cmd/dt.
 
 ### 4.10 Benchmarks and long runs
 
@@ -2106,8 +2116,10 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    *Exit:* two weeks with one alert per real regression and none from flakes.
 6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
    tracked runs on the dedicated host.
-7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
-   RFC gets its section (R11), and the component groups follow.
+7. **Component RFCs name their suites.** Each RFC under `docs/internals/rfcs/` ends its test section
+   with its suites paragraph (R11, §4.9), and the component groups follow as each component gets a
+   suite of its own. While the adapters move onto the VFS service, `e2e/cross-protocol` runs on the
+   pull requests that can break it (§4.3).
 
 Conformance comes first, in steps 1–3, because its suites are already graded, then the system
 scenarios and fio (R8).

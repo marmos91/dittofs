@@ -564,7 +564,7 @@ them is a second prose copy here.
 These workflows gate pull request merges and should complete in under 5 minutes:
 
 - **tests.yml** -- Through `dt`: lint, unit tests with the race detector (on Windows too, non-blocking), integration, operator, and pjdfstest, pynfs, WPTS, smbtorture (over two runners) and cthon04 on badger-s3
-- **e2e**, in tests.yml -- its Kerberos tests, on the PRs that can affect them; the whole suite after a merge, and with the stress tests nightly. Non-blocking until it has a quiet week on develop
+- **e2e**, in tests.yml -- its Kerberos tests, and its cross-protocol tests (one file through NFS and SMB), each on the PRs that can affect them; the whole suite after a merge, and with the stress tests nightly. Non-blocking until it has a quiet week on develop
 
 ### What Runs on Push to Develop (Comprehensive)
 
