@@ -2747,7 +2747,21 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
 3. if what is held is dirty and the remote is put-healthy, turn the journal's
    pressure on if it is not already ([§6.1](#6.1%20The%20work%20queue)), so it is offloaded at once, then evict and repack what that made offloaded, and
    retry;
-4. otherwise refuse, as the table below says.
+4. otherwise sync the scope, so that what an unsynced overwrite supersedes
+   becomes unreclaimed: alice overwrites 1 GiB of `vm.img`, and until the sync
+   both records are held, so a repack frees nothing; after it, the old 1 GiB
+   frees. Seal each active segment that holds the scope's unreclaimed bytes,
+   but never one of a stream with a capacity-sealed segment still awaiting
+   repack, so a refused share seals at most one segment per stream; then repack
+   and retry. Still refused while the scope's sealed segments hold unreclaimed
+   bytes ([RFC 1 §4.4](rfc-1-journal.md#4.4%20Inspection)) and no cause of the table's second row holds: `ErrDelay`
+   (`DelayCapacity`); else refuse, as the table below says. RFC 1 declares
+   neither call yet: `Sync` names files and a segment seals only when full or
+   idle ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), so it owes a sync and a seal of a scope's active
+   segments, and §4.4's per-segment accounting reports no unreclaimed bytes, so
+   it owes that figure too; [RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions) records all three. A seal marker draws
+   on the reserved headroom, so a journal at its limit still takes it
+   ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
 
 **One table decides every capacity refusal.** [RFC 0](rfc-0-data-lifecycle.md), [RFC 1](rfc-1-journal.md), RFC 17 and the
 protocol RFCs cite it rather than restate it. The cause of a put-unhealthy store
