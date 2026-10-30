@@ -1765,6 +1765,11 @@ with every result.
 | Health probe | requests | exactly one |
 | List of 100,000 blocks | requests, peak memory | one per page of the caller's `n` (1,000, and 500 through `Small`), and at most one page held |
 
+**Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and §7.1
+in full against the local emulator under §7.2's fault transport in `integration`. No suite runs yet
+the nightly pass against each production service, the per-service lab rows, §7.5's benchmarks or
+fuzzing past the seed corpus.
+
 ## 8. Decisions and open questions
 
 Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements):

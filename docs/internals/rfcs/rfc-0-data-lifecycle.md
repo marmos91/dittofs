@@ -1570,6 +1570,10 @@ it break.
 | **I9** | RFC 9: deletion racing a put and a delayed delete landing after a retry; [RFC 8](rfc-8-engine.md): a crashed attempt's intent is collected | RFC 9: intents abandoned and collected, objects collected by listing (which should stay near zero) |
 | **I10** | RFC 6: the model test crashes a removal between batches and reads through it; RFC 8: reads during a partly applied truncate | RFC 6: removals not yet done, and their age |
 
+**Suites.** RFC 0 owns no suite: §9.3 names the component whose tests check each invariant, and
+those run in that component's suites, most in `unit`, where RFC 8 §15 carries §1.4's single-node
+checks and RFC 16's store tests §9.2's conflict checks.
+
 ## 10. Failure model
 
 Every condition below has exactly one specified behaviour.

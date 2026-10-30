@@ -3110,6 +3110,11 @@ nfstest — run through `dt` as the end-to-end layer.
 > after-merge run against today's `pkg/metadata/lock.Manager` through a shim
 > fixes them, compared with `benchstat` (RFC 17 §8's tiers).
 
+**Suites.** §12's rows and §13.1's units, table suite, fault injection, model and fuzz seeds run
+in `unit`; the end-to-end layer is `pynfs`, `smbtorture`, `pjdfstest`, `wpts`, `cthon04` and
+`nfstest`, with the NLM driver in `e2e`. No suite runs yet the multi-node simulation, the rows
+marked cluster, or §13.3's benchmarks.
+
 ## 14. Observability
 
 Metric names are shown without the deployment's prefix. `protocol` takes

@@ -1386,6 +1386,11 @@ Results are recorded as [the index](rfc-index.md#Test%20tiers) requires, plus th
 BLAKE3 used (AVX-512, AVX2, NEON) and the toolchain version: the same carver on
 the same box differs by more across those than across commits.
 
+**Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks and §10's golden
+vectors, differential, property and fault tests run in `unit`, and an allocation count the race
+detector skews joins the named gates of `unit/nonrace`. No suite runs yet §9.1's K1 to K5 on the
+reference box, fuzzing past the seed corpus, or the golden vectors on a second CPU architecture.
+
 ## 11. Open questions
 
 One is open:

@@ -2552,6 +2552,16 @@ durability rules: the writes that matter are the ones not yet flushed. A harness
 to cannot fail §6.3's move row: the row exists to see what a Windows client does
 with the status it is sent.
 
+**Suites.** §16.6's translation tests and fuzz seeds run in `unit`, as do §18's
+rows that inject a fault below the server through the composed single-node
+harness. §18's rows that name smbtorture tests run in `smbtorture`, the Kerberos
+re-authentication ones in `smbtorture/kerberos`, the MS-FSA cases in `wpts`, the
+rows reaching one file over SMB and NFS in `e2e/cross-protocol`, those with a
+Linux kernel client in `e2e`, those that need Windows itself in
+`clients/windows`, and the hour-long profile-container run in `system`. No suite
+runs yet the wire tests against a reference or Windows server, or the steps §18
+marks cluster.
+
 ## 19. Observability
 
 Metric names follow [RFC 25 §2](rfc-25-observability.md#2.%20Metrics) and are

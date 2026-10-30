@@ -2800,6 +2800,10 @@ these. Shrink every failing sequence to a minimal one and keep it.
 | Consistency-check walk ([§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) | time per ref | ≤ 2 µs per ref |
 | Audit ([§7.5](#7.5%20Audit)) of 10^8 refs | refs/s | ≥ 10^6 refs/s |
 
+**Suites.** §11.1's Group A rows and model-based interleavings and §11.2's counted rows run in
+`unit`, through the shared store tests over the embedded store. No suite runs yet §11.3's
+benchmarks, §11.2's hot-refcount latency report, the replicated store or a range-splitting backend.
+
 ## 12. Open questions
 
 1. **Group-commit window** ([§3.4](#3.4%20Ordering%20against%20the%20journal)). Stability points bound the window; how

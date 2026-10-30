@@ -2272,6 +2272,11 @@ cold fetch per small random read and coarser deduplication ([RFC 2](rfc-2-carver
 `Target` is a namespace setting and bound ([RFC 13](rfc-13-configuration.md)), so it is chosen at
 creation. Deduplication lowers the chunk rows, never the ref rows.
 
+**Suites.** §6.1's store tests over the embedded store and the in-memory fake, §6.2's model and
+property tests, §6.3's codec and layout checks and §6.4's faults through the fault-injecting store
+run in `unit`. No suite runs yet the replicated store's rows, §6.4's power loss on the embedded
+store's real device, or §7's benchmarks.
+
 ## 8. Observability
 
 Metric names are shown without the deployment's prefix, which the exporter

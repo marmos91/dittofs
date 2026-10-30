@@ -1160,6 +1160,12 @@ the store between the write and the read, is not evidence for Z8: it proves only
 that the two halves agree with each other. A check against the mode-only path is
 not evidence for the ACL path, and the reverse.
 
+**Suites.** §9's rows through both adapters, driven with real clients' tools, run
+in `e2e/cross-protocol`, and the rows on the functions alone, §2.8's lookup
+failure, the golden vectors and the decoders' fuzz seeds in `unit`. No suite runs
+yet the rows against a Windows or other reference server, which are RFC 20's wire
+tests.
+
 ## 10. Open questions
 
 1. **Maximal requests with generic bits.** Samba grants an SMB `MAXIMUM_ALLOWED`

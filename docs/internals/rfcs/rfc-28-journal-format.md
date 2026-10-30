@@ -1313,6 +1313,12 @@ assert *when* the journal notices, not *whether*:
 Checksums detect accidents, not intent: anyone who can write to the journal's
 directory is trusted with its content.
 
+**Suites.** §4.2's and §4.4's checks, with the model-based runs from fixed seeds, run in the
+journal's own conformance suite and group, registered with the v2 journal's code; the fuzz targets'
+seed corpora run in `unit`, on NTFS in `unit/windows`. No suite runs yet the NTFS directory-flush
+check with a power cut, XFS, Btrfs or APFS, fuzzing past the seed corpus, the soak, or §4.3's
+benchmarks.
+
 ## 5. Open questions
 
 1. ~~**Scrub.**~~ Declined on one node: no background pass reads the journal to

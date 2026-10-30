@@ -1945,6 +1945,12 @@ its own.
 API's sign-in is tested against the real identity server, called directly
 ([RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)).
 
+**Suites.** Tier 1, identity alone with a fake directory, KDC and domain
+controller, and Tier 2, through both adapters on the composed single-node
+harness, run in `unit`, with the fuzz seeds and table tests. The allocation
+rules are RFC 16's and the roles row RFC 23's; the forwarded-identity row's
+cluster half has no suite yet.
+
 ## 11. Migration
 
 Each slice ships alone, behind the one before it, and deletes what it replaces.

@@ -1410,6 +1410,11 @@ names, on the composed single-node harness of the [index](rfc-index.md#Test%20ha
 | §6.2 propagation **(cluster)** | Forward a write from P1 to S2 with sampling at 1: assert one trace with P1's span parenting S2's service span. Retry the write: assert the same request ID, a new span, and one application. | trace context in the dedup key |
 | §6.3 cost | `testing.AllocsPerRun` of starting and ending an unsampled span is 0, and of each `Sink` method is 0. | a span that allocates unsampled; a sink that boxes its event |
 
+**Suites.** §12's checks run on the composed single-node harness in `unit`, the
+scrape's diff against metrics.golden included, and §6.3's allocation counts, which
+the race detector skews, join `unit/nonrace`. No suite runs yet §6.2's propagation
+row, which needs two nodes.
+
 ## 13. Open questions
 
 1. **A per-share counter profile.** §2.4 forbids share labels on counters. An

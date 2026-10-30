@@ -435,6 +435,10 @@ On a local cluster (kind or k3d), in the cluster tier of the
 - **Node certificates:** assert each pod's certificate names its node ID, and a
   decommissioned node's is revoked (K7).
 
+**Suites.** §10's K1, a DittoServer of two replicas refused, is the resource's own validation
+and belongs in `operator`. No suite runs yet the rest of §10, which needs a local kind or k3d
+cluster.
+
 ## 11. Open questions
 
 1. **Load balancer reset.** Whether common cloud load balancers reset a dead

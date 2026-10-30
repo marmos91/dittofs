@@ -32,8 +32,9 @@ func names(cells []Cell) []string {
 
 // The pr tier is today's pull-request checks, with the conformance suites on
 // the production profile, badger-s3, only, and smbtorture over two runners.
-// With no change given, the Kerberos e2e run, which has paths, is planned too,
-// non-blocking as e2e is. A cell names the test tools it takes from {tools}.
+// With no change given, the Kerberos and cross-protocol e2e runs, which have
+// paths, are planned too, non-blocking as e2e is. A cell names the test tools
+// it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -44,7 +45,7 @@ func TestPRTier(t *testing.T) {
 		"unit", "unit/windows",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
-		"e2e/kerberos",
+		"e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
@@ -300,8 +301,19 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("docs/guide/x.md", "README.md", "test/e2e/README.md"); len(got) != 0 {
 		t.Errorf("docs-only change planned %v", got)
 	}
-	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || !slices.Contains(got, "unit") {
+	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
+	}
+	if got := plan("pkg/config/config.go"); slices.Contains(got, "e2e/cross-protocol") {
+		t.Errorf("a configuration change plans e2e/cross-protocol: %v", got)
+	}
+	for _, p := range []string{
+		"internal/adapter/nfs/v4/handlers/open.go", "pkg/adapter/smb/adapter.go", "pkg/metadata/file.go",
+		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/cross_protocol_lock_test.go",
+	} {
+		if got := plan(p); !slices.Contains(got, "e2e/cross-protocol") {
+			t.Errorf("a change to %s doesn't plan e2e/cross-protocol", p)
+		}
 	}
 	for _, p := range []string{
 		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/smb_kerberos_test.go",

@@ -1297,6 +1297,12 @@ Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 | Move of a 10⁷-file namespace with 1% changed during the pre-seed | freeze to B serving | under `freeze_timeout`; no block transferred |
 | Re-home of a 10⁶-file share under 64 writers | MB/s against `rehome.rate`; p99 write latency | within 10% of the rate; p99 within 2× of no re-home |
 
+**Suites.** Until RFC 10's simulator is built, §5.2's scenarios and §5.3's and §5.4's checks run
+from fixed seeds on the composed single-node harness, against a real metadata backend and the
+remote-tier emulator, in `integration`, and S-snap-move-nlm-notify, which needs a Linux client's
+hard mount, is a `system` scenario. No suite runs yet §5.1's model checker and seed search,
+S-snap-move-ca-windows, or §5.5's benchmarks.
+
 ## 6. Observability
 
 Metric names are shown without the deployment's prefix, which the exporter adds.
