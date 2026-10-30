@@ -311,9 +311,9 @@ than a private one per RFC.
    Every fault seam consults one fault interface: fail, delay, drop, tear or
    reorder a named operation, on a seeded schedule read from that clock. The
    interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
-   component declares the subset of them it uses in its own package, in
-   standard-library types, so the node's one clock satisfies each as it is; none
-   defines a private clock. The
+   component declares the methods it uses in its own package, in standard-library
+   types, so the node's one clock and the seeded fault satisfy each as they are;
+   none defines a private clock. The
    seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fake store
    ([RFC 3 §1.4](rfc-3-syncer.md#1.4%20It%20is%20testable%20on%20its%20own)), the fault transport under a real store client
    ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)) and the fault-injecting store wrappers
