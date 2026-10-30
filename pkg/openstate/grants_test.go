@@ -262,6 +262,9 @@ func TestFenceAfterAMissedRecall(t *testing.T) {
 		t.Fatalf("a fenced client was offered %+v", g)
 	}
 	f.pass(t, leasePeriod/2, a.Client, b.Client)
+	if _, g := f.grantOpen(t, a, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{6}, Want: rwh}); g != nil {
+		t.Fatalf("half a lease period into the fence: offered %+v", g)
+	}
 	if _, err := f.open(b, second, OpenRequest{Access: wr}); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
