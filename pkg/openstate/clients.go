@@ -295,10 +295,6 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 			t.cmu.Unlock()
 			return nil, ErrClientInUse // the proposal stays for its own principal
 		}
-		if ok {
-			delete(t.pending, key)
-			t.uncharge(pd.source)
-		}
 		t.cmu.Unlock()
 		if !ok {
 			return nil, ErrStaleClient
@@ -359,8 +355,13 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	}
 
 	// One critical section ends the old ID and makes the new one current, so
-	// no renewal finds both.
+	// no renewal finds both. The proposal goes only here, so a confirm the
+	// store refused may be retried.
 	t.cmu.Lock()
+	if pd, ok := t.pending[keyOf(*rec)]; ok && p != nil && pd.Confirm == p.Confirm {
+		delete(t.pending, keyOf(*rec))
+		t.uncharge(pd.source)
+	}
 	if ended != nil {
 		delete(t.leases, ended.ID)
 		delete(t.known, ended.ID)

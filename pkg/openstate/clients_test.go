@@ -764,3 +764,24 @@ func TestExpiredClientLeavesNoIndex(t *testing.T) {
 		t.Errorf("grant budget %v, lease keys %v, counts per Via %v after the expiry", x.granted, x.keys, x.via)
 	}
 }
+
+// A confirm the store refuses leaves its proposal: the same confirm retried
+// connects the client.
+func TestRefusedConfirmMayBeRetried(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	c := nfs("host-a", 1, entity.NewUser())
+	p, err := f.Propose(ctx, c, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.fail.Store(true)
+	_, err = f.Connect(ctx, c, &p)
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a confirm over a refusing store: %v, want its error", err)
+	}
+	if id, err := f.Connect(ctx, c, &p); err != nil || id != p.Client {
+		t.Errorf("the same confirm retried: %d, %v; want %d", id, err, p.Client)
+	}
+}
