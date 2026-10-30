@@ -1,0 +1,7 @@
+# seal marker: 32 bytes (RFC 28 section 2.2)
+44 4a 53 31                 # [0,4)   magic "DJS1"
+00 00 00 00                 # [4,8)   reserved
+01 02 03 04 05 06 07 08     # [8,16)  segment id 0x0807060504030201
+21 22 23 24 25 26 27 28     # [16,24) own offset 0x2827262524232221
+00 00 00 00                 # [24,28) reserved
+8b be 0b 0b                 # [28,32) CRC32C of the identity then [0,28), 0x0b0bbe8b
