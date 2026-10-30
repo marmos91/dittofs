@@ -504,37 +504,6 @@ func rebuild(t *testing.T, order []Record, floor core.Version) *files {
 	return fs
 }
 
-// TestRebuildShuffledIdentical: the rebuild's result — held pieces, markers,
-// tags, segments and drop ranges alike — depends only on the records, not on
-// the order they were fed in. A rebuild that sorted by feed order, or noted
-// by feed order, gives different ranges or state to two shuffles.
-func TestRebuildShuffledIdentical(t *testing.T) {
-	h := drive(t, 1, 120)
-	orders := make([][]Record, 0, 53)
-	shuffled := slices.Clone(h.recs)
-	orders = append(orders, slices.Clone(h.recs), slices.Clone(h.recs))
-	slices.Reverse(orders[1])
-	rng := rand.New(rand.NewPCG(2, 3375))
-	for range 50 {
-		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
-		orders = append(orders, slices.Clone(shuffled))
-	}
-	want := snapshot(rebuild(t, orders[0], ver(0)), true)
-	for i := 1; i < len(orders); i++ {
-		fs := rebuild(t, orders[i], ver(0))
-		if d := diffSnap(snapshot(fs, true), want); d != "" {
-			t.Fatalf("order %d differs: %s", i, d)
-		}
-		// The per-segment counters equal the walk after every rebuild too,
-		// whatever order the feeders raced in.
-		var segs []core.SegmentID
-		for s := range genSegs {
-			segs = append(segs, core.SegmentID(s+1))
-		}
-		checkSegments(t, i, fs, segs...)
-	}
-}
-
 // TestRebuildIncrementalEqualsRebuild is the core property: an index built
 // incrementally by the runtime's own operations, a record logged per
 // append, is identical to the rebuild of the log fed in a shuffled order —

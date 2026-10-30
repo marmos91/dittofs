@@ -582,4 +582,23 @@ func TestUnmark(t *testing.T) {
 		}
 		assertPieces(t, &s, Piece{Extent: ext(0, 4), Record: rec(1, 0), Version: ver(1)})
 	})
+
+	// An unmark narrower than the marked piece clears only the part it
+	// names, keeping the ends of the piece at their places in the record.
+	// An unmark that dropped the whole piece would unmark more than the
+	// record's bytes it was given, so a later offload would re-upload them.
+	t.Run("narrower than the piece", func(t *testing.T) {
+		var s heldSet
+		a := rec(1, 0)
+		s.insert(write(0, 12, a, 2))
+		s.markOffloaded(ext(0, 12), ver(2), ver(2))
+		if n := s.unmark(ext(4, 4), ver(2)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want the middle", n)
+		}
+		assertPieces(t, &s,
+			Piece{Extent: ext(0, 4), Record: a, Version: ver(2), Offloaded: true},
+			Piece{Extent: ext(4, 4), Record: a, Skip: 4, Version: ver(2)},
+			Piece{Extent: ext(8, 4), Record: a, Skip: 8, Version: ver(2), Offloaded: true},
+		)
+	})
 }

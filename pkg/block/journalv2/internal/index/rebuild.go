@@ -343,8 +343,8 @@ func (b *rebuilder) replayShard(s *rebuildShard) error {
 		delete(byFile, id)
 	}
 	// A retained piece can name a file whose records are elsewhere — one
-	// the caller holds pieces for but fed no record of. It lands with its
-	// marks only.
+	// the caller holds pieces for but fed no record of. It lands as the
+	// caller gave it: no mark of this replay reaches a retained piece.
 	for id, pieces := range byFile {
 		if err := b.fs.update(id, func(f *file) error {
 			return b.replayFile(f, id, nil, pieces)
@@ -414,11 +414,13 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// depends on the feed order.
 	slices.SortFunc(recs, compareBufRec)
 
-	// decision: records equal in kind, extent and numbers are one record,
-	// whatever its feed count — a header-only record carried forward by
-	// repack, a record re-appended after a failed sync whose original is
-	// still on disk. Every copy has been noted above, so the drop ranges
-	// lose nothing here.
+	// decision: records with equal numbers are one record, whatever its
+	// feed count — a header-only record carried forward by repack, a
+	// record re-appended after a failed sync whose original is still on
+	// disk. The journal never reissues a pair of numbers, so two records
+	// whose kind or extent differs can only be damage or another writer,
+	// and they collapse too, into the greater (segment, offset); every
+	// copy has been noted above, so the drop ranges lose nothing here.
 	//
 	// decision: of two copies of one record, the replay keeps the one at
 	// the greater (segment, offset). Both carry the record's numbers, so
@@ -548,8 +550,6 @@ func compareBufRec(a, b bufRec) int {
 	)
 }
 
-// sameRecord reports whether a and b are one record carried in two places:
-// equal in kind, extent and numbers, differing only where they sit.
 // sameRecord reports whether a and b are one record carried in two places:
 // the journal issues a pair of numbers to one record only, so equal numbers
 // mean the same record, wherever each copy sits.

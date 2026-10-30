@@ -167,6 +167,34 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 		}
 	})
 
+	t.Run("copies in one segment, the greater offset kept", func(t *testing.T) {
+		// Two copies of one record inside one segment, at offsets 0 and
+		// 200: the greater offset is kept whichever order the copies were
+		// fed in — the sort breaks the tie, not the feed order.
+		for _, order := range [][]int{{0, 1}, {1, 0}} {
+			var fs files
+			b := newRebuilder(&fs, &Counters{})
+			id := fid(1)
+			rs := []Record{
+				recd(RecWrite, id, 7, 7, 1, 0, 0, 4),
+				recd(RecWrite, id, 7, 7, 1, 200, 0, 4),
+			}
+			for _, i := range order {
+				if err := b.Feed(rs[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := b.Finish(ver(0)); err != nil {
+				t.Fatal(err)
+			}
+			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
+				{Extent: ext(0, 4), Record: rec(1, 200), Version: ver(7)},
+			}) {
+				t.Fatalf("order %v: held = %+v, want the piece read from the copy at 200", order, got)
+			}
+		}
+	})
+
 	t.Run("the greater version wins with the lower seq", func(t *testing.T) {
 		// A write at (v8, s3) against a write at (v7, s9) over the same
 		// bytes: the higher version wins, its lower sequence number
