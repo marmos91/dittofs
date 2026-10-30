@@ -336,8 +336,8 @@ life's bytes past its newest record are a torn tail at recovery
 guarantees and a recycled one does not is that the bytes past its newest record
 are zeros. **A failed append ends its segment, as a failed sync does**
 ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), fresh or recycled: its slot may hold bytes the zero-slot rule of
-[§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over, and ending it keeps zeros below a proven sync point
-damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The stream
+[§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over, or zeros no later synced-through offset may pass, so
+nothing could prove a record appended after them synced ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The stream
 takes no further append there and continues in a new segment naming no
 predecessor; the records written to the segment since its last successful sync
 are re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync); a stream's synced-through offset
@@ -1020,11 +1020,11 @@ device lost, corruption by the rule above.
 > [!note] ponytail
 > The synced-through offset stops at a failed or unfinished slot, so in a
 > segment a failed append ended, nothing on disk proves the records synced
-> above that slot: a device that later loses one leaves zeros read as a failed
-> write, a loss nobody reports. Bounded by that segment's life, since repack
-> carries those records forward once its window is resolved. Upgrade to a
-> record naming the failed slot, a format change, when [§4.4](#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)'s lost-write faults
-> show a loss there.
+> above that slot: at the next open, one the device later loses reads as a
+> failed write and one it later damages as a torn slot or tail, a loss nobody
+> reports. Bounded by that segment's life, since repack carries those records
+> forward once its window is resolved. Upgrade to a record naming the failed
+> slot, a format change, when failed appends are seen in the field.
 >
 > The forward search reads the whole unwritten remainder of each newest segment
 > at open, up to one segment cap per stream. Upgrade to bounding it by the

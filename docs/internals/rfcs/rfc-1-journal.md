@@ -1821,7 +1821,7 @@ Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 | A directory sync **MUST** follow the creation of a segment or the `format` file before any `Sync` covering its records returns. | Otherwise power loss can drop a synced segment's directory entry, and the segment with it ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 | A segment's unlink or recycle **MUST** be durable before a removal record whose retention counted that segment is dropped. | Otherwise a crash can bring the segment back without the removal that covered its records ([§7.2](#7.2%20Repack)). |
 | A sync that failed **MUST NOT** satisfy, by a later success, a `Sync` for writes made before the failure. | Those writes may be lost already ([§5.3](#5.3%20A%20failed%20sync)). |
-| A segment whose sync or one of whose appends failed **MUST NOT** be appended to again. | What the device holds past its last successful sync is unknown, and a failed slot holds bytes a scan cannot cross or zeros a later sync point would mark as damage; a record appended after either could follow them ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
+| A segment whose sync or one of whose appends failed **MUST NOT** be appended to again. | What the device holds past its last successful sync is unknown, and a failed slot holds bytes a scan cannot cross or zeros no later synced-through offset may pass; a record appended after either could follow bytes a scan cannot cross, or never be proven synced ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 
 ### 5.2 Syncing
 
