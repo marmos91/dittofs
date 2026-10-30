@@ -831,7 +831,10 @@ segment — and the segment is then reported as
 damaged ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)'s `DamagedSegments`); otherwise it is torn, as an unsynced take
 is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Either way its records are attached on their own checksums
 ([§2.3](#2.3%20Records)), and with its predecessor unknown it is treated as one that could have
-been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A segment whose header is torn is ended at recovery,
+not sealed, as one with a torn slot that is not zeros is ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). If it were sealed,
+its own seal marker would prove the header synced at the next open and turn the
+crash into damage.
 
 **A segment with no record is a spare again.** A segment under a name this
 journal produces whose header slot is zeros — a spare no stream took — or whose
@@ -1283,7 +1286,8 @@ each region has its own required outcome:
   repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
-- a segment header proven synced: the segment is reported as damaged and its records are still
+- a segment header: the segment is reported as damaged if the header is proven
+  synced, and otherwise the header is torn; either way its records are still
   attached ([§3.1](#3.1%20Rebuilding));
 - a seal marker: the segment is reported as damaged if a successor names it, and
   otherwise the marker is a torn tail ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
