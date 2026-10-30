@@ -56,7 +56,7 @@ the refusal error; the memory bound per entry.
 | --- | --- | --- |
 | 1 Unit tests | all | every R-number has a test that can fail |
 | 2 Fuzz | none | no parser: the index reads only values the store already decoded |
-| 3 Observability | 3.1, 3.3, 3.5 | `Deps.Metrics` and `Deps.Logger` taken in 3.1; `quota_refusals_total` and `quota_soft_crossings_total` resolved at construction and recorded with an atomic add. No span: `Check` runs inside the VFS's service span, and its wait on a shard lock is too short to be a span event |
+| 3 Observability | T3.1, T3.3, T3.5 | `Deps.Metrics` and `Deps.Logger` taken in T3.1; `quota_refusals_total` and `quota_soft_crossings_total` resolved at construction and recorded with an atomic add. No span: `Check` runs inside the VFS's service span, and its wait on a shard lock is too short to be a span event |
 | … | | |
 
 ## 3. Requirements and invariants
@@ -68,21 +68,21 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Usage per (share, principal) equals the sum of the sizes of the files it owns, after every operation | MUST | RFC 90 §3.1 | 3.2 |
-| R2 | A write the check admitted never takes usage over the hard limit | MUST NOT | §3.2 | 3.3 |
-| R3 | The check and the usage update happen in the same metadata transaction | MUST | §3.2, RFC 16 §4.3 | 3.4 |
-| R4 | Usage never goes negative; an underflow is reported as corruption, never clamped | invariant | §3.1 | 3.2 |
-| R5 | A chown moves the file's bytes from the old owner to the new one in one step | MUST | §3.3 | 3.4 |
-| R6 | A soft-limit crossing is reported once per grace period, not once per write | SHOULD | §3.4 | 3.5 |
-| R7 | A refused write returns `ErrQuotaExceeded`, naming the limit and the principal | MUST | §3.2 | 3.3, 3.6 |
+| R1 | Usage per (share, principal) equals the sum of the sizes of the files it owns, after every operation | MUST | RFC 90 §3.1 | T3.2 |
+| R2 | A write the check admitted never takes usage over the hard limit | MUST NOT | §3.2 | T3.3 |
+| R3 | The check and the usage update happen in the same metadata transaction | MUST | §3.2, RFC 16 §4.3 | T3.4 |
+| R4 | Usage never goes negative; an underflow is reported as corruption, never clamped | invariant | §3.1 | T3.2 |
+| R5 | A chown moves the file's bytes from the old owner to the new one in one step | MUST | §3.3 | T3.4 |
+| R6 | A soft-limit crossing is reported once per grace period, not once per write | SHOULD | §3.4 | T3.5 |
+| R7 | A refused write returns `ErrQuotaExceeded`, naming the limit and the principal | MUST | §3.2 | T3.3, T3.6 |
 
 **Cost and concurrency**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R8 | A check costs O(1) | bound | §6.2 | 3.1, 3.3 |
-| R9 | Checks for different principals never contend on one lock | MUST NOT | §6.2 | 3.1 |
-| R10 | At most 64 bytes per (share, principal) entry at 10⁶ entries | bound | §6.2 | 3.1 |
+| R8 | A check costs O(1) | bound | §6.2 | T3.1, T3.3 |
+| R9 | Checks for different principals never contend on one lock | MUST NOT | §6.2 | T3.1 |
+| R10 | At most 64 bytes per (share, principal) entry at 10⁶ entries | bound | §6.2 | T3.1 |
 
 ## 4. Decisions this epic takes
 
@@ -97,18 +97,18 @@ subtasks and tests can cite them.
 
 ```text
 pkg/quotav2/internal/usage/
-  table.go        3.1  sharded usage table
-  account.go      3.2  create, extend, truncate, remove
-  check.go        3.3  hard-limit check
-  hook.go         3.4  transaction hook and chown
-  soft.go         3.5  soft limits and grace
+  table.go        T3.1  sharded usage table
+  account.go      T3.2  create, extend, truncate, remove
+  check.go        T3.3  hard-limit check
+  hook.go         T3.4  transaction hook and chown
+  soft.go         T3.5  soft limits and grace
 ```
 
 ## 6. Subtasks
 
-### 3.1 Usage table and lock sharding
+### T3.1 Usage table and lock sharding
 
-**Subtask 3.1 estimate: 1.5 man-days.**
+**Subtask T3.1 estimate: 1.5 man-days.**
 
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R8, R9, R10.
@@ -120,11 +120,11 @@ pkg/quotav2/internal/usage/
 - **Tests:** a `-race` test with writers on 64 principals (catches a global lock); a
   memory check at 10⁶ entries that fails when one field is added (catches R10).
 
-### 3.2 Usage accounting
+### T3.2 Usage accounting
 
-**Subtask 3.2 estimate: 2.5 man-days.**
+**Subtask T3.2 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** 3.1.
+- **Track:** B. **Depends on:** T3.1.
 - **Covers:** R1, R4.
 - **Deliverables:** `account.go`: one function per operation that changes a file's size
   or existence.
@@ -134,11 +134,11 @@ pkg/quotav2/internal/usage/
 - **Tests:** a property test of random create, extend, truncate and remove against the
   model; a truncate below zero (catches a clamp).
 
-### 3.3 Hard-limit check
+### T3.3 Hard-limit check
 
-**Subtask 3.3 estimate: 2 man-days.**
+**Subtask T3.3 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** 3.2.
+- **Track:** B. **Depends on:** T3.2.
 - **Covers:** R2, R7, R8.
 - **Deliverables:** `check.go`: `Check(share, principal, delta) error`; the
   `quota_refusals_total` counter.
@@ -148,11 +148,11 @@ pkg/quotav2/internal/usage/
 - **Tests:** the at-limit and over-limit cases; comparisons per check at most constant
   from 10³ to 10⁶ entries.
 
-### 3.4 Transaction hook and chown
+### T3.4 Transaction hook and chown
 
-**Subtask 3.4 estimate: 3 man-days.**
+**Subtask T3.4 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** 3.3.
+- **Track:** B. **Depends on:** T3.3.
 - **Covers:** R3, R5.
 - **Deliverables:** `hook.go`: the RFC 16 §4.3 pre-commit hook; chown as one move.
 - **Acceptance criteria:**
@@ -161,11 +161,11 @@ pkg/quotav2/internal/usage/
 - **Tests:** an abort injected after the check; a `-race` test that reads both owners'
   usage during chowns and checks the sum never changes.
 
-### 3.5 Soft limits and grace
+### T3.5 Soft limits and grace
 
-**Subtask 3.5 estimate: 2 man-days.**
+**Subtask T3.5 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** 3.3.
+- **Track:** B. **Depends on:** T3.3.
 - **Covers:** R6.
 - **Deliverables:** `soft.go`: soft limit, grace timer on the injected clock (D2), the
   `quota_soft_crossings_total` counter.
@@ -174,37 +174,37 @@ pkg/quotav2/internal/usage/
 - **Tests:** writes over the soft limit across two grace periods, driven by the fake
   clock: two crossings, not one and not a thousand.
 
-### 3.6 Refusal message and limits table
+### T3.6 Refusal message and limits table
 
-**Subtask 3.6 estimate: 0.25 man-days.**
+**Subtask T3.6 estimate: 0.25 man-days.**
 
-- **Track:** B. **Depends on:** 3.3.
+- **Track:** B. **Depends on:** T3.3.
 - **Covers:** R7.
 - **Deliverables:** the wording of `ErrQuotaExceeded`, and the limits table in the
   package doc.
 - **Acceptance criteria:**
   - The message matches RFC 90 §3.2's example.
-- **Tests:** the existing 3.3 test asserts the message.
+- **Tests:** the existing T3.3 test asserts the message.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
-  S2(["S2 red suite in CI"]):::sync --> T1["3.1 Usage table"]
-  T1 --> T2["3.2 Accounting"] --> T3["3.3 Hard-limit check"]
-  T3 --> C1(["after 3.3: Check usable by epic 5"]):::sync
-  T3 --> T4["3.4 Transaction hook"] & T5["3.5 Soft limits"] & T6["3.6 Refusal message"]
+  S2(["S2 red suite in CI"]):::sync --> T1["T3.1 Usage table"]
+  T1 --> T2["T3.2 Accounting"] --> T3["T3.3 Hard-limit check"]
+  T3 --> C1(["after T3.3: Check usable by epic 5"]):::sync
+  T3 --> T4["T3.4 Transaction hook"] & T5["T3.5 Soft limits"] & T6["T3.6 Refusal message"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoint after 3.3: epic 5 can start calling `Check` against the in-memory index.
+Checkpoint after T3.3: epic 5 can start calling `Check` against the in-memory index.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | 3.1, 3.2 | 4 | — | the usage index, correct and fast, with nothing calling it yet |
-| 2 | 3.3, 3.4, 3.5, 3.6 | 7.25 | PR 1 | the checks, end to end through the transaction hook |
+| 1 | T3.1, T3.2 | 4 | — | the usage index, correct and fast, with nothing calling it yet |
+| 2 | T3.3, T3.4, T3.5, T3.6 | 7.25 | PR 1 | the checks, end to end through the transaction hook |
 
 A suggestion only: one pull request per subtask works as well.
 

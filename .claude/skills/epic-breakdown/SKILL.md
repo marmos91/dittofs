@@ -32,17 +32,21 @@ and write the document. That is the whole output.
 
 The units of work are the **epic** and its **subtasks**. No other word names them: not
 task, ticket, story, step, phase, stage, milestone or work item. That holds in headings,
-table columns, ids and prose. A subtask's id is `<epic>.<n>` (`4.3`), never `E4-3` or `Task 3`.
-Progress is tracked by mapping pull requests to these ids, so they must stay stable:
+table columns, ids and prose. A subtask's id is `T<epic>.<n>` (`T4.3`), never `E4-3`,
+`4-3` or `Task 3`. The `T` only marks the id as a subtask's, beside `E`, `S`, `R` and `D`;
+it does not make "task" a word for the unit. A bare `4.3` cited before the prefix existed
+names the same subtask as `T4.3`. Progress is tracked by mapping pull requests to these
+ids, so they must stay stable:
 
 - **Keep the plan's ids.** Where the plan's candidate list numbers a subtask, keep its id
   for the same work. New subtasks get the next free numbers, after the plan's.
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id may
-  have been cited becomes `4.3a`, `4.3b`; work mapped to `4.3` then covers both parts.
+  have been cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
 - **Never reuse or drop an id that a pull request has cited.** Search first:
-  `gh pr list --state all --search '"<epic>.<n>" in:title'` (a plain `--search "4.2"` is a
-  full-text search and also returns pull requests citing an RFC's §4.2). If the work moved,
-  say where in §9.
+  `gh pr list --state all --search '"T<epic>.<n>" in:title'`, and for an epic whose ids
+  were cited before the prefix, also `'"<epic>.<n>" in:title'` (a plain `--search "4.2"` is
+  a full-text search and also returns pull requests citing an RFC's §4.2). If the work
+  moved, say where in §9.
 
 A **track** (A, B or C, one line of work through the epics) and a **synchronisation point** (S1, S2, …)
 are not units of work and keep their names. A **pull request** groups subtasks (§8 below);
@@ -150,8 +154,8 @@ per group:
 ```markdown
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A file's held extents are disjoint. A superseding write splits or narrows, and never leaves two extents covering one offset | MUST NOT | RFC 1 §4 | 4.2 |
-| R13 | Covering extent of an offset, or its absence, in O(log n) | bound | §4.1 | 4.1, 4.2 |
+| R1 | A file's held extents are disjoint. A superseding write splits or narrows, and never leaves two extents covering one offset | MUST NOT | RFC 1 §4 | T4.2 |
+| R13 | Covering extent of an offset, or its absence, in O(log n) | bound | §4.1 | T4.1, T4.2 |
 ```
 
 `Kind` is one of `MUST`, `MUST NOT`, `SHOULD` (adopted), `invariant` (prose `never` /
@@ -179,10 +183,10 @@ A number is never reused or renumbered, and a dropped requirement keeps its row,
 with its tests, rather than all the types, then all the methods, then all the tests:
 
 ```
-Bad:  4.1 all types   4.2 all insert paths   4.3 all queries   4.4 the tests
-Good: 4.1 B-tree container with its property test
-      4.2 held-extent insert and point lookup, tested at 10⁶ extents
-      4.3 span query with exact gaps, tested against an oracle
+Bad:  T4.1 all types   T4.2 all insert paths   T4.3 all queries   T4.4 the tests
+Good: T4.1 B-tree container with its property test
+      T4.2 held-extent insert and point lookup, tested at 10⁶ extents
+      T4.3 span query with exact gaps, tested against an oracle
 ```
 
 Each subtask leaves the tree building and its tests green, lands its own tests, and creates
@@ -210,7 +214,7 @@ scale.
 Each subtask carries exactly one estimate line, on its own line, in this form:
 
 ```markdown
-**Subtask 4.2 estimate: 2.5 man-days.**
+**Subtask T4.2 estimate: 2.5 man-days.**
 ```
 
 The epic total goes in the document header, in the same form the plan uses:
@@ -225,9 +229,9 @@ scratchpad and run `awk -f epic-check.awk <epic-doc>`:
 
 ```awk
 /^## /                                   { in6 = ($0 ~ /^## 6\./) }
-in6 && /^### [0-9]+\.[0-9]+[a-z]? /      { head[$2]++; order[++k] = $2 }
-/(Epic|Subtask) [0-9]+(\.[0-9]+[a-z]?)? estimate:/ {
-  if ($0 ~ /^\*\*Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
+in6 && /^### T[0-9]+\.[0-9]+[a-z]? /     { head[$2]++; order[++k] = $2 }
+/(Epic [0-9]+|Subtask T?[0-9]+\.[0-9]+[a-z]?) estimate:/ {
+  if ($0 ~ /^\*\*Subtask T[0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
     est[$2]++; n++; d += $4
   } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
     hn = $4; hd = $6; seen = 1
@@ -244,7 +248,7 @@ END {
 
 Only the `TOTAL` line may print; write it into the header. Anything else is a defect to fix:
 a malformed line (`2,5`, `~2`, `0.3`, an indented or bulleted line, a missing word) is
-reported rather than summed; a `### <k>.<n>` subtask heading in §6 without exactly one
+reported rather than summed; a `### T<k>.<n>` subtask heading in §6 without exactly one
 estimate line, or an estimate line without a heading, is reported, so a deleted line
 cannot go unnoticed; and a header line that no longer matches the sum is reported.
 
@@ -287,7 +291,7 @@ Header, one field per line: **Sources:** the RFC sections owned, with links.
 ## 4. Decisions this epic takes   — what the RFC leaves open, the choice and why; each one
                                     names the `decision:` or `ponytail:` marker it leaves
 ## 5. Target tree               — `text` block, each entry tagged with its subtask
-## 6. Subtasks                  — one `### <k>.<n> <title>` per subtask (below)
+## 6. Subtasks                  — one `### T<k>.<n> <title>` per subtask (below)
 ## 7. Order of work             — Mermaid graph of subtask dependencies, and checkpoints
 ## 8. Suggested pull requests   — Step 5.1
 ## 9. Open points
@@ -296,11 +300,11 @@ Header, one field per line: **Sources:** the RFC sections owned, with links.
 Each subtask in §6:
 
 ```markdown
-### 4.2 Held-extent set for one file
+### T4.2 Held-extent set for one file
 
-**Subtask 4.2 estimate: 2.5 man-days.**
+**Subtask T4.2 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** 4.1.
+- **Track:** B. **Depends on:** T4.1.
 - **Covers:** R1–R6, R13–R16.
 - **Deliverables:** the types, functions and files it adds, with signatures where they are
   a contract.
@@ -311,7 +315,7 @@ Each subtask in §6:
 ```
 
 Graphs are Mermaid, never ASCII art, styled with stroke only and quoted labels, as the
-plan skill describes. Checkpoints are stadium nodes (`(["after 4.3: index API usable"])`).
+plan skill describes. Checkpoints are stadium nodes (`(["after T4.3: index API usable"])`).
 
 ### 5.1 Suggested pull requests (§8)
 
@@ -334,18 +338,18 @@ subtasks stay the unit that is estimated and tracked. Say so in one line under t
 ```markdown
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | 4.1, 4.2, 4.4 | 7 | — | the container and counters every later subtask builds on |
-| 2 | 4.3, 4.5–4.7 | 8.5 | PR 1 | the file map, markers and floor buckets share the per-file lock |
-| 3 | 4.8–4.12 | 6 | PR 2 | bounds, accounting and rebuild, which read everything above |
+| 1 | T4.1, T4.2, T4.4 | 7 | — | the container and counters every later subtask builds on |
+| 2 | T4.3, T4.5–T4.7 | 8.5 | PR 1 | the file map, markers and floor buckets share the per-file lock |
+| 3 | T4.8–T4.12 | 6 | PR 2 | bounds, accounting and rebuild, which read everything above |
 
 A suggestion only: one pull request per subtask works as well.
 ```
 
 Compute each pull request's man-days from the subtask lines, for example
-`grep -E '^\*\*Subtask 4\.(1|2|4)[a-z]? estimate:' <epic-doc> | awk '{d+=$4} END{print d}'`
-(the `[a-z]?` keeps split subtasks such as `4.2a` and `4.2b` in the sum). The
+`grep -E '^\*\*Subtask T4\.(1|2|4)[a-z]? estimate:' <epic-doc> | awk '{d+=$4} END{print d}'`
+(the `[a-z]?` keeps split subtasks such as `T4.2a` and `T4.2b` in the sum). The
 pull requests' man-days add up to the epic total. Each pull request's description names the
-RFC and every subtask it delivers, one id per mention (`RFC 1, subtask 4.1, subtask 4.2`),
+RFC and every subtask it delivers, one id per mention (`RFC 1, T4.1, T4.2`),
 and says when it finishes a subtask only in part, so that it can be mapped to the subtasks
 it delivers.
 
@@ -372,7 +376,7 @@ When the user explicitly asks for them, follow these steps. If the epic issue al
    gh issue create --title "<component> v2, epic <k>: <title>" \
      --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --body-file <body.md>
    ```
-3. **One issue per subtask.** Title `<component> v2, epic <k>.<n>: <title>`. Body: the
+3. **One issue per subtask.** Title `<component> v2, epic T<k>.<n>: <title>`. Body: the
    subtask's §6 section, the rows of §3 it covers, and "Depends on #…" for the subtask
    issues it depends on. Like the epic, it stands alone and does not refer to the plan.
 4. **Attach each subtask to the epic as a sub-issue**, not as a checklist in the epic's

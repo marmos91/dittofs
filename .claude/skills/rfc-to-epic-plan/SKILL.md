@@ -16,8 +16,11 @@ below is dropped.
 The plan has two kinds of unit of work: an **epic**, and the **subtasks** it is split into.
 No other word names them: not task, ticket, story, step, phase, stage, milestone, work
 package or work item. That holds in headings, table columns, ids and prose. A subtask's id
-is `<epic>.<n>` (`4.3`), never `E4-3` or `T3`: pull requests cite that form, and progress is
-tracked by mapping pull requests to those ids.
+is `T<epic>.<n>` (`T4.3`), never `E4-3`, `4-3` or `T3`. The `T` only marks the id as a
+subtask's, beside `E` for epics, `S` for synchronisation points and `R` for requirements; it
+does not make "task" a word for the unit. Pull requests cite that form, and progress is
+tracked by mapping pull requests to those ids. `T4.3` and a bare `4.3` name the same
+subtask, so ids cited before the prefix existed stay valid.
 
 Two other words keep their own meaning because they are not units of work. A **track** (A, B or C) is
 one line of work through the epics. A **synchronisation point** (S1, S2, …) is where the
@@ -225,7 +228,7 @@ Header: scope (the RFC + related RFCs with their in-scope level), tracks (A, B,
 ## 4. Directory layout proposed for epic 1 — a tree, each entry tagged with its epic
 ## 5. The epics in detail       — per epic, under `### Epic <n> — <title>`: the epic
                                    estimate line (below), a paragraph, the RFC sections
-                                   owned, and the candidate subtasks with `<n>.<k>` ids
+                                   owned, and the candidate subtasks with `T<n>.<k>` ids
 ## 6. Risks and open points
 ## 7. RFC coverage              — table: RFC section → epic(s); related-RFC sections too
 ```
@@ -354,7 +357,7 @@ use `epic-breakdown` in the document they are reading:
 >   MUST NOT into numbered requirements, estimates each subtask in man-days and suggests
 >   the pull requests. A human doing it by hand follows the same skill.
 > - **Epic and subtask, nothing else.** The units of work are the epic and its subtasks,
->   with subtask ids `<epic>.<n>` (`4.3`). No other word names them: not task, ticket,
+>   with subtask ids `T<epic>.<n>` (`T4.3`). No other word names them: not task, ticket,
 >   story, step or phase, in headings, tables, ids or prose.
 > - **The epic stands alone.** Copy the numbered rules below into the epic document word
 >   for word, under their own heading — the rules only, not this instruction, which speaks
@@ -456,7 +459,7 @@ use `epic-breakdown` in the document they are reading:
 - Every Step 0 default and every divergence from an existing plan is listed in the header
   or in §6.
 - No graph is in ASCII art.
-- Units of work are called epics and subtasks everywhere, and subtask ids are `<epic>.<n>`:
+- Units of work are called epics and subtasks everywhere, and subtask ids are `T<epic>.<n>`:
   `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <plan>` turns
   up nothing that names this plan's units.
 - `plan-check.awk` prints only its `TOTAL` line, which matches the `**Plan estimate: …**`
