@@ -700,8 +700,8 @@ func TestCloseRetriedAfterLandedDelete(t *testing.T) {
 	if !errors.Is(err, errWrite) {
 		t.Fatalf("a close whose delete is answered an error: %v, want that error", err)
 	}
-	if _, err := f.Opens().Close(ctx, a, refOf(o), Seqs{}); err != nil {
-		t.Errorf("the close retried: %v, want closed", err)
+	if res, err := f.Opens().Close(ctx, a, refOf(o), Seqs{}); err != nil || res.Orphan {
+		t.Errorf("the close retried: %+v, %v; want closed, its linked file no orphan", res, err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("another client's write open after the retried close: %v", err)
