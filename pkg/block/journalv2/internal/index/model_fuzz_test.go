@@ -598,7 +598,8 @@ var modelSeeds = [][]byte{
 }
 
 // plantInputs returns every seed plus sixty-four generated inputs, so the
-// planted-bug test runs a corpus the size of a CI pass without fuzzing.
+// planted-bug test runs a corpus of a few dozen inputs, on every test pass,
+// without fuzzing.
 func plantInputs() [][]byte {
 	out := slices.Clone(modelSeeds)
 	rng := rand.New(rand.NewPCG(4, 12))
