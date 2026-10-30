@@ -145,3 +145,18 @@ func TestUnlinkAfterLastBatchLeavesNoHold(t *testing.T) {
 		t.Errorf("after a restart and grace's end: %d records still hold the unlinked source", len(got))
 	}
 }
+
+// A clone's hold denies nothing: an SMB rename replacing its source is
+// admitted while the clone runs.
+func TestCloneHoldAdmitsReplaceOfItsSource(t *testing.T) {
+	f := newFixture(t)
+	s := f.caller(t, smb("pc-a"))
+	src, _ := f.fileIn(t, "src")
+	dst, _ := f.fileIn(t, "dst")
+	if _, err := f.Opens().CloneOpen(ctx, src, f.cloned(t, src, dst)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Checks().CheckChange(ctx, s, src, nil, ChangeRename|ChangeReplace); err != nil {
+		t.Errorf("an SMB rename replacing a source only a clone holds: %v, want nil", err)
+	}
+}

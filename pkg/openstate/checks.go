@@ -225,8 +225,12 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 		if what&(ChangeRename|ChangeAddEntry) != 0 && e.pending != nil {
 			return ErrDeletePending
 		}
-		if smb && what&ChangeReplace != 0 && len(e.opens) > 0 {
-			return ErrAccess
+		if smb && what&ChangeReplace != 0 {
+			for _, h := range e.opens {
+				if h.Clone == nil { // a clone's hold denies nothing
+					return ErrAccess
+				}
+			}
 		}
 		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
 			var hs []*open
