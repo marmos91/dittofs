@@ -180,7 +180,7 @@ func FuzzSeal(f *testing.F) {
 	f.Add(golden, uint64(testSegment), testOffset+32)
 	f.Add(golden, uint64(testSegment)+1, testOffset)
 
-	f.Add(AppendSealMarker(nil, otherIdentity, testSealMarker), uint64(testSegment), testOffset)
+	f.Add(AppendSealMarker(nil, &otherIdentity, testSealMarker), uint64(testSegment), testOffset)
 
 	f.Add(slices.Clone(golden[:31]), uint64(testSegment), testOffset)
 	f.Add(append(slices.Clone(golden), 0x00), uint64(testSegment), testOffset)
@@ -195,7 +195,7 @@ func FuzzSeal(f *testing.F) {
 	f.Add(reserved, uint64(testSegment), testOffset)
 
 	f.Fuzz(func(t *testing.T, in []byte, segment uint64, offset int64) {
-		m, err := DecodeSealMarker(in, testIdentity, core.SegmentID(segment), offset)
+		m, err := DecodeSealMarker(in, &testIdentity, core.SegmentID(segment), offset)
 
 		if err == nil {
 			if len(in) != SealMarkerSize {
@@ -207,7 +207,7 @@ func FuzzSeal(f *testing.F) {
 			if m.Segment != core.SegmentID(segment) || m.Offset != offset {
 				t.Fatalf("decoded %+v, want the segment %d and offset %d it was read at", m, segment, offset)
 			}
-			if got := AppendSealMarker(nil, testIdentity, m); !slices.Equal(got, in) {
+			if got := AppendSealMarker(nil, &testIdentity, m); !slices.Equal(got, in) {
 				t.Fatalf("AppendSealMarker =\n% x\nwant the input\n% x", got, in)
 			}
 			return
@@ -224,7 +224,7 @@ func FuzzSeal(f *testing.F) {
 			if got, want := binary.LittleEndian.Uint32(in[28:32]), wantSeededCRC(testIdentity, in[0:28]); got != want {
 				t.Fatalf("a marker reported at the wrong place with checksum 0x%08x, want the seeded CRC32C of [0,28): 0x%08x", got, want)
 			}
-			if got := AppendSealMarker(nil, testIdentity, m); !slices.Equal(got, in) {
+			if got := AppendSealMarker(nil, &testIdentity, m); !slices.Equal(got, in) {
 				t.Fatalf("a marker reported at the wrong place re-encodes as\n% x\nwant the input\n% x", got, in)
 			}
 			if m.Segment == core.SegmentID(segment) && m.Offset == offset {

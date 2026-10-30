@@ -17,7 +17,7 @@ import (
 func TestSealMarkerGolden(t *testing.T) {
 	golden := readGolden(t, "seal")
 
-	encoded := AppendSealMarker(nil, testIdentity, testSealMarker)
+	encoded := AppendSealMarker(nil, &testIdentity, testSealMarker)
 	if !bytes.Equal(encoded, golden) {
 		t.Errorf("AppendSealMarker =\n% x\nwant the golden file\n% x", encoded, golden)
 	}
@@ -27,7 +27,7 @@ func TestSealMarkerGolden(t *testing.T) {
 		t.Errorf("golden file =\n% x\nwant raw's bytes\n% x", golden, other)
 	}
 
-	m, err := DecodeSealMarker(golden, testIdentity, testSegment, testOffset)
+	m, err := DecodeSealMarker(golden, &testIdentity, testSegment, testOffset)
 	if err != nil {
 		t.Fatalf("DecodeSealMarker(golden) = %v, want no error", err)
 	}
@@ -43,7 +43,7 @@ func TestAppendSealMarkerAppendsToDst(t *testing.T) {
 	prefix := []byte{0xee, 0xbe, 0xef}
 	golden := readGolden(t, "seal")
 
-	if got := AppendSealMarker(slices.Clone(prefix), testIdentity, testSealMarker); !bytes.Equal(got, append(slices.Clone(prefix), golden...)) {
+	if got := AppendSealMarker(slices.Clone(prefix), &testIdentity, testSealMarker); !bytes.Equal(got, append(slices.Clone(prefix), golden...)) {
 		t.Errorf("AppendSealMarker with a prefix =\n% x\nwant the prefix then the golden file\n% x", got, append(prefix, golden...))
 	}
 }
@@ -67,7 +67,7 @@ func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 		{"read at another offset", testSegment, testOffset + 32},
 		{"read in another segment", testSegment + 1, testOffset},
 	} {
-		m, err := DecodeSealMarker(golden, testIdentity, c.segment, c.offset)
+		m, err := DecodeSealMarker(golden, &testIdentity, c.segment, c.offset)
 		if !errors.Is(err, ErrWrongPlace) || errors.Is(err, ErrDamaged) {
 			t.Fatalf("%s: DecodeSealMarker = %v, want an error matching ErrWrongPlace and not ErrDamaged", c.name, err)
 		}
@@ -82,9 +82,9 @@ func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 		identity core.JournalID
 	}{
 		{"read under another identity", golden, otherIdentity},
-		{"a marker written under another identity", AppendSealMarker(nil, otherIdentity, testSealMarker), testIdentity},
+		{"a marker written under another identity", AppendSealMarker(nil, &otherIdentity, testSealMarker), testIdentity},
 	} {
-		m, err := DecodeSealMarker(c.b, c.identity, testSegment, testOffset)
+		m, err := DecodeSealMarker(c.b, &c.identity, testSegment, testOffset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Fatalf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
@@ -131,7 +131,7 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 		{"non-zero reserved bytes at 24", reserved24},
 	}
 	for _, c := range cases {
-		m, err := DecodeSealMarker(c.b, testIdentity, testSegment, testOffset)
+		m, err := DecodeSealMarker(c.b, &testIdentity, testSegment, testOffset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
@@ -148,7 +148,7 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 		for bit := range 8 {
 			b := slices.Clone(golden)
 			b[i] ^= 1 << bit
-			if _, err := DecodeSealMarker(b, testIdentity, testSegment, testOffset); !errors.Is(err, ErrDamaged) {
+			if _, err := DecodeSealMarker(b, &testIdentity, testSegment, testOffset); !errors.Is(err, ErrDamaged) {
 				t.Errorf("golden with byte %d bit %d flipped: DecodeSealMarker = %v, want an error matching ErrDamaged", i, bit, err)
 			}
 		}
@@ -164,7 +164,7 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 	// Offset -1 encodes as 0xffffffffffffffff: the least in-range above
 	// MaxInt64.
-	b := AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: -1})
+	b := AppendSealMarker(nil, &testIdentity, SealMarker{Segment: testSegment, Offset: -1})
 
 	for _, c := range []struct {
 		name   string
@@ -173,7 +173,7 @@ func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 		{"read at a real offset", testOffset},
 		{"read at the negative offset it decodes as", -1},
 	} {
-		m, err := DecodeSealMarker(b, testIdentity, testSegment, c.offset)
+		m, err := DecodeSealMarker(b, &testIdentity, testSegment, c.offset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
