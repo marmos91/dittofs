@@ -63,7 +63,7 @@ epic's document already exists and the user did not ask to replace it.
 | 1 | Plan path and epic number | **required**, from the request |
 | 2 | Output path | default `docs/internals/planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
 | 3 | Track | A, B, C or the team, from the plan's §2; never ask for names |
-| 4 | Existing epic issue | `gh issue list --label epic --state all --search "epic <k>"`. If one exists, note its number; if issues are ever created (Step 6), there must not be a second one |
+| 4 | Existing epic issue | `gh issue list --state all --label epic --label rfc-<n>-epic-<k>` (both labels must match; a text search for "epic <k>" also returns other epics). If one exists, note its number; if issues are ever created (Step 6), there must not be a second one |
 
 Ask for whatever is missing with `AskUserQuestion`, in one batch, before reading further.
 
@@ -90,11 +90,14 @@ reviewer can check the list against the RFC without rereading it.
 list and pull every normative line:
 
 ```bash
-sed -n '<from>,<to>p' <rfc> | rg -n -w 'MUST( NOT)?|SHALL( NOT)?|REQUIRED|SHOULD( NOT)?'
+sed -n '<from>,<to>p' <rfc> | rg -n -i -w 'must( not)?|shall( not)?|required|should( not)?'
 ```
 
-The RFCs use RFC 2119 key words in capitals, so the match is case-sensitive. Then run a
-second, case-insensitive sweep for invariants stated in prose, which the RFCs write often:
+The match is case-insensitive on purpose. Most RFCs write the RFC 2119 key words in
+capitals, but some write them in lower case only, and a case-sensitive sweep would return
+an empty table for those. A lower-case hit in prose that binds nothing maps to "not an
+obligation" in 2.4. Then run a second, case-insensitive sweep for invariants stated in
+prose, which the RFCs write often:
 `never`, `always`, `at most`, `at least`, `only`. Finally, collect the numbers the sections
 put on the epic: cost bounds (`O(log n)`), limits, sizes and performance targets in tables,
 and the RFC's test rows (a §9-style table) that name this area.
@@ -211,8 +214,17 @@ Numbers are plain: no `~`, no ranges, no unit inside the number. Compute the tot
 script, never by hand:
 
 ```bash
-grep -E '^\*\*Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]' <epic-doc> |
+grep -E '^\*\*Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$' <epic-doc> |
   awk '{n++; d+=$4} END{printf "%d subtasks, %g man-days\n", n, d}'
+```
+
+The pattern is strict, so a malformed line (`2,5`, `~2`, `0.3`, a missing word) is not
+summed. Find any with this check, which must print nothing; then check that the header's
+epic line equals the script's output:
+
+```bash
+grep -nE '^\*\*(Epic|Subtask) [0-9]+(\.[0-9]+[a-z]?)? estimate:' <epic-doc> |
+  grep -vE ':\*\*(Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days|Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days)\.\*\*$'
 ```
 
 `grep -E '^\*\*(Epic|Subtask) [0-9.]+[a-z]? estimate:' <epic-doc>` lists the whole estimate.
@@ -235,14 +247,19 @@ Use this structure. Section numbers are fixed so epic documents can be compared.
 
 ```
 # Epic <k>: <component> v2 <title>
-Header: **Sources:** the RFC sections owned, with links. **Track:** A, B, C or the team.
-        **Epic <k> estimate: <n> subtasks, <d> man-days.** **Depends on:** synchronisation
-        points and epics, naming what each provides. **Blocks:** epics, and what they need.
+Header, one field per line: **Sources:** the RFC sections owned, with links.
+        **Track:** A, B, C or the team.
+        **Epic <k> estimate: <n> subtasks, <d> man-days.**   ← alone on its line, so a
+                                                               grep anchored on ^ finds it
+        **Depends on:** synchronisation points and epics, naming what each provides.
+        **Blocks:** epics, and what they need.
 
 ## 1. Goal                     — what exists at the end; "at the end of the epic" bullets
 ### 1.1 In scope
 ### 1.2 Out of scope           — and which epic owns each item
-## 2. General rules for each epic — the plan's §1.5 rules, copied word for word
+## 2. General rules for each epic — the plan's numbered §1.5 rules, copied word for word;
+                                    not the instruction that opens §1.5, which speaks
+                                    of "this plan"
 ### 2.1 How the rules apply    — table: rule | subtasks | how; a rule that does not apply
                                  is named, with the reason
 ## 3. Requirements and invariants — the R-tables from Step 2
@@ -301,7 +318,8 @@ that is estimated and tracked. A subtask is not a pull request.
 ```
 
 Compute each pull request's man-days from the subtask lines, for example
-`grep -E '^\*\*Subtask 4\.(1|2|4) estimate:' <epic-doc> | awk '{d+=$4} END{print d}'`. The
+`grep -E '^\*\*Subtask 4\.(1|2|4)[a-z]? estimate:' <epic-doc> | awk '{d+=$4} END{print d}'`
+(the `[a-z]?` keeps split subtasks such as `4.2a` and `4.2b` in the sum). The
 pull requests' man-days add up to the epic total. Each pull request's description names the
 RFC and every subtask it delivers, one id per mention (`RFC 1, subtask 4.1, subtask 4.2`),
 and says when it finishes a subtask only in part, so that it can be mapped to the subtasks
