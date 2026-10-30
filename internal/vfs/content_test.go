@@ -18,6 +18,9 @@ type fakeContent struct {
 	files    map[entity.FileID][]byte
 	versions uint64
 	verifier vfs.Verifier
+	// truncating, when set, runs as Truncate is called, before it stages
+	// anything.
+	truncating func(entity.FileID)
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -62,6 +65,9 @@ func (c *fakeContent) Read(ctx context.Context, f entity.FileID, off int64, dst 
 }
 
 func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64) error {
+	if c.truncating != nil {
+		c.truncating(f)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.files[f] = grow(c.files[f], size)[:size]
