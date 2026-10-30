@@ -44,8 +44,9 @@ func TestSyscallTableIsReal(t *testing.T) {
 	}
 }
 
-// TestNoCallBesideTheTable fails on a golang.org/x/sys/unix or syscall name
-// used outside calls.go other than a constant the package passes as data, and
+// TestNoCallBesideTheTable fails on a golang.org/x/sys/unix,
+// golang.org/x/sys/windows or syscall name used outside the tables, calls.go
+// and calls_windows.go, other than a constant the package passes as data, and
 // on Sync or Fd taken from a field such as f.f, an *os.File's own fsync or
 // its raw descriptor. A test that swaps the table sees only calls made
 // through it, so a call made beside it would go unseen. It reads every
@@ -60,10 +61,35 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"O_DIRECTORY": true,
 		"O_CLOEXEC":   true,
 		"EINTR":       true,
+
+		// Windows: constants, the handle, overlapped and file information
+		// types, and the conversion of a path to UTF-16, which makes no
+		// system call.
+		"GENERIC_READ":               true,
+		"GENERIC_WRITE":              true,
+		"FILE_SHARE_READ":            true,
+		"FILE_SHARE_WRITE":           true,
+		"FILE_SHARE_DELETE":          true,
+		"CREATE_NEW":                 true,
+		"OPEN_EXISTING":              true,
+		"FILE_ATTRIBUTE_NORMAL":      true,
+		"FILE_FLAG_BACKUP_SEMANTICS": true,
+		"FileAllocationInfo":         true,
+		"FileEndOfFileInfo":          true,
+		"ERROR_INVALID_PARAMETER":    true,
+		"Handle":                     true,
+		"Overlapped":                 true,
+		"ByHandleFileInformation":    true,
+		"UTF16PtrFromString":         true,
 	}
 	raw := map[string]bool{
-		"golang.org/x/sys/unix": true,
-		"syscall":               true,
+		"golang.org/x/sys/unix":    true,
+		"golang.org/x/sys/windows": true,
+		"syscall":                  true,
+	}
+	tables := map[string]bool{
+		"calls.go":         true,
+		"calls_windows.go": true,
 	}
 
 	entries, err := os.ReadDir(".")
@@ -74,7 +100,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "calls.go" {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || tables[name] {
 			continue
 		}
 
