@@ -349,7 +349,7 @@ one, as in [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface):
 package vfs // internal/vfs
 
 type Deps struct {
-	Meta     *metadata.Store   // RFC 16 §3.2: the views the filesystem declares
+	Meta     *kvstore.Store    // RFC 16 §3.2 (pkg/metadata/kvstore): the views the filesystem declares
 	Open     *openstate.Table  // RFC 14: open state and client records (§2.2); New keeps only its views
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
 	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests; internal to the filesystem
@@ -2431,7 +2431,10 @@ function or field, on:
   outside it;
 - a call of `Authorize` or `Granted` outside `authz`;
 - any store, engine or open-state import in `admit`, `pseudofs` or `lockorder`,
-  which reach the store only through the narrow reads they declare.
+  which reach the store only through the narrow reads they declare;
+- any use of RFC 16's `ControlPlane` view anywhere under `internal/vfs`: it is
+  the management API's, and the filesystem reads only the views it declares
+  (§10 item 4).
 
 It (V32), and §9's allowlist test, is seeded with one deliberate violation of
 each rule in its own test data and must report it.
