@@ -54,6 +54,16 @@ var testSegmentHeader = SegmentHeader{
 	Stream:      testStream,
 }
 
+// testOffset is the seal marker's own offset in the segment: raw's test
+// value, a byte range no other field's.
+const testOffset int64 = 0x2827262524232221
+
+// testSealMarker is the marker the seal golden holds: it seals testSegment
+// at testOffset, written under testIdentity, so a decode under that
+// identity, at that segment and offset, succeeds and one under any other
+// does not.
+var testSealMarker = SealMarker{Segment: testSegment, Offset: testOffset}
+
 // readGolden reads testdata/golden/<name>.hex: # to end of line a comment,
 // whitespace ignored, the rest hex. It takes the interface of both testing.T
 // and testing.F, so a fuzz test's seeds read it too.
@@ -105,4 +115,18 @@ func rechecksum(b []byte) {
 // checksum.
 func rechecksumHeader(b []byte) {
 	binary.LittleEndian.PutUint32(b[44:48], wantCRC(b[0:44]))
+}
+
+// wantSeededCRC is the standard library's CRC32C of identity followed by b,
+// computed here and not by the package, on a fresh slice, so a test never
+// checks the codec against itself.
+func wantSeededCRC(identity core.JournalID, b []byte) uint32 {
+	return crc32.Checksum(append(identity[:], b...), crc32.MakeTable(crc32.Castagnoli))
+}
+
+// rechecksumSeal stores the CRC32C of identity then [0,28) at [28,32) of a
+// seal marker, so an edit fails a decode only for the edit, not for its
+// stale checksum.
+func rechecksumSeal(b []byte, identity core.JournalID) {
+	binary.LittleEndian.PutUint32(b[28:32], wantSeededCRC(identity, b[0:28]))
 }
