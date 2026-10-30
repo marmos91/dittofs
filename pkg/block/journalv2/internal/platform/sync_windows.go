@@ -1,12 +1,21 @@
 package platform
 
 import (
-	"fmt"
+	"errors"
 	"io/fs"
 
 	"golang.org/x/sys/windows"
+)
 
-	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
+const (
+	// dirAccess is what SyncDir opens the directory for: FlushFileBuffers
+	// needs a handle with write access.
+	dirAccess = windows.GENERIC_WRITE
+
+	// dirShare lets SyncDir's handle refuse no other open of the directory,
+	// so a create, rename or remove in it is never refused while the
+	// directory is being flushed.
+	dirShare = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
 )
 
 // Sync is FlushFileBuffers on the file's own handle (RFC 28 Appendix A:
@@ -52,12 +61,68 @@ func (f *file) Sync() error {
 	return nil
 }
 
-// SyncDir is not implemented yet: the directory flush of RFC 28 Appendix A
-// is still to be written.
+// SyncDir makes the directory's entries durable the way Windows can. There is
+// no directory sync there: a create, rename or unlink is made durable by
+// opening the directory with backup semantics, without which a directory
+// does not open, and calling FlushFileBuffers on it (RFC 28 Appendix A: "a
+// create, rename or unlink is made durable by opening the directory with
+// backup semantics and calling `FlushFileBuffers` on it, which NTFS
+// honours"). A new file needs it before its records are durable (RFC 28 §2.2:
+// "Syncing a file makes its bytes durable, not its entry in the directory").
+// SyncDir opens the directory its path names now and closes the handle before
+// returning, whether the flush succeeded or not. It returns the one error
+// that happened as itself, and both through errors.Join when the flush and
+// the close both failed.
 func (o *OS) SyncDir() error {
-	return &fs.PathError{
-		Op:   "open",
-		Path: o.dir,
-		Err:  fmt.Errorf("%w: directory flush", core.ErrNotImplemented),
+	p, err := windows.UTF16PtrFromString(o.dir)
+	if err != nil {
+		return &fs.PathError{
+			Op:   "open",
+			Path: o.dir,
+			Err:  err,
+		}
 	}
+
+	h, err := o.calls.createFile(
+		p,
+		dirAccess,
+		dirShare,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return &fs.PathError{
+			Op:   "open",
+			Path: o.dir,
+			Err:  err,
+		}
+	}
+
+	var errs []error
+
+	if err := o.calls.flushFileBuffers(h); err != nil {
+		errs = append(errs, &fs.PathError{
+			Op:   "FlushFileBuffers",
+			Path: o.dir,
+			Err:  err,
+		})
+	}
+
+	// A close error after a good flush is reported too: a handle that does
+	// not close was not the one the flush was meant for.
+	if err := o.calls.closeHandle(h); err != nil {
+		errs = append(errs, &fs.PathError{
+			Op:   "CloseHandle",
+			Path: o.dir,
+			Err:  err,
+		})
+	}
+
+	if len(errs) == 1 {
+		return errs[0]
+	}
+
+	return errors.Join(errs...)
 }
