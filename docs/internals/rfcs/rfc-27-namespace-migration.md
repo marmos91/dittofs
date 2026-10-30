@@ -276,7 +276,8 @@ machine-generation identifier, where the platform offers one that changes when
 a virtual machine is cloned or restored from an image, and compares it with the
 one it recorded. A difference means this process runs on a copy: it mints a new
 instance part, and holds no namespace — it does not write, collect or delete in
-any — until an operator states which of the copies is the installation. A copy
+any — until an operator states which of the copies is the installation
+(`AcceptCopy`, below). A copy
 is never silently a second holder. A copy may hold a metadata store older than
 the one last served — a VM restored from an image — and nothing records that
 it is older, so once the operator confirms a copy, or the nonce check
@@ -308,6 +309,31 @@ that crashed between the two recognise its own claim at restart. Two copies
 started at once from one image fence each other within one `Recheck` period: the
 one that reads the other's nonce stops, and only one keeps writing.
 
+**At start every node reads the claim, and none writes it.** GC's `Claim`
+([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) reads it before any share of the namespace attaches, and its
+answer decides them ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5): a claim naming this installation
+with a nonce it recorded is **held**; with a nonce it never recorded, a
+**copy**, whose shares serve reads and refuse writes; one naming another
+installation, or `released`, is **foreign**, and its shares are not attached. The
+start's rewrite is the first `Recheck` of the first partition's holder, so one
+process per namespace writes the claim, as at every later period.
+
+**An operator's acceptance ends a copy's fence.** `AcceptCopy` records the nonce
+the claim carries as *accepted* in the namespace's nonce record: the operator's
+statement that this installation, not the one that wrote that nonce, holds the
+namespace. The next `Claim` settles the store ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)), records that
+nonce as last written, and answers held; the holder's next `Recheck` then
+rewrites the claim with a fresh nonce.
+
+**A new namespace's first claim is written by the path that creates it** — the
+API's create, a re-home's new namespace ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), a restore into a new
+namespace ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)), an import — before any share of it attaches. It
+puts the claim `owned` as every claim put does (below), refusing a create where a
+claim already exists at the prefix, and sets `claimed` in the nonce record in the
+transaction that records the nonce written. Until then `Claim` answers
+**pending**. Once `claimed` is set, a missing claim is **foreign**: something
+deleted it, and the namespace is not new.
+
 > decision: which copy survives is decided by timing, not by which is the
 > original, and the alert names both so an operator can swap them. The cost is
 > one claim put per namespace per `Recheck` period. Make the claim a conditional
@@ -335,7 +361,7 @@ through it:
   periods on a clock that may run slow, has fenced itself.
 
 **Every claim put records its nonce first.** Every path that writes a claim — a
-start, a `Recheck`, a new namespace's first claim, a move's or a recovery's import, a re-home's new namespace
+`Recheck`, a new namespace's first claim, a move's or a recovery's import, a re-home's new namespace
 ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), a restore into a new namespace ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)) — records the nonce it
 intends to write in its own metadata store before the put, and records it as the
 last written after, as steps 2–3 above do. The record of a namespace's claim
@@ -1149,6 +1175,12 @@ type Migration interface {
 	// ReleasePin deletes A's export pin on a master key for one move, once the
 	// operator states B holds no retained export naming it (§2.4).
 	ReleasePin(ctx context.Context, ns NamespaceID, move MoveID, masterKey MasterKeyID) error
+}
+// Claims holds the operator's statements about a namespace's claim (§2.1).
+type Claims interface {
+	// AcceptCopy records the nonce the claim now carries as accepted: this
+	// installation, a copy, holds the namespace. The next Claim settles and serves.
+	AcceptCopy(ctx context.Context, ns NamespaceID) error
 }
 
 type MoveID [16]byte    // minted by A when it writes a move's export; logged and reported with the move

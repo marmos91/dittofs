@@ -522,22 +522,27 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    every component holds the records' values before any of them starts.
 5. **The content side and the state the server reads**, in build order:
    **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the remote
-   stores; then, for each namespace a share this node serves names, GC's
-   `Claim` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), which runs
-   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s start-time claim check before the engine serves a binding of
-   that namespace or GC starts on it, and which fences a namespace it finds
-   copied, as [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, rather than failing the
-   start; the engine, in
-   [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of shares this node serves in
-   one call; GC, with each served share's namespace; open state for the shards
+   stores; then GC's `Claim` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) for every namespace GC will hold,
+   which reads the namespace's claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and decides that namespace's
+   shares before the engine serves any of them or GC starts on it:
+   - **held**: they serve;
+   - **copy** — the claim names this installation with a nonce it never
+     recorded: they are bound `Fenced`, serving reads and refusing writes as
+     [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, until an operator accepts the copy;
+   - **foreign** — the claim names another installation, is `released`, or is
+     missing on a namespace whose claim this installation wrote — and
+     **pending** — a namespace still being created — and a `Claim` that failed:
+     they are not attached, and `Stats` names them. Reconcile runs `Claim`
+     again and attaches them once it answers held.
+
+   None of these fails the start. Then the engine, in
+   [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of attached shares in
+   one call; GC, with each namespace `Claim` answered held or copy; open state for the shards
    this node acquires, handed the built server as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
-   created while the node serves is attached alone. If no share this node
-   serves names its namespace yet, the node first runs `Claim` for it, which
-   for a namespace this installation has just created, with no claim and no
-   recorded nonce, writes its first claim; a namespace that arrived by an
-   import is not checked again, since the import took its claim
-   ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+   created while the node serves is attached alone, decided by its namespace's
+   `Claim` the same way; the node runs that `Claim` first when no share on the
+   node names the namespace yet.
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
    gateway, the client-address agent and the pNFS data server.
 7. The **operation runner** (§4.6), which resumes the operations this node
