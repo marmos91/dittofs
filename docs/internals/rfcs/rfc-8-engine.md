@@ -28,9 +28,9 @@ tags:
 content surface the filesystem service ([RFC 17](rfc-17-vfs.md)) calls.
 
 Conventions, RFC 2119 keywords and test tiers are set once in the
-[index](rfc-index.md). This document specifies behaviour, not the current code;
-[Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists where the code differs, as defects to fix, never
-rules to build around. Where it chooses a policy the set left open, the choice is
+[index](rfc-index.md). This document specifies behaviour, not the current code:
+the engine it describes is built fresh, beside today's, which it replaces
+rather than fixes. Where it chooses a policy the set left open, the choice is
 labelled **proposal** and names the measurement that would overturn it.
 
 ---
@@ -160,8 +160,7 @@ operation, rules first: write ([§4](#4.%20Write)), flush ([§5](#5.%20Commit%3A
 on deduplication is deferred and can be skipped), read ([§7](#7.%20Read)), truncate and
 deallocate ([§8](#8.%20Truncate%2C%20deallocate%20and%20release)), clone ([§9](#9.%20Clone)). [§10](#10.%20Local%20space)–[§11](#11.%20Health%20and%20failure) cover local space and health, [§12](#12.%20Interface) the
 interface the filesystem service calls, [§13](#13.%20Invariants) the invariants in one table. [§14](#14.%20Observability)–[§15](#15.%20Conformance)
-(metrics, tests, benchmarks) and Appendix A (where today's code differs) can
-wait for a second reading.
+(metrics, tests, benchmarks) can wait for a second reading.
 
 ### Scenarios
 
@@ -3408,52 +3407,3 @@ enough to exhaust the local device's write cache.
 7. **Who holds the cut gate** (`Deps.Gate`, [§2.6](#2.6%20Dependencies%20and%20wiring)): neither
    [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) nor [RFC 17](rfc-17-vfs.md) names the component that holds the per-shard
    cut gate every existence commit passes.
-
-## Appendix A — where the current code differs
-
-One line per requirement.
-
-| Requirement | Code today |
-| --- | --- |
-| [§2.1](#2.1%20Content%20composition) one composition root, no setters | split between today's control-plane runtime and the engine; setters wire the remote store and metrics on a serving engine |
-| [§2.1](#2.1%20Content%20composition) every share has a remote store | a share may run with a local sink that reports extents offloaded |
-| [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | about fifteen capabilities negotiated by assertion, each with a silent fallback |
-| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) one journal per device | one journal per share |
-| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings refused | invalid chunking settings replaced by defaults; no profile record |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) start order | no floor, no existence replay, no ledger; a bounded join, then close under running loops |
-| [§2.7](#2.7%20The%20version%20limit) version limit | none: no version counter is shared with metadata, so nothing bounds versions a crash may reissue |
-| [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) `Draw` | a metadata change takes its change attribute from the store's clock (`ctime`), never from the journal |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone-kind source open | no record holds the source during a clone, and nothing holds back removals of its destination |
-| [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§6.2](#6.2%20When%20a%20file%20is%20offered) offload policy here | thresholds are journal configuration |
-| [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) the engine orders a write; existence at the stability point | adapters call authorise and existence around a stage-only write |
-| [§6.2](#6.2%20When%20a%20file%20is%20offered), [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload never stopped | passes skipped while the remote is unhealthy, cleared only by the probe |
-| [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) narrow per-file guard | a striped journal lock and a striped engine lock; removals do not take it; the partition's offload lock is held for the whole pass, upload included |
-| [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfers survive removals | no removal is checked at commit |
-| [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) assembly streamed | assembly in the carver; chunks copied through three buffers; adopted chunks count toward the target |
-| [§6.5](#6.5%20The%20dedup%20oracle) V1 offload always carries | offload looks chunks up and adopts them across files, behind an in-process adoption guard |
-| [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted name, intent before put | random names, no intent; the name is not recomputable from the header |
-| [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) per missing extent, hole vs uncarved | the whole window fetched; an uncovered extent reads as zeros |
-| [§7.2](#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order), [§7.3](#7.3%20Filling%20is%20a%20decision) reply independent of fill | every fetch fills and the read re-reads the journal |
-| [§7.4](#7.4%20The%20speculator) pre-warm yields | runs until the journal refuses |
-| [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) allocation from the hole set | answered from the journal joined with the refs |
-| [§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves) re-resolution | once only; a second resolution naming no location reads as "not uploaded yet" |
-| [§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) eviction and refusal here | the journal evicts and refuses for itself |
-| [§10.5](#10.5%20GC%20is%20not%20scheduled%20here) GC not scheduled here | a process-wide ticker in the engine layer |
-| [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload in health | a failed pass reaches no health state |
-| [§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service) no component returned | the engine returns its journal and remote store |
-| [§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | writes zeros through the journal |
-| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) commit answered by the journal | a per-share setting makes commit wait for an inline offload |
-| [§12.3](#12.3%20The%20engine%20writes%20no%20residency) no residency writes | the engine marks extents remote and pins journal versions |
-| E1 no dead state | a read cache is started and never consulted |
-
-## Appendix B — Migration
-
-Ordered so the code stops lying first:
-
-1. One composition root, no setters ([Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs), its first three rows).
-2. `Deps`, `New`, `Start` and `Close` on today's engine ([§2.6](#2.6%20Dependencies%20and%20wiring)).
-3. One journal per device ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
-4. The interface of [§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service) beside the old one, and the filesystem service
-   moved to it.
-5. Policy out of the journal ([§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below)).
-6. The old surface deleted.
