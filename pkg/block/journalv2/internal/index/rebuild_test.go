@@ -974,6 +974,29 @@ func doRivalled(t *testing.T, rs []Record, owner, rival core.ShareTag) {
 	}
 }
 
+// TestRebuildFinishReturnsTheReplayError: a replay that fails — a record
+// only damage could leave there, bypassing Feed's validation — finishes the
+// winning Finish with the error, not a nil that would tell the caller its
+// rebuilt index stands.
+func TestRebuildFinishReturnsTheReplayError(t *testing.T) {
+	var fs files
+	id := fid(1)
+	b := newRebuilder(&fs, &Counters{})
+	if err := b.Feed(recd(RecWrite, id, 1, 1, 1, 0, 0, 4)); err != nil {
+		t.Fatal(err)
+	}
+	// A plant Feed would refuse: a zero-length deallocate cannot be fed,
+	// so a shard whose buffer holds one is a damaged log, and the Finish
+	// that replays it must fail with the refusal the replay hit.
+	s := b.shards[hashID(id)>>(64-6)]
+	s.mu.Lock()
+	s.bufs[id] = append(s.bufs[id], bufRec{kind: RecDeallocate, tag: 7, seg: 1, numbers: nums(9, 9), off: 100, n: 0})
+	s.mu.Unlock()
+	if err := b.Finish(ver(0)); !errors.Is(err, core.ErrZeroLength) {
+		t.Fatalf("Finish over a damaged buffer = %v, want ErrZeroLength", err)
+	}
+}
+
 // TestRebuildRefusesAfterFinish: feeding a finished builder is an error that
 // changes nothing, a Record whatever its shape, and it never panics.
 func TestRebuildRefusesAfterFinish(t *testing.T) {
