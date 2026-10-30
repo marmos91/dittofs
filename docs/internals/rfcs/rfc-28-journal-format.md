@@ -1285,7 +1285,7 @@ No flip may produce a read that returns bytes other than the ones written.
 - *reordered writes*: any subset of the unsynced writes survives, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
 
 After each, the reopened journal is compared with the reference model of
-[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes; anything
+[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered, unless a fault lost it at its call, is held and reads its exact bytes; anything
 else is held record by record, each record whole or not at all. A write split
 at a segment cap is several records ([§2.2](#2.2%20Segments)), so it can come back partly held,
 but only as a prefix of its pieces: a segment's seal marker is durable before
