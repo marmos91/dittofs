@@ -14,6 +14,8 @@ type calls struct {
 	fsync     func(fd int) error
 	fdatasync func(fd int) error
 	close     func(fd int) error
+	fallocate func(fd int, mode uint32, off int64, n int64) error
+	pwrite    func(fd int, p []byte, off int64) (n int, err error)
 }
 
 // realTable is the table NewOS gives every OS.
@@ -22,4 +24,6 @@ var realTable = calls{
 	fsync:     unix.Fsync,
 	fdatasync: unix.Fdatasync,
 	close:     unix.Close,
+	fallocate: unix.Fallocate,
+	pwrite:    unix.Pwrite,
 }
