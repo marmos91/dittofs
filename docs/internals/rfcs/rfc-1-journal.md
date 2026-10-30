@@ -1160,7 +1160,7 @@ walk can produce is omitted.
 | `HeadroomBytes` / `RepackReserveBytes` | gauge | the reserved headroom for records without bytes and the repack reserve, each as allocated now ([§6](#6.%20Capacity)) |
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
-| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header, torn tail or torn slot is never one. A damaged segment that an open then empties and unlinks stays counted until the journal closes |
+| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header, torn tail or torn slot is never one. A damaged segment that an open then empties and unlinks stays counted until the journal closes, with its row in the per-segment breakdown of [§4.4](#4.4%20Inspection) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -1921,7 +1921,7 @@ for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3
 and only once repack has carried those records forward. **A failed append ends
 its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole until an
 open ends it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); one whose sync
-fails at open is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
+fails at open is a failed one, even if a torn slot ends it too. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things:
 
