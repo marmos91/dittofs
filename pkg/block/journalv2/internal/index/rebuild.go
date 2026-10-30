@@ -200,6 +200,12 @@ func (b *rebuilder) Feed(r Record) error {
 	}
 	s := b.shards[hashID(r.File)>>(64-6)]
 	s.mu.Lock()
+	// A feeder that read finishing before the claim, then waited on this
+	// lock while Finish drained the shard, is refused here: the drain
+	// marked the shard under the same lock, so its record cannot land in
+	// a buffer the replay has already taken. No test reaches this window
+	// deterministically — it spans the claim and the drain, both inside
+	// Finish — so it is pinned by the claim's handshake tests instead.
 	if s.drained {
 		s.mu.Unlock()
 		return errRebuilt
