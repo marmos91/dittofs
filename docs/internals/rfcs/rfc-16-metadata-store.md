@@ -483,18 +483,51 @@ type ShareGrant struct {
 
 // ExportPolicy is the share's admission and identity-mapping rule, one per
 // share. The filesystem service applies it on every call (RFC 17 §4.9); the
-// file checks behind Files.Authorize never see it (RFC 7 §7.4).
+// file checks behind Files.Authorize never see it (RFC 7 §7.4). The minimums
+// are stored, never derived from Flavors: "Kerberos only" (MinProof Ticket)
+// and "no AUTH_SYS, NTLM allowed" (MinProof Secret) would both be Flavors
+// [krb5]. The protection floor binds every caller, AUTH_SYS included, so
+// PutExportPolicy refuses, ErrInvalid, a policy whose MinProof admits AUTH_SYS
+// (None or Claimed) with a MinProtection above None: a client that could strip
+// a Kerberos session's protection would connect over AUTH_SYS instead. A
+// policy carried over from today's runtime maps its three options so:
+// require_kerberos → MinProof Ticket; else allow_auth_sys → MinProof None;
+// otherwise MinProof Secret. None admits what allow_auth_sys admits today —
+// AUTH_SYS and AUTH_NONE callers and guest sessions — so no existing mount
+// breaks, and a share's SMB guest flag is set when today's adapter-wide guest
+// setting is on and the share has allow_auth_sys, the two gates a guest passes
+// today (RFC 22 §5.1); an administrator who wants AUTH_NONE and guests
+// refused raises MinProof to Claimed. min_kerberos_level krb5i → MinProtection Integrity,
+// krb5p → Privacy, krb5 or none → None; on a share whose mapped MinProof admits
+// AUTH_SYS (None or Claimed) it is None whatever the level, because today's
+// floor bound authenticated callers only, so that share's Kerberos and NTLM
+// callers lose their floor rather than its AUTH_SYS mounts breaking. A share's
+// encrypt_data, or a mapped Privacy, sets SMB's encrypt flag, as today's
+// runtime turns tree encryption on for the first whatever the Kerberos level
+// and for the second on a share's sessions that can encrypt. Both
+// minimums bind every protocol on the share, SMB included: today's runtime
+// already applies the three options to SMB sessions (require_kerberos refuses
+// NTLM, and the level is an NTLM session's signing or encryption floor), so a
+// share's SMB sessions meet the same minimums as its NFS calls, as they do
+// today.
+// MinProtection and SMB's
+// encrypt flag answer different questions: MinProtection decides who gets in
+// (Privacy refuses at tree connect a session that cannot encrypt), and encrypt
+// decides how the server talks to the sessions it admits (it encrypts every
+// one). So encrypt with no minimum still admits a signed-only session and
+// encrypts it, and the two together admit encrypted sessions only.
 type ExportPolicy struct {
-	Share       ShareID
-	Flavors     []AuthFlavor  // admitted, in preference order: SECINFO's answer
-	MinKerberos KerberosLevel // krb5, krb5i, krb5p; zero when Kerberos is not required
-	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
-	Squash      Squash        // none, root, all; root by default (RFC 18 §6.2)
-	Anonymous   Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
-	ManageGIDs  bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
-	ReadOnly    bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
-	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7), guest access (RFC 22 §5.1); all off by default
-	Version     uint64        // raised by every change; the authorisation cache key carries it
+	Share         ShareID
+	Flavors       []AuthFlavor  // offered, in preference order: SECINFO's answer; admission reads the minimums, not this
+	MinProof      ProofKind     // RFC 18 §6.1: None, Claimed (AUTH_SYS), Secret (NTLM), Ticket (Kerberos only); a call proved below it is ErrWrongSecurity
+	MinProtection Protection    // RFC 18 §6.1: None, Integrity (krb5i, SMB signing), Privacy (krb5p, SMB encryption); None when MinProof admits AUTH_SYS
+	Clients       []ClientRule  // first match decides; no match refuses. Empty admits every client
+	Squash        Squash        // none, root, all; root by default (RFC 18 §6.2)
+	Anonymous     Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
+	ManageGIDs    bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
+	ReadOnly      bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
+	SMB           SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7), guest access (RFC 22 §5.1); all off by default
+	Version       uint64        // raised by every change; the authorisation cache key carries it
 }
 
 // ClientRule admits or refuses clients by address range or netgroup, and may
@@ -869,11 +902,13 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
 2. **Snapshots.** With `delete`, each snapshot is deleted through RFC 12's
    serial deletion. With `detach`, nothing is deleted yet: step 4 keeps what the
    snapshots see.
-3. **Live state and journal**, per shard. The engine moves the share's storage binding
-   to `removing` ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), which stops admission and joins every call, clone,
-   pass and batch already in flight, and waits for the filesystem service's
-   count of calls admitted to the share to reach zero
-   ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), which joins the namespace calls admitted before the
+3. **Live state and journal**, per shard, run by the node that is the shard's
+   primary, once `st` reaches step 3, for every such shard whose `rm` row is
+   not yet offloaded, while serving and again at `Node.Start`. It moves the share's storage binding
+   to `removing` ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), which stops the engine's admission and joins every call, clone,
+   pass and batch already in flight, and calls the filesystem's `JoinShare`,
+   which waits for its count of calls admitted to the share to reach zero
+   ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and so joins the namespace calls admitted before the
    mark — a late `Create` among them — that never enter the engine. Every open, lock, lock waiter, caching
    grant, watch, layout and copy under the share then ends without a recall
    (`DropShare` with the removed reason, [RFC 14 §11](rfc-14-open-state.md#11.%20Interface)): the adapter is told of each through
@@ -1048,7 +1083,8 @@ The views are defined where their semantics are:
 | `Namespace`, `Files`, `Capacity` | names, attributes, ACLs, xattrs, streams, statfs and usage | [RFC 7](rfc-7-namespace-metadata.md) |
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
 | `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number, and `NextID(kind)`, which issues client, open and lock IDs from `IDS‖kind`; never caching grants or watches, which are never durable | [RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring) |
-| `Principals`, `Records`, `Minter` | identity's lookups and a share's policy, its reads of one record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
+| `ShareIndex` | the share list as admission and the pseudo-filesystem read it on every call: one share with its export policy, a share by name or path, the list and its version, a netgroup; it writes nothing | this RFC, for [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
+| `Principals`, `Records`, `Minter` | identity's lookups, a user's record and a share's policy, its reads of one group's record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
 | `Lifecycle` | a device's journal identity, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
 | `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
 
@@ -1064,6 +1100,9 @@ type Principals interface {
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	// A caller of Grant reads S‖id‖gv before the grants it keys a cache entry on.
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, bool, error) // false: no grant names p; a stored none is (none, true)
+	// User is p's user record: the Disabled flag and the deleted mark
+	// resolution refuses, which a Principal lacks. A deleted user is not found.
+	User(ctx context.Context, p Principal) (User, error)
 	// SharePolicy reads what resolution needs of one share in one snapshot, so a
 	// squash, an anonymous principal and the versions a cache keys on never come
 	// from two different commits.
@@ -1080,11 +1119,26 @@ type SharePolicy struct {
 	GrantVersion  uint64 // S‖id‖gv
 }
 
-// Records reads one principal's record by ID: the spellings, the Disabled flag
-// and the deleted mark that Principals, which answers a Principal only, lacks.
+// Records reads one group's record by ID: the spellings and the deleted mark
+// that Principals, which answers a Principal only, lacks.
 type Records interface {
-	User(ctx context.Context, p Principal) (User, error)
 	Group(ctx context.Context, p Principal) (Group, error)
+}
+
+// ShareIndex is the filesystem service's read view of the share list: what
+// admission and the pseudo-filesystem read on every call (RFC 17 §4.9). It
+// writes nothing, so the service reaches no control-plane write through it.
+// The installation's identity, which the pseudo-filesystem's handles digest
+// (RFC 7 §6.1), is read through the store's Installation, not a view.
+type ShareIndex interface {
+	// Share is one share with its state and its export policy, read in one
+	// snapshot. A share being removed is still found, in its state.
+	Share(ctx context.Context, id ShareID) (Share, ExportPolicy, error)
+	ByName(ctx context.Context, name string) (ShareID, error) // NX‖share‖name, under §2.3.1's fold: what an SMB client names
+	ByPath(ctx context.Context, path string) (ShareID, error) // NP‖path: what an NFS client mounts
+	List(ctx context.Context) (ShareList, []Share, error)     // every share the name index holds, with the version it was read at
+	Version(ctx context.Context) (ShareList, error)           // the version alone: whether a list read earlier is current
+	Netgroup(ctx context.Context, name string) (Netgroup, bool, error) // false: none, which a rule naming it treats as failing closed
 }
 
 // Minter is identity's only write path: the records a first sign-in or lookup
@@ -1151,7 +1205,7 @@ type ControlPlane interface {
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition, expect uint64) error // §2.3.2
 	SetGrant(ctx context.Context, g ShareGrant, expect uint64) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a principal with no file spelling — a machine or an API-only account (RFC 18 §2.4) — is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
 	DeleteGrant(ctx context.Context, share ShareID, p Principal, expect uint64) error // deletes the grant and its GR key, so the principal falls through to its groups' grants, and sets S‖id‖gv to the writing commit's version, so a cache keyed before the deletion misses
-	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does
+	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does; ErrInvalid for a MinProtection above None with a MinProof that admits AUTH_SYS (ExportPolicy)
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
 	SetQuota(ctx context.Context, share ShareID, q Quota, expect uint64) error // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
@@ -1177,7 +1231,7 @@ What each consumer holds:
 | Consumer | Holds |
 | --- | --- |
 | NFS and SMB adapters | `vfs.Service` only ([RFC 17](rfc-17-vfs.md)) |
-| Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, and the engine's content facade |
+| Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, and the engine's content facade; `ShareIndex` and `Installation` for admission and the pseudo-filesystem; `Principals.User` for resolution |
 | Open state ([RFC 14](rfc-14-open-state.md)), `*openstate.Table` | `OpenRecords`: the filesystem service reaches open state only through the table, never the view |
 | Engine | `Existence`, `Content`, `Lifecycle`; `Inspect.Refs` for the reseed only |
 | GC | `Blocks` |
@@ -1255,6 +1309,7 @@ var (
 	_ Existence    = st.Existence()
 	_ Content      = st.Content()
 	_ Blocks       = st.Blocks()
+	_ ShareIndex   = st.ShareIndex()
 	_ Principals   = st.Principals()
 	_ Records      = st.Records()
 	_ Minter       = st.Minter()
@@ -1581,7 +1636,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `GR‖principal‖ShareID` | grant reverse index: one empty key per `ShareGrant`, so deleting a principal finds its grants without a scan of every share; server-wide, so an export carries no row of it and an import writes one per grant it publishes |
 | | `NX‖kind‖name` | name index: user, group and share names → ID, unique within the kind; `name` is the name's case fold — for a user or group simple Unicode case folding, as Windows and directories compare them (RFC 18 §4.6), for a share §2.3.1's fold — and the value holds the original name |
-| | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
+| | `NP‖path` | share path index: path → `ShareID`, unique; `ShareIndex.ByPath` reads it, and the pseudo-filesystem is built from `ShareIndex.List`, which scans `NX‖share` (RFC 17 §4.9) |
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
 | | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
