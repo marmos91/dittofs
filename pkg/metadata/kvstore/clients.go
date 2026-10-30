@@ -214,7 +214,9 @@ func (c Clients) DropShards(ctx context.Context, id entity.ClientID) error {
 }
 
 // Delete removes a client record with its name row and shard marks: an
-// expired or destroyed client, whose state is already released.
+// expired, revoked or destroyed client. An expiry, or the revoke of a client
+// with no owner, deletes it before the client's state is released, so a
+// refused delete releases nothing.
 func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		cl, err := clientIn(tx, id)
