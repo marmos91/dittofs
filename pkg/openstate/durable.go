@@ -219,7 +219,7 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 				// against others. Park it if a client is seen reconnecting one.
 				t.closeByTable(ctx, e, o, &out)
 			default:
-				t.park(e, o, &out)
+				t.park(ctx, e, o, &out)
 			}
 			return nil
 		})
@@ -231,9 +231,10 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 
 // park keeps o, of e, disconnected until its Timeout passes. Its waiters
 // go, a callback one answered not granted: no session is left to hold
-// what they would be granted.
-func (t *Table) park(e *entry, o *open, out *outbox) {
+// what they would be granted. The waiters they held back are served.
+func (t *Table) park(ctx context.Context, e *entry, o *open, out *outbox) {
 	o.parked = t.d.Clock.Elapsed() + o.Durable.Timeout
+	dropped := false
 	for i := 0; i < len(e.waiters); {
 		w := e.waiters[i]
 		if w.Owner.Client != o.Client || w.Open != o.Ref.Token {
@@ -241,6 +242,7 @@ func (t *Table) park(e *entry, o *open, out *outbox) {
 			continue
 		}
 		t.dropWaiter(e, i)
+		dropped = true
 		if w.Wait == WaitCallback {
 			out.over = append(out.over, waitOver{*w, false})
 		}
@@ -248,6 +250,9 @@ func (t *Table) park(e *entry, o *open, out *outbox) {
 	t.idx.Lock()
 	t.parked[e.file] = struct{}{}
 	t.idx.Unlock()
+	if dropped {
+		t.serve(ctx, e, out)
+	}
 }
 
 // reconnects reports whether who may reconnect o at now, presenting m.

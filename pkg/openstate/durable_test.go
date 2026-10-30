@@ -3,6 +3,7 @@ package openstate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sync/atomic"
@@ -728,5 +729,29 @@ func TestRefusedOpenLeavesItsLeaseUnwidened(t *testing.T) {
 	}
 	if err := f.check(); err != nil {
 		t.Errorf("after the refused widening open: %v", err)
+	}
+}
+
+// A disconnect that parks an open serves the waiters its own waiter held
+// back, in that step: the open's waiter goes, and the one behind it is
+// granted.
+func TestParkServesTheWaitersItFrees(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	c, h := f.host(t, "c", 1), f.host(t, "h", 1)
+	file, r := f.fileIn(t, "disk")
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{sh(0, 5)}})
+	r.Access = rd | wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, o), Open: byID(o), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{sh(0, 1)}, Wait: WaitCallback}) // barred by a's waiter
+	f.sink.takeWaits()
+	f.disconnect(t, a, s1)
+	var got []string
+	for _, w := range f.sink.takeWaits() {
+		got = append(got, fmt.Sprintf("%s %v", w.w.Owner.Name, w.granted))
+	}
+	if want := fmt.Sprintf("%s false", smbOwner(a, o).Name); len(got) != 2 || got[0] != want || got[1] != "h true" {
+		t.Errorf("the disconnect raised %q, want a's waiter not granted, then h's granted", got)
 	}
 }

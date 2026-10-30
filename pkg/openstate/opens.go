@@ -1310,7 +1310,7 @@ func (t *Table) closeByTable(ctx context.Context, e *entry, o *open, out *outbox
 			t.savePending(ctx, e)
 		}
 		if o.parked == 0 {
-			t.park(e, o, out)
+			t.park(ctx, e, o, out)
 			o.parked = max(t.d.Clock.Elapsed(), 1)
 		}
 		return false
