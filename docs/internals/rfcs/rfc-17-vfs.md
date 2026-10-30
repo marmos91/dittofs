@@ -2470,7 +2470,7 @@ tree working:
    fixes the stateid's and the SMB `FileId`'s shard, instance and `OpenID`
    widths (§3.4).
 4. **Gaps in the layers below**, found by §3.5's table: RFC 7's `Attrs` has no exclusive-create
-   verifier though §2.10 stores one, and no call turns an empty file into a
+   verifier though [RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create) stores one, and no call turns an empty file into a
    symlink (SMB `SET_REPARSE_POINT`); RFC 16 declares no read view of the share
    name and path indexes or of quota records but `ControlPlane`'s, which the
    server must not call. Each is the owning RFC's to add.
