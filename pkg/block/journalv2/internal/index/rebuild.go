@@ -127,11 +127,12 @@ type rebuilder struct {
 	// split.
 	shards [fileShards]*rebuildShard
 	// finishing claims the builder for Finish: one call wins the
-	// CompareAndSwap and runs the rebuild, every other is refused with
-	// errRebuilt and touches nothing.
+	// CompareAndSwap and runs the rebuild — every other, from the moment
+	// the claim lands to the end of the process, is refused with
+	// errRebuilt before it touches anything, counters included. A refused
+	// floor releases the claim, so a builder that failed on its floor is
+	// still open for a good one.
 	finishing atomic.Bool
-	// finished marks the builder whose Finish has run.
-	finished atomic.Bool
 }
 
 // newRebuilder returns a builder that rebuilds into fs and ctr, the index
@@ -154,10 +155,11 @@ func newRebuilder(fs *files, ctr *Counters) *rebuilder {
 // has taken the record, so a refused one raises neither. After Finish has
 // begun it returns errRebuilt, whatever the record's shape.
 func (b *rebuilder) Feed(r Record) error {
-	// The finished check runs before the validation, so a caller racing a
-	// Finish hears the rebuild is over rather than a validation error the
-	// record's shape did not earn.
-	if b.finished.Load() {
+	// The claim runs before the validation, so a caller racing a Finish
+	// hears the rebuild is over rather than a validation error the
+	// record's shape did not earn — a record whose shard Finish is
+	// currently replaying is refused here, not half-validated first.
+	if b.finishing.Load() {
 		return errRebuilt
 	}
 	switch r.Kind {
@@ -242,10 +244,10 @@ func (b *rebuilder) Feed(r Record) error {
 func (b *rebuilder) Retain(id core.FileID, r Retained) error {
 	s := b.shards[hashID(id)>>(64-6)]
 	s.mu.Lock()
-	// Every shard is drained before Finish does anything else, so the
-	// drained check is the whole lifetime: before Finish it admits, from
-	// Finish on it refuses.
-	if s.drained {
+	// Every shard is drained once Finish claims, so the drained check is
+	// the whole lifetime: before the claim it admits, from the claim on it
+	// refuses.
+	if s.drained || b.finishing.Load() {
 		s.mu.Unlock()
 		return errRebuilt
 	}
@@ -265,19 +267,18 @@ func (b *rebuilder) Retain(id core.FileID, r Retained) error {
 // refused with nothing else changed, and the builder stays usable for a
 // good floor, its buffers wherever the feeders left them.
 func (b *rebuilder) Finish(floor core.Version) error {
-	if b.finished.Load() {
+	// The claim is taken first, before the floor raise, so two racing
+	// Finishes resolve on it alone: the loser is refused before it raises
+	// the counters or stores anything, and an openBuckets of its own
+	// could not lower the buckets the winner is dropping entries against.
+	// A refused floor releases the claim, so the builder stays open for a
+	// good one.
+	if !b.finishing.CompareAndSwap(false, true) {
 		return errRebuilt
 	}
 	if err := b.ctr.RaiseFloor(floor); err != nil {
+		b.finishing.Store(false)
 		return err
-	}
-	// The claim is taken after the floor check, so a refused floor never
-	// claims and the builder stays open for a good one, and the loser of
-	// two good floors is refused before it stores anything: an openBuckets
-	// of its own could lower the buckets the winner is dropping entries
-	// against.
-	if !b.finishing.CompareAndSwap(false, true) {
-		return errRebuilt
 	}
 	// Every shard refuses feeds before the start is read, and each record
 	// accepted before that was observed under its shard's lock — Observe
@@ -312,22 +313,18 @@ func (b *rebuilder) Finish(floor core.Version) error {
 	}
 	close(next)
 	wg.Wait()
-	b.finished.Store(true)
 	return first
 }
 
-// replayShard applies the buffers of every file in one shard. The shard is
-// marked drained as its buffers leave, under the same lock the feeders
-// append under, so a feeder that races Finish is refused with errRebuilt
-// rather than left holding a record nobody replays.
+// replayShard applies the buffers of every file in one shard. The shards
+// were all marked drained by Finish before the workers started, so a feeder
+// racing the replay is already refused by the drained check rather than
+// left holding a record nobody replays.
 func (b *rebuilder) replayShard(s *rebuildShard) error {
 	s.mu.Lock()
 	bufs := s.bufs
 	keeps := s.keeps
 	s.bufs, s.keeps = nil, nil
-	// Drained before the lock drops: a feeder arriving now is refused under
-	// the same lock rather than appended to a buffer nobody replays.
-	s.drained = true
 	s.mu.Unlock()
 
 	byFile := make(map[core.FileID][]Retained)

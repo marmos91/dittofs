@@ -903,60 +903,6 @@ func TestRebuildRivalled(t *testing.T) {
 	}
 }
 
-// TestRebuildRefusesAfterADrainedShard: Finish drains a shard under its lock
-// and marks it, so a feeder arriving after the drain — before the Finish
-// returning has even set finished — is refused with errRebuilt rather than
-// handed a nil for a record nobody replays. Without the mark, a feeder that
-// raced Finish into a drained shard would lose its record and see success.
-func TestRebuildRefusesAfterADrainedShard(t *testing.T) {
-	var fs files
-	ctr := &Counters{}
-	id := fid(1)
-	b := newRebuilder(&fs, ctr)
-	if err := b.Feed(recd(RecWrite, id, 1, 1, 1, 0, 0, 4)); err != nil {
-		t.Fatal(err)
-	}
-	// Drain id's shard the way Finish's worker does, without ending the
-	// builder: the window a feeder racing Finish lands in.
-	s := b.shards[hashID(id)>>(64-6)]
-	if err := b.replayShard(s); err != nil {
-		t.Fatal(err)
-	}
-	if b.finished.Load() {
-		t.Fatal("the builder is finished before Finish returned")
-	}
-	if err := b.Feed(recd(RecWrite, id, 2, 2, 1, 64, 0, 4)); !errors.Is(err, errRebuilt) {
-		t.Fatalf("Feed into a drained shard = %v, want errRebuilt", err)
-	}
-	if err := b.Retain(id, Retained{Piece: Piece{Extent: ext(0, 4), Version: ver(1)}, By: ver(1)}); !errors.Is(err, errRebuilt) {
-		t.Fatalf("Retain into a drained shard = %v, want errRebuilt", err)
-	}
-	// The refused record moved no counter of either kind: the numbers were
-	// never observed, so the journal's next issue still exceeds only what
-	// the taken record carried.
-	if got := ctr.NextVersion(); got != ver(2) {
-		t.Fatalf("NextVersion() = %v after the refused feed, want 2", got)
-	}
-	if seq, err := ctr.NextSeq(); err != nil || seq != 2 {
-		t.Fatalf("NextSeq() = %d, %v after the refused feed, want 2", seq, err)
-	}
-	// A record for a file of another shard still feeds, and its shard
-	// replays at the coming Finish.
-	other := fid(9)
-	if fs.shard(other) == fs.shard(id) {
-		t.Skip("the ids share a shard; pick another")
-	}
-	if err := b.Feed(recd(RecWrite, other, 3, 3, 2, 0, 0, 4)); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Finish(ver(0)); err != nil {
-		t.Fatal(err)
-	}
-	if p := heldPieces(&fs, other); len(p) != 1 {
-		t.Fatalf("the other shard's record was lost: %+v", p)
-	}
-}
-
 // TestRebuildRefusesAfterFinish: feeding a finished builder is an error that
 // changes nothing, a Record whatever its shape, and it never panics.
 func TestRebuildRefusesAfterFinish(t *testing.T) {
@@ -1145,26 +1091,43 @@ func TestRebuildTwoFinishes(t *testing.T) {
 		id := fid(1)
 		ctr := &Counters{}
 		b := newRebuilder(&fs, ctr)
+		// The fed maximum is 6; the contests' floors are 0 and 30, both
+		// below and above it. Whichever wins, it must open the buckets at
+		// its own start — the fed maximum 6 for a 0 floor, 30 for the
+		// other — so a loser that raised the counters before it was
+		// refused, moving the winner's start to its floor, fails.
 		for _, r := range []Record{
-			recd(RecWrite, id, 1, 1, 1, 0, 0, 4),
+			recd(RecWrite, id, 1, 6, 1, 0, 0, 4),
 		} {
 			if err := b.Feed(r); err != nil {
 				t.Fatal(err)
 			}
 		}
 		errs := make(chan error, 2)
+		winnerFloor := make(chan uint64, 1)
 		var wg sync.WaitGroup
-		wg.Go(func() { errs <- b.Finish(ver(0)) })
-		wg.Go(func() { errs <- b.Finish(ver(30)) })
+		wg.Go(func() {
+			err := b.Finish(ver(0))
+			if err == nil {
+				winnerFloor <- 0
+			}
+			errs <- err
+		})
+		wg.Go(func() {
+			err := b.Finish(ver(30))
+			if err == nil {
+				winnerFloor <- 30
+			}
+			errs <- err
+		})
 		wg.Wait()
 		close(errs)
+		close(winnerFloor)
 		wins, refused := 0, 0
-		var opened core.Version
 		for err := range errs {
 			switch {
 			case err == nil:
 				wins++
-				opened = fs.asOf(fid(2))
 			case errors.Is(err, errRebuilt):
 				refused++
 			default:
@@ -1174,13 +1137,18 @@ func TestRebuildTwoFinishes(t *testing.T) {
 		if wins != 1 || refused != 1 {
 			t.Fatalf("%d wins, %d refusals: exactly one Finish must take the builder", wins, refused)
 		}
-		// The buckets stand at the winner's start still: the loser neither
-		// lowered them with its own floor nor re-stored a different one.
-		if now := fs.asOf(fid(2)); now != opened {
-			t.Fatalf("the buckets stand at %v but the winner opened %v: the loser moved them", now, opened)
+		floor := <-winnerFloor
+		opened := fs.asOf(fid(2)) // a file with no entry reads its bucket
+		// The winner opened at its own start — the fed maximum 6 for a
+		// zero floor, its 30 for the other — and the loser touched
+		// nothing: a loser that ran the floor raise first would move the
+		// winner's start to its own floor, whatever the winner's was.
+		want := max(floor, 6) // the fed maximum, when the floor is below it
+		if opened.Counter != want {
+			t.Fatalf("winner at floor %d opened %v, want its own start %d: the losing Finish moved the counters", floor, opened, want)
 		}
-		if opened.Counter != 1 && opened.Counter != 30 {
-			t.Fatalf("the winner opened %v, want the fed maximum 1 or the refusing floor's 30", opened)
+		if next := ctr.NextVersion(); next.Compare(ver(opened.Counter)) <= 0 {
+			t.Fatalf("NextVersion() = %v, want above the winner's start", next)
 		}
 		// A third Finish on the finished builder is refused.
 		if err := b.Finish(ver(0)); !errors.Is(err, errRebuilt) {
