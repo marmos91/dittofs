@@ -114,6 +114,54 @@ func (x ShareIndex) List(ctx context.Context) (entity.ShareList, []entity.Share,
 	return entity.ShareList{Version: v}, out, err
 }
 
+// Removing lists the shares being removed, whose removal a start resumes:
+// the name index no longer holds them, so List does not.
+//
+// ponytail: seeks once per share in the store, removed or not, reading each
+// one's state, as nothing indexes the shares being removed. Read the removal's
+// per-shard progress rows instead once its later steps record them.
+func (x ShareIndex) Removing(ctx context.Context) ([]entity.ShareID, error) {
+	var out []entity.ShareID
+	err := x.s.kv.View(ctx, func(r kv.Reader) error {
+		out = out[:0]
+		prefix := []byte{keys.KindS}
+		var after []byte
+		for {
+			var id entity.ShareID
+			found := false
+			for row, err := range r.Scan(prefix, after) {
+				if err != nil {
+					return err
+				}
+				if len(row.Key) < 1+len(id) {
+					return merrs.NewInvalidArgumentError("a share key shorter than its ID")
+				}
+				copy(id[:], row.Key[1:])
+				found = true
+				break
+			}
+			if !found {
+				return nil
+			}
+			b, ok, err := get(r, shareKey(id, keys.SSt))
+			if err != nil {
+				return err
+			}
+			if ok {
+				st, err := decodeState(b)
+				if err != nil {
+					return err
+				}
+				if st.State == entity.ShareRemoving {
+					out = append(out, id)
+				}
+			}
+			after = shareKey(id, 0xFF) // past every key of the share: no sub-kind is 0xFF
+		}
+	})
+	return out, err
+}
+
 // Netgroup is the netgroup of that name; found is false for none, which a
 // client rule naming it treats as failing closed.
 func (x ShareIndex) Netgroup(ctx context.Context, name string) (g entity.Netgroup, found bool, err error) {

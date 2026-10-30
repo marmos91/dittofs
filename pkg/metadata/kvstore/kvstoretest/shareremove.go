@@ -11,13 +11,22 @@ import (
 func testDeleteShareMark(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	cp := f.s.ControlPlane()
+	other := share("other", "/other")
+	must(t, cp.PutShare(ctx, other))
 	before, _ := cp.ShareList(ctx)
+	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 0 {
+		t.Errorf("shares being removed before any removal: %v, %v", got, err)
+	}
 	must(t, cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse))
+	// The one share being removed is listed, though no name finds it.
+	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 1 || got[0] != f.share.ID {
+		t.Errorf("shares being removed: %v, %v; want only %v", got, err, f.share.ID)
+	}
 
 	if after, _ := cp.ShareList(ctx); after.Version != before.Version+1 {
 		t.Errorf("ShareList %d -> %d", before.Version, after.Version)
 	}
-	if got := all(t, cp.Shares(ctx)); len(got) != 0 {
+	if got := all(t, cp.Shares(ctx)); len(got) != 1 || got[0].ID != other.ID {
 		t.Errorf("a share being removed is listed: %+v", got)
 	}
 	// The name and path are free at once.
