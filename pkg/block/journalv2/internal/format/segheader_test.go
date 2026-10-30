@@ -139,13 +139,11 @@ func TestDecodeSegmentHeaderRefusesAnUnknownVersion(t *testing.T) {
 }
 
 // TestDecodeSegmentHeaderRefusesAFlippedBit flips every bit of every byte of
-// the golden file and checks the one outcomes there is: every flip damages the
-// header. A flip in the identity breaks the checksum, so another journal's
-// segment never masquerades as damage by a single bit, and a flip in a
-// version-1 header's version field is a header whose checksum still verifies
-// while naming a version this binary does not read — which is damage: the
-// segment is reported as damaged and its records are attached, while an
-// unknown version fails the open.
+// the golden file and checks the one outcome there is: every flip breaks the
+// checksum, so every flip is damage. That pins the checksum before the
+// identity, so a damaged header is never taken for another journal's, and
+// before the version field, so a flipped version bit reports the segment as
+// damaged with its records attached rather than failing the open.
 func TestDecodeSegmentHeaderRefusesAFlippedBit(t *testing.T) {
 	golden := readGolden(t, "segheader_pred")
 
@@ -228,19 +226,5 @@ func TestDecodeSegmentHeaderRefusesAZeroSegmentId(t *testing.T) {
 
 	if _, err := DecodeSegmentHeader(b, testIdentity); !errors.Is(err, ErrDamaged) || errors.Is(err, ErrForeign) || errors.Is(err, ErrUnknownVersion) {
 		t.Errorf("DecodeSegmentHeader(segment id 0) = %v, want an error matching ErrDamaged and not ErrForeign or ErrUnknownVersion", err)
-	}
-}
-
-// TestDecodeSegmentHeaderRepairsAFlippedVersionBitAsDamage pins the order the
-// segment header's checks run in, which the format file's also held before it:
-// a checksum that verifies is judged before the version field, so a corrupted
-// version bit in an otherwise-checksummed version-1 header is reported as
-// damage — the segment is reported and its records attached, never refusing
-// the open as a version it cannot read.
-func TestDecodeSegmentHeaderRepairsAFlippedVersionBitAsDamage(t *testing.T) {
-	b := readGolden(t, "segheader_pred")
-	b[5] ^= 0x01 // 1 LE16 is 01 00, so this names version 3 with the CRC intact
-	if _, err := DecodeSegmentHeader(b, testIdentity); !errors.Is(err, ErrDamaged) || errors.Is(err, ErrUnknownVersion) {
-		t.Errorf("DecodeSegmentHeader(a version-1 header with version bit 0 of byte 5 flipped) = %v, want an error matching ErrDamaged and not ErrUnknownVersion", err)
 	}
 }

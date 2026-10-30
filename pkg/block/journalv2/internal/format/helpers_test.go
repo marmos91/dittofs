@@ -30,8 +30,7 @@ var testInstallation = core.InstallationID{
 var testFormatFile = FormatFile{Identity: testIdentity, Installation: testInstallation}
 
 // otherIdentity is a second journal's identity: a segment naming it is that
-// journal's, not damaged. It sits in raw's byte range for identities too, so
-// the bytes agree with raw's.
+// journal's, not damaged. Its bytes are in no other header field's range.
 var otherIdentity = core.JournalID{
 	0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
 	0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
