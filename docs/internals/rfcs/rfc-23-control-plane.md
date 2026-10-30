@@ -528,7 +528,11 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
    created while the node serves is attached alone.
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
-   gateway, the client-address agent and the pNFS data server.
+   gateway, the client-address agent and the pNFS data server. Then every
+   removal a crash interrupted runs its step 3 here: for each shard this node is
+   primary of whose share's removal has reached step 3 and whose `rm` row is
+   not yet offloaded, `JoinShare`, then open state's `DropShare`
+   ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), before any adapter serves.
 7. The **operation runner** (§4.6), which resumes the operations this node
    holds; then the **management API**, which starts accepting calls.
 8. **The first full reconcile** (§2.3) completes, and, **(cluster)**, the node
@@ -562,7 +566,7 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
    waiting for a failover. Then the pNFS data server, the client-address agent
    and the gateway stop, then `vfs.Serve`.
 5. GC drains ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)).
-6. `*vfs.Server`'s `Drain`, then its `Close` ([RFC 17](rfc-17-vfs.md)).
+6. `*vfs.Server`'s `Drain`, then its `Stop` ([RFC 17](rfc-17-vfs.md)).
 7. The event sink, identity and open state close, and then GC.
 8. The engine stops in RFC 8 §2.5's reverse order, which joins and closes every
    storage binding, its journals and its flows; then the syncer and the remote
@@ -589,7 +593,7 @@ The node holds two pictures: the **desired** one, read from records, and the
 | Record changed | The node, on each node it concerns |
 | --- | --- |
 | a share created | `addShare`: a storage binding in the engine, the share's namespace in GC, the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
-| a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): the same three, in reverse |
+| a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): at step 3, for each shard this node is primary of whose `rm` row is not yet offloaded, the storage binding to `removing`, `*vfs.Server`'s `JoinShare`, then open state's `DropShare` ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)); then the same three as `addShare`, in reverse |
 | a share's state changed | moves the share's storage binding to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
 | a share's live setting | hands the new value to the storage binding, within RFC 13's live bound |
 | a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No storage binding is replaced |
