@@ -826,6 +826,7 @@ type Deps struct {
 	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Pools   *resources.Pools  // RFC 24 §2.3: receive, reply, connection state
 	Metrics *metrics.Registry // RFC 25 §2
+	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger  *slog.Logger
 	// Dial opens an outbound connection from a given local address: NLM's
 	// callbacks to a host, from the floating address it used (§3.3). A test

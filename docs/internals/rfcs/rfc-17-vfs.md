@@ -359,6 +359,7 @@ type Deps struct {
 	Events   Events            // the node's event sink, or the null sink (§3.3)
 	Clock    Clock // the package's own subset of RFC 8 §2.1's Clock
 	Metrics  *metrics.Registry
+	Tracer   trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger   *slog.Logger
 }
 

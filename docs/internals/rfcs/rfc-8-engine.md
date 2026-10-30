@@ -796,6 +796,7 @@ type Deps struct {
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
 	Watchdog  *health.Watchdog // RFC 25 §3.5: each journal's scheduler takes Loop("engine.sched." + journal)
 	Metrics   *metrics.Registry
+	Tracer    trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger    *slog.Logger
 }
 ```
@@ -834,7 +835,7 @@ primary of the file's shard.
 | remote block store | [RFC 4](rfc-4-remote-tier.md)'s codec, [RFC 5](rfc-5-transforms.md)'s transforms | — | the remote service | reached only through the share's flow | root, registered with the syncer, ref-counted per configuration → root | open while any flow names it |
 | metadata store | [RFC 16](rfc-16-metadata-store.md), with [RFC 6](rfc-6-block-metadata.md)'s views | — | — | `Deps.Existence`, `Deps.Content`, `Deps.Lifecycle`, `Deps.Refs` | root → root | never closed by the engine |
 | cut gate, one per shard | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | — | — | `Deps.Gate` | root → root | — |
-| clock, metrics, logger | one per node | — | — | `Deps` | root → root | — |
+| clock, metrics, tracer, logger | one per node | — | — | `Deps` | root → root | — |
 
 ### 2.7 The version limit
 

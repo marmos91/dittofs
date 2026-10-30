@@ -1943,6 +1943,7 @@ type Deps struct {
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
 	Clock    Clock                      // the package's own subset of RFC 8 §2.1's Clock
 	Metrics  *metrics.Registry
+	Tracer   trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger   *slog.Logger
 }
 
