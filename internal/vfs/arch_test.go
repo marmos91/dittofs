@@ -15,7 +15,8 @@ import (
 const module = "github.com/marmos91/dittofs/"
 
 // network is the network code the filesystem never imports: routing and
-// transport are implemented outside it.
+// transport are implemented outside it. net/netip, addresses as values that
+// client rules compare, is not network code.
 var network = []string{"net", "crypto/tls", "golang.org/x/net", "google.golang.org/grpc"}
 
 // below is what admit, pseudofs and lockorder never import: each reaches the
@@ -58,7 +59,7 @@ func violations(t *testing.T, root string) []string {
 		for _, imp := range file.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			switch {
-			case under(p, network):
+			case p != "net/netip" && under(p, network):
 				found = append(found, rel+": imports network code "+p)
 			case under(p, adapters):
 				found = append(found, rel+": imports an adapter, "+p)
