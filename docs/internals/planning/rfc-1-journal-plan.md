@@ -708,22 +708,25 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - seal marker, footer and trailer, written durably and at most once; no record after
     the seal marker, and the marker durable before a successor naming the segment is
     taken (RFC 28 §2.2);
-  - the footer after its records are durable, the trailer after the footer's entries are
-    (RFC 28 §2.4, §2.5); how many syncs that takes: pending #3450;
+  - seal in two steps (RFC 28 §2.5): every record durable first, then the marker, footer
+    and trailer durable with no order among them (two syncs for a full seal, three for an
+    early one; MAY split further). A failed sync in either step leaves the segment never
+    sealed and its successor naming none. The seal is complete after the second step: a
+    failed truncation sync does not end the segment, which stays accounted at its cap;
   - a footer for a segment an earlier process sealed, if written at all, only after a
     scan verifies the segment, and never over a footer that verifies (RFC 28 §2.4);
   - an early seal truncates the free tail, and its segment is unlinked when retired,
     never recycled; a full seal keeps the cap;
   - idle seal.
 - **Retirement:**
-  - recycle (close, rename to a fresh id, directory sync, zero the slots);
+  - recycle (close, rename to a fresh id, directory sync, zero the slots and sync);
   - unlink, with descriptors closed first;
-  - ending a segment after a failed append on a recycled segment, or a short write on a
-    fresh one: it is never sealed, the stream continues in a segment naming no
-    predecessor, and its synced-through offset never passes the failed slot
-    (RFC 28 §2.2); whether it may pass a zero slot on a segment that continues: pending
-    #3439;
-  - a recycle whose rename fails: pending #3407.
+  - ending a segment after any failed append, fresh or recycled: it is never sealed, the
+    stream continues in a segment naming no predecessor, and its synced-through offset
+    never passes a slot whose write failed or has not completed (RFC 28 §2.2);
+  - a recycle any of whose steps fails (the rename, the directory sync, the zeroing or its
+    sync) is never taken, and is unlinked under whichever of its two names is found
+    (RFC 28 §2.2).
 - **Accounting:** `UsedBytes` at the cap until unlink. Retirement is idempotent and
   subtracts exactly once. A double retire logs at `Warn` and is counted.
 - **Descriptors:** a per-process bounded cache that reopens on miss, with
@@ -772,10 +775,10 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   - `Init` refuses a non-empty directory;
   - `Init` and `Open` refuse what epic 3's Appendix A probes reject;
   - open fails on a `format` file that does not verify or whose version it does not
-    recognise, a segment newer than its `format` file, and a verifying header of a kind
-    its format version does not define, in any range; none is upgraded, repaired or
-    skipped (RFC 28 §2.1–§2.3). A footer of an unrecognised version is only "no footer"
-    (RFC 28 §2.5);
+    recognise, a segment whose version it does not recognise or that is newer than its
+    `format` file, and a verifying header of a kind its format version does not define, in
+    any range; none is upgraded, repaired or skipped (RFC 28 §2.1–§2.3). A footer of an
+    unrecognised version is only "no footer" (RFC 28 §2.5);
   - a directory holding a segment but no `format` file fails with `ErrUnidentified`
     (RFC 28 §3.4);
   - `Init` and `Restamp` sync the directory after writing the `format` file, before they
@@ -806,12 +809,12 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   - loss records re-entered in the ring as "found at open";
   - forget records applied.
 - **Tail handling:**
-  - torn tail vs corruption (RFC 28 §2.2, §3.3): a torn tail exists only in a segment
-    that could have been open at a crash (a stream's newest, or one no successor names),
-    and neither it nor a zero slot stepped over is reported as damage. A bad record
-    anywhere else, one below a later verifying record's synced-through offset, and
-    a missing seal marker in a segment named as a predecessor are corruption. Pending: a
-    bad seal marker on a segment no successor names (#3451), zeros at a stream's tail
+  - torn tail vs corruption (RFC 28 §2.2, §3.3): a torn tail exists only in a segment that
+    could have been open at a crash (a stream's newest, or one no successor names), and
+    neither it nor a zero slot stepped over is reported as damage. A bad record anywhere
+    else, a bad record or zeros below a later verifying record's synced-through offset,
+    and a missing seal marker in a segment named as a predecessor are corruption. Pending:
+    a bad seal marker on a segment no successor names (#3451), zeros at a stream's tail
     with no later record (#3405);
   - a torn tail truncated at its start, never below a verifying record, made durable and
     sealed; a torn slot that is not zeros before a verifying record is truncated the same
@@ -864,8 +867,7 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`; a
     payload that fails its check is never served (RFC 28 §2.3), and the record header a
     read finds is checked against the catalog entry that sent it there (RFC 28 §2.4); a
-    record that fails either has its extents dropped and is reported as a loss event
-    (RFC 28 §3.3);
+    record that fails either is handled by epic 7's corruption rule (RFC 28 §3.3);
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
@@ -1130,11 +1132,10 @@ explicit, recorded decision.
   speculative preallocation (accounting follows the cap) and disk hot-removal mid-write
   need special hosts, and nothing in this plan provisions them. They stay out of the
   system e2e suite until one exists.
-- **RFC 28 format changes still open.** #3406 (a record's own offset in its header) and
-  #3405 (proof that a tail slot was written) change the bytes, so they are settled before
-  epic 3 freezes the format.
+- **An RFC 28 format change still open.** #3405 (proof that a tail slot was written)
+  changes the bytes, so it is settled before epic 3 freezes the format.
 - **Background scrub**: declined on a single node, so content is verified only when it
-  is read (RFC 28 §5); whether a replica scrubs is RFC 10 §16's (pending #3495).
+  is read (RFC 28 §5); whether a replica scrubs is RFC 10 §16's.
 - **Segments vs staging files** (RFC 28 §2.6) is gated by benchmark J9. This plan assumes
   segments. A J9 result that overturns that reopens epics 3, 5 and 7.
 - **Cluster-only items** (RFC 10 replication, a non-zero epoch, the `generation` field,
