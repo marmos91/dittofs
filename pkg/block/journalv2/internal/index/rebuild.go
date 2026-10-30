@@ -129,9 +129,10 @@ type rebuilder struct {
 	// finishing claims the builder for Finish: one call wins the
 	// CompareAndSwap and runs the rebuild — every other, from the moment
 	// the claim lands to the end of the process, is refused with
-	// errRebuilt before it touches anything, counters included. A refused
-	// floor releases the claim, so a builder that failed on its floor is
-	// still open for a good one.
+	// errRebuilt before it touches anything, counters included. Only a
+	// floor the check above already admitted reaches the claim, so the
+	// claim is never released: nothing after it can leave the builder
+	// open again.
 	finishing atomic.Bool
 }
 
@@ -264,20 +265,29 @@ func (b *rebuilder) Retain(id core.FileID, r Retained) error {
 // already standing at the start. The shards replay in parallel; the first
 // error a replay returns is kept and returned, and the shard that returned
 // it stops while the others complete. A floor with a non-zero epoch is
-// refused with nothing else changed, and the builder stays usable for a
-// good floor, its buffers wherever the feeders left them.
+// refused before the claim, so it changes nothing — not the counters, not
+// the buckets, and no feeder is told the rebuild is over by a floor the
+// builder went on to refuse — and the builder stays usable for a good
+// floor, its buffers wherever the feeders left them. The loser of two good
+// floors is refused before it raises anything.
 func (b *rebuilder) Finish(floor core.Version) error {
-	// The claim is taken first, before the floor raise, so two racing
-	// Finishes resolve on it alone: the loser is refused before it raises
-	// the counters or stores anything, and an openBuckets of its own
-	// could not lower the buckets the winner is dropping entries against.
-	// A refused floor releases the claim, so the builder stays open for a
-	// good one.
+	// The floor is checked before the claim: a refused floor never claims,
+	// so a feeder racing a Finish that goes on to be refused is never
+	// told the rebuild is over, and the builder stays open for a good one.
+	if err := checkFloor(floor); err != nil {
+		return err
+	}
+	// The claim resolves two racing Finishes on it alone: the loser is
+	// refused before it raises the counters or stores anything, and an
+	// openBuckets of its own could not lower the buckets the winner is
+	// dropping entries against.
 	if !b.finishing.CompareAndSwap(false, true) {
 		return errRebuilt
 	}
+	// The floor was checked above, so this cannot refuse; the check is kept
+	// rather than ignored with a blank, so a future reason it can refuses
+	// loudly here instead of claiming a builder it cannot rebuild.
 	if err := b.ctr.RaiseFloor(floor); err != nil {
-		b.finishing.Store(false)
 		return err
 	}
 	// Every shard refuses feeds before the start is read, and each record

@@ -149,10 +149,23 @@ func (c *Counters) SetVersionLimit(mark core.Version) error {
 // and changes nothing: at open, which it fails, and at a share's attach, which
 // it fails the same way.
 func (c *Counters) RaiseFloor(floor core.Version) error {
+	if err := checkFloor(floor); err != nil {
+		return err
+	}
+	raise(&c.high, min(floor.Counter, maxVersion))
+	return nil
+}
+
+// checkFloor refuses a floor the format cannot carry — one with a non-zero
+// epoch — without touching any counter. RaiseFloor checks it before it
+// raises; a caller that must know a floor is good before it commits to
+// anything — the rebuild's claim, which a refused floor must not take, so a
+// feeder racing it is never told the rebuild is over by a floor that went
+// on to be refused — checks it first itself.
+func checkFloor(floor core.Version) error {
 	if floor.Epoch != 0 {
 		return fmt.Errorf("%w: version floor %v has a non-zero epoch", core.ErrUnknownFormat, floor)
 	}
-	raise(&c.high, min(floor.Counter, maxVersion))
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -1181,6 +1182,72 @@ func TestRebuildTwoFinishes(t *testing.T) {
 		// A third Finish on the finished builder is refused.
 		if err := b.Finish(ver(0)); !errors.Is(err, errRebuilt) {
 			t.Fatalf("a third Finish = %v, want errRebuilt", err)
+		}
+	}
+}
+
+// TestRefusedFloorsClaimNothing: a feeder racing a Finish whose floor is
+// refused must never hear errRebuilt — "the rebuild is over" — because the
+// builder goes on to take a good floor, and a feeder that believed the error
+// and stopped would have lost its record from that rebuild. The floor is
+// checked before the claim, so a refused floor never claims.
+func TestRefusedFloorsClaimNothing(t *testing.T) {
+	for range 5 {
+		var fs files
+		id := fid(1)
+		b := newRebuilder(&fs, &Counters{})
+		// A hot feeder, spinning until the good floor at the end finally
+		// closes the shards. Only errRebuilt received during the refused
+		// floors below counts: once the good floor claims, errRebuilt is
+		// the contract.
+		var refusedPhase atomic.Bool
+		refusedPhase.Store(true)
+		refusedErrs := make(chan error, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			v := 0
+			for {
+				v++
+				if err := b.Feed(recd(RecWrite, id, uint64(v), uint64(v), core.SegmentID(1+v/100), uint32(v)*8, int64(v)*8, 8)); err != nil {
+					if errors.Is(err, errRebuilt) && refusedPhase.Load() {
+						select {
+						case refusedErrs <- err:
+						default:
+						}
+					}
+					return
+				}
+			}
+		})
+		// Two hundred refused floors, each refusing before the claim in
+		// turn: any of them telling the feeder errRebuilt is the defect.
+		bad := core.Version{Epoch: 1, Counter: 99}
+		for range 200 {
+			if err := b.Finish(bad); !errors.Is(err, core.ErrUnknownFormat) {
+				t.Fatalf("a refused floor = %v, want ErrUnknownFormat", err)
+			}
+		}
+		refusedPhase.Store(false)
+		// The good floor takes the builder; every accepted record is held
+		// at or below the start it opens.
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatal(err)
+		}
+		wg.Wait()
+		select {
+		case err := <-refusedErrs:
+			t.Fatalf("a refused floor told the feeder %v: the rebuild went on", err)
+		default:
+		}
+		held := heldPieces(&fs, id)
+		if len(held) == 0 {
+			t.Fatal("no record survived: the feeder never fed")
+		}
+		start := fs.asOf(fid(2))
+		for _, p := range held {
+			if p.Version.Compare(start) > 0 {
+				t.Fatalf("held %v above the bucket start %v: the start was read before a shard closed", p.Version, start)
+			}
 		}
 	}
 }
