@@ -1919,9 +1919,9 @@ synced before the failure, its window's records having been re-appended
 elsewhere or failed, so repack carries those forward and unlinks the rest, as
 for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). It is unlinked, never recycled,
 and only once repack has carried those records forward. **A failed append ends
-its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and so does recovery's
-ending of a segment without sealing it ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); this rule governs each
-whole: its window is resolved below, it becomes a repack candidate only then, and
+its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole. A segment
+recovery ends without sealing it is instead emptied and unlinked at open
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things:
 
@@ -2266,10 +2266,11 @@ implementation already maintains ([§4.1](#4.1%20What%20it%20must%20answer), [§
 need to read a segment to decide whether to repack it, and **SHOULD** take the
 segments with the least live payload first, since they free the most per byte
 copied. Only segments inside the scope are candidates. A segment pinned by a
-running offer ([§3.3](#3.3%20Offload)) is not a candidate, a segment left by a failed sync, or by
-a failed append that ended it, or by recovery ending it unsealed, is one once
-its window, if any, is resolved, never before ([§5.3](#5.3%20A%20failed%20sync)), and a segment a pass has selected
-takes no new pin until the pass ends with it.
+running offer ([§3.3](#3.3%20Offload)) is not a candidate. A segment left by a failed sync, or by a
+failed append that ended it, is one once its window, if any, is resolved, never
+before ([§5.3](#5.3%20A%20failed%20sync)); one recovery ends is emptied and unlinked at open instead
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A segment a pass has selected takes no new pin until the pass ends
+with it.
 
 **Content preservation.** Repack **MUST** preserve the set of held extents and of
 retained extents ([§3.11](#3.11%20Snapshot%20holds)), the bytes they produce, and their offloaded bits. Resetting an offloaded bit would make
