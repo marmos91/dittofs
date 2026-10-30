@@ -1120,9 +1120,10 @@ after a loss, each client resends its recent unstable writes once.
   included, before the file is served ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - **A stability point joins the group commit; it never issues its own.** One
   that must wait asks the journal's group commit ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) to run now and waits for
-  the transaction that covers its file. Stability points that arrive together
-  share that transaction, across files, so a burst of `fsync`s costs one
-  transaction per journal, not one per file.
+  the transaction that covers its file, or the last of them for a file split
+  over several. Stability points that arrive together share those
+  transactions, across files, so a burst of `fsync`s costs one transaction per
+  batch, not one per file.
 - **Existence is otherwise committed lazily.** A file's pending existence is
   committed by the group commit within a bounded age of the sync that made it
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
@@ -1289,7 +1290,8 @@ older content served as newer.
 
 - Pending existence of one journal that is due together — every file synced
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
-  be committed in one transaction, not one per write or per file.
+  be committed together, one transaction per bounded batch (below), not one per
+  write or per file.
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
   of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
   proposal: 256), overturned by B5's transactions per stability point rising at
@@ -3212,7 +3214,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) sync before existence | Write, then `Commit`, a truncate and an offer capture, each with the storage seam dropping unsynced records at a host crash injected right after the existence commit. Assert every committed `size` is backed by synced records: no read of committed existence fails as **Lost**. Remove the `Sync`: the check fails. |
 | [§12.2](#12.2%20A%20retried%20mutation%20is%20answered%2C%20not%20re-applied) retried mutation | Drop write A's reply; land write B on the same extent; retry A with its request ID. Assert A is answered with its original version and B's bytes survive. Repeat with the shard handed to another primary before the retry (cluster): assert the new primary answers it from the journal record, with no table shipped. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) stable write, lazy existence | Append stable, and append then `Commit`, counting metadata transactions: assert each reply follows the journal sync and precedes any transaction. Crash before the group commit; restart; assert `size` and `mtime` are the written ones before the file is served, and existence committed within the bound once serving. |
-| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) overwrite waits for existence | Offload `[0, 4 MiB)`, overwrite 64 KiB inside it and `Commit`; then, right after the reply and before the existence age passes, drop the journal's record as corrupt. Assert the reply came after an existence commit that wrote the overwrite record, and the 64 KiB read fails as **Lost**, never the offloaded bytes. Issue `Commit` on 64 files with overwrites at once; assert one transaction covers them. A design that answers after the sync alone serves the superseded chunk with no error. |
+| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) overwrite waits for existence | Offload `[0, 4 MiB)`, overwrite 64 KiB inside it and `Commit`; then, right after the reply and before the existence age passes, drop the journal's record as corrupt. Assert the reply came after an existence commit that wrote the overwrite record, and the 64 KiB read fails as **Lost**, never the offloaded bytes. Issue `Commit` on 64 files with overwrites at once, within one batch's `G` and `K`; assert one transaction covers them. A design that answers after the sync alone serves the superseded chunk with no error. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) cut points | Write and flush A in one file, then write B in another, both unstable and uncommitted; request a cut. Assert the snapshot holds A and B; write C after the cut point and before the gate reopens, and assert the snapshot lacks C and no existence above the cut point committed while the gate was closed. A cut that commits nothing misses A and B. Write and flush `~tmp1`, then rename it over `report.docx`, racing the close; assert the snapshot shows the old `report.docx` or the new one with its bytes, never a zero-length one. Start a primary with its gate closed and a pre-cut commit pending; assert its own commits pass the gate. A cut that takes its points before closing the gate admits the rename against content above them. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) stalled store | Stall the metadata store. Assert a `Commit` over an append is answered after its sync, and one over an overwrite of committed content is answered `ErrDelay` at its deadline, never success, until the store commits. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) failed window | Fail one sync window under writes to a file. Assert its stability point fails, the verifier changes, and the file's next `Commit` succeeds without a restart. Fail the timer's sync with no `Commit` waiting: assert the file's next `Commit` fails once and the one after succeeds, another file's `Commit` is unaffected, and an SMB flush through an open across the loss fails once with `ErrLost` from the returned loss sequence. Fail a window over an overwrite of a flushed write: assert the flushed write reads back. A journal that keeps the window pending fails every later `Commit` of the file; one that reports only to a waiting `Sync` lets the next flush succeed over the loss. |
