@@ -21,10 +21,14 @@ type SealMarker struct {
 // identity, and returns the result: the magic, the segment, the marker's own
 // offset, and the checksum of the bytes this call appends, never of a
 // caller's prefix. The checksum is seeded with the identity, so the marker
-// verifies only under the journal that wrote it. The identity travels as a
-// pointer: by value it is an array whose slice moves it to the heap, one
-// allocation on every append.
-func AppendSealMarker(dst []byte, identity *core.JournalID, m SealMarker) []byte {
+// verifies only under the journal that wrote it. The offset is a slot's, so
+// it is 0 or more; a negative one is a caller's bug and panics rather than
+// writing a marker its own decoder would refuse.
+func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte {
+	if m.Offset < 0 {
+		panic(fmt.Sprintf("format: seal marker offset %d is below 0", m.Offset))
+	}
+
 	start := len(dst)
 
 	dst = append(dst, 'D', 'J', 'S', '1')
@@ -32,21 +36,21 @@ func AppendSealMarker(dst []byte, identity *core.JournalID, m SealMarker) []byte
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(m.Segment))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(m.Offset))
 	dst = append(dst, 0, 0, 0, 0) // reserved
-	return binary.LittleEndian.AppendUint32(dst, crc32cSeeded(identity, dst[start:]))
+	return binary.LittleEndian.AppendUint32(dst, crc32cSeeded(identitySeed(identity), dst[start:]))
 }
 
 // DecodeSealMarker reads a seal marker, opened under journal's identity, at
 // the given segment and offset. An error matching ErrDamaged means the bytes
 // are not a seal marker of this journal: a wrong length, magic or checksum
 // against this identity's seed, reserved bytes that are not zero, or an own
-// offset too large for the int64 a read offset is. One
-// matching ErrWrongPlace means the marker verifies but names another segment
-// or another offset than the ones it was read at — it was written somewhere
+// offset too large for the int64 a read offset is. An error matching
+// ErrWrongPlace means the marker verifies but names another segment or
+// another offset than the ones it was read at — it was written somewhere
 // else, so a copy inside a payload never ends a scan — and it comes with the
 // marker filled, which holds its bytes' segment and offset. A slot of zeros
 // is ErrDamaged here; the scanner tells an untaken slot from a marker before
 // decoding.
-func DecodeSealMarker(b []byte, identity *core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
+func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
 	if len(b) != SealMarkerSize {
 		return SealMarker{}, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SealMarkerSize)
 	}
@@ -58,7 +62,7 @@ func DecodeSealMarker(b []byte, identity *core.JournalID, segment core.SegmentID
 	// a segment header, whose checksum is unseeded so a foreign one can be
 	// told apart, no foreign marker is ever reported as anything but
 	// damage.
-	if got, want := binary.LittleEndian.Uint32(b[28:32]), crc32cSeeded(identity, b[0:28]); got != want {
+	if got, want := binary.LittleEndian.Uint32(b[28:32]), crc32cSeeded(identitySeed(identity), b[0:28]); got != want {
 		return SealMarker{}, fmt.Errorf("%w: checksum 0x%08x, want the CRC32C of the identity then [0,28): 0x%08x", ErrDamaged, got, want)
 	}
 
@@ -79,6 +83,11 @@ func DecodeSealMarker(b []byte, identity *core.JournalID, segment core.SegmentID
 	// no place this journal reads at, so it is refused as damage here,
 	// before the place comparison — never reported as a marker written
 	// somewhere else.
+	//
+	// decision: the refusal is stricter than the byte table, which bounds
+	// no field. It holds while a segment cannot exceed MaxInt64 bytes —
+	// the day one could, an in-range recorded offset exists and the
+	// refusal must go; until then no marker of this format can carry one.
 	if m.Offset < 0 {
 		return SealMarker{}, fmt.Errorf("%w: own offset %d is above MaxInt64", ErrDamaged, uint64(m.Offset))
 	}

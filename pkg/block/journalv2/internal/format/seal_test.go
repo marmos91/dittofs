@@ -2,6 +2,7 @@ package format
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"slices"
 	"testing"
@@ -17,7 +18,7 @@ import (
 func TestSealMarkerGolden(t *testing.T) {
 	golden := readGolden(t, "seal")
 
-	encoded := AppendSealMarker(nil, &testIdentity, testSealMarker)
+	encoded := AppendSealMarker(nil, testIdentity, testSealMarker)
 	if !bytes.Equal(encoded, golden) {
 		t.Errorf("AppendSealMarker =\n% x\nwant the golden file\n% x", encoded, golden)
 	}
@@ -27,7 +28,7 @@ func TestSealMarkerGolden(t *testing.T) {
 		t.Errorf("golden file =\n% x\nwant raw's bytes\n% x", golden, other)
 	}
 
-	m, err := DecodeSealMarker(golden, &testIdentity, testSegment, testOffset)
+	m, err := DecodeSealMarker(golden, testIdentity, testSegment, testOffset)
 	if err != nil {
 		t.Fatalf("DecodeSealMarker(golden) = %v, want no error", err)
 	}
@@ -43,7 +44,7 @@ func TestAppendSealMarkerAppendsToDst(t *testing.T) {
 	prefix := []byte{0xee, 0xbe, 0xef}
 	golden := readGolden(t, "seal")
 
-	if got := AppendSealMarker(slices.Clone(prefix), &testIdentity, testSealMarker); !bytes.Equal(got, append(slices.Clone(prefix), golden...)) {
+	if got := AppendSealMarker(slices.Clone(prefix), testIdentity, testSealMarker); !bytes.Equal(got, append(slices.Clone(prefix), golden...)) {
 		t.Errorf("AppendSealMarker with a prefix =\n% x\nwant the prefix then the golden file\n% x", got, append(prefix, golden...))
 	}
 }
@@ -67,7 +68,7 @@ func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 		{"read at another offset", testSegment, testOffset + 32},
 		{"read in another segment", testSegment + 1, testOffset},
 	} {
-		m, err := DecodeSealMarker(golden, &testIdentity, c.segment, c.offset)
+		m, err := DecodeSealMarker(golden, testIdentity, c.segment, c.offset)
 		if !errors.Is(err, ErrWrongPlace) || errors.Is(err, ErrDamaged) {
 			t.Fatalf("%s: DecodeSealMarker = %v, want an error matching ErrWrongPlace and not ErrDamaged", c.name, err)
 		}
@@ -82,9 +83,9 @@ func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 		identity core.JournalID
 	}{
 		{"read under another identity", golden, otherIdentity},
-		{"a marker written under another identity", AppendSealMarker(nil, &otherIdentity, testSealMarker), testIdentity},
+		{"a marker written under another identity", AppendSealMarker(nil, otherIdentity, testSealMarker), testIdentity},
 	} {
-		m, err := DecodeSealMarker(c.b, &c.identity, testSegment, testOffset)
+		m, err := DecodeSealMarker(c.b, c.identity, testSegment, testOffset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Fatalf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
@@ -108,15 +109,22 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 	copy(recordMagic[0:4], "DJR1")
 	rechecksumSeal(recordMagic, testIdentity)
 
-	// The reserved bytes are rechecksummed, so only the reserved rule can
-	// refuse these, never a stale checksum.
-	reserved4 := slices.Clone(golden)
-	reserved4[4] = 0xff
-	rechecksumSeal(reserved4, testIdentity)
+	// Every reserved byte is its own case, rechecksummed, so only the
+	// reserved rule can refuse each — never a stale checksum — and a
+	// check that skips any of the eight cannot pass unnoticed.
+	for _, i := range []int{4, 5, 6, 7, 24, 25, 26, 27} {
+		reserved := slices.Clone(golden)
+		reserved[i] = 0xff
+		rechecksumSeal(reserved, testIdentity)
 
-	reserved24 := slices.Clone(golden)
-	reserved24[24] = 0xff
-	rechecksumSeal(reserved24, testIdentity)
+		m, err := DecodeSealMarker(reserved, testIdentity, testSegment, testOffset)
+		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
+			t.Errorf("non-zero reserved byte at %d: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", i, err)
+		}
+		if m != (SealMarker{}) {
+			t.Errorf("non-zero reserved byte at %d: decoded %+v on damage, want the zero marker", i, m)
+		}
+	}
 
 	cases := []struct {
 		name string
@@ -127,11 +135,9 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 		{"empty", nil},
 		{"a slot of zeros", make([]byte, SealMarkerSize)},
 		{"a record header's magic", recordMagic},
-		{"non-zero reserved bytes at 4", reserved4},
-		{"non-zero reserved bytes at 24", reserved24},
 	}
 	for _, c := range cases {
-		m, err := DecodeSealMarker(c.b, &testIdentity, testSegment, testOffset)
+		m, err := DecodeSealMarker(c.b, testIdentity, testSegment, testOffset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
@@ -148,7 +154,7 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 		for bit := range 8 {
 			b := slices.Clone(golden)
 			b[i] ^= 1 << bit
-			if _, err := DecodeSealMarker(b, &testIdentity, testSegment, testOffset); !errors.Is(err, ErrDamaged) {
+			if _, err := DecodeSealMarker(b, testIdentity, testSegment, testOffset); !errors.Is(err, ErrDamaged) {
 				t.Errorf("golden with byte %d bit %d flipped: DecodeSealMarker = %v, want an error matching ErrDamaged", i, bit, err)
 			}
 		}
@@ -162,9 +168,12 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 // is 64 bits wide while core's offsets are int64, so a marker that did hold
 // such an offset could not name a place this journal reads at.
 func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
-	// Offset -1 encodes as 0xffffffffffffffff: the least in-range above
-	// MaxInt64.
-	b := AppendSealMarker(nil, &testIdentity, SealMarker{Segment: testSegment, Offset: -1})
+	// 0xffffffffffffffff at [16,24) is the least stored offset above
+	// MaxInt64. The encoder refuses to write one, so the field is set by
+	// hand and rechecksummed.
+	b := slices.Clone(readGolden(t, "seal"))
+	binary.LittleEndian.PutUint64(b[16:24], 0xffffffffffffffff)
+	rechecksumSeal(b, testIdentity)
 
 	for _, c := range []struct {
 		name   string
@@ -173,7 +182,7 @@ func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 		{"read at a real offset", testOffset},
 		{"read at the negative offset it decodes as", -1},
 	} {
-		m, err := DecodeSealMarker(b, &testIdentity, testSegment, c.offset)
+		m, err := DecodeSealMarker(b, testIdentity, testSegment, c.offset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
 			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
@@ -181,4 +190,18 @@ func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 			t.Errorf("%s: decoded %+v on damage, want the zero marker", c.name, m)
 		}
 	}
+}
+
+// TestAppendSealMarkerPanicsOnANegativeOffset pins that an encoder handed an
+// offset no read could ever pass crashes rather than writing a marker its
+// own decoder refuses: the bound is a programming invariant of the callers,
+// not something the bytes can carry, so it is refused at the call, not
+// encoded onto disk.
+func TestAppendSealMarkerPanicsOnANegativeOffset(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Errorf("AppendSealMarker with a negative offset returned; want a panic")
+		}
+	}()
+	AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: -1})
 }
