@@ -641,11 +641,21 @@ func absLen(r Record) int64 { return max(r.Len, 1) }
 // pair to merge and the ranges differ.
 func TestRebuildDropRangesOrderFree(t *testing.T) {
 	id := fid(1)
-	var recs []Record
-	off := int64(0)
-	for i := range 20 {
-		recs = append(recs, recd(RecWrite, id, uint64(i+1), uint64(i+1), 1, uint32(i)*64, off, 4096))
-		off += 4096 + int64(1+(i*7)%5)*4096
+	// Two scenes. The first's records carry version == seq, so a note pass
+	// sorted by version passes it. The second is the one on disk: an
+	// offloaded, release or unmark record carries the version of the
+	// content it names, so ties are the normal case, and only the sequence
+	// number splits them.
+	scenes := []struct {
+		name string
+		mk   func(i int, off int64) Record
+	}{
+		{"writes, version and seq distinct", func(i int, off int64) Record {
+			return recd(RecWrite, id, uint64(i+1), uint64(i+1), 1, uint32(i)*64, off, 4096)
+		}},
+		{"offloaded marks, every version tied", func(i int, off int64) Record {
+			return recd(RecOffloaded, id, uint64(i+1), 1, 1, uint32(i)*64, off, 4096)
+		}},
 	}
 	ranges := func(order []Record) []dropRange {
 		var out []dropRange
@@ -663,16 +673,24 @@ func TestRebuildDropRangesOrderFree(t *testing.T) {
 		})
 		return out
 	}
-	want := ranges(recs)
-	if len(want) != maxDropRanges {
-		t.Fatalf("the scene keeps %d ranges, want the cap %d so the merge runs", len(want), maxDropRanges)
-	}
 	rng := rand.New(rand.NewPCG(1, 2))
-	for i := range 50 {
-		o := slices.Clone(recs)
-		rng.Shuffle(len(o), func(a, b int) { o[a], o[b] = o[b], o[a] })
-		if got := ranges(o); !slices.Equal(got, want) {
-			t.Fatalf("shuffle %d: ranges %v, want %v", i, got, want)
+	for _, scene := range scenes {
+		var recs []Record
+		off := int64(0)
+		for i := range 20 {
+			recs = append(recs, scene.mk(i, off))
+			off += 4096 + int64(1+(i*7)%5)*4096
+		}
+		want := ranges(recs)
+		if len(want) != maxDropRanges {
+			t.Fatalf("%s: the scene keeps %d ranges, want the cap %d so the merge runs", scene.name, len(want), maxDropRanges)
+		}
+		for i := range 50 {
+			o := slices.Clone(recs)
+			rng.Shuffle(len(o), func(a, b int) { o[a], o[b] = o[b], o[a] })
+			if got := ranges(o); !slices.Equal(got, want) {
+				t.Fatalf("%s, shuffle %d: ranges %v, want %v", scene.name, i, got, want)
+			}
 		}
 	}
 }
