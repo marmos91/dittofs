@@ -186,6 +186,13 @@ func TestSMBLockLists(t *testing.T) {
 	if _, err := f.Locks().Unlock(ctx, s, file, byS, so, make([]ByteRange, 65), Seqs{}, nil); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a 65-range unlock list: %v, want ErrInvalid", err)
 	}
+	held := make([]ByteRange, maxRanges)
+	for i, l := range most {
+		held[i] = l.ByteRange
+	}
+	if _, err := f.Locks().Unlock(ctx, s, file, byS, so, held, Seqs{}, nil); err != nil {
+		t.Errorf("a 64-range unlock list: %v", err)
+	}
 	long := LockOwner{Client: s.Client, Name: make([]byte, 1025)}
 	if _, err := f.lock(s, file, LockReq{Owner: long, Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an owner past 1,024 bytes: %v, want ErrInvalid", err)
