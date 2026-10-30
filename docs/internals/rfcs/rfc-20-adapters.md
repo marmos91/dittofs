@@ -704,24 +704,30 @@ through it.
 
 | Callback | Why the service calls it | SMB on the wire | NFS on the wire |
 | --- | --- | --- | --- |
-| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on alice-pc's session | `CB_RECALL` on the NFSv4.1 back channel |
+| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on the session holding alice's open, which the service names | `CB_RECALL` on the NFSv4.1 back channel |
 | `Notify` | Explorer watches `projects/`; build01 creates a file in it | `CHANGE_NOTIFY` response to the request alice-pc left pending | `CB_NOTIFY` (NFSv4.1, optional) |
 | `LockWaitOver` | build01 waits for a lock alice-pc holds; alice-pc unlocks | the pending `LOCK` request finally answered | `NLMPROC4_GRANTED` RPC to build01's lock manager |
 | `RecallAny` | build01 reaches 4096 delegations at one primary | nothing: SMB has no such request | `CB_RECALL_ANY` keeping 2048, on NFSv4.1 only |
 | `Revoked` | build01's lease expired, an administrator revoked its client, the share was removed or moved | pending requests answered with the protocol's error; a moved share's trees ended | same, by the protocol's own errors |
 
 Each protocol implements the interface once, on a small per-client value that
-knows the client's connection or host and nothing about files:
+knows the client's connection or host and nothing about files. An SMB break
+goes to the session the service names, never one the adapter chooses
+([RFC 22 §4.4](rfc-22-smb.md#4.4%20The%20client%20record%20is%20the%20machine)):
 
 ```go
 // smbCallbacks is what the SMB adapter registers at Connect for one client.
 type smbCallbacks struct {
-	sess *session.Session // the client's session: its channels' writers, its pending requests
+	sessions *session.Table // this node's sessions: their channels' writers, their pending requests
 }
 
-func (c *smbCallbacks) RecallGrant(ctx context.Context, g metadata.CachingGrant, to vfs.GrantKind) error {
+func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, g metadata.CachingGrant, to vfs.GrantKind) error {
+	sess, ok := c.sessions.Get(s)
+	if !ok {
+		return session.ErrGone // ended since the service picked it: an error, as no live channel is
+	}
 	msg := wire.LeaseBreak{Key: leaseKey(g), NewState: leaseState(to)}
-	return c.sess.Notify(ctx, &msg) // encoded and queued on a live channel's writer (§6.2); none live is an error
+	return sess.Notify(ctx, &msg) // encoded and queued on a live channel's writer (§6.2); none live is an error
 }
 ```
 

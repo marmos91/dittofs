@@ -679,16 +679,64 @@ carries many users' sessions at once.
 
 - The client record of an SMB client **MUST** be keyed by `ClientGuid` alone
   and hold no principal
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): a negotiate naming a
-  known `ClientGuid` finds that record whoever then authenticates, and is never
-  refused for its principal.
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): the first
+  authenticated `SESSION_SETUP` naming a known `ClientGuid` finds that record
+  whoever authenticates, and is never refused for its principal. A null or
+  guest session never joins a client, so its opens are granted no lease or
+  oplock: the grant budget, the caching fence and a break's routing are a
+  client's, and a guest has none. The `CREATE` succeeds with
+  `SMB2_OPLOCK_LEVEL_NONE` and no lease context in the response.
 - Principals bind where SMB binds them: each session to the user who set it
   up, and each open to its opener
   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A reconnect, a replay and
   every call through a FileId are checked against the open's principal, never
   the record's.
+- **A break goes by its lease's opens, never by the record**
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): to a session holding
+  one of the lease's opens (MS-SMB2 3.3.4.7); if every one is disconnected,
+  only to a session of that client signed in as one of the openers; and if
+  there is none, nowhere, so the break times out (§6.3). The service names the
+  session, and the adapter sends on that session's connection and nowhere
+  else. An acknowledgement is checked against the open's principal, not only
+  the `ClientGuid`; one arriving on the connection the break was sent on is
+  made as the session the break was sent to, since the sessions of one
+  machine's users share that connection and MS-SMB2 does not say which of them
+  carries the acknowledgement.
+- **A lease is joined only by an opener**
+  ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)): a `CREATE`
+  presenting the key of an existing lease of the file joins it only for a
+  principal already one of the lease's openers, or one on a connection that
+  carries an opener's session, which the adapter passes as
+  `OpenRequest.Conn`. Any other caller's `CREATE` succeeds with
+  `SMB2_OPLOCK_LEVEL_NONE` and no lease: a server may grant less caching than
+  asked, so the open works and only its caching is withheld. A user who sends
+  alice-pc's `ClientGuid` and alice's lease key and signs in as herself opens
+  the file uncached and never sees a break of alice's, nor answers one, and a
+  change of hers to the file that conflicts with the lease
+  ([RFC 14 §5.2](rfc-14-open-state.md#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)) breaks alice's lease.
+
+  > decision: a join refused by the connection test withholds the lease, not
+  > the open. The test rests on a machine's users sharing one connection, which
+  > no capture has checked yet; multichannel, or a redirector that opens a
+  > connection per user, would fail it for a legitimate user, and withholding
+  > only caching makes that case slower rather than broken. Revisit once a
+  > capture of a multi-session host settles the connection model.
 - What RFC 14 keeps per client is therefore per machine: the grant budget, and
   the caching fence after a missed break (§6.3).
+
+  > decision: a stranger who sends a machine's `ClientGuid` joins its record, so
+  > shares its grant budget and its 90 s caching fence: by holding grants, or by
+  > missing a break of its own, it can deny that machine caching. It cannot read
+  > the machine's breaks, which go by open, nor answer them, nor join a lease
+  > to become an opener, since a join needs an opener's principal or an
+  > opener's connection; nor change a file without breaking the machine's
+  > lease on it, since a lease is a caller's own only when the caller's
+  > principal is one of its openers', and a refused join records no key. Keying the record by principal would refuse every
+  > user but the first on a shared host (below). The connection test trusts
+  > every user signed in on one machine's connection as that machine's users
+  > already trust each other's cache. Revisit if a `ClientGuid` shared this way
+  > is seen in the wild, or if a capture of a multi-session host shows an
+  > acknowledgement on a connection other than the break's.
 - **A logoff closes only its own session's opens** (MS-SMB2 3.3.5.6), and
   releases nothing else of the record: another user's disconnected durable or
   persistent opens on the same machine keep running their timeouts. The record
@@ -906,7 +954,7 @@ clients do not, so the adapter finishes the request itself:
 
 1. answers an interim `STATUS_PENDING` with an async ID, and frees the worker;
 2. lets the primary send the holder a break (`LEASE_BREAK_NOTIFICATION`, or
-   `OPLOCK_BREAK`) through its callbacks, requiring an acknowledgement
+   `OPLOCK_BREAK`) through its callbacks, on a session §4.4 picks, requiring an acknowledgement
    (`ACK_REQUIRED`) when write or handle caching is broken;
 3. re-runs the request when the holder acknowledges, its break reaches the
    deadline ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)),
@@ -2231,7 +2279,7 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
-| `Client.Pending` | never set | — | an SMB client is confirmed in one step, by `NEGOTIATE` |
+| `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
@@ -2249,6 +2297,7 @@ mapping it needs is here.
 | `Open.Suspended` | the -1 and -2 timestamp sentinels of a set-info (§9.3) | — | `ChangeTime` is never suspended (S15) |
 | `Open.LossSeen` | nothing on the wire | — | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
 | `CachingGrant.Key` | the lease key | — | an oplock has none and covers its one open |
+| `OpenRequest.Conn` | the principals of the other sessions on the `CREATE`'s connection | — | lets a second user of one machine join its lease; a stranger on another connection cannot (§4.4) |
 | `CachingGrant.Epoch`, `V2` | the v2 lease epoch, starting from the create context's | — | unsent for a v1 lease and an oplock |
 | `CachingGrant.Parent` | the v2 lease's parent lease key, as its first request named it | — | written with a persistent open's lease; never read by RFC 14 |
 | `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | — | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |

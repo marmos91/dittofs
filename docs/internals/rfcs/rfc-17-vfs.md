@@ -409,7 +409,7 @@ type Peers interface {
 	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
 	Sequence(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: a sequenced owner's number at its home primary (RFC 14 §2.8)
 	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
-	Recall(ctx context.Context, to NodeID, c ClientID, ev any) error        // a primary's recall, notify or revoke back to the client's lease owner (RFC 14 §4.1)
+	Recall(ctx context.Context, to NodeID, s SessionRef, ev any) error      // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
 }
 
 // Envelope is RFC 15 §4.3's route envelope; its rules are there.
@@ -689,7 +689,7 @@ type Service interface {
 // TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP (never a null or guest one), an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
@@ -880,7 +880,7 @@ modes held. The delegation lends no access.
 // Callbacks is implemented by each adapter and registered per client at
 // Connect. The service calls up through it and never imports an adapter.
 type Callbacks interface {
-	RecallGrant(ctx context.Context, g CachingGrant, to GrantKind) error // NFS CB_RECALL, SMB lease or oplock break
+	RecallGrant(ctx context.Context, s SessionRef, g CachingGrant, to GrantKind) error // NFS CB_RECALL on the client's back channel, s zero; SMB lease or oplock break on s, which the service picked and the adapter only delivers to
 	Notify(ctx context.Context, w WatchID, changes []Change) error      // SMB CHANGE_NOTIFY, NFS directory notifications
 	Revoked(ctx context.Context, what Revocation)                       // state ended without the client asking: the adapter answers what it holds pending on it
 	LockWaitOver(ctx context.Context, w LockWaiter, granted bool) (refused bool, err error) // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional; refused: the NLM host refused the grant, and the primary releases the lock
@@ -991,9 +991,9 @@ address and the trees reached through other addresses is
 [RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver)'s
 and [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)'s.
 
-**A callback path can move between nodes** (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
-A client's callbacks go out through the node that holds its back channel; a
-primary on another node reaches it through `Peers.Recall` (§2.3).
+**An NFSv4.1 callback path can move between nodes** (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
+An NFSv4.1 client's callbacks go out through the node that holds its back
+channel; a primary on another node reaches it through `Peers.Recall` (§2.3).
 When the client binds its callback path through another node — after an
 address takeover, or a lost connection — that node's adapter calls `Connect`
 again, and its filesystem records it in the client's record (RFC 14's `Rebind`); the
@@ -1002,14 +1002,34 @@ every recall after the client moved would go out through a path the client no
 longer listens on and end in revocation.
 
 **Only the client's own principal moves its path.** The filesystem **MUST** refuse
-with `StateError` `ClientInUse` a `Connect` that would move an existing
+with `StateError` `ClientInUse` an NFSv4 `Connect` that would move an existing
 client's callback path for a caller whose authenticated principal is neither
 the one the client record names nor one holding a session under that client
-([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)). An SMB client
-is therefore registered at its first authenticated `SESSION_SETUP`, not at
-`NEGOTIATE`, whose `ClientGuid` anyone can send: otherwise a peer presenting
-another machine's `ClientGuid` through a second node would receive its lease
-breaks, and the machine's leases would be revoked for breaks it never saw.
+([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)). An SMB
+`Connect` is never refused for its principal, because its breaks go by open
+(below), not by a path a `Connect` could move
+([RFC 22 §4.4](rfc-22-smb.md#4.4%20The%20client%20record%20is%20the%20machine)).
+
+**An SMB break goes by its open, not by the client's path.** An SMB record names
+no principal, and its `ClientGuid` travels in clear, so anyone can send a
+machine's and hold a session under its record
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
+registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
+and a null or guest session never joins a client, so its opens are offered no
+lease or oplock. The filesystem picks the session for a lease or oplock break:
+one holding one of the grant's opens, each signed in as its opener; when every
+such open is disconnected, only a session of that client signed in as one of
+the openers; and when there is none, none, so the break is sent nowhere and
+runs to its deadline. It passes that session to `RecallGrant`, through
+`Peers.Recall` to the node the `SessionRef` names when it is another, and the
+adapter delivers there and nowhere else. `AckRecall` on a lease or oplock is
+admitted only from one of its openers' principals, and an open joins an
+existing lease only for one of them or for a caller on the same connection as
+an opener's session
+([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). So a peer presenting
+another machine's `ClientGuid` and lease key, through this node or a second
+one, receives none of its breaks, and the machine's leases are not revoked for
+breaks sent elsewhere.
 
 **Notifications honour traverse permission.** `Notify` delivers a change only
 when the watch's identity may traverse every directory between the watched one
@@ -2277,7 +2297,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |
-| V36 | Only the client's own principal moves its callback path. | A second node presents alice-pc's `ClientGuid` from a session authenticated as mallory: `ClientInUse`, and alice-pc's next lease break still reaches alice-pc; a `NEGOTIATE` alone registers nothing. |
+| V36 | An SMB break reaches only a session holding one of the lease's opens, or one signed in as an opener, and never any other session of the client; only an opener joins or answers the lease, and a change by any other principal of the client breaks it. | mallory sends alice-pc's `ClientGuid` and signs in as herself, through this node and through a second one; build01 then writes `report.docx`, which alice-pc holds under an RWH lease on an open that shares delete: the break reaches alice's session and none of mallory's, with alice's open connected and with it disconnected, and mallory's `AckRecall` on the lease is `NotYours`. Then disconnect alice's open and end alice's session: the next break reaches no session, mallory's included, and runs to its deadline. mallory opens `report.docx` on her own connection presenting alice's lease key: the open succeeds with no lease, and she is not an opener; bob, signed in on alice-pc's connection, presenting the same key joins the lease. alice signs in again and takes a fresh, acknowledged RWH lease on an open that shares write and delete; mallory writes through her no-lease open: the break reaches alice's session and none of mallory's. alice takes another fresh, acknowledged RWH lease the same way; mallory renames another file over `report.docx`: the break reaches alice's session and none of mallory's. A `NEGOTIATE` alone, or a null or guest session, registers nothing, and a guest's open is offered no lease. |
 | V37 | A create charges the new file's owner, never the parent's. | bob, at his inode quota, creates in alice's directory, which has room under alice's: `ErrQuota` (`QuotaUser`), nothing created and nothing charged to alice. |
 | V38 | Delete on close takes the parent's step only after releasing the file's. | A last close running a delete on close races 10⁴ times an unlink of another name of the same file, with the parent's ID below the file's: neither waits for its deadline, and exactly one name is left. |
 | V39 | Admission runs before the handle is resolved. | A client outside a share's netgroup presents a live handle and the handle of a removed file: `ErrAccess` for both. |
