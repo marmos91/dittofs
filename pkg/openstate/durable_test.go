@@ -496,10 +496,11 @@ func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 // fail from the readAt'th one counted from zero while readAt is positive.
 // It counts the write transactions asked of it in updates, and fails the
 // updateAt'th one counted from one, and every one from the failFrom'th, as a
-// node stopping there would leave the store.
+// node stopping there would leave the store. While lose is set, writes land
+// and are answered an error all the same.
 type failing struct {
 	kv.KV
-	fail                                       atomic.Bool
+	fail, lose                                 atomic.Bool
 	readAt, reads, updateAt, updates, failFrom atomic.Int64
 }
 
@@ -517,7 +518,10 @@ func (s *failing) Update(ctx context.Context, fn func(kv.Txn) error) error {
 	if s.fail.Load() || n == s.updateAt.Load() || s.failFrom.Load() > 0 && n >= s.failFrom.Load() {
 		return errWrite
 	}
-	return s.KV.Update(ctx, fn)
+	if err := s.KV.Update(ctx, fn); err != nil || !s.lose.Load() {
+		return err
+	}
+	return errWrite
 }
 
 // failingFS is a fixture's store over a failing store.

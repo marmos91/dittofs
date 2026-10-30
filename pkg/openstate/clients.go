@@ -569,7 +569,7 @@ func (v clients) Expire(ctx context.Context, c entity.ClientID) error {
 }
 
 // expireLapsed ends c if its lease has ended: the lease owner's expiry. Its
-// state is released, then its record deleted, then its lease dropped, and
+// record is deleted, then its lease dropped and its state released, and
 // ClientEnded raised once the client step is released. A renewal or a
 // confirm that landed meanwhile keeps it.
 //
@@ -597,7 +597,6 @@ func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox
 	if err != nil && !merrs.IsNotFoundError(err) {
 		return entity.ClientRecord{}, false, err
 	}
-	t.releaseClient(ctx, c, out)
 	if found {
 		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
 			return entity.ClientRecord{}, false, err
@@ -654,8 +653,11 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 	return err
 }
 
-// revoke is Revoke, under the client step. Each reference enters the revoked
-// set before its state is released, so none is ever answered bad meanwhile.
+// revoke is Revoke, under the client step. Its record is written before
+// anything is released, so a refused write leaves another client nothing to
+// take that the revoked one would reclaim after a restart. Each reference
+// enters the revoked set before its state is released, so none is ever
+// answered bad meanwhile.
 //
 // decision: a client with no Owner, an SMB machine or an NLM host, is revoked
 // as an expiry ends it: its record is deleted, since without an owner it has
@@ -663,17 +665,29 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 // report revoked state.
 func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) error {
 	rec, err := t.d.Records.Clients().Get(ctx, c)
+	if merrs.IsNotFoundError(err) {
+		t.forget(ctx, c, out) // a delete answered an error may have landed: release what is held here all the same
+		return ErrStaleClient
+	}
 	if err != nil {
-		return staleIfGone(err)
+		return err
 	}
 	if rec.Owner.IsZero() {
-		t.releaseClient(ctx, c, out)
 		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
 			return err
 		}
 		t.forget(ctx, c, out)
 		return nil
 	}
+	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
+		return err
+	}
+	t.cmu.Lock()
+	if k, ok := t.known[c]; ok {
+		k.shards = nil
+		t.known[c] = k
+	}
+	t.cmu.Unlock()
 	// ponytail: it scans every reference the table holds, of every client.
 	// Index references by client when a revoke is seen slow on a busy primary.
 	t.idx.Lock()
@@ -684,16 +698,7 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 	}
 	t.idx.Unlock()
 	t.releaseClient(ctx, c, out)
-	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
-		return err
-	}
 	t.unreclaim(c)
-	t.cmu.Lock()
-	defer t.cmu.Unlock()
-	if k, ok := t.known[c]; ok {
-		k.shards = nil
-		t.known[c] = k
-	}
 	return nil
 }
 

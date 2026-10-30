@@ -1340,3 +1340,89 @@ func TestSilentClientsNameLapsesAfterARestart(t *testing.T) {
 		}
 	}
 }
+
+// An expiry whose record delete is refused releases nothing: another client
+// is granted the lapsed client's lock only once its record is gone, so after
+// a restart the lapsed client's reclaim is refused, and the lock's new
+// holder reclaims it.
+func TestRefusedExpiryReleasesNothing(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	x1, y := f.caller(t, nfsAs("x", entity.RecoverStatus)), f.caller(t, nfsAs("y", entity.RecoverStatus))
+	file := in(5)
+	f.mustLock(t, x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, y, in(5), LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}}) // y's shard mark
+	f.clock.advance(leasePeriod - time.Second)
+	f.renew(t, y)
+	f.clock.advance(2 * time.Second)
+
+	st.fail.Store(true)
+	f.sweep(ctx) // x's expiry is refused
+	_, err := f.lock(y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}})
+	st.fail.Store(false)
+	if err != nil {
+		f.sweep(ctx)
+		f.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}})
+	}
+
+	g := f.restart(t)
+	g.renew(t, y)
+	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); err == nil {
+		t.Error("the lapsed client's reclaim after the restart was granted, want refused")
+	}
+	g.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+}
+
+// A revoke whose record write is refused releases nothing, as an expiry's:
+// after a restart the revoked client's reclaim is refused, and the lock's new
+// holder reclaims it.
+func TestRefusedRevokeReleasesNothing(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	x1, y := f.caller(t, nfsAs("x", entity.RecoverStatus)), f.caller(t, nfsAs("y", entity.RecoverStatus))
+	file := in(5)
+	f.mustLock(t, x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, y, in(5), LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}}) // y's shard mark
+
+	st.fail.Store(true)
+	if err := f.Revoke(ctx, x1.Client); !errors.Is(err, errWrite) {
+		t.Fatalf("a revoke over a refusing store: %v, want its error", err)
+	}
+	_, err := f.lock(y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}})
+	st.fail.Store(false)
+	if err != nil {
+		if err := f.Revoke(ctx, x1.Client); err != nil {
+			t.Fatal(err)
+		}
+		f.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}})
+	}
+
+	g := f.restart(t)
+	g.renew(t, x1, y)
+	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("the revoked client's reclaim after the restart: %v, want ErrNoReclaim", err)
+	}
+	g.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+}
+
+// A revoke retried after its record delete landed but was answered an error
+// finds no record and still releases what the client holds.
+func TestRevokeRetriedAfterLandedDeleteReleases(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	h1, h2 := f.host(t, "h1", 1), f.host(t, "h2", 1)
+	file := in(5)
+	f.mustLock(t, h1, file, LockReq{Owner: owner(h1, "p"), Ranges: []LockRange{x(0, 10)}})
+
+	st.lose.Store(true)
+	if err := f.Revoke(ctx, h1.Client); !errors.Is(err, errWrite) {
+		t.Fatalf("a revoke whose delete is answered an error: %v, want that error", err)
+	}
+	st.lose.Store(false)
+	if err := f.Revoke(ctx, h1.Client); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("the retried revoke: %v, want ErrStaleClient", err)
+	}
+	if _, err := f.lock(h2, file, LockReq{Owner: owner(h2, "p"), Ranges: []LockRange{x(0, 10)}}); err != nil {
+		t.Errorf("another host's lock after the retried revoke: %v, want granted", err)
+	}
+}
