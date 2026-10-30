@@ -299,7 +299,8 @@ path, and a roll costs only the take.
 its stream left because the next record did not fit — keeps its cap: the seal
 writes its trailer at the cap's last 32 bytes ([§2.5](#2.5%20Catalog%20layout)) and returns no tail, so it
 stays full-size and allocated, accounted at its cap. A segment **sealed early**
-— idle ([§3.1](#3.1%20Rebuilding)) or at recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) — always returns its free tail
+— idle ([§3.1](#3.1%20Rebuilding)), at recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) or for capacity
+([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) — always returns its free tail
 ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)), and is unlinked when retired, never recycled. Whether a
 full-size segment is recycled is decided when repack or reclamation retires it,
 never at seal: it becomes a spare while the pool is below its target, and is
