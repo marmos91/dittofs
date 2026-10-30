@@ -1368,7 +1368,8 @@ directory is trusted with its content.
    ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and a settled removal's marker is gone ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A lost
    release only holds offloaded content again ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)); what a lost
    truncate, deallocate or delete would bring back is recovery's to handle, not
-   a pass's. Overturned if one node ever keeps a second local copy to repair
+   a pass's ([§3.3](#3.3%20Torn%20and%20corrupt%20records); a range that names no record is reconciled against
+   metadata by the engine, [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Overturned if one node ever keeps a second local copy to repair
    from.
    **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
    dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.

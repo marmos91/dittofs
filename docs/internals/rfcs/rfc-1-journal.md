@@ -1183,7 +1183,7 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
-| `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, and whether it found a corrupt range that names no record, which the engine must reconcile before serving ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
+| `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, and whether it found a corrupt range that names no record, which the engine must reconcile before serving ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded, every failed sync window and every corrupt range that names no record, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
