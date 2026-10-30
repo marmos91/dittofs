@@ -1365,9 +1365,8 @@ func TestRefusedExpiryReleasesNothing(t *testing.T) {
 	file := in(5)
 	f.mustLock(t, x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}})
 	f.mustLock(t, y, in(5), LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}}) // y's shard mark
-	f.clock.advance(leasePeriod - time.Second)
-	f.renew(t, y)
-	f.clock.advance(2 * time.Second)
+	// x lapses; pass fires no timer, so the sweep below is the only one
+	f.pass(t, leasePeriod+time.Second, y.Client)
 
 	st.fail.Store(true)
 	f.sweep(ctx) // x's expiry is refused
