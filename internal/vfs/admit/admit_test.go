@@ -91,3 +91,40 @@ func TestClientRules(t *testing.T) {
 		}
 	}
 }
+
+// nobodyHome holds no protocol ID and no membership, and every user it is
+// asked about is live with a read-write grant.
+type nobodyHome struct{}
+
+func (nobodyHome) ByID(context.Context, entity.ProtocolScheme, uint32) (entity.Principal, bool, error) {
+	return entity.Principal{}, false, nil
+}
+func (nobodyHome) User(context.Context, entity.Principal) (entity.User, bool, error) {
+	return entity.User{}, true, nil
+}
+func (nobodyHome) Grant(context.Context, entity.ShareID, entity.Principal) (entity.ShareAccess, error) {
+	return entity.AccessReadWrite, nil
+}
+func (nobodyHome) Groups(context.Context, entity.Principal) ([]entity.Principal, error) {
+	return nil, nil
+}
+
+// A policy naming no anonymous principal refuses every caller it would
+// make anonymous, rather than letting it act as the zero principal.
+func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	share := entity.NewShareID()
+	for _, c := range []struct {
+		name string
+		id   vfs.Identity
+		p    entity.ExportPolicy
+	}{
+		{"squashed", vfs.Identity{Proof: vfs.ProofTicket, Evidence: vfs.Evidence{Principal: entity.NewUser()}}, entity.ExportPolicy{Squash: entity.SquashAll}},
+		{"unmapped", vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: 1000}}, entity.ExportPolicy{}},
+		{"proving nothing", vfs.Identity{}, entity.ExportPolicy{}},
+	} {
+		if got, _, err := Resolve(ctx, nobodyHome{}, c.id, share, c.p, entity.NotNarrowed); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s: acts as %v, %v; want ErrAccess", c.name, got.Principal, err)
+		}
+	}
+}

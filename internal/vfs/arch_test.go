@@ -20,8 +20,12 @@ const module = "github.com/marmos91/dittofs/"
 var network = []string{"net", "crypto/tls", "golang.org/x/net", "google.golang.org/grpc"}
 
 // below is what admit, pseudofs and lockorder never import: each reaches the
-// store only through the narrow reads it declares beside its own code.
+// store only through the narrow reads it declares beside its own code. The
+// store's value types, entity, are no read, and they may name them.
 var below = []string{module + "pkg/metadata", module + "pkg/block", module + "pkg/openstate"}
+
+// values is the one package under below they may import.
+const values = module + "pkg/metadata/entity"
 
 // adapters is every adapter's code, which the filesystem never imports.
 var adapters = []string{module + "internal/adapter", module + "pkg/adapter"}
@@ -63,7 +67,7 @@ func violations(t *testing.T, root string) []string {
 				found = append(found, rel+": imports network code "+p)
 			case under(p, adapters):
 				found = append(found, rel+": imports an adapter, "+p)
-			case (pkg == "admit" || pkg == "pseudofs" || pkg == "lockorder") && under(p, below):
+			case (pkg == "admit" || pkg == "pseudofs" || pkg == "lockorder") && under(p, below) && p != values:
 				found = append(found, rel+": imports "+p+" below its declared reads")
 			}
 		}

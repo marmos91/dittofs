@@ -1,6 +1,7 @@
-// Package admit is admission's steps 2 and 3 for one call reaching one
-// share: its security minimums and its client rules. It reads nothing but
-// what it is handed and the netgroups it names, so it
+// Package admit is admission's steps for one call reaching one share: Check,
+// the share's security minimums and its client rules, then
+// Resolve, the caller it acts as there. It reads nothing but what it is
+// handed, the netgroups Check names and the principals Resolve reads, so it
 // decides the same for a call whatever path brought it to the share.
 package admit
 
