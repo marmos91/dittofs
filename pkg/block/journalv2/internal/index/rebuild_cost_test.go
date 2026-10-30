@@ -58,26 +58,26 @@ func rebuildCost(t *testing.T, n int) (uint64, *files, time.Duration) {
 	return cmps.Load(), fs, time.Since(start)
 }
 
-// TestRebuildCost: the rebuild's comparisons per record grow at most
-// logarithmically, and the rebuilt count and per-segment counters are exact.
-// Every record is one file's, so a super-linear step in the replay — a
-// whole-file walk per record — multiplies the tree's comparisons by n and
-// breaks the growth bound however fast the machine is.
+// TestRebuildCost: the rebuild's costs grow at most logarithmically, and
+// the rebuilt count and per-segment counters are exact. Every record is one
+// file's. The comparison count catches a super-linear search or insert;
+// it cannot see a whole-file walk, which visits nodes without comparing
+// keys, so the time ratio of the two runs catches that: 8x the records
+// costs about 9x the time, a walk per record about 64x, with or without
+// the race detector.
 func TestRebuildCost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("rebuilds 2^17 records")
 	}
 	small, fsSmall, smallTime := rebuildCost(t, 1<<14)
-	// The small run is bounded on the clock before the large one starts,
-	// so a quadratic step in the replay fails here in seconds: the tree's
-	// comparison count cannot see a whole-file walk, which visits nodes
-	// without comparing keys. The clean small rebuild takes tens of
-	// milliseconds; 2 s holds the bound far above noise and far below a
-	// walk per record, which costs n^2/2.
-	if !raceEnabled && smallTime > 2*time.Second {
-		t.Fatalf("the 2^14 rebuild took %v, over the 2 s bound: a step of the replay is not logarithmic", smallTime)
+	large, fsLarge, largeTime := rebuildCost(t, 1<<17)
+
+	// 8x the records costs about 8x the log ratio, about 9.4x the time; a
+	// walk per record costs about 64x. The ratio holds with and without
+	// the race detector.
+	if r := float64(largeTime) / float64(smallTime); r > 24 {
+		t.Fatalf("2^17 rebuild took %.1fx the 2^14 one, want at most 24x: a step of the replay is not logarithmic", r)
 	}
-	large, fsLarge, _ := rebuildCost(t, 1<<17)
 
 	if got := fsLarge.extentCount(); got != 1<<17 {
 		t.Fatalf("extentCount() = %d, want %d", got, 1<<17)
