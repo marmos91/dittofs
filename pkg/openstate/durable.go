@@ -63,6 +63,7 @@ func (e *entry) unsaved() bool {
 
 // persistLease writes the record of each persistent open on e that g
 // covers, so each carries the lease's kind and epoch as they now stand.
+// last's record, if g covers it, is written after every other one.
 //
 // ponytail: one write per record, so a failure part way leaves the records
 // written before it ahead of the table. A refused open saves them again;
@@ -70,13 +71,16 @@ func (e *entry) unsaved() bool {
 // A restart before the next write of those records installs a lease state
 // the client was never sent. Write them in one transaction if a store
 // failure is seen leaving a record's lease ahead across a restart.
-func (t *Table) persistLease(ctx context.Context, e *entry, g *grant) error {
+func (t *Table) persistLease(ctx context.Context, e *entry, g *grant, last *open) error {
 	for _, h := range e.opens {
-		if h.persistent() && h.Grant == g.id {
+		if h != last && h.persistent() && h.Grant == g.id {
 			if err := t.persist(ctx, e, h); err != nil {
 				return err
 			}
 		}
+	}
+	if last != nil && last.persistent() && last.Grant == g.id {
+		return t.persist(ctx, e, last)
 	}
 	return nil
 }
@@ -87,7 +91,7 @@ func (t *Table) persistLeaseAs(ctx context.Context, e *entry, g *grant, fsm gran
 	keep := g.fsm
 	g.fsm = fsm
 	defer func() { g.fsm = keep }()
-	return t.persistLease(ctx, e, g)
+	return t.persistLease(ctx, e, g, nil)
 }
 
 // cloneFSM is f with its own copy of the recall in flight, which its
@@ -136,19 +140,25 @@ func (t *Table) endedLocked(c entity.ClientID, s entity.SessionRef) bool {
 
 // persistOpen writes o, just granted on e, where it is persistent, and the
 // persistent opens the lease covering it covers, whose kind the open may
-// have widened. A failed write takes o back out, as if it was refused; the
-// caller puts a widened lease back.
+// have widened. o's record is written last, so a failed write of another
+// leaves none of o's. A failed write takes o back out, as if it was refused;
+// the caller puts a widened lease back.
 //
-// decision: a failed write's record, which the store may still have
-// committed, is not deleted: the store is failing writes, and the next
-// start installs the record and closes it at its Timeout. Delete it here if
-// a store is found failing one write and not the next.
+// decision: after a failed write o's record, which the store may still have
+// committed, is deleted once, best effort, finding none when the failure
+// came before it: the store is failing writes, and if the delete fails too
+// the next start installs the record and closes it at its Timeout. Retry the
+// delete on the timer if a store is found failing one write and not the
+// next.
 func (t *Table) persistOpen(ctx context.Context, e *entry, o *open) error {
 	var err error
 	if g := e.grants[o.Grant.Token]; g != nil && g.id == o.Grant {
-		err = t.persistLease(ctx, e, g) // writes o's record too
+		err = t.persistLease(ctx, e, g, o) // writes o's record too, last
 	} else if o.persistent() {
 		err = t.persist(ctx, e, o)
+	}
+	if err != nil && o.persistent() {
+		_, _ = t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
 	}
 	if err != nil {
 		t.uncover(e, o)

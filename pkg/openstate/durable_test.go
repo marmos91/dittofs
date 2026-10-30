@@ -498,11 +498,11 @@ func TestOnlyPersistentOpensAreInstalled(t *testing.T) {
 // It counts the write transactions asked of it in updates, and fails the
 // updateAt'th one counted from one, and every one from the failFrom'th, as a
 // node stopping there would leave the store. While lose is set, writes land
-// and are answered an error all the same.
+// and are answered an error all the same, as the loseAt'th one does.
 type failing struct {
 	kv.KV
-	fail, lose                                 atomic.Bool
-	readAt, reads, updateAt, updates, failFrom atomic.Int64
+	fail, lose                                         atomic.Bool
+	readAt, reads, updateAt, updates, failFrom, loseAt atomic.Int64
 }
 
 func (s *failing) View(ctx context.Context, fn func(kv.Reader) error) error {
@@ -519,7 +519,7 @@ func (s *failing) Update(ctx context.Context, fn func(kv.Txn) error) error {
 	if s.fail.Load() || n == s.updateAt.Load() || s.failFrom.Load() > 0 && n >= s.failFrom.Load() {
 		return errWrite
 	}
-	if err := s.KV.Update(ctx, fn); err != nil || !s.lose.Load() {
+	if err := s.KV.Update(ctx, fn); err != nil || !s.lose.Load() && n != s.loseAt.Load() {
 		return err
 	}
 	return errWrite
@@ -780,6 +780,52 @@ func TestRefusedWideningOpenPutsTheLeaseRecordsBack(t *testing.T) {
 		if err := f.check(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A refused widening open leaves no record of its own behind, whichever
+// order the lease's records were written in.
+func TestRefusedWideningOpenLeavesNoRecord(t *testing.T) {
+	for range 40 { // map order: o's record is written before the failing one in some runs
+		fs, st := failingFS(t)
+		f := reopen(t, fs, &fakeClock{})
+		a := f.caller(t, smbMachine("pc-a"))
+		file, r := f.fileIn(t, "disk")
+		r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{1}, ptr[uint16](1), GrantRead
+		f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+		r.Want = rwh
+		st.updateAt.Store(st.updates.Load() + 2)
+		_, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 2))
+		st.updateAt.Store(0)
+		if err == nil {
+			t.Fatal("the widening open whose write failed was granted")
+		}
+		recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recs) != 1 {
+			t.Fatalf("stored opens after the refused open: %d, want the first one only", len(recs))
+		}
+	}
+}
+
+// A persistent open whose record write lands but is answered an error is
+// refused, and its record deleted.
+func TestOpenWhoseLandedWriteErredLeavesNoRecord(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a := f.caller(t, smbMachine("pc-a"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd
+	st.loseAt.Store(st.updates.Load() + 3) // the open's own record, after its file's writes
+	_, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	st.loseAt.Store(0)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("an open whose write is answered an error: %v, want that error", err)
+	}
+	if recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID); err != nil || len(recs) != 0 {
+		t.Errorf("stored opens after the refused open: %d, %v; want none", len(recs), err)
 	}
 }
 
