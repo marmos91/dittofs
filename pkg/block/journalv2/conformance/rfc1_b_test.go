@@ -146,7 +146,7 @@ func wantENOSPC(t *testing.T, err error, what string) {
 func fullDevice(t *testing.T, f *journalv2test.Fixture) {
 	t.Helper()
 
-	full := sim.FaultAction{Kind: sim.Fail, Err: syscall.ENOSPC}
+	full := sim.FaultAction{Err: syscall.ENOSPC}
 	fault, err := sim.NewSchedule(1, nil,
 		sim.Rule{Op: journalv2test.OpCreate, Key: "*", Action: full},
 		sim.Rule{Op: journalv2test.OpAllocate, Key: "*", Action: full},

@@ -16,7 +16,10 @@ type Waiter interface {
 	After(d time.Duration) <-chan struct{}
 }
 
-var _ Waiter = (*TestClock)(nil)
+var (
+	_ Waiter = (*TestClock)(nil)
+	_ Fault  = (*Schedule)(nil)
+)
 
 // Rule selects some of a seam's calls and the action to take on them.
 //
@@ -59,11 +62,10 @@ type scheduled struct {
 	rng   *rand.Rand
 }
 
-// NewSchedule returns a schedule of rules seeded with seed, whose Delay
-// actions wait on clock. clock may be nil when no rule delays. It refuses an
-// empty Op or Key, a negative From or Count, a Prob outside [0, 1], a Fail
-// with a nil Err, a Delay of zero or less, a Tear with a negative N, and an
-// unknown Kind.
+// NewSchedule returns a schedule of rules seeded with seed, whose delays wait
+// on clock. clock may be nil when no rule delays. It refuses an empty Op or
+// Key, a negative From or Count, a Prob outside [0, 1], an action that does
+// nothing, a TearAfter below Lose, a negative Delay, and a loss with an Err.
 func NewSchedule(seed uint64, clock Waiter, rules ...Rule) (*Schedule, error) {
 	s := &Schedule{clock: clock}
 
@@ -90,16 +92,16 @@ func (r Rule) validate(clock Waiter) error {
 		return errors.New("negative From or Count")
 	case !(r.Prob >= 0 && r.Prob <= 1):
 		return fmt.Errorf("a Prob of %v, outside [0, 1]", r.Prob)
-	case a.Kind < Pass || a.Kind > Reorder:
-		return fmt.Errorf("unknown kind %v", a.Kind)
-	case a.Kind == Fail && a.Err == nil:
-		return errors.New("fail with a nil Err")
-	case a.Kind == Delay && a.Delay <= 0:
+	case a == (FaultAction{}):
+		return errors.New("an action that does nothing: set Err, Delay or TearAfter")
+	case a.TearAfter < Lose:
+		return fmt.Errorf("a TearAfter of %d: below Lose, which is the one loss", a.TearAfter)
+	case a.Delay < 0:
 		return fmt.Errorf("delay of %v", a.Delay)
-	case a.Kind == Delay && clock == nil:
+	case a.Delay > 0 && clock == nil:
 		return errors.New("delay with no clock")
-	case a.Kind == Tear && a.N < 0:
-		return fmt.Errorf("tear keeping %d bytes", a.N)
+	case a.TearAfter < 0 && a.Err != nil:
+		return errors.New("a loss with an Err: a lost operation reports success")
 	}
 
 	return nil
@@ -114,22 +116,26 @@ func (r Rule) hash() uint64 {
 	}
 
 	h := fnv.New64a()
-	_, _ = fmt.Fprintf(h, "%q %q %d %d %x %d %q %d %d",
+	_, _ = fmt.Fprintf(h, "%q %q %d %d %x %q %d %d",
 		r.Op, r.Key, r.From, r.Count, math.Float64bits(r.Prob),
-		r.Action.Kind, msg, r.Action.Delay, r.Action.N)
+		msg, r.Action.Delay, r.Action.TearAfter)
 	return h.Sum64()
 }
 
-// At returns the action for one call of op on key. For a Delay it first waits
-// the action's Delay on the schedule's clock, without holding the schedule,
-// so other calls are decided meanwhile.
-func (s *Schedule) At(op string, key []byte) FaultAction {
+// At returns the results for one call of op on key. A delay it first waits
+// out on the schedule's clock, without holding the schedule, so other calls
+// are decided meanwhile.
+//
+// decision: At waits the delay itself, and returns it only to say so, because
+// the seams it drives take no clock of their own; a seam applies a returned
+// delay as already elapsed.
+func (s *Schedule) At(op string, key []byte) (delay time.Duration, tearAfter int, err error) {
 	a := s.decide(op, string(key))
-	if a.Kind == Delay {
+	if a.Delay > 0 {
 		<-s.clock.After(a.Delay)
 	}
 
-	return a
+	return a.Delay, a.TearAfter, a.Err
 }
 
 // decide selects the FaultAction for a call of op on key according to the rules.

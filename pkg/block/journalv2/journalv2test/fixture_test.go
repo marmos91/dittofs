@@ -33,7 +33,7 @@ func (r *fatalRecorder) Fatal(args ...any) {
 // set up fails the test as the fixture's failure, never as the check's.
 func TestFixtureReportsItsOwnFailures(t *testing.T) {
 	eio := errors.New("injected EIO")
-	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Kind: sim.Fail, Err: eio}})
+	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: eio}})
 	if err != nil {
 		t.Fatal(err)
 	}
