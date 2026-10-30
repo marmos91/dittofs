@@ -28,8 +28,9 @@ import (
 // its Sink and Admission as its Order.
 type fixture struct {
 	*Filesystem
-	tab *openstate.Table
-	fs  *kvstoretest.FS
+	tab   *openstate.Table
+	fs    *kvstoretest.FS
+	clock *sim.TestClock
 }
 
 func memKV(tb testing.TB) kv.KV {
@@ -55,7 +56,8 @@ func newFixtureOf(t *testing.T, d Deps) *fixture {
 	if err := fs.Store.ControlPlane().PutUser(t.Context(), entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}); err != nil {
 		t.Fatal(err)
 	}
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Rand: rand.Reader})
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +70,7 @@ func newFixtureOf(t *testing.T, d Deps) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Filesystem: s, tab: tab, fs: fs}
+	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock}
 }
 
 // newFilesystem is a serving filesystem, drained and stopped when the test
