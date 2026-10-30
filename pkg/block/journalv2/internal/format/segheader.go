@@ -44,7 +44,9 @@ func AppendSegmentHeader(dst []byte, h SegmentHeader) []byte {
 // version-1 segment header; one matching ErrUnknownVersion means it verifies
 // but names a version this binary does not read; one matching ErrForeign
 // means it verifies and belongs to another journal, and it comes with the
-// decoded header, so the caller can report whose segment it is.
+// decoded header, so the caller can report whose segment it is. A slot of
+// zeros is ErrDamaged here; it is an untaken spare, not damage, so the
+// caller tests for it before decoding.
 //
 // The returned header's ID is not compared with the id in the segment's
 // file name: the caller must, and a mismatch is what an interrupted recycle
