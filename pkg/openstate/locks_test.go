@@ -1767,3 +1767,30 @@ func TestDowngradeGrantServesTheWaitersItFrees(t *testing.T) {
 		t.Errorf("p's replacing request raised %v, want %v", got, want)
 	}
 }
+
+// A request that replaces its owner's waiter and is then served, its range
+// freed by a downgrade, but refused past its client's ranges cap, which
+// another of the client's waiters just took, is answered waiting and
+// reported not granted, its lock state gone.
+func TestReplacingWaiterRefusedPastTheCap(t *testing.T) {
+	f := newFixture(t)
+	file := in(1)
+	h1, h2, h4 := f.host(t, "h1", 1), f.host(t, "h2", 1), f.host(t, "h4", 1)
+	q, p, p2 := owner(h1, "q"), owner(h2, "p"), owner(h2, "p2")
+	f.mustLock(t, h1, file, LockReq{Owner: q, Ranges: []LockRange{x(6, 1)}})
+	f.mustLock(t, h4, file, LockReq{Owner: owner(h4, "e"), Ranges: []LockRange{sh(1, 1)}})
+	f.mustLock(t, h2, file, LockReq{Owner: p, Ranges: []LockRange{x(0, 2)}, Wait: WaitCallback})   // behind e's byte 1
+	f.mustLock(t, h1, file, LockReq{Owner: q, Ranges: []LockRange{sh(1, 6)}, Wait: WaitCallback})  // behind p's waiter
+	f.mustLock(t, h2, file, LockReq{Owner: p2, Ranges: []LockRange{sh(1, 1)}, Wait: WaitCallback}) // behind p's waiter
+	f.lower(cappedRanges, 1)
+	if res, err := f.lock(h2, file, LockReq{Owner: p, Ranges: []LockRange{sh(3, 4)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+		t.Errorf("p's replacing request: %+v, %v; want Waiting", res, err)
+	}
+	var got []string
+	for _, w := range f.sink.takeWaits() {
+		got = append(got, fmt.Sprintf("%s %v", w.w.Owner.Name, w.granted))
+	}
+	if want := []string{"p false", "q true", "p2 true", "p false"}; !slices.Equal(got, want) {
+		t.Errorf("p's replacing request raised %v, want %v", got, want)
+	}
+}
