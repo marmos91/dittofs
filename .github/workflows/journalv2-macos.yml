@@ -1,0 +1,50 @@
+# The journal's macOS storage: its sync and allocation calls, and the storage
+# contract on the operating system's own files. No other job builds or runs
+# the darwin files.
+name: Journal v2 macOS
+
+on:
+  push:
+    branches: [develop, feat/storage-v2]
+    paths:
+      - 'pkg/block/journalv2/**'
+      - 'pkg/sim/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/journalv2-macos.yml'
+  pull_request:
+    branches: [develop, main, feat/storage-v2]
+    paths:
+      - 'pkg/block/journalv2/**'
+      - 'pkg/sim/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/journalv2-macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel only a superseded pull-request run. A push is a distinct commit
+  # someone wants tested.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  platform:
+    name: Journal storage on macOS
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true  # Built-in caching (replaces actions/cache)
+
+      - name: Run the platform and storage tests
+        run: go test -race ./pkg/block/journalv2/internal/platform/... ./pkg/block/journalv2/internal/storage/...
