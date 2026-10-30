@@ -352,6 +352,27 @@ func (s *heldSet) markOffloaded(e core.Extent, oldest, newest core.Version) int 
 	return len(s.work)
 }
 
+// unmark clears the offloaded bit of the content held inside e whose version
+// is at most newest, and only inside e, splitting a piece at e's ends. It
+// returns the number of pieces it cleared, and costs O(log n) per piece, like
+// markOffloaded. Each cleared part goes back through put, so accounting and
+// the index agree and neighbours that now agree join as one entry.
+func (s *heldSet) unmark(e core.Extent, newest core.Version) int {
+	s.work = s.work[:0]
+	s.visit(e, func(p Piece) bool {
+		if p.Offloaded && p.Version.Compare(newest) <= 0 {
+			q := clip(p, e)
+			q.Offloaded = false
+			s.work = append(s.work, q)
+		}
+		return true
+	})
+	for _, q := range s.work {
+		s.put(q)
+	}
+	return len(s.work)
+}
+
 // repoint moves the pieces inside e held from record from to record to, whose
 // payload holds e's bytes from skip on, keeping their extents, versions and
 // bits. A record re-appended after a failed sync is the same record in a new
