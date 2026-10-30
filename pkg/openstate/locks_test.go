@@ -393,6 +393,23 @@ func TestWaiterBarsOnlyItsBlockers(t *testing.T) {
 	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a1"), Open: refOf(o), Ranges: []LockRange{x(0, 1)}})
 }
 
+// A waiter is barred by the blockers of the waiters ahead of it, never by
+// those of a waiter behind it: a shared waiter freed beside a shared lock is
+// granted though an exclusive waiter behind it still waits on that lock.
+func TestWaiterNotBarredByOneBehind(t *testing.T) {
+	f := newFixture(t)
+	file := anyFile()
+	c, d, a, b := f.host(t, "c", 1), f.host(t, "d", 1), f.host(t, "a", 1), f.host(t, "b", 1)
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{sh(0, 5)}})
+	f.mustLock(t, d, file, LockReq{Owner: owner(d, "d"), Ranges: []LockRange{x(5, 5)}})
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{sh(0, 10)}, Wait: WaitCallback})
+	f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
+	f.unlock(t, d, file, owner(d, "d"), br(5, 5))
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 || got[0] != "a" {
+		t.Errorf("granted at d's unlock: %v, want a, ahead of b", got)
+	}
+}
+
 // A poll that repeats the request it waits with keeps its place and its
 // wait, and a lock that turns an owner's exclusive lock shared grants the
 // shared waiters it frees.
