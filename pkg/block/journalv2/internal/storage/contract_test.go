@@ -98,9 +98,13 @@ var held []storage.File
 //     atomicity is the kernel's rename; the crash half is as above.
 //   - ReadAtDirect's "bypassing the page cache, so it observes what reached
 //     the device": not provided yet, the read goes through the page cache.
-//   - Allocate's two sentences, and File's "A file allocated and never
-//     synced comes back short or unallocated": the operating system's
-//     allocation is not written yet.
+//   - File's "A file allocated and never synced comes back short or
+//     unallocated": a crash. The seam's own tests check it on the seam; on
+//     the operating system it takes a power cut.
+//   - Allocate's "so a later WriteAt into them needs no new space": the seam
+//     extends the file sparsely by its own decision, so only the size is
+//     checked here. platform's TestAllocateCalls checks the blocks the
+//     filesystem allocated.
 //   - Sync's "It is a data-only sync, or a full sync where the platform
 //     requires one": the call is seen only beneath the storage. platform's
 //     TestSyncCalls checks it there.
@@ -270,6 +274,34 @@ var contract = []contractCase{
 		write(t, f, "EA", 1)
 		expectSize(t, f, 12)
 		expectRead(t, f, "hEAd\x00\x00\x00\x00tail", 0)
+	}},
+	{"Allocate allocates the n bytes at offset off", func(t *testing.T, c env) {
+		f := create(t, c.fs, "a")
+
+		defer closeFile(t, f)
+
+		if err := f.Allocate(4096, 3*4096+5); err != nil {
+			t.Fatalf("Allocate: %v", err)
+		}
+
+		expectSize(t, f, 4*4096+5)
+		write(t, f, "record", 4*4096-1)
+		expectSize(t, f, 4*4096+5)
+		expectRead(t, f, "record", 4*4096-1)
+	}},
+	{"Bytes no write has reached read as zeros", func(t *testing.T, c env) {
+		f := create(t, c.fs, "a")
+
+		defer closeFile(t, f)
+
+		write(t, f, "record", 0)
+
+		if err := f.Allocate(6, 2*4096+3); err != nil {
+			t.Fatalf("Allocate: %v", err)
+		}
+
+		expectSize(t, f, 6+2*4096+3)
+		expectRead(t, f, "record"+string(make([]byte, 2*4096+3)), 0)
 	}},
 	{"Sync makes every WriteAt, Allocate and Truncate that returned before it durable", func(t *testing.T, c env) {
 		f := create(t, c.fs, "a")

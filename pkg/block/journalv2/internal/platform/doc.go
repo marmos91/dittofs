@@ -3,10 +3,10 @@
 // sync made by the call RFC 28 Appendix A names for the platform.
 //
 // decision: golang.org/x/sys is imported here and nowhere else in the journal,
-// which otherwise depends on the standard library alone. The calls a sync
-// needs (fdatasync, and later fallocate, F_FULLFSYNC and O_DIRECT) are the
-// operating system's file interface RFC 1 §1.1 allows, and the syscall package
-// covers them incompletely and is frozen. The import test holds the split per
-// package. Widen it only if another package needs a call the standard library
-// lacks.
+// which otherwise depends on the standard library alone. The calls the
+// storage needs (fdatasync and fallocate, and later F_FULLFSYNC and O_DIRECT)
+// are the operating system's file interface RFC 1 §1.1 allows, and the
+// syscall package covers them incompletely and is frozen. The import test
+// holds the split per package. Widen it only if another package needs a call
+// the standard library lacks.
 package platform
