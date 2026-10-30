@@ -681,3 +681,28 @@ func TestReleasedPersistentOpenComesBack(t *testing.T) {
 		t.Error("a persistent open released with its client reconnects after a restart")
 	}
 }
+
+// A close whose record delete landed but was answered an error is retried
+// to a close: the retry finds no record and drops the open, so its deny mode
+// no longer refuses another client.
+func TestCloseRetriedAfterLandedDelete(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Deny = rd|wr, wr
+	o := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+
+	st.lose.Store(true)
+	_, err := f.Opens().Close(ctx, a, refOf(o), Seqs{})
+	st.lose.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a close whose delete is answered an error: %v, want that error", err)
+	}
+	if _, err := f.Opens().Close(ctx, a, refOf(o), Seqs{}); err != nil {
+		t.Errorf("the close retried: %v, want closed", err)
+	}
+	if _, err := f.open(b, file, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("another client's write open after the retried close: %v", err)
+	}
+}

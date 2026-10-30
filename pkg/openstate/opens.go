@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 	"github.com/marmos91/dittofs/pkg/openstate/conflict"
 	"github.com/marmos91/dittofs/pkg/openstate/sequence"
@@ -1116,6 +1117,9 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 		return false, nil
 	}
 	orphaned, err := t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
+	if merrs.IsNotFoundError(err) {
+		return false, nil // an earlier delete answered an error landed
+	}
 	return orphaned.File != entity.FileID{}, err
 }
 
