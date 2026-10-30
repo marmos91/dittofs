@@ -128,7 +128,9 @@ pkg/quotav2/internal/usage/
 - **Acceptance criteria:**
   - `Get` and `Add` cost O(1) and allocate nothing.
   - Readers and writers of different principals run in parallel.
-- **Tests:** a `-race` test with writers on 64 principals (catches a global lock); a
+- **Tests:** a test that holds one principal's shard lock through a test hook and checks
+  that `Check` for a principal in another shard still returns (catches a global lock, which
+  would block it); the `-race` run with writers on 64 principals (catches a data race); a
   memory check at 10⁶ entries that fails when one field is added (catches R10).
 
 ### T3.2 Usage accounting

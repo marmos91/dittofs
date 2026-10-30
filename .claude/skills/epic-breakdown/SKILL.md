@@ -43,10 +43,10 @@ ids, so they must stay stable:
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id may
   have been cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
 - **Never reuse or drop an id that a pull request has cited.** Search first:
-  `gh pr list --state all --search '"T<epic>.<n>" in:title'`, and for an epic whose ids
-  were cited before the prefix, also `'"<epic>.<n>" in:title'` (a plain `--search "4.2"` is
-  a full-text search and also returns pull requests citing an RFC's §4.2). If the work
-  moved, say where in §9.
+  `gh pr list --state all --search '"T<epic>.<n>" in:title,body'`, since pull requests cite
+  ids in their descriptions too. For an epic whose ids were cited before the prefix, also
+  search `'"<epic>.<n>" in:title,body'`, and discard the hits that only cite an RFC's
+  §<epic>.<n>. If the work moved, say where in §9.
 
 A **track** (A, B or C, one line of work through the epics) and a **synchronisation point** (S1, S2, …)
 are not units of work and keep their names. A **pull request** groups subtasks (§8 below);
@@ -154,7 +154,7 @@ per group:
 ```markdown
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A file's held extents are disjoint. A superseding write splits or narrows, and never leaves two extents covering one offset | MUST NOT | RFC 1 §4 | T4.2 |
+| R1 | A file's held extents are disjoint. A superseding write splits or narrows, and never leaves two extents covering one offset | MUST | RFC 1 §4 | T4.2 |
 | R13 | Covering extent of an offset, or its absence, in O(log n) | bound | §4.1 | T4.1, T4.2 |
 ```
 
@@ -228,18 +228,23 @@ number. Compute the total with this check, never by hand. Save it as `epic-check
 scratchpad and run `awk -f epic-check.awk <epic-doc>`:
 
 ```awk
-/^## /                                   { in6 = ($0 ~ /^## 6\./) }
-in6 && /^### T[0-9]+\.[0-9]+[a-z]? /     { head[$2]++; order[++k] = $2 }
+/^## /                                   { in6 = ($0 ~ /^## 6\./); cur = "" }
+in6 && /^### /                           { cur = "" }
+in6 && /^### T[0-9]+\.[0-9]+[a-z]? /     { cur = $2; head[$2]++; order[++k] = $2
+                                           if (head[$2] > 1) print "duplicate heading " $2 }
 /(Epic [0-9]+|Subtask T?[0-9]+\.[0-9]+[a-z]?) estimate:/ {
   if ($0 ~ /^\*\*Subtask T[0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
     est[$2]++; n++; d += $4
+    if ($2 != cur) print "estimate line for " $2 " (line " NR ") sits under " (cur == "" ? "no subtask heading" : "heading " cur)
   } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
-    hn = $4; hd = $6; seen = 1
+    if (seen++) print "a second epic estimate line, line " NR
+    else { epic = $2; hn = $4; hd = $6 }
   } else print "malformed, line " NR ": " $0
 }
 END {
   for (i = 1; i <= k; i++) if (est[order[i]] != 1) print "subtask " order[i] ": " est[order[i]] + 0 " estimate lines"
   for (id in est) if (!(id in head)) print "estimate line for " id " has no ### heading in §6"
+  if (seen) for (id in head) if (id !~ "^T" epic "\\.") print "subtask " id " is not an id of epic " epic
   printf "TOTAL %d subtasks, %g man-days\n", n, d
   if (!seen) print "no epic estimate line in the header"
   else if (hn != n || hd != d) printf "header says %d subtasks, %g man-days\n", hn, hd
@@ -249,10 +254,12 @@ END {
 Only the `TOTAL` line may print; write it into the header. Anything else is a defect to fix:
 a malformed line (`2,5`, `~2`, `0.3`, an indented or bulleted line, a missing word) is
 reported rather than summed; a `### T<k>.<n>` subtask heading in §6 without exactly one
-estimate line, or an estimate line without a heading, is reported, so a deleted line
-cannot go unnoticed; and a header line that no longer matches the sum is reported.
+estimate line, an estimate line without a heading or under another subtask's heading, a
+subtask id of another epic, a duplicate heading and a second epic line are reported, so a
+deleted or misplaced line cannot go unnoticed; and a header line that no longer matches
+the sum is reported.
 
-`grep -E '^\*\*(Epic|Subtask) [0-9.]+[a-z]? estimate:' <epic-doc>` lists the whole estimate.
+`grep -E '^\*\*(Epic [0-9]+|Subtask T[0-9]+\.[0-9]+[a-z]?) estimate:' <epic-doc>` lists the whole estimate.
 
 **Updating the plan is not required.** Its estimate line for this epic was the figure when
 the plan was written, and the epic document's line supersedes it for this epic. The plan
@@ -380,7 +387,7 @@ When the user explicitly asks for them, follow these steps. If the epic issue al
    gh issue create --title "<component> v2, epic <k>: <title>" \
      --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --body-file <body.md>
    ```
-3. **One issue per subtask.** Title `<component> v2, epic T<k>.<n>: <title>`. Body: the
+3. **One issue per subtask.** Title `<component> v2, subtask T<k>.<n>: <title>`. Body: the
    subtask's §6 section, the rows of §3 it covers, and "Depends on #…" for the subtask
    issues it depends on. Like the epic, it stands alone and does not refer to the plan.
 4. **Attach each subtask to the epic as a sub-issue**, not as a checklist in the epic's
@@ -423,7 +430,8 @@ Before handing over, check:
   Mermaid.
 - §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
 - §1.3 explains every `E<n>` and `S<n>` the document uses, the copied rules included. This
-  prints the ones missing from it, and must print nothing:
+  prints the ones missing from it, and must print nothing. A token that names something
+  else, such as the S3 storage service, gets its own line in §1.3 saying so:
 
   ```bash
   rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' <epic-doc> | sort -u |
