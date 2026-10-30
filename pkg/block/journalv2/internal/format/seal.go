@@ -36,7 +36,8 @@ func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte 
 // DecodeSealMarker reads a seal marker, opened under journal's identity, at
 // the given segment and offset. An error matching ErrDamaged means the bytes
 // are not a seal marker of this journal: a wrong length, magic or checksum
-// against this identity's seed, or reserved bytes that are not zero. One
+// against this identity's seed, reserved bytes that are not zero, or an own
+// offset too large for the int64 a read offset is. One
 // matching ErrWrongPlace means the marker verifies but names another segment
 // or another offset than the ones it was read at — it was written somewhere
 // else, so a copy inside a payload never ends a scan — and it comes with the
@@ -44,13 +45,11 @@ func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte 
 // is ErrDamaged here; the scanner tells an untaken slot from a marker before
 // decoding.
 func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
-	m := SealMarker{}
-
 	if len(b) != SealMarkerSize {
-		return m, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SealMarkerSize)
+		return SealMarker{}, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SealMarkerSize)
 	}
 	if string(b[0:4]) != "DJS1" {
-		return m, fmt.Errorf("%w: magic %q, want %q", ErrDamaged, b[0:4], "DJS1")
+		return SealMarker{}, fmt.Errorf("%w: magic %q, want %q", ErrDamaged, b[0:4], "DJS1")
 	}
 	// A marker seeded with another journal's identity fails here and is
 	// indistinguishable from damage — that is what the seed is for. Unlike
@@ -58,7 +57,7 @@ func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID,
 	// told apart, no foreign marker is ever reported as anything but
 	// damage.
 	if got, want := binary.LittleEndian.Uint32(b[28:32]), crc32cSeeded(identity, b[0:28]); got != want {
-		return m, fmt.Errorf("%w: checksum 0x%08x, want the CRC32C of the identity then [0,28): 0x%08x", ErrDamaged, got, want)
+		return SealMarker{}, fmt.Errorf("%w: checksum 0x%08x, want the CRC32C of the identity then [0,28): 0x%08x", ErrDamaged, got, want)
 	}
 
 	// decision: non-zero reserved bytes are refused as damage, the
@@ -68,13 +67,20 @@ func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID,
 		return SealMarker{}, fmt.Errorf("%w: reserved bytes are not zero", ErrDamaged)
 	}
 
-	m.Segment = core.SegmentID(binary.LittleEndian.Uint64(b[8:16]))
-	m.Offset = int64(binary.LittleEndian.Uint64(b[16:24]))
+	m := SealMarker{
+		Segment: core.SegmentID(binary.LittleEndian.Uint64(b[8:16])),
+		Offset:  int64(binary.LittleEndian.Uint64(b[16:24])),
+	}
 
-	// The offsets are compared as uint64: one stored above MaxInt64 can
-	// never equal a real read offset, which is an int64, so it needs no
-	// check of its own — it is already not this place's.
-	if m.Segment != segment || uint64(m.Offset) != uint64(offset) {
+	// The offset column is 64 bits wide while a read offset is an int64:
+	// a stored offset with its top bit set decodes negative and can name
+	// no place this journal reads at, so it is refused as damage here,
+	// before the place comparison — never reported as a marker written
+	// somewhere else.
+	if m.Offset < 0 {
+		return SealMarker{}, fmt.Errorf("%w: own offset %d is above MaxInt64", ErrDamaged, uint64(m.Offset))
+	}
+	if m.Segment != segment || m.Offset != offset {
 		return m, fmt.Errorf("%w: segment %d, offset %d, want the segment %d and offset %d it was read at", ErrWrongPlace, m.Segment, m.Offset, segment, offset)
 	}
 	return m, nil

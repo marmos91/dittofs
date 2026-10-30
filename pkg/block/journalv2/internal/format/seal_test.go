@@ -154,3 +154,31 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64 pins that a marker
+// whose own offset, as stored, does not fit an int64 is refused as damage —
+// at any read offset, including the negative one its bytes decode as — and
+// never accepted as a marker of this place. The offset column of the table
+// is 64 bits wide while core's offsets are int64, so a marker that did hold
+// such an offset could not name a place this journal reads at.
+func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
+	// Offset -1 encodes as 0xffffffffffffffff: the least in-range above
+	// MaxInt64.
+	b := AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: -1})
+
+	for _, c := range []struct {
+		name   string
+		offset int64
+	}{
+		{"read at a real offset", testOffset},
+		{"read at the negative offset it decodes as", -1},
+	} {
+		m, err := DecodeSealMarker(b, testIdentity, testSegment, c.offset)
+		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
+			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
+		}
+		if m != (SealMarker{}) {
+			t.Errorf("%s: decoded %+v on damage, want the zero marker", c.name, m)
+		}
+	}
+}
