@@ -1221,4 +1221,7 @@ func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, n, file, delegated(g, file), br(0, 1), true); err != nil {
 		t.Errorf("a write through the holder's own delegation: %v", err)
 	}
+	if err := f.Checks().CheckIO(ctx, n, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an anonymous write by the holder: %v, want ErrShareViolation", err)
+	}
 }
