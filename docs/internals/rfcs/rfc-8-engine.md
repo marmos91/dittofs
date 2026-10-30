@@ -994,8 +994,9 @@ state.
 - A write **MUST NOT** wait for a metadata transaction, an offload or the remote
   tier. It waits only for admission and for the journal.
 - Until the file's next stability point ([§5](#5.%20Commit%3A%20the%20stability%20point)), the journal is the authority
-  for the write: `Read`, `Overlay` and `Allocation` apply the journal's
-  uncommitted operations of the file over committed existence.
+  for the write: `Read` and `Allocation` apply the journal's uncommitted
+  operations of the file over committed existence; `Overlay` returns them
+  alone, and the service joins it with the File record ([§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)).
 - The reply carries the **write verifier** (below).
 - A **stable** write ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)) is a stability point for its
   own extent: it is answered once the journal has synced it and, when it
@@ -2967,7 +2968,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Read(file, off, dst)` | [§7](#7.%20Read) |
 | `Truncate(file, size)`, `Deallocate(file, off, n)`, `Delete(file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
 | `Clone(src, dst, x)`, `Copy(src, dst, xs)` | [§9](#9.%20Clone) |
-| `Overlay(file)` | size, times and version: committed existence with the journal's uncommitted operations applied ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
+| `Overlay(file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 | `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator) |
@@ -2979,9 +2980,21 @@ service answers an attribute request by joining the namespace's File record with
 it ([RFC 17](rfc-17-vfs.md)); nothing else answers those three, and the metadata store calls
 no engine method. `Overlay` reads the journal only: it makes no metadata read
 and takes no lock shared across files. For a file with no uncommitted operation
-it answers "nothing pending", and the service uses the File record alone. Its
+it returns `pending` false, and the service uses the File record alone. Its
 cost is the file's uncommitted operations, at most those staged within one
 existence age.
+
+**`Overlay` replays the pending operations, not committed existence.** It
+replays them in version order: a truncate sets the size and sets `SizeSet`, and
+each later write raises the size to its end. The service uses `o.Size` when
+`SizeSet`, and otherwise the larger of it and the File record's size
+([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)). The engine cannot apply them over the committed size itself:
+it would need a second copy of it, which [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives) forbids. And "take
+the larger" alone is wrong for a pending truncate: with the File record at
+1 MiB, writes pending to 2 MiB and then a truncate to 512 KiB at version *v*, a
+`GETATTR` inside the truncate's window would answer 2 MiB at *v*, and after its
+phase 1 512 KiB at the same *v*, so an NFSv4 client that cached 2 MiB under *v*
+would never revalidate.
 
 Offload, eviction and removal batches are not engine methods: the work queue
 runs offload and removal batches ([§6.1](#6.1%20The%20work%20queue)) and the eviction loop eviction
@@ -3028,7 +3041,7 @@ func (e *Engine) Deallocate(ctx context.Context, f FileID, off, n int64) error
 func (e *Engine) Delete(ctx context.Context, f FileID) error // the file's release (RFC 7 §4.5); never the journal's Release, which evicts
 func (e *Engine) Clone(ctx context.Context, src, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len
 func (e *Engine) Copy(ctx context.Context, src, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline
-func (e *Engine) Overlay(ctx context.Context, f FileID) (Overlay, error)                 // journal only; no metadata read
+func (e *Engine) Overlay(ctx context.Context, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
 func (e *Engine) Allocation(ctx context.Context, f FileID, off int64) (Span, error)      // RFC 6 §2's Span, the journal's uncommitted operations applied (§7.6)
 
 // Control: node-local.
@@ -3054,7 +3067,8 @@ type WriteOpts struct {
 }
 type Extent struct{ SrcOff, DstOff, Len int64 } // RFC 17's Extent is an alias of this
 type Overlay struct {
-	Size         int64
+	Size         int64 // SizeSet: the size; else the end of the pending writes
+	SizeSet      bool  // a truncate is pending, so Size is exact
 	Mtime, Ctime time.Time
 	Version      Version
 }

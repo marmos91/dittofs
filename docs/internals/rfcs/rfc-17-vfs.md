@@ -2033,9 +2033,13 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 ### 5.7 GetAttr
 
 The metadata store is a leaf: it never calls the engine. `GetAttr` joins
-`Files.Get` with the engine's `Overlay` — `Size`, `Times` and `Version` of writes
-staged but not yet committed — at the file's primary, where both are local. The
-overlay wins where it is newer. The two are read under the file's commit
+`Files.Get` with the engine's `Overlay` — `Size`, `Times` and `Version` of the
+operations staged but not yet committed, replayed in version order — at the
+file's primary, where both are local
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)). With nothing pending the File record
+answers alone. Otherwise the size is `Overlay.Size` when `SizeSet` — a
+truncate is pending, so it is exact — and the larger of it and the File
+record's size when not; the times and `Version` are the overlay's. The two are read under the file's commit
 serialisation, retried as a sequence lock, so a commit between them never yields
 a lower size or `Version` than one already returned
 ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)).
