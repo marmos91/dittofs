@@ -504,3 +504,57 @@ func TestReplaceKeepsTheShape(t *testing.T) {
 	}
 	checkInvariants(t, &tr)
 }
+
+// TestReplaceKeepsTheShapeBelowAFullChild replaces keys held inside full
+// leaves that have roomy right siblings, in a tree deep enough that the
+// descent passes an inner node: the exact shape conditions a rotation runs
+// on, which a replace must not take. It catches an insert that rotates full
+// children on its way down, before it knows whether the key is held: each
+// such replace moves a key between two leaves and rewrites a separator,
+// where the tree it answers from should not have moved at all.
+func TestReplaceKeepsTheShapeBelowAFullChild(t *testing.T) {
+	var tr btree[int]
+	rng := rand.New(rand.NewPCG(7, 7))
+	for tr.len() < 100_000 {
+		tr.set(rng.Uint64(), 0)
+	}
+	if tr.root.children == nil {
+		t.Fatal("setup: the tree has no inner nodes")
+	}
+
+	// The shape is the keys of every node, in walk order: node identities
+	// alone cannot catch a rotation, which rewrites two children and their
+	// separator in place.
+	shape := func() [][]uint64 {
+		var out [][]uint64
+		var walk func(n *node[int])
+		walk = func(n *node[int]) {
+			out = append(out, slices.Clone(n.keys[:n.count]))
+			if n.children != nil {
+				for _, c := range n.children[:n.count+1] {
+					walk(c)
+				}
+			}
+		}
+		if tr.root != nil {
+			walk(tr.root)
+		}
+		return out
+	}
+
+	// Replace held keys drawn across the tree; most sit in ordinary leaves,
+	// and some — on a random tree, many — under a full child with a roomy
+	// right sibling, which a replace must leave standing.
+	var victims []uint64
+	tr.ascend(0, func(k uint64, _ int) bool { victims = append(victims, k); return len(victims) < 2_000 })
+	before := shape()
+	for _, k := range victims {
+		if _, replaced := tr.set(k, 1); !replaced {
+			t.Fatalf("set(%d) did not replace a held key", k)
+		}
+	}
+	if after := shape(); !slices.EqualFunc(before, after, func(a, b []uint64) bool { return slices.Equal(a, b) }) {
+		t.Fatal("a replace moved a key: the tree's shape changed while only values were set")
+	}
+	checkInvariants(t, &tr)
+}

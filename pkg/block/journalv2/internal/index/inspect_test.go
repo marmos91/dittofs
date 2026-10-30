@@ -31,8 +31,9 @@ func fmtEntries(es []Entry) string {
 // sameEntry compares two read-out entries field by field, Clone by value: both
 // nil, or the specs equal. A whole-struct compare would take the Clone pointer
 // for a field and name every copied spec unequal, so each field is compared on
-// its own. It is the comparison the rebuild property tests share, so a field
-// the read-out drops fails both.
+// its own. The rebuild property tests compare read-outs through it too, so a
+// field the read-out drops is invisible to them as well — it vanishes from
+// both sides — which is why TestInspectFileEntries pins every field.
 func sameEntry(a, b Entry) bool {
 	switch {
 	case a.Clone == nil || b.Clone == nil:
@@ -49,7 +50,7 @@ func sameEntry(a, b Entry) bool {
 }
 
 // inspectFile reads one file out, through the read-out and nothing else.
-func inspectFile(fs *files, id core.FileID) []Entry { return fs.inspect(id, nil) }
+func inspectFile(fs *files, id core.FileID) []Entry { return fs.inspect(id) }
 
 // heldTag, retainedTag and markerTag are the tags the expectation entries
 // of each test carry; a per-test variable keeps the tables short while still
@@ -98,19 +99,20 @@ func markerEntry(kind core.ChangeKind, off, n int64, v uint64) Entry {
 }
 
 // TestInspectFileEntries: one file holding a three-way split, a piece split by
-// a mark, retained shapes from two overlapping retaining writes, and the four
-// marker kinds reads out exactly those entries. The markers go in first: a
-// removal cuts content below its version, so the content is written above
-// them and survives. Catches: a missing kind, a lost tail skip, a lost
-// offloaded bit or By, a wrong Removal or Tag, and a merge across a bit
-// change.
+// a mark, retained shapes from two overlapping retaining writes, and the
+// three marker kinds it applies — a deallocate, a truncate and a clone target
+// — reads out exactly those entries. The markers go in first: a removal cuts
+// content below its version, so the content is written above them and
+// survives. Catches: a missing kind, a lost tail skip, a lost offloaded bit
+// or By, a wrong Removal or Tag, and a merge across a bit change.
 func TestInspectFileEntries(t *testing.T) {
 	heldTag, retainedTag, markerTag = 7, 7, 7
 	var fs files
 	id := fid(1)
 	spec := core.CloneSpec{Src: fid(9), SrcOff: 10, DstOff: 160, Len: 8, AsOf: ver(9)}
 	change(t, &fs, id, func(f *file) error {
-		// The four marker kinds, at versions the content below avoids.
+		// Three markers — deallocate, truncate, clone target — at versions
+		// the content below avoids.
 		if err := f.recorded(3, ext(100, 8), nums(6, 6), 7, id); err != nil {
 			return err
 		}
@@ -124,7 +126,9 @@ func TestInspectFileEntries(t *testing.T) {
 		if err := f.recorded(3, ext(0, 0), nums(8, 8), 7, id); err != nil {
 			return err
 		}
-		f.held.fill(write(256, 4, rec(3, 0), 8)) // above the delete: it survives
+		// The fill sits at v8, above the truncate's v7, so the marker leaves
+		// it standing.
+		f.held.fill(write(256, 4, rec(3, 0), 8))
 		if err := f.recorded(3, ext(160, 8), nums(9, 9), 7, id); err != nil {
 			return err
 		}
@@ -229,18 +233,13 @@ func TestInspectToEndMarker(t *testing.T) {
 
 // TestInspectOrderTieBreaks: at one offset the read-out hands out a held
 // piece, then retained pieces in storage order, then markers in version
-// order. The markers are built the way remove builds them — an
-// out-of-version-order marker slice is a state no operation can produce —
-// and the retained pair is added in the reverse of version order, so a
-// rewrite of either tie-break shows.
-//
-// The kind tie-break itself cannot be caught by this test: appendEntries
-// appends held, then retained, then markers, so entries leaving the three
-// loops already sit in kind order, and on five entries the sort is an
-// insertion sort that never moves an equal offset pair. A kind-first
-// comparison over offsets would still show here — nothing below moves an
-// entry whose offset differs — so what the test pins is the offset-first
-// key, and the stored order of each kind at one offset.
+// order — the order appendEntries appends in, which the sort, by offset
+// alone and stable, keeps where offsets tie. The markers are built the way
+// remove builds them — an out-of-version-order marker slice is a state no
+// operation can produce — and the retained pair is added in the reverse of
+// version order, so a rewrite of either the key or the append order shows.
+// Five entries cannot stress the sort's stability; TestInspectOrderStableAtSize
+// does that.
 func TestInspectOrderTieBreaks(t *testing.T) {
 	heldTag, retainedTag, markerTag = 0, 0, 0
 	var fs files
@@ -299,9 +298,105 @@ func TestInspectCloneSpecIsACopy(t *testing.T) {
 	}
 }
 
+// TestInspectEntriesOfARivalledFile: a file rebuilt from records under two
+// tags is rivalled on purpose — no rule decides which tag's records are read,
+// so the rebuild keeps the file refusing both — and its read-out reports the
+// owner's tag on every entry, including the ones the rival's records back,
+// because the index keeps one tag per file, not one per piece. The Entry.Tag
+// decision names this and what overturns it; this test pins the behaviour so
+// the gap to the public entry's per-record Tag is stated by the code, not
+// accidental.
+func TestInspectEntriesOfARivalledFile(t *testing.T) {
+	heldTag = 7
+	var fs files
+	id := fid(1)
+	recs := []Record{
+		recd(RecWrite, id, 1, 1, 1, 0, 0, 4),
+		recd(RecWrite, id, 2, 2, 2, 0, 8, 4),
+	}
+	// The second record's tag differs, so the replayed file is rivalled.
+	recs[1].Tag = 9
+	b := newRebuilder(&fs, &Counters{})
+	for _, r := range recs {
+		if err := b.Feed(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.Finish(ver(0)); err != nil {
+		t.Fatal(err)
+	}
+	fs.view(id, func(f *file) {
+		if !f.rivalled || f.rival != 9 {
+			t.Fatalf("the rebuild left the file rivalled %v with rival %d, want true, 9", f.rivalled, f.rival)
+		}
+	})
+	for _, e := range inspectFile(&fs, id) {
+		if e.Tag != 7 {
+			t.Fatalf("entry %v names tag %d, want the owner's 7", e, e.Tag)
+		}
+	}
+}
+
+// TestInspectOrderStableAtSize: the read-out's sort must be stable at a size
+// the library's sort stops using its insertion sort, or equal offsets come
+// back in an order the storage never held. Forty markers sit over four
+// offsets, ten to an offset, each offset's markers in the version order the
+// slice stores them in; an unstable sort mixes the ten.
+func TestInspectOrderStableAtSize(t *testing.T) {
+	markerTag = 0
+	var fs files
+	id := fid(1)
+	change(t, &fs, id, func(f *file) error {
+		for v := uint64(1); v <= 40; v++ {
+			if err := f.deallocate(ext(int64(v%4), 4), ver(v)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	last := map[int64]uint64{}
+	for _, e := range inspectFile(&fs, id) {
+		if e.Kind != EntryMarker {
+			t.Fatalf("read out %v, want markers only", e)
+		}
+		if v := e.Version.Counter; v <= last[e.Extent.Off] {
+			t.Fatalf("markers at offset %d read out of version order: v%d after v%d", e.Extent.Off, v, last[e.Extent.Off])
+		}
+		last[e.Extent.Off] = e.Version.Counter
+	}
+}
+
+// TestInspectWaitsForNoReader: the read-out runs beside another reader of
+// the file, both under the read lock, so it must not wait for the reader to
+// finish — let alone take the write lock a plain index walk would. It catches
+// a read-out that goes through update, whose exclusive lock waits for every
+// reader out and stalls inspection behind the reads it exists to serve.
+func TestInspectWaitsForNoReader(t *testing.T) {
+	var fs files
+	id := fid(1)
+	change(t, &fs, id, func(f *file) error {
+		return f.recorded(1, ext(0, 4), nums(1, 1), 1, id)
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if got := inspectFile(&fs, id); len(got) != 0 {
+			t.Errorf("read out %v from a file holding one record and nothing else", got)
+		}
+	}()
+	fs.view(id, func(*file) {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the read-out waited for another reader's lock")
+		}
+	})
+	<-done
+}
+
 // TestInspectMissingFileCreatesNothing: a read-out of an unknown id yields
-// nothing and creates no entry. Catches a read-out that goes through update
-// or commit.
+// nothing and creates no entry. Catches a read-out that creates the entry it
+// reads.
 func TestInspectMissingFileCreatesNothing(t *testing.T) {
 	var fs files
 	if got := inspectFile(&fs, fid(1)); got != nil {
@@ -313,7 +408,7 @@ func TestInspectMissingFileCreatesNothing(t *testing.T) {
 }
 
 // inspectState is the index's whole state, captured as the does-not-mutate
-// check compares it. Every per-file field — pieces, entries, change version,
+// check compares it. Every per-file field — pieces, markers, change version,
 // tags, rival, segments, drop ranges, scratch — is keyed by FileID, so the
 // comparison sees every file's state and not only the one the shard map
 // iteration reached last; the per-file slices are captured under each file's
@@ -321,7 +416,7 @@ func TestInspectMissingFileCreatesNothing(t *testing.T) {
 // same way.
 type inspectState struct {
 	files     int
-	entries   map[core.FileID][]Entry
+	markers   map[core.FileID][]marker
 	held      map[core.FileID][]Piece
 	retained  map[core.FileID][]Retained
 	change    map[core.FileID]core.Version
@@ -341,11 +436,14 @@ type inspectState struct {
 	segments  map[core.SegmentID]SegmentBytes
 }
 
-// capture copies the index's whole state out, no read-out involved.
+// capture copies the index's whole state out. Nothing it copies goes through
+// the read-out — the markers are cloned from the file's own slice — so a
+// side effect of the read-out shows in the second capture alone, not in the
+// first it would have run into.
 func capture(fs *files) inspectState {
 	var st inspectState
 	clear := func() {
-		st.entries = map[core.FileID][]Entry{}
+		st.markers = map[core.FileID][]marker{}
 		st.held = map[core.FileID][]Piece{}
 		st.retained = map[core.FileID][]Retained{}
 		st.change = map[core.FileID]core.Version{}
@@ -378,7 +476,7 @@ func capture(fs *files) inspectState {
 		fs.view(id, func(f *file) {
 			st.held[id] = f.held.pieces(nil)
 			st.retained[id] = f.retained.list(nil)
-			st.entries[id] = f.appendEntries(nil)
+			st.markers[id] = slices.Clone(f.markers)
 			st.change[id], st.hasChange[id] = f.changeVersion()
 			st.tag[id], st.tagged[id] = f.owner()
 			st.rival[id], st.rivalled[id] = f.rival, f.rivalled
@@ -421,7 +519,6 @@ func TestInspectDoesNotMutate(t *testing.T) {
 	fs := &h.fs
 	before := capture(fs)
 
-	drive(t, 0, 0) // keeps the helper's rng out of the capture
 	var ids []core.FileID
 	for id := range fs.inspectAll() {
 		ids = append(ids, id)
@@ -579,8 +676,11 @@ func TestInspectAllYieldsHoldingNoLock(t *testing.T) {
 }
 
 // TestInspectAllDuringChanges: a file removed inside a yield is not yielded,
-// and one created during the walk, where the drain reaches it, reads out
-// like any other. Catches stale yields and panics on vanished entries.
+// and a file created inside one is not yielded either — the FileIDs were
+// collected before the first yield, so neither a removal nor a creation can
+// reach the walk. The exact yield is asserted: the four files the index
+// holds, minus the one removed at the first step. Catches stale yields and
+// panics on vanished entries.
 func TestInspectAllDuringChanges(t *testing.T) {
 	var fs files
 	testFiles(t, &fs, 4)
@@ -605,8 +705,8 @@ func TestInspectAllDuringChanges(t *testing.T) {
 		}
 		return true
 	})
-	if len(yielded) >= 4 && yielded[3] == fid(4) {
-		t.Fatalf("a file removed inside the first yield was still yielded: %v", yielded)
+	if want := []core.FileID{fid(1), fid(2), fid(3)}; !slices.Equal(yielded, want) {
+		t.Fatalf("yielded %v, want %v: the removed file or one created mid-walk was yielded", yielded, want)
 	}
 }
 

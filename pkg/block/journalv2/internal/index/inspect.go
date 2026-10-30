@@ -25,7 +25,21 @@ type Entry struct {
 	Kind    EntryKind
 	Extent  core.Extent // a marker running to the end of the file has Len = MaxInt64 - Off
 	Version core.Version
-	Tag     core.ShareTag // the file's owner; zero when the file has none
+	// Tag is the file's owner, not a per-record tag: the index keeps one tag
+	// per file and refuses a second, so every entry of a file has its owner's.
+	// A rivalled file reports its owner.
+	//
+	// decision: the public entry's Tag names the share whose record backs the
+	// entry, and for a file with records under two tags — a rival the rebuild
+	// keeps on purpose, since no rule decides which tag's records are read —
+	// the two disagree: the index keeps no tag per piece, so the read-out
+	// reports the owner on every entry, including the ones the rival's
+	// records back. Overturned by a tag kept per piece, or by recovery
+	// parking a rival's records out of the read-out until one tag is
+	// forgotten, or by the public doc narrowed to the file's owner; the
+	// reader wiring the journal's inspection must not map Tag one to one
+	// for a rivalled file.
+	Tag core.ShareTag // the file's owner; zero when the file has none
 	// Record is held and retained: the record holding the bytes; zero for a
 	// marker.
 	Record RecordAt
@@ -49,10 +63,11 @@ type Entry struct {
 // The copy changes no index state. The only shared write it can make is a
 // cost test's comparison counter, which is nil outside those tests.
 func (f *file) appendEntries(out []Entry) []Entry {
-	tag := core.ShareTag(0)
-	if f.tagged {
-		tag = f.tag
-	}
+	// The buffer is grown once, to the entry count, so appending allocates
+	// nothing past it and a file of many extents holds the read lock for one
+	// copy rather than for a series of regrowths.
+	out = slices.Grow(out, int(f.entries()))
+	tag := f.tag
 	f.held.visit(whole, func(p Piece) bool {
 		out = append(out, Entry{
 			Kind:      EntryHeld,
@@ -94,34 +109,34 @@ func (f *file) appendEntries(out []Entry) []Entry {
 	return out
 }
 
-// sortEntries orders one file's entries into read-out order: by offset, and
-// at an equal offset held, then retained, then markers. The sort is stable,
-// so retained pieces keep compareRetained's order and markers their stored
-// one — version order, ties in the order they were applied, both their own
-// storage orders. The caller holds no lock by then, as every read-out's sort
-// runs after its view released the file's.
+// sortEntries orders one file's entries into read-out order: by offset, the
+// stable sort keeping appendEntries' kind order — held, then retained, then
+// markers — at an equal offset, and within a kind the storage order the loops
+// appended in: compareRetained's for retained pieces, version order for
+// markers. The caller holds no lock by then, as every read-out's sort runs
+// after its view released the file's.
 func sortEntries(es []Entry) {
 	slices.SortStableFunc(es, func(a, b Entry) int {
-		return cmp.Or(cmp.Compare(a.Extent.Off, b.Extent.Off), cmp.Compare(a.Kind, b.Kind))
+		return cmp.Compare(a.Extent.Off, b.Extent.Off)
 	})
 }
 
-// inspect appends id's entries, in read-out order, to out and returns it. A
-// file with no entry, or with a tag alone, yields nothing and creates
-// nothing: the read-out claims no file and mutates nothing.
+// inspect returns id's entries, in read-out order. A file with no entry, or
+// with a tag alone, yields nothing and creates nothing: the read-out claims
+// no file and mutates nothing.
 //
 // It is the inspection read-out's per-file side: the caller maps the entries
 // as the journal's inspection does.
 //
 // ponytail: the read-out copies a file's entries under its read lock, O(n),
 // so a writer of that file waits for the copy; a file of 10^6 extents holds
-// it for milliseconds. Upgrade to a read-out in offset-bounded chunks, each
-// consistent on its own, when an inspection pass shows in a write-latency
-// profile of the file it reads.
-func (fs *files) inspect(id core.FileID, out []Entry) []Entry {
-	first := len(out)
+// it for tens of milliseconds. Upgrade to a read-out in offset-bounded
+// chunks, each consistent on its own, when an inspection pass shows in a
+// write-latency profile of the file it reads.
+func (fs *files) inspect(id core.FileID) []Entry {
+	var out []Entry
 	fs.view(id, func(f *file) { out = f.appendEntries(out) })
-	sortEntries(out[first:])
+	sortEntries(out)
 	return out
 }
 
@@ -132,7 +147,7 @@ func compareFileIDs(a, b core.FileID) int {
 }
 
 // inspectAll yields every file's entries, one file at a time, in FileID
-// order. Its contract is the public All's: it mutates the store and stops
+// order. Its contract is the public All's: it mutates nothing and stops
 // nothing, each file's slice is the caller's, and a file holding no entry is
 // skipped.
 //
@@ -154,7 +169,7 @@ func (fs *files) inspectAll() iter.Seq2[core.FileID, []Entry] {
 		for i := range fs.shards {
 			s := &fs.shards[i]
 			s.mu.Lock()
-			ids = slices.Grow(ids, len(ids)+len(s.m))
+			ids = slices.Grow(ids, len(s.m))
 			for id := range s.m {
 				ids = append(ids, id)
 			}
@@ -162,7 +177,7 @@ func (fs *files) inspectAll() iter.Seq2[core.FileID, []Entry] {
 		}
 		slices.SortFunc(ids, compareFileIDs)
 		for _, id := range ids {
-			es := fs.inspect(id, nil)
+			es := fs.inspect(id)
 			if len(es) == 0 {
 				continue
 			}

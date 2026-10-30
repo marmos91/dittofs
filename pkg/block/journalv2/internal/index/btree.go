@@ -192,12 +192,13 @@ type promoted[V any] struct {
 // returns what n's split hands up when the insert overflowed n. rightmost says
 // whether n is on the tree's rightmost path.
 //
-// A full child whose last key is above k hands that key to a right sibling
-// with room rather than splitting at once, allocating nothing and keeping
-// leaves fuller whichever order keys arrive in. The rotation runs only when
-// k stays below the key that moves up, so the child the search chose is
-// still the child that holds k; only when the sibling is full too does the
-// insert split, as before.
+// A full child whose last key is above k, and which does not already hold k,
+// hands that key to a right sibling with room rather than splitting at once,
+// allocating nothing and keeping leaves fuller whichever order keys arrive
+// in. The rotation runs only when k stays below the key that moves up and
+// the descent is an insert rather than a replace, so the child the search
+// chose is still the child that holds k and a replace never moves a key;
+// only when the sibling is full too does the insert split, as before.
 func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, up promoted[V], cmps uint64) {
 	i, found, cmps := n.search(k)
 	if found {
@@ -207,7 +208,13 @@ func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, u
 	if n.children == nil {
 		return old, false, n.insertOrSplit(i, k, v, nil, rightmost), cmps
 	}
-	if c := n.children[i]; i < n.count && c.count >= maxItems && k < c.keys[c.count-1] && n.children[i+1].count < maxItems {
+	// The rotation is skipped when the chosen child already holds k, so a
+	// replace never moves a key: the descent changes nothing, and a later
+	// replace of a key below a full child with a roomy sibling answers from
+	// the shape the tree already has. The look is one descent, made only
+	// when the child is full and the sibling has room — the rare case an
+	// insert rotates in.
+	if c := n.children[i]; i < n.count && c.count >= maxItems && k < c.keys[c.count-1] && n.children[i+1].count < maxItems && !c.has(k) {
 		n.rotateRight(i)
 	}
 	old, replaced, below, c := n.children[i].insert(k, v, rightmost && i == n.count)
@@ -216,6 +223,24 @@ func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, u
 		up = n.insertOrSplit(i, below.key, below.val, below.right, rightmost)
 	}
 	return old, replaced, up, cmps
+}
+
+// has reports whether k is held anywhere in n's subtree: one descent, reading
+// only. Its comparisons go uncounted, like any read outside the counted
+// operations; it runs once per insert at most, only when a rotation is in
+// reach and the key arrives below the full child.
+func (n *node[V]) has(k uint64) bool {
+	for n != nil {
+		i, found, _ := n.search(k)
+		if found {
+			return true
+		}
+		if n.children == nil {
+			return false
+		}
+		n = n.children[i]
+	}
+	return false
 }
 
 // rotateRight moves child i's last key — and the subtree after it, in an

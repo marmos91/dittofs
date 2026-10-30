@@ -57,7 +57,7 @@ func TestInspectRace(t *testing.T) {
 	wg.Go(func() {
 		for range 2000 {
 			for _, id := range files {
-				checkEntries(fs.inspect(id, nil))
+				checkEntries(fs.inspect(id))
 			}
 		}
 	})

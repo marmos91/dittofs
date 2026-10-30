@@ -292,7 +292,7 @@ func (m *ModelIndex) Since(id core.FileID, from core.Version) []Change {
 }
 
 // File returns id's entries as the inspection read-out does.
-func (m *ModelIndex) File(id core.FileID) []Entry { return m.fs.inspect(id, nil) }
+func (m *ModelIndex) File(id core.FileID) []Entry { return m.fs.inspect(id) }
 
 // All yields every file's entries as the bulk read-out does.
 func (m *ModelIndex) All() iter.Seq2[core.FileID, []Entry] { return m.fs.inspectAll() }

@@ -90,14 +90,21 @@ func randomTreeBytesPerEntry[V any](n int, perm []int, val func(i int) V) float6
 	return float64(int64(after)-int64(before)) / float64(n)
 }
 
-// TestIndexBytesPerEntry is RFC 1 §9.7's index memory check, measured
-// through the whole index: one file of 10^6 extents, each its own record,
-// written through admission and commit as the journal writes, must hold
-// "bytes per entry at 10^6 extents at or below 56 written sequentially and
-// at or below 72 written in random order, the figures of §4.2 plus a tenth".
-// The bounds are the RFC's own, not a decision. Catches entry or node growth,
+// TestIndexBytesPerEntry is the index memory check, measured through the
+// whole index: one file of 10^6 extents, each its own record, written through
+// admission and commit as the journal writes, must hold at most 56 bytes an
+// entry written sequentially and at most 72 written in random order. The
+// bounds are the RFC's own, not a decision. Catches entry or node growth,
 // and an unmeasured heap: the check holds from below too, at an entry's own
 // width plus its key.
+//
+// decision: the check measures one file, the population the per-entry
+// figures describe. A file's own cost does not shrink with its extents: its
+// first leaf is a full 1,536-byte node, so a file of one extent costs about
+// 1,960 bytes and 10^6 extents over 10^4 files about 86 an entry. Overturned
+// if the extent bound must cap memory for journals of many small files,
+// which needs the bound to count files too, or a first leaf sized to its
+// keys.
 func TestIndexBytesPerEntry(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("builds a file of 10^6 extents and measures its heap")
