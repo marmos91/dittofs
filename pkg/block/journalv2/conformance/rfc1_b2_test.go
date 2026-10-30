@@ -732,7 +732,7 @@ func failWindow(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID)
 	t.Helper()
 
 	name := segmentName(seg)
-	eio := sim.FaultAction{Kind: sim.Fail, Err: syscall.EIO}
+	eio := sim.FaultAction{Err: syscall.EIO}
 	fault, err := sim.NewSchedule(1, nil,
 		sim.Rule{Op: journalv2test.OpSync, Key: name, Count: 1, Action: eio},
 		sim.Rule{Op: journalv2test.OpRead, Key: name, Action: eio},
@@ -951,9 +951,9 @@ type relay struct {
 
 func newRelay(key string) *relay { return &relay{key: key, next: make(chan struct{})} }
 
-func (r *relay) At(op string, key []byte) sim.FaultAction {
+func (r *relay) At(op string, key []byte) (time.Duration, int, error) {
 	if (op != journalv2test.OpRead && op != journalv2test.OpReadDirect) || string(key) != r.key {
-		return sim.FaultAction{}
+		return 0, 0, nil
 	}
 	r.mu.Lock()
 	close(r.next)
@@ -965,7 +965,7 @@ func (r *relay) At(op string, key []byte) sim.FaultAction {
 		r.relayed.Add(1)
 	case <-time.After(relayWait):
 	}
-	return sim.FaultAction{}
+	return 0, 0, nil
 }
 
 // TestRFC1B_ReclaimNotStarved checks that a repack of a segment under a
