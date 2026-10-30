@@ -60,10 +60,10 @@ func TestConcurrentWriteAt(t *testing.T) {
 
 // TestClosedFile checks Allocate on an open file is still not implemented,
 // then that every operation on a closed file fails with an *fs.PathError
-// matching fs.ErrClosed, rather than reaching whatever file has since reused
-// the descriptor's number, and Sync makes no system call. The
-// file is kept reachable until the profiler's check, so the *os.File
-// finalizer cannot close a leaked descriptor first and hide the leak.
+// matching fs.ErrClosed and naming the file's full path, rather than reaching
+// whatever file has since reused the descriptor's number, and Sync makes no
+// system call. The file is kept reachable until the profiler's check, so the
+// *os.File finalizer cannot close a leaked descriptor first and hide the leak.
 func TestClosedFile(t *testing.T) {
 	var f storage.File
 	t.Cleanup(func() {
@@ -71,8 +71,9 @@ func TestClosedFile(t *testing.T) {
 	})
 	prof.Watch(t, prof.Options{})
 
+	dir := t.TempDir()
 	r := &recorder{}
-	f, err := newOS(t.TempDir(), r.table()).Create("a")
+	f, err := newOS(dir, r.table()).Create("a")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -114,6 +115,8 @@ func TestClosedFile(t *testing.T) {
 		var pe *fs.PathError
 		if !errors.As(err, &pe) || !errors.Is(err, fs.ErrClosed) {
 			t.Errorf("%s after Close: %v (%T), want an *fs.PathError matching fs.ErrClosed", op.name, err, err)
+		} else if want := filepath.Join(dir, "a"); pe.Path != want {
+			t.Errorf("%s after Close: %v names %s, want the full path %s", op.name, err, pe.Path, want)
 		}
 	}
 

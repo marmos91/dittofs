@@ -98,8 +98,12 @@ var held []storage.File
 //     atomicity is the kernel's rename; the crash half is as above.
 //   - ReadAtDirect's "bypassing the page cache, so it observes what reached
 //     the device": not provided yet, the read goes through the page cache.
-//   - Allocate's two sentences: the operating system's allocation is not
-//     written yet.
+//   - Allocate's two sentences, and File's "A file allocated and never
+//     synced comes back short or unallocated": the operating system's
+//     allocation is not written yet.
+//   - Sync's "It is a data-only sync, or a full sync where the platform
+//     requires one": the call is seen only beneath the storage. platform's
+//     TestSyncCalls checks it there.
 //   - "A later success does not stand in for a Sync that failed", and the
 //     same for SyncDir: it needs a failure injected beneath the storage.
 //     platform's TestSyncError and TestSyncDirError check it there, and the

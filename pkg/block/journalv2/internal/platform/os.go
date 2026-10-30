@@ -12,8 +12,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
 
-// filePerm is the mode a created file gets: the journal holds its users'
-// data, so only the process's own user reads it.
+// filePerm is the mode a created file is asked for, which the umask can only
+// narrow: the journal holds its users' data, so only the process's own user
+// reads it.
 const filePerm = 0o600
 
 // OS is a storage.FS over the directory dir, on the operating system's files.
@@ -124,7 +125,7 @@ func (f *file) Allocate(off, n int64) error {
 	if err != nil {
 		return &fs.PathError{
 			Op:   "allocate",
-			Path: f.name,
+			Path: f.f.Name(),
 			Err:  err,
 		}
 	}
@@ -132,14 +133,14 @@ func (f *file) Allocate(off, n int64) error {
 	if err := rc.Control(func(uintptr) {}); err != nil {
 		return &fs.PathError{
 			Op:   "allocate",
-			Path: f.name,
+			Path: f.f.Name(),
 			Err:  fs.ErrClosed,
 		}
 	}
 
 	return &fs.PathError{
 		Op:   "allocate",
-		Path: f.name,
+		Path: f.f.Name(),
 		Err:  fmt.Errorf("%w: allocation", core.ErrNotImplemented),
 	}
 }

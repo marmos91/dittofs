@@ -22,7 +22,7 @@ func (f *file) Sync() error {
 	if err != nil {
 		return &fs.PathError{
 			Op:   "fdatasync",
-			Path: f.name,
+			Path: f.f.Name(),
 			Err:  err,
 		}
 	}
@@ -38,7 +38,7 @@ func (f *file) Sync() error {
 	}); err != nil {
 		return &fs.PathError{
 			Op:   "fdatasync",
-			Path: f.name,
+			Path: f.f.Name(),
 			Err:  fs.ErrClosed,
 		}
 	}
@@ -46,7 +46,7 @@ func (f *file) Sync() error {
 	if serr != nil {
 		return &fs.PathError{
 			Op:   "fdatasync",
-			Path: f.name,
+			Path: f.f.Name(),
 			Err:  serr,
 		}
 	}
@@ -57,9 +57,17 @@ func (f *file) Sync() error {
 // SyncDir is fsync on a descriptor of the directory (RFC 28 Appendix A: "and
 // `fsync` on the directory's descriptor after a create, a rename or an
 // unlink"). It opens the directory its path names now and closes it before
-// returning, whether the fsync succeeded or not.
+// returning, whether the fsync succeeded or not. It returns the one error
+// that happened as itself, and both through errors.Join when the fsync and
+// the close both failed.
 func (o *OS) SyncDir() error {
+	// An open interrupted by a signal is made again, as os.OpenFile does:
+	// repeating an open hides no failed sync.
 	fd, err := o.calls.open(o.dir, dirFlags, 0)
+	for errors.Is(err, unix.EINTR) {
+		fd, err = o.calls.open(o.dir, dirFlags, 0)
+	}
+
 	if err != nil {
 		return &fs.PathError{
 			Op:   "open",
@@ -78,7 +86,10 @@ func (o *OS) SyncDir() error {
 	}
 
 	// The close is never repeated: Linux releases the descriptor even when
-	// close reports EINTR, so a second close could close another file's.
+	// close reports EINTR, so a second close could close another file's. A
+	// close error after a good fsync is reported too: a directory has no
+	// flush, so close fails only with EBADF, which means the descriptor was
+	// not ours and the fsync proved nothing.
 	if err := o.calls.close(fd); err != nil {
 		errs = append(errs, &fs.PathError{
 			Op:   "close",
@@ -87,21 +98,27 @@ func (o *OS) SyncDir() error {
 		})
 	}
 
+	if len(errs) == 1 {
+		return errs[0]
+	}
+
 	return errors.Join(errs...)
 }
 
 // retryInterrupted makes the sync call on fd, again for as long as it returns
 // EINTR, and returns the last call's result.
 //
-// decision: a sync interrupted by a signal is made again. EINTR means the call
-// did not complete, not that it failed; the os package's own File.Sync repeats
-// fsync on it the same way, while the golang.org/x/sys calls are raw and
-// repeat nothing. RFC 1 §5.2's "**MUST NOT** be recorded as success and
-// retried silently" is about a sync that failed: every other error is
-// returned after one call, and what this returns is the repeated call's own
-// result, success or error. Returning EINTR as a failure would, by RFC 1
-// §5.3, make everything written since the last good sync not durable and end
-// the segment, when nothing failed.
+// decision: a sync interrupted by a signal is made again, as the os package's
+// own File.Sync does; the golang.org/x/sys calls are raw and repeat nothing.
+// Every other error is returned after one call, and what this returns is the
+// repeated call's own result, so a failed sync is never recorded as success
+// (RFC 1 §5.2). EINTR says a signal cut the call short, not that writeback
+// failed: ext4 and XFS wait uninterruptibly and never return it from a sync,
+// and FUSE and NFS return a writeback error they found before an EINTR from a
+// later step. Returning EINTR as a failure would, by RFC 1 §5.3, end the
+// segment when nothing failed. Withdraw it, and report EINTR as a failed
+// sync, if a supported filesystem is found to return EINTR after consuming a
+// writeback error.
 func retryInterrupted(sync func(fd int) error, fd int) error {
 	for {
 		if err := sync(fd); !errors.Is(err, unix.EINTR) {

@@ -244,13 +244,19 @@ func expectSyncDir(t *testing.T, log []call, dir string, fsyncs int) {
 	}
 }
 
-// expectPathError fails t unless err is, or joins, an *fs.PathError wrapping
-// errno, the shape the platform's own errors take.
-func expectPathError(t *testing.T, err error, errno syscall.Errno) {
+// expectPathError fails t unless err is itself an *fs.PathError wrapping
+// errno and naming path, the shape the platform's own errors take when one
+// thing failed.
+func expectPathError(t *testing.T, err error, errno syscall.Errno, path string) {
 	t.Helper()
 
-	if !errors.Is(err, errno) || !hasPathError(err, errno) {
+	pe, ok := err.(*fs.PathError)
+	if !ok || !errors.Is(pe.Err, errno) {
 		t.Fatalf("got %v (%T), want an *fs.PathError wrapping %v", err, err, errno)
+	}
+
+	if pe.Path != path {
+		t.Fatalf("%v: names %s, want %s", err, pe.Path, path)
 	}
 }
 
@@ -326,7 +332,7 @@ func TestSyncError(t *testing.T) {
 	r.failNext("fdatasync", syscall.EIO)
 	err := a.Sync()
 	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 1)
-	expectPathError(t, err, syscall.EIO)
+	expectPathError(t, err, syscall.EIO, filepath.Join(dir, "a"))
 
 	err = a.Sync()
 	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 1)
@@ -345,39 +351,57 @@ func TestSyncInterrupted(t *testing.T) {
 	r := &recorder{}
 	a := openOn(t, newOS(dir, r.table()), "a")
 
-	r.failNext("fdatasync", syscall.EINTR)
+	r.failNext("fdatasync", syscall.EINTR, syscall.EINTR)
 	err := a.Sync()
-	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 2)
+	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 3)
 
 	if err != nil {
-		t.Fatalf("Sync interrupted once: %v", err)
+		t.Fatalf("Sync interrupted twice: %v", err)
 	}
 
 	r.failNext("fdatasync", syscall.EINTR, syscall.EIO)
 	err = a.Sync()
 	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 2)
-	expectPathError(t, err, syscall.EIO)
+	expectPathError(t, err, syscall.EIO, filepath.Join(dir, "a"))
 }
 
-// TestSyncAfterClose checks Sync on a closed file fails before any system
-// call, so it never syncs whatever file has since reused the descriptor's
-// number.
-func TestSyncAfterClose(t *testing.T) {
+// TestSyncCloseDuringSync checks a Close made while Sync's fdatasync is under
+// way does not release the descriptor under it: the file closed and another
+// opened from inside the call, fdatasync still acts on the first file.
+func TestSyncCloseDuringSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
+	var other *os.File
+	t.Cleanup(func() {
+		if other != nil {
+			_ = other.Close()
+		}
+	})
+
+	dir := t.TempDir()
 	r := &recorder{}
-	a := openOn(t, newOS(t.TempDir(), r.table()), "a")
-	if err := a.Close(); err != nil {
-		t.Fatal(err)
+	table := r.table()
+	var a *file
+	fdatasync := table.fdatasync
+	table.fdatasync = func(fd int) error {
+		if err := a.Close(); err != nil {
+			t.Errorf("Close during Sync: %v", err)
+		}
+
+		var err error
+		if other, err = os.Create(filepath.Join(dir, "b")); err != nil {
+			t.Fatal(err)
+		}
+
+		return fdatasync(fd)
 	}
+	a = openOn(t, newOS(dir, table), "a")
 
 	err := a.Sync()
-	if log := r.take(); len(log) != 0 {
-		t.Fatalf("Sync after Close made %v, want no call", log)
-	}
+	expectSync(t, r.take(), "fdatasync", filepath.Join(dir, "a"), 1)
 
-	if err == nil {
-		t.Fatal("Sync after Close returned nil")
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
 	}
 }
 
@@ -393,7 +417,7 @@ func TestSyncDirError(t *testing.T) {
 	r.failNext("fsync", syscall.EIO)
 	err := o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
-	expectPathError(t, err, syscall.EIO)
+	expectPathError(t, err, syscall.EIO, dir)
 
 	err = o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
@@ -408,11 +432,13 @@ func TestSyncDirError(t *testing.T) {
 		t.Fatalf("want only the failed open, got %v", log)
 	}
 
-	expectPathError(t, err, syscall.EMFILE)
+	expectPathError(t, err, syscall.EMFILE, dir)
 }
 
-// TestSyncDirCloseError checks that when both the fsync and the close of the
-// directory fail, SyncDir returns both errors and makes no further call.
+// TestSyncDirCloseError checks a close error after a good fsync fails the
+// SyncDir with the close's error alone, and that when both the fsync and the
+// close of the directory fail, SyncDir returns both errors and makes no
+// further call.
 func TestSyncDirCloseError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -420,17 +446,25 @@ func TestSyncDirCloseError(t *testing.T) {
 	r := &recorder{}
 	o := newOS(dir, r.table())
 
-	r.failNext("fsync", syscall.EIO)
-	r.failNext("close", syscall.ENOSPC)
+	r.failNext("close", syscall.EBADF)
 	err := o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
-	expectPathError(t, err, syscall.EIO)
-	expectPathError(t, err, syscall.ENOSPC)
+	expectPathError(t, err, syscall.EBADF, dir)
+
+	r.failNext("fsync", syscall.EIO)
+	r.failNext("close", syscall.ENOSPC)
+	err = o.SyncDir()
+	expectSyncDir(t, r.take(), dir, 1)
+
+	if !hasPathError(err, syscall.EIO) || !hasPathError(err, syscall.ENOSPC) {
+		t.Fatalf("got %v, want the fsync's EIO and the close's ENOSPC, each an *fs.PathError", err)
+	}
 }
 
-// TestSyncDirInterrupted is TestSyncInterrupted for SyncDir's fsync. The
-// close is never repeated: Linux releases the descriptor even when close
-// reports EINTR.
+// TestSyncDirInterrupted is TestSyncInterrupted for SyncDir's fsync, and
+// checks an interrupted open of the directory is made again. The close is
+// never repeated: Linux releases the descriptor even when close reports
+// EINTR.
 func TestSyncDirInterrupted(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -438,21 +472,34 @@ func TestSyncDirInterrupted(t *testing.T) {
 	r := &recorder{}
 	o := newOS(dir, r.table())
 
-	r.failNext("fsync", syscall.EINTR)
+	r.failNext("fsync", syscall.EINTR, syscall.EINTR)
 	err := o.SyncDir()
-	expectSyncDir(t, r.take(), dir, 2)
+	expectSyncDir(t, r.take(), dir, 3)
 
 	if err != nil {
-		t.Fatalf("SyncDir interrupted once: %v", err)
+		t.Fatalf("SyncDir interrupted twice: %v", err)
 	}
 
 	r.failNext("fsync", syscall.EINTR, syscall.EIO)
 	err = o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 2)
-	expectPathError(t, err, syscall.EIO)
+	expectPathError(t, err, syscall.EIO, dir)
 
 	r.failNext("close", syscall.EINTR)
 	err = o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
-	expectPathError(t, err, syscall.EINTR)
+	expectPathError(t, err, syscall.EINTR, dir)
+
+	r.failNext("open", syscall.EINTR)
+	err = o.SyncDir()
+	log := r.take()
+	if len(log) == 0 || log[0].op != "open" || log[0].fd != -1 {
+		t.Fatalf("want the interrupted open first, got %v", log)
+	}
+
+	expectSyncDir(t, log[1:], dir, 1)
+
+	if err != nil {
+		t.Fatalf("SyncDir with its open interrupted: %v", err)
+	}
 }
