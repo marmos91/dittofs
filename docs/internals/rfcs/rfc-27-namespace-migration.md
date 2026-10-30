@@ -335,7 +335,7 @@ through it:
   periods on a clock that may run slow, has fenced itself.
 
 **Every claim put records its nonce first.** Every path that writes a claim — a
-start, a `Recheck`, a move's or a recovery's import, a re-home's new namespace
+start, a `Recheck`, a new namespace's first claim, a move's or a recovery's import, a re-home's new namespace
 ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), a restore into a new namespace ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)) — records the nonce it
 intends to write in its own metadata store before the put, and records it as the
 last written after, as steps 2–3 above do. The record of a namespace's claim

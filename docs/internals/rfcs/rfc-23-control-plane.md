@@ -377,7 +377,7 @@ store configuration, and the last storage binding to close one releases it.
 | 2 | remote stores ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), one client per store configuration | the store configuration, its `Secret` | the remote service | 5 / 8 |
 | 3 | syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores | the remote stores | 5 / 8 |
 | 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views | the journals, the syncer, the block-metadata views | 5 / 8 |
-| 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | 5 / drains at 5, closes at 7 |
+| 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Claim` and `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | `Claim` before the engine at 5, then 5 / drains at 5, closes at 7 |
 | 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the server implements | the metadata store, the `Sink` | 5 / 7 |
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
 | 8 | `*vfs.Server`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
@@ -522,17 +522,22 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    every component holds the records' values before any of them starts.
 5. **The content side and the state the server reads**, in build order:
    **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the remote
-   stores, each opened with
-   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim check for every namespace this node serves,
-   which completes before the engine serves a binding of that namespace or GC
-   starts on it, and which fences a namespace it finds copied rather than
-   failing the start; the engine, in
+   stores; then, for each namespace a share this node serves names, GC's
+   `Claim` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), which runs
+   [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s start-time claim check before the engine serves a binding of
+   that namespace or GC starts on it, and which fences a namespace it finds
+   copied, as [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, rather than failing the
+   start; the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of shares this node serves in
    one call; GC, with each served share's namespace; open state for the shards
    this node acquires, handed the built server as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
-   created while the node serves is attached alone, after the same claim check
-   when its namespace is new to this node.
+   created while the node serves is attached alone. If no share this node
+   serves names its namespace yet, the node first runs `Claim` for it, which
+   for a namespace this installation has just created, with no claim and no
+   recorded nonce, writes its first claim; a namespace that arrived by an
+   import is not checked again, since the import took its claim
+   ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
    gateway, the client-address agent and the pNFS data server.
 7. The **operation runner** (§4.6), which resumes the operations this node
