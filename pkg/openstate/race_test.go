@@ -138,7 +138,11 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 	case <-time.After(100 * time.Millisecond): // the write's I/O, staged under the admission lock
 	}
 	unlock()
-	<-granted
+	select {
+	case <-granted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter was not granted within 5 s of the write's staging")
+	}
 }
 
 // A release across files never holds an index while it waits for an entry:

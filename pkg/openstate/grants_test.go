@@ -334,14 +334,16 @@ func TestUnsentRecallsAreBounded(t *testing.T) {
 	for _, file := range files[:maxUnsent] {
 		wg.Go(func() { _, _ = f.open(b, file, OpenRequest{Access: wr}) })
 	}
-	for {
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 		f.idx.Lock()
 		n := f.unsent
 		f.idx.Unlock()
 		if n == maxUnsent {
 			break
 		}
-		time.Sleep(time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Fatalf("%d recalls held unsent, want %d", n, maxUnsent)
+		}
 	}
 	past := make(chan error, 1)
 	wg.Go(func() { _, err := f.open(b, files[maxUnsent], OpenRequest{Access: wr}); past <- err })

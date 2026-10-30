@@ -696,10 +696,13 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 		done <- err
 	}()
 	fs := &g.files[target.ID[0]]
-	for waiting := false; !waiting; {
+	for deadline, waiting := time.Now().Add(5*time.Second), false; !waiting; time.Sleep(time.Millisecond) {
 		fs.mu.Lock()
 		waiting = fs.entries[target.ID].users == 2
 		fs.mu.Unlock()
+		if !waiting && time.Now().After(deadline) {
+			t.Fatal("the reclaim did not wait for the step within 5 s")
+		}
 	}
 	g.clock.advance(leasePeriod / 2) // grace ends while the reclaim waits for the step
 	close(release)
@@ -1126,6 +1129,16 @@ type blockingRand struct {
 	r        *seeded
 }
 
+// wait waits for a read to enter b, failing the test after 5 s.
+func (b *blockingRand) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no read of the random source within 5 s")
+	}
+}
+
 func (b *blockingRand) Read(p []byte) (int, error) {
 	if b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
@@ -1150,7 +1163,7 @@ func TestDropShareRefusesARacingLock(t *testing.T) {
 		_, err := f.lock(a, file, LockReq{Owner: owner(a, "other"), Ranges: []LockRange{x(0, 10)}})
 		locked <- err
 	}()
-	<-rnd.entered // admitted, minting its lock state
+	rnd.wait(t) // admitted, minting its lock state
 	dropped := make(chan error)
 	go func() { dropped <- f.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}) }()
 	for !f.droppedShard(file.Shard) {

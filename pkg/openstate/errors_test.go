@@ -25,7 +25,7 @@ func TestOwnerRequestInFlightIsDelayed(t *testing.T) {
 		_, err := f.open(a, in(1), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)})
 		first <- err
 	}()
-	<-rnd.entered // the first open is minting its reference
+	rnd.wait(t) // the first open is minting its reference
 	if _, err := f.open(a, in(1), OpenRequest{Access: rd, Owner: oo, Seqs: num(1)}); delayedFor(err) != DelayConflict {
 		t.Errorf("an owner's request while its first is in flight: %v, want ErrDelay (DelayConflict)", err)
 	}

@@ -194,7 +194,7 @@ func TestOpenCapHoldsItsPlaceAcrossABreak(t *testing.T) {
 		_, err := f.open(b, file, OpenRequest{Access: wr})
 		opened <- err
 	}()
-	<-rnd.entered // past the cap check, minting its reference
+	rnd.wait(t) // past the cap check, minting its reference
 	_, other := f.open(b, in(1), OpenRequest{Access: rd})
 	close(rnd.released)
 	err := <-opened
@@ -248,7 +248,7 @@ func TestLockCapHoldsItsPlaceAcrossARecall(t *testing.T) {
 				_, err := f.lock(b, file, lock)
 				locked <- err
 			}()
-			<-rnd.entered // past the cap check and the recall, minting its lock state
+			rnd.wait(t) // past the cap check and the recall, minting its lock state
 			_, rerr := f.lock(b, other, racing)
 			close(rnd.released)
 			err := <-locked
@@ -302,7 +302,7 @@ func TestLockOwnerKeepsItsPlaceWhileItsLastStateDrops(t *testing.T) {
 		_, err := f.lock(b, file, LockReq{Owner: owner(b, "o"), Ranges: []LockRange{x(0, 10)}})
 		locked <- err
 	}()
-	<-rnd.entered // past the cap check, minting o's lock state on file
+	rnd.wait(t) // past the cap check, minting o's lock state on file
 	f.unlock(t, b, other, owner(b, "o"), br(0, 10))
 	_, perr := f.lock(b, other, LockReq{Owner: owner(b, "p"), Ranges: []LockRange{x(0, 10)}})
 	close(rnd.released)
@@ -377,7 +377,7 @@ func TestOpenCapHoldsItsPlace(t *testing.T) {
 		_, err := f.open(b, file, as(b, 6))
 		created <- err
 	}()
-	<-rnd.entered // past the cap check, minting its reference
+	rnd.wait(t) // past the cap check, minting its reference
 	_, other := f.open(b, in(1), OpenRequest{Access: rd})
 	close(rnd.released)
 	err := <-created
