@@ -59,7 +59,7 @@ func TestSeededCRC32CIsTheCRCOfTheIdentityThenTheBytes(t *testing.T) {
 		{"the golden's first 28 bytes", covered},
 		{"32 bytes of 0xff", bytes.Repeat([]byte{0xff}, 32)},
 	} {
-		if got, want := crc32cSeeded(&testIdentity, c.in), wantSeededCRC(testIdentity, c.in); got != want {
+		if got, want := crc32cSeeded(identitySeed(testIdentity), c.in), wantSeededCRC(testIdentity, c.in); got != want {
 			t.Errorf("crc32cSeeded(%s) = 0x%08x, want 0x%08x", c.name, got, want)
 		}
 	}
@@ -67,28 +67,31 @@ func TestSeededCRC32CIsTheCRCOfTheIdentityThenTheBytes(t *testing.T) {
 	// The golden's span seeded with testIdentity, computed by hand, pins
 	// the whole codec: the same bytes unseeded give 0x62df0dba, so a seed
 	// that is dropped or appended after the bytes reads back wrong here.
-	if got, want := crc32cSeeded(&testIdentity, covered), uint32(0x0b0bbe8b); got != want {
+	if got, want := crc32cSeeded(identitySeed(testIdentity), covered), uint32(0x0b0bbe8b); got != want {
 		t.Errorf("crc32cSeeded(the golden's first 28 bytes) = 0x%08x, want 0x%08x", got, want)
 	}
-	if got, want := crc32cSeeded(&testIdentity, covered), crc32c(covered); got == want {
+	if got, want := crc32cSeeded(identitySeed(testIdentity), covered), crc32c(covered); got == want {
 		t.Errorf("crc32cSeeded(the golden's first 28 bytes) = 0x%08x, the same as the unseeded crc32c; want the seeds to differ", got)
 	}
 }
 
 // TestSeededCodecAllocatesNothing pins the seeded path at zero allocations
-// per operation: the checksum's parameter is an array passed by value, and
-// slicing a stack copy moves it to the heap, so the identity travels as a
-// pointer — the record encoder's per-op allocation assertion starts from
-// this helper, and a copy reintroduced here would surface there. The race
-// detector changes allocation counts too much to compare.
+// per operation. The identity reaches the checksum as a seed the codec
+// derives without ever slicing the identity: a slice handed to hash/crc32
+// moves the array to the heap, one allocation on every seeded encode and
+// decode, so the test drives the codec with a fresh local identity — a
+// local is what escapes, while a package-level one is already on the heap
+// and would hide it. The race detector changes allocation counts too much
+// to compare.
 func TestSeededCodecAllocatesNothing(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector changes allocation counts")
 	}
 
 	b := readGolden(t, "seal")[:28]
+	identity := testIdentity // a local: what a call site passes, not a package value
 
-	if got := testing.AllocsPerRun(1000, func() { sinkCRC = crc32cSeeded(&testIdentity, b) }); got != 0 {
+	if got := testing.AllocsPerRun(1000, func() { sinkCRC = crc32cSeeded(identitySeed(identity), b) }); got != 0 {
 		t.Errorf("crc32cSeeded allocates %v times per call, want 0", got)
 	}
 
@@ -97,14 +100,14 @@ func TestSeededCodecAllocatesNothing(t *testing.T) {
 	buf := make([]byte, 0, SealMarkerSize)
 	if got := testing.AllocsPerRun(1000, func() {
 		clear(buf)
-		buf = AppendSealMarker(buf[:0], &testIdentity, testSealMarker)
+		buf = AppendSealMarker(buf[:0], identity, testSealMarker)
 	}); got != 0 {
 		t.Errorf("AppendSealMarker allocates %v times per call, want 0", got)
 	}
 
 	// The read path pays the same helper, so the decode is pinned too.
 	var m SealMarker
-	if got := testing.AllocsPerRun(1000, func() { m, sinkErr = DecodeSealMarker(buf, &testIdentity, testSegment, testOffset) }); got != 0 {
+	if got := testing.AllocsPerRun(1000, func() { m, sinkErr = DecodeSealMarker(buf, identity, testSegment, testOffset) }); got != 0 {
 		t.Errorf("DecodeSealMarker allocates %v times per call, want 0", got)
 	}
 	if m != testSealMarker || sinkErr != nil {
