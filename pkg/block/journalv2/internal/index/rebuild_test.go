@@ -875,18 +875,12 @@ func TestRebuildOverTheBound(t *testing.T) {
 	if n := fs.indexRefusals(); n != 0 {
 		t.Fatalf("a rebuild counted %d refusals, want 0", n)
 	}
-	if _, err := fs.admitWrite(id, ext(8, 4), false); !isNoSpaceIndex(err) {
-		t.Fatalf("admitWrite over the bound = %v, want the index refusal", err)
+	if _, err := fs.admitWrite(id, ext(8, 4), false); err != nil {
+		assertIndexRefusal(t, err)
 	}
 	if n := fs.indexRefusals(); n != 1 {
 		t.Fatalf("indexRefusals() = %d, want the refused write counted", n)
 	}
-}
-
-// isNoSpaceIndex reports whether err is the bound's named refusal.
-func isNoSpaceIndex(err error) bool {
-	var n *core.NoSpaceError
-	return errors.As(err, &n) && n.Limit == core.LimitIndex
 }
 
 // TestRebuildRivalled: records of one FileID under two tags rebuild the file

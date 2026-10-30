@@ -251,10 +251,11 @@ func (b *rebuilder) Feed(r Record) error {
 func (b *rebuilder) Retain(id core.FileID, r Retained) error {
 	s := b.shards[hashID(id)>>(64-6)]
 	s.mu.Lock()
-	// Every shard is drained once Finish claims, so the drained check is
-	// the whole lifetime: before the claim it admits, from the claim on it
-	// refuses.
-	if s.drained || b.finishing.Load() {
+	// The drained check is the whole lifetime: before Finish drains the
+	// shard it admits, and a keep appended while Finish is between its
+	// claim and this shard's drain is still taken by the replay; from the
+	// drain on it refuses.
+	if s.drained {
 		s.mu.Unlock()
 		return errRebuilt
 	}

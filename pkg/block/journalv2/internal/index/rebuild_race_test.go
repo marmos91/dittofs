@@ -54,7 +54,7 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 
 	// The sequential expectation: the same records, the same keeps, fed
 	// and finished alone.
-	want := func() snapshotResult {
+	want := func() indexSnap {
 		fs := &files{}
 		b := newRebuilder(fs, &Counters{})
 		for _, r := range h.recs {
@@ -70,7 +70,7 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 		if err := b.Finish(ver(0)); err != nil {
 			t.Fatal(err)
 		}
-		return snapshotResult{snap: snapshot(fs, true)}
+		return snapshot(fs, true)
 	}()
 
 	const feeders = 16
@@ -106,14 +106,8 @@ func TestRebuildConcurrentFeeders(t *testing.T) {
 		if err := b.Finish(ver(0)); err != nil {
 			t.Fatalf("Finish: %v", err)
 		}
-		got := snapshot(fs, true)
-		if d := diffSnap(got, want.snap); d != "" {
+		if d := diffSnap(snapshot(fs, true), want); d != "" {
 			t.Fatalf("round %d: %s", round, d)
 		}
 	}
-}
-
-// snapshotResult carries a snapshot out of a closure.
-type snapshotResult struct {
-	snap indexSnap
 }
