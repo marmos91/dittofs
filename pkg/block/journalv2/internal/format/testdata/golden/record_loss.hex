@@ -1,0 +1,24 @@
+# record.loss: 96-byte header then a 16-byte body: the dropped record's
+# sequence number, then a flag word whose bit 0 is the synced flag, bit 1 the
+# offloaded-bit-set flag and bits 8-15 the reason (RFC 28 section 2.3). Here
+# the flags are 0x0303: synced, offloaded, reason 3, a failed sync window.
+44 4a 52 31                 # [0,4)   magic "DJR1"
+0a                          # [4]     kind 10, loss
+00 00 00                    # [5,8)   reserved
+01 02 03 04 05 06 07 08     # [8,16)  segment id 0x0807060504030201
+a0 a1 a2 a3 a4 a5 a6 a7     # [16,32) the dropped record's FileID 0xa0..0xaf
+a8 a9 aa ab ac ad ae af
+30 31 32 33 34 35 36 37     # [32,40) the extent dropped 0x3736353433323130
+40 41 42 43 44 45 46 47     # [40,48) length 0x4746454443424140
+50 51 52 53 54 55 56 57     # [48,56) sequence number 0x5756555453525150
+00 00 00 00 00 00 00 00     # [56,64) version epoch, always zero in this format
+60 61 62 63 64 65 66 67     # [64,72) version counter 0x6766656463626160
+70 71 72 73                 # [72,76) share tag 0x73727170
+48 49 4a 4b 4c 4d 4e 4f     # [76,84) synced-through offset 0x4f4e4d4c4b4a4948
+db 88 ca 06                 # [84,88) payload CRC32C of identity then the 16
+                            #         body bytes, 0x06ca88db
+d8 d9 da db                 # [88,92) own offset in its segment 0xdbdad9d8
+97 3d ba f7                 # [92,96) header CRC32C of identity then [0,92), 0xf7ba3d97
+88 89 8a 8b 8c 8d 8e 8f     # [96,104)  dropped sequence number 0x8f8e8d8c8b8a8988
+03 03 00 00 00 00 00 00     # [104,112) flag word 0x0303: bit 0 synced, bit 1
+                            #           offloaded bit was set, bits 8-15 reason 3
