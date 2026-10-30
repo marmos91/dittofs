@@ -439,19 +439,12 @@ type CreateArgs struct {
 	Dev      uint64
 }
 
-// Verifier is the write verifier: it changes whenever unstable writes may
-// have been lost.
-type Verifier [8]byte
-
 // WriteResult is what Write answers.
 type WriteResult struct {
 	N        int
 	Verifier Verifier
 	WCC      WCC
 }
-
-// Extent is one range Copy or Clone moves.
-type Extent struct{ SrcOff, DstOff, Len int64 }
 
 // CopyArgs is a copy's or a clone's source and destination: for Copy the
 // extents in order, for Clone exactly one.

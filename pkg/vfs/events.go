@@ -56,21 +56,6 @@ type QuotaEvent struct {
 	Writer   Identity  // the refused caller, for QuotaHardRefused only
 }
 
-// QuotaScope is what a quota limits, in the order a refusal names the first
-// one exceeded.
-type QuotaScope uint8
-
-const (
-	QuotaShare QuotaScope = iota + 1
-	QuotaProject
-	QuotaUser
-	QuotaGroup
-
-	quotaScopeEnd
-)
-
-var quotaScopes = [...]string{QuotaShare: "share", QuotaProject: "project", QuotaUser: "user", QuotaGroup: "group"}
-
 // QuotaResource is what a quota counts.
 type QuotaResource uint8
 
