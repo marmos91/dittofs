@@ -556,7 +556,8 @@ The filesystem moves through four states, **built**, **serving**, **draining** a
 what the earlier ones started, and `Start` returns its error, so the filesystem is
 either serving or as it was built.
 
-1. **Open state.** For each shard this node is primary of, call RFC 14's
+1. **Open state.** For each shard this node is primary of — each live share's
+   own shard ([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)) included —, call RFC 14's
    `Recovery.ServeShard`, which installs the shard's persistent opens before
    anything is answered, and enter grace
    ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)):
@@ -567,7 +568,8 @@ either serving or as it was built.
    grace to end.
 2. **Shares.** Read the share list, build the pseudo-filesystem from it
    ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), start following the share
-   list's version.
+   list's version. A share added later has its shard served as step 1 serves
+   one when it is added.
 
 **Drain.** Called once every adapter has drained
 ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), and in a
