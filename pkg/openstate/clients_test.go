@@ -768,8 +768,8 @@ func TestExpiredClientLeavesNoIndex(t *testing.T) {
 	}
 }
 
-// A confirm the store refuses leaves its proposal: the same confirm retried
-// connects the client.
+// A confirm the store refuses leaves its proposal: another principal's
+// confirm of it is refused, and the same confirm retried connects the client.
 func TestRefusedConfirmMayBeRetried(t *testing.T) {
 	fs, st := failingFS(t)
 	f := reopen(t, fs, &fakeClock{})
@@ -783,6 +783,9 @@ func TestRefusedConfirmMayBeRetried(t *testing.T) {
 	st.fail.Store(false)
 	if !errors.Is(err, errWrite) {
 		t.Fatalf("a confirm over a refusing store: %v, want its error", err)
+	}
+	if _, err := f.Connect(ctx, nfs("host-a", 1, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
+		t.Errorf("another principal's confirm of the name: %v, want ErrClientInUse", err)
 	}
 	if id, err := f.Connect(ctx, c, &p); err != nil || id != p.Client {
 		t.Errorf("the same confirm retried: %d, %v; want %d", id, err, p.Client)
