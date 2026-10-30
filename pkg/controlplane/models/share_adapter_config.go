@@ -54,6 +54,17 @@ type NFSExportOptions struct {
 }
 
 // DefaultNFSExportOptions returns the default NFS export options for a new share.
+//
+// ponytail: nothing converts these options into the metadata store's
+// ExportPolicy yet, which states MinProof and MinProtection. The conversion,
+// once written, maps RequireKerberos to MinProof Ticket; else AllowAuthSys to
+// MinProof None, which admits AUTH_SYS, AUTH_NONE and guests as today, so no
+// existing mount breaks (raise it to Claimed to refuse AUTH_NONE and guests);
+// otherwise MinProof Secret. MinKerberosLevel krb5i maps to MinProtection
+// Integrity, krb5p to Privacy, anything else to None; MinProtection is None
+// whatever the level when the mapped MinProof admits AUTH_SYS (None or
+// Claimed). Write it with the upgrade that moves a share's export options
+// into the store.
 func DefaultNFSExportOptions() NFSExportOptions {
 	return NFSExportOptions{
 		Squash:           string(DefaultSquashMode),

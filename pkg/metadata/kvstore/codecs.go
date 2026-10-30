@@ -188,7 +188,7 @@ func encodePolicy(p entity.ExportPolicy) []byte {
 	for _, f := range p.Flavors {
 		w.Uint8(uint8(f))
 	}
-	w.Uint8(uint8(p.MinKerberos)).Len(len(p.Clients))
+	w.Uint8(uint8(p.MinProof)).Uint8(uint8(p.MinProtection)).Bool(p.ReadOnly).Len(len(p.Clients))
 	for _, c := range p.Clients {
 		if c.Match.CIDR.IsValid() {
 			b, _ := c.Match.CIDR.MarshalBinary()
@@ -214,7 +214,7 @@ func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
 			p.Flavors[i] = entity.AuthFlavor(r.Uint8())
 		}
 	}
-	p.MinKerberos = entity.KerberosLevel(r.Uint8())
+	p.MinProof, p.MinProtection, p.ReadOnly = entity.ProofKind(r.Uint8()), entity.Protection(r.Uint8()), r.Bool()
 	if n := r.Len(); n > 0 {
 		p.Clients = make([]entity.ClientRule, n)
 		for i := range p.Clients {
@@ -236,7 +236,9 @@ func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
 		}
 	}
 	p.Squash = entity.Squash(r.Uint8())
-	p.Anonymous = readPrincipal(r)
+	if p.Anonymous = readPrincipal(r); p.Anonymous.IsZero() {
+		p.Anonymous = entity.AnonymousPrincipal
+	}
 	p.SMB = entity.SMBShareFlags(r.Uint8())
 	p.Version = r.Uint64()
 	return p, r.Done()
