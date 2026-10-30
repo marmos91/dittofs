@@ -694,7 +694,6 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - fixed cap, allocated whole;
   - ids rising above every id on disk;
   - several append streams;
-  - the file-append serialisation point;
   - writes split at the cap.
 - **Spare pool:**
   - `.spare.tmp`, then rename, then directory sync;
@@ -827,6 +826,8 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - the repack reserve;
   - immediate, named, I/O-free refusals.
 - **Concurrency:**
+  - the file append domain: writes to one `FileID` are serialised (RFC 28 §2.2), from the
+    version draw until the index has the extent, over epic 5's append streams;
   - the five lock domains and their total order, with a lock-order recorder in tests;
   - no I/O under the file index;
   - shutdown.
