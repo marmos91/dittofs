@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs"
 )
 
@@ -76,4 +77,72 @@ func neutral(err error) bool {
 		}
 	}
 	return false
+}
+
+// openCodes is the service's error for each of open state's sentinels.
+var openCodes = []struct {
+	is   error
+	then error
+}{
+	{openstate.ErrBadState, &vfs.StateError{Kind: vfs.StateBadState}},
+	{openstate.ErrStaleState, &vfs.StateError{Kind: vfs.StateStaleState}},
+	{openstate.ErrNotYours, &vfs.StateError{Kind: vfs.StateNotYours}},
+	{openstate.ErrOldState, &vfs.StateError{Kind: vfs.StateOldState}},
+	{openstate.ErrStaleClient, &vfs.StateError{Kind: vfs.StateStaleClient}},
+	{openstate.ErrClientInUse, &vfs.StateError{Kind: vfs.StateClientInUse}},
+	{openstate.ErrClientBusy, &vfs.StateError{Kind: vfs.StateClientBusy}},
+	{openstate.ErrNoRecall, &vfs.StateError{Kind: vfs.StateNoRecall}},
+	{openstate.ErrNoReclaim, &vfs.StateError{Kind: vfs.StateNoReclaim}},
+	{openstate.ErrReclaimConflict, &vfs.StateError{Kind: vfs.StateReclaimConflict}},
+	{openstate.ErrBadSeqID, &vfs.StateError{Kind: vfs.StateBadSeqID}},
+	{openstate.ErrLocksHeld, &vfs.StateError{Kind: vfs.StateLocksHeld}},
+	{openstate.ErrCreateInUse, &vfs.StateError{Kind: vfs.StateCreateInUse}},
+	{openstate.ErrRecordChanged, &vfs.StateError{Kind: vfs.StateRecordChanged}},
+	{openstate.ErrInvalid, vfs.ErrInvalid},
+	{openstate.ErrGrace, vfs.ErrGrace},
+	{openstate.ErrShareViolation, vfs.ErrShareViolation},
+	{openstate.ErrDeletePending, vfs.ErrDeletePending},
+	{openstate.ErrAccess, vfs.ErrAccess},
+	{openstate.ErrLocked, vfs.ErrLocked},
+	{openstate.ErrRangeNotLocked, vfs.ErrRangeNotLocked},
+	{openstate.ErrLost, vfs.ErrLost},
+	{openstate.ErrStopped, vfs.ErrUnavailable},
+}
+
+// openDelays is the service's cause for each of open state's delays.
+var openDelays = map[openstate.DelayCause]vfs.DelayCause{
+	openstate.DelayRecall:    vfs.DelayRecall,
+	openstate.DelayResources: vfs.DelayResources,
+	openstate.DelayFrozen:    vfs.DelayFrozen,
+	openstate.DelayCommit:    vfs.DelayCommit,
+	openstate.DelayConflict:  vfs.DelayConflict,
+}
+
+// openErr is the service's error for one open state answered; anything open
+// state does not name goes on to storeErr, as open state hands the store's
+// failures on.
+//
+// decision: ErrStopped is ErrUnavailable, the answer a draining filesystem
+// gives: open state stops only after the filesystem has drained, so a call
+// meeting it is one the node is shutting down under. Overturned by an answer
+// of its own for it in the service's error set.
+func openErr(err error) error {
+	var delay *openstate.DelayError
+	var revoked *openstate.RevokedError
+	switch {
+	case err == nil || neutral(err):
+		return err
+	case errors.As(err, &delay):
+		return &vfs.Delay{Cause: openDelays[delay.Cause]}
+	case errors.As(err, &revoked):
+		return &vfs.StateError{Kind: vfs.StateRevoked, Admin: revoked.Cause == openstate.RevokedByAdmin}
+	case errors.Is(err, openstate.ErrRevoked):
+		return &vfs.StateError{Kind: vfs.StateRevoked}
+	}
+	for _, c := range openCodes {
+		if errors.Is(err, c.is) {
+			return c.then
+		}
+	}
+	return storeErr(err)
 }
