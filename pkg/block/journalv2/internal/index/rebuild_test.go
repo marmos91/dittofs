@@ -891,17 +891,58 @@ func isNoSpaceIndex(err error) bool {
 
 // TestRebuildRivalled: records of one FileID under two tags rebuild the file
 // rivalled, refusing a check through either tag, identically for every feed
-// order.
+// order. With distinct numbers the note order is the seq order; two
+// damaged records carrying the SAME numbers under different tags are
+// ordered by where they sit, so the owner is the record at the greater
+// (segment, offset) whichever order the records were fed in.
 func TestRebuildRivalled(t *testing.T) {
+	// The first record noted claims the entry, and for equal numbers the
+	// note order is by (segment, offset), so the expected owner is fixed
+	// per scene however the records were fed.
+	scenes := []struct {
+		name  string
+		recos []Record
+		owner core.ShareTag
+		rival core.ShareTag
+	}{
+		// The seq 1 record is noted first, so tag 7 owns.
+		{"distinct numbers", []Record{
+			recd(RecWrite, fid(1), 1, 1, 1, 0, 0, 4),
+			func() Record {
+				r := recd(RecWrite, fid(1), 2, 2, 2, 64, 8, 4)
+				r.Tag = 9
+				return r
+			}(),
+		}, 7, 9},
+		// Equal numbers can only be damage or another writer, but a
+		// rebuild must still produce one state, not a different owner per
+		// feed order: the notes run by (seq, segment, offset), so the
+		// segment 1 record is noted first and its tag owns.
+		{"equal numbers, two tags", []Record{
+			func() Record {
+				r := recd(RecWrite, fid(1), 1, 1, 2, 0, 0, 4)
+				r.Tag = 7
+				return r
+			}(),
+			func() Record {
+				r := recd(RecWrite, fid(1), 1, 1, 1, 0, 8, 4)
+				r.Tag = 9
+				return r
+			}(),
+		}, 9, 7},
+	}
+	for _, scene := range scenes {
+		t.Run(scene.name, func(t *testing.T) {
+			doRivalled(t, scene.recos, scene.owner, scene.rival)
+		})
+	}
+}
+
+func doRivalled(t *testing.T, rs []Record, owner, rival core.ShareTag) {
+	t.Helper()
 	build := func(order []int) *files {
 		var fs files
 		b := newRebuilder(&fs, &Counters{})
-		id := fid(1)
-		rs := []Record{
-			recd(RecWrite, id, 1, 1, 1, 0, 0, 4),
-			recd(RecWrite, id, 2, 2, 2, 64, 8, 4),
-		}
-		rs[1].Tag = 9
 		for _, i := range order {
 			if err := b.Feed(rs[i]); err != nil {
 				t.Fatal(err)
@@ -922,11 +963,12 @@ func TestRebuildRivalled(t *testing.T) {
 				}
 			})
 		}
-		// Both tags' records are on disk, whichever fed first: the first in
-		// sequence order owns the entry, the second is the rival.
+		// Both tags' records are on disk, whichever fed first: the first
+		// noted claims the entry, and the notes run in a fixed order, so
+		// the owner is the same for every feed order.
 		fs.view(id, func(f *file) {
-			if f.tag != 7 || f.rival != 9 {
-				t.Fatalf("order %v: tags = %d, %d, want 7 owning and 9 the rival", order, f.tag, f.rival)
+			if f.tag != owner || f.rival != rival {
+				t.Fatalf("order %v: tags = %d, %d, want %d owning and %d the rival", order, f.tag, f.rival, owner, rival)
 			}
 		})
 	}

@@ -414,7 +414,16 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// park the rival's records.
 	notes := slices.Clone(recs)
 	slices.SortStableFunc(notes, func(a, c bufRec) int {
-		return cmp.Compare(a.numbers.Seq, c.numbers.Seq)
+		// The sequence number orders the notes; where two records carry
+		// the same one — damage or another writer, the journal issues a
+		// pair once — where they sit decides, so the noted order is a
+		// total order and the owner among equal pairs does not depend on
+		// the feed order.
+		return cmp.Or(
+			cmp.Compare(a.numbers.Seq, c.numbers.Seq),
+			cmp.Compare(a.seg, c.seg),
+			cmp.Compare(a.at, c.at),
+		)
 	})
 	for _, r := range notes {
 		_ = f.recorded(r.seg, extentOf(r), r.numbers, r.tag, id)
@@ -520,7 +529,11 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 	// and a piece's own record seq plays no part: a repack copy keeps the
 	// bit its content had.
 	slices.SortStableFunc(marks, func(a, c bufRec) int {
-		return cmp.Compare(a.numbers.Seq, c.numbers.Seq)
+		return cmp.Or(
+			cmp.Compare(a.numbers.Seq, c.numbers.Seq),
+			cmp.Compare(a.seg, c.seg),
+			cmp.Compare(a.at, c.at),
+		)
 	})
 	// decision: the marks reach the held set only, never retained pieces.
 	// A mark names the bytes its record offered or unmarked, which are
