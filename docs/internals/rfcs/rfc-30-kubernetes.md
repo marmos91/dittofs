@@ -39,7 +39,7 @@ Every DittoFS node is the same: each takes client calls and each keeps some of
 the notebooks ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)). The
 pod a client reaches is its receptionist: if another pod is in charge of the
 file, it passes the call there and decides nothing itself
-([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)).
+([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)).
 Each pod has its own fast disk and a name that must survive a restart, so the
 cluster is one StatefulSet. The replicated metadata store is the town hall, run
 by its own operator. The DittoFS operator is the building manager: it adds pods
@@ -61,7 +61,7 @@ unannounced loses nothing — it only costs a short pause.
 
 **Monday morning, connections triple.**
 1. New connections spread over the existing pods; each pod's gateway forwards
-   what it is not primary for ([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)).
+   what it is not primary for ([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)).
 2. Nothing scales: adding a pod moves shards, so the pool grows only on
    capacity signals ([§6.1](#6.1%20The%20node%20pool)).
 

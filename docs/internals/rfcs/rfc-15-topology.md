@@ -77,7 +77,7 @@ what each node runs, which node is in charge of each file, and which node a
 client's call goes to. This RFC answers them: every node runs everything
 ([§2.1](#2.1%20One%20node%20type)), a shard's primary is in charge of its files
 ([§3](#3.%20One%20primary%20per%20shard)), and the node a call arrives at
-forwards it there ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)).
+forwards it there ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)).
 
 In outline: clients reach DittoFS over NFS (Network File System) or SMB (Server
 Message Block); writes land in a local journal and are later uploaded to an
@@ -99,7 +99,7 @@ alice-pc's gateway node.
    primary, so its gateway looks the file's shard up in its cached copy of the
    shard records and forwards the write to S1 with an **envelope** — a request
    ID unique in the cluster, the shard and the epoch P1 expects, and a hop
-   count of zero. At S1 the receive side checks the epoch, and S1's server
+   count of zero. At S1 the receive side checks the epoch, and S1's filesystem
    admits, applies and replies.
 2. **A lost reply.** The reply is lost and P1 sends the write again under the
    same request ID. Meanwhile another write has landed on the same bytes.
@@ -137,7 +137,7 @@ alice-pc's gateway node.
           ▼
   ┌ S1 ──────────────────────┐ ┌ S2 ─────────────┐ ┌ S3 ──────────┐
   │ vfs.Serve: fence, dedup  │ │ primary of B    │ │ replica of A │
-  │ vfs.Server, primary of A │ │ profiles/bob/   │ │              │
+  │ vfs.Filesystem, primary of A │ │ profiles/bob/   │ │              │
   │ open state, journal,     │ │                 │ │              │
   │ results by request ID    │ │                 │ │              │
   └──────────────────────────┘ └─────────────────┘ └──────────────┘
@@ -148,7 +148,7 @@ Every node runs every box above; P1 is drawn as a gateway and S1 as a primary
 only because of where alice-pc connected and which shard her file is in. The
 figure draws the same design with three nodes, where S2 is the gateway:
 
-![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Server, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's server with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
+![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Filesystem, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's filesystem with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
 
 ### The words you need
 
@@ -162,7 +162,7 @@ figure draws the same design with three nodes, where S2 is the gateway:
 - **[Gateway node](rfc-0-data-lifecycle.md#Glossary)**: the node a client's
   call arrives at. Its `vfs.Gateway` forwards the call to the primary when it is
   not the primary itself, and decides nothing
-  ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)).
+  ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)).
 - **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: the fencing number in a shard's
   record; what raises it is stated once, in
   [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms). A call carrying an
@@ -196,15 +196,15 @@ alice-pc's connection; S1 is primary of shard A, `profiles/alice/`.
 
 1. alice-pc asks P1 to open `profiles/alice/notes.txt`.
 2. Each `Lookup` of the walk names a directory handle; P1's gateway forwards
-   each to the directory's primary, S1, and S1's server answers it
-   ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)).
-3. The open is forwarded the same way, and S1's server admits it and records it
+   each to the directory's primary, S1, and S1's filesystem answers it
+   ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)).
+3. The open is forwarded the same way, and S1's filesystem admits it and records it
    in S1's open state ([§2.5](#2.5%20The%20cut)).
 4. Each write goes P1 to S1, then to S1's two replicas, before the OK
    ([§2.5](#2.5%20The%20cut)).
 
 A write crosses the network four times before its OK; had alice-pc connected to
-S1 itself, the gateway would have called S1's server directly and saved one
+S1 itself, the gateway would have called S1's filesystem directly and saved one
 crossing.
 
 **Draining a node for maintenance.**
@@ -266,7 +266,7 @@ A store outage does not turn into a storm of address takeovers.
 ### How the rest is organised
 
 [§2](#2.%20Roles) defines the one node type, the start-up checks, what the
-gateway and the server each do ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)), how a node is built, and why
+gateway and the filesystem each do ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)), how a node is built, and why
 the cut is at `vfs.Service` ([§2.5](#2.5%20The%20cut)). [§3](#3.%20One%20primary%20per%20shard) is the one-primary rule.
 [§4](#4.%20Where%20each%20call%20runs) says which node serves each call, what
 makes a call safe to route, how calls spanning two shards run, and the
@@ -304,9 +304,9 @@ can hold a client's connection, be a shard's primary, or be its replica:
 | Component | What it does on every node | Specified in |
 | --- | --- | --- |
 | adapters | speak the wire, hold sessions, and sign clients in through `vfs.Service`'s `SignIn` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); call `vfs.Service` and nothing else, identity included ([RFC 18](rfc-18-identity.md)) | [RFC 20](rfc-20-adapters.md) |
-| `vfs.Gateway` **(cluster)** | routes each call to the primary of its file's shard; decides nothing | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) |
-| `vfs.Serve` **(cluster)** | receives forwarded calls: fences and deduplicates them, then calls the local server | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides), [§4.3](#4.3%20The%20route%20envelope) |
-| `vfs.Server` | the filesystem: decides every call for the shards this node is primary of | [RFC 17](rfc-17-vfs.md) |
+| `vfs.Gateway` **(cluster)** | routes each call to the primary of its file's shard; decides nothing | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides) |
+| `vfs.Serve` **(cluster)** | receives forwarded calls: fences and deduplicates them, then calls the local filesystem | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides), [§4.3](#4.3%20The%20route%20envelope) |
+| `vfs.Filesystem` | the filesystem: decides every call for the shards this node is primary of | [RFC 17](rfc-17-vfs.md) |
 | identity, open state | map identities per share; hold opens, locks, caching grants and layouts | [RFC 18](rfc-18-identity.md), [RFC 14](rfc-14-open-state.md) |
 | content subsystem | engine, journals and their replication, syncer, GC | [RFC 8](rfc-8-engine.md), [RFC 10](rfc-10-journal-replication.md) |
 | client-address agent; **(cluster)** pNFS metadata-server and data-server endpoints | floating addresses and move notifications to clients; layouts | [§5](#5.%20Clients) |
@@ -323,7 +323,7 @@ document of this set designs a node with one.
 > ponytail: every node runs protocol and storage. Split the roles when protocol
 > CPU (TLS/SMB encryption, GSS) is measured saturating nodes whose disks are
 > idle, or when a deployment needs disk-less protocol nodes for isolation. The
-> split costs only `vfs.Gateway` with no local server; no interface changes.
+> split costs only `vfs.Gateway` with no local filesystem; no interface changes.
 
 > ponytail: one primary caps a shard's metadata operations and data bandwidth
 > at one node together ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20primary%20per%20shard)). The upgrade is a namespace primary and a data
@@ -342,7 +342,7 @@ A node **MUST** refuse to start when:
 - it uses an embedded single-node metadata store and is not the only node;
 - it has no journal device or no remote-tier credentials.
 
-### 2.3 The gateway forwards, the server decides
+### 2.3 The gateway forwards, the filesystem decides
 
 The filesystem service ([RFC 17](rfc-17-vfs.md)) is one interface,
 `vfs.Service`, which adapters call with values only. In a cluster each node
@@ -352,13 +352,13 @@ holds three things behind it, all in package `vfs`:
 | --- | --- | --- | --- |
 | **`vfs.Gateway`** — implements `vfs.Service` | resolves the routing handle each request value names to its shard's primary through `vfs.Router` ([§6](#6.%20Learning%20primaries)); if the primary is this node, calls the checked `vfs.Service` that `vfs.Serve` returns; otherwise stamps the route envelope ([§4.3](#4.3%20The%20route%20envelope)) with the request identity the adapter handed it, sends the call through `vfs.Transport`, and retries, traces and counts it — one generic call path for every method | authenticate, admit to a share, map an identity, squash, check a permission, order, parse protocol data, or call open state, the metadata store or the engine itself | nothing about files; its router caches shard records and files' recorded shards |
 | **`vfs.Serve`** — the receive side | refuses a call whose node epoch is fenced, whose shard epoch is not current or whose hop count is not zero, naming the primary it knows; answers a retry from the dedup table by request ID ([§4.3](#4.3%20The%20route%20envelope)); then calls the server. It runs the same checks for a call that arrives over `vfs.Transport` and for the gateway's local path, which it returns as a checked `vfs.Service` | forward a call, or read anything about the file | the dedup table |
-| **`vfs.Server`** — the filesystem | everything else: refusing a file whose recorded shard is not the one named (`ErrWrongShard`), admission to the share, identity resolution, flavour and squash, ordering, open state, metadata and content ([RFC 17](rfc-17-vfs.md)) | route | open state, quota reservations, grace, admitted-call counts |
+| **`vfs.Filesystem`** — the filesystem | everything else: refusing a file whose recorded shard is not the one named (`ErrWrongShard`), admission to the share, identity resolution, flavour and squash, ordering, open state, metadata and content ([RFC 17](rfc-17-vfs.md)) | route | open state, quota reservations, grace, admitted-call counts |
 
-So adapters sign in and translate, the gateway forwards, and the server
+So adapters sign in and translate, the gateway forwards, and the filesystem
 decides. An adapter turns its protocol's request into a neutral `vfs.Service`
 call before the gateway sees it, and turns the neutral result back into its
 protocol's reply ([RFC 20 §2.1](rfc-20-adapters.md#2.1%20Two%20questions%20place%20every%20piece%20of%20logic));
-nothing below the adapter — gateway, transport, `vfs.Serve`, server — parses a
+nothing below the adapter — gateway, transport, `vfs.Serve`, filesystem — parses a
 protocol value. The gateway's
 one choice — which node to send to — decides nothing either: a wrong choice is
 refused by the receiver, never applied ([§6](#6.%20Learning%20primaries)). The
@@ -381,19 +381,19 @@ file logic, and are made by its implementation outside `vfs`.
                                  dedup by request ID
                                                │
                                                ▼
-                                vfs.Server at the primary: admission,
+                                vfs.Filesystem at the primary: admission,
                                 identity, squash, ordering
                                 ─► open state, metadata, engine
 ```
 
-- The gateway **MUST** hold a `vfs.Service`, never a `*vfs.Server`, so its local
+- The gateway **MUST** hold a `vfs.Service`, never a `*vfs.Filesystem`, so its local
   shortcut and its remote path are the same interface.
 - In a cluster the local shortcut **MUST** pass the same fence and dedup as a
   forwarded call — `vfs.Serve`'s checks, run in-process — and carry the same
   request ID, so a call a stale cache routes locally is refused, and the retry
   of a call first sent locally is answered once, after a takeover too. The
   shortcut drops only the network hop: `vfs.Serve` returns its checks as a
-  checked `vfs.Service`, and that, never the bare server, is the gateway's
+  checked `vfs.Service`, and that, never the bare filesystem, is the gateway's
   local `vfs.Service`.
 - The request ID ([§4.3](#4.3%20The%20route%20envelope)) is the adapter's,
   derived from its protocol's own retry identity, and handed with the call; the
@@ -410,7 +410,7 @@ file logic, and are made by its implementation outside `vfs`.
   grant, watch or state ID names
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call with neither — `Root`,
   `ListShares`, the pseudo-filesystem, a client's lease and session calls —
-  runs at the gateway node's own server. A client's record lives at its lease
+  runs at the gateway node's own filesystem. A client's record lives at its lease
   owner, `Lease.Node`, and names its back channel and session holders in
   `Reach` (`Callback`, `Down`, `Sessions`); the lease owner and back channel are
   chosen among the nodes holding its sessions
@@ -418,16 +418,16 @@ file logic, and are made by its implementation outside `vfs`.
   costs no hop when the owner is this node.
 - A call that touches two shards is routed by its first handle to its
   coordinator, the source directory's primary or, for a link, the target
-  directory's, whose server runs it as [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) says. A path walk is one `Lookup` per
+  directory's, whose filesystem runs it as [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) says. A path walk is one `Lookup` per
   component, each routed by its directory. The gateway never splits a call.
 - A single node builds no gateway and no receive side: its adapters call
-  `vfs.Server` directly, and none of the envelope, fencing or dedup of a
+  `vfs.Filesystem` directly, and none of the envelope, fencing or dedup of a
   forwarded call applies.
 
 > decision: a call naming no file is decided by the gateway node's own
-> `vfs.Server`, not at a primary, because it touches no shard's state: share
+> `vfs.Filesystem`, not at a primary, because it touches no shard's state: share
 > admission there reads the share records any node reads, and every later call
-> on the share's files is admitted again by its primary's server. Overturned if
+> on the share's files is admitted again by its primary's filesystem. Overturned if
 > such a call ever needs state a primary holds.
 
 **Calls with no file run on the receiving node.** A call that names no file —
@@ -450,12 +450,12 @@ the content subsystem below it. Before it builds anything, `New` refuses what
 [§2.2](#2.2%20Startup%20refuses%20what%20cannot%20work) lists. What a cluster
 adds to that composition, and nothing else, is this section's:
 
-- **What it builds.** After `*vfs.Server`, `vfs.Serve` over the server, then
+- **What it builds.** After `*vfs.Filesystem`, `vfs.Serve` over the filesystem, then
   `vfs.NewGateway` with the checked `vfs.Service` that `vfs.Serve` returns as its
   local one, the router ([§6](#6.%20Learning%20primaries)) and the transport
-  ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)). The
-  adapters are handed the gateway instead of the server; on one node they are
-  handed the server and none of these is built. The engine's journal
+  ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)). The
+  adapters are handed the gateway instead of the filesystem; on one node they are
+  handed the filesystem and none of these is built. The engine's journal
   replication ([RFC 10](rfc-10-journal-replication.md)), shard placement
   ([RFC 11](rfc-11-ownership.md)), the client-address agent and the pNFS data
   server ([§5](#5.%20Clients)) come with the cluster too, at the places RFC 23
@@ -476,12 +476,12 @@ adds to that composition, and nothing else, is this section's:
 
 A client call crosses between nodes at exactly one interface: `vfs.Service`,
 forwarded whole by the gateway and received by `vfs.Serve`
-([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)). Below
+([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)). Below
 it, everything that call touches runs at the primary; above it, nothing holds
 file state. This binds every deployment; on a single node the cut is a function
 call.
 
-![The cut is vfs.Service: on the gateway node an adapter signs in and calls vfs.Gateway, which decides nothing; the gateway either calls the local vfs.Server or stamps an envelope (request ID, shard and epoch, node and node epoch, hop 0) and sends it over vfs.Transport to vfs.Serve at the primary, which checks the fence and dedup; vfs.Server at the primary then decides admission, identity, squash and ordering and calls open state, the metadata store and the engine, while the legend gives the reasons the cut is not under the VFS](img/rfc15-cut.svg)
+![The cut is vfs.Service: on the gateway node an adapter signs in and calls vfs.Gateway, which decides nothing; the gateway either calls the local vfs.Filesystem or stamps an envelope (request ID, shard and epoch, node and node epoch, hop 0) and sends it over vfs.Transport to vfs.Serve at the primary, which checks the fence and dedup; vfs.Filesystem at the primary then decides admission, identity, squash and ordering and calls open state, the metadata store and the engine, while the legend gives the reasons the cut is not under the VFS](img/rfc15-cut.svg)
 
 **Why the cut is at `vfs.Service` and not under it.** Forwarding the engine's,
 the metadata store's or open state's calls instead would keep the filesystem
@@ -489,10 +489,10 @@ service at the gateway and cost:
 
 | Cut under the filesystem service | Cut at `vfs.Service` |
 | --- | --- |
-| open state at the gateway for admission and at the primary for I/O: two copies, and a grace period that spans both | open state in one place, the primary's server |
+| open state at the gateway for admission and at the primary for I/O: two copies, and a grace period that spans both | open state in one place, the primary's filesystem |
 | a `WRITE` is several forwarded calls — admit, check open state, reserve quota, append, update size and times | a `WRITE` is one forwarded call |
 | the engine interface is chatty: calls per extent, per version and per commit, each a round trip | one round trip per client operation |
-| each forwarded piece fenced on its own, so a check and the I/O it admits can straddle an epoch change | one epoch, checked once by `vfs.Serve`, fences the whole call, and the server runs the check and the I/O under it |
+| each forwarded piece fenced on its own, so a check and the I/O it admits can straddle an epoch change | one epoch, checked once by `vfs.Serve`, fences the whole call, and the filesystem runs the check and the I/O under it |
 
 **What else crosses between nodes.** Every message travels on a node channel
 ([§4.4](#4.4%20Node%20channels)):
@@ -501,8 +501,8 @@ service at the gateway and cost:
 | --- | --- | --- |
 | a forwarded `vfs.Service` call | a gateway and `vfs.Serve` at the primary | §2.3, [§4.3](#4.3%20The%20route%20envelope) |
 | a replication message | a primary and its replicas | [RFC 10](rfc-10-journal-replication.md) |
-| a cross-shard prepare, commit or release | two primaries' servers, through `vfs.Peers` | [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) |
-| a server's other call to a second primary: an overlay of an entry in another shard, a cross-shard copy's source read, an owner's sequence at its home primary, the lease owner's calls to its client's primaries, and their recalls back | two servers, through `vfs.Peers` | [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring) |
+| a cross-shard prepare, commit or release | two primaries' filesystems, through `vfs.Peers` | [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) |
+| a filesystem's other call to a second primary: an overlay of an entry in another shard, a cross-shard copy's source read, an owner's sequence at its home primary, the lease owner's calls to its client's primaries, and their recalls back | two filesystems, through `vfs.Peers` | [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring) |
 | a handover's or move's shipped tail and open-state table | two primaries | [RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) |
 | a newest-version question for a read served off the primary | a node and the primary | [RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes) |
 
@@ -547,13 +547,13 @@ primary: nothing within one shard crosses between nodes.
 ## 4. Where each call runs
 
 The gateway routes each `vfs.Service` call by its handle to that shard's
-primary ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)); adapters never see this table. The table says which
-calls of the metadata store ([RFC 16](rfc-16-metadata-store.md)) a server may make for a shard it
+primary ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)); adapters never see this table. The table says which
+calls of the metadata store ([RFC 16](rfc-16-metadata-store.md)) a filesystem may make for a shard it
 is not primary of:
 
 | Made by | Calls |
 | --- | --- |
-| **any node's server** (store reads, needing no primary) | `Lookup`, `Entries`, `EntriesPlus`, `Files.Get` (the committed part), `ACL`, `Xattrs`, `Streams`, `Authorize`, `Resolve`, `Capacity.*`, `Principals.*` |
+| **any node's filesystem** (store reads, needing no primary) | `Lookup`, `Entries`, `EntriesPlus`, `Files.Get` (the committed part), `ACL`, `Xattrs`, `Streams`, `Authorize`, `Resolve`, `Capacity.*`, `Principals.*` |
 | **any node** (store transactions, no shard's primary) | `ControlPlane.*` |
 | **the shard's primary** | `Create`, `Link`, `Unlink`, `Rename`, `SetAttrs`, `SetACL`, `SetXattr`, `RemoveXattr`, `OpenRecords.*`, `Existence.*`, the size and times overlay of `Files.Get`, reads and writes |
 | **any node, by sweep assignment** | `Blocks.*` ([RFC 9](rfc-9-gc.md)) |
@@ -826,7 +826,7 @@ file across data servers needs per-file or range shards, which are deferred to
 ### 5.2 SMB and NFSv3
 
 These protocols have no data servers. Clients connect to any node, whose
-gateway calls the local server when the node is the primary and forwards to the
+gateway calls the local filesystem when the node is the primary and forwards to the
 primary otherwise: no extra hop when the client reached the primary's node, one
 when it did not. pNFS clients use the same forwarding path
 when a data server fails, as the NFSv4.1 specification requires, so it exists
@@ -927,7 +927,7 @@ embedded single-node store gives none.
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
 | T10 | A request ID is the adapter's, derived from its protocol's retry identity, so every retry the protocol lets a client send — on a new connection, through another gateway node that holds the client — carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. A handover ships the open-state calls' entries with the open-state table. A replay the protocol names by open state is matched at the primary against the open's own replay state, durable for a persistent open. Adapter bytes travel opaque in the call and its result; a version the reading adapter cannot read is refused `ErrAdapterVersion`, never misread. |
 | T11 | A single node advertises no pNFS and answers every layout operation not supported. |
-| T12 | A client call crosses between nodes only as a whole `vfs.Service` call, forwarded by `vfs.Gateway` and received by `vfs.Serve`. The gateway holds no file state and decides nothing: it makes no admission, identity, permission, ordering, open-state, metadata or engine call; only its router reads shard records and files' recorded shards. Every such decision is made by a `vfs.Server`: the primary's for a call naming a handle, the gateway node's own for one naming none. |
+| T12 | A client call crosses between nodes only as a whole `vfs.Service` call, forwarded by `vfs.Gateway` and received by `vfs.Serve`. The gateway holds no file state and decides nothing: it makes no admission, identity, permission, ordering, open-state, metadata or engine call; only its router reads shard records and files' recorded shards. Every such decision is made by a `vfs.Filesystem`: the primary's for a call naming a handle, the gateway node's own for one naming none. |
 
 ## 9. Conformance and benchmarks
 
@@ -1051,7 +1051,7 @@ adapters' (`adapter_record_decode_failures_total{protocol, reason}`,
 
 **Spans.** A forwarded call is a child span of the adapter's request span on
 the gateway node, carrying the envelope's trace context (§4.3) to the primary,
-where `vfs.Serve` and the server's step continue it (RFC 25 §6.2). Its
+where `vfs.Serve` and the filesystem's step continue it (RFC 25 §6.2). Its
 attributes are the view, the shard and the neutral result; no client, owner,
 file or principal identifier is one.
 

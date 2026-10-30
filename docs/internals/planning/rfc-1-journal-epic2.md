@@ -823,14 +823,14 @@ suite's known file until it passes. The journal-specific fixtures land with the 
 test that uses them (D11).
 
 Under route B of #3119, a `dfs` serving NFS or SMB on journal v2 needs more than epic 11:
-the filesystem service, `vfs.Server` (stage 2, RFC 17), and the adapters moved onto it
+the filesystem service, `vfs.Filesystem` (stage 2, RFC 17), and the adapters moved onto it
 (RFC 17 §9's slices, stage 5). The catalogue is therefore split by the tier each row can
 run at, and the dependencies are named per tier. Who writes the integration-tier rows,
 the journal team or the filesystem service's owner, is agreed at S4a.
 
 ### 7.1 At the filesystem service's integration tier
 
-`vfs.Server` over the real engine on a temporary journal, the in-memory store, a fake
+`vfs.Filesystem` over the real engine on a temporary journal, the in-memory store, a fake
 remote tier and the fake clock, with no node and no kernel client (RFC 17 §8, the
 integration tier). **Depends on:** epic 11 and #3119 stage 2's `vfs.New` with its
 integration harness (RFC 17 §9, slice 1).
@@ -849,7 +849,7 @@ integration harness (RFC 17 §9, slice 1).
 ### 7.2 A real `dfs` with kernel clients
 
 Under `test/e2e`, a real `dfs` on journal v2 with kernel NFS and SMB clients.
-**Depends on:** epic 11, #3119 stage 2 (`vfs.Server`) and the adapters moved onto it. The
+**Depends on:** epic 11, #3119 stage 2 (`vfs.Filesystem`) and the adapters moved onto it. The
 write verifier is the filesystem service's (RFC 17 §5.8), from the engine's loss
 generation, so the durability rows need RFC 17 §9's slice 4 (`Write`, `Read`, `Commit`
 and the verifier) as well. Epic 10's rows need only a `dfs` that starts.

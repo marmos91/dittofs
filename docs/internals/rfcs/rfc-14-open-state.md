@@ -2603,7 +2603,7 @@ the suite runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20
 
 The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which
 `node.New` builds it into, calls `Start(ctx, sink, order)` with the built
-`*vfs.Server` as the `Sink` and its admission lock as `order`, after the store
+`*vfs.Filesystem` as the `Sink` and its admission lock as `order`, after the store
 and before the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
 `Stop`, before the store's. `Start` starts the timer and nothing
@@ -2628,7 +2628,7 @@ and open state is
 left to the next start's grace
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the timers.
 
-![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the server as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
+![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the filesystem as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
 
 ### 11.3 Methods
 

@@ -112,7 +112,7 @@ primary, reply cache in memory.
 
 - **gateway node / primary** — the node a client's call arrives at, which
   forwards it to the primary when it is not the primary itself
-  ([RFC 17 §2](rfc-17-vfs.md#2.%20Gateway%20and%20server)) / the one node that
+  ([RFC 17 §2](rfc-17-vfs.md#2.%20Gateway%20and%20filesystem)) / the one node that
   orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
 - **File handle** — an opaque name for a file, the same on every node and after
   restart ([§7.1](#7.1%20File%20handles),

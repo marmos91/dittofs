@@ -52,7 +52,7 @@
 <text x="355" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
 <text x="355" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="300" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="355" y="197" class="s" text-anchor="middle">vfs.Server</text>
+<text x="355" y="197" class="s" text-anchor="middle">vfs.Filesystem</text>
 <text x="308" y="220" class="s">primary: S, U2</text>
 <text x="308" y="238" class="s">replica: P, U3</text>
 <text x="308" y="256" class="s">one journal</text>
@@ -63,7 +63,7 @@
 <text x="510" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
 <text x="510" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="455" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="510" y="197" class="s" text-anchor="middle">vfs.Server</text>
+<text x="510" y="197" class="s" text-anchor="middle">vfs.Filesystem</text>
 <text x="463" y="220" class="s">primary: P</text>
 <text x="463" y="238" class="s">replica: S, U2</text>
 <text x="463" y="256" class="s">one journal</text>
@@ -74,7 +74,7 @@
 <text x="665" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
 <text x="665" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="610" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="665" y="197" class="s" text-anchor="middle">vfs.Server</text>
+<text x="665" y="197" class="s" text-anchor="middle">vfs.Filesystem</text>
 <text x="618" y="220" class="s">primary: U1</text>
 <text x="618" y="238" class="s">replica: S, P, U3</text>
 <text x="618" y="256" class="s">one journal</text>
@@ -85,7 +85,7 @@
 <text x="820" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
 <text x="820" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="765" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="820" y="197" class="s" text-anchor="middle">vfs.Server</text>
+<text x="820" y="197" class="s" text-anchor="middle">vfs.Filesystem</text>
 <text x="773" y="220" class="s">primary: U3</text>
 <text x="773" y="238" class="s">replica: U1, U2</text>
 <text x="773" y="256" class="s">one journal</text>

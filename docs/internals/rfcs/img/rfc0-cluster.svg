@@ -42,7 +42,7 @@
   <rect x="168" y="138" width="128" height="22" rx="11" class="rp"/><text x="232" y="153" class="rt" text-anchor="middle">replica: B, C</text>
   <rect x="172" y="168" width="124" height="26" rx="4" class="ada"/><text x="182" y="185" class="s">NFS / SMB adapters</text>
   <rect x="54" y="168" width="110" height="26" rx="4" class="vfs"/><text x="64" y="185" class="s">vfs.Gateway</text>
-  <rect x="54" y="202" width="242" height="26" rx="4" class="vfs"/><text x="64" y="219" class="s">vfs.Serve · vfs.Server — decides</text>
+  <rect x="54" y="202" width="242" height="26" rx="4" class="vfs"/><text x="64" y="219" class="s">vfs.Serve · vfs.Filesystem — decides</text>
   <rect x="54" y="236" width="242" height="26" rx="4" class="data"/><text x="64" y="253" class="s">open state · metadata transactions</text>
   <rect x="54" y="270" width="242" height="26" rx="4" class="data"/><text x="64" y="287" class="s">journal · engine · syncer · GC</text>
   <text x="54" y="318" class="s">orders every change to shard A's files</text>
@@ -53,7 +53,7 @@
   <rect x="473" y="138" width="128" height="22" rx="11" class="rp"/><text x="537" y="153" class="rt" text-anchor="middle">replica: A, C</text>
   <rect x="477" y="168" width="124" height="26" rx="4" class="ada"/><text x="487" y="185" class="s">NFS / SMB adapters</text>
   <rect x="359" y="168" width="110" height="26" rx="4" class="vfs"/><text x="369" y="185" class="s">vfs.Gateway</text>
-  <rect x="359" y="202" width="242" height="26" rx="4" class="vfs"/><text x="369" y="219" class="s">vfs.Serve · vfs.Server — decides</text>
+  <rect x="359" y="202" width="242" height="26" rx="4" class="vfs"/><text x="369" y="219" class="s">vfs.Serve · vfs.Filesystem — decides</text>
   <rect x="359" y="236" width="242" height="26" rx="4" class="data"/><text x="369" y="253" class="s">open state · metadata transactions</text>
   <rect x="359" y="270" width="242" height="26" rx="4" class="data"/><text x="369" y="287" class="s">journal · engine · syncer · GC</text>
   <text x="359" y="318" class="s">gateway node for build01</text>
@@ -64,7 +64,7 @@
   <rect x="778" y="138" width="128" height="22" rx="11" class="rp"/><text x="842" y="153" class="rt" text-anchor="middle">replica: A, B</text>
   <rect x="782" y="168" width="124" height="26" rx="4" class="ada"/><text x="792" y="185" class="s">NFS / SMB adapters</text>
   <rect x="664" y="168" width="110" height="26" rx="4" class="vfs"/><text x="674" y="185" class="s">vfs.Gateway</text>
-  <rect x="664" y="202" width="242" height="26" rx="4" class="vfs"/><text x="674" y="219" class="s">vfs.Serve · vfs.Server — decides</text>
+  <rect x="664" y="202" width="242" height="26" rx="4" class="vfs"/><text x="674" y="219" class="s">vfs.Serve · vfs.Filesystem — decides</text>
   <rect x="664" y="236" width="242" height="26" rx="4" class="data"/><text x="674" y="253" class="s">open state · metadata transactions</text>
   <rect x="664" y="270" width="242" height="26" rx="4" class="data"/><text x="674" y="287" class="s">journal · engine · syncer · GC</text>
   <text x="664" y="318" class="s">orders every change to shard C's files</text>
@@ -106,6 +106,6 @@
   <text x="32" y="554" class="l"><tspan font-weight="700">S1 lost.</tspan> S2 takes shard A over at a higher epoch; gateways re-route there. A stale S1 is refused by the epoch.</text>
   <text x="32" y="576" class="l"><tspan font-weight="700">A gateway node lost.</tspan> Another node takes its addresses; open state is untouched, because it lives at the primaries.</text>
   <text x="32" y="598" class="l"><tspan font-weight="700" fill="#4c8a58">Green dashed arrows:</tspan> journal records ship to the shard's replicas; a write is acknowledged once the whole replica set holds it (RFC 10).</text>
-  <text x="32" y="620" class="l"><tspan font-weight="700">Grey arrow:</tspan> S2's gateway forwards a write to shard A with an envelope; vfs.Serve at S1 checks fence and dedup, then vfs.Server decides.</text>
-  <text x="32" y="642" class="l"><tspan font-weight="700">One machine</tspan> is the single-node install: no gateway, and the adapters call vfs.Server directly.</text>
+  <text x="32" y="620" class="l"><tspan font-weight="700">Grey arrow:</tspan> S2's gateway forwards a write to shard A with an envelope; vfs.Serve at S1 checks fence and dedup, then vfs.Filesystem decides.</text>
+  <text x="32" y="642" class="l"><tspan font-weight="700">One machine</tspan> is the single-node install: no gateway, and the adapters call vfs.Filesystem directly.</text>
 </svg>

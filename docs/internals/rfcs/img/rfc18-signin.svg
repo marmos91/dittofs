@@ -29,7 +29,7 @@
   <text x="124" y="54" class="z">THE NODE HOLDING THE CONNECTION — NEVER FORWARDED</text>
   <rect x="14" y="62" width="84" height="44" rx="5" class="pr"/><text x="24" y="80" class="h">client</text><text x="24" y="98" class="s">NFS or SMB</text>
   <rect x="122" y="62" width="100" height="44" rx="5" class="pr"/><text x="132" y="80" class="h">adapter</text><text x="132" y="98" class="s">wire only</text>
-  <rect x="246" y="62" width="138" height="44" rx="5" class="sv"/><text x="256" y="80" class="m">*vfs.Server</text><text x="256" y="98" class="s">behind vfs.Service</text>
+  <rect x="246" y="62" width="138" height="44" rx="5" class="sv"/><text x="256" y="80" class="m">*vfs.Filesystem</text><text x="256" y="98" class="s">behind vfs.Service</text>
   <rect x="398" y="62" width="130" height="44" rx="5" class="sv"/><text x="408" y="80" class="m">Authenticator</text><text x="408" y="98" class="s">identity (§3.1)</text>
   <rect x="592" y="62" width="166" height="44" rx="5" class="st"/><text x="602" y="80" class="h">store, secret provider</text><text x="602" y="98" class="s">records, index, Secrets</text>
   <rect x="770" y="62" width="120" height="44" rx="5" class="am"/><text x="780" y="80" class="h">directory, DC</text><text x="780" y="98" class="s">outside the node</text>

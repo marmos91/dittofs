@@ -470,7 +470,7 @@ queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
 
 **Start.** The node starts GC in build order: after the metadata store and
 the engine, whose syncer GC's flows need, and before open state, identity and
-`*vfs.Server` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)). `New`
+`*vfs.Filesystem` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)). `New`
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
 up to store time, and runs a first `Recheck`. No delete is issued until that
@@ -484,7 +484,7 @@ nothing. A share's removal changes nothing here: its refs drop through RFC 6, an
 its blocks retire like any others.
 
 **Drain.** The node drains GC in reverse build order: after the adapters, the
-gateway and `Serve` stop, and before `*vfs.Server` and the engine stop. GC stops posting, lets each in-flight batch commit or
+gateway and `Serve` stop, and before `*vfs.Filesystem` and the engine stop. GC stops posting, lets each in-flight batch commit or
 abort, and cancels remote deletes at the context's deadline. A cancelled delete
 leaves its record `deleted`, and the next start resumes it. A compaction
 cancelled after its intent abandons that intent at once ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)), and an

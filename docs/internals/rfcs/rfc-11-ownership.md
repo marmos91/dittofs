@@ -93,13 +93,13 @@ doing the writing.
 
 | Where | Runs | Decides |
 | --- | --- | --- |
-| every node | adapters, which sign clients in; `vfs.Gateway`; `vfs.Serve`; `vfs.Server`; open state, journals, engine | — |
-| the gateway node | the adapter, then `vfs.Gateway`: looks the file's shard and primary up, calls the local server if this node is the primary, else stamps the route envelope and sends the call | nothing: a wrong route is refused by the receiver ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)) |
-| the primary | `vfs.Serve`: fence by node epoch, shard epoch and hop count, dedup by request ID; then `vfs.Server` | everything: admission, identity, squash, ordering, open state, metadata, content |
+| every node | adapters, which sign clients in; `vfs.Gateway`; `vfs.Serve`; `vfs.Filesystem`; open state, journals, engine | — |
+| the gateway node | the adapter, then `vfs.Gateway`: looks the file's shard and primary up, calls the local filesystem if this node is the primary, else stamps the route envelope and sends the call | nothing: a wrong route is refused by the receiver ([§5.1](#5.1%20Gateways%20forward%20to%20the%20primary)) |
+| the primary | `vfs.Serve`: fence by node epoch, shard epoch and hop count, dedup by request ID; then `vfs.Filesystem` | everything: admission, identity, squash, ordering, open state, metadata, content |
 
 ```text
- adapter ─► vfs.Gateway ─┬─ local primary ───────────────────────────► vfs.Server
-                         └─ envelope ─► transport ─► vfs.Serve ──────► vfs.Server
+ adapter ─► vfs.Gateway ─┬─ local primary ───────────────────────────► vfs.Filesystem
+                         └─ envelope ─► transport ─► vfs.Serve ──────► vfs.Filesystem
                                                     (fence, dedup)   (decides: open state,
                                                                       metadata, engine)
 ```
@@ -138,7 +138,7 @@ and costs nothing to defer ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%2
 2. P1's gateway looks up the file's shard (A) and A's primary (S1) in its cache
    of shard records, and forwards the write, stamped with the shard and epoch it
    expects.
-3. At S1, `vfs.Serve` checks S1 is still A's primary at that epoch; S1's server
+3. At S1, `vfs.Serve` checks S1 is still A's primary at that epoch; S1's filesystem
    checks alice's open and the locks others hold, stages the write in its
    journal and copies it to S2 and S3 ([RFC 10](rfc-10-journal-replication.md)).
 4. When all three hold it, S1 answers OK, and P1 passes it to alice-pc.
@@ -967,9 +967,9 @@ File protocols carry operations on many files over one connection and cannot
 redirect a client per file, so the gateway node's `vfs.Gateway` routes each
 operation, and does nothing else: it authenticates, admits, maps, squashes and
 orders nothing, and calls neither open state, the metadata store nor the engine
-([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)):
+([RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides)):
 
-![The cut is vfs.Service: on the gateway node an adapter signs in and calls vfs.Gateway, which decides nothing; the gateway either calls the local vfs.Server or stamps an envelope (request ID, shard and epoch, node and node epoch, hop 0) and sends it over vfs.Transport to vfs.Serve at the primary, which checks the fence and dedup; vfs.Server at the primary then decides admission, identity, squash and ordering and calls open state, the metadata store and the engine, while the legend gives the reasons the cut is not under the VFS](img/rfc15-cut.svg)
+![The cut is vfs.Service: on the gateway node an adapter signs in and calls vfs.Gateway, which decides nothing; the gateway either calls the local vfs.Filesystem or stamps an envelope (request ID, shard and epoch, node and node epoch, hop 0) and sends it over vfs.Transport to vfs.Serve at the primary, which checks the fence and dedup; vfs.Filesystem at the primary then decides admission, identity, squash and ordering and calls open state, the metadata store and the engine, while the legend gives the reasons the cut is not under the VFS](img/rfc15-cut.svg)
 
 - it looks up the shard of the handle the operation names, and the shard's
   primary, through `vfs.Router` over a cache of shard records read from the
@@ -983,7 +983,7 @@ orders nothing, and calls neither open state, the metadata store nor the engine
   count**;
 - the receiver's `vfs.Serve` refuses the call if the epoch is not its current
   one or if the sender's node epoch has been fenced, and answers a retry from
-  the dedup table below; only then does the primary's `vfs.Server` see the
+  the dedup table below; only then does the primary's `vfs.Filesystem` see the
   call, refuse it with `ErrWrongShard` if the file's recorded shard is not the
   one named, and otherwise decide it. The
   gateway re-reads the shard record and retries with backoff
@@ -1058,7 +1058,7 @@ installation settings ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%
 > or by brief gateway losses that trip the delay.
 
 On one node there is no gateway and no receive side: the adapters call the
-node's `vfs.Server` directly.
+node's `vfs.Filesystem` directly.
 
 ### 5.2 Clients that can route themselves
 
@@ -1100,7 +1100,7 @@ one round trip and no bytes.
 > decision: the gateway forwards every read to the primary and serves none
 > itself, because choosing to serve one locally would be a decision at the
 > gateway. A read off the primary is therefore served only by a node's
-> `vfs.Server` that the primary's answer names, and that path is not built yet
+> `vfs.Filesystem` that the primary's answer names, and that path is not built yet
 > ([§15](#15.%20Open%20questions)). Overturned when the primary's read bandwidth
 > is measured as the limit on a shard with idle replicas.
 
@@ -1700,7 +1700,7 @@ a claim or address mark waited out the claim hold.
 
 1. **Follow-the-writer defaults.** The window, share and dwell in [§3.3](#3.3%20The%20primary%20follows%20the%20writer) are
    proposals, to be tuned from measured workloads.
-2. **Reads off the primary** ([§6](#6.%20Reads%20on%20other%20nodes)): how the primary's server
+2. **Reads off the primary** ([§6](#6.%20Reads%20on%20other%20nodes)): how the primary's filesystem
    names another node to serve a read — a redirect the gateway follows, or a
    shared read grant per extent revoked before a write is accepted over it — so
    that the gateway still decides nothing. Taken up if the primary's read

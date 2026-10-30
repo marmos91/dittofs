@@ -423,7 +423,7 @@ thin with four rules:
    a handler is one function that makes one service call (§4.3). Neither holds
    a connection.
 4. **An interface only where there are two implementations.** `vfs.Service`
-   (the server, the gateway, the recording fake, the null service), the authenticator (the
+   (the filesystem, the gateway, the recording fake, the null service), the authenticator (the
    local store, a domain, a fake), a protocol and its stages (NFS's RPC
    protocol, SMB), a sidecar (§3.5). Everything else is a concrete type.
 
@@ -817,7 +817,7 @@ package core // internal/adapter/core
 // A field is an interface where it has two implementations, a concrete type
 // where it has one.
 type Deps struct {
-	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the server or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Pools   *resources.Pools  // RFC 24 §2.3: receive, reply, connection state
 	Metrics *metrics.Registry // RFC 25 §2
 	Logger  *slog.Logger
@@ -1210,7 +1210,7 @@ squashing, or decide that a principal is privileged. Those are the service's,
 per share, by [RFC 18 §6](rfc-18-identity.md#6.%20Resolution%20per%20share)'s
 resolution. Where the handshake itself needs a directory — verifying an NTLM
 response, a Kerberos ticket against a keytab — the adapter calls the service's
-`SignIn`, which the server delegates to the authentication interface RFC 18
+`SignIn`, which the filesystem delegates to the authentication interface RFC 18
 defines ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations),
 [RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), and
 holds only the result in its security context. A handshake that fails is
@@ -1724,7 +1724,7 @@ adapter each entry point is one handler and one call:
 **Finding it in the code.** Each entry is a file named after its wire
 operation, and the entry methods — `Root`, `SecInfo`, `ListShares` — are called
 from those files and nowhere else in an adapter. So "what runs when a client mounts" is one search for the method,
-which lands on one handler, whose one call leads into the service's server ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
+which lands on one handler, whose one call leads into the service's filesystem ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
 where resolution, admission and the pseudo-filesystem are. The import test
 (§7.1) keeps it so: it lists every call of an entry method from adapter code
 and fails on one outside the files above, so a second path to a share — how

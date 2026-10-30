@@ -444,9 +444,9 @@ closes nothing it was handed. Its consumers get only the interfaces they call:
 
 | Interface | Consumer | Handed as |
 | --- | --- | --- |
-| `Resolver` (§6.1) | `*vfs.Server`, for admission | `vfs.Deps.Identity` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) |
-| `Authenticator` (§3.1) | `*vfs.Server`, behind `vfs.Service`'s `SignIn` | `vfs.Deps.Auth` |
-| `Identities` (§4.1) | `*vfs.Server`, behind `vfs.Service`'s `Spell` and `Find` | `vfs.Deps.Names` |
+| `Resolver` (§6.1) | `*vfs.Filesystem`, for admission | `vfs.Deps.Identity` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) |
+| `Authenticator` (§3.1) | `*vfs.Filesystem`, behind `vfs.Service`'s `SignIn` | `vfs.Deps.Auth` |
+| `Identities` (§4.1) | `*vfs.Filesystem`, behind `vfs.Service`'s `Spell` and `Find` | `vfs.Deps.Names` |
 | `APISignIn`, `TokenVerifier` (§8.1) | the management API | its `Deps` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) |
 | none | the adapters, which reach sign-in and naming only through `vfs.Service` ([RFC 20 §4.4](rfc-20-adapters.md#4.4%20Identity)) | — |
 
@@ -463,12 +463,12 @@ so a gateway bug becomes a refusal, not an impersonation. It resolves with its
 own caches and re-reads the bound principal's record (§6.1), so a disable
 reaches calls forwarded from every node.
 
-> decision: identity is one component shared by `*vfs.Server` and the
+> decision: identity is one component shared by `*vfs.Filesystem` and the
 > management API, not part of `vfs`. The API signs in over no file protocol, so
 > a sign-in path inside `vfs` would have the API depend on the filesystem
 > service; a handshake round is per connection and acts on no share; and
 > identity has its own suite (§10), run without a filesystem. Overturned if the
-> API stops calling identity, leaving `*vfs.Server` the only consumer; identity
+> API stops calling identity, leaving `*vfs.Filesystem` the only consumer; identity
 > then folds into `internal/vfs`.
 
 ```go
@@ -512,7 +512,7 @@ would write (§2.2).
 
 **Start and stop.** No settings reach `New`. The node reads the records at
 start and hands identity its first `State` through `Apply`, before `Start`. It
-stops identity after `*vfs.Server` and the management API, since a drain still
+stops identity after `*vfs.Filesystem` and the management API, since a drain still
 delivers calls that resolve and the API checks an account on every call; the
 order is [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s.
 
@@ -554,7 +554,7 @@ neither identity package. The NTLM and SPNEGO wire code is
 ### 3.1 The authentication interface
 
 Adapters run handshakes; this interface does the parts that need a secret or a
-directory. Its one caller is `*vfs.Server`, which passes `vfs.Service`'s
+directory. Its one caller is `*vfs.Filesystem`, which passes `vfs.Service`'s
 `SignIn` straight through, on the node holding the connection
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)). Signatures are indicative:
 
@@ -562,7 +562,7 @@ directory. Its one caller is `*vfs.Server`, which passes `vfs.Service`'s
 package identity // pkg/identity
 
 // Authenticator verifies one handshake round. It is the same shape as
-// vfs.Principals.SignIn, so the server passes it through.
+// vfs.Principals.SignIn, so the filesystem passes it through.
 type Authenticator interface {
 	SignIn(ctx context.Context, step SignInStep) (SignInResult, error)
 }
@@ -919,7 +919,7 @@ Mapping runs in two directions, and both use the same records:
   owner and group, an ACL entry's principal, a quota entry. It reads the
   principal's record.
 
-`*vfs.Server` holds both as `Identities`, and `vfs.Service` exposes them to
+`*vfs.Filesystem` holds both as `Identities`, and `vfs.Service` exposes them to
 adapters as `Spell` and `Find`
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so an adapter asks and never
 decides:
@@ -1295,7 +1295,7 @@ guards:
 
 Resolution is admission's step 4
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)). It runs
-in `*vfs.Server`, at the primary, on every call the caller cache (§7.1) does not
+in `*vfs.Filesystem`, at the primary, on every call the caller cache (§7.1) does not
 answer, after the share's state, `MinProof`, `MinProtection` and client rules
 have admitted the call, and before
 [RFC 19](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order) decides
@@ -1376,7 +1376,7 @@ type Claims struct {
 // kind, the protection and the claims.
 func (id Identity) Key() ProofKey
 
-// Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Server is its only caller.
+// Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Filesystem is its only caller.
 // p is the share's policy, read in one snapshot (RFC 16 §3's SharePolicy);
 // readOnly says admission's step 3 narrowed the call to read-only.
 type Resolver interface {
@@ -1939,7 +1939,7 @@ run as one table-driven test over (proof kind × squash × grant × no file
 spelling) against a fake store; `NewHashes` is a pure function with a table of
 its own.
 
-**Who fakes what.** `*vfs.Server`'s unit tests fake identity with
+**Who fakes what.** `*vfs.Filesystem`'s unit tests fake identity with
 `identitytest.Static`. Adapter tests fake only `vfs.Service`, sign-in included
 ([RFC 20 §7](rfc-20-adapters.md#7.%20Tests)), never identity. The management
 API's sign-in is tested against the real identity server, called directly
@@ -1955,7 +1955,7 @@ Each slice ships alone, behind the one before it, and deletes what it replaces.
 | 1 | the pure packages: the `pkg/identity` value types and `Key()`, the SID codec, owner strings, the closure walk, `NewHashes`, the throttle, each with its unit and fuzz tests | — | — |
 | 2 | the store: `Minter` with allocation inside its transaction, the uid, gid and RID counters, `PGEN`, the well-known IDs including root, `SharePolicy` (RFC 16) | — | slice 1 |
 | 3 | SIDs: today's uid-derived SIDs written once as stored values, read beside the derived ones in a shadow pass that logs every disagreement, then switched, so no SID changes (ID4) | RID derivation from a uid | slice 2 |
-| 4 | resolution in `*vfs.Server` ([RFC 17 §9](rfc-17-vfs.md#9.%20Migration) slice 2), run in shadow beside today's resolver until their callers agree, then switched: squash `none`/`root`/`all`, stored `none` grants, one caller cache | the NFS share-permission resolver, the NFSv3 auth-context cache, SID share permissions, `default_permission` | slices 2, 3 |
+| 4 | resolution in `*vfs.Filesystem` ([RFC 17 §9](rfc-17-vfs.md#9.%20Migration) slice 2), run in shadow beside today's resolver until their callers agree, then switched: squash `none`/`root`/`all`, stored `none` grants, one caller cache | the NFS share-permission resolver, the NFSv3 auth-context cache, SID share permissions, `default_permission` | slices 2, 3 |
 | 5 | the authenticator behind `SignIn`: Kerberos with the PAC binding, NTLM with the MIC, re-authentication, logon events | the five-domain NTLM retry; the RPCSEC_GSS "unmapped → nobody" path | slice 4 |
 | 6 | the directory client and its cache with stale grace and verified TLS; `TokenVerifier` and OpenID Connect | the resolver cache's error TTL; `allow_plaintext` | slice 4 |
 

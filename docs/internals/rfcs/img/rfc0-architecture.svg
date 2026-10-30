@@ -43,7 +43,7 @@
   <rect x="110" y="142" width="770" height="60" rx="5" class="vfs"/>
   <text x="124" y="165" class="h">filesystem service — vfs.Service (RFC 17)</text>
   <text x="124" y="183" class="s">open, read, write, commit, lookup, readdir, attributes, locks, grants, watches, statfs</text>
-  <text x="124" y="197" class="s">vfs.Server decides at the primary: authorise → open state → quota → content · in a cluster vfs.Gateway forwards there (RFC 15)</text>
+  <text x="124" y="197" class="s">vfs.Filesystem decides at the primary: authorise → open state → quota → content · in a cluster vfs.Gateway forwards there (RFC 15)</text>
 
   <path d="M200,204 L200,224" class="arr"/>
   <path d="M400,204 L400,224" class="arr"/>
@@ -87,7 +87,7 @@
   <text x="744" y="373" class="h">remote tier</text>
   <text x="744" y="394" class="s">objects (RFC 4, 5)</text>
 
-  <text x="110" y="446" class="l">Single node: adapters call vfs.Server directly, every arrow a local call. Each shard has one primary.</text>
+  <text x="110" y="446" class="l">Single node: adapters call vfs.Filesystem directly, every arrow a local call. Each shard has one primary.</text>
   <text x="110" y="466" class="l">Cluster: every node runs all of this; vfs.Gateway forwards a call to the file's primary, over one replicated KV.</text>
   <text x="110" y="486" class="s">Adapters hold only vfs.Service. Nothing below the service imports an adapter; callbacks go up through interfaces adapters implement.</text>
 </svg>
