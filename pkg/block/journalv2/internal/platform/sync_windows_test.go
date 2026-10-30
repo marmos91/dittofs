@@ -414,6 +414,71 @@ func expectFlush(t *testing.T, log []call, h windows.Handle, n int) {
 	}
 }
 
+// expectSyncDir fails t unless log is exactly: dir opened through createFile
+// as an existing directory with backup semantics, for writing, sharing reads,
+// writes and deletes; then flushes flushFileBuffers calls on that handle; then
+// that handle closed.
+func expectSyncDir(t *testing.T, log []call, dir string, flushes int) {
+	t.Helper()
+
+	if len(log) != flushes+2 || log[0].op != "createFile" || log[len(log)-1].op != "closeHandle" {
+		t.Fatalf(
+			"want createFile, %d flushFileBuffers and closeHandle of the directory, got %v",
+			flushes,
+			log,
+		)
+	}
+
+	open, closed := log[0], log[len(log)-1]
+
+	if open.path != dir {
+		t.Fatalf("%v: want %s opened", open, dir)
+	}
+
+	if open.attrs&windows.FILE_FLAG_BACKUP_SEMANTICS == 0 {
+		t.Fatalf(
+			"%v: want FILE_FLAG_BACKUP_SEMANTICS, without which a directory does not open",
+			open,
+		)
+	}
+
+	if open.createmode != windows.OPEN_EXISTING {
+		t.Fatalf("%v: want OPEN_EXISTING", open)
+	}
+
+	// FlushFileBuffers needs write access to the handle.
+	if open.access&windows.GENERIC_WRITE == 0 {
+		t.Fatalf("%v: want GENERIC_WRITE", open)
+	}
+
+	for _, bit := range []struct {
+		name string
+		bit  uint32
+	}{
+		{"FILE_SHARE_READ", windows.FILE_SHARE_READ},
+		{"FILE_SHARE_WRITE", windows.FILE_SHARE_WRITE},
+		{"FILE_SHARE_DELETE", windows.FILE_SHARE_DELETE},
+	} {
+		if open.share&bit.bit == 0 {
+			t.Errorf(
+				"%v: want %s, so the open refuses no other open of the directory",
+				open,
+				bit.name,
+			)
+		}
+	}
+
+	if closed.handle != open.handle {
+		t.Fatalf("%v: want the handle %v returned closed", closed, open)
+	}
+
+	for _, c := range log[1 : len(log)-1] {
+		if c.op != "flushFileBuffers" || c.handle != open.handle {
+			t.Fatalf("%v: want flushFileBuffers on the handle %v returned", c, open)
+		}
+	}
+}
+
 // expectPathError fails t unless err is itself an *fs.PathError wrapping
 // errno and naming path, the shape the platform's own errors take when one
 // thing failed.
@@ -431,9 +496,31 @@ func expectPathError(t *testing.T, err error, errno syscall.Errno, path string) 
 	}
 }
 
-// TestSyncCalls checks the call each Sync makes on Windows (RFC 28 Appendix
+// hasPathError reports whether err is, or joins, an *fs.PathError wrapping
+// errno and naming path.
+func hasPathError(err error, errno syscall.Errno, path string) bool {
+	if pe, ok := err.(*fs.PathError); ok {
+		return errors.Is(pe.Err, errno) && pe.Path == path
+	}
+
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range j.Unwrap() {
+			if hasPathError(e, errno, path) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// TestSyncCalls checks the call each sync makes on Windows (RFC 28 Appendix
 // A: "`FlushFileBuffers` is the sync"): one FlushFileBuffers on the file's own
-// handle per Sync, made inside the file's Control callback.
+// handle per Sync, made inside the file's Control callback, and per SyncDir
+// one on a handle of the directory that SyncDir opens with backup semantics
+// and closes itself ("opening the directory with backup semantics and calling
+// `FlushFileBuffers` on it"). The calls are real, so on NTFS a SyncDir that
+// returns nil proves the directory handle's access is enough for the flush.
 func TestSyncCalls(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -462,6 +549,15 @@ func TestSyncCalls(t *testing.T) {
 			t.Fatalf("Sync %s: %v", step.name, err)
 		}
 	}
+
+	for range 2 {
+		err := o.SyncDir()
+		expectSyncDir(t, r.take(), dir, 1)
+
+		if err != nil {
+			t.Fatalf("SyncDir: %v", err)
+		}
+	}
 }
 
 // TestSyncError checks a failed sync is reported and not retried (RFC 1 §5.2:
@@ -486,5 +582,89 @@ func TestSyncError(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("second Sync: %v", err)
+	}
+}
+
+// TestSyncDirOpenError checks a directory that fails to open is reported with
+// the open's error alone, and that nothing is flushed or closed.
+func TestSyncDirOpenError(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+
+	r.failNext("createFile", windows.ERROR_ACCESS_DENIED)
+	err := o.SyncDir()
+	log := r.take()
+
+	if len(log) != 1 || log[0].op != "createFile" {
+		t.Fatalf("want only the failed createFile, got %v", log)
+	}
+
+	expectPathError(t, err, windows.ERROR_ACCESS_DENIED, dir)
+}
+
+// TestSyncDirFlushError is TestSyncError for SyncDir: a failed flush of the
+// directory is returned alone, after exactly one flush, the handle is still
+// closed, and the next SyncDir makes exactly one new flush.
+func TestSyncDirFlushError(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+
+	r.failNext("flushFileBuffers", windows.ERROR_IO_DEVICE)
+	err := o.SyncDir()
+	expectSyncDir(t, r.take(), dir, 1)
+	expectPathError(t, err, windows.ERROR_IO_DEVICE, dir)
+
+	err = o.SyncDir()
+	expectSyncDir(t, r.take(), dir, 1)
+
+	if err != nil {
+		t.Fatalf("second SyncDir: %v", err)
+	}
+}
+
+// TestSyncDirCloseError checks a close error after a good flush fails the
+// SyncDir with the close's error alone: a handle that does not close was not
+// the one the flush was meant for.
+func TestSyncDirCloseError(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+
+	r.failNext("closeHandle", windows.ERROR_INVALID_HANDLE)
+	err := o.SyncDir()
+	expectSyncDir(t, r.take(), dir, 1)
+	expectPathError(t, err, windows.ERROR_INVALID_HANDLE, dir)
+}
+
+// TestSyncDirFlushAndCloseError checks that when both the flush and the close
+// of the directory fail, SyncDir returns both errors, each an *fs.PathError
+// naming the directory, and makes no further call.
+func TestSyncDirFlushAndCloseError(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+
+	r.failNext("flushFileBuffers", windows.ERROR_IO_DEVICE)
+	r.failNext("closeHandle", windows.ERROR_INVALID_HANDLE)
+	err := o.SyncDir()
+	expectSyncDir(t, r.take(), dir, 1)
+
+	if !hasPathError(err, windows.ERROR_IO_DEVICE, dir) ||
+		!hasPathError(err, windows.ERROR_INVALID_HANDLE, dir) {
+		t.Fatalf(
+			"got %v, want the flush's and the close's errors, each an *fs.PathError naming %s",
+			err,
+			dir,
+		)
 	}
 }
