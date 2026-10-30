@@ -131,16 +131,10 @@ type Identity struct {
 // decided. The call's Client is per call, so it is never cached, and two
 // clients proving the same user never pass for each other.
 //
-// decision: an NFSv4.0 call has no session; its Client is the clientid its
-// stateid names, which the adapter checks against the principal
-// SETCLIENTID_CONFIRM recorded, never against the address it came from. The
-// recorded address is where callbacks go, nothing more, so a client that
-// reconnects from a new address keeps its opens. Under AUTH_SYS the principal
-// is a claimed uid, so any host sending that uid and the clientid passes for
-// the client; an address check would not close that, an address being as
-// easy to claim. The check is the NFSv4 adapter's, not the service's, and
-// stays this weak for AUTH_SYS; a share that must not trust it requires a
-// proof above ProofClaimed.
+// An NFSv4.0 call has no session. Its Client is the client on the state its
+// stateid resolves to or, for an operation that names an open or lock owner,
+// that owner's client. NFSv4.0 is offered no delegation, so checking that
+// client against the state's opener is the whole check.
 type Call struct {
 	Identity Identity
 	Protocol Protocol
