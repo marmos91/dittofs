@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
@@ -56,6 +57,112 @@ func FuzzFormatFile(f *testing.F) {
 		version := errors.Is(err, ErrUnknownVersion)
 		if damaged == version {
 			t.Fatalf("DecodeFormatFile = %v, want an error matching exactly one of ErrDamaged and ErrUnknownVersion", err)
+		}
+	})
+}
+
+// FuzzSegmentHeader drives the decoder with any bytes. Whatever arrives, it
+// either decodes or matches exactly one outcome class, never a panic; and
+// whatever decodes holds exactly the bytes' fields: on a clean decode
+// encoding it again reproduces the input, and on a foreign one the header is
+// returned filled — its identity, id, predecessor and stream match the
+// input's bytes, though its reserved bytes, which the header has no field
+// for, are never reproduced.
+func FuzzSegmentHeader(f *testing.F) {
+	pred := readGolden(f, "segheader_pred")
+	nopred := readGolden(f, "segheader_nopred")
+
+	f.Add(pred)
+	f.Add(nopred)
+	f.Add(slices.Clone(pred[:47]))
+	f.Add(append(slices.Clone(pred), 0x00))
+
+	v2 := slices.Clone(pred)
+	binary.LittleEndian.PutUint16(v2[4:6], 2)
+	f.Add(v2)
+
+	other := testSegmentHeader
+	other.Identity = otherIdentity
+	f.Add(AppendSegmentHeader(nil, other))
+
+	// A foreign header whose reserved bytes are not zero: its checksum
+	// verifies, its identity is another journal's, and its reserved bytes
+	// are never judged here, so it must be told apart as foreign with the
+	// fields its bytes carry.
+	foreignReserved := AppendSegmentHeader(nil, other)
+	copy(foreignReserved[6:8], []byte{0xff, 0xff})
+	rechecksumHeader(foreignReserved)
+	f.Add(foreignReserved)
+
+	// This journal's own header with non-zero reserved bytes, and one with
+	// an id of zero: both verify their checksum, so both reach the field
+	// checks and are refused as damage, never as foreign.
+	ownReserved := AppendSegmentHeader(nil, testSegmentHeader)
+	copy(ownReserved[6:8], []byte{0xff, 0xff})
+	rechecksumHeader(ownReserved)
+	f.Add(ownReserved)
+
+	ownZero := AppendSegmentHeader(nil, testSegmentHeader)
+	clear(ownZero[24:32])
+	rechecksumHeader(ownZero)
+	f.Add(ownZero)
+
+	f.Add([]byte{})
+	f.Add(make([]byte, SegmentHeaderSize))
+
+	f.Fuzz(func(t *testing.T, in []byte) {
+		h, err := DecodeSegmentHeader(in, testIdentity)
+
+		if err == nil {
+			if len(in) != SegmentHeaderSize {
+				t.Fatalf("decoded %d bytes, want %d", len(in), SegmentHeaderSize)
+			}
+			if got, want := binary.LittleEndian.Uint32(in[44:48]), wantCRC(in[0:44]); got != want {
+				t.Fatalf("decoded bytes whose checksum is 0x%08x, want the CRC32C of [0,44): 0x%08x", got, want)
+			}
+			// A clean decode is by construction this journal's own: the
+			// identity matched, and a header of no segment is damage.
+			if h.Identity != testIdentity {
+				t.Fatalf("decoded a header under identity % x, want the identity it was opened with % x", h.Identity, testIdentity)
+			}
+			if h.ID == 0 {
+				t.Fatalf("decoded a header with a segment id of 0, want 1 or more")
+			}
+			if got := AppendSegmentHeader(nil, h); !slices.Equal(got, in) {
+				t.Fatalf("AppendSegmentHeader =\n% x\nwant the input\n% x", got, in)
+			}
+			return
+		}
+
+		if errors.Is(err, ErrForeign) {
+			// A foreign header is returned filled, so recovery can report
+			// whose it is: every field must say what the bytes hold, and
+			// the identity it names is never the one it was opened with.
+			if h.Identity == testIdentity {
+				t.Fatalf("a header reported foreign under the identity it was opened with")
+			}
+			if h.Identity != core.JournalID(in[8:24]) {
+				t.Fatalf("a foreign header returned the identity % x, want the input's % x", h.Identity, in[8:24])
+			}
+			if h.ID != core.SegmentID(binary.LittleEndian.Uint64(in[24:32])) {
+				t.Fatalf("a foreign header returned segment id %d, want the input's %d", h.ID, core.SegmentID(binary.LittleEndian.Uint64(in[24:32])))
+			}
+			if h.Predecessor != core.SegmentID(binary.LittleEndian.Uint64(in[32:40])) {
+				t.Fatalf("a foreign header returned predecessor %d, want the input's %d", h.Predecessor, core.SegmentID(binary.LittleEndian.Uint64(in[32:40])))
+			}
+			if h.Stream != binary.LittleEndian.Uint32(in[40:44]) {
+				t.Fatalf("a foreign header returned stream %d, want the input's %d", h.Stream, binary.LittleEndian.Uint32(in[40:44]))
+			}
+		}
+
+		matched := 0
+		for _, class := range []error{ErrDamaged, ErrUnknownVersion, ErrForeign} {
+			if errors.Is(err, class) {
+				matched++
+			}
+		}
+		if matched != 1 {
+			t.Fatalf("DecodeSegmentHeader = %v, want an error matching exactly one of ErrDamaged, ErrUnknownVersion and ErrForeign", err)
 		}
 	})
 }
