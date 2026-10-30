@@ -78,6 +78,14 @@ suites:
         # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
         cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
+      # The journal index's allocation and memory checks and the profiler's heap checks, which
+      # skip under -race.
+      journal-index:
+        cmd: go test -timeout=5m ./pkg/block/journalv2/internal/index/ ./pkg/block/journalv2/journalv2test/prof/
+      # The index built with a bug planted in its split, which the model fuzz must find. The
+      # planted build breaks the package's other tests by design, so only this test runs.
+      journal-plant:
+        cmd: go test -tags=journalv2_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journalv2/internal/index/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:

@@ -101,18 +101,14 @@ jobs:
             ./internal/... \
             ./cmd/...
 
-      # The journal index's and the profiler's heap checks skip under -race,
-      # which the step above always uses, so both packages run again without
-      # it, and without -short so the 10^6-extent checks run. The second
-      # command builds the index with a bug planted in its split and runs
-      # only the test that requires the model-based fuzz to find it: the
-      # planted build is expected to break other tests of the package, hence
-      # the -run.
+      # The journal index's and the profiler's checks that skip under -race,
+      # and the planted-bug proof: options of the unit suite, run by dt so a
+      # run that finds no test fails rather than passing.
       - name: Run the journal index checks without -race
         if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: |
-          go test -count=1 -timeout=15m ./pkg/block/journalv2/internal/index/ ./pkg/block/journalv2/journalv2test/prof/
-          go test -count=1 -timeout=5m -tags journalv2_plant_split -run '^TestFuzzFindsPlantedSplit$' ./pkg/block/journalv2/internal/index/
+          test/harness/bin/dt run unit/journal-index --ci
+          test/harness/bin/dt run unit/journal-plant --ci
 
       - name: Upload coverage to Codecov
         if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
