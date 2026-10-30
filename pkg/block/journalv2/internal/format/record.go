@@ -183,7 +183,10 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 	binary.LittleEndian.PutUint32(dst[start+84:start+88], crc32cSeeded(seed, dst[bodyStart:]))
 	binary.LittleEndian.PutUint32(dst[start+92:start+96], crc32cSeeded(seed, dst[start:start+92]))
 
-	for len(dst)%8 != 0 {
+	// The padding lines the record up within its segment, not within dst:
+	// the caller's prefix is never a part of it, so it is counted from
+	// the record's own start.
+	for (len(dst)-start)%8 != 0 {
 		dst = append(dst, 0)
 	}
 	return dst
@@ -345,7 +348,7 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 			Share: core.ShareID(body[0:16]),
 			File:  core.NewFileID([16]byte(body[16:32])),
 			Off:   off,
-			AsOf:  core.Version{Counter: binary.LittleEndian.Uint64(body[40:48])},
+			AsOf:  core.Version{Counter: binary.LittleEndian.Uint64(body[48:56])},
 		}
 	case KindHold, KindUnhold, KindStamp:
 		out.Cut = core.SnapshotCut(binary.LittleEndian.Uint64(body[0:8]))
