@@ -955,24 +955,46 @@ func TestCrossingIntoAShareIsAudited(t *testing.T) {
 	}
 }
 
-// failKV fails the next View once armed: a store failing a read.
+// failKV fails the next View once armed: a store failing a read. With fails
+// set, a View or an Update fails with what fails answers for it, update set
+// for an Update.
 type failKV struct {
 	kv.KV
-	mu  sync.Mutex
-	err error
+	mu    sync.Mutex
+	err   error
+	fails func(update bool) error
 }
 
 func (f *failKV) arm(err error) { f.mu.Lock(); f.err = err; f.mu.Unlock() }
+
+// failing sets fails.
+func (f *failKV) failing(fails func(update bool) error) { f.mu.Lock(); f.fails = fails; f.mu.Unlock() }
 
 func (f *failKV) View(ctx context.Context, fn func(kv.Reader) error) error {
 	f.mu.Lock()
 	err := f.err
 	f.err = nil
+	if f.fails != nil && err == nil {
+		err = f.fails(false)
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	return f.KV.View(ctx, fn)
+}
+
+func (f *failKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	f.mu.Lock()
+	var err error
+	if f.fails != nil {
+		err = f.fails(true)
+	}
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return f.KV.Update(ctx, fn)
 }
 
 // A listing fails when a share's read fails, a store failure or an

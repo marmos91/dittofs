@@ -24,6 +24,8 @@ type fakeContent struct {
 	// truncating, when set, runs as Truncate is called, before it stages
 	// anything.
 	truncating func(entity.FileID)
+	// truncErr, when set, is every Truncate's answer, staging nothing.
+	truncErr error
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -73,6 +75,9 @@ func (c *fakeContent) Read(ctx context.Context, f entity.FileID, off int64, dst 
 func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64) error {
 	if c.truncating != nil {
 		c.truncating(f)
+	}
+	if c.truncErr != nil {
+		return c.truncErr
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
