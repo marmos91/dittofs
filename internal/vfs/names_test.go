@@ -196,7 +196,7 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 func TestTheLastUnlinkReleasesOnlyAFileNoOpenHolds(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
-	content := n.engine.(*fakeContent)
+	content := n.engine
 	held := n.create(t, n.admin, n.fs.Root, "held", vfs.CreateRegular)
 	free := n.create(t, n.admin, n.fs.Root, "free", vfs.CreateRegular)
 	for _, f := range []vfs.File{held.File, free.File} {
