@@ -252,6 +252,16 @@ type Opens interface {
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	// Releasing marks f as being released, before the service removes its
+	// bytes: ErrFileOpen while the table holds an open of f, a clone's hold
+	// included, and ErrReleasing while f is already marked, either changing
+	// nothing. While marked, an open of f is ErrReleasing, which the service
+	// answers as for a released file, stale. The service calls done once,
+	// true when the release committed, false when it aborted, and either
+	// ends the mark. It holds f's admission lock from Releasing to done, so
+	// no open lands between the check and the removal. The mark is not
+	// written: after a restart the stored pending release is run again.
+	Releasing(ctx context.Context, f FileKey) (done func(released bool), err error)
 	// CloneOpen holds src for the clone c names in the table: the durable
 	// open of no client the clone's first phase wrote in its transaction,
 	// which keeps src from release, holds no access, denies nothing, and
@@ -420,6 +430,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 		if r.Reclaim && !grace {
 			return t.reclaimHeld(e, who, r, &res)
+		}
+		if e.releasing {
+			return ErrReleasing
 		}
 		if e.pending != nil {
 			return ErrDeletePending
@@ -1292,6 +1305,55 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 		}
 	}
 	return recs, commit, nil
+}
+
+// decision: a second Releasing of a marked file is refused rather than
+// answered as the first, so the two never share one mark that either's done
+// would end under the other. Answer it idempotently if the service is found
+// to call it twice for one release.
+func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return nil, err
+	}
+	if _, begun := t.instance(f.Shard); !begun {
+		return nil, &DelayError{DelayFrozen} // its durable opens are not yet held
+	}
+	err := t.step(f.ID, func(e *entry) error {
+		switch {
+		case e.releasing:
+			return ErrReleasing
+		case len(e.opens) > 0:
+			return ErrFileOpen
+		}
+		e.releasing = true
+		e.states++ // the mark keeps the entry
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// A committed release drops the file from the table: a delegation or a
+	// lock state held with no open names a file that is gone.
+	done := func(released bool) {
+		_ = t.step(f.ID, func(e *entry) error {
+			if !e.releasing {
+				return nil
+			}
+			e.releasing = false
+			e.states--
+			if released {
+				for _, g := range e.grants {
+					t.dropGrant(e, g)
+				}
+				for _, ls := range e.lstates {
+					t.dropLockState(e, ls)
+				}
+			}
+			return nil
+		})
+	}
+	return done, nil
 }
 
 // nameByID indexes o by the ID it took for its record, so the record is

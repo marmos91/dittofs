@@ -291,6 +291,44 @@ func TestUnlinkMakesOpensDurable(t *testing.T) {
 	}
 }
 
+// A file is marked releasing only while it has no open, and the mark refuses
+// every open of it, and a second mark, until done ends it, whether the release
+// committed or aborted.
+func TestReleasingRefusesOpens(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	held := f.mustOpen(t, a, file, OpenRequest{Access: rd})
+	if _, err := f.Opens().Releasing(ctx, file); !errors.Is(err, ErrFileOpen) {
+		t.Fatalf("Releasing a file with an open: %v, want ErrFileOpen", err)
+	}
+	second, err := f.open(a, file, OpenRequest{Access: rd})
+	if err != nil {
+		t.Fatalf("an open after a refused Releasing: %v; the refusal marks nothing", err)
+	}
+	f.close(t, a, held)
+	f.close(t, a, second)
+
+	for _, released := range []bool{false, true} {
+		done, err := f.Opens().Releasing(ctx, file)
+		if err != nil {
+			t.Fatalf("Releasing a file with no open: %v", err)
+		}
+		if _, err := f.open(a, file, OpenRequest{Access: rd}); !errors.Is(err, ErrReleasing) {
+			t.Errorf("an open of a releasing file: %v, want ErrReleasing", err)
+		}
+		if _, err := f.Opens().Releasing(ctx, file); !errors.Is(err, ErrReleasing) {
+			t.Errorf("a second Releasing of a marked file: %v, want ErrReleasing", err)
+		}
+		done(released)
+		o, err := f.open(a, file, OpenRequest{Access: rd})
+		if err != nil {
+			t.Fatalf("an open after done(%v): %v; done ends the mark", released, err)
+		}
+		f.close(t, a, o)
+	}
+}
+
 // An open of a file with no entry is written durable whether or not this
 // table saw the unlink: after the entry was freed with its last open, and
 // after a restart.
@@ -823,5 +861,54 @@ func TestDowngradeMayNotWidenDeny(t *testing.T) {
 	o := f.mustOpen(t, n, anyFile(), OpenRequest{Access: rd | wr})
 	if _, err := f.Opens().Downgrade(ctx, n, refOf(o), Seqs{}, rd, wr); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a downgrade to a deny the open does not hold: %v, want ErrInvalid", err)
+	}
+}
+
+// Releasing waits while the file's shard is not begun, whose durable opens
+// are not yet held.
+func TestReleasingInAShardNotBegun(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.Opens().Releasing(ctx, in(9)); delayedFor(err) != DelayFrozen {
+		t.Errorf("Releasing in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
+	}
+}
+
+// A delegation or a lock state held with no open does not refuse a release.
+// An aborted release ends the mark though they keep the file's entry; a
+// committed one drops them, so neither is used on the released file.
+func TestReleasingWithStateButNoOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
+	file := anyFile()
+	o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
+	if d == nil {
+		t.Fatal("no delegation")
+	}
+	f.close(t, a, o)
+	if _, err := f.lock(a, file, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 1)}}); err != nil {
+		t.Fatalf("a lock with no open: %v", err)
+	}
+
+	done, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing with a delegation and a lock but no open: %v", err)
+	}
+	done(false)
+	again, err := f.open(a, file, OpenRequest{Access: rd})
+	if err != nil {
+		t.Fatalf("an open after an aborted release: %v; done ends the mark", err)
+	}
+	f.close(t, a, again)
+
+	if done, err = f.Opens().Releasing(ctx, file); err != nil {
+		t.Fatalf("Releasing again: %v", err)
+	}
+	done(true)
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write under the delegation of a released file: %v, want ErrBadState", err)
+	}
+	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l != nil {
+		t.Errorf("a lock test on a released file: %+v, %v; want no lock held", l, err)
 	}
 }
