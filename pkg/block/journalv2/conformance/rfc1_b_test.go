@@ -1394,20 +1394,27 @@ func TestRFC1B_NoVersionRepeats(t *testing.T) {
 	above("a draw once the limit was raised", d, last)
 }
 
-// TestRFC1B_FloorBuckets checks that deleting other files does not make a
-// fill of a file with no entry stale, while deleting and recreating the file
-// itself does.
+// TestRFC1B_FloorBuckets checks that deleting files outside a file's floor
+// bucket does not make a fill of that file stale, while deleting and
+// recreating the file itself does.
 //
-// decision: four other files are deleted, not 10^4. A file with no entry is
-// checked against its bucket, and 10^4 deletes over 4,096 buckets raise X's
-// with probability about 91%, so a correct journal would refuse X's fill. Four
-// raise it with probability about 0.1%, and the file IDs are fixed, so a
-// journal whose hash puts one of them in X's bucket fails every run rather
-// than now and then. That holds for a hash fixed across opens; nothing
-// requires one, and a hash seeded per open makes the 0.1% a flake. Overturned
-// if the bucket of a file becomes observable, so the check can pick files
-// that miss X's.
+// X has no entry, so a read of it reports its floor bucket as asOf. A first
+// pass writes, deletes and settles 10^4 other files, reading X after each, and
+// counts the deletes that raised X's asOf: at most 15 may, about 2.4 being
+// expected over 4,096 buckets, while one journal-wide floor raises it on every
+// delete. A second pass repeats the others, leaving out those that raised it,
+// so every delete in it lands outside X's bucket and X's fill must be
+// accepted whatever the bucket hash.
+//
+// decision: the bound of 15 raises is the one check here a correct journal
+// can fail. Random files exceed it less than once in 10^8 runs, and the file
+// IDs are fixed, so a hash fixed across opens that puts more than 15 of them in
+// X's bucket fails every run rather than now and then; a hash seeded per open
+// makes it that rare flake. Overturned if a journal's hash is shown to put
+// more than 15 of these files in one bucket: pick other IDs, not a larger
+// bound, since the bound is what tells buckets from a single floor.
 func TestRFC1B_FloorBuckets(t *testing.T) {
+	const others, maxRaises = 10000, 15
 	f := journalv2test.New(t)
 	h, other := f.Share(0), f.Share(1)
 	v, err := f.J.Draw()
@@ -1424,28 +1431,50 @@ func TestRFC1B_FloorBuckets(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(missing) != 1 {
-			t.Fatalf("a read of a file never written reports missing %+v, want it all", missing)
+			t.Fatalf("a read of a file the journal holds nothing of reports missing %+v, want it all", missing)
 		}
 		return as
 	}
-	x, y := journalv2test.File(0), journalv2test.File(1)
-	xAsOf, yAsOf := asOf(x), asOf(y)
-
-	for i := range 4 {
+	churn := func(i int) {
+		t.Helper()
 		id := journalv2test.File(100 + i)
 		write(t, other, id, 0, []byte{byte(i)})
 		d, err := other.Delete(t.Context(), id)
 		stub(t, "Delete", err)
 		if err != nil {
-			t.Fatalf("delete file %d: %v", i, err)
+			t.Fatalf("delete other file %d: %v", i, err)
 		}
 		other.Settle(id, d)
+	}
+	x, y := journalv2test.File(0), journalv2test.File(1)
+
+	raised := make(map[int]bool)
+	prev := asOf(x)
+	for i := range others {
+		churn(i)
+		cur := asOf(x)
+		if c := cur.Compare(prev); c < 0 {
+			t.Fatalf("X's asOf fell from %+v to %+v after deleting other file %d", prev, cur, i)
+		} else if c > 0 {
+			raised[i] = true
+			if len(raised) > maxRaises {
+				t.Fatalf("X's asOf rose after %d of the first %d deletes of other files, want at most %d: deletes are not confined to X's floor bucket", len(raised), i+1, maxRaises)
+			}
+		}
+		prev = cur
+	}
+
+	xAsOf := asOf(x)
+	for i := range others {
+		if !raised[i] {
+			churn(i)
+		}
 	}
 	p := pattern("fill-x", 4096)
 	err = h.Fill(t.Context(), x, 0, p, xAsOf, v)
 	stub(t, "Fill", err)
 	if err != nil {
-		t.Fatalf("a fill of a file with no entry, after deletes of others: %v", err)
+		t.Fatalf("a fill of a file with no entry, after %d deletes outside its floor bucket: %v", others-len(raised), err)
 	}
 	buf := make([]byte, len(p))
 	_, missing, _, _, err := h.ReadAt(t.Context(), x, 0, buf)
@@ -1454,6 +1483,7 @@ func TestRFC1B_FloorBuckets(t *testing.T) {
 		t.Fatalf("the accepted fill reads missing %+v (%v), want its bytes served", missing, err)
 	}
 
+	yAsOf := asOf(y)
 	d, err := h.Delete(t.Context(), y)
 	stub(t, "Delete", err)
 	if err != nil {
