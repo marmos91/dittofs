@@ -2407,8 +2407,8 @@ unwritten space. A segment **sealed full** is the exception: it is never
 truncated, since little is left past its footer and returning it frees no
 block, and it keeps its cap, accounted at it, so that once retired it can be
 recycled as a full-size, allocated spare; whether it is recycled or unlinked is
-decided at its retirement, by the spare pool's target then
-([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). A
+decided at its retirement, by the spare pool's target then, and a recycle that
+fails is an unlink ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). A
 segment left after a failed sync, or ended by a failed append or by recovery
 without a seal, is not sealed ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) and keeps its cap until
 unlinked. No record lies past the trailer, so nothing
