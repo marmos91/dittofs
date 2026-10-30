@@ -58,20 +58,16 @@ type holder struct {
 	seq    uint32 // the state's current sequence; the first is 1
 }
 
-// mint issues a reference to a new piece of state of e's file, held by client
-// c, under that file's step. Its token is 64 bits read from Deps.Rand, outside
-// idx; a failed read mints nothing.
+// mintUnder issues a reference to a new piece of state of e's file, held by
+// client c, under that file's step. Its token is 64 bits read from Deps.Rand,
+// outside idx; a failed read mints nothing. under, if set, runs with idx held
+// once the token is free and before the reference is added: an error from it
+// adds nothing. A minted reference carries the low bits of its shard's grace
+// instance.
 //
 // ponytail: one mutex guards the reference index for every file, so mints and
 // resolves on different files serialise on it. Split it by shard like files
 // when step-wait time on unrelated files shows contention on idx.
-func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
-	return t.mintUnder(e, c, s, typ, nil)
-}
-
-// mintUnder is mint, running under, if set, with idx held once the token is
-// free and before the reference is added: an error from it adds nothing. A
-// minted reference carries the low bits of its shard's grace instance.
 func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
 	var b [8]byte
 	for {

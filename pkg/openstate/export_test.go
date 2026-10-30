@@ -220,3 +220,8 @@ func checked(t *testing.T, tab *Table) {
 		}
 	})
 }
+
+// mint is mintUnder with nothing run under idx.
+func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
+	return t.mintUnder(e, c, s, typ, nil)
+}
