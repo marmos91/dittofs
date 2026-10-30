@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -16,13 +17,21 @@ import (
 
 // call is one entry of a recorder's log.
 type call struct {
-	op   string // open, fsync, fdatasync or close
+	op   string // open, fsync, fdatasync, close, fallocate or pwrite
 	fd   int    // the descriptor acted on, or open's result; -1 for a failed open
 	path string // open: the path opened
-	mode int    // open: its flags
+	mode int    // open: its flags; fallocate: its mode
 
-	// fsync and fdatasync: the file the descriptor referred to at the call,
-	// so a sync on a stale or wrong descriptor is seen.
+	// fallocate: the range asked for. pwrite: the offset, the bytes asked
+	// for, the bytes the call reported written and whether every byte asked
+	// for was zero.
+	off, n  int64
+	asked   int
+	zero    bool
+	written int
+
+	// Every call but open and close: the file the descriptor referred to at
+	// the call, so a call on a stale or wrong descriptor is seen.
 	dev, ino uint64
 }
 
@@ -32,19 +41,43 @@ func (c call) String() string {
 		return fmt.Sprintf("open(%s, %#x) = %d", c.path, c.mode, c.fd)
 	case "close":
 		return fmt.Sprintf("close(%d)", c.fd)
+	case "fallocate":
+		return fmt.Sprintf(
+			"fallocate(%d, %#x, %d, %d) on dev %d ino %d",
+			c.fd,
+			c.mode,
+			c.off,
+			c.n,
+			c.dev,
+			c.ino,
+		)
+	case "pwrite":
+		return fmt.Sprintf(
+			"pwrite(%d, %d bytes, zero %t, %d) = %d on dev %d ino %d",
+			c.fd,
+			c.asked,
+			c.zero,
+			c.off,
+			c.written,
+			c.dev,
+			c.ino,
+		)
 	default:
 		return fmt.Sprintf("%s(%d) on dev %d ino %d", c.op, c.fd, c.dev, c.ino)
 	}
 }
 
 // recorder is a table that logs every call and makes it. An error queued for
-// an op is returned by its next call instead: open, fsync and fdatasync then
-// do not run, and close runs, as Linux releases the descriptor even when
-// close reports an error.
+// an op is returned by its next call instead: open, fsync, fdatasync,
+// fallocate and pwrite then do not run, and close runs, as Linux releases the
+// descriptor even when close reports an error. A short count queued for
+// pwrite makes its next call write only that many bytes, and a count of 0
+// makes it write nothing and report no error.
 type recorder struct {
-	mu   sync.Mutex
-	log  []call
-	fail map[string][]error // per op, what its next calls return, oldest first
+	mu    sync.Mutex
+	log   []call
+	fail  map[string][]error // per op, what its next calls return, oldest first
+	short []int              // what the next pwrite calls write at most, oldest first
 }
 
 // failNext makes the next calls of op return errs, one each, in order.
@@ -57,6 +90,30 @@ func (r *recorder) failNext(op string, errs ...error) {
 	}
 
 	r.fail[op] = append(r.fail[op], errs...)
+}
+
+// shortNext makes the next pwrite calls write at most ns bytes, one each, in
+// order.
+func (r *recorder) shortNext(ns ...int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.short = append(r.short, ns...)
+}
+
+// nextShort returns the count queued for the next pwrite, or -1.
+func (r *recorder) nextShort() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.short) == 0 {
+		return -1
+	}
+
+	n := r.short[0]
+	r.short = r.short[1:]
+
+	return n
 }
 
 // take returns the calls logged since the last take.
@@ -136,7 +193,72 @@ func (r *recorder) table() calls {
 
 			return err
 		},
+		fallocate: func(fd int, mode uint32, off, n int64) error {
+			c := call{
+				op:   "fallocate",
+				fd:   fd,
+				mode: int(mode),
+				off:  off,
+				n:    n,
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if err := r.add(c); err != nil {
+				return err
+			}
+
+			return unix.Fallocate(fd, mode, off, n)
+		},
+		pwrite: func(fd int, p []byte, off int64) (int, error) {
+			c := call{
+				op:    "pwrite",
+				fd:    fd,
+				off:   off,
+				asked: len(p),
+				zero:  !slices.ContainsFunc(p, nonZero),
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if r.queued("pwrite") {
+				return 0, r.add(c)
+			}
+
+			short := r.nextShort()
+
+			if short == 0 {
+				_ = r.add(c)
+
+				return 0, nil
+			}
+
+			if short > 0 && short < len(p) {
+				p = p[:short]
+			}
+
+			n, err := unix.Pwrite(fd, p, off)
+			c.written = max(n, 0)
+			_ = r.add(c)
+
+			return n, err
+		},
 	}
+}
+
+// nonZero reports whether b is not zero.
+func nonZero(b byte) bool {
+	return b != 0
+}
+
+// fdIdentity returns the device and inode the descriptor fd refers to, or
+// zeros where it refers to nothing.
+func fdIdentity(fd int) (dev, ino uint64) {
+	var st unix.Stat_t
+
+	if unix.Fstat(fd, &st) != nil {
+		return 0, 0
+	}
+
+	return uint64(st.Dev), st.Ino
 }
 
 func (r *recorder) sync(op string, fd int, real func(int) error) error {
@@ -145,10 +267,7 @@ func (r *recorder) sync(op string, fd int, real func(int) error) error {
 		fd: fd,
 	}
 
-	var st unix.Stat_t
-	if unix.Fstat(fd, &st) == nil {
-		c.dev, c.ino = uint64(st.Dev), st.Ino
-	}
+	c.dev, c.ino = fdIdentity(fd)
 
 	if err := r.add(c); err != nil {
 		return err

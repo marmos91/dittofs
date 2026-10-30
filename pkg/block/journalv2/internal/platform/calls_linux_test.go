@@ -31,6 +31,8 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"fsync", "unix.Fsync", got.fsync, unix.Fsync},
 		{"fdatasync", "unix.Fdatasync", got.fdatasync, unix.Fdatasync},
 		{"close", "unix.Close", got.close, unix.Close},
+		{"fallocate", "unix.Fallocate", got.fallocate, unix.Fallocate},
+		{"pwrite", "unix.Pwrite", got.pwrite, unix.Pwrite},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -56,10 +58,12 @@ func TestNoCallBesideTheTable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	constants := map[string]bool{
-		"O_RDONLY":    true,
-		"O_DIRECTORY": true,
-		"O_CLOEXEC":   true,
-		"EINTR":       true,
+		"O_RDONLY":                 true,
+		"O_DIRECTORY":              true,
+		"O_CLOEXEC":                true,
+		"EINTR":                    true,
+		"EINVAL":                   true,
+		"FALLOC_FL_ALLOCATE_RANGE": true,
 	}
 	raw := map[string]bool{
 		"golang.org/x/sys/unix": true,

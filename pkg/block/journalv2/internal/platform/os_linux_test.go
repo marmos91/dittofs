@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
 	"golang.org/x/sys/unix"
@@ -58,12 +57,13 @@ func TestConcurrentWriteAt(t *testing.T) {
 	}
 }
 
-// TestClosedFile checks Allocate on an open file is still not implemented,
+// TestClosedFile checks Allocate on an open file allocates through the table,
 // then that every operation on a closed file fails with an *fs.PathError
-// matching fs.ErrClosed and naming the file's full path, rather than reaching
-// whatever file has since reused the descriptor's number, and Sync makes no
-// system call. The file is kept reachable until the profiler's check, so the
-// *os.File finalizer cannot close a leaked descriptor first and hide the leak.
+// matching fs.ErrClosed and naming the file's full path, Allocate's with the
+// op fallocate, rather than reaching whatever file has since reused the
+// descriptor's number, and Sync and Allocate make no system call. The file
+// is kept reachable until the profiler's check, so the *os.File finalizer
+// cannot close a leaked descriptor first and hide the leak.
 func TestClosedFile(t *testing.T) {
 	var f storage.File
 	t.Cleanup(func() {
@@ -78,8 +78,11 @@ func TestClosedFile(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := f.Allocate(0, 1); !errors.Is(err, core.ErrNotImplemented) {
-		t.Fatalf("Allocate on an open file: %v, want core.ErrNotImplemented", err)
+	err = f.Allocate(0, 1)
+	expectAllocate(t, r.take(), filepath.Join(dir, "a"), 0, 1, 1)
+
+	if err != nil {
+		t.Fatalf("Allocate on an open file: %v", err)
 	}
 
 	if err := f.Close(); err != nil {
@@ -117,6 +120,8 @@ func TestClosedFile(t *testing.T) {
 			t.Errorf("%s after Close: %v (%T), want an *fs.PathError matching fs.ErrClosed", op.name, err, err)
 		} else if want := filepath.Join(dir, "a"); pe.Path != want {
 			t.Errorf("%s after Close: %v names %s, want the full path %s", op.name, err, pe.Path, want)
+		} else if op.name == "Allocate" && pe.Op != "fallocate" {
+			t.Errorf("Allocate after Close: %v has op %q, want fallocate", err, pe.Op)
 		}
 	}
 
