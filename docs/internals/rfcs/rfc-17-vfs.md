@@ -1827,7 +1827,13 @@ when a release commits that wrote the pending releases of its file's named
 streams ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)),
 for each of those streams; and in recovery, for every pending release, when the
 table raises `Sink.GraceEnded(share, shard)` (§2.5), read with `PendingReleases(share, shard)`, never by a
-scan of the share's files. The release transaction re-checks its holders itself
+scan of the share's files. Before each `Delete` the service takes the file's
+admission lock — at a last close, a `Sink.Closed` and `GraceEnded` it holds
+none yet — and marks the file through `Opens.Releasing`, which fails if an open
+exists; it reports the release's outcome to the `done` that returns, so an
+aborted release clears the mark
+([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
+The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
 

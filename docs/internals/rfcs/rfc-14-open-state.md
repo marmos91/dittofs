@@ -2252,6 +2252,27 @@ durable, and on an abort it changes nothing, an issued ID left unused. Under the
 lock no call's open or close of the file lands between the two; a timer
 step's close can, and the commit deletes the record the unlink wrote for it.
 
+**A release marks the table first.** Before it calls the engine's `Delete`, the
+service calls `Opens.Releasing`, which fails, changing nothing, while the table
+holds an open of the file, and otherwise marks the file releasing: from then on
+an open of it by handle is answered as for a released file, stale
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), step 1). Two rules make the mark safe:
+
+- **It is taken under the file's admission lock.** Every open of the file is
+  admitted under that lock, so none lands between the check for opens and the
+  journal's `Delete`, which drops bytes no abort can put back. At a last close,
+  at a timer's `Sink.Closed` and at `GraceEnded` the service holds no admission
+  lock yet, so it takes the file's first; without it an open by handle could
+  slip in between the check and the `Delete` and lose its bytes.
+- **`done(false)` clears it.** The service reports through `done` whether the
+  release committed. When phase 1 aborts — on a durable open this table never
+  admitted, for example — `done(false)` clears the mark; left set, every later
+  open of that live file would answer stale until a restart. `done(true)` drops
+  the file from the table.
+
+The mark is volatile. A crash after it loses nothing: the file's pending
+release is still stored, and recovery runs it again once grace ends (§9.2).
+
 ### 9.2 A new primary releases nothing before grace ends
 
 Volatile opens held by a failed primary are gone with it. Until its grace period
@@ -2754,6 +2775,7 @@ type Opens interface {
 	Close(ctx, who Caller, o OpenRef, q Seqs) (CloseResult, error)          // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
+	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
 	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry
 	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: holds in the table the source open of no client that the clone's first phase wrote in its transaction; ErrBadState when none is stored
 	CloneClose(ctx, o OpenID) (CloseResult, error)                          // §9.2: the clone's last batch, whose transaction deleted the hold
@@ -2961,6 +2983,8 @@ var (
 	ErrDelay           = errors.New("openstate: retry later")
 	ErrNotYours        = errors.New("openstate: state held by another client or principal")
 	ErrDeletePending   = errors.New("openstate: file is delete pending")
+	ErrFileOpen        = errors.New("openstate: the file has an open") // §9.1: Releasing on a file any open holds, a clone's hold included
+	ErrReleasing       = errors.New("openstate: the file is being released") // §9.1: an open, or a second Releasing, while the mark is set; the service answers it stale
 	ErrBadSeqID        = errors.New("openstate: owner sequence out of order")
 	ErrClientInUse     = errors.New("openstate: client name held by another principal")
 	ErrClientBusy      = errors.New("openstate: client still holds a session or state")

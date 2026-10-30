@@ -2327,12 +2327,14 @@ which calls the journal's `Delete`, never its `Release`, which evicts
 
 **Steps.**
 
-1. Take the file's guard. A release also marks the file **releasing** in its
-   open table at the primary, under the table's lock, having found no open
-   there ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)); from then on an open of the file by handle is
+1. Take the file's guard. For a release, the service has marked the file
+   **releasing** in its open table at the primary, under the file's admission
+   lock, having found no open there (`Opens.Releasing`,
+   [RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)); from then on an open of the file by handle is
    answered as for a released file, stale. Every open of a file is admitted
-   through that table, so no open can commit between this check and the
-   journal's `Delete`, which drops bytes no abort can put back.
+   under that lock, so no open can commit between the check and the journal's
+   `Delete`, which drops bytes no abort can put back. The engine reads and
+   writes no open state: `Deps` holds no view of it.
 2. The journal removes the extent, and assigns the removal its version *v*
    ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A release is `Delete`, a removal of `[0, ∞)`.
 3. Phase 1: one transaction commits pending existence, the existence change and
@@ -2340,7 +2342,8 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    also re-checks the file's holders and deletes its namespace records and its
    pending release, aborting if an open has arrived ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)) — a backstop
    behind step 1's mark, reached only by a durable open no table of this primary
-   admitted, and then handled as start handles it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3); writes a pending
+   admitted, and then handled as start handles it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3), the service's
+   `done(false)` clearing the mark; writes a pending
    release for each of the file's named streams; and deletes its File record,
    FileData fields included ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Phase 1 writes no ref and drops
    none, whatever the extent's size: every ref over the extent is dropped or
