@@ -810,6 +810,34 @@ func TestRefusedWideningOpenLeavesNoRecord(t *testing.T) {
 	}
 }
 
+// A refused widening open, its store failing from the second write on so
+// that the cleanup delete fails too, leaves no record of its own: it is
+// written last, after the write that fails.
+func TestRefusedWideningOpenWritesItsRecordLast(t *testing.T) {
+	for range 40 { // map order: o's record would come first in some runs
+		fs, st := failingFS(t)
+		f := reopen(t, fs, &fakeClock{})
+		a := f.caller(t, smbMachine("pc-a"))
+		file, r := f.fileIn(t, "disk")
+		r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{1}, ptr[uint16](1), GrantRead
+		f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+		r.Want = rwh
+		st.failFrom.Store(st.updates.Load() + 2)
+		_, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 2))
+		st.failFrom.Store(0)
+		if err == nil {
+			t.Fatal("the widening open whose write failed was granted")
+		}
+		recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recs) != 1 {
+			t.Fatalf("stored opens after the refused open, the delete failing too: %d, want the first one only", len(recs))
+		}
+	}
+}
+
 // A persistent open whose record write lands but is answered an error is
 // refused, and its record deleted.
 func TestOpenWhoseLandedWriteErredLeavesNoRecord(t *testing.T) {
