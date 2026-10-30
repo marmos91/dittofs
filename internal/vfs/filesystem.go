@@ -69,7 +69,7 @@ type Content interface {
 // WriteOpts is what a write asks of the engine beside its bytes.
 type WriteOpts struct {
 	Suspend entity.TimeMask // the times this write leaves alone
-	Done    func()          // called once, by the existence commit recording the write's usage; never if Write fails
+	Done    func()          // called exactly once per accepted write: by the commit recording its usage or its loss, or by the engine, charging nothing, when it drops the write uncommitted; never if Write fails
 }
 
 // Overlay is a file's size, times and version as the journal's uncommitted
