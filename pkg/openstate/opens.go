@@ -485,7 +485,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 		confirmed := t.ownerConfirmed(r)
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
-		var mine *grant // the lease the offer may widen, put back when o's write fails
+		// The lease the offer may widen, put back when o's write fails.
+		var mine *grant
 		var was grantfsm.Grant
 		if !grace && confirmed {
 			for _, g := range e.grants {
