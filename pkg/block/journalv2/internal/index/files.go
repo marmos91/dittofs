@@ -103,6 +103,11 @@ type files struct {
 	// fresh index, where no version has been opened above and the buckets
 	// also stand at zero.
 	opened uint64
+	// segs is the store-wide table of per-segment bytes: what each segment
+	// backs as held and retained extents, maintained incrementally by the
+	// sets of every entry, never derived by a walk. Reclamation asks it in
+	// O(1); there is no store-wide listing of a segment's extents to walk.
+	segs segments
 
 	// dropRanges is the number of drop ranges over every file and segment.
 	// It is maintained by apply, under each file's lock, so it stays exact
@@ -167,6 +172,12 @@ type file struct {
 	segs []segRecords
 	// markers are the file's unsettled removal markers, in version order.
 	markers []marker
+}
+
+// newFile returns an entry whose held and retained sets feed acct, keeping a
+// file created by files.update accounted from its first piece.
+func newFile(acct *segments) *file {
+	return &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 }
 
 // entries returns the number of entries of the file the count is of: held
@@ -339,7 +350,7 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) er
 			if s.m == nil {
 				s.m = make(map[core.FileID]*file)
 			}
-			f = &file{}
+			f = newFile(&fs.segs)
 			s.m[id] = f
 		}
 		s.mu.Unlock()
@@ -409,7 +420,9 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	}
 	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
-	f.held = heldSet{} // free the empty tree and its scratch for the tag-only life
+	// Free the empty tree and its scratch for the tag-only life, keeping the
+	// accounting: a cut in a later update happens to this same set.
+	f.held = heldSet{acct: f.held.acct}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
@@ -521,6 +534,24 @@ func (f *file) recorded(seg core.SegmentID, e core.Extent, n Numbers, tag core.S
 	}
 	return err
 }
+
+// segmentBytes returns what seg backs, in O(1), whether or not the table
+// holds an entry for it. A segment not written yet, or one retired, reads zero.
+func (fs *files) segmentBytes(seg core.SegmentID) SegmentBytes { return fs.segs.bytes(seg) }
+
+// segmentLive returns the bytes seg backs as held and retained extents as one
+// figure, in O(1): the reclamation read-out, which must not see a live segment
+// count zero while a write is in flight.
+func (fs *files) segmentLive(seg core.SegmentID) int64 { return fs.segs.live(seg) }
+
+// retireSegment withdraws seg's counters from the table. It is called when a
+// segment is unlinked or recycled — a recycle gives the spare a new id, so the
+// old id is retired either way — after the caller has walked the files,
+// calling segmentGone for each, so the entry has nothing left to name. The
+// return is the leftover the segment still counted, for the caller to log,
+// and whether the segment was even there: a second retire reports absent, as
+// reclamation needs to be idempotent.
+func (fs *files) retireSegment(seg core.SegmentID) (SegmentBytes, bool) { return fs.segs.retire(seg) }
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record
 // of the file — and, with them, forgets the segment's drop ranges, so from

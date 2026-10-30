@@ -21,6 +21,11 @@ type Hold struct {
 	released    chan struct{}
 	waiting     int
 
+	// first makes the hold stop only the first call it matches; taken is
+	// whether that call came. Both are guarded by the seam's mu.
+	first bool
+	taken bool
+
 	mu sync.Mutex
 }
 
@@ -46,6 +51,18 @@ type Hold struct {
 // code under test armed, so a held call waits on no clock: only Release frees
 // it.
 func (s *Seam) Hold(t testing.TB, op, key string) *Hold {
+	return s.newHold(t, op, key, false)
+}
+
+// HoldFirst is Hold stopping only the first call it matches: every later
+// call passes it, while the first stays blocked until Release. A check uses
+// it to stop one call at storage and let a second, made while the first
+// waits, run to its end.
+func (s *Seam) HoldFirst(t testing.TB, op, key string) *Hold {
+	return s.newHold(t, op, key, true)
+}
+
+func (s *Seam) newHold(t testing.TB, op, key string, first bool) *Hold {
 	if op == "" || key == "" {
 		panic(fmt.Sprintf(`journalv2test: Hold(%q, %q): an empty op or key; "*" holds every one`, op, key))
 	}
@@ -56,6 +73,7 @@ func (s *Seam) Hold(t testing.TB, op, key string) *Hold {
 		key:      key,
 		reached:  make(chan struct{}),
 		released: make(chan struct{}),
+		first:    first,
 	}
 
 	s.mu.Lock()
@@ -97,9 +115,11 @@ func (s *Seam) hold(op, key string) {
 	s.mu.Lock()
 	var matched []*Hold
 	for _, h := range s.holds {
-		if sim.Match(h.op, op) && sim.Match(h.key, key) {
-			matched = append(matched, h)
+		if !sim.Match(h.op, op) || !sim.Match(h.key, key) || (h.first && h.taken) {
+			continue
 		}
+		h.taken = true
+		matched = append(matched, h)
 	}
 	s.mu.Unlock()
 

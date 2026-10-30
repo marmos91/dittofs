@@ -217,6 +217,14 @@ var artifactsKept = func() bool {
 	return f != nil && f.Value.String() == "true"
 }
 
+// Descriptors returns how many descriptors the process has open now, and
+// whether they could be listed here, so a check can bound what the code under
+// test holds open while it runs, not only what it leaves behind.
+func Descriptors() (int, bool) {
+	fds, ok := descriptors()
+	return len(fds), ok
+}
+
 // leakedDescriptors returns the descriptors open now that were not in before,
 // or that name another file than they did, each as its number and, where the
 // platform names it, its file, and whether the descriptors could be listed.

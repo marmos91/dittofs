@@ -43,6 +43,12 @@ const (
 	// seals it, if it is at least FixtureIdleSealBytes full.
 	IdleSealAge = core.IdleSealAge
 
+	// OfferPins is the most segments one offer pins. JournalPins is the count
+	// of segments all running offers pin together past which an offer takes
+	// no extent from an unpinned segment but its first.
+	OfferPins   = core.OfferPins
+	JournalPins = core.JournalPins
+
 	// versionWindow is how far each open raises the version limit past the
 	// floor: more versions than any one test draws.
 	versionWindow = 1 << 32
@@ -87,7 +93,32 @@ type Fixture struct {
 // profiler's checks run, when the test ends.
 func New(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, true, FixtureSegmentCap)
+	return newFixture(tb, nil, true, FixtureSegmentCap, nil)
+}
+
+// NewWith is New with set applied to the journal's settings before Init, for
+// a check that needs a bound the fixture's defaults put out of reach.
+func NewWith(tb testing.TB, set func(*journalv2.Settings)) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, FixtureSegmentCap, set)
+}
+
+// NewWithSegmentCap is New with segments of segmentCap bytes, for a check
+// whose record must fit whole in one segment beside others: a write larger
+// than what its segment has left is split into records. The journal's
+// maximum stays FixtureMaxBytes.
+func NewWithSegmentCap(tb testing.TB, segmentCap int64) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, segmentCap, nil)
+}
+
+// NewWithOptions is NewWith with opts added to the options the journal is
+// initialised and opened with, for a check that needs one the fixture does
+// not set, such as a descriptor budget of its own. The fixture's clock, its
+// settings and its storage are set after opts, so opts cannot replace them.
+func NewWithOptions(tb testing.TB, set func(*journalv2.Settings), opts ...journalv2.Option) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, true, FixtureSegmentCap, set, opts...)
 }
 
 // NewUnwatched is New without the profiler, for a second journal in a test
@@ -96,13 +127,14 @@ func New(tb testing.TB) *Fixture {
 // watch runs its checks, which then cover it too.
 func NewUnwatched(tb testing.TB) *Fixture {
 	tb.Helper()
-	return newFixture(tb, nil, false, FixtureSegmentCap)
+	return newFixture(tb, nil, false, FixtureSegmentCap, nil)
 }
 
 // newFixture is New with fault set on the seam before the journal is
-// initialised, the profiler only when watch is set, and segments of segCap
-// bytes.
-func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixture {
+// initialised, the profiler only when watch is set, segments of segCap
+// bytes, set, when not nil, applied to the settings, and opts added before
+// the fixture's own options.
+func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set func(*journalv2.Settings), opts ...journalv2.Option) *Fixture {
 	tb.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -125,6 +157,9 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		IdleSealBytes:   segCap / 16,
 	}
 	core.SetSegmentCap(&settings, segCap)
+	if set != nil {
+		set(&settings)
+	}
 
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{
@@ -132,7 +167,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		Dir:     dir,
 		tb:      tb,
 		clock:   clock,
-		opts:    []journalv2.Option{journalv2.WithClock(clock), journalv2.WithSettings(settings)},
+		opts:    append(opts[:len(opts):len(opts)], journalv2.WithClock(clock), journalv2.WithSettings(settings)),
 		handles: map[int]*journalv2.Handle{},
 	}
 
@@ -141,7 +176,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64) *Fixtu
 		tb.Fatalf("fixture: init: %v", err)
 	}
 
-	f.open()
+	f.open(true)
 	tb.Cleanup(f.close)
 	return f
 }
@@ -152,13 +187,13 @@ func (f *Fixture) options() []journalv2.Option {
 	return append(f.opts[:len(f.opts):len(f.opts)], journalv2.WithStorage(f.Seam.FS()))
 }
 
-// open opens the fixture's journal, raises its version limit, and attaches
-// every share attached before.
+// open opens the fixture's journal, raises its version limit when limit is
+// set, and attaches every share attached before.
 //
 // The floor of each open is the limit the last one set, as a caller that
 // records its limit durably before raising it would pass: no version issued
 // before a crash, whose record the crash lost, is then issued again.
-func (f *Fixture) open() {
+func (f *Fixture) open(limit bool) {
 	f.tb.Helper()
 
 	f.floor = f.limit
@@ -169,11 +204,13 @@ func (f *Fixture) open() {
 	f.J = j
 
 	// The journal issues no version until its first limit.
-	f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
-	if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
-		f.tb.Fatalf("stub: SetVersionLimit")
-	} else if err != nil {
-		f.tb.Fatalf("fixture: set version limit: %v", err)
+	if limit {
+		f.limit = journalv2.Version{Counter: f.floor.Counter + versionWindow}
+		if err := f.J.SetVersionLimit(f.limit); errors.Is(err, journalv2.ErrNotImplemented) {
+			f.tb.Fatalf("stub: SetVersionLimit")
+		} else if err != nil {
+			f.tb.Fatalf("fixture: set version limit: %v", err)
+		}
 	}
 
 	for i := range f.handles {
@@ -201,6 +238,15 @@ func (f *Fixture) close() {
 			f.tb.Errorf("fixture: close: %v", err)
 		}
 	}
+}
+
+// Abandon leaves the journal open now, and its handles, unclosed when the test
+// ends, for a test that found a call blocked in it: closing would wait for
+// that call, and the test would hang rather than fail. The journal's
+// goroutines and descriptors are then leaked, and the profiler reports them.
+func (f *Fixture) Abandon() {
+	f.J = nil
+	clear(f.handles)
 }
 
 // Share returns the handle of share i, attaching it on first use with tag
@@ -266,11 +312,28 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 		f.tb.Logf("fixture: closing the crashed journal: %v", err)
 	}
 
-	f.open()
+	f.open(true)
 }
 
 // Reopen closes the journal cleanly and opens it again.
 func (f *Fixture) Reopen() {
+	f.tb.Helper()
+	f.reopen(true)
+}
+
+// ReopenWithoutLimit is Reopen without setting a version limit, so the
+// journal it opens has none until the test sets one. Its floor is the same as
+// Reopen's. A limit the test sets through f.J is not recorded: a later Reopen
+// or Crash takes its floor from the last limit the fixture set, not that one.
+func (f *Fixture) ReopenWithoutLimit() {
+	f.tb.Helper()
+	f.reopen(false)
+}
+
+// reopen closes every handle and the journal, failing the test if one does
+// not close cleanly, and opens the journal again, setting a version limit
+// when limit is set.
+func (f *Fixture) reopen(limit bool) {
 	f.tb.Helper()
 
 	for _, h := range f.handles {
@@ -282,7 +345,7 @@ func (f *Fixture) Reopen() {
 		f.tb.Fatalf("fixture: close: %v", err)
 	}
 
-	f.open()
+	f.open(limit)
 }
 
 // FailNext makes the next n calls of op on a file matching key fail with
@@ -293,7 +356,7 @@ func (f *Fixture) FailNext(op, key string, n int) {
 
 	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{
 		Op: op, Key: key, Count: n,
-		Action: sim.FaultAction{Kind: sim.Fail, Err: syscall.EIO},
+		Action: sim.FaultAction{Err: syscall.EIO},
 	})
 	if err != nil {
 		f.tb.Fatalf("fixture: fail %s on %s: %v", op, key, err)
@@ -307,7 +370,7 @@ func (f *Fixture) FailNext(op, key string, n int) {
 func (f *Fixture) Drop(op, key string) {
 	f.tb.Helper()
 
-	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{Op: op, Key: key, Action: sim.FaultAction{Kind: sim.Drop}})
+	fault, err := sim.NewSchedule(1, f.clock, sim.Rule{Op: op, Key: key, Action: sim.FaultAction{TearAfter: sim.Lose}})
 	if err != nil {
 		f.tb.Fatalf("fixture: drop %s on %s: %v", op, key, err)
 	}

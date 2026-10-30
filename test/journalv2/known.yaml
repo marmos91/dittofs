@@ -13,6 +13,270 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the data path, offload, release, repack and recovery.'
   issue: '#3379'
+- test: TestRFC1A_FillSafety
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its absence check atomic with WriteAt, and the data path.'
+  issue: '#3378'
+- test: TestRFC1A_FillSetsTheBit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its offloaded bit and Release.'
+  issue: '#3379'
+- test: TestRFC1A_LostStampIsOffered
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, the headroom, stamps, offers of unstamped versions, release and repack.'
+  issue: '#3379'
+- test: TestRFC1A_NeighboursAreFrozen
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offers widened to offloaded neighbours, frozen while the callback runs, and release.'
+  issue: '#3379'
+- test: TestRFC1A_NoPinOnSegmentUnderRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offers that skip segments under repack, and repack.'
+  issue: '#3379'
+- test: TestRFC1A_NoResurrection
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, Deallocate and its removal marker.'
+  issue: '#3378'
+- test: TestRFC1A_NoZeroFill
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, MarkOffloaded and Release.'
+  issue: '#3379'
+- test: TestRFC1A_OfferStopsAtThrough
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs stamps and offers bounded by through, carrying per-extent stamps.'
+  issue: '#3379'
+- test: TestRFC1A_OfferedBytesVerified
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offers whose reader verifies whole records, and corrupt drops.'
+  issue: '#3379'
+- test: TestRFC1A_PartialReleaseKeepsRecordWhole
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
+  issue: '#3379'
+- test: TestRFC1A_Refusal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded and Release refusing dirty extents.'
+  issue: '#3379'
+- test: TestRFC1A_ReleaseFreesNothingInsideSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and per-segment accounting.'
+  issue: '#3379'
+- test: TestRFC1A_RemovalDuringOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offers frozen across Truncate and Delete.'
+  issue: '#3379'
+- test: TestRFC1A_RemovalsSurviveToSince
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
+  issue: '#3378'
+- test: TestRFC1A_UnlinkUnderRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and the reader guard.'
+  issue: '#3379'
+- test: TestRFC1A_WriteDuringOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offload and its report, and Release refusing dirty extents.'
+  issue: '#3379'
+- test: TestRFC1B_BackgroundJoined
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repack, Close joining background work before closing segments, and recovery.'
+  issue: '#3379'
+- test: TestRFC1B_Coalescing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
+  issue: '#3379'
+- test: TestRFC1B_Descriptors
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segments, the descriptor budget, reopens counted in Stats and the data path.'
+  issue: '#3378'
+- test: TestRFC1B_FailedWindowDoesNotWedge
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs failed sync windows resolved, loss events and offload.'
+  issue: '#3379'
+- test: TestRFC1B_FloorBuckets
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its floor buckets, Delete and Settle.'
+  issue: '#3378'
+- test: TestRFC1B_FreedMeansFreed
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and repack.'
+  issue: '#3379'
+- test: TestRFC1B_HandleClose
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs handles whose Close waits for calls in flight, and the data path.'
+  issue: '#3378'
+- test: TestRFC1B_HeadroomIsAllocated
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs headroom allocated ahead, MarkOffloaded, release, removals and repack.'
+  issue: '#3379'
+- test: TestRFC1B_IndexBoundRefuses
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
+  issue: '#3379'
+- test: TestRFC1B_NamedRefusal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals naming their limit and shortfall, release and repack.'
+  issue: '#3379'
+- test: TestRFC1B_NoDeadlock
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Fill, MarkOffloaded, release, repack and Verify.'
+  issue: '#3379'
+- test: TestRFC1B_NoVersionRepeats
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the version limit, Draw, the open floor and recovery of the version counter.'
+  issue: '#3378'
+- test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
+  issue: '#3379'
+- test: TestRFC1B_PinnedSegmentsBounded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs idle sealing, offload pinning a bounded number of segments, release and repack.'
+  issue: '#3379'
+- test: TestRFC1B_PinsBoundedAcrossOffers
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs idle sealing and offload pins bounded across running offers.'
+  issue: '#3379'
+- test: TestRFC1B_ReclaimNotStarved
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and repack taking a segment under sustained reads.'
+  issue: '#3379'
+- test: TestRFC1B_RecordsWithoutBytesAtTheLimit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, records drawn on the headroom, idle sealing, MarkOffloaded and release.'
+  issue: '#3379'
+- test: TestRFC1B_RemovalRecordsDroppedPerExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill, MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
+  issue: '#3379'
+- test: TestRFC1B_RemovalsDoNotWaitOnOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs offload, removals that never wait on its callback, and repack.'
+  issue: '#3379'
+- test: TestRFC1B_RepackAimedAtShare
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
+  issue: '#3379'
+- test: TestRFC1B_RepackAtCapacity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, MarkOffloaded, release and repack.'
+  issue: '#3379'
+- test: TestRFC1B_RepackBesideShareAtLimit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs share limits, release and repack copies outside every share limit.'
+  issue: '#3379'
+- test: TestRFC1B_Reservation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs reservations atomic against the journal maximum, and the data path.'
+  issue: '#3378'
+- test: TestRFC1B_ReserveAhead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Reserve, its writes and Close, share limits, the index bound and the headroom half rule.'
+  issue: '#3378'
+- test: TestRFC1B_SegmentAndRecordAccounting
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs segments, their accounting, per-share record accounting and idle sealing.'
+  issue: '#3378'
+- test: TestRFC1B_ShareLimit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs share limits and per-share accounting rebuilt at open.'
+  issue: '#3378'
+- test: TestRFC1B_StorageReturned
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and repack.'
+  issue: '#3379'
+- test: TestRFC1B_SyncFailure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs failed syncs reported and counted, the sync timer and recovery.'
+  issue: '#3378'
 - test: TestRFC1D_AccountingFollowsCap
   status: fail
   fix: planned
@@ -61,18 +325,18 @@
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs per-segment accounting, release and repack.'
   issue: '#3379'
-- test: TestRFC1D_StatsTakeNoWriteLock
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
-  issue: '#3378'
 - test: TestRFC1D_StatsCostIsFlat
   status: skip
   fix: planned
   category: env
   reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
   issue: '#3395'
+- test: TestRFC1D_StatsTakeNoWriteLock
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
+  issue: '#3378'
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned

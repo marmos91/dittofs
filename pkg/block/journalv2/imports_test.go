@@ -26,10 +26,14 @@ const (
 // have. The rule:
 //
 //   - the standard library and the journal's own packages are allowed
-//     everywhere;
+//     everywhere, except that the conformance checks reach the journal only
+//     through its public package and the test components, so a check tests
+//     the surface a caller has and not the implementation behind it;
 //   - golang.org/x/sys is allowed in internal/platform only;
-//   - the set's clock and test-clock packages are allowed in journalv2test
-//     only;
+//   - the set's clock package is allowed in journalv2test only, and its
+//     test-clock and fault package in journalv2test and conformance, whose
+//     checks build fault rules; they reach the clock only through the
+//     fixture;
 //   - the previous journal package is forbidden everywhere;
 //   - anything else is forbidden.
 //
@@ -136,17 +140,25 @@ func forbidden(rel, path string) string {
 	case within(path, journalv1Path):
 		return "the journal must not depend on the previous journal package"
 	case within(path, journalv2Path):
+		if within(rel, "conformance") && path != journalv2Path && !within(path, journalv2Path+"/journalv2test") {
+			return "the conformance checks may import the journal's public package and its test components only"
+		}
 		return ""
 	case within(path, xsysPath):
 		if within(rel, "internal/platform") {
 			return ""
 		}
 		return "golang.org/x/sys is allowed in internal/platform only"
-	case within(path, clockPath), within(path, simPath):
+	case within(path, simPath):
+		if within(rel, "journalv2test") || within(rel, "conformance") {
+			return ""
+		}
+		return "the set's test-clock and fault package is allowed in journalv2test and conformance only"
+	case within(path, clockPath):
 		if within(rel, "journalv2test") {
 			return ""
 		}
-		return "the set's clock and test-clock packages are allowed in journalv2test only"
+		return "the set's clock package is allowed in journalv2test only"
 	case isStdlib(path):
 		return ""
 	default:
@@ -165,4 +177,48 @@ func within(path, root string) bool {
 func isStdlib(path string) bool {
 	first, _, _ := strings.Cut(path, "/")
 	return !strings.Contains(first, ".")
+}
+
+// TestImportRuleScopesSim pins where the set's fault package may be
+// imported: by the test components and the conformance checks, which build
+// fault rules, and nowhere else; and the clock package by the test
+// components only.
+func TestImportRuleScopesSim(t *testing.T) {
+	for _, c := range []struct {
+		rel, path string
+		allowed   bool
+	}{
+		{"journalv2test", simPath, true},
+		{"conformance", simPath, true},
+		{"internal/core", simPath, false},
+		{".", simPath, false},
+		{"conformance", clockPath, false},
+		{"journalv2test", clockPath, true},
+	} {
+		if got := forbidden(c.rel, c.path) == ""; got != c.allowed {
+			t.Errorf("%s importing %s: allowed %v, want %v", c.rel, c.path, got, c.allowed)
+		}
+	}
+}
+
+// TestImportRuleKeepsConformanceOnThePublicSurface pins that the conformance
+// checks may import the journal's public package and its test components, and
+// none of its internal packages, while the test components may.
+func TestImportRuleKeepsConformanceOnThePublicSurface(t *testing.T) {
+	for _, c := range []struct {
+		rel, path string
+		allowed   bool
+	}{
+		{"conformance", journalv2Path, true},
+		{"conformance", journalv2Path + "/journalv2test", true},
+		{"conformance", journalv2Path + "/journalv2test/model", true},
+		{"conformance", journalv2Path + "/internal/core", false},
+		{"conformance", journalv2Path + "/internal/index", false},
+		{"journalv2test", journalv2Path + "/internal/core", true},
+		{"internal/index", journalv2Path + "/internal/core", true},
+	} {
+		if got := forbidden(c.rel, c.path) == ""; got != c.allowed {
+			t.Errorf("%s importing %s: allowed %v, want %v", c.rel, c.path, got, c.allowed)
+		}
+	}
 }

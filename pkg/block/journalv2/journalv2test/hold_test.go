@@ -306,3 +306,26 @@ func TestHoldRefusesAnEmptyOp(t *testing.T) {
 	}()
 	s.Hold(t, "", "*")
 }
+
+func TestAHoldOnTheFirstCallLetsLaterOnesPass(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	h := s.HoldFirst(t, OpWrite, "seg")
+
+	first := make(chan error, 1)
+	go func() { _, err := f.WriteAt([]byte("a"), 0); first <- err }()
+	within(t, h.Reached(), "the first write reaching the hold")
+
+	aside(t, "a second write, made while the first is held", func() error {
+		_, err := f.WriteAt([]byte("b"), 1)
+		return err
+	})
+	if returned(first) || h.Waiting() != 1 {
+		t.Fatalf("the first write returned or is not held: Waiting = %d", h.Waiting())
+	}
+
+	h.Release()
+	if err := within(t, first, "the released first write returning"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -16,7 +16,7 @@ import (
 
 // written is one write a check made: where, and its version.
 type written struct {
-	share   int
+	share   int // the fixture share's index, or -1 for a write through a handle of the check's own
 	id      journalv2.FileID
 	extent  journalv2.Extent
 	version journalv2.Version

@@ -139,3 +139,27 @@ func TestWatchReportsEveryLeak(t *testing.T) {
 		}
 	}
 }
+
+func TestDescriptorsCountsWhatIsOpenNow(t *testing.T) {
+	before, ok := Descriptors()
+	if !ok {
+		t.Fatal("the descriptors cannot be listed on a platform that lists them")
+	}
+	var files []*os.File
+	for range 3 {
+		f, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	opened, _ := Descriptors()
+	for _, f := range files {
+		_ = f.Close()
+	}
+	closed, _ := Descriptors()
+
+	if opened != before+3 || closed != before {
+		t.Fatalf("Descriptors = %d before, %d with three more open, %d once they closed: want %d, %d, %d", before, opened, closed, before, before+3, before)
+	}
+}
