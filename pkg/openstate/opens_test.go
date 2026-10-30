@@ -545,18 +545,62 @@ func TestChangeChecks(t *testing.T) {
 	}
 }
 
-// An open of a named stream is an open of its base file for deny
-// modes, and its durable record names the stream.
-func TestStreamOpenIsAnOpenOfItsBase(t *testing.T) {
+// Deny modes are judged per stream: a stream's deny-write refuses neither an
+// open of the base for write nor an anonymous write, which is of the base, nor
+// an open of another stream; it refuses another open of its own stream. A
+// stream's durable record names the stream.
+func TestStreamDenyModesArePerStream(t *testing.T) {
 	f := newFixture(t)
-	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
-	base, stream := anyFile(), entity.NewFileID()
+	s, n, q := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser())), f.caller(t, smb("bob-pc"))
+	base, stream, other := anyFile(), entity.NewFileID(), entity.NewFileID()
 	f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd, Deny: wr})
-	if _, err := f.open(n, base, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
-		t.Errorf("a write open of the base under the stream's deny-write: %v, want ErrShareViolation", err)
-	}
 	if recs := f.durable(t, base); len(recs) != 1 || recs[0].File != stream {
 		t.Errorf("the base's durable records %d records, want one naming the stream", len(recs))
+	}
+	if _, err := f.open(n, base, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open of the base beside a stream's deny-write: %v", err)
+	}
+	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, true); err != nil {
+		t.Errorf("an anonymous write beside a stream's deny-write: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: other, Access: wr}); err != nil {
+		t.Errorf("a write open of another stream beside a stream's deny-write: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: stream, Access: wr}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("a write open of the same stream under its deny-write: %v, want ErrShareViolation", err)
+	}
+}
+
+// Across a file and its streams only delete is judged: a stream's open not
+// sharing delete refuses an open of the base asking delete, and an NFS remove
+// or rename of the base, but not an open of another stream asking delete; a
+// base open holding delete refuses a stream's open not sharing it.
+func TestStreamDenyDeleteRefusesTheBasesDelete(t *testing.T) {
+	f := newFixture(t)
+	s, n, q := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser())), f.caller(t, smb("bob-pc"))
+	base, stream := anyFile(), entity.NewFileID()
+	f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd, Deny: del})
+	if _, err := f.open(q, base, OpenRequest{Access: rd | del}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an open of the base asking delete beside a stream's deny-delete: %v, want ErrShareViolation", err)
+	}
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := f.Checks().CheckChange(ctx, n, base, nil, what); !errors.Is(err, ErrShareViolation) {
+			t.Errorf("an NFS change %d of the base beside a stream's deny-delete: %v, want ErrShareViolation", what, err)
+		}
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: entity.NewFileID(), Access: rd | del}); err != nil {
+		t.Errorf("an open of another stream asking delete beside a stream's deny-delete: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
+		t.Errorf("an open of the base asking no delete beside a stream's deny-delete: %v", err)
+	}
+	held := anyFile()
+	f.mustOpen(t, q, held, OpenRequest{Access: rd | del, Deny: wr | del})
+	if _, err := f.open(s, held, OpenRequest{Stream: entity.NewFileID(), Access: rd, Deny: del}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("a stream open denying delete beside a base open holding delete: %v, want ErrShareViolation", err)
+	}
+	if _, err := f.open(s, held, OpenRequest{Stream: entity.NewFileID(), Access: rd | wr}); err != nil {
+		t.Errorf("a stream open sharing delete beside a base open holding delete and denying write and delete: %v", err)
 	}
 }
 
@@ -651,6 +695,10 @@ func TestStreamOpenDeletesNothing(t *testing.T) {
 	yes := true
 	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a disposition set through a named stream's open: %v, want ErrInvalid", err)
+	}
+	no := false
+	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &no}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a disposition cleared through a named stream's open: %v, want ErrInvalid", err)
 	}
 	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
 		t.Errorf("an open of the base beside the stream's open: %v", err)

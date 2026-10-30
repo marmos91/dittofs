@@ -466,13 +466,16 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		own := func(g *grant) bool { return g.heldBy(who.Client, r.Lease, granted) }
 		var hs []*open
 		for _, h := range e.opens {
-			if h != granted && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
+			if h != granted && !sharesStream(r.Stream, access, deny, h) {
 				hs = append(hs, h)
 			}
 		}
 		if err := t.breakHandles(ctx, e, hs, own, out); err != nil {
 			return err
 		}
+		// ponytail: a stream's open recalls the base's and other streams'
+		// grants as if it were theirs, which recalls more than it must. Judge
+		// a grant against an open of its own stream once grants are per stream.
 		if err := t.recallOthers(ctx, e, own, func(g *grant) GrantKind { return conflict.GrantKeeps(access, deny, g.key != (LeaseKey{})) }, out); err != nil {
 			return err
 		}
@@ -703,6 +706,28 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 	}
 	o.durable = true
 	return nil
+}
+
+// sharesStream reports whether an open of stream s, zero for the base file,
+// asking access and denying deny can be held beside h. Deny modes are judged
+// per stream, as MS-FSA judges sharing: in full between opens of one stream,
+// and across a file and its streams only for the base's delete, which a stream
+// open not sharing delete refuses, whichever of the two came first.
+//
+// decision: a stream's own delete access is judged against no other stream's
+// or the base's opens, and one stream's open never refuses another stream's;
+// only the base's delete, which would remove every stream, is judged across.
+// Judge a stream's delete too once a stream can be deleted on its own.
+func sharesStream(s entity.FileID, access, deny entity.AccessMask, h *open) bool {
+	switch {
+	case h.Stream == s:
+		return conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny)
+	case s.IsZero():
+		return conflict.Shares(access&entity.Delete, 0, h.Mode.Access, h.Mode.Deny)
+	case h.Stream.IsZero():
+		return conflict.Shares(access, deny, h.Mode.Access&entity.Delete, 0)
+	}
+	return true
 }
 
 // openOf is owner's open of e's file, or of its stream s, on e; nil for none
