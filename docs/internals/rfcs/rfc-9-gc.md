@@ -474,8 +474,18 @@ the engine, whose syncer GC's flows need, and before open state, identity and
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
 up to store time, and runs a first `Recheck`. No delete is issued until that
-`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so GC's start needs no gate of its own beyond the claim check
-the node runs first.
+`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so GC's start needs no gate of its own beyond `Claim`.
+
+**`Claim` is the start-time claim check, and it is GC's.** Before the engine
+starts, the node calls `Claim` once for each namespace a share it serves names,
+and again before it attaches a share whose namespace no share on the node names
+yet ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). It runs the same read, record and put
+that each `Recheck` runs ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) through the `View` it is handed, and runs [§3.7](#3.7%20Trash)'s
+settle before it reports a namespace held whose store is older than the state
+last served. It needs
+no `Start` and opens no flow: the claim is a control object, read and put
+directly through `Remote`. It returns whether the namespace is fenced
+([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), and an error only when it could not read or write the claim.
 
 **Namespaces come and go while GC runs.** The node adds and removes contexts
 ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)). A namespace whose drain deletes its `NS‖ns` records
@@ -947,8 +957,8 @@ last served, since every later claim put recorded its nonce first, and settles a
 that finds another installation's nonce fences itself as
 [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says.
 
-The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
-claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
+The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), `Blocks.Settle`, run by
+`Claim` ([§2.5](#2.5%20Composition%20and%20lifecycle)), the start-time claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim), for each namespace whose claim carries a nonce this
 store never recorded. That check runs before any storage binding serves or GC
 starts ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5).
 
@@ -1979,6 +1989,13 @@ func (g *GC) Conditions(dst []health.Condition) []health.Condition
 func (g *GC) Add(ctx context.Context, ns NamespaceID, v View) error
 func (g *GC) Remove(ctx context.Context, ns NamespaceID) error
 
+// Claim is the start-time claim check (§2.5, RFC 27 §2.1): read, record, put,
+// and §3.7's settle for a store older than the state last served. The node calls
+// it before the engine starts and before attaching a namespace new to the node;
+// it needs no Start. fenced: the claim names another holder, a nonce this
+// installation did not record, or released.
+func (g *GC) Claim(ctx context.Context, ns NamespaceID, v View) (fenced bool, err error)
+
 // Blocks is what GC needs from block metadata. Retirement, resurrection, the §3.5
 // verification and the hold and pause gates live inside its transactions; none is a call.
 type Blocks interface {
@@ -2035,6 +2052,9 @@ type namespaceBlocks interface {
 	// intended nonce and stamping started in store time; after it, recording the
 	// written nonce and the result (§7.5).
 	RecordRecheck(ctx context.Context, r RecheckRecord) error
+	// Settle moves every retired block whose not_before is at or before store time
+	// to deleted, in K-bounded transactions through BR, without §3.5's verification (§3.7).
+	Settle(ctx context.Context) error
 }
 
 type MarkResult struct{ Deleted, Refused []BlockName } // one transaction's, at most K names
