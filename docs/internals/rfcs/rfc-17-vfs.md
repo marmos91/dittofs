@@ -465,8 +465,9 @@ pkg/vfs/                     the contract adapters build against
   service.go                 Service, composed of one interface per area (§3.1)
   types.go open.go           Handle, Identity, Call, OpenRef, Target, WCC, … and the aliases of metadata types (§3.0)
   ids.go                     the codecs of every client-held name (§3.4)
-  errors.go                  sentinels, *Delay, *QuotaError, *StateError, *CrossError, Errors() (§4.3);
-                             re-exports, as aliases, the neutral content errors the engine also returns
+  errors.go                  Errors() (§4.3), and every value of vfserr re-exported as an alias
+  vfserr/                    the filesystem's error values: sentinels, *Delay, *QuotaError, *StateError,
+                             *CrossError, all of DelayCause and CrossKind, and Extent; standard library only
   callbacks.go               Callbacks, Revocation (§3.2)
   events.go                  Events, AccessEvent and QuotaEvent (§3.3)
   vfstest/                   Record, Null and RecordingCallbacks, hand-written (§8)
@@ -656,7 +657,7 @@ type CreateKind uint8 // Dir, Symlink, Fifo, Socket, Char, Block, Regular
 
 type CreateArgs struct { Kind CreateKind; Attrs Attrs; Verifier *[8]byte; Target []byte; Dev uint64 }
 type WriteResult struct { N int; Verifier Verifier; WCC WCC }
-type Extent struct { SrcOff, DstOff, Len int64 }
+type Extent = vfserr.Extent // { SrcOff, DstOff, Len int64 }, declared beside the errors (§4.3) so the engine needs no pkg/vfs
 type CopyArgs struct { Src, Dst OpenRef; Extents []Extent } // Copy: in order, as copychunk's chunks; Clone: exactly one
 type CopyResult struct { N int64; WCC WCC }
 type LockReq struct { Ranges []LockRange; Wait WaitKind; Reclaim bool; Owner LockOwner; Replay *LockSequence; Seqs Seqs } // §5.11: every range in one step, all or none
@@ -1228,11 +1229,17 @@ belongs to is shared across nodes
 
 ### 4.3 Errors are neutral values
 
-The service returns the errors below, declared in `pkg/vfs/errors.go`. The
-content errors are declared once in the errors package the engine and the
-service share, and re-exported as aliases, so the engine returns them without
-importing the layer above. `vfs.Errors()` returns every sentinel and one value
-of every typed kind, so an adapter's error table can be checked total
+The service returns the errors below. They are declared once, in
+`pkg/vfs/vfserr`, a leaf package that imports only the standard library: every
+sentinel and typed kind, all of `DelayCause` and `CrossKind`, and `Extent`. The
+engine returns `ErrDelay` with its causes and `ErrCross` with its kinds, and Go
+cannot split an enum across two packages, so each enum moves whole, values only
+the service returns included. `Extent` moves with them because while
+`vfs.Extent` aliased the engine's, every adapter importing `pkg/vfs` compiled
+the engine. So the engine imports `vfserr` and never `pkg/vfs`, nor open state
+through it, and `pkg/vfs` re-exports every value as an alias. `vfs.Errors()`
+stays in `pkg/vfs` and returns every sentinel and one value of every typed
+kind, so an adapter's error table can be checked total
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
 How each reaches the wire is
 [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
@@ -1262,7 +1269,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
-| `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | aliases |
+| `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | — |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
 refusals: `ClientInUse` (a client name another principal holds), `ClientBusy`

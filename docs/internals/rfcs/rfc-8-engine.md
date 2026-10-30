@@ -3068,7 +3068,7 @@ type WriteOpts struct {
 	Suspend TimeMask // Modify, Access: times this write leaves alone
 	Done    func()   // called exactly once per accepted write: by the existence commit that records its usage or the loss-record commit, or by the engine, charging nothing, when a failed window, Forget, a journal device lost whole or the node ceasing to serve its shard drops it uncommitted (§5.1, RFC 17 §5.6); never if Write fails
 }
-type Extent struct{ SrcOff, DstOff, Len int64 } // RFC 17's Extent is an alias of this
+type Extent = vfserr.Extent // { SrcOff, DstOff, Len int64 }; vfs.Extent aliases it too (RFC 17 §4.3)
 type Overlay struct {
 	Size         int64 // SizeSet: the size; else the end of the pending writes
 	SizeSet      bool  // a truncate is pending, so Size is exact
@@ -3081,8 +3081,10 @@ type Overlay struct {
 // StoreID: RFC 3's. Errors: the engine declares none (below).
 ```
 
-**The engine declares no error.** It returns these values of the errors package
-it shares with the filesystem service ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which re-exports them:
+**The engine declares no error.** It returns these values of `pkg/vfs/vfserr`,
+the leaf package of the filesystem's error values, which imports only the
+standard library and which `pkg/vfs` re-exports as aliases
+([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the engine never imports `pkg/vfs`:
 `ErrLost` ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), reported as data loss), `ErrUnavailable` ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably), transient),
 `ErrCorrupt` ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves), and the journal's `ErrOtherShare`, never retried), `ErrNoSpace`
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
