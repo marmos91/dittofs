@@ -102,12 +102,12 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
   `Client`, `Session` and `Channel{Seq, Replay}`), not an `Identity` with more fields: the
   resolver caches only `Identity`, so over NFSv4.1 and SMB two machines signed in as one user
   never share a client. A call that names no open leaves `Client` unused. NFSv4.0's client is the
-  stateid's clientid, and a delegation stateid is the client's only under its record's `Owner`,
-  or under any principal when `Owner` is zero; NLM's is the host's client record. So over NFSv4.0
-  two machines can act as one client: two that confirm as one Kerberos user share an `Owner`, a
-  zero `Owner` lets the clientid alone decide, and the address recorded at `SETCLIENTID_CONFIRM`
-  is for callbacks only. The rule is stated once, in RFC 14 §2.2, whose `decision:` names these
-  ceilings.
+  one on the state its stateid resolves to, or for an operation that names an open or lock owner,
+  that owner's client, and only a client confirmed under NFSv4.0: a stateid whose client was not
+  is `NotYours`. NLM's is the host's client record. An NFSv4.0 client is offered no delegation
+  (RFC 21 §5.3), so over NFSv4.0 the opener-only rule is the whole check, and the address
+  recorded at `SETCLIENTID_CONFIRM` is for callbacks only. The rule is stated once, in
+  RFC 14 §2.2.
 - `Authorize` and `Granted` both take the parent directory (`via`); delete through it needs `via`
   to hold an entry naming the file, read in the same transaction, with the sticky rule (RFC 19
   §3.1 step 7).
@@ -117,8 +117,9 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
   SECINFO and `MinKerberos` goes (RFC 16 §2.3).
 - `*Filesystem`'s lifecycle close is `Stop`. The node, not `DeleteShare`, joins a removed share:
   `DeleteShare` marks and answers `202`, and the node calls `JoinShare` then `DropShare` for each
-  shard it is primary of whose `rm` row is not yet offloaded, while serving and at start (§2.5,
-  §4.9, RFC 16 §2.3.2 step 3).
+  shard it is primary of whose share's removal has reached step 3 and whose `rm` row is not yet
+  offloaded, while serving and at start (§2.5, §4.9, RFC 16 §2.3.2 step 3). This store runs only
+  the mark, so until its later steps land, that is each share it has marked.
 - The filesystem keeps no event queue: it calls the sink, which never blocks and alone counts drops
   (§2.5, §3.3, §7).
 - `Record` and `Spell` are on `Mutates`' read-only list; `Find`, which can mint a principal, is
@@ -144,8 +145,8 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
 beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's; V19, V20 and V25 complete in
-stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 is piece 10's
-and L20 piece 8's, and L29's restart case piece 7's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
+stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 and L63 are piece
+10's and L20 piece 8's, and L29's restart case piece 7's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
 its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
 1. **Contract:** `pkg/vfs`'s value types and the aliases §3.0 lists from the metadata store and
@@ -180,11 +181,11 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    `Granted`, passing both the parent as `via`, and emitting the `AccessEvent`s the audit policy
    selects; §8's fuzz target for handles.
    - Admission counts each call against its share, and `JoinShare` waits the count out (§4.9).
-     The node's side of a removal, `JoinShare` then `DropShare` for each shard it is primary of
-     whose `rm` row is not yet offloaded, lands here for a share seen to leave the share list
-     while serving; its run at start is piece 7's. Until a node exists, both run from a stand-in
-     for the removal driver in `internal/vfs`, which the filesystem calls itself, from `Start`
-     and from admission when the share list's version moves:
+     The node's side of a removal, `JoinShare` then `DropShare` for a share seen to leave the
+     share list while serving, every shard of it, lands here; its run at start is piece 7's.
+     Until a node exists, both run from a stand-in for the removal driver in `internal/vfs`,
+     which admission starts when the share list's version moves, in the background and counted
+     as a call, so a drain waits for it and no call waits on its own share's count:
 
      ```go
      // ponytail: joins and drops a share the store marked for removal, and
@@ -230,15 +231,15 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    Done when: V22 (→8), V31 (→8) pass.
 7. **Open, close and release recovery:** `Start`'s step 1, `Recovery.ServeShard` for each shard
    (RFC 14 §11.3); opens, with `DELETE` and `MAXIMUM_ALLOWED` granted through `via` (§4.6), and a
-   `MAXIMUM_ALLOWED` open on a read-only share granted without write (RFC 22 §16.5); deny modes,
-   delete on close and the four moments of release; the pending
-   releases a shard holds run when its grace ends (`Sink.GraceEnded`);
-   `vfs_deferred_unlink_refusals_total`.
-   - The `Call.Client` check, with RFC 14 §2.2's `decision:` at it, and a case per rule: I/O
-     through A's grant by client B signed in as A's user is `NotYours` over SMB and NFSv4.1; over
-     NFSv4.0, A's delegation stateid presented by a principal other than its record's `Owner` is
-     `NotYours`, and is served when presented by the `Owner` from a new address, or by any
-     principal when the `Owner` is zero.
+   `MAXIMUM_ALLOWED` open on a read-only share granted with every right outside RFC 19's read row
+   stripped, a `DELETE` its parent grants through `via` included (RFC 22 §16.5); deny modes,
+   delete on close and the four moments of release; the pending releases a shard holds run when
+   its grace ends (`Sink.GraceEnded`); `vfs_deferred_unlink_refusals_total`.
+   - The `Call.Client` check, with a case per rule: client B signed in as A's user closing A's
+     open is `NotYours` over SMB and NFSv4.1 (V8). I/O through A's grant by B is V24's (→10),
+     and over NFSv4.0, where the opener is the whole check (RFC 14 §2.2), A's open stateid quoted
+     under another principal is V18's (→8), as RFC 21 §5.2's v4.0 row runs it. Over NFSv4.0, an
+     NFSv4.1 client's open stateid is `NotYours`, as its client was not confirmed under NFSv4.0.
    - The stand-in's run at start (piece 3), after step 1 has served the share's shards, since a
      `ServeShard` after a `DropShare` installs the share's persistent opens again; done when a
      share marked before a restart has no opens, and its holders are told `RevokedShare`, once
@@ -246,7 +247,9 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    Done when: V8 (→10), V9, V17, V21, V28, V33, V35 (→10), V38, and RFC 14's L29 pass: open then close, and delete
    on close, run in the unit tier, and each open meeting a deny mode held only in a handle cache
    gets `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes
-   only after handle caching is broken (§4.3).
+   only after handle caching is broken (§4.3); on a share narrowed to read-only, a
+   `MAXIMUM_ALLOWED` open of an existing file whose parent grants delete-child is granted no right
+   outside the read row, and one asking for `DELETE` by name is `ErrReadOnly`.
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, and the write
    verifier. `WriteOpts.Done` is a no-op until piece 9:
 
@@ -313,7 +316,7 @@ which are the node's, a removal's or a cut's.
    | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)`; RFC 16's `Records` (`User`, `Group`) |
    | piece 3 `authz`, piece 6 streams | `Files.Granted`, and `via` on it and on `Files.Authorize`, with a `kvstoretest` case beside RFC 7 §12's removal-rights row: delete through a `via` the caller owns that holds no entry naming the file is refused; an `Identity` carrying the admitted share access and its read-only cause, so `Authorize` answers a share's narrowing `ErrReadOnly` (RFC 7 §7.4); `Files.Streams` (RFC 7) |
    | piece 3, admission's step 2 | `ExportPolicy.MinProof`, `MinProtection` and `ReadOnly` in place of `MinKerberos`; `PutExportPolicy` refusing a protection floor on a policy that admits AUTH_SYS, with a `kvstoretest` case for the refusal and for a Kerberos policy with the same floor, which saves |
-   | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to Claimed, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share that admits AUTH_SYS; both binding SMB on the share as today (RFC 16 §2.3) |
+   | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; both binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 3, admission's steps 1–3 | a read view of the share list, path index, export policy, client rules and netgroups |
    | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2) |
