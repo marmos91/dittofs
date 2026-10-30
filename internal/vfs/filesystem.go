@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -132,15 +134,18 @@ type Filesystem struct {
 	lockState openstate.Locks
 	grants    openstate.Grants
 	reg       *registry      // each client's callback paths
-	sending   sync.WaitGroup // the callbacks being delivered
+	sending   sync.WaitGroup // the callbacks being delivered and the releases being run
+	marks     releaser
 
-	mu     sync.Mutex
-	state  state
-	calls  sync.WaitGroup  // the admitted calls not yet answered
-	active int             // how many of calls there are, so Drain tells none from some
-	stop   context.Context // ends at Drain's deadline, ending every admitted call's context
-	cancel context.CancelFunc
-	joins  map[entity.ShareID]*join // the calls counted against each share
+	mu       sync.Mutex
+	state    state
+	starting bool                    // Start is running its steps
+	served   map[entity.ShareID]bool // the shares whose shard has been served
+	calls    sync.WaitGroup          // the admitted calls not yet answered
+	active   int                     // how many of calls there are, so Drain tells none from some
+	stop     context.Context         // ends at Drain's deadline, ending every admitted call's context
+	cancel   context.CancelFunc
+	joins    map[entity.ShareID]*join // the calls counted against each share
 	// removed is every share whose removal removeShare has started.
 	removed map[entity.ShareID]bool
 
@@ -149,6 +154,7 @@ type Filesystem struct {
 
 	inflight       prometheus.Gauge
 	callbackErrors *prometheus.CounterVec
+	refusals       prometheus.Counter
 }
 
 var (
@@ -173,7 +179,9 @@ func New(d Deps) (*Filesystem, error) {
 		build:     make(chan struct{}, 1),
 		joins:     map[entity.ShareID]*join{},
 		removed:   map[entity.ShareID]bool{},
+		served:    map[entity.ShareID]bool{},
 		events:    d.Events,
+		marks:     noMark{},
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",
@@ -182,6 +190,10 @@ func New(d Deps) (*Filesystem, error) {
 			Namespace: "dittofs", Name: "vfs_callback_errors_total",
 			Help: "Callbacks that failed, or found no path to the client, by kind.",
 		}, []string{"kind"}),
+		refusals: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "dittofs", Name: "vfs_deferred_unlink_refusals_total",
+			Help: "Deletes on close refused after their client closed: each file kept its name.",
+		}),
 	}
 	if fs.events == nil {
 		fs.events = noEvents{}
@@ -192,7 +204,7 @@ func New(d Deps) (*Filesystem, error) {
 	}
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
-		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors} {
+		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals} {
 			if err := d.Metrics.Register(c); err != nil {
 				return nil, fmt.Errorf("vfs: %w", err)
 			}
@@ -203,14 +215,103 @@ func New(d Deps) (*Filesystem, error) {
 }
 
 // Start starts serving: from it on, calls are admitted. It is called once,
-// on a built filesystem, before any adapter serves.
+// on a built filesystem, before any adapter serves, and after the node has
+// started open state with the filesystem as its Sink. It serves the shards
+// first, so each installs its persistent opens and enters grace, then ends
+// the open state of each share being removed; it does not wait for grace to
+// end. A step that fails leaves the filesystem built, and Start answers its
+// error: a shard it served stays served, as open state cannot unserve one,
+// and the node stops open state.
 func (fs *Filesystem) Start(ctx context.Context) error {
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if fs.state != built {
+	if fs.state != built || fs.starting {
+		defer fs.mu.Unlock()
 		return fmt.Errorf("vfs: Start of a %s filesystem", fs.state)
 	}
+	fs.starting = true
+	fs.mu.Unlock()
+	err := fs.serveShards(ctx)
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.starting = false
+	if err != nil {
+		return fmt.Errorf("vfs: start: %w", err)
+	}
 	fs.state = serving
+	return nil
+}
+
+// serveShards is Start's first step. It serves the shard of every share,
+// live or being removed, that no failed Start before it served, so each
+// installs its persistent opens, then has open state drop the state of every
+// share being removed, as its removal's step at a start does, telling each
+// holder: no call is admitted yet, so none is left to join. The table raises its events meanwhile, which the
+// filesystem delivers as when serving.
+func (fs *Filesystem) serveShards(ctx context.Context) error {
+	ix := fs.meta.ShareIndex()
+	_, shares, err := ix.List(ctx)
+	if err != nil {
+		return err
+	}
+	removing, err := ix.Removing(ctx)
+	if err != nil {
+		return err
+	}
+	for _, id := range removing {
+		sh, _, err := ix.Share(ctx, id)
+		if err != nil {
+			return err
+		}
+		shares = append(shares, sh)
+	}
+	fs.mu.Lock()
+	shares = slices.DeleteFunc(shares, func(sh entity.Share) bool { return fs.served[sh.ID] })
+	fs.mu.Unlock()
+	if err := fs.serve(ctx, shares); err != nil {
+		return err
+	}
+	fs.mu.Lock()
+	for _, id := range removing {
+		fs.removed[id] = true
+	}
+	fs.mu.Unlock()
+	for _, id := range removing {
+		if err := fs.recovery.DropShare(ctx, id, netip.Addr{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// serve raises the incarnation of each share's shard, in one transaction, a
+// new grace instance, and has open state serve each share's shard under it.
+//
+// ponytail: serve raises the incarnations itself, in its own transaction,
+// standing in for the node's start transaction, which raises them with the
+// node epoch; move the raise there when the node record lands.
+func (fs *Filesystem) serve(ctx context.Context, shares []entity.Share) error {
+	if len(shares) == 0 {
+		return nil
+	}
+	ids := make([]entity.ShardID, len(shares))
+	for i, sh := range shares {
+		ids[i] = sh.Shard
+	}
+	if err := fs.meta.RaiseIncarnations(ctx, ids); err != nil {
+		return err
+	}
+	for _, sh := range shares {
+		rec, err := fs.meta.Shard(ctx, sh.Shard)
+		if err != nil {
+			return err
+		}
+		if err := fs.recovery.ServeShard(ctx, sh.ID, sh.Shard, rec.GraceInstance); err != nil {
+			return err
+		}
+		fs.mu.Lock()
+		fs.served[sh.ID] = true
+		fs.mu.Unlock()
+	}
 	return nil
 }
 
@@ -255,7 +356,9 @@ func (fs *Filesystem) Drain(ctx context.Context) error {
 
 // Stop ends the filesystem: it is called once, on a drained filesystem, or on
 // a built one whose Start was never called or failed. It ends the callbacks
-// being delivered and waits for them to return, and keeps no queue to flush.
+// being delivered and the releases being run and waits for them to return,
+// and keeps no queue to flush: a release it ends is pending in the store,
+// and the next start's recovery runs it.
 // It closes nothing it was handed: the node stops open state, then the
 // engine, the event sink and the store, after it.
 //
@@ -263,7 +366,7 @@ func (fs *Filesystem) Drain(ctx context.Context) error {
 // area's close of an open, and *Filesystem carries both.
 func (fs *Filesystem) Stop() error {
 	fs.mu.Lock()
-	if fs.state != built && fs.state != draining {
+	if fs.state != built && fs.state != draining || fs.starting {
 		defer fs.mu.Unlock()
 		return fmt.Errorf("vfs: Stop of a %s filesystem", fs.state)
 	}

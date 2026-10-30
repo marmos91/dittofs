@@ -18,11 +18,6 @@ import (
 // locks, once open state admits it, and answered with the WCC read in that
 // one hold.
 //
-// ponytail: a change in a share's shard not yet served answers ErrDelay, as
-// open state refuses every change there; the filesystem serves no shard
-// itself yet. Start serves the shards it is primary of once release recovery
-// is built.
-//
 // ponytail: no change draws a version from the engine: the store's SetAttrs,
 // SetACL and xattr changes each draw their own. Draw one under the accept
 // lock and hand it to the store once the store takes a version drawn by its
@@ -492,6 +487,9 @@ func (fs *Filesystem) change(ctx context.Context, c vfs.Call, t vfs.Target, op v
 // locks, and reads its attributes under them: what a WCC's Before is. Its
 // release drops both locks and uncounts the call.
 func (fs *Filesystem) hold(ctx context.Context, c vfs.Call, t vfs.Target) (*admitted, vfs.File, func(), error) {
+	if err := onSession(c, t.Open); err != nil {
+		return nil, vfs.File{}, nil, err
+	}
 	a, release, err := fs.admitChange(ctx, c, t.H)
 	if err != nil {
 		release()

@@ -10,22 +10,6 @@ import (
 // not serving, as every call is, and otherwise answered errUnbuilt. Each moves
 // to its own file as it is built.
 
-func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest) (vfs.OpenResult, error) {
-	return vfs.OpenResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Downgrade(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q vfs.Seqs, access vfs.Access, deny vfs.Access) (uint32, error) {
-	return 0, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) ConfirmOpen(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q vfs.Seqs) (uint32, error) {
-	return 0, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q vfs.Seqs) (*vfs.WCC, error) {
-	return nil, fs.unbuilt(ctx)
-}
-
 func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
 	return 0, false, fs.unbuilt(ctx)
 }

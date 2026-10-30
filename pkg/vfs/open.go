@@ -14,6 +14,12 @@ const (
 	Supersede                                // replace it, or create it
 )
 
+// MaximumAllowed is an open's maximal flag, SMB's MAXIMUM_ALLOWED: beside
+// the rights Access names, the open is granted every right the caller holds
+// on the file, delete through the directory it resolved through included,
+// and refused only when it holds none or lacks one it named.
+const MaximumAllowed Access = 0x02000000
+
 // OpenRequest is what an open asks for. It names the file by Dir and Name, the
 // directory the path resolved through and the entry in it, or, with no Name,
 // by H.
