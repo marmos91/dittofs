@@ -122,6 +122,36 @@ type Identity struct {
 	Client     netip.Addr // the client's address, which client rules read
 }
 
+// Call is one call's caller: the Identity it proved and, beside it, never in
+// it, the client, session and channel it came on. Every Service method that
+// acts for a caller takes one; a call naming no open leaves Client unused.
+// Each call's client is Client, never one the Identity names. Identity is
+// what a resolver caches, keyed on its proof; Identity.Client, its address,
+// is per machine and carried in the key separately wherever a client rule
+// decided. The call's Client is per call, so it is never cached, and two
+// clients proving the same user never pass for each other.
+//
+// decision: an NFSv4.0 call has no session; its Client is the clientid its
+// stateid names, which the adapter checks against the principal
+// SETCLIENTID_CONFIRM recorded, never against the address it came from. The
+// recorded address is where callbacks go, nothing more, so a client that
+// reconnects from a new address keeps its opens. Under AUTH_SYS the principal
+// is a claimed uid, so any host sending that uid and the clientid passes for
+// the client; an address check would not close that, an address being as
+// easy to claim. The check is the NFSv4 adapter's, not the service's, and
+// stays this weak for AUTH_SYS; a share that must not trust it requires a
+// proof above ProofClaimed.
+type Call struct {
+	Identity Identity
+	Protocol Protocol
+	Client   ClientID   // the client the adapter proved the call came from; zero: none, as NFSv3 has
+	Session  SessionRef // the SMB or NFSv4.1 session; zero: none, as NFSv4.0 and NFSv3 have
+	Channel  struct {
+		Seq    uint16 // the SMB channel sequence the request carried
+		Replay bool   // the request is marked a replay
+	}
+}
+
 // ProofKind is how the sender was proved, in increasing order.
 type ProofKind uint8
 

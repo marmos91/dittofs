@@ -33,3 +33,25 @@ func TestMutates(t *testing.T) {
 		t.Fatalf("%d ops, want one per Service method: %d", n, want)
 	}
 }
+
+// Identity is what a resolver caches, keyed on its proof, so nothing in it
+// may name a client or a session: those travel in Call.
+func TestIdentityNamesNoClient(t *testing.T) {
+	forbidden := map[reflect.Type]bool{reflect.TypeFor[vfs.ClientID](): true, reflect.TypeFor[vfs.SessionRef](): true}
+	var walk func(path string, typ reflect.Type)
+	walk = func(path string, typ reflect.Type) {
+		if forbidden[typ] {
+			t.Errorf("Identity%s is a %v, which belongs in Call", path, typ)
+		}
+		switch typ.Kind() {
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				f := typ.Field(i)
+				walk(path+"."+f.Name, f.Type)
+			}
+		case reflect.Slice, reflect.Array, reflect.Pointer:
+			walk(path+"[]", typ.Elem())
+		}
+	}
+	walk("", reflect.TypeFor[vfs.Identity]())
+}
