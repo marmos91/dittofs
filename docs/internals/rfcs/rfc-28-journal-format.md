@@ -346,7 +346,7 @@ synced and recovery finds it torn or steps over it, never corrupt; and the segme
 sealed. What becomes of it after that is [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s rule for a failed
 segment, not an exception to it: a repack candidate once its window is
 resolved, unlinked, never recycled, only after repack has carried forward the
-records synced into it before the failure, unless the next open ends it
+records synced into it before the failure, unless the next open ends or seals it
 ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 **A roll that finds no spare ready is refused, at once.** A content write that
@@ -996,8 +996,9 @@ treated as never written and **MUST NOT** be reported as damage. Unsynced writes
 may survive out of order, so a record that verifies after a torn slot is whole and
 may have been answered: it is attached, never cut off with the slot, and a later sync
 may already have made it durable. A seal marker that verifies proves every record
-before it synced, as it proves the segment header ([§3.1](#3.1%20Rebuilding)): a seal makes its
-records durable before it writes the marker ([§2.5](#2.5%20Catalog%20layout)). So a bad record before
+before it synced, as it proves the segment header ([§3.1](#3.1%20Rebuilding)): a seal waits for every
+append reserved below it to complete, and makes its records durable before it writes
+the marker ([§2.5](#2.5%20Catalog%20layout)); an append that fails there ends the segment instead ([§2.2](#2.2%20Segments)). So a bad record before
 such a marker, a zero slot included, is corruption, not a torn slot or torn tail.
 A seal marker that does not verify is part of the
 torn tail unless a successor names its segment, which proves the seal durable
@@ -1028,14 +1029,17 @@ open finds its failed slot as above. **A segment recovery ends is emptied before
 Nothing can prove its records synced any more. Left in place, later damage to them would
 read as torn. So, once every unproven tail has been verified in place ([§3.1](#3.1%20Rebuilding)),
 recovery empties the segments it ends one at a time, drawing on the repack reserve
-([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). It re-appends, keeping their numbers, the records of the segment
-that repack would carry forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), to a new segment synced with the
-directory together with the loss record of each record it dropped as corrupt. It skips
-a record whose copy with the same sequence number already verifies, payload included,
-in a segment whose header verifies and that recovery does not end, this step's own new
-segments included. It then unlinks the ended segment and syncs the directory. A crash
-part way leaves copies that the next open skips, so the step runs to completion once
-and never appends a record twice.
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). Before the first, it unlinks every segment that backs nothing, and each
+unlinked segment's space refills the reserve before the next is emptied. For each one, it
+re-appends, whole and never merged, keeping their numbers, the records of the segment
+that repack would carry forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), together with the loss record of each
+record it dropped as corrupt. It writes them to a new segment, which it seals and syncs
+with the directory. If that sync fails, it re-appends them again; it never fails them. It
+skips a record whose copy with the same sequence number already verifies, payload
+included, in a segment whose header verifies, that recovery does not end and whose sync
+has not failed in this open, this step's own new segments included. It then unlinks the
+ended segment and syncs the directory. A crash part way leaves copies that the next open
+skips or, if it ends their segment, copies again, so no record is ever held twice.
 
 > decision: a segment recovery ends is emptied whole at open, not left for repack
 > after re-appending only its unproven window. Left in place, it would be ended again
@@ -1285,7 +1289,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. In a sealed segment without its catalog, copy a verifying record over another record of the same size that has records after it; reopen; assert the copy is not attached there, `scan_resyncs` counts one, the segment is reported as damaged, and the original still reads back. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) torn tail cut off | Tear the last record of the newest segment; reopen; write and `Sync` A; crash again and reopen. Assert A reads back, `torn_tails` counted one, and the torn segment is sealed. A design that appends after the torn bytes loses A to the second scan. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and nothing is reported as damage: the original is torn. |
-| [§3.3](#3.3%20Torn%20and%20corrupt%20records) an ended segment is emptied once | End a segment at open (a torn slot before a verifying record) and empty it into a recycled spare. Crash at every step of the emptying with writes reordered, and reopen twice: once with the process killed, and once with power lost right after the second open's unlink. Assert every record the ended segment held reads back each time, none is appended twice, and a corrupt record's loss is still reported. A design that lets two ended segments skip each other's copies, or skips a copy only the page cache holds, loses a synced record. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) an ended segment is emptied once | End a segment at open (a torn slot before a verifying record) and empty it into a recycled spare. Crash at every step of the emptying with writes reordered, and reopen twice: once with the process killed, and once with power lost right after the second open's unlink. Assert every record the ended segment held reads back each time, none is held twice, and a corrupt record's loss is still reported. A design that lets two ended segments skip each other's copies, or skips a copy only the page cache holds, loses a synced record. |
 | [§2.3](#2.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
 | [§2.3](#2.3%20Records) kind values | Golden vectors, one per kind of the kinds table, with fixed identity, `FileID`, tag, offsets, version and payload: assert each encodes to the committed bytes and decodes back, that the kind byte is the table's value, and that every payload and zero field is as the table gives. Flip a verifying header's kind to 15 and to 128, re-checksumming it; assert both fail the open and neither is skipped. |
 | [§2.2](#2.2%20Segments) segment header and seal marker | Golden vectors for a segment header with and without a predecessor, and for a seal marker: assert the committed bytes. Write a segment under another identity; assert its header verifies and the segment is reported as foreign, not damaged. Copy a seal marker into a write's payload; assert a scan does not stop at it. |
