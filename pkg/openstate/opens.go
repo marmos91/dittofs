@@ -966,7 +966,7 @@ func (t *Table) sequenced(o sequence.Owner, n *uint32, req seqReq, fn func(repla
 		// it, or was another principal's, which may not move the owner's
 		// sequence.
 		//
-		// decision: ErrNotYours is exempt beside the four RFC 14 §2.8 lists,
+		// decision: ErrNotYours is exempt beside the four the design lists,
 		// since the adapters answer it NFS4ERR_BAD_STATEID, which the client
 		// does not count either. Count it if it is ever mapped to an error
 		// the client counts.
