@@ -582,6 +582,9 @@ func TestStartAndStop(t *testing.T) {
 		t.Error("a second Start was accepted")
 	}
 	g.Stop()
+	if err := g.Start(ctx, g.sink, g.order.order); err == nil {
+		t.Error("a Start after Stop was accepted")
+	}
 	check("after Stop")
 	if _, err := f.Record(ctx, id); err != nil {
 		t.Fatalf("calls on a stopped table changed the store: %v", err)
