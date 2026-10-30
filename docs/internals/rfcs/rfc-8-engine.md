@@ -906,6 +906,12 @@ pkg/block/engine/            the engine (this RFC)
 pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
+**Until the cutover the engine is `pkg/block/enginev2`**, as the journal is
+`pkg/block/journalv2`, beside v1's `engine` and `journal`; the cutover that
+deletes v1 renames both to the names above. The suffix is in Go package and
+import paths only: metric, span and log names say `engine` and `journal` from
+the start.
+
 `offload/` is the one subpackage. It is the largest state machine, and its tests
 import only fakes of the offer, the carver, a flow and block metadata's views, so the import
 rule enforces its boundary.
