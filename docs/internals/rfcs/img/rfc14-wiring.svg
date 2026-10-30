@@ -84,7 +84,7 @@
   <text x="210" y="365" class="s">Serve still receives; then Serve</text>
   <path d="M396,349 L416,349" class="ln"/>
   <rect x="418" y="314" width="150" height="70" rx="6" class="sv"/>
-  <text x="430" y="333" class="m">Drain, Close</text>
+  <text x="430" y="333" class="m">Drain, Stop</text>
   <text x="430" y="350" class="s">the server; revokes</text>
   <text x="430" y="365" class="s">nothing</text>
   <path d="M570,349 L590,349" class="ln"/>

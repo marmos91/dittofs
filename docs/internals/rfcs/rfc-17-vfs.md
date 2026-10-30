@@ -394,8 +394,8 @@ type Router interface {
 
 // Transport carries a call to env.To and its reply back, over a node channel (RFC 15 §4.4).
 type Transport interface {
-	Send(ctx context.Context, c Call) (Reply, error)
-	Receive(h func(context.Context, Call) Reply) (stop func())
+	Send(ctx context.Context, r Request) (Reply, error)
+	Receive(h func(context.Context, Request) Reply) (stop func())
 }
 
 // Peers carries the server's own calls to another primary (cluster), each
@@ -423,9 +423,11 @@ type Envelope struct {
 	Hop        uint8
 }
 
-// Call is one Service method as values (§4.7), and Reply is its results.
-type Call struct { Env Envelope; Op vfs.Op; Args []any; Trace []byte }
-type Reply struct { Results []any; Err error }
+// Request is one Service method as values (§4.7), sent to the node that owns
+// the share, and Reply is its results. Forwarding is what the gateway does with
+// a Request, not a type: vfs.Call names only who is calling.
+type Request struct { Env Envelope; Op vfs.Op; Args []any; Trace []byte }
+type Reply   struct { Results []any; Err error }
 ```
 
 `New` keeps no `*openstate.Table`: it takes the table's seven views
@@ -461,7 +463,7 @@ nothing else of the service.
 ```text
 pkg/vfs/                     the contract adapters build against
   service.go                 Service, composed of one interface per area (§3.1)
-  types.go open.go           Handle, Identity, OpenRef, Target, WCC, … and the aliases of metadata types (§3.0)
+  types.go open.go           Handle, Identity, Call, OpenRef, Target, WCC, … and the aliases of metadata types (§3.0)
   ids.go                     the codecs of every client-held name (§3.4)
   errors.go                  sentinels, *Delay, *QuotaError, *StateError, *CrossError, Errors() (§4.3);
                              re-exports, as aliases, the neutral content errors the engine also returns
@@ -470,10 +472,10 @@ pkg/vfs/                     the contract adapters build against
   vfstest/                   Record, Null and RecordingCallbacks, hand-written (§8)
     suite/                   suite.Run: the conformance suite, one file per area (§8)
 internal/vfs/                the server, one file per operation; the gateway and its receive side
-  server.go                  Server, New(Deps), Start, Drain, Close (§2.5); Content
+  server.go                  Server, New(Deps), Start, Drain, Stop, JoinShare (§2.5); Content
   gateway.go                 Gateway, NewGateway: §2.1's routing table and the one generic call path
   serve.go                   Serve: the fence and the dedup table, and the checked Service it returns
-  envelope.go                Envelope, Call, Reply, Router, Transport, Peers
+  envelope.go                Envelope, Request, Reply, Router, Transport, Peers
   clients.go                 Connect, AddSession, Renew, Disconnect, Destroy, … (§3.1)
   lookup.go readdir.go       Lookup (§5.10); ReadDir
   create.go link.go          Create (§5.10); Link
@@ -516,7 +518,7 @@ reverse. No piece closes anything it was handed.
 | # | Piece | Built by | Calls | Start | Stop |
 | --- | --- | --- | --- | --- | --- |
 | 1 | metadata store, engine, GC, open state, identity | their RFCs, in [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s order | engine: the journal, the syncer, the block-metadata views; GC: `Blocks`, `Remote`, the syncer, `Keys` | before the server | after it; GC drains before the server stops |
-| 2 | `*vfs.Server` | `vfs.New(Deps)` | identity, open state, the metadata views, the engine | `Start`, below | `Drain`, then `Close` |
+| 2 | `*vfs.Server` | `vfs.New(Deps)` | identity, open state, the metadata views, the engine, the event sink | `Start`, below | `Drain`, then `Stop` |
 | 3 | `vfs.Serve` **(cluster)** | `vfs.Serve` | `Router.Fence`, the server | registers on the transport | after the node has handed over the shards it is primary of; stops receiving and joins the calls running |
 | 4 | `*vfs.Gateway` **(cluster)** | `vfs.NewGateway(GatewayDeps)` | the checked `Service`, `Router`, `Transport` | nothing to start | refuses new calls with `ErrUnavailable` and joins the forwarded ones |
 | 5 | adapters | [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) | `vfs.Service` | last: after the first reconcile has opened the shares and, in a cluster, a node epoch exists | first |
@@ -533,16 +535,20 @@ calls to those shards are answered by this node until the new primary serves,
 never refused while they wait for a failover.
 
 `vfs.Service` carries no lifecycle method. `*vfs.Server`, which `New` returns
-and only the node holds, carries three:
+and only the node holds, carries three, and `JoinShare` for a share's removal:
 
 ```go
 func (s *Server) Start(ctx context.Context) error // before any adapter serves
 func (s *Server) Drain(ctx context.Context) error // after every adapter has drained
-func (s *Server) Close() error                    // closes nothing it was handed
+func (s *Server) Stop() error                     // closes nothing it was handed
+func (s *Server) JoinShare(ctx context.Context, sh ShareID) error // waits out the calls admitted to sh before its removal mark (§4.9)
 ```
 
+`Stop`, not `Close`: `Data.Close` closes an open, and `Stop` matches
+`Node.Stop` and `Table.Stop`.
+
 The server moves through four states, **built**, **serving**, **draining** and
-**closed**, once and in that order. `New` starts no goroutine and opens nothing.
+**stopped**, once and in that order. `New` starts no goroutine and opens nothing.
 
 **Start.** Each step completes before the next begins. A step that fails stops
 what the earlier ones started, and `Start` returns its error, so the server is
@@ -559,7 +565,7 @@ either serving or as it was built.
    grace to end.
 2. **Shares.** Read the share list, build the pseudo-filesystem from it
    ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), start following the share
-   list's version, and start the event sink's queue (§3.3).
+   list's version.
 
 **Drain.** Called once every adapter has drained
 ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), and in a
@@ -571,16 +577,29 @@ them, and a mutation cancelled there may still have applied, as RFC 20 §3.1
 says of an abandoned request. Draining revokes nothing: open state is left to
 the next start's grace, and a recall in flight is neither forced nor revoked.
 
-**Close.** Stops the timers, flushes the event sink's queue until the context
-given to `Drain` ends, then drops what is left and counts it (§7). It closes
-nothing it was handed: the node stops open state (`Table.Stop`), then closes
-the engine and the store, after it.
+**Stop.** Stops the timers. It closes nothing it was handed: the node stops
+open state (`Table.Stop`), then closes the engine and the store, after it.
+
+**The server keeps no event queue.** It hands each event to the sink as it
+builds it, and the sink's contract is that it never blocks (§3.3): the sink
+drops what it cannot keep and alone counts each drop, RFC 25's
+`events_dropped_total{stream, reason}` (§7). With no sink configured the null
+sink takes them. The node stops the sink after the server
+([RFC 25 §8.1](rfc-25-observability.md#8.1%20What%20the%20root%20builds)), so
+a second queue here would only drop the same event in a second place, counted
+by a second metric.
 
 **Shares come and go while the server serves.** Adding a share is a record
 written to the store; the server sees the share list's version rise and
 rebuilds the pseudo-filesystem, and no call to the service is made. Removing
 one is [RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)'s
-procedure, whose service steps are §4.9's join and RFC 14's `DropShare`.
+procedure, whose service steps are the node's: for every shard it is primary
+of whose share's removal has reached step 3 and whose `rm` row is not yet
+offloaded — while serving, and again at `Node.Start` — it calls `JoinShare`,
+§4.9's join, then RFC 14's `DropShare`. The control plane's `DeleteShare` only marks
+the share and returns, `202` ([RFC 23 §3.2](rfc-23-control-plane.md#3.2%20A%20share)), so no
+request waits on the slowest call, and a crash between the mark and the join
+leaves a marked share the next start finishes.
 
 > decision: the lifecycle methods are on the concrete types, not on
 > `vfs.Service`. Keeping them off the interface is what stops an adapter from
@@ -608,9 +627,10 @@ holds.
 
 | Type | What it is |
 | --- | --- |
-| `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
+| `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one inside a `Call`; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
+| `Call` | `{Identity Identity; Protocol Protocol; Client ClientID; Session SessionRef; Channel struct{Seq uint16; Replay bool}}`: who a call comes from, taken by every method of every area but `SignIn` and `Spell`, which act for no caller (§3.1). `Identity` is the user, what the resolver resolves and caches; the rest sit beside it, never inside it, so no cache ever sees them and two machines signed in as one principal share a resolution but never a client. `Protocol` is the request's; `Client` the machine, as the adapter proved it — for NFSv4.1 and SMB its session's, for NFSv4.0 the client on the state its stateid resolves to, or for an operation that names an open or lock owner, that owner's client, and only a client confirmed under NFSv4.0, as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, for NLM the host's client record, zero for an NFSv3 call that names no lock; `Session` the SMB or NFSv4.1 session, zero otherwise; `Channel` an SMB request's channel sequence and whether it is a replay, checked through `Opens.Channel` ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). It is not `Identity.Client`, which is the client's address. One shape serves every call: an NFSv4 `REMOVE` or an SMB delete on close can name an open (`Target.Open`) whose `NotYours` check needs the call's client, and every access event carries the protocol and client (§3.3); a call that names no open, a `Lookup` say, leaves `Client` unused. A `Clients` method names the client it acts on as its own argument; only `Propose` and `Connect`, which come before there is one, take a `Call` whose `Client` is not yet that client |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
-| `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Caller.Client`) — and carries no identity: the call's `id` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
+| `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Call.Client`) — and carries no identity: the call's `Identity` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
@@ -668,78 +688,78 @@ type Service interface {
 // client's sessions; the gateway routes these calls to it (§2.1, §2.2), except
 // TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
-	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's server; changes no state
-	Connect(ctx context.Context, id Identity, c ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
-	AddSession(ctx context.Context, id Identity, c ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
-	Record(ctx context.Context, id Identity, c ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
-	Renew(ctx context.Context, id Identity, c ClientID) (ClientStatus, error)
-	Disconnect(ctx context.Context, id Identity, c ClientID, s SessionRef) error // an SMB session's last channel ended
-	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
-	ReclaimComplete(ctx context.Context, id Identity, c ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
-	FreeState(ctx context.Context, id Identity, c ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
-	TestState(ctx context.Context, id Identity, c ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
-	ReleaseLockOwner(ctx context.Context, id Identity, c ClientID, o LockOwner) error // StateError LocksHeld while it holds a lock
-	HostRestarted(ctx context.Context, id Identity, host []byte, state uint32) error // NSM SM_NOTIFY, NLMPROC4_FREE_ALL: expires the host's old client
+	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's server; changes no state
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
+	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
+	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
+	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error // an SMB session's last channel ended
+	Destroy(ctx context.Context, c Call, cl ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
+	ReclaimComplete(ctx context.Context, c Call, cl ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
+	FreeState(ctx context.Context, c Call, cl ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
+	TestState(ctx context.Context, c Call, cl ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
+	ReleaseLockOwner(ctx context.Context, c Call, cl ClientID, o LockOwner) error // StateError LocksHeld while it holds a lock
+	HostRestarted(ctx context.Context, c Call, host []byte, state uint32) error // NSM SM_NOTIFY, NLMPROC4_FREE_ALL: expires the host's old client
 }
 
 // Names. Every method also takes a pseudo-filesystem handle (§4.9).
 type Names interface {
-	Lookup(ctx context.Context, id Identity, dir Handle, name []byte) (Handle, File, error)
-	ReadDir(ctx context.Context, id Identity, dir Handle, after Cursor, max int, want EntryFields) (Page, error)
-	Create(ctx context.Context, id Identity, dir Handle, name []byte, a CreateArgs) (CreateResult, error) // mkdir, symlink, mknod, NFSv3 CREATE
-	Link(ctx context.Context, id Identity, dir Handle, name []byte, target Handle) (CreateResult, error)
-	Unlink(ctx context.Context, id Identity, dir Target, name []byte) (UnlinkResult, error) // any entry; a directory only when empty
-	Rmdir(ctx context.Context, id Identity, dir Target, name []byte) (UnlinkResult, error)  // a directory only; ErrNotDir otherwise
-	Rename(ctx context.Context, id Identity, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error)
+	Lookup(ctx context.Context, c Call, dir Handle, name []byte) (Handle, File, error)
+	ReadDir(ctx context.Context, c Call, dir Handle, after Cursor, max int, want EntryFields) (Page, error)
+	Create(ctx context.Context, c Call, dir Handle, name []byte, a CreateArgs) (CreateResult, error) // mkdir, symlink, mknod, NFSv3 CREATE
+	Link(ctx context.Context, c Call, dir Handle, name []byte, target Handle) (CreateResult, error)
+	Unlink(ctx context.Context, c Call, dir Target, name []byte) (UnlinkResult, error) // any entry; a directory only when empty
+	Rmdir(ctx context.Context, c Call, dir Target, name []byte) (UnlinkResult, error)  // a directory only; ErrNotDir otherwise
+	Rename(ctx context.Context, c Call, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error)
 }
 
 // Attributes, ACLs, xattrs, streams.
 type Attributes interface {
-	GetAttr(ctx context.Context, id Identity, h Handle) (File, error)
-	SetAttr(ctx context.Context, id Identity, t Target, a AttrChange) (WCC, error)
-	GetACL(ctx context.Context, id Identity, h Handle) (ACL, error)
-	SetACL(ctx context.Context, id Identity, t Target, acl ACL) (WCC, error)
-	Xattrs(ctx context.Context, id Identity, h Handle) ([]Xattr, error)
-	SetXattr(ctx context.Context, id Identity, t Target, x Xattr, m XattrMode) (WCC, error)
-	RemoveXattr(ctx context.Context, id Identity, t Target, name []byte) (WCC, error)
-	Streams(ctx context.Context, id Identity, h Handle) ([]File, error)
-	Access(ctx context.Context, id Identity, h, parent Handle, want Access) (Access, error) // Files.Granted ∩ want; parent zero when unknown
+	GetAttr(ctx context.Context, c Call, h Handle) (File, error)
+	SetAttr(ctx context.Context, c Call, t Target, a AttrChange) (WCC, error)
+	GetACL(ctx context.Context, c Call, h Handle) (ACL, error)
+	SetACL(ctx context.Context, c Call, t Target, acl ACL) (WCC, error)
+	Xattrs(ctx context.Context, c Call, h Handle) ([]Xattr, error)
+	SetXattr(ctx context.Context, c Call, t Target, x Xattr, m XattrMode) (WCC, error)
+	RemoveXattr(ctx context.Context, c Call, t Target, name []byte) (WCC, error)
+	Streams(ctx context.Context, c Call, h Handle) ([]File, error)
+	Access(ctx context.Context, c Call, h, parent Handle, want Access) (Access, error) // Files.Granted ∩ want; parent zero when unknown
 }
 
 // Data.
 type Data interface {
-	Open(ctx context.Context, id Identity, req OpenRequest) (OpenResult, error)
-	Downgrade(ctx context.Context, id Identity, ref OpenRef, q Seqs, access, deny Access) (uint32, error) // NFSv4 OPEN_DOWNGRADE: the open's new stateid seqid
-	ConfirmOpen(ctx context.Context, id Identity, ref OpenRef, q Seqs) (uint32, error)                    // NFSv4.0 OPEN_CONFIRM: the open's new stateid seqid
-	Close(ctx context.Context, id Identity, ref OpenRef, q Seqs) (*WCC, error)            // the parent's WCC when a delete on close ran
-	Read(ctx context.Context, id Identity, ref OpenRef, off int64, dst []byte) (n int, eof bool, err error)
-	Write(ctx context.Context, id Identity, ref OpenRef, off int64, src []byte, s Stability) (WriteResult, error)
-	Commit(ctx context.Context, id Identity, ref OpenRef, off, length int64) (Verifier, error) // NFS COMMIT, SMB FLUSH
-	Deallocate(ctx context.Context, id Identity, ref OpenRef, off, length int64) (WCC, error)
-	Seek(ctx context.Context, id Identity, ref OpenRef, off int64, what SeekWhat) (int64, error)
-	Copy(ctx context.Context, id Identity, a CopyArgs) (CopyResult, error) // COPY, copychunk: bounded chunks, synchronous, may be short
-	Clone(ctx context.Context, id Identity, a CopyArgs) (WCC, error)        // CLONE, duplicate-extents: atomic
+	Open(ctx context.Context, c Call, req OpenRequest) (OpenResult, error)
+	Downgrade(ctx context.Context, c Call, ref OpenRef, q Seqs, access, deny Access) (uint32, error) // NFSv4 OPEN_DOWNGRADE: the open's new stateid seqid
+	ConfirmOpen(ctx context.Context, c Call, ref OpenRef, q Seqs) (uint32, error)                    // NFSv4.0 OPEN_CONFIRM: the open's new stateid seqid
+	Close(ctx context.Context, c Call, ref OpenRef, q Seqs) (*WCC, error)            // the parent's WCC when a delete on close ran
+	Read(ctx context.Context, c Call, ref OpenRef, off int64, dst []byte) (n int, eof bool, err error)
+	Write(ctx context.Context, c Call, ref OpenRef, off int64, src []byte, s Stability) (WriteResult, error)
+	Commit(ctx context.Context, c Call, ref OpenRef, off, length int64) (Verifier, error) // NFS COMMIT, SMB FLUSH
+	Deallocate(ctx context.Context, c Call, ref OpenRef, off, length int64) (WCC, error)
+	Seek(ctx context.Context, c Call, ref OpenRef, off int64, what SeekWhat) (int64, error)
+	Copy(ctx context.Context, c Call, a CopyArgs) (CopyResult, error) // COPY, copychunk: bounded chunks, synchronous, may be short
+	Clone(ctx context.Context, c Call, a CopyArgs) (WCC, error)        // CLONE, duplicate-extents: atomic
 }
 
 // Locks, grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, id Identity, ref OpenRef, r LockReq) (StateRef, error) // the lock state's reference, new Seq included; zero where the protocol names none
-	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
-	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
-	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error) // in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid
-	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: a return; StateError NoRecall: a lease or oplock with no recall in flight (RFC 14 §2.4)
-	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
-	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
+	Lock(ctx context.Context, c Call, ref OpenRef, r LockReq) (StateRef, error) // the lock state's reference, new Seq included; zero where the protocol names none
+	CancelLock(ctx context.Context, c Call, ref OpenRef, r ByteRange) (granted bool, err error)
+	TestLock(ctx context.Context, c Call, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
+	Unlock(ctx context.Context, c Call, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error) // in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid
+	AckRecall(ctx context.Context, c Call, g GrantID, to GrantKind) error // to GrantNone: a return; StateError NoRecall: a lease or oplock with no recall in flight (RFC 14 §2.4)
+	Watch(ctx context.Context, c Call, w WatchSpec) (WatchID, error)
+	Unwatch(ctx context.Context, c Call, w WatchID) error
 }
 
 // Shares and volumes (§4.9).
 type Shares interface {
-	Root(ctx context.Context, id Identity, s ShareRef) (Handle, ShareInfo, error) // MNT, PUTROOTFH, PUTPUBFH, TREE_CONNECT; zero ShareRef: the pseudo-root
-	SecInfo(ctx context.Context, id Identity, dir Handle, name []byte) ([]AuthFlavor, error)
-	ListShares(ctx context.Context, id Identity) ([]ShareInfo, error)
-	StatFS(ctx context.Context, id Identity, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
-	Quota(ctx context.Context, id Identity, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
-	Snapshots(ctx context.Context, id Identity, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
+	Root(ctx context.Context, c Call, s ShareRef) (Handle, ShareInfo, error) // MNT, PUTROOTFH, PUTPUBFH, TREE_CONNECT; zero ShareRef: the pseudo-root
+	SecInfo(ctx context.Context, c Call, dir Handle, name []byte) ([]AuthFlavor, error)
+	ListShares(ctx context.Context, c Call) ([]ShareInfo, error)
+	StatFS(ctx context.Context, c Call, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
+	Quota(ctx context.Context, c Call, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
+	Snapshots(ctx context.Context, c Call, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
 }
 ```
 
@@ -751,7 +771,7 @@ type Shares interface {
 type Principals interface {
 	SignIn(ctx context.Context, step SignInStep) (SignInResult, error)           // one verification round: a ticket or an NTLM response in, the Identity, the session keys and the reply token out
 	Spell(ctx context.Context, p Principal, as Scheme) (Spelling, error)         // owner string, SID, uid: RFC 18's spelling of p
-	Find(ctx context.Context, id Identity, s Spelling) (Principal, error)       // the principal holding s; mints a directory principal only for a proven id
+	Find(ctx context.Context, c Call, s Spelling) (Principal, error)       // the principal holding s; mints a directory principal only for a proven identity
 }
 ```
 
@@ -785,13 +805,15 @@ So no handler follows a mutation with a `GetAttr`
 
 **Which calls change state.** These change nothing — no file, open state,
 client record or lease — and a handler may make any number of them:
-`Propose`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`, `Xattrs`,
-`Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
-`ListShares`, `StatFS`, `Quota` and `Snapshots`. Every other method may change
+`Propose`, `Record`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`,
+`Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
+`ListShares`, `StatFS`, `Quota`, `Snapshots` and `Spell`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so `vfstest.Record` and the adapters' one-call test read it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. `Read` is on it although the store may advance access time;
+but the confirm. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
+since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
 
 > decision: the attributes are always returned, and atomic when present:
@@ -811,7 +833,7 @@ its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20rele
 only through the state it presents, as an NFSv4.0 stateid does, anyone who
 learns that state could present it. An open's open-time grant
 ([§4.6](#4.6%20One%20chokepoint)) therefore authorises a call only when the
-call's `id` resolves to the principal the open was granted to, or to the
+call's `Identity` resolves to the principal the open was granted to, or to the
 client's `Owner` for a call its state protection (`Protect`) names
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call by any other principal through
 the same open or lock state **MUST** be refused with `NotYours`
@@ -823,8 +845,10 @@ its own access opens the file itself.
 under its delegation's stateid for any of its open-owners and principals
 (RFC 8881 §9.1.3), so an `OpenRef` naming a delegation is not bound to a
 principal. The service **MUST** refuse it with `NotYours` unless the delegation
-is held by the call's client — for NFSv4.1 the session's — and **MUST** then
-authorise the call as for an anonymous open: `id`'s principal against the file
+is held by the call's client on a session (`Call.Session` set); a `Delegated`
+reference on a call with no session is `NotYours`, since NFSv4.0 is offered no
+delegation. The service **MUST** then authorise the call as for an
+anonymous open: the `Identity`'s principal against the file
 and the share grant ([§4.6](#4.6%20One%20chokepoint)), and against the deny
 modes held. The delegation lends no access.
 
@@ -1148,7 +1172,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
 | `AckRecall` | `Grants.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `Watches.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
-| `Root`, `SecInfo`, `ListShares` | share records and export policy (gap: RFC 16 declares no read view of the share indexes but `ControlPlane.Shares`), `Files.Root` | — | lease owner |
+| `Root`, `SecInfo`, `ListShares` | `ShareIndex`: share records, export policy and the name and path indexes ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); `Files.Root` | — | lease owner |
 | `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the server ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local server; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
@@ -1305,7 +1329,7 @@ conflict check, in that order:
 ```go
 // The order of every call (indicative), in the server at the file's primary,
 // where the gateway has routed it (§2.1); RFC 7 §7 owns what Authorize decides.
-caller, err := s.admit(ctx, id, shareOf(h)) // state, flavour, client rules, resolution, share cap → RFC 18's Caller
+caller, err := s.admit(ctx, call, shareOf(h)) // state, flavour, client rules, resolution, share cap → RFC 18's Caller
 switch {
 case t.Open != nil && t.Open.Kind == Opened: // through an open: its stored grant
 	g := openGrant(t.Open)                     // RFC 14's Access, Privileged and Via
@@ -1449,10 +1473,14 @@ are and is never cached.
 **A share's removal joins the calls admitted before it.** Admission counts
 the call against its share *before* it reads the share's state, and uncounts it
 when the call is answered or refused; the count is kept by the server that
-admits, the file's primary. Once the removal's mark commits, its
-step 3 ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share))
-waits for the count to reach zero before it ends the share's open state,
-alongside the engine's own join
+admits, the file's primary. Once the removal's mark commits, the node calls
+`Server.JoinShare`, which waits for the count to reach zero, and only then
+RFC 14's `DropShare`, which ends the share's open state: that is step 3 of
+[RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), which
+the node runs for every shard it is primary of whose `rm` row is not yet
+offloaded, while serving and again at `Node.Start` (§2.5), so a primary that
+crashes partway finds the shard again however far the coordinator has moved
+the share's `st`, alongside the engine's own join
 ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 Counting before checking closes the window: a call that read the state before
 the mark had counted itself first, so the join waits for it, and one that
@@ -1550,8 +1578,8 @@ serving a file's waiters in the timer's steps, and after `AckRecall`,
 the `order` function the node hands the table at `Start`
 ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the service calls
 those holding no admission lock. Every table
-call in the sketches below passes `c.Who()`: the call's client, mapped
-principal and protocol, as RFC 14's `Caller`, and names a file by `keyOf`: its
+call in the sketches below passes `c.Who()`: the `Call`'s client and
+protocol and the mapped principal, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`.
 
 **A held call holds nothing.** A call the service holds behind a clone or a copy's
@@ -1581,8 +1609,8 @@ Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0)
 The lock never spans a sync or a group commit.
 
 ```go
-func (s *Server) Write(ctx context.Context, id Identity, ref OpenRef, off int64, src []byte, st Stability) (WriteResult, error) {
-	c, done, err := s.admit.Call(ctx, id, ref.Handle) // step 1: counted, then admitted (§4.9)
+func (s *Server) Write(ctx context.Context, call Call, ref OpenRef, off int64, src []byte, st Stability) (WriteResult, error) {
+	c, done, err := s.admit.Call(ctx, call, ref.Handle) // step 1: counted, then admitted (§4.9)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -2107,11 +2135,11 @@ call and never follows a symlink — the client does
 ([RFC 22 §12.4](rfc-22-smb.md#12.4%20Reparse%20points)).
 
 ```go
-func (s *Server) Lookup(ctx context.Context, id Identity, dir Handle, name []byte) (Handle, File, error) {
+func (s *Server) Lookup(ctx context.Context, call Call, dir Handle, name []byte) (Handle, File, error) {
 	if s.pseudo.Is(dir) {
-		return s.pseudo.Lookup(ctx, id, dir, name) // a pseudo directory, or the junction into a share
+		return s.pseudo.Lookup(ctx, call, dir, name) // a pseudo directory, or the junction into a share
 	}
-	c, done, err := s.admit.Call(ctx, id, dir) // §4.9
+	c, done, err := s.admit.Call(ctx, call, dir) // §4.9; a Lookup names no open, so call.Client goes unused
 	if err != nil {
 		return nil, File{}, err
 	}
@@ -2131,7 +2159,7 @@ func (s *Server) Lookup(ctx context.Context, id Identity, dir Handle, name []byt
 		return nil, File{}, err
 	}
 	if share(h) != share(dir) { // a junction into another share: admitted and resolved again there
-		c2, done2, err := s.admit.Call(ctx, id, h)
+		c2, done2, err := s.admit.Call(ctx, call, h)
 		if err != nil {
 			return nil, File{}, err
 		}
@@ -2219,7 +2247,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 
 | # | Invariant | Test |
 | --- | --- | --- |
-| V3 | Every cross-component order is the one in §5, in every protocol. | Each order is tested by what it prevents, through each protocol's `Identity`: a write refused at step 3 holds no reservation, stages no byte and clears no setuid bit; one refused at step 5 holds no reservation; a create refused add-file charges no inode and adds no entry, and is refused `ErrAccess` before a delete-pending parent could answer `ErrDeletePending`. |
+| V3 | Every cross-component order is the one in §5, in every protocol. | Each order is tested by what it prevents, through each protocol's `Call`: a write refused at step 3 holds no reservation, stages no byte and clears no setuid bit; one refused at step 5 holds no reservation; a create refused add-file charges no inode and adds no entry, and is refused `ErrAccess` before a delete-pending parent could answer `ErrDeletePending`. |
 | V4 | A routing refusal never reaches an adapter. | **(cluster)** Move a shard's primary between a call's routing and its arrival; assert the gateway re-routes and the call succeeds. |
 | V6 | A recall not acknowledged by its deadline revokes the grant; no worker waits on a recall. | A conflicting operation returns `ErrDelay` while its recall is pending, with no goroutine blocked; a recall that misses its deadline delivers `RevokedGrant` naming the grant, `Renew` reports `RecallableRevoked`, a write under its stateid returns `ErrState` (`Revoked`), not `NotYours`, and the client's next open is offered no grant while the revoked one is unfreed. |
 | V7 | The conflict check and the I/O it admits run at one primary, and no conflicting state is granted between them. | A model test interleaves a lock and a write: the lock is ordered wholly before or after the write. |
@@ -2246,7 +2274,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
 | V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
 | V32 | The service imports no adapter and no network code; the gateway and `Serve` call no store, engine, open state or identity and hold the server only as a `vfs.Service`; `Authorize` and `Granted` are called only from `authz`. | §8's architecture check, which must report each of its seeded violations. |
-| V33 | `Start` is all or nothing, `New` starts nothing, and `Close` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Close`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
+| V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |
 | V36 | Only the client's own principal moves its callback path. | A second node presents alice-pc's `ClientGuid` from a session authenticated as mallory: `ClientInUse`, and alice-pc's next lease break still reaches alice-pc; a `NEGOTIATE` alone registers nothing. |
@@ -2321,7 +2349,7 @@ primary from a local one" a checked claim rather than a design intention.
 **Entry point.** `vfstest/suite.Run(t, newService)` runs the conformance suite
 against any factory, a server or a gateway, one file per area of §3.1 — clients, names, attributes,
 data, locking, shares — plus `crossproto.go`, the cross-protocol scenarios,
-driven by `Identity` values of different `Protocol` with no adapter, and
+driven by `Call` values of different `Protocol` with no adapter, and
 `faults.go`, as `pkg/metadata/storetest` does for stores. It is how the
 service is tested end to end before any adapter calls it. `Record`, `Null` and
 `RecordingCallbacks` in `pkg/vfs/vfstest` are hand-written: `Record` implements
@@ -2471,9 +2499,9 @@ tree working:
    widths (§3.4).
 4. **Gaps in the layers below**, found by §3.5's table: RFC 7's `Attrs` has no exclusive-create
    verifier though [RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create) stores one, and no call turns an empty file into a
-   symlink (SMB `SET_REPARSE_POINT`); RFC 16 declares no read view of the share
-   name and path indexes or of quota records but `ControlPlane`'s, which the
-   server must not call. Each is the owning RFC's to add.
+   symlink (SMB `SET_REPARSE_POINT`); RFC 16 declares no read view of quota
+   records but `ControlPlane`'s, which the server must not call. Each is the
+   owning RFC's to add.
 
 5. **Watches and placement across shards.** A recursive watch over a subtree
    whose directories sit in several shards ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards))
