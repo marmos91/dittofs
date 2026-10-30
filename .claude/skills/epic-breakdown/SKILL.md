@@ -21,9 +21,9 @@ the plan does not:
 3. **The pull requests.** A suggestion of how the subtasks group into one to three pull
    requests.
 
-The reference results are `docs/internals/planning/rfc-1-journal-epic3.md` (structure,
-decisions, depth) and `rfc-1-journal-epic4.md` (the requirements tables). Read both once.
-**Do not copy their content.**
+The reference result is [`example-epic.md`](example-epic.md), beside this file: an epic of
+an invented RFC that follows every rule below, with its requirement tables, estimate lines
+and suggested pull requests. Read it once for shape and depth. **Do not copy its content.**
 
 **Do not write code while breaking down.** Read the RFC and the code you need to understand,
 and write the document. That is the whole output.
