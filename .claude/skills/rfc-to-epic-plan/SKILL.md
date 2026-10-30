@@ -6,9 +6,6 @@ description: Turn a DittoFS RFC (docs/internals/rfcs/rfc-*.md) into an implement
 # From an RFC to an epic plan
 
 The output is one Markdown plan that a small team can pick up and work in parallel.
-The reference result is `docs/internals/planning/rfc-1-journal-plan.md`: read it once for
-tone and depth. **Do not copy its content.** Its epics, packages and rules are about the
-journal, and the next RFC has a different shape.
 
 Naming used below: **v1** is the component that exists today, and **v2** is the one the
 RFC describes. When the RFC builds something new, there is no v1 and every v1 clause
@@ -32,8 +29,9 @@ Steps of this skill are its procedure, not units of the plan.
 
 Read the RFC's frontmatter first (`rfc`, `title`, `component`, `status`, `depends_on`).
 Then fill the checklist below. Take an answer from the user's request or from the repo
-where you can. Where you cannot, **ask** with `AskUserQuestion`, in one batch. **Do not
-start planning while a required item is still open.** Defaults are only for the items
+where you can. Where you cannot, **ask** with `AskUserQuestion`, in one batch; if you
+cannot ask (for example when running as a subagent), stop and report the missing inputs
+rather than guess. **Do not start planning while a required item is still open.** Defaults are only for the items
 marked as having one, and the plan's header states each default that was used.
 
 | # | Input | Required? | How to fill it |
@@ -46,7 +44,7 @@ marked as having one, and the plan's header states each default that was used.
 | 6 | Tracks | fixed: three tracks named **A, B and C** (Step 2), with no owner | do not ask; who works which track is decided outside the plan |
 | 7 | Target branch and external dependencies (PRs or other plans that must land first) | default: none known, listed as an open point | check `docs/internals/planning/` for plans this RFC depends on |
 | 8 | The programme this RFC belongs to: an umbrella issue or plan that stages the work, assigns owners, and says which existing code is being replaced | **required** | ask for the link, then read its latest decisions; if there is none, say so in the header |
-| 9 | Dashboards | default: **no**, unless the RFC asks for them | the RFC's named alerts are alert rules in the integration epic's exporters, not a dashboard epic |
+| 9 | Dashboards | default: **no**, unless the RFC asks for them | the RFC's named alerts are alert rules (RFC 25 §7) in the integration epic, not a dashboard epic |
 | 10 | Output path | default: `docs/internals/planning/rfc-<n>-<slug>-plan.md` | |
 | 11 | RFC `status: deferred` | **ask** | plan the whole RFC, or only the hooks the RFC says must exist before it is built? |
 
@@ -61,20 +59,26 @@ marked as having one, and the plan's header states each default that was used.
   with them. Where you diverge, say so as an open point.
 - Read the programme from Step 0 #8: its stages, who owns each, and what each stage
   replaces. Never plan integration against code a later stage deletes.
+- Read RFC 25 (`docs/internals/rfcs/rfc-25-observability.md`) §2, §3.9, §5, §6 and §8:
+  the observability contract every component follows (rule 3). Find the RFC's prefix in
+  §2.1's table, and check whether the RFC states an exception of its own.
 
 ## Step 2 — Carve the epics
 
 ### Fixed epics
 
-The first two and the last two epics always have these roles, and a dashboards epic
-follows them only when Step 0 #9 says so. Number them by position: with N middle epics, the
-last two are N+3 and N+4.
+E1 and E2 always open the plan, and E2E green always closes it, followed only by the
+optional dashboards epic (Step 0 #9). The integration epics sit just before E2E green: one,
+or one per programme stage that needs its own (Step 0 #8), including any "planned after" a
+synchronisation point (Step 3). Number every epic by position: E1, E2, the N middle epics
+(E3 to E(N+2)), the integration epics from E(N+3), then E2E green, then dashboards. With
+one integration epic, E2E green is E(N+4); with two, E(N+5).
 
 | Role | Content |
 | --- | --- |
-| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, `Stats`, and the injection points (options, a `Tracer`, a logger). Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
+| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
 | **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness, a known-failure list the runner reads) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
-| **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, exporters for metrics and spans (and the RFC's alert rules), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
+| **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the known-failure list to empty. Also soak tests, benchmarks the RFC names, and CI registration. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
 
@@ -87,8 +91,8 @@ surface, E2's test components, another epic's pure in-memory implementation, or 
 implementation of an epic it depends on once that has landed.
 
 **How many.** Start from the estimate `N = round(wc -l RFC / 400)`, clamped to 3..8, so
-that each of the three tracks owns at least one. For RFC 1 (2747 lines) that gives 7 middle
-epics. For RFC 30 (445 lines) it gives 3.
+that each of the three tracks owns at least one. A 2,800-line RFC gives 7 middle epics; a
+450-line one gives 1, raised to the floor of 3.
 
 The estimate is a **sanity check, not a quota**:
 1. First, list the RFC's cohesive work areas **without looking at N**. Map each one to the
@@ -107,36 +111,40 @@ be the team's). Assign epics so that each track is a coherent line of work — o
 the RFC, its own packages, few hand-offs to the others — and busy from S2 to integration.
 If the RFC's areas do not divide into three, split a track's area along a seam it already
 has (for example the platform layer away from the codecs) rather than leave a track empty.
+This does not conflict with "never split a cohesive area just to reach N": a split along an
+existing seam is not an artificial one, and an area with no such seam stays whole. If that
+leaves a track with too little, say so in §3.4 and name what fills it.
 
 **Subtask size.** A subtask is one coherent piece of work for one engineer, landing with its
-tests, ideally up to 5 man-days. It is **not** one pull request: the owner groups subtasks
-into pull requests as they see fit, and the epic breakdown only suggests a grouping, with a
-pull request ideally up to 20 man-days. Both figures are ceilings to aim under, not targets.
-Cut subtasks, and group them, by what makes sense: one logical change, readable on its own,
-following the dependencies, delivering a piece of functionality that can be named. There is
-no target number of subtasks per epic; the count follows from the work. Give it as a
-number; the detailed breakdown is written when the epic starts, with the `epic-breakdown`
-skill.
+tests, ideally up to 5 man-days. Cut subtasks by what makes sense: one logical change,
+readable on its own, following the dependencies, delivering a piece of functionality that
+can be named. There is no target number of subtasks per epic; the count follows from the
+work. Give it as a number; the detailed breakdown is written when the epic starts, with the
+`epic-breakdown` skill. How subtasks become pull requests is under "Subtasks and pull
+requests" below.
 
-**Man-days.** Estimate every epic in man-days of one engineer, in multiples of 0.25. This
-is effort, not calendar time: no parallelism, no waiting on reviews or external
-dependencies. It includes the tests, doc comments, review fixes and whatever the §1.5 rules
-require. An epic that is "planned after Sx" gets no figure.
+**Man-days.** The plan estimates **epics, not subtasks**. Its subtasks are candidates, and
+the per-subtask estimate belongs to the epic's breakdown, so the plan's figure is a first,
+higher-level one. An epic that is "planned after Sx" gets no figure. Reach it like this,
+with the scale under "Estimating in man-days" below:
 
-The plan estimates **epics, not subtasks**. Its subtasks are candidates, and the
-per-subtask estimate belongs to the epic's breakdown, so this is a first, higher-level
-figure. Reach it like this:
+1. Place the epic's candidate subtasks roughly on the scale; most land at 1–3 man-days. Do
+   not write per-subtask figures into the plan.
+2. Add the work the candidate list does not name but the epic owns (see the scale's last
+   paragraph).
+3. Weight the sum as the scale says.
 
-1. Place the epic's candidate subtasks roughly on the scale below; most land at 1–3
-   man-days. Do not write per-subtask figures into the plan.
-2. Add the work the candidate list does not name but the epic owns: its tests and fuzz
-   targets, CI wiring, metrics, docs, the review or freeze step, per-platform variants.
-   Size test-catalogue work by the number of checks the RFC names, not by the number of
-   bullet families.
-3. Weight the sum upward for crash or durability semantics, lock ordering, per-OS code,
-   anything verified only with fault injection, and burn-down work whose size cannot be
-   known in advance (estimate it, and name it in §6). Weight it downward for pure
-   declaration work: signatures, stubs, types the RFC already states.
+## Estimating in man-days
+
+This section is the one place the estimating rules live. The `epic-breakdown` skill uses it
+for its per-subtask figures, so a plan's figure and its epics' refined figures share one
+scale.
+
+**Unit.** Man-days of one engineer, in multiples of 0.25. This is effort, not calendar time:
+no parallelism, no waiting on reviews, other epics or external dependencies. An estimate
+includes the work's tests, doc comments, review fixes and whatever the plan's general rules
+require of it (fuzzing, metrics, profiling, known-failure bookkeeping). Numbers are plain:
+no `~`, no ranges, no comma, no unit inside the number.
 
 | Man-days | Typical work |
 | --- | --- |
@@ -147,8 +155,22 @@ figure. Reach it like this:
 | 3 | concurrency, crash safety or on-disk ordering in one component |
 | 5 | a subsystem's core algorithm under race or crash testing; the ceiling for one subtask |
 
-The `epic-breakdown` skill uses the same scale, so a plan's figure and its epics' refined
-figures can be compared.
+Weight upward for crash or durability semantics, lock ordering, per-OS code, anything
+verified only with fault injection, and burn-down work whose size cannot be known in advance
+(estimate it, and name it as an open point). Weight downward for pure declaration work:
+signatures, stubs, types the RFC already states. Do not drop work because no subtask names
+it: tests and fuzz targets, CI wiring, metrics, docs, the review or freeze step and
+per-platform variants each belong somewhere. Size test-catalogue work by the number of
+checks the RFC names, not by the number of bullet families.
+
+### Subtasks and pull requests
+
+A subtask is not a pull request, and the plan does not decide how subtasks ship. Some
+engineers open one pull request per subtask, others group several; both are fine, and
+neither is the default. The epic breakdown **suggests** a grouping, to keep pull requests
+readable: a suggested pull request is ideally up to 15 man-days, a ceiling to aim under
+rather than a target, grouped by logic, readability, dependencies and a deliverable that can
+be named. The owner may follow it, regroup, or open one pull request per subtask.
 
 ## Step 3 — Write the plan
 
@@ -161,8 +183,10 @@ epics. So it has none of the following:
 - checkboxes;
 - "to be updated when…" or "TBD" placeholders;
 - tables of issue numbers that fill in later;
-- decisions deferred to another thread ("location decided in #NNN"): settle them, or list
-  them in §6 with the options.
+- decisions deferred with no pointer: settle them, or list them in §6 with the options and
+  the issue or pull request where they are being decided (`pending #NNN`). A link to the
+  open thread is what an open point needs; an issue number in a plan is fine (the rule
+  against them is about source comments).
 
 The one exception is an epic that cannot be broken down yet because it waits on an
 interface someone else owns: give it "planned after Sx" in place of an estimate (subtasks
@@ -225,13 +249,37 @@ Each epic in §5 opens with exactly one line, on a line of its own, in one of th
 ```
 
 Use the second form when some epic is "planned after", and list every such epic. Numbers
-are plain: no `~`, no ranges, no `+ E11`, no unit inside the number. Compute the total
-with this script, never by hand, and make the §2 table's total row agree with it:
+are plain multiples of 0.25: no `~`, no ranges, no `+ E11`, no comma, no unit inside the
+number. Compute the total with this check, never by hand. Save it as `plan-check.awk` in
+the scratchpad and run `awk -f plan-check.awk <plan>`:
 
-```bash
-grep -E '^\*\*Epic [0-9]+ estimate: [0-9]' <plan> |
-  awk '{n+=$4; d+=$6} END{printf "%d subtasks, %g man-days\n", n, d}'
+```awk
+/^## /                                   { in5 = ($0 ~ /^## 5\./) }
+in5 && /^### Epic [0-9]+ /               { head[$3]++; order[++k] = $3 }
+/(Epic [0-9]+|Plan) estimate:/ {
+  if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
+    est[$2]++; n += $4; d += $6
+  } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: planned after S[0-9]+[a-z]?\.\*\*$/) {
+    est[$2]++; later = later " " $2
+  } else if ($0 ~ /^\*\*Plan estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days(, not counting epics? [0-9]+((, | and )[0-9]+)*)?\.\*\*$/) {
+    pn = $3; pd = $5; seen = 1
+  } else print "malformed, line " NR ": " $0
+}
+END {
+  for (i = 1; i <= k; i++) if (est[order[i]] != 1) print "epic " order[i] ": " est[order[i]] + 0 " estimate lines"
+  for (id in est) if (!(id in head)) print "estimate line for epic " id " has no ### heading in §5"
+  printf "TOTAL %d subtasks, %g man-days%s\n", n, d, later ? ", not counting epic" later : ""
+  if (!seen) print "no plan estimate line in §2"
+  else if (pn != n || pd != d) printf "plan line says %d subtasks, %g man-days\n", pn, pd
+}
 ```
+
+Only the `TOTAL` line may print. Anything else is a defect to fix: a malformed line (`21,5`,
+`~20`, an indented or bulleted line, a missing word) is reported rather than summed; an
+epic heading in §5 without exactly one estimate line, or an estimate line without a
+heading, is reported, so a deleted line cannot go unnoticed; and a `**Plan estimate:**`
+line that differs from the sum is reported. Make the §2 table's total row agree with the
+`TOTAL` line.
 
 `grep -E '^\*\*(Epic [0-9]+|Plan) estimate:' <plan>` then lists the whole estimate.
 
@@ -308,18 +356,20 @@ use `epic-breakdown` in the document they are reading:
 > - **Epic and subtask, nothing else.** The units of work are the epic and its subtasks,
 >   with subtask ids `<epic>.<n>` (`4.3`). No other word names them: not task, ticket,
 >   story, step or phase, in headings, tables, ids or prose.
-> - **The epic stands alone.** Copy these rules into the epic document word for word,
->   under their own heading. The epic document must not refer to this plan, link to it,
+> - **The epic stands alone.** Copy the numbered rules below into the epic document word
+>   for word, under their own heading — the rules only, not this instruction, which speaks
+>   of "this plan". The epic document must not refer to this plan, link to it,
 >   or say "see the plan". Everything a reader needs to do the epic is in the epic
 >   document itself: the RFC sections it implements, the interfaces it builds on, the
 >   rules, and the subtasks.
 > - **The epic document records decisions, not progress, like this plan.** It has no
 >   status fields, no checkboxes to tick and no sections to keep up to date as the work
 >   goes on. It is revised through a pull request only when a decision changes.
-> - **Subtasks are not pull requests.** A subtask is ideally up to 5 man-days, a pull
->   request ideally up to 20. The owner groups subtasks into pull requests as they see
->   fit; the epic document only suggests a grouping. Cut and group by logic, readability,
->   dependencies and a deliverable that can be named, not to hit a number.
+> - **Subtasks are not pull requests.** A subtask is ideally up to 5 man-days. The owner
+>   ships subtasks as they see fit, one pull request each or several together; the epic
+>   document only suggests a grouping, each suggested pull request ideally up to 15
+>   man-days. Cut and group by logic, readability, dependencies and a deliverable that can
+>   be named, not to hit a number.
 > - **Every subtask states how it meets each rule that applies to it.** A rule that does
 >   not apply is named, with the reason.
 > - **In the issue tracker, only when someone asks for issues:** they are not created by
@@ -337,14 +387,21 @@ use `epic-breakdown` in the document they are reading:
    component did not just write itself: on-disk records, wire messages, config, API
    payloads. Where E2 has a reference model, also fuzz operation sequences against it.
    The property: an input is either accepted as valid or rejected, never a panic.
-3. **Metrics, and tracing where relevant.** Maintain every counter and gauge the RFC
-   assigns to the epic's area, and expose it through `Stats`, served from maintained
-   counters, never a walk. Spans go through E1's standard-library `Tracer` and logs
-   through an injected `*slog.Logger`, never through a metrics or tracing library. There
-   is no event callback: a condition worth an event is a `Stats` field, and a stream of
-   them is a numbered ring a poller can tell it missed entries of. Add a callback only if
-   the RFC asks for push delivery, and define what it carries. The exporters arrive in the
-   integration epic. Name the operations worth a span.
+3. **Observability follows RFC 25.** The component takes what RFC 25 §8 says the root
+   builds, as fields of its `Deps`: a `*slog.Logger` (narrowed with
+   `With("component", <prefix>)`), the `*metrics.Registry` and the tracing API's `Tracer`.
+   It implements `health.Source` for the conditions the RFC defines, and each long-running
+   loop takes its `*health.Loop` from the watchdog. Metrics are the counters, gauges and
+   histograms the RFC assigns to the epic's area, named under the RFC's prefix (RFC 25
+   §2.1) with §2.2–§2.6's units, labels and buckets, resolved once at construction and
+   recorded with an atomic add (§2.9); an event is counted once, by the component that
+   decides it (§2.7). Spans follow §6.1 (constant `<prefix>.<Name>` names, a wait is a span
+   event, background work opens a root span), and an unsampled span allocates nothing
+   (§6.3). Logs follow §5, and nothing §5.4 forbids reaches a log, span or metric. Name
+   the metrics, conditions and spans each epic owns. **Exception:** where the RFC itself
+   restricts its dependencies (for example to the standard library) or defines its own
+   observability surface, follow the RFC, state the exception in this rule, and put the
+   bridge to RFC 25's registry, tracer and health evaluator in the integration epic.
 4. **Profiling.** Tests and benchmarks run under E2's profiling harness, and fail on
    goroutine, descriptor or memory leaks and on anomalous resource growth. Name the hot
    paths that carry allocations-per-op assertions.
@@ -399,9 +456,9 @@ use `epic-breakdown` in the document they are reading:
 - Units of work are called epics and subtasks everywhere, and subtask ids are `<epic>.<n>`:
   `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <plan>` turns
   up nothing that names this plan's units.
-- Every epic in §5 has exactly one estimate line in the fixed form, the script's total
-  matches the `**Plan estimate: …**` line and the §2 total row, and every epic without a
-  figure is "planned after Sx" and named in the plan estimate line.
+- `plan-check.awk` prints only its `TOTAL` line, which matches the `**Plan estimate: …**`
+  line and the §2 total row; every epic without a figure is "planned after Sx" and named
+  in the plan estimate line.
 - Nothing in the plan tracks progress: no status, no checkboxes, no placeholders.
 - §1.5 opens with the verbatim instruction: epics are expanded with `epic-breakdown`, the
   rules are copied into each epic, the epic

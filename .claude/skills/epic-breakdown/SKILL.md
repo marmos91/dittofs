@@ -1,6 +1,6 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested split into one to three pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues, done only when explicitly asked. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues, done only when explicitly asked. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
@@ -18,8 +18,8 @@ the plan does not:
    R1…Rn, so that subtasks and tests can cite them and nothing is silently dropped.
 2. **The subtasks.** Small, ordered and verifiable, each with acceptance criteria, its tests,
    the requirements it covers and a man-day estimate.
-3. **The pull requests.** A suggestion of how the subtasks group into one to three pull
-   requests.
+3. **The pull requests.** An optional suggestion of how the subtasks group into pull
+   requests; one pull request per subtask works as well.
 
 The reference result is [`example-epic.md`](example-epic.md), beside this file: an epic of
 an invented RFC that follows every rule below, with its requirement tables, estimate lines
@@ -40,7 +40,9 @@ Progress is tracked by mapping pull requests to these ids, so they must stay sta
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id may
   have been cited becomes `4.3a`, `4.3b`; work mapped to `4.3` then covers both parts.
 - **Never reuse or drop an id that a pull request has cited.** Search first:
-  `gh pr list --state all --search "<epic>.<n>"`. If the work moved, say where in §9.
+  `gh pr list --state all --search '"<epic>.<n>" in:title'` (a plain `--search "4.2"` is a
+  full-text search and also returns pull requests citing an RFC's §4.2). If the work moved,
+  say where in §9.
 
 A **track** (A, B or C, one line of work through the epics) and a **synchronisation point** (S1, S2, …)
 are not units of work and keep their names. A **pull request** groups subtasks (§8 below);
@@ -62,10 +64,12 @@ epic's document already exists and the user did not ask to replace it.
 | --- | --- | --- |
 | 1 | Plan path and epic number | **required**, from the request |
 | 2 | Output path | default `docs/internals/planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
-| 3 | Track | A, B, C or the team, from the plan's §2; never ask for names |
+| 3 | Track | A, B, C or the team, from the plan's §2 (Step 1 has the fallback for an older plan); never ask for names |
 | 4 | Existing epic issue | `gh issue list --state all --label epic --label rfc-<n>-epic-<k>` (both labels must match; a text search for "epic <k>" also returns other epics). If one exists, note its number; if issues are ever created (Step 6), there must not be a second one |
 
 Ask for whatever is missing with `AskUserQuestion`, in one batch, before reading further.
+If you cannot ask (for example when running as a subagent), stop and report the missing
+inputs rather than guess.
 
 ## Step 1 — Read
 
@@ -73,6 +77,13 @@ Ask for whatever is missing with `AskUserQuestion`, in one batch, before reading
   in §3, the general rules in §1.5, and every §7 coverage row that names the epic. That
   gives the **owned sections**: the RFC sections, and the related-RFC sections, the epic is
   answerable for.
+- **A plan written before these conventions** may lack some of that. Fall back, and say in
+  the report which fallback was used:
+  - no §7 coverage table → the owned sections are the RFC sections cited in the epic's §5
+    section and its §2 row;
+  - no `**Epic <k> estimate:**` line → report "no plan figure" instead of a comparison;
+  - no Track column → the track named for the epic in §3.4 or in the §2 row (a letter
+    only), else "the team".
 - The RFC: the owned sections in full, and the sections they cite. Large RFCs exceed one
   `Read`; list headings with `rg -n '^#' <rfc>` and read by line range.
 - The epics this one depends on: their documents if they exist, for the interfaces this epic
@@ -86,23 +97,35 @@ This is the step the plan does not do, and the one that matters most. The goal i
 **every obligation the RFC places on this epic appears exactly once, numbered**, and that a
 reviewer can check the list against the RFC without rereading it.
 
-**2.1 Sweep, mechanically.** For each owned section, take its line range from the heading
-list and pull every normative line:
+**2.1 Read each owned section for its obligations.** Read the owned sections in full and
+list every statement that binds this epic's code. Reading finds what a line-based search
+cannot: a key word wrapped across two lines (`**MUST` at the end of one line, `NOT**` at
+the start of the next), and the rules the RFCs state without any key word. Look for:
+
+- the RFC 2119 key words (MUST, MUST NOT, SHALL, REQUIRED, SHOULD, SHOULD NOT), in capitals
+  or in lower case: some RFCs write them only in lower case;
+- **bold lead sentences**, which the RFCs use for rules even with no key word
+  ("**Records, once written, are immutable.**"); each one is a rule;
+- invariants stated in prose (`never`, `always`, `at most`, `at least`, `only`), when they
+  constrain the code rather than describe it (`append-only` and "the only copy" usually
+  describe);
+- the numbers the sections put on the epic: cost bounds (`O(log n)`), limits, sizes and
+  performance targets in tables, and the RFC's test rows (a §9-style table) that name this
+  area.
+
+Note each one with its RFC line number in a scratch file, not in the document.
+
+Then cross-check the key words mechanically, so that none is missed. Search the whole file
+and keep each owned section's range afterwards, so the line numbers are the RFC's own:
 
 ```bash
-sed -n '<from>,<to>p' <rfc> | rg -n -i -w 'must( not)?|shall( not)?|required|should( not)?'
+rg -n -U -o -i -w 'must(\**\s+\**not)?|shall(\s+not)?|required|should(\**\s+\**not)?' <rfc> |
+  awk -F: -v from=<from> -v to=<to> '$1+0 >= from && $1+0 <= to'
 ```
 
-The match is case-insensitive on purpose. Most RFCs write the RFC 2119 key words in
-capitals, but some write them in lower case only, and a case-sensitive sweep would return
-an empty table for those. A lower-case hit in prose that binds nothing maps to "not an
-obligation" in 2.4. Then run a second, case-insensitive sweep for invariants stated in
-prose, which the RFCs write often:
-`never`, `always`, `at most`, `at least`, `only`. Finally, collect the numbers the sections
-put on the epic: cost bounds (`O(log n)`), limits, sizes and performance targets in tables,
-and the RFC's test rows (a §9-style table) that name this area.
-
-Keep the raw hits in a scratch file, not in the document. Step 2.4 checks against them.
+`-U` lets a match span lines: a wrapped `MUST NOT` prints as two consecutive lines
+(`320:MUST`, `321:NOT`), and it is one hit, a prohibition. Step 2.4 maps every key-word hit;
+the prose words are a reading aid only and need no mapping.
 
 **2.2 Turn the hits into requirements.**
 
@@ -120,8 +143,8 @@ Keep the raw hits in a scratch file, not in the document. Step 2.4 checks agains
   this epic's, and name the epic that owns the rest ("the index offers the predicate; epic 9
   owns the hold rule"). Do not list obligations that belong wholly to another epic.
 
-**2.3 Number and tabulate.** Number them R1…Rn in table order, grouped under short bold
-headings by theme (structure, queries and cost, concurrency, limits, recovery, …). One table
+**2.3 Number and tabulate.** In a new document, number them R1…Rn in table order, grouped
+under short bold headings by theme (structure, queries and cost, concurrency, limits, recovery, …). One table
 per group:
 
 ```markdown
@@ -134,13 +157,17 @@ per group:
 `Kind` is one of `MUST`, `MUST NOT`, `SHOULD` (adopted), `invariant` (prose `never` /
 `always`), `bound` (cost, size or performance target) or `test row` (a row of the RFC's own
 test tables). `Source` cites the section, with the RFC named when the epic has more than
-one source. A requirement number is never reused or renumbered once subtasks cite it.
+one source. Once the document exists, numbers are stable: a requirement added later takes
+the next free number and goes in its group's table, so a table may read `R12, R47, R13`.
+A number is never reused or renumbered, and a dropped requirement keeps its row, marked
+"withdrawn" with the reason.
 
 **2.4 Check coverage, both ways.**
 
-- Every raw hit from 2.1 maps to an R-number, to another epic, or to "not an obligation"
-  (background, an example). Go through the scratch file line by line; an unmapped hit is a
-  gap.
+- Every key-word hit of the cross-check in 2.1 maps to an R-number, to another epic, or to
+  "not an obligation" (background, an example). Go through it line by line; an unmapped
+  hit is a gap. A bold lead sentence or prose invariant noted while reading maps the same
+  way, but the prose words of the search need no mapping of their own.
 - Every R-number has at least one subtask and at least one test that can fail if the
   requirement is broken.
 - Every subtask covers at least one R-number, or says why it covers none (scaffolding that
@@ -175,28 +202,10 @@ the natural places to cut a pull request.
 
 ## Step 4 — Estimate each subtask in man-days
 
-Man-days of one engineer, in multiples of 0.25. This is effort, not calendar time: no
-parallelism, no waiting on reviews or on other epics. Each estimate includes the subtask's
-tests, doc comments, review fixes and what the general rules require of it (fuzzing,
-metrics, profiling, known-failure bookkeeping). Place each subtask on this scale, the same
-one the plan's epic figures use:
-
-| Man-days | Typical work |
-| --- | --- |
-| 0.25 | a very small change: wording or a comment, a minor visual tweak, a one-line default |
-| 0.5 | a type or constant set with tests; a doc table; a config key |
-| 1 | a small codec, or one well-specified function with edge-case tests |
-| 2 | a component with a few interacting rules, or about five conformance checks |
-| 3 | concurrency, crash safety or on-disk ordering in one component |
-| 5 | a subsystem's core algorithm under race or crash testing; the ceiling for one subtask |
-
-Weight upward for crash or durability semantics, lock ordering, per-OS code, anything
-verified only with fault injection, and burn-down work whose size cannot be known in advance
-(estimate it, and name it in §9). Weight downward for pure declaration work: signatures,
-stubs, types the RFC already states. Do not drop work the epic owns because no subtask
-names it: tests, CI wiring, fuzz targets, metrics, docs, the review step, per-platform
-variants each belong to some subtask. Size test-catalogue work by the number of checks the
-RFC names.
+Estimate each subtask with the scale, the weighting and the number rules under "Estimating
+in man-days" in `.claude/skills/rfc-to-epic-plan/SKILL.md`. That section is the only copy:
+read it there rather than restating it here, so the plan's figures and these stay on one
+scale.
 
 Each subtask carries exactly one estimate line, on its own line, in this form:
 
@@ -210,22 +219,34 @@ The epic total goes in the document header, in the same form the plan uses:
 **Epic 4 estimate: 12 subtasks, 21.5 man-days.**
 ```
 
-Numbers are plain: no `~`, no ranges, no unit inside the number. Compute the total with this
-script, never by hand:
+Numbers are plain multiples of 0.25: no `~`, no ranges, no comma, no unit inside the
+number. Compute the total with this check, never by hand. Save it as `epic-check.awk` in the
+scratchpad and run `awk -f epic-check.awk <epic-doc>`:
 
-```bash
-grep -E '^\*\*Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$' <epic-doc> |
-  awk '{n++; d+=$4} END{printf "%d subtasks, %g man-days\n", n, d}'
+```awk
+/^## /                                   { in6 = ($0 ~ /^## 6\./) }
+in6 && /^### [0-9]+\.[0-9]+[a-z]? /      { head[$2]++; order[++k] = $2 }
+/(Epic|Subtask) [0-9]+(\.[0-9]+[a-z]?)? estimate:/ {
+  if ($0 ~ /^\*\*Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
+    est[$2]++; n++; d += $4
+  } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
+    hn = $4; hd = $6; seen = 1
+  } else print "malformed, line " NR ": " $0
+}
+END {
+  for (i = 1; i <= k; i++) if (est[order[i]] != 1) print "subtask " order[i] ": " est[order[i]] + 0 " estimate lines"
+  for (id in est) if (!(id in head)) print "estimate line for " id " has no ### heading in §6"
+  printf "TOTAL %d subtasks, %g man-days\n", n, d
+  if (!seen) print "no epic estimate line in the header"
+  else if (hn != n || hd != d) printf "header says %d subtasks, %g man-days\n", hn, hd
+}
 ```
 
-The pattern is strict, so a malformed line (`2,5`, `~2`, `0.3`, a missing word) is not
-summed. Find any with this check, which must print nothing; then check that the header's
-epic line equals the script's output:
-
-```bash
-grep -nE '^\*\*(Epic|Subtask) [0-9]+(\.[0-9]+[a-z]?)? estimate:' <epic-doc> |
-  grep -vE ':\*\*(Subtask [0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days|Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days)\.\*\*$'
-```
+Only the `TOTAL` line may print; write it into the header. Anything else is a defect to fix:
+a malformed line (`2,5`, `~2`, `0.3`, an indented or bulleted line, a missing word) is
+reported rather than summed; a `### <k>.<n>` subtask heading in §6 without exactly one
+estimate line, or an estimate line without a heading, is reported, so a deleted line
+cannot go unnoticed; and a header line that no longer matches the sum is reported.
 
 `grep -E '^\*\*(Epic|Subtask) [0-9.]+[a-z]? estimate:' <epic-doc>` lists the whole estimate.
 
@@ -294,13 +315,14 @@ plan skill describes. Checkpoints are stadium nodes (`(["after 4.3: index API us
 
 ### 5.1 Suggested pull requests (§8)
 
-Suggest how the subtasks group into **one, two or at most three** pull requests. It is only
-a suggestion: the owner opens the pull requests they see fit, and the subtasks stay the unit
-that is estimated and tracked. A subtask is not a pull request.
+Suggest a grouping of the subtasks into pull requests, following "Subtasks and pull
+requests" in `.claude/skills/rfc-to-epic-plan/SKILL.md`. It is a suggestion, not an
+obligation: the owner may follow it, regroup, or open one pull request per subtask, and the
+subtasks stay the unit that is estimated and tracked. Say so in one line under the table.
 
-- **Size:** a pull request is ideally up to 20 man-days, a ceiling to aim under rather than a
-  target. An epic that does not fit three pull requests of that size is too big, and that
-  goes in §9 as an open point.
+- **Size:** a suggested pull request is ideally up to 15 man-days, a ceiling to aim under
+  rather than a target. The number of pull requests follows from that and from the
+  groupings below.
 - **What goes together:** group by logic, readability and dependencies, so that each pull
   request delivers a piece of functionality that can be named. Take consecutive subtasks in
   the order of work. Each pull request builds, passes its tests and leaves nothing
@@ -315,6 +337,8 @@ that is estimated and tracked. A subtask is not a pull request.
 | 1 | 4.1, 4.2, 4.4 | 7 | — | the container and counters every later subtask builds on |
 | 2 | 4.3, 4.5–4.7 | 8.5 | PR 1 | the file map, markers and floor buckets share the per-file lock |
 | 3 | 4.8–4.12 | 6 | PR 2 | bounds, accounting and rebuild, which read everything above |
+
+A suggestion only: one pull request per subtask works as well.
 ```
 
 Compute each pull request's man-days from the subtask lines, for example
@@ -365,48 +389,36 @@ When the user explicitly asks for them, follow these steps. If the epic issue al
 | Rationalization | Reality |
 | --- | --- |
 | "The plan already lists the subtasks" | It lists candidates sized for a plan. Without the requirements next to them, nobody can tell which RFC obligation fell through. |
-| "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Sweep mechanically, then map every hit. |
+| "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section, then cross-check the key words and map every hit. |
 | "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim. |
 | "The estimate is close enough to the plan's" | Then the script will say so. Compute it; don't copy the plan's figure. |
 | "Let's create the issues now, it saves a step" | The plan and the breakdown will be revised, and issues copied from them go stale. Only when asked. |
-| "This epic needs one pull request per subtask" | Subtasks are units of work, not of review. Group them by what reads well together. |
 | "The old epic document is out of date, I'll replace it" | Someone may be working from it. Stop and ask. |
-
-## Red flags
-
-- A requirement table built by reading rather than by the sweep, or a raw hit that maps to
-  nothing.
-- A requirement with no subtask, or no test that can fail.
-- A subtask over 5 man-days with no reason given.
-- Subtasks cut to reach a count, or pull requests grouped by size alone rather than by what
-  they deliver.
-- An estimate total typed by hand, or a `~` in a number.
-- The plan edited to record progress, or edited when the user did not ask.
-- More than three suggested pull requests, or one that leaves the tree half-wired.
-- The words task, ticket, story, step or phase naming this epic's units; ids like `E4-3`.
-- Checkboxes, status fields, "TBD", or a reference to the plan in the document.
-- Issues created, or offered with a question, without the user asking for them.
 
 ## Verification
 
 Before handing over, check:
 
-- Every raw hit of the sweep is mapped, and the R-tables carry `Kind`, `Source` and
-  `Subtasks` on every row.
+- Every key-word hit of the cross-check is mapped, every bold lead sentence of the owned
+  sections is accounted for, and the R-tables carry `Kind`, `Source` and `Subtasks` on
+  every row.
 - Every R-number has a subtask and a test; every subtask covers an R-number or says why not.
-- Every subtask has exactly one estimate line; the script's total matches the header's
-  `**Epic <k> estimate: …**` line; the plan is touched only if the user asked for it.
-- §8 suggests one to three pull requests whose subtasks cover every subtask once, and whose
-  man-days add up to the total; each one names what it delivers.
+- No subtask is over 5 man-days without a reason, and none was cut to reach a count.
+- `epic-check.awk` prints only its `TOTAL` line, and the header's `**Epic <k> estimate: …**`
+  line says the same; the plan is touched only if the user asked for it.
+- §8's suggested pull requests cover every subtask once, their man-days add up to the
+  total, each names what it delivers and leaves nothing half-wired, and the table says the
+  grouping is only a suggestion.
 - `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <epic-doc>` finds
   nothing naming this epic's units.
 - The document never refers to the plan, has no checkboxes or status, and its graphs are
   Mermaid.
 - §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
-- No GitHub issue was created unless the user asked, and then with the labels and sub-issue
-  links above.
+- No GitHub issue was created, or offered, unless the user asked, and then with the labels
+  and sub-issue links above.
 
 Then report the output path, the requirement count, the subtask count and the man-day total
-(and the plan's figure for comparison), the suggested pull requests, the subtasks whose
+(and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,
+the suggested pull requests, the subtasks whose
 estimate is least certain, and the open points, in a few lines. End with one line saying the
 GitHub issues can be created on request.

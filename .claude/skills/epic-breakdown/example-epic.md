@@ -48,7 +48,7 @@ the refusal error; the memory bound per entry.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. …
 2. **Fuzz tests where relevant.** …
-3. **Metrics, and tracing where relevant.** …
+3. **Observability follows RFC 25.** …
 
 ### 2.1 How the rules apply
 
@@ -56,7 +56,7 @@ the refusal error; the memory bound per entry.
 | --- | --- | --- |
 | 1 Unit tests | all | every R-number has a test that can fail |
 | 2 Fuzz | none | no parser: the index reads only values the store already decoded |
-| 3 Metrics | 3.3, 3.5 | `quota_refusals` and `quota_soft_crossings` counters, served from `Stats` |
+| 3 Observability | 3.1, 3.3, 3.5 | `Deps.Metrics` and `Deps.Logger` taken in 3.1; `quota_refusals_total` and `quota_soft_crossings_total` resolved at construction and recorded with an atomic add. No span: `Check` runs inside the VFS's service span, and its wait on a shard lock is too short to be a span event |
 | … | | |
 
 ## 3. Requirements and invariants
@@ -112,7 +112,8 @@ pkg/quotav2/internal/usage/
 
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R8, R9, R10.
-- **Deliverables:** `table.go`: `Table`, `Get`, `Add`, 256 shards (D1).
+- **Deliverables:** `table.go`: `Table`, `Get`, `Add`, 256 shards (D1); `New(Deps)` taking
+  the logger and metrics registry RFC 25 §8 provides.
 - **Acceptance criteria:**
   - `Get` and `Add` cost O(1) and allocate nothing.
   - Readers and writers of different principals run in parallel.
@@ -140,7 +141,7 @@ pkg/quotav2/internal/usage/
 - **Track:** B. **Depends on:** 3.2.
 - **Covers:** R2, R7, R8.
 - **Deliverables:** `check.go`: `Check(share, principal, delta) error`; the
-  `quota_refusals` counter.
+  `quota_refusals_total` counter.
 - **Acceptance criteria:**
   - A write exactly at the limit passes; one byte over is refused.
   - The error names the limit and the principal.
@@ -167,7 +168,7 @@ pkg/quotav2/internal/usage/
 - **Track:** B. **Depends on:** 3.3.
 - **Covers:** R6.
 - **Deliverables:** `soft.go`: soft limit, grace timer on the injected clock (D2), the
-  `quota_soft_crossings` counter.
+  `quota_soft_crossings_total` counter.
 - **Acceptance criteria:**
   - A thousand writes over the soft limit inside one grace period report one crossing.
 - **Tests:** writes over the soft limit across two grace periods, driven by the fake
@@ -204,6 +205,8 @@ Checkpoint after 3.3: epic 5 can start calling `Check` against the in-memory ind
 | --- | --- | --- | --- | --- |
 | 1 | 3.1, 3.2 | 4 | — | the usage index, correct and fast, with nothing calling it yet |
 | 2 | 3.3, 3.4, 3.5, 3.6 | 7.25 | PR 1 | the checks, end to end through the transaction hook |
+
+A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
