@@ -831,7 +831,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 	defer release()
 	recall := t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(r.Owner.Client, key, op) }, func(*grant) GrantKind { return GrantNone }, out)
 	var de *DelayError
-	if errors.As(recall, &de) && (de.Cause != DelayRecall || r.Wait != WaitCallback) {
+	if recall != nil && (!errors.As(recall, &de) || de.Cause != DelayRecall || r.Wait != WaitCallback) {
 		return LockResult{}, recall
 	}
 	var held *Lock

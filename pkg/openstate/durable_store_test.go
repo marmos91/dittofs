@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -1186,5 +1187,55 @@ func TestFirstStateWaitsForItsShardMark(t *testing.T) {
 		if rec, _ := f.Record(ctx, c.Client); len(rec.Shards) != 1 {
 			t.Errorf("after the first %s the shards listed are %+v, want its own", what, rec.Shards)
 		}
+	}
+}
+
+// A lock whose recall of another client's persistent lease cannot write
+// the break answers the store's error under every wait kind, and leaves the
+// file usable: a later lock on it is answered.
+func TestLockWhoseRecallWriteFailsAnswersTheError(t *testing.T) {
+	for _, w := range []WaitKind{WaitNone, WaitPoll, WaitCallback} {
+		t.Run([]string{"none", "poll", "callback"}[w], func(t *testing.T) {
+			fs, st := failingFS(t)
+			f := reopen(t, fs, &fakeClock{})
+			a := f.caller(t, smbMachine("pc-a"))
+			h := f.host(t, "host-h", 1)
+			file, r := f.fileIn(t, "doc")
+			r.Access, r.Lease, r.Epoch, r.Want = rd|wr, LeaseKey{5}, ptr[uint16](3), rwh // a v2 lease: its break writes a new epoch
+			if res, err := f.Opens().Open(ctx, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1)); err != nil || res.Grant == nil {
+				t.Fatal(res, err)
+			}
+			// lock answers in time, a panic or a hang reported as an error
+			// rather than taking the test down with it
+			lock := func(w WaitKind) (LockResult, error) {
+				type answer struct {
+					res LockResult
+					err error
+				}
+				done := make(chan answer, 1)
+				go func() {
+					defer func() {
+						if p := recover(); p != nil {
+							done <- answer{err: fmt.Errorf("panic: %v", p)}
+						}
+					}()
+					res, err := f.lock(h, file, LockReq{Owner: owner(h, "lo"), Ranges: []LockRange{x(0, 10)}, Wait: w})
+					done <- answer{res, err}
+				}()
+				select {
+				case a := <-done:
+					return a.res, a.err
+				case <-time.After(5 * time.Second):
+					return LockResult{}, errors.New("no answer in 5 s")
+				}
+			}
+			st.updateAt.Store(st.updates.Load() + 1) // the break's write, and no later one
+			if res, err := lock(w); !errors.Is(err, errWrite) {
+				t.Errorf("a lock whose break's write fails: %+v, %v; want the store's error", res, err)
+			}
+			if _, err := lock(WaitNone); delayedFor(err) != DelayRecall {
+				t.Errorf("a lock once the store writes again: %v; want the recall in flight", err)
+			}
+		})
 	}
 }
