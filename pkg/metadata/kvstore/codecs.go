@@ -236,7 +236,9 @@ func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
 		}
 	}
 	p.Squash = entity.Squash(r.Uint8())
-	p.Anonymous = readPrincipal(r)
+	if p.Anonymous = readPrincipal(r); p.Anonymous.IsZero() {
+		p.Anonymous = entity.AnonymousPrincipal
+	}
 	p.SMB = entity.SMBShareFlags(r.Uint8())
 	p.Version = r.Uint64()
 	return p, r.Done()
