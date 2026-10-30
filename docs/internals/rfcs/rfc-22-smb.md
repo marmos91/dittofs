@@ -2370,6 +2370,32 @@ permanent capacity cause do not clear by themselves and are answered at once. Wh
 `ErrDelay`, and which become `ErrNoSpace`, is RFC 8 §10.2's one table
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)).
 
+**A read-only share narrows an open; it refuses only a write.** A share, or a
+client rule, that narrows the caller to read-only
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) leaves
+every open that asks only for rights in
+[RFC 19 §3.2](rfc-19-authorization.md#3.2%20The%20share%20ceiling)'s read row
+as it was: a `CREATE` asking `MAXIMUM_ALLOWED`, or only rights in that row, with
+a disposition that opens an existing file, is
+granted, with every right outside RFC 19's read row stripped from its granted
+access and from `MaximalAccess`. A `CREATE` that asks such a right explicitly,
+`DELETE` for a delete on close and `WRITE_DAC` among them, or whose
+disposition creates, overwrites or supersedes (`FILE_CREATE`, `FILE_OPEN_IF`
+where the file is missing, `FILE_OVERWRITE`, `FILE_OVERWRITE_IF`,
+`FILE_SUPERSEDE`), and every write or set-information through the tree, is
+`ErrReadOnly`, as [RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)'s
+step 2 refuses it. A write a user's own `read` grant refuses is `ErrAccess`,
+`STATUS_ACCESS_DENIED`.
+
+> decision: a read-only narrowing grants a `MAXIMUM_ALLOWED` open, as Explorer
+> often sends, the read row rather than refusing it, so browsing the share
+> works, and answers a write `STATUS_MEDIA_WRITE_PROTECTED`, where
+> Samba answers `STATUS_ACCESS_DENIED`, because the Linux SMB client maps it to
+> `EROFS`, so a user sees "read-only file system" and an administrator looks at
+> the share, not at file modes, as NFS's `NFS4ERR_ROFS` tells them. Withdraw the status,
+> answering `STATUS_ACCESS_DENIED`, if a Windows application is found that
+> mishandles the write-protected status.
+
 ### 16.6 Testing
 
 The translations are tested as RFC 20 §7 says, as pure functions with no
