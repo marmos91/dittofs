@@ -732,6 +732,34 @@ func TestRefusedOpenLeavesItsLeaseUnwidened(t *testing.T) {
 	}
 }
 
+// An open that widens a lease cut to none and whose write is refused leaves
+// the lease out of its client's grant budget, as it was.
+func TestRefusedOpenLeavesALeaseAtNoneUncounted(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	a, w := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-w"))
+	file, r := f.fileIn(t, "disk")
+	r.Access, r.Lease, r.Epoch, r.Want = rd, LeaseKey{1}, ptr[uint16](1), GrantRead
+	_, g := f.grantOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 1))
+	if g == nil {
+		t.Fatal("no lease offered")
+	}
+	f.close(t, w, f.mustOpen(t, w, file, OpenRequest{Access: wr})) // cuts a's read lease to none
+	f.pass(t, coversDeadline, a.Client)
+	st.fail.Store(true)
+	_, err := f.open(a, file, keep(r, entity.DurabilityPersistent, s1, time.Hour, 2))
+	st.fail.Store(false)
+	if !errors.Is(err, errWrite) {
+		t.Fatalf("a widening open over a refusing store: %v, want its error", err)
+	}
+	f.idx.Lock()
+	counted := f.granted[a.Client]
+	f.idx.Unlock()
+	if counted != 0 {
+		t.Errorf("a lease at none whose widening was refused counts %d against its client's budget", counted)
+	}
+}
+
 // A widening open whose lease write lands an earlier open's record and fails
 // on its own puts the lease back, and that record with it.
 func TestRefusedWideningOpenPutsTheLeaseRecordsBack(t *testing.T) {
