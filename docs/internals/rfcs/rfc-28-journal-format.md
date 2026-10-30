@@ -924,7 +924,7 @@ a failed sync window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) �
 ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), from a copy that verified at the first read, to a new segment that is
 then synced with the directory; one that verified at neither read is dropped by
 [§3.3](#3.3%20Torn%20and%20corrupt%20records). Once its tail is proven, the segment is sealed after its last verifying
-record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
+record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) or recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)). The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
 limit, so a journal opened at its maximum after the process was killed still
 opens. The cost is one sync and one read of the writes past the last proven
 sync point per stream — at most one sync bound's worth — and it makes "verified at open" mean "on the device"; in the
@@ -1013,7 +1013,8 @@ of sealing it** — a recycled segment whose later append persisted before an
 earlier one at a crash, or a fresh one after a short write: a sealed segment
 read later without its catalog would find that slot and report corruption, so
 recovery truncates the tail as above but writes no seal marker, and the segment
-is left as after a failed append ([§2.2](#2.2%20Segments)).
+is left as after a failed append ([§2.2](#2.2%20Segments)). A segment whose header is torn is ended
+the same way ([§3.1](#3.1%20Rebuilding)).
 
 **Unless a later record proves it was synced.** Every record header carries the
 stream's synced-through offset ([§2.3](#2.3%20Records)). A bad record that lies below the
