@@ -19,7 +19,7 @@ import (
 func TestSyscallTableIsReal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	got := realTable
+	got := NewOS(t.TempDir()).calls
 	pins := []struct {
 		name, want string
 		got, x     any
