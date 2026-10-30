@@ -1305,13 +1305,21 @@ directory is trusted with its content.
 
 ## 5. Open questions
 
-1. **Scrub.** Verification on read never checks content that is never read, so
-   long-held dirty content can decay unnoticed; whether a paced background pass,
-   taking the [§3.3](#3.3%20Torn%20and%20corrupt%20records) action on a failure, earns its disk bandwidth is undecided.
-   **(cluster)** Replication raises the stakes: a replica's copy is read mostly
-   at a takeover or a rejoin, so its decay is found exactly when it is the copy
-   that counts ([RFC 10 §9.1](rfc-10-journal-replication.md#9.1%20Why%20one%20replica%20suffices)). Mirrored disk arrays answer the same problem
-   with a paced patrol read.
+1. ~~**Scrub.**~~ Declined on one node: no background pass reads the journal to
+   verify it. No dirty record reaches the remote tier unverified: an offload
+   reads and verifies it whole before any byte of it is uploaded
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and damage to offloaded content is refetched ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Content
+   held longer (through a remote outage, a store refusal, a stranded tag) is
+   no better served by a pass: one node holds no second copy to repair it from,
+   so a pass would only report the same loss sooner. Nor can a pass repair a
+   header-only record: nothing in memory keeps one once it is synced
+   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and a settled removal's marker is gone ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A lost
+   release only holds offloaded content again ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)); what a lost
+   truncate, deallocate or delete would bring back is recovery's to handle, not
+   a pass's. Overturned if one node ever keeps a second local copy to repair
+   from.
+   **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
+   dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.
 2. **Segment size** ([§2.2](#2.2%20Segments)). With descriptors bounded separately ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at
