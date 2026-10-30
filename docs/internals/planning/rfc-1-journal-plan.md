@@ -1133,8 +1133,8 @@ explicit, recorded decision.
 - **RFC 28 format changes still open.** #3406 (a record's own offset in its header) and
   #3405 (proof that a tail slot was written) change the bytes, so they are settled before
   epic 3 freezes the format.
-- **Background scrub** (RFC 28 §5, question 1): deferred to after v1 by #3392. Until
-  then content is verified only when it is read.
+- **Background scrub**: declined on a single node, so content is verified only when it
+  is read (RFC 28 §5); whether a replica scrubs is RFC 10 §16's (pending #3495).
 - **Segments vs staging files** (RFC 28 §2.6) is gated by benchmark J9. This plan assumes
   segments. A J9 result that overturns that reopens epics 3, 5 and 7.
 - **Cluster-only items** (RFC 10 replication, a non-zero epoch, the `generation` field,
