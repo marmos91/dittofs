@@ -1,10 +1,13 @@
 package platform
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -300,6 +303,98 @@ func TestSizeAbove4GiB(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("Size: %d, %v; want %d, nil", got, err, want)
 		}
+	}
+}
+
+// TestConcurrentWriteAt writes one allocated segment from many goroutines at
+// once, each at its own offsets, then syncs, closes, reopens and reads it
+// back whole, on the real filesystem under the race detector. A WriteAt that
+// is not positional, a seek then a write, lands bytes at another writer's
+// offset; one that shares state between calls is reported by the race
+// detector. Every byte no writer reached reads as zero.
+func TestConcurrentWriteAt(t *testing.T) {
+	var files []storage.File
+	t.Cleanup(func() {
+		runtime.KeepAlive(files)
+	})
+	prof.Watch(t, prof.Options{})
+
+	const (
+		name    = "00000000000000000001.seg"
+		writers = 32
+		rounds  = 32
+		chunk   = 512
+		gap     = 2 * chunk // each write fills the first half of its slot
+		end     = writers * rounds * gap
+	)
+
+	o := NewOS(t.TempDir())
+
+	f, err := o.Create(name)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	files = append(files, f)
+
+	if err := f.Allocate(0, end); err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+
+	var wg sync.WaitGroup
+
+	for w := range writers {
+		wg.Go(func() {
+			p := bytes.Repeat([]byte{byte(w + 1)}, chunk)
+
+			for r := range rounds {
+				off := int64((r*writers + w) * gap)
+
+				if n, err := f.WriteAt(p, off); n != chunk || err != nil {
+					t.Errorf("WriteAt at %d: %d, %v", off, n, err)
+
+					return
+				}
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	g, err := o.Open(name)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	files = append(files, g)
+	got := make([]byte, end+1)
+
+	if n, err := g.ReadAt(got, 0); n != end || !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadAt past the end: %d, %v; want %d, io.EOF", n, err, end)
+	}
+
+	for i := range end {
+		want := byte(0)
+
+		if i%gap < chunk {
+			want = byte((i/gap)%writers + 1)
+		}
+
+		if got[i] != want {
+			t.Fatalf("byte %d is %d, want %d", i, got[i], want)
+		}
+	}
+
+	if err := g.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
