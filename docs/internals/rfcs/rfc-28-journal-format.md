@@ -1119,7 +1119,8 @@ again. While a record is unread:
   sequence number while another copy of it does not verify (above);
 - it is a record that verifies for the torn-tail rule, so no truncation cuts
   it off, and repack does not carry it forward or select its segment while it
-  is live (above);
+  is live (above); no pass that empties or unlinks a segment, at open or
+  after, removes the segment holding it, which stays suspect until it reads;
 - the scan at open does not fail on it: where the record's header or a catalog
   that verifies names its extents, they are held as unread, and the scan
   resumes past it as it does past a bad record. An unread range that nothing
