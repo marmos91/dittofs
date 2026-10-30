@@ -21,8 +21,10 @@ type SealMarker struct {
 // identity, and returns the result: the magic, the segment, the marker's own
 // offset, and the checksum of the bytes this call appends, never of a
 // caller's prefix. The checksum is seeded with the identity, so the marker
-// verifies only under the journal that wrote it.
-func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte {
+// verifies only under the journal that wrote it. The identity travels as a
+// pointer: by value it is an array whose slice moves it to the heap, one
+// allocation on every append.
+func AppendSealMarker(dst []byte, identity *core.JournalID, m SealMarker) []byte {
 	start := len(dst)
 
 	dst = append(dst, 'D', 'J', 'S', '1')
@@ -44,7 +46,7 @@ func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte 
 // marker filled, which holds its bytes' segment and offset. A slot of zeros
 // is ErrDamaged here; the scanner tells an untaken slot from a marker before
 // decoding.
-func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
+func DecodeSealMarker(b []byte, identity *core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
 	if len(b) != SealMarkerSize {
 		return SealMarker{}, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SealMarkerSize)
 	}
