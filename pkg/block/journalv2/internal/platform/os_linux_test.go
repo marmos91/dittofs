@@ -126,10 +126,9 @@ func TestClosedFile(t *testing.T) {
 }
 
 // TestCreatePermission checks Create makes a file only its owner can read or
-// write. The umask can remove any bit, the owner's included, so the test sets
-// one that keeps the owner's bits and removes the others' write bits, under
-// which 0o600 stays 0o600 and 0o644 stays 0o644. The umask is process wide:
-// no test in this package runs in parallel.
+// write. The umask can only narrow the mode Create asks for, so the test clears
+// it, and the file's mode is exactly the one asked for. The umask is process
+// wide: no test in this package runs in parallel.
 func TestCreatePermission(t *testing.T) {
 	var f storage.File
 	t.Cleanup(func() {
@@ -137,7 +136,7 @@ func TestCreatePermission(t *testing.T) {
 	})
 	prof.Watch(t, prof.Options{})
 
-	old := unix.Umask(0o022)
+	old := unix.Umask(0)
 	t.Cleanup(func() {
 		unix.Umask(old)
 	})
