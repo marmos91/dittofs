@@ -187,7 +187,7 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 // rename through an exclusive handle; and POSIX allows an NFS rename of a
 // directory with open children. That covers the source only: the target an
 // SMB rename replaces, ChangeReplace, was never opened by the renamer, and is
-// refused ErrAccess while any open of it is held, as Windows refuses it.
+// refused ErrAccess while any client's open of it is held, as Windows refuses it.
 // Judge every caller if a protocol is served that removes a name without an
 // open of its own.
 func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error {
