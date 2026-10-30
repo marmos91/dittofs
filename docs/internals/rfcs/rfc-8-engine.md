@@ -419,6 +419,8 @@ type Clock interface {
 // and the write fails. tearAfter < 0 loses a write or a sync: it is reported
 // done and makes nothing durable. A tear of any other operation, or a loss of
 // one or with err set, is a mistake in the check, which the seam refuses.
+// What a lost or torn write reads back before a crash, and what a later sync
+// makes of it, is the seam's model: the storage seam's is RFC 1 §1.3.
 type Fault interface {
     At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }

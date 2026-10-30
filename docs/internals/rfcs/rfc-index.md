@@ -309,9 +309,11 @@ than a private one per RFC.
    the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
    from one clock interface (now, timers, and, under test, advance and skew).
    Every fault seam consults one fault interface: fail, delay, tear or lose a
-   named operation, on a seeded schedule read from that clock. The lost, torn
-   and reordered writes of a crash ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)) are the seam's simulated
-   crash, never a call's fault. A seam's other faults, such as a reply lost
+   named operation, on a seeded schedule read from that clock. A fault is
+   decided at the call and acts on that one call. A crash is a separate seam
+   operation that decides at crash time which unsynced writes survive, whole,
+   torn or out of order ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); a write, or the tail of a torn write, lost at its call is never among
+   them. A seam's other faults, such as a reply lost
    after its commit applied, a reordered message, or the fault transport's, are
    its own settings. The
    interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
