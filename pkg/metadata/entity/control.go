@@ -151,15 +151,30 @@ func (a *ShareAccess) UnmarshalText(b []byte) error { return enumUnmarshal(share
 
 // ExportPolicy is the share's admission and identity-mapping rule, one per
 // share, applied by the filesystem service on every call.
+//
+// The minimums are stored as such, never derived from Flavors, which lists
+// what SECINFO answers and admits nothing: a Kerberos-only share that refuses
+// NTLM and one that refuses only AUTH_SYS list the same flavours.
 type ExportPolicy struct {
-	Share       ShareID
-	Flavors     []AuthFlavor  // admitted, in preference order: SECINFO's answer
-	MinKerberos KerberosLevel // zero when Kerberos is not required
-	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
-	Squash      Squash
-	Anonymous   Principal // what a squashed caller becomes
-	SMB         SMBShareFlags
-	Version     uint64 // raised by every change; the authorisation cache key carries it
+	Share         ShareID
+	Flavors       []AuthFlavor // SECINFO's answer, in preference order; admission never reads it
+	MinProof      ProofKind    // how strongly every caller must prove who it is
+	MinProtection Protection   // the signing or sealing every caller's messages need
+	ReadOnly      bool         // every caller is held to read-only, whatever its grant
+	Clients       []ClientRule // first match decides; no match refuses. Empty admits every client
+	Squash        Squash
+	Anonymous     Principal // what a squashed caller becomes
+	SMB           SMBShareFlags
+	Version       uint64 // raised by every change; the authorisation cache key carries it
+}
+
+// Valid reports whether the policy's minimums can be met together. A
+// protection floor needs a verified proof: a caller allowed in on a claim, or
+// on none, carries no protection, so a share admitting it with a floor
+// protects nothing, while the floor still refuses an honest Kerberos caller.
+func (p ExportPolicy) Valid() bool {
+	return p.MinProof.String() != "" && p.MinProtection.String() != "" &&
+		(p.MinProtection == ProtectionNone || p.MinProof >= ProofSecret)
 }
 
 type AuthFlavor uint8
@@ -176,21 +191,36 @@ func (f AuthFlavor) String() string                { return enumString(authFlavo
 func (f AuthFlavor) MarshalText() ([]byte, error)  { return enumMarshal(authFlavors, f) }
 func (f *AuthFlavor) UnmarshalText(b []byte) error { return enumUnmarshal(authFlavors, f, b) }
 
-// KerberosLevel is ordered: each level includes the protection below it.
-type KerberosLevel uint8
+// ProofKind is how strongly a caller proved who it is, in increasing order.
+type ProofKind uint8
 
 const (
-	KerberosNone KerberosLevel = iota
-	Krb5
-	Krb5i
-	Krb5p
+	ProofNone    ProofKind = iota // anonymous or guest
+	ProofClaimed                  // ids asserted, nothing verified: AUTH_SYS
+	ProofSecret                   // a shared-secret challenge: NTLM
+	ProofTicket                   // a third party's mutual proof: Kerberos
 )
 
-var kerberosLevels = []string{KerberosNone: "none", Krb5: "krb5", Krb5i: "krb5i", Krb5p: "krb5p"}
+var proofs = []string{ProofNone: "none", ProofClaimed: "claimed", ProofSecret: "secret", ProofTicket: "ticket"}
 
-func (l KerberosLevel) String() string                { return enumString(kerberosLevels, l) }
-func (l KerberosLevel) MarshalText() ([]byte, error)  { return enumMarshal(kerberosLevels, l) }
-func (l *KerberosLevel) UnmarshalText(b []byte) error { return enumUnmarshal(kerberosLevels, l, b) }
+func (p ProofKind) String() string                { return enumString(proofs, p) }
+func (p ProofKind) MarshalText() ([]byte, error)  { return enumMarshal(proofs, p) }
+func (p *ProofKind) UnmarshalText(b []byte) error { return enumUnmarshal(proofs, p, b) }
+
+// Protection is how a caller's messages are protected, in increasing order.
+type Protection uint8
+
+const (
+	ProtectionNone      Protection = iota
+	ProtectionIntegrity            // every message signed
+	ProtectionPrivacy              // every message sealed
+)
+
+var protections = []string{ProtectionNone: "none", ProtectionIntegrity: "integrity", ProtectionPrivacy: "privacy"}
+
+func (p Protection) String() string                { return enumString(protections, p) }
+func (p Protection) MarshalText() ([]byte, error)  { return enumMarshal(protections, p) }
+func (p *Protection) UnmarshalText(b []byte) error { return enumUnmarshal(protections, p, b) }
 
 type Squash uint8
 

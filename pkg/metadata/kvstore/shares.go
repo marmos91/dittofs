@@ -423,8 +423,11 @@ func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy
 			return merrs.NewInvalidArgumentError("a client rule names one CIDR or netgroup, and at most read-write")
 		}
 	}
-	if p.MinKerberos.String() == "" || p.Squash.String() == "" {
-		return merrs.NewInvalidArgumentError("unknown Kerberos level or squash")
+	if !p.Valid() {
+		return merrs.NewInvalidArgumentError("an export policy's protection floor needs a verified proof, and both are known values")
+	}
+	if p.Squash.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown squash")
 	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, ok, err := get(tx, shareKey(p.Share, keys.SInfo)); err != nil || !ok {
