@@ -149,7 +149,7 @@ func (w wantRecord) rawOf() raw.Record {
 
 // recordGoldens returns the 14 records the golden files hold, one per kind,
 // in the kinds table's order.
-func recordGoldens(t *testing.T) map[string]wantRecord {
+func recordGoldens(t testing.TB) map[string]wantRecord {
 	t.Helper()
 
 	// The release, deallocate, offloaded, unmark and loss goldens share

@@ -242,3 +242,156 @@ func FuzzSeal(f *testing.F) {
 		}
 	})
 }
+
+// FuzzRecord drives the record decoder with any bytes read at any segment
+// and offset. Whatever arrives, it either decodes or matches exactly one
+// outcome class, never a panic; a decode that fits the header but not the
+// body verifies only the header; and whatever comes back is exactly what
+// the bytes contain: a decoded header names the place it was read at, and
+// a verified record re-encodes to exactly the bytes it was read from,
+// padding included.
+func FuzzRecord(f *testing.F) {
+	var goldens []wantRecord
+	// The 14 goldens at their own place, one at the wrong segment and one
+	// at the wrong offset, then their foil bytes, each of which a real
+	// journal could meet.
+	for name, want := range recordGoldens(f) {
+		goldens = append(goldens, want)
+
+		b := readGolden(f, "record_"+name)
+		f.Add(b, uint64(testSegment), want.h.Offset)
+		f.Add(b, uint64(testSegment)+1, want.h.Offset)
+		f.Add(b, uint64(testSegment), want.h.Offset+8)
+	}
+
+	// A record under another journal's identity: damaged under this one.
+	f.Add(AppendRecord(nil, otherIdentity, recordGoldens(f)["release"].h, RecordBody{}), uint64(testSegment), recordGoldens(f)["release"].h.Offset)
+
+	// Kinds this format version does not define: 0, the first reserved
+	// value and the first extension's, rechecksummed so only the kind
+	// rule can refuse them.
+	for _, kind := range []byte{0, 15, 128} {
+		b := slices.Clone(readGolden(f, "record_release"))
+		b[4] = kind
+		rechecksumRecord(b, testIdentity)
+		f.Add(b, uint64(testSegment), recordGoldens(f)["release"].h.Offset)
+	}
+
+	// A non-zero epoch, a write with one modification-time byte flipped,
+	// and a write whose padding is dirty: each reaches the rule its bytes
+	// break, never a stale checksum.
+	epochOne := slices.Clone(readGolden(f, "record_release"))
+	binary.LittleEndian.PutUint64(epochOne[56:64], 1)
+	rechecksumRecord(epochOne, testIdentity)
+	f.Add(epochOne, uint64(testSegment), recordGoldens(f)["release"].h.Offset)
+
+	mtimeFlipped := slices.Clone(readGolden(f, "record_write"))
+	mtimeFlipped[96] ^= 0xff
+	rechecksumRecordBody(mtimeFlipped, testIdentity, 21)
+	f.Add(mtimeFlipped, uint64(testSegment), recordGoldens(f)["write"].h.Offset)
+
+	dirtyPadding := slices.Clone(readGolden(f, "record_write"))
+	for i := RecordHeaderSize + 21; i < len(dirtyPadding); i++ {
+		dirtyPadding[i] = 0xff
+	}
+	f.Add(dirtyPadding, uint64(testSegment), recordGoldens(f)["write"].h.Offset)
+
+	f.Add([]byte(nil), uint64(testSegment), testOffset)
+	f.Add(make([]byte, RecordHeaderSize), uint64(testSegment), testOffset)
+
+	f.Fuzz(func(t *testing.T, in []byte, segment uint64, offset int64) {
+		if len(in) < RecordHeaderSize {
+			return // the decode's length rule is covered by its tests
+		}
+		header := in[:RecordHeaderSize]
+
+		h, err := DecodeRecordHeader(header, testIdentity, core.SegmentID(segment), offset)
+		if err != nil {
+			matched := 0
+			for _, class := range []error{ErrDamaged, ErrWrongPlace, ErrUnknownKind, ErrNonZeroEpoch} {
+				if errors.Is(err, class) {
+					matched++
+				}
+			}
+			if matched != 1 {
+				t.Fatalf("DecodeRecordHeader = %v, want an error matching exactly one of the record classes", err)
+			}
+			if h != (RecordHeader{}) {
+				t.Fatalf("DecodeRecordHeader = %v with the header %+v, want the zero header on refusal", err, h)
+			}
+			return
+		}
+
+		// A decoded header names the place it was read at and holds
+		// readable extents.
+		if h.Segment != core.SegmentID(segment) || h.Offset != offset {
+			t.Fatalf("decoded %+v, want the segment %d and offset %d it was read at", h, segment, offset)
+		}
+		if h.Extent.Off < 0 || h.Extent.Len < 0 {
+			t.Fatalf("decoded a negative extent %+v", h.Extent)
+		}
+		if h.Extent.Off+h.Extent.Len < 0 {
+			t.Fatalf("decoded an overflowing extent %+v", h.Extent)
+		}
+		if h.Version.Epoch != 0 {
+			t.Fatalf("decoded a non-zero epoch %d", h.Version.Epoch)
+		}
+
+		// The header names the body's size; if the input holds it, the
+		// body verifies and re-encodes, to the input followed by its
+		// own zero padding. The encoding of the body is the decoder's
+		// inverse, so the record round trips.
+		end := RecordHeaderSize + h.BodySize()
+		if int64(len(in)) < end {
+			return
+		}
+		body, err := VerifyRecordBody(in[RecordHeaderSize:end], testIdentity, h)
+		if err != nil {
+			matched := 0
+			for _, class := range []error{ErrDamaged, ErrNonZeroEpoch} {
+				if errors.Is(err, class) {
+					matched++
+				}
+			}
+			if matched != 1 {
+				t.Fatalf("VerifyRecordBody = %v, want an error matching exactly one of ErrDamaged and ErrNonZeroEpoch", err)
+			}
+			if !recordBodiesEqual(body, RecordBody{}) {
+				t.Fatalf("VerifyRecordBody = %v with body %+v, want the zero body on refusal", err, body)
+			}
+			return
+		}
+		// A verified payload is the input's own bytes, never a copy
+		// the decoder made: re-encoding it reproduces the input.
+		if h.Kind == KindWrite || h.Kind == KindFill {
+			if !payloadWithin(body.Payload, in[RecordHeaderSize:end], h) {
+				t.Fatalf("the verified payload is not the input's own bytes")
+			}
+		}
+
+		encoded := AppendRecord(nil, testIdentity, h, body)
+		want := append(slices.Clone(in[:end]), make([]byte, (8-end%8)%8)...)
+		if !slices.Equal(encoded, want) {
+			t.Fatalf("AppendRecord =\n% x\nwant the input's header and body with zero padding\n% x", encoded, want)
+		}
+	})
+}
+
+// payloadWithin reports whether the verified payload is a slice of the input
+// the decoder was handed — the very bytes it checked, never a copy. The
+// body's layout puts a write's payload after its 8-byte modification time
+// and a fill's at the body's first byte, so the payload's first byte sits
+// at that offset of the input, and its last within the input's end.
+func payloadWithin(payload, in []byte, h RecordHeader) bool {
+	start := 8
+	if h.Kind == KindFill {
+		start = 0
+	}
+	if len(in) < start+len(payload) {
+		return false
+	}
+	if len(payload) == 0 {
+		return true
+	}
+	return &payload[0] == &in[start]
+}
