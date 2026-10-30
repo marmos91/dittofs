@@ -80,7 +80,7 @@ one integration epic, E2E green is E(N+4); with two, E(N+5).
 | Role | Content |
 | --- | --- |
 | **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
-| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely: the suite is an entry in `test/suites.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); each red test is one entry in the suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry; and the RFC's suites paragraph names the suite and the group (RFC 29 R11), held to the registry by `dt docs --check` where that check exists. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
+| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test starts red and is listed as a known failure. **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); otherwise the existing suites the paragraph names. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, held to the registry by `dt docs --check` where that check exists. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
 | **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the suite's `known.yaml` to empty. Also soak tests, the benchmarks the RFC names, and the suite's tiers past `pr`; the suite itself was registered in E2. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
@@ -391,12 +391,13 @@ use `epic-breakdown` in the document they are reading:
 >   be named, not to hit a number.
 > - **Every subtask states how it meets each rule that applies to it.** A rule that does
 >   not apply is named, with the reason.
-> - **In the issue tracker, only when someone asks for issues:** they are not created by
->   default, because the plan and the breakdown are often revised and issues copied from
->   them go stale. When they are created, the epic is one issue labelled `epic`, whose body is the
->   epic document. Each subtask is its own issue, created as a sub-issue of the epic
->   issue rather than as a checklist in its body. Like the epic, a subtask issue stands
->   alone and does not refer to the plan.
+> - **In the issue tracker, issues point at the epic document and copy nothing:** they
+>   are created once the epic document has merged, and their bodies are a link to its
+>   section with a line of context, so a revision of the document never leaves an issue
+>   saying something else. The epic is one issue labelled `epic`. Each subtask is its own
+>   issue, created as a sub-issue of the epic issue rather than as a checklist in its body.
+>   All of them join the "DittoFS v1.0" project, each subtask with its man-days in the
+>   `Estimate` field.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
@@ -469,9 +470,10 @@ use `epic-breakdown` in the document they are reading:
   and no package that a middle epic creates.
 - No E2 test imports a package that does not exist at S2; each such test is listed in the
   epic that creates the package.
-- E2 registers the suite: its `test/suites.yaml` entry with a build tag and a component
-  group, its `known.yaml`, and the RFC's suites paragraph. E2E green adds only the tiers
-  past `pr`, soak and benchmarks.
+- E2 registers the red tests in the suites the RFC's suites paragraph names, each in its
+  suite's `known.yaml`; a suite of its own (`test/suites.yaml` entry, build tag, component
+  group) only when the paragraph calls for one. E2E green adds only the tiers past `pr`,
+  soak and benchmarks.
 - The integration epic follows the programme's stages, and an epic waiting on someone
   else's interface says "planned after Sx" and names the point.
 - There is a dashboards epic only if the RFC or the user asked for one.
@@ -492,7 +494,8 @@ use `epic-breakdown` in the document they are reading:
 - §1.5 opens with the verbatim instruction: epics are expanded with `epic-breakdown`, the
   rules are copied into each epic, the epic
   stands alone and records decisions rather than progress, subtasks are not pull requests,
-  and issues, only when asked for, use an `epic` label with sub-issues.
+  and issues point at the epic document, with an `epic` label, sub-issues and the
+  project's `Estimate` field.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
