@@ -1708,6 +1708,13 @@ A client removed from a grant is then refused on its next call, whatever handles
 against the grant like every other call; the filesystem service calls it when
 a client mounts or tree-connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
+**The store names fewer read-only causes than `Caller` does.** RFC 18's
+`ReadOnlyCause` is `NotNarrowed`, `Grant` or `Share`. The identity this
+component receives carries `NotNarrowed`, `NarrowedByShare` (the policy's
+`ReadOnly` flag) or `NarrowedByClient` (a client rule): it splits RFC 18's
+`Share` in two, so a refusal names which of them narrowed the caller, and has
+no `Grant` cause, since `Authorize` reads the grant's own level itself.
+
 An identity **MUST** carry every field any check reads — including the ones a
 particular backend's checks do not read — because the component that builds it
 cannot know which check runs.
@@ -1843,7 +1850,10 @@ deletes and renames by opening the file with **delete** and then acting on the
 open ([RFC 22 §13](rfc-22-smb.md#13.%20Rename%20and%20delete%20with%20open%20handles)) makes the open where the decision is made. `Authorize` and `Granted`, asked on a
 handle the caller resolved through a directory, grant **delete** when the file
 grants it or the directory grants **delete a child** (sticky rule included),
-and **read attributes** when the file grants it or the directory grants **list**.
+and **read attributes** when the file grants it or the directory grants **list**
+— the directory's part only when it holds an entry naming the file, read in the
+decision's transaction, so a caller cannot pass any directory it owns as the
+parent ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
 The filesystem service passes the
 directory the open resolved through ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), on `Granted` too, so a
 maximal-access open carries the **delete** its parent grants. A
@@ -2435,7 +2445,7 @@ type Files interface {
 	// via is the directory h was resolved through, or zero; it lets delete and
 	// read attributes be granted from the parent (§7.7).
 	Authorize(ctx context.Context, id Identity, h, via Handle, want Access) (audited bool, err error) // share grant, then mode or ACL, every call (§7.2, §7.4); rights of §7.7; audited: an audit or alarm entry of the file selected the decision, granted or refused (§7.6)
-	Granted(ctx context.Context, id Identity, h, via Handle) (Access, error)       // the whole granted set: access and maximal-access queries (§2.6)
+	Granted(ctx context.Context, id Identity, h, via Handle, want Access) (Access, error) // the part of want granted: an access query passes the rights it asks, a maximal-access query (§2.6) every right
 	Root(ctx context.Context, id Identity, share ShareID) (Handle, File, error) // authorised against the share grant (§7.4)
 	Resolve(ctx context.Context, h Handle) (FileID, error)                     // ErrStale, ErrWrongShare
 }
