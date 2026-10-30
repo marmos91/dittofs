@@ -68,6 +68,10 @@ def main():
         for d in deps:
             if d not in stems:
                 bad.append(f'{p.name}: depends_on names unknown RFC [[{d}]]')
+        if p.stem in deps:
+            bad.append(f'{p.name}: depends_on names itself')
+        if deps and n and 'rfc-0-data-lifecycle' not in deps:
+            bad.append(f'{p.name}: depends_on omits RFC 0, which every RFC that builds on another builds on')
         edges[n] = sorted({stems[d] for d in deps if d in stems} - {0, n})
     if bad:
         sys.exit('\n'.join(bad))
