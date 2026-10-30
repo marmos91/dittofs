@@ -1417,6 +1417,26 @@ func TestRefusedRevokeReleasesNothing(t *testing.T) {
 	g.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
 }
 
+// An expiry whose record delete landed but was answered an error is retried
+// by the next sweep, which finds no record and still raises ClientEnded once,
+// with the client's shards.
+func TestExpiryRetriedAfterLandedDeleteEndsTheClient(t *testing.T) {
+	fs, st := failingFS(t)
+	f := reopen(t, fs, &fakeClock{})
+	x1 := f.caller(t, nfsAs("x", entity.RecoverStatus))
+	f.mustLock(t, x1, in(5), LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.pass(t, leasePeriod+time.Second)
+
+	st.lose.Store(true)
+	f.sweep(ctx) // the delete lands, answered an error
+	st.lose.Store(false)
+	f.sweep(ctx)
+	f.Stop() // waits for the steps the sweep started
+	if e := f.sink.endedOf(x1.Client); len(e) != 1 || len(e[0].shards) != 1 || e[0].shards[0] != 5 {
+		t.Errorf("ClientEnded for the client whose delete landed: %+v, want once with shard 5", e)
+	}
+}
+
 // A revoke retried after its record delete landed but was answered an error
 // finds no record and still releases what the client holds.
 func TestRevokeRetriedAfterLandedDeleteReleases(t *testing.T) {

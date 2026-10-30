@@ -593,17 +593,22 @@ func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox
 		return entity.ClientRecord{}, false, nil
 	}
 	rec, err := t.d.Records.Clients().Get(ctx, c)
-	found := err == nil
-	if err != nil && !merrs.IsNotFoundError(err) {
+	if merrs.IsNotFoundError(err) {
+		// an earlier delete answered an error may have landed: it ended all the same
+		t.cmu.Lock()
+		k, ok := t.known[c]
+		t.cmu.Unlock()
+		t.forget(ctx, c, out)
+		return entity.ClientRecord{ID: c, Shards: k.shards}, ok, nil
+	}
+	if err != nil {
 		return entity.ClientRecord{}, false, err
 	}
-	if found {
-		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
-			return entity.ClientRecord{}, false, err
-		}
+	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+		return entity.ClientRecord{}, false, err
 	}
 	t.forget(ctx, c, out)
-	return rec, found, nil
+	return rec, true, nil
 }
 
 // forget drops c's lease, its fence and its place in the known set here, then
