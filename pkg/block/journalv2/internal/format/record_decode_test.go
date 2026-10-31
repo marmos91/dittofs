@@ -94,10 +94,23 @@ func TestDecodeRecordHeaderClasses(t *testing.T) {
 		t.Errorf("epoch 1: DecodeRecordHeader = (%+v, %v), want the zero header and ErrNonZeroEpoch", h, err)
 	}
 
+	// A stored own offset that is not a multiple of 8 is damage, never a
+	// header handed out: no record of this format starts anywhere but a
+	// multiple of 8, so a caller holding one would hold a header no writer
+	// could have produced. It is refused where it says it was read too, so
+	// it never comes back as at the wrong place either.
+	b = slices.Clone(readGolden(t, "record_release"))
+	binary.LittleEndian.PutUint32(b[88:92], 4)
+	rechecksumRecord(b, testIdentity)
+	h, err = DecodeRecordHeader(b, testIdentity, testSegment, 4)
+	if !errors.Is(err, ErrDamaged) || h != (RecordHeader{}) {
+		t.Errorf("a misaligned own offset: DecodeRecordHeader = (%+v, %v), want the zero header and ErrDamaged", h, err)
+	}
+
 	// A verifying unknown kind and a non-zero epoch are refused after the
 	// place, so a record at another offset naming either is still at the
 	// wrong place first: no reader of an unknown record judges its bytes.
-	for kind := range []uint8{0, 15} {
+	for _, kind := range []uint8{0, 15} {
 		b := slices.Clone(readGolden(t, "record_release"))
 		b[4] = uint8(kind)
 		rechecksumRecord(b, testIdentity)

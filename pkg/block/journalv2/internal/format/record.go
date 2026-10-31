@@ -214,8 +214,9 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 // DecodeRecordHeader reads a record header, opened under journal's identity,
 // at the given segment and offset. An error matching ErrDamaged means the
 // bytes are not a record of this journal: a wrong length, magic or checksum
-// against this identity's seed, reserved bytes that are not zero, or a field
-// outside the bounds or inside the kinds table's zero-field rules — another
+// against this identity's seed, reserved bytes that are not zero, a stored own
+// offset that is not a multiple of 8, or a field outside the bounds or inside
+// the kinds table's zero-field rules — another
 // journal's record lands here too, indistinguishable from damage, as with a
 // seal marker, which is what the seed is for. An error matching ErrWrongPlace
 // means the header verifies but was written somewhere else — at another
@@ -245,6 +246,13 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 
 	storedSegment := core.SegmentID(binary.LittleEndian.Uint64(b[8:16]))
 	storedOffset := int64(binary.LittleEndian.Uint32(b[88:92]))
+	// A record starts at a multiple of 8 within its segment, so a stored own
+	// offset that is not one can name no place this journal reads at or
+	// writes to. The column is 32 bits wide, so it cannot top MaxUint32; it
+	// is never negative either, so misalignment is the only case to refuse.
+	if storedOffset%8 != 0 {
+		return RecordHeader{}, fmt.Errorf("%w: own offset %d is not a multiple of 8", ErrDamaged, storedOffset)
+	}
 	if storedSegment != segment || storedOffset != offset {
 		return RecordHeader{}, fmt.Errorf("%w: segment %d, own offset %d, want the segment %d and offset %d it was read at", ErrWrongPlace, storedSegment, storedOffset, segment, offset)
 	}
