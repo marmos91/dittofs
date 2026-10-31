@@ -1,0 +1,28 @@
+# record.write: 96-byte header, 8-byte modification time, 13-byte payload,
+# 3 bytes of zero padding to the next multiple of 8 (RFC 28 section 2.3).
+# Checksums are CRC32C over the journal identity
+# (10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f) then the covered bytes.
+44 4a 52 31                 # [0,4)   magic "DJR1"
+01                          # [4]     kind 1, write
+00 00 00                    # [5,8)   reserved
+01 02 03 04 05 06 07 08     # [8,16)  segment id 0x0807060504030201
+a0 a1 a2 a3 a4 a5 a6 a7     # [16,32) FileID 0xa0..0xaf
+a8 a9 aa ab ac ad ae af
+30 31 32 33 34 35 36 37     # [32,40) file offset 0x3736353433323130
+0d 00 00 00 00 00 00 00     # [40,48) length 13
+50 51 52 53 54 55 56 57     # [48,56) sequence number 0x5756555453525150
+00 00 00 00 00 00 00 00     # [56,64) version epoch, always zero in this format
+60 61 62 63 64 65 66 67     # [64,72) version counter 0x6766656463626160
+70 71 72 73                 # [72,76) share tag 0x73727170
+48 49 4a 4b 4c 4d 4e 4f     # [76,84) synced-through offset 0x4f4e4d4c4b4a4948
+15 38 bb cf                 # [84,88) payload CRC32C of identity then mtime
+                            #         then the 13 payload bytes, 0xcfbb3815
+d8 d9 da db                 # [88,92) own offset in its segment 0xdbdad9d8,
+                            #         a multiple of 8
+dc 6d 0d 3e                 # [92,96) header CRC32C of identity then [0,92), 0x3e0d6ddc
+68 69 6a 6b 6c 6d 6e 6f     # [96,104) modification time 0x6f6e6d6c6b6a6968,
+                            #          nanoseconds since the Unix epoch UTC
+c0 c1 c2 c3                 # [104,117) payload bytes 0xc0..0xcc, 13 of them
+c4 c5 c6 c7
+c8 c9 ca cb cc
+00 00 00                    # [117,120) zero padding, covered by no checksum

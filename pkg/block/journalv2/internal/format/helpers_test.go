@@ -64,6 +64,116 @@ const testOffset int64 = 0x2827262524232221
 // does not.
 var testSealMarker = SealMarker{Segment: testSegment, Offset: testOffset}
 
+// The record's test values, one byte-value pattern per field, raw's own
+// where the two share a field: every 8-byte integer counts down from a
+// distinctive hex pattern and every array holds one run of bytes, so a field
+// written a byte off, big-endian or in another field's place reads back as
+// bytes from the wrong pattern, never as the right value by accident. The
+// clone source file and the write payload share 0xc0.., the only two fields
+// that can: they never meet in one record, and neither is ever compared with
+// the other.
+var (
+	// testRecordFile is the FileID every record golden but the unhold
+	// and forget ones carries.
+	testRecordFile = core.NewFileID([16]byte{
+		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+		0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+	})
+
+	// testRecordOffset is the record's own offset in its segment: a
+	// multiple of 8, as a record slot is.
+	testRecordOffset int64 = 0xdbdad9d8
+
+	// testRecordFileOffset is the file offset every kind with an offset
+	// carries in its golden.
+	testRecordFileOffset int64 = 0x3736353433323130
+
+	// testRecordLength is the length of the release, deallocate, clone
+	// target, offloaded, unmark and loss goldens.
+	testRecordLength int64 = 0x4746454443424140
+
+	// testRecordSeq is the sequence number every record golden carries.
+	testRecordSeq = core.Seq(0x5756555453525150)
+
+	// testRecordVersion is the content version every record golden carries,
+	// with the epoch half zero as this format version requires.
+	testRecordVersion = core.Version{Epoch: 0, Counter: 0x6766656463626160}
+
+	// testRecordTag is the share tag every record golden carries.
+	testRecordTag = core.ShareTag(0x73727170)
+
+	// testRecordSyncedThrough is the synced-through offset every record
+	// golden carries.
+	testRecordSyncedThrough int64 = 0x4f4e4d4c4b4a4948
+
+	// testWriteMTime is the modification time of the write golden.
+	testWriteMTime int64 = 0x6f6e6d6c6b6a6968
+
+	// testWritePayload is the 13 payload bytes of the write golden.
+	testWritePayload = []byte{
+		0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+		0xc8, 0xc9, 0xca, 0xcb, 0xcc,
+	}
+
+	// testFillPayload is the 21 payload bytes of the fill golden.
+	testFillPayload = []byte{
+		0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+		0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+		0xf0, 0xf1, 0xf2, 0xf3, 0xf4,
+	}
+
+	// testLoss is the loss body of the loss golden: a dropped sequence
+	// number, and flags naming a synced drop of an offloaded record for
+	// reason 3.
+	testLoss = Loss{
+		Dropped:   core.Seq(0x8f8e8d8c8b8a8988),
+		Synced:    true,
+		Offloaded: true,
+		Reason:    LossFailedSync,
+	}
+
+	// testClone is the clone source of the clone target golden.
+	testClone = CloneSource{
+		Share: core.ShareID{
+			0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+			0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+		},
+		File: core.NewFileID([16]byte{
+			0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+			0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
+		}),
+		Off:  0x2726252423222120,
+		AsOf: core.Version{Epoch: 0, Counter: 0x9f9e9d9c9b9a9998},
+	}
+
+	// testCut is the cut number of the hold, unhold and stamp goldens.
+	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
+)
+
+// wantWriteBody is the write body the write golden holds: the bytes its
+// checksum covers, the modification time then the payload. The other bodies'
+// byte strings live with the tests that build them.
+func wantWriteBody() []byte {
+	b := binary.LittleEndian.AppendUint64(nil, uint64(testWriteMTime))
+	return append(b, testWritePayload...)
+}
+
+// rechecksumRecord stores the seeded CRC32C of identity then [92,96)'s
+// covered bytes at [92,96) of a record header, so an edit fails a decode only
+// for the edit, not for its stale checksum.
+func rechecksumRecord(b []byte, identity core.JournalID) {
+	binary.LittleEndian.PutUint32(b[92:96], wantSeededCRC(identity, b[0:92]))
+}
+
+// rechecksumRecordBody stores the seeded CRC32C of identity then the body's
+// bytes at [84,88) of a record header and then redoes the header checksum,
+// so an edit to a body, its length or its checksum fails a verify only for
+// the edit, not for a stale checksum.
+func rechecksumRecordBody(b []byte, identity core.JournalID, bodyLen int) {
+	binary.LittleEndian.PutUint32(b[84:88], wantSeededCRC(identity, b[96:96+bodyLen]))
+	rechecksumRecord(b, identity)
+}
+
 // readGolden reads testdata/golden/<name>.hex: # to end of line a comment,
 // whitespace ignored, the rest hex. It takes the interface of both testing.T
 // and testing.F, so a fuzz test's seeds read it too.

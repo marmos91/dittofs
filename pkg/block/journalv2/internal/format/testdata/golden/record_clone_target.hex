@@ -1,0 +1,27 @@
+# record.clone target: 96-byte header then a 56-byte body: the source
+# ShareID, the source FileID, the source offset and AsOf (RFC 28 section
+# 2.3). The header's file offset and length are the spec's DstOff and Len.
+44 4a 52 31                 # [0,4)   magic "DJR1"
+07                          # [4]     kind 7, clone target
+00 00 00                    # [5,8)   reserved
+01 02 03 04 05 06 07 08     # [8,16)  segment id 0x0807060504030201
+a0 a1 a2 a3 a4 a5 a6 a7     # [16,32) FileID of the destination 0xa0..0xaf
+a8 a9 aa ab ac ad ae af
+30 31 32 33 34 35 36 37     # [32,40) DstOff 0x3736353433323130
+40 41 42 43 44 45 46 47     # [40,48) Len 0x4746454443424140
+50 51 52 53 54 55 56 57     # [48,56) sequence number 0x5756555453525150
+00 00 00 00 00 00 00 00     # [56,64) version epoch, always zero in this format
+60 61 62 63 64 65 66 67     # [64,72) version counter 0x6766656463626160
+70 71 72 73                 # [72,76) share tag 0x73727170
+48 49 4a 4b 4c 4d 4e 4f     # [76,84) synced-through offset 0x4f4e4d4c4b4a4948
+6d 16 1b 48                 # [84,88) payload CRC32C of identity then the 56
+                            #         body bytes, 0x481b166d
+d8 d9 da db                 # [88,92) own offset in its segment 0xdbdad9d8
+f7 18 db d7                 # [92,96) header CRC32C of identity then [0,92), 0xd7db18f7
+b0 b1 b2 b3 b4 b5 b6 b7     # [96,112)  source ShareID 0xb0..0xbf
+b8 b9 ba bb bc bd be bf
+c0 c1 c2 c3 c4 c5 c6 c7     # [112,128) source FileID 0xc0..0xcf
+c8 c9 ca cb cc cd ce cf
+20 21 22 23 24 25 26 27     # [128,136) source offset 0x2726252423222120
+00 00 00 00 00 00 00 00     # [136,144) AsOf epoch, always zero in this format
+98 99 9a 9b 9c 9d 9e 9f     # [144,152) AsOf counter 0x9f9e9d9c9b9a9998
