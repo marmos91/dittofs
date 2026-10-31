@@ -390,16 +390,16 @@ views and `Refs`.
 
 **One clock and one fault interface, fixed here.** This section fixes the
 signatures of the two interfaces every component takes at construction
-([the index's test harness](rfc-index.md#Test%20tiers), item 1): the journal, the syncer, the engine, GC,
+([the index's test harness](rfc-index.md#Test%20harness), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
 seam — the journal's storage seam, the fake store, the fault transport, the
 fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
-**The clock is written in standard-library types only.** Each component declares
-the clock it reads in its own package ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), as the subset of these
-methods it uses, so the node's one clock satisfies every such declaration as it
-is, and no component needs an adapter to take it. A type of this package in a
+**Both interfaces are written in standard-library types only.** Each component declares
+the clock it reads, and each seam the fault it consults, in its own package ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), as the subset of these
+methods it uses, so the node's one clock and the seeded fault satisfy every such declaration as
+they are, and no component needs an adapter to take it. A type of this package in a
 signature would make that impossible for a component that may import nothing
 but the standard library, such as the journal ([RFC 1 §1.1](rfc-1-journal.md#1.1%20Non-goals)).
 
@@ -412,10 +412,17 @@ type Clock interface {
 }
 
 // Fault is consulted by a seam before each named operation, on a seeded
-// schedule read from the Clock. Its results are standard-library values, so a
-// seam that may import only the standard library implements it as is.
+// schedule read from the Clock. A delay is waited out before the rest is
+// applied. Zero values pass. err alone fails the operation. tearAfter > 0
+// tears a write after that many bytes: with err nil the write is reported
+// whole and only those bytes can become durable; with err set only they land,
+// and the write fails. tearAfter < 0 loses a write or a sync: it is reported
+// done and makes nothing durable. A tear of any other operation, or a loss of
+// one or with err set, is a mistake in the check, which the seam refuses.
+// What a lost or torn write reads back before a crash, and what a later sync
+// makes of it, is the seam's model: the storage seam's is RFC 1 §1.3.
 type Fault interface {
-    At(op string, key []byte) (delay time.Duration, err error, tearAfter int) // zero values pass; err fails the operation; tearAfter > 0 tears a write after that many bytes
+    At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
 ```
 
