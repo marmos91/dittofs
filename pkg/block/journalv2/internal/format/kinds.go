@@ -59,6 +59,19 @@ func bodySize(k Kind, length int64) int64 {
 	}
 }
 
+// hasBody reports whether kind k's record carries body bytes at all. The kinds
+// split into the same two buckets bodySize gives them sized counts to, and
+// bodySize is the only other place that must know the split, so the two stay
+// beside each other.
+func hasBody(k Kind) bool {
+	switch k {
+	case KindRelease, KindTruncate, KindDeallocate, KindDelete, KindOffloaded, KindUnmark, KindForget:
+		return false
+	default:
+		return k.known()
+	}
+}
+
 // LossReason is why a loss record drops the record it names: corruption, a
 // stale offload mark, a failed sync window, or a superseding record. The
 // 0 it would need to name no reason is refused as damage, so no loss record

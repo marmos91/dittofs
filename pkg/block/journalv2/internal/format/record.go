@@ -308,6 +308,16 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 		return RecordHeader{}, fmt.Errorf("%w: own offset %d plus the record's size %d overflows", ErrDamaged, offset, h.Size())
 	}
 
+	// A kind with no body stores the seeded checksum of no bytes at
+	// [84,88) — the checksum AppendRecord writes for its empty body — and
+	// it is checked here, with the header's own fields, so a record is
+	// never attached whose payload slot holds a value no writer of this
+	// format produces. A body's checksum is matched against its bytes in
+	// VerifyRecordBody, the one place every record's bytes pass through.
+	if !hasBody(h.Kind) && h.PayloadCRC != crc32cSeeded(identitySeed(identity), nil) {
+		return RecordHeader{}, fmt.Errorf("%w: %s has no body, payload checksum 0x%08x, want the CRC32C of no bytes: 0x%08x", ErrDamaged, h.Kind, h.PayloadCRC, crc32cSeeded(identitySeed(identity), nil))
+	}
+
 	if err := checkFields(h); err != nil {
 		return RecordHeader{}, err
 	}
