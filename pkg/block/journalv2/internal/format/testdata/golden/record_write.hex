@@ -22,7 +22,7 @@ d8 d9 da db                 # [88,92) own offset in its segment 0xdbdad9d8,
 dc 6d 0d 3e                 # [92,96) header CRC32C of identity then [0,92), 0x3e0d6ddc
 68 69 6a 6b 6c 6d 6e 6f     # [96,104) modification time 0x6f6e6d6c6b6a6968,
                             #          nanoseconds since the Unix epoch UTC
-c0 c1 c2 c3                 # [104,108) payload bytes 0xc0..0xcc, 13 of them
+c0 c1 c2 c3                 # [104,117) payload bytes 0xc0..0xcc, 13 of them
 c4 c5 c6 c7
 c8 c9 ca cb cc
 00 00 00                    # [117,120) zero padding, covered by no checksum

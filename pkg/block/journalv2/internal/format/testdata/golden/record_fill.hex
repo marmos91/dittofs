@@ -18,7 +18,7 @@ a8 a9 aa ab ac ad ae af
                             #         payload bytes, 0xe17bcc20
 d8 d9 da db                 # [88,92) own offset in its segment 0xdbdad9d8
 b6 32 87 52                 # [92,96) header CRC32C of identity then [0,92), 0x528732b6
-e0 e1 e2 e3                 # [96,100) payload bytes 0xe0..0xf4, 21 of them
+e0 e1 e2 e3                 # [96,117) payload bytes 0xe0..0xf4, 21 of them
 e4 e5 e6 e7
 e8 e9 ea eb
 ec ed ee ef
