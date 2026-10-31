@@ -29,7 +29,8 @@ type RecordHeader struct {
 	SyncedThrough int64
 
 	// Offset is the record's own offset in its segment, 0 or more and a
-	// multiple of 8, where no segment exceeds MaxInt64 bytes.
+	// multiple of 8. On disk it is a 32-bit column, so AppendRecord refuses
+	// a value above MaxUint32.
 	Offset int64
 
 	// PayloadCRC is the seeded checksum of the body. Set by
@@ -214,10 +215,11 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 // at the given segment and offset. An error matching ErrDamaged means the
 // bytes are not a record of this journal: a wrong length, magic or checksum
 // against this identity's seed, reserved bytes that are not zero, a stored own
-// offset that is not a multiple of 8, or a field outside the bounds or inside
-// the kinds table's zero-field rules — another
-// journal's record lands here too, indistinguishable from damage, as with a
-// seal marker, which is what the seed is for. An error matching ErrWrongPlace
+// offset that is not a multiple of 8, a field outside the bounds or inside the
+// kinds table's zero-field rules, or a header of a kind with no body whose
+// payload slot is not the checksum of no bytes — another journal's record
+// lands here too, indistinguishable from damage, as with a seal marker, which
+// is what the seed is for. An error matching ErrWrongPlace
 // means the header verifies but was written somewhere else — at another
 // segment or another offset — and it is never returned filled: its other
 // fields are unvalidated and nothing it could report is needed by a scan, so
@@ -330,7 +332,8 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 // goes through it and hands out no part of a record that does not verify. On
 // any failure it returns the zero body — no payload slice, never part of
 // one — and an error matching ErrDamaged, or ErrNonZeroEpoch for a clone
-// target whose AsOf carries a non-zero epoch half.
+// target whose AsOf carries a non-zero epoch half. It panics, through
+// BodySize, when handed a header of an unknown kind.
 //
 // ponytail: a read of 4 KiB from a 1 MiB record reads and checks the whole
 // megabyte, because the one checksum covers the whole payload and nothing
