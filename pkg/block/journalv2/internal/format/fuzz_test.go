@@ -277,17 +277,21 @@ func FuzzRecord(f *testing.F) {
 		f.Add(b, uint64(testSegment), recordGoldens(f)["release"].h.Offset)
 	}
 
-	// A non-zero epoch, a write with one modification-time byte flipped,
-	// and a write whose padding is dirty: each reaches the rule its bytes
-	// break, never a stale checksum.
+	// A non-zero epoch, a write with one modification-time byte flipped, and
+	// a write whose padding is dirty: each is rechecksummed, so a stale
+	// checksum never breaks first and the rule its bytes target judges them
+	// — the epoch rule, the payload checksum, the padding's absence.
 	epochOne := slices.Clone(readGolden(f, "record_release"))
 	binary.LittleEndian.PutUint64(epochOne[56:64], 1)
 	rechecksumRecord(epochOne, testIdentity)
 	f.Add(epochOne, uint64(testSegment), recordGoldens(f)["release"].h.Offset)
 
+	// A write with one modification-time byte flipped: its header is
+	// rechecksummed for the edit, so the flip breaks the body alone and
+	// VerifyRecordBody alone can refuse it.
 	mtimeFlipped := slices.Clone(readGolden(f, "record_write"))
 	mtimeFlipped[96] ^= 0xff
-	rechecksumRecordBody(mtimeFlipped, testIdentity, 21)
+	rechecksumRecord(mtimeFlipped, testIdentity)
 	f.Add(mtimeFlipped, uint64(testSegment), recordGoldens(f)["write"].h.Offset)
 
 	dirtyPadding := slices.Clone(readGolden(f, "record_write"))

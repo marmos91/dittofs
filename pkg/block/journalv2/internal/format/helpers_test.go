@@ -150,7 +150,7 @@ var (
 	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
 )
 
-// testRecordBody is the write body the write golden holds: the bytes its
+// wantWriteBody is the write body the write golden holds: the bytes its
 // checksum covers, the modification time then the payload. The other bodies'
 // byte strings live with the tests that build them.
 func wantWriteBody() []byte {
