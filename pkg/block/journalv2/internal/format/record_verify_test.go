@@ -165,9 +165,9 @@ func TestRecordPaddingIsIgnored(t *testing.T) {
 		if err != nil {
 			t.Fatalf("record_%s with dirty padding: DecodeRecordHeader = %v, want no error", name, err)
 		}
-		wantCRC := wantSeededCRC(testIdentity, want.bodyBytes())
-		if h.Kind != want.h.Kind || h.PayloadCRC != wantCRC {
-			t.Errorf("record_%s with dirty padding: decoded %+v, want the same header as the golden's %+v", name, h, want.h)
+		want.h.PayloadCRC = wantSeededCRC(testIdentity, want.bodyBytes())
+		if h != want.h {
+			t.Errorf("record_%s with dirty padding: decoded %+v, want the golden's %+v", name, h, want.h)
 		}
 
 		verified, err := VerifyRecordBody(dirty[RecordHeaderSize:RecordHeaderSize+want.h.BodySize()], testIdentity, h)
@@ -178,13 +178,16 @@ func TestRecordPaddingIsIgnored(t *testing.T) {
 			t.Errorf("record_%s with dirty padding: verified body %+v, want the golden's %+v", name, verified, want.body)
 		}
 
-		// And the encoder writes zeros there whatever sits in dst's
-		// tail: the padding is the record's own zero bytes, never a
-		// caller's leftovers.
-		dst := make([]byte, 0, len(golden))
-		clear(dst[:cap(dst)])
+		// And the encoder zeroes the padding whatever a caller left in the
+		// buffer's tail: the padding is the record's own zero bytes, never
+		// a caller's leftovers, so the golden comes back over dirty memory.
+		dstBuffer := make([]byte, len(golden))
+		for i := range dstBuffer {
+			dstBuffer[i] = 0xff
+		}
+		dst := dstBuffer[:0]
 		if got := AppendRecord(dst, testIdentity, want.h, want.body); !slices.Equal(got, golden) {
-			t.Errorf("record_%s: AppendRecord over reused memory =\n% x\nwant the golden file\n% x", name, got, golden)
+			t.Errorf("record_%s: AppendRecord over memory filled with 0xff =\n% x\nwant the golden file\n% x", name, got, golden)
 		}
 	}
 }
