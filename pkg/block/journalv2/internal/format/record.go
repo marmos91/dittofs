@@ -114,6 +114,12 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		panic(fmt.Sprintf("format: version epoch %d is above 0", h.Version.Epoch))
 	}
 
+	// Only a write and a fill carry content, so every other kind refuses a
+	// payload before the switch: no kind's body may also carry one.
+	if h.Kind != KindWrite && h.Kind != KindFill && len(body.Payload) != 0 {
+		panic(fmt.Sprintf("format: kind %d carries a payload, want none", uint8(h.Kind)))
+	}
+
 	switch h.Kind {
 	case KindWrite, KindFill:
 		if int64(len(body.Payload)) != h.Extent.Len {
@@ -124,9 +130,6 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 			panic(fmt.Sprintf("format: loss reason %d is outside 1-4", uint8(body.Loss.Reason)))
 		}
 	case KindCloneTarget:
-		if len(body.Payload) != 0 {
-			panic(fmt.Sprintf("format: kind %d carries a payload, want none", uint8(h.Kind)))
-		}
 		if body.Clone.AsOf.Epoch != 0 {
 			panic(fmt.Sprintf("format: clone AsOf epoch %d is above 0", body.Clone.AsOf.Epoch))
 		}
@@ -135,10 +138,6 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		}
 		if body.Clone.Off+h.Extent.Len < 0 {
 			panic(fmt.Sprintf("format: clone source offset %d plus the length %d overflows", body.Clone.Off, h.Extent.Len))
-		}
-	default:
-		if len(body.Payload) != 0 {
-			panic(fmt.Sprintf("format: kind %d carries a payload, want none", uint8(h.Kind)))
 		}
 	}
 
