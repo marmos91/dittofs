@@ -7,7 +7,7 @@ import (
 
 // TestRecordErrorClassesAreDistinct pins that the record decoder's two new
 // classes are separate errors: an unknown kind is not damage, so a scan never
-// mistakingly steps over a kind it does not know by a length it read, and a
+// mistakenly steps over a kind it does not know by a length it read, and a
 // non-zero epoch is not damage, so recovery can tell a version this format
 // forbids from a rotted byte.
 func TestRecordErrorClassesAreDistinct(t *testing.T) {
