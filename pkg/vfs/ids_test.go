@@ -151,6 +151,9 @@ func TestEncodeRefusesWhatDoesNotFit(t *testing.T) {
 		"an open's stateid":   {Kind: vfs.RefOpened, State: vfs.StateRef{Type: vfs.StateOpen, Shard: 1, Token: 99}, Open: 5},
 		"anonymous":           {Kind: vfs.RefAnonymous, Open: 5},
 		"a grace instance":    {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: 1, Instance: 7}, Open: 5},
+		"a state type":        {Kind: vfs.RefOpened, State: vfs.StateRef{Type: vfs.StateOpen, Shard: 1}, Open: 5},
+		"a token":             {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: 1, Token: 99}, Open: 5},
+		"a sequence":          {Kind: vfs.RefOpened, State: vfs.StateRef{Shard: 1, Seq: 3}, Open: 5},
 	} {
 		if p, err := vfs.EncodeFileID(ref); !errors.Is(err, vfs.ErrInvalid) {
 			t.Errorf("FileId, %s: %#x, %v; want ErrInvalid", name, p, err)

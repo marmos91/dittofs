@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/marmos91/dittofs/internal/vfs/authz"
 	"github.com/marmos91/dittofs/internal/vfs/lockorder"
+	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 	"github.com/marmos91/dittofs/pkg/openstate"
@@ -30,8 +33,9 @@ type Deps struct {
 	Meta    *kvstore.Store
 	Open    *openstate.Table // the node starts it with the filesystem as its Sink and Admission as its Order
 	Engine  Content
-	Events  vfs.Events            // never blocks, and counts what it drops; nil: the null sink
-	Metrics prometheus.Registerer // nil: the filesystem's metrics are kept but not registered
+	Events  vfs.Events                     // never blocks, and counts what it drops; nil: the null sink
+	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
+	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
@@ -69,7 +73,7 @@ type Content interface {
 // WriteOpts is what a write asks of the engine beside its bytes.
 type WriteOpts struct {
 	Suspend entity.TimeMask // the times this write leaves alone
-	Done    func()          // called once, by the existence commit recording the write's usage; never if Write fails
+	Done    func()          // called exactly once per accepted write: by the commit recording its usage or its loss, or by the engine, charging nothing, when it drops the write uncommitted; never if Write fails
 }
 
 // Overlay is a file's size, times and version as the journal's uncommitted
@@ -109,8 +113,13 @@ var errUnbuilt = fmt.Errorf("vfs: call not built yet: %w", vfs.ErrUnavailable)
 // sink, keeping no queue of its own, so an event is dropped, and counted, in
 // one place only: the sink.
 type Filesystem struct {
+	meta   *kvstore.Store
+	open   *openstate.Table
+	authz  authz.Authz
 	events vfs.Events
 	locks  lockorder.Locks
+	pseudo atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
+	build  chan struct{}                 // holds a token while one call rebuilds pseudo
 
 	mu     sync.Mutex
 	state  state
@@ -118,6 +127,12 @@ type Filesystem struct {
 	active int             // how many of calls there are, so Drain tells none from some
 	stop   context.Context // ends at Drain's deadline, ending every admitted call's context
 	cancel context.CancelFunc
+	joins  map[entity.ShareID]*join // the calls counted against each share
+	// removed is every share whose removal removeShare has started.
+	removed map[entity.ShareID]bool
+
+	beforeShareRead func() // run by admission before it reads the share; nil but in tests
+	beforeBuild     func() // run by tree before it reads the share list to build; nil but in tests
 
 	inflight prometheus.Gauge
 }
@@ -134,7 +149,12 @@ func New(d Deps) (*Filesystem, error) {
 		return nil, errors.New("vfs: a filesystem needs a metadata store, open state and an engine")
 	}
 	fs := &Filesystem{
-		events: d.Events,
+		meta:    d.Meta,
+		open:    d.Open,
+		build:   make(chan struct{}, 1),
+		joins:   map[entity.ShareID]*join{},
+		removed: map[entity.ShareID]bool{},
+		events:  d.Events,
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",
@@ -143,6 +163,7 @@ func New(d Deps) (*Filesystem, error) {
 	if fs.events == nil {
 		fs.events = noEvents{}
 	}
+	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
 		if err := d.Metrics.Register(fs.inflight); err != nil {
 			return nil, fmt.Errorf("vfs: %w", err)

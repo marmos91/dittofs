@@ -133,8 +133,12 @@ type Identity struct {
 //
 // An NFSv4.0 call has no session. Its Client is the client on the state its
 // stateid resolves to or, for an operation that names an open or lock owner,
-// that owner's client. NFSv4.0 is offered no delegation, so checking that
-// client against the state's opener is the whole check.
+// that owner's client, and only a client confirmed under NFSv4.0, which the
+// adapter reads from the record's Adapter bytes: a stateid of a client
+// confirmed by EXCHANGE_ID, a delegation's among them, is NotYours. The
+// address SETCLIENTID_CONFIRM recorded is where callbacks go, never a check.
+// NFSv4.0 is offered no delegation, so I/O through an open is checked against
+// the open's principal.
 type Call struct {
 	Identity Identity
 	Protocol Protocol

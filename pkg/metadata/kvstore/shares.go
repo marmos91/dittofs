@@ -346,14 +346,18 @@ func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, f
 }
 
 // SetGrant sets a principal's access to a share, raising the grant's
-// version. A grant of none removes it, with its reverse row; the principal's
-// groups then decide its access. A grant names a user, a group, or the share's
-// defaults, authenticated users or everyone. Share and principal must exist,
-// read so that a deletion of either conflicts; a default always exists.
+// version. A grant of none is stored like any other and blocks the principal:
+// only RemoveGrant lets its groups, then the defaults, decide again. A grant
+// names a user, a group, or the share's defaults, authenticated users or
+// everyone, and a default grants at most read-write. Share and principal must
+// exist, read so that a deletion of either conflicts; a default always exists.
 func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 	isDefault := g.Principal == entity.AuthenticatedUsers || g.Principal == entity.Everyone
 	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup && !isDefault) {
 		return merrs.NewInvalidArgumentError("a grant names a user, a group, authenticated users or everyone, and a known access")
+	}
+	if isDefault && g.Access > entity.AccessReadWrite {
+		return merrs.NewInvalidArgumentError("a default grant is at most read-write")
 	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, ok, err := get(tx, shareKey(g.Share, keys.SInfo)); err != nil || !ok {
@@ -373,17 +377,23 @@ func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 		if err != nil {
 			return err
 		}
-		if g.Access == entity.AccessNone {
-			if err := tx.Delete(key); err != nil {
-				return err
-			}
-			return tx.Delete(rev)
-		}
 		g.Version = nextVersion(tx, old.Version)
 		if err := tx.Set(key, encodeGrant(g)); err != nil {
 			return err
 		}
 		return tx.Set(rev, nil)
+	})
+}
+
+// RemoveGrant removes a principal's grant on a share, with its reverse row:
+// its groups, then the defaults, decide its access again. Removing one that
+// does not exist is not an error.
+func (c ControlPlane) RemoveGrant(ctx context.Context, share entity.ShareID, p entity.Principal) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if err := tx.Delete(grantKey(share, p.ID)); err != nil {
+			return err
+		}
+		return tx.Delete(grantRevKey(p.ID, share))
 	})
 }
 
