@@ -826,9 +826,10 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - the repack reserve;
   - immediate, named, I/O-free refusals.
 - **Concurrency:**
-  - the file append domain: writes to one `FileID` are serialised (RFC 28 §2.2), from the
-    version draw until the index has the extent, over epic 5's append streams;
-  - the five lock domains and their total order, with a lock-order recorder in tests;
+  - the file append domain (RFC 1 §8.2): one `FileID`'s writes, fills, removals, releases and
+    repack copies are serialised (RFC 28 §2.2), from the version draw until the index has the
+    extent, over epic 5's append streams, with `Fill`'s absence check and the tag claim;
+  - the six lock domains and their total order, with a lock-order recorder in tests;
   - no I/O under the file index;
   - shutdown.
 - **`Stats` aggregation:** served from counters, keeping the documented inequalities, with
