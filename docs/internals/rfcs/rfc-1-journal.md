@@ -283,7 +283,7 @@ real files and directory and remembers every write, allocation and truncate
 since its file's last sync and every create, rename and unlink since the last
 directory sync; a simulated crash discards exactly those — a file allocated
 and never synced comes back short or unallocated — and reopens the journal on
-the same directory. The seam implements the set's one fault interface
+the same directory. The seam consults the set's one fault interface
 ([the index's test harness](rfc-index.md#Test%20harness), item 1), and can fail any one call, so a failed sync, a failed directory sync and
 a failed uncached read are each reachable. Killing the process instead leaves unsynced
 writes in the page cache, and proves a durability the journal does not have.
