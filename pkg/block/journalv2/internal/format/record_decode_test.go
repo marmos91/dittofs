@@ -254,8 +254,17 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 				binary.LittleEndian.PutUint64(b[64:72], 1)
 			}, ErrDamaged, "names version"})
 	}
-	perGolden["write"] = append(perGolden["write"],
-		ref{"a zero FileID", func(b []byte) { clear(b[16:32]) }, ErrDamaged, "names no FileID"})
+
+	// Every kind that names a file refuses one with no FileID at all: all
+	// twelve but unhold and forget, looped so a later edit that narrows the
+	// rule in kinds.go to a few kinds fails here on the kinds it dropped.
+	for _, kind := range []string{
+		"write", "fill", "release", "truncate", "deallocate", "delete",
+		"clone_target", "offloaded", "unmark", "loss", "hold", "stamp",
+	} {
+		perGolden[kind] = append(perGolden[kind],
+			ref{"a zero FileID", func(b []byte) { clear(b[16:32]) }, ErrDamaged, "names no FileID"})
+	}
 
 	for kind, refs := range perGolden {
 		goldenName := "record_" + kind
