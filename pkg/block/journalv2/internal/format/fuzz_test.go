@@ -296,6 +296,14 @@ func FuzzRecord(f *testing.F) {
 	}
 	f.Add(dirtyPadding, uint64(testSegment), recordGoldens(f)["write"].h.Offset)
 
+	// A record whose stored own offset is not a multiple of 8, at the place
+	// it names: it is refused as damage, never handed out as a header no
+	// writer could have produced.
+	misaligned := slices.Clone(readGolden(f, "record_release"))
+	binary.LittleEndian.PutUint32(misaligned[88:92], 4)
+	rechecksumRecord(misaligned, testIdentity)
+	f.Add(misaligned, uint64(testSegment), int64(4))
+
 	f.Add([]byte(nil), uint64(testSegment), testOffset)
 	f.Add(make([]byte, RecordHeaderSize), uint64(testSegment), testOffset)
 
