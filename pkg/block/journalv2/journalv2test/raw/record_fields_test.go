@@ -9,15 +9,14 @@ import (
 // never taken from the package's constants.
 
 // testFullRecord is a record holding every field a header can carry: the
-// synced-through offset, the own offset and a write body. Its byte ranges are
-// the payload's and the catalog entry's own, so a field written a byte off
-// reads back as bytes from the wrong range, never as the right value by
-// accident.
-//
-//	0x41-0x48  synced-through offset   0xd9-0xdc  own offset
-//	0x31-0x38  clone source offset     0x8f-0x98  loss body
-//	0xb0-0xbf  clone source share      0xef-0xf6  cut number
-//	0xc0-0xcf  clone source file       0xe0-0xf4  fill payload
+// synced-through offset, the own offset and a write body. Every field of it,
+// header and body, reads back from its own range of byte values out of the
+// record's table with the test values — the synced-through offset's 0xd1-0xd8
+// and the own offset's 0xf0-0xf3 among them, which only a record carrying the
+// two has — so a field written a byte off, or in another field's place, reads
+// back as bytes from the wrong range, never as the right value by accident.
+// The body kinds' ranges live with the records that carry them, in
+// record_bodies_test.
 var testFullRecord = Record{
 	Identity: testIdentity,
 	Kind:     0xc5,
@@ -31,10 +30,9 @@ var testFullRecord = Record{
 	Seq:           0x6867666564636261,
 	Version:       Version{Epoch: 0xa8a7a6a5a4a3a2a1, Counter: 0xb8b7b6b5b4b3b2b1},
 	Tag:           0x84838281,
-	SyncedThrough: 0x4142434445464748,
-	At:            0x484a4b4c,
+	SyncedThrough: 0xd8d7d6d5d4d3d2d1,
+	At:            0xf3f2f1f0,
 	Write:         &WriteBody{MTime: testMTime, Payload: []byte{0x91, 0x92, 0x93}},
-	// Write:         nil, // set by the tests that need a kind's body
 }
 
 // TestFullRecordCarriesTheSyncedThroughOffsetAndOwnOffset pins that a record
