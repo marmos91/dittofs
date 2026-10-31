@@ -11,12 +11,24 @@ import (
 // TestVerifyRecordBodyRefusesAChangedByte flips every byte of a body, one
 // byte at a time — the write's modification time included — and checks that
 // each flip is refused as damage with the zero body and no payload slice:
-// no part of a record that does not verify is ever handed out.
+// no part of a record that does not verify is ever handed out. The unchanged
+// body verifies first, so each flip is judged against a checksum that matches
+// it: a test whose body never verifies would refuse every flip for the wrong
+// reason.
 func TestVerifyRecordBodyRefusesAChangedByte(t *testing.T) {
 	for _, name := range []string{"write", "fill", "loss", "clone_target"} {
 		want := wantRecordAt(t, name)
+		want.h.PayloadCRC = wantSeededCRC(testIdentity, want.bodyBytes())
 		golden := readGolden(t, "record_"+name)
 		body := golden[RecordHeaderSize : RecordHeaderSize+want.h.BodySize()]
+
+		verified, err := VerifyRecordBody(body, testIdentity, want.h)
+		if err != nil {
+			t.Fatalf("record_%s unchanged: VerifyRecordBody = %v, want no error", name, err)
+		}
+		if !recordBodiesEqual(verified, want.body) {
+			t.Fatalf("record_%s unchanged: verified %+v, want the golden's %+v", name, verified, want.body)
+		}
 
 		for i := range body {
 			b := slices.Clone(golden)
@@ -36,7 +48,9 @@ func TestVerifyRecordBodyRefusesAChangedByte(t *testing.T) {
 // TestVerifyRecordBodyRefusesAWrongLength pins that a body of any length
 // other than the one the header names is refused before its checksum is
 // even read, one byte short or one long included, and comes back as the
-// zero body.
+// zero body. Each wrong-length body carries a checksum that matches its
+// own bytes, so only the length rule can refuse it — the short body's
+// checksum is set to the seeded checksum of the bytes it does hold.
 func TestVerifyRecordBodyRefusesAWrongLength(t *testing.T) {
 	for _, name := range []string{"write", "fill", "loss", "clone_target", "hold"} {
 		want := wantRecordAt(t, name)
@@ -51,12 +65,14 @@ func TestVerifyRecordBodyRefusesAWrongLength(t *testing.T) {
 			// the decoder refused it.
 			arg := make([]byte, n)
 			copy(arg, body)
-			verified, err := VerifyRecordBody(arg, testIdentity, want.h)
+			h := want.h
+			h.PayloadCRC = wantSeededCRC(testIdentity, arg)
+			verified, err := VerifyRecordBody(arg, testIdentity, h)
 			if !errors.Is(err, ErrDamaged) {
 				t.Errorf("record_%s body of %d bytes, want %d: VerifyRecordBody = %v, want an error matching ErrDamaged", name, n, want.h.BodySize(), err)
 			}
-			if !recordBodiesEqual(verified, RecordBody{}) {
-				t.Errorf("record_%s body of %d bytes: verified %+v, want the zero body", name, n, verified)
+			if !recordBodiesEqual(verified, RecordBody{}) || verified.Payload != nil {
+				t.Errorf("record_%s body of %d bytes: verified %+v, want the zero body and no payload", name, n, verified)
 			}
 		}
 	}
