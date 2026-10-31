@@ -151,7 +151,7 @@ writes the claim `released`.
    says which copy is the installation
    ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 3. On a platform that reports nothing, the claim's nonce, a fresh value written
-   at every start and recheck, catches it. The copy reads the claim before
+   at every recheck, catches it at start. The copy reads the claim before
    rewriting it ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 4. The claim holds the original's newer nonce, which the copy never recorded.
    The copy stops writing, its GC stops deleting, and it alerts
@@ -276,16 +276,16 @@ machine-generation identifier, where the platform offers one that changes when
 a virtual machine is cloned or restored from an image, and compares it with the
 one it recorded. A difference means this process runs on a copy: it mints a new
 instance part, and holds no namespace — it does not write, collect or delete in
-any — until an operator states which of the copies is the installation. A copy
+any — until an operator states which of the copies is the installation
+(`AcceptCopy`, below). A copy
 is never silently a second holder. A copy may hold a metadata store older than
 the one last served — a VM restored from an image — and nothing records that
-it is older, so once the operator confirms a copy, or the nonce check
-(below) has stopped one, the confirmed installation runs
-[RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)'s settle of retired blocks before it serves, adopts, clones or
+it is older, so once the operator accepts a copy, the accepted installation runs
+[RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)'s settle of retired blocks before it serves writes, adopts, clones or
 collects, as for any store opened at an older state.
 
-**The claim catches a copy the platform does not report.** At every start, and
-at every `Recheck`, the holder rewrites its claim with a fresh instance nonce, in
+**The claim catches a copy the platform does not report.** At every `Recheck`,
+the first after each start included, the holder rewrites its claim with a fresh instance nonce, in
 this order, each step done before the next:
 
 1. **read** the claim. If it names this installation's identity with a nonce
@@ -307,6 +307,33 @@ original's newer records name. Recording before the put is what lets a holder
 that crashed between the two recognise its own claim at restart. Two copies
 started at once from one image fence each other within one `Recheck` period: the
 one that reads the other's nonce stops, and only one keeps writing.
+
+**At start every node reads the claim, and none writes it.** GC's `Claim`
+([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) reads it before any share of the namespace attaches, and its
+answer decides them ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5): a claim naming this installation
+with a nonce it recorded is **held**; with a nonce it never recorded, a
+**copy**, whose shares serve reads and refuse writes; one naming another
+installation, or `released`, is **foreign**, and its shares are not attached. The
+start's rewrite is the first `Recheck` of the first partition's holder, so one
+process per namespace writes the claim, as at every later period.
+
+**An operator's acceptance ends a copy's fence.** `AcceptCopy` records the nonce
+the claim carries as *accepted* in the namespace's nonce record: the operator's
+statement that this installation, not the one that wrote that nonce, holds the
+namespace. The next `Claim` settles the store ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)), records that
+nonce as last written, and answers held; the holder's next `Recheck` then
+rewrites the claim with a fresh nonce.
+
+**A new namespace's first claim is written by the path that creates it** — the
+API's create, a re-home's new namespace ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), a restore into a new
+namespace ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)), an import. The put is remote, so it runs after the
+transaction that creates the namespace, as a step of an operation that resumes
+after a crash ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)): it puts the claim `owned` as every claim put
+does (below), and sets `claimed` in the nonce record in the transaction that
+records the nonce written. Where a claim already exists at the prefix it puts
+nothing and fails, naming the prefix. Until `claimed` is set `Claim` answers
+**pending**, and no share of the namespace attaches. Once `claimed` is set, a missing claim is **foreign**: something
+deleted it, and the namespace is not new.
 
 > decision: which copy survives is decided by timing, not by which is the
 > original, and the alert names both so an operator can swap them. The cost is
@@ -335,7 +362,7 @@ through it:
   periods on a clock that may run slow, has fenced itself.
 
 **Every claim put records its nonce first.** Every path that writes a claim — a
-start, a `Recheck`, a move's or a recovery's import, a re-home's new namespace
+`Recheck`, a new namespace's first claim, a move's or a recovery's import, a re-home's new namespace
 ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), a restore into a new namespace ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)) — records the nonce it
 intends to write in its own metadata store before the put, and records it as the
 last written after, as steps 2–3 above do. The record of a namespace's claim
@@ -1150,6 +1177,13 @@ type Migration interface {
 	// operator states B holds no retained export naming it (§2.4).
 	ReleasePin(ctx context.Context, ns NamespaceID, move MoveID, masterKey MasterKeyID) error
 }
+// Claims holds the operator's statements about a namespace's claim (§2.1).
+type Claims interface {
+	// AcceptCopy records the nonce the claim now carries as accepted, and confirms
+	// an instance part this start minted: this installation, a copy, holds the
+	// namespace. The next Claim settles and serves.
+	AcceptCopy(ctx context.Context, ns NamespaceID) error
+}
 
 type MoveID [16]byte    // minted by A when it writes a move's export; logged and reported with the move
 type MasterKeyID []byte // a master key's ID as a stored wrap carries it (RFC 5 Appendix B.2): up to 65,535 bytes
@@ -1278,7 +1312,7 @@ expired; a claim read that stopped a stale image before its put.
 | S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. `S-snap-move-refuses` with a share created before the pause commits: drop the pause transaction's tracked reads of `ShareList`, and the move ends with no base cut of the share and B without it. |
 | S26 | `S-snap-rehome` and `S-snap-rehome-crash-<step>` under the model-based run: every snapshot and the live share read back their model copies at every step, and after the finish no ref names N and the audit of both namespaces is clean. Skip the catch-up passes: finish refuses, since `old_refs` is not zero. `S-snap-rehome-finish-load` and `S-snap-rehome-backup-keys` as their rows state. |
 | S41 | `S-snap-move-freeze-reply`, `S-snap-move-nlm-notify`, `S-snap-move-ca-windows`, `S-snap-move-cleanup-crash`, `S-snap-rehome-backup-extend` and `S-snap-rehome-backup-expire` as their rows state, each with the failing variant its row names. |
-| S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. Restore a day-old image of a running installation, on a platform that reports nothing: it stops at its first start, before any put, and the original keeps writing; rewrite the claim before reading it, and the original is the one fenced. Crash the holder between its put and recording the nonce: at restart it recognises its own claim. |
+| S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. Restore a day-old image of a running installation, on a platform that reports nothing: its `Claim` answers copy at its first start, before any put: its shares serve reads only and its GC deletes nothing, and the original keeps writing; rewrite the claim before reading it, and the original is the one fenced. Crash the holder between its put and recording the nonce: at restart it recognises its own claim. |
 
 ### 5.4 Group B — cost and wedging
 

@@ -1080,9 +1080,10 @@ how to test them: they are specific to each backend and live in its profile
   proved it at that size;
 - the client's checksum mode is pinned explicitly in the profile, never left to
   a client library's default, which can change between releases;
-- the namespace claim ([§4.13](#4.13%20Control%20objects)) is read, and handed to the opener, which applies
-  [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim rule; a claim that exists but cannot be read fails the
-  open, while an absent one is reported as absent;
+- the namespace claim ([§4.13](#4.13%20Control%20objects)) is read, and handed to the opener; the store
+  applies no claim rule and fails no open on it, since GC's `Claim` decides the
+  namespace ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), and an unreadable claim leaves only that namespace's
+  shares unattached;
 - where a service's listings lag its writes, a check that lists what it just
   wrote **MAY** re-list a bounded number of times, over a bounded time the
   profile states, before refusing to open;

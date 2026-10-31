@@ -474,7 +474,27 @@ the engine, whose syncer GC's flows need, and before open state, identity and
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
 up to store time, and runs a first `Recheck`. No delete is issued until that
-`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so starting needs no other gate.
+`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so GC's start needs no gate of its own beyond `Claim`.
+
+**`Claim` is the start-time claim check, and it is GC's.** The node calls
+`Claim` for a namespace before it adds it to GC or binds a share of it: at every
+start, and when a namespace is new to the node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). Every node
+calls it, and it writes no claim: it reads the namespace's nonce record through
+`Blocks.State`, then the claim through `Remote`, then the record again, and takes
+a nonce found in either read of the record as recorded, so a holder's `Recheck`
+that rewrites the claim between the reads is not read as a copy. While this
+start has minted a new instance part ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) it answers copy for every namespace.
+The first partition's holder
+rewrites the claim at its first `Recheck` after `Add`, as at every later one
+([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). It needs no `Start` and opens no flow. It answers by [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s
+rule: **held**, **copy**, **foreign** or **pending**, or an error when it could not read the
+claim, which the node treats as not yet checked. Its one write follows an
+operator's acceptance of a copy: it runs [§3.7](#3.7%20Trash)'s settle through `Blocks.Settle`,
+whose last transaction, only if the record's written nonce is still the one it
+read and `accepted` is still set, records the accepted nonce as written and clears
+`accepted`, and then answers held. The settle is idempotent, and a node that finds
+`accepted` already cleared answers held, so two nodes running it at once converge
+and neither rolls back a nonce a `Recheck` wrote meanwhile.
 
 **Namespaces come and go while GC runs.** The node adds and removes contexts
 ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)). A namespace whose drain deletes its `NS‖ns` records
@@ -924,7 +944,7 @@ three purposes, none of which needs dedup:
 **A recovered state settles its retired blocks before it serves.** Every open of
 the metadata store at a state older than the one last served — a restore from a
 backup or a replica, a recovery import ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)) — **MUST**, before any
-client is served and before any adoption, clone, restore or GC pass runs, move
+write is served and before any adoption, clone, restore or GC pass runs, move
 every `retired` block whose `not_before` is at or before store time to
 `deleted`, in batched transactions through the `BR` index, without the
 verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes): its object may already be gone, so it may not be
@@ -938,18 +958,19 @@ timeline's deleter could not have reached it yet.
 
 An older state is detected, not declared. The claim holds the nonce this
 installation last wrote into it, and the metadata store records each nonce
-before its put (`NS‖ns‖claim`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). An open that finds the
+before its put (`NS‖ns‖claim`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A `Claim` that finds the
 claim naming this installation but carrying a nonce that is neither the
 last one its store records writing nor the one it records intending to write
-is running on a store restored from an image or a replica older than the state
-last served, since every later claim put recorded its nonce first, and settles as above before it serves; one
-that finds another installation's nonce fences itself as
-[RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says.
+is a copy, or is running on a store restored from an image or a replica older
+than the state last served, since every later claim put recorded its nonce
+first. It fences as [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says, and settles as above
+only once an operator has accepted the copy, before it serves writes. One that finds
+another installation's identity fences itself too.
 
-The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
-claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
-store never recorded. That check runs before any storage binding serves or GC
-starts ([RFC 23](rfc-index.md) §2.2 step 4).
+The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), `Blocks.Settle`, run by
+`Claim` ([§2.5](#2.5%20Composition%20and%20lifecycle)), the start-time claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim), for each namespace whose
+claim carries a nonce an operator has accepted. That check runs before any storage binding serves or GC
+starts ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5).
 
 **An object is deleted only after a claim rewrite later than its `deleted`
 mark** ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 4). The nonce changes once per `Recheck`, so detection is
@@ -1679,7 +1700,8 @@ lifecycle rules ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%2
 a fixed short period (proposal: 5 min), independent of any other GC work, and
 also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records it through `RecordRecheck`, before the claim put and after it:
-`NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
+`NS‖ns‖gc‖recheck` = {started, finished, passed, drift}. The claim nonces are
+recorded apart, through `RecordNonce` (below).
 
 **`Recheck` is a sequence of small calls, not one.** Each setting is read by
 its own call, and a version walk under the prefix runs one page per call
@@ -1708,7 +1730,7 @@ is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
 ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
 nonce this installation recorded as written or intended; on a mismatch it
 writes nothing, stops writing the namespace and issues no delete. It **MUST**
-then record the nonce it is about to write as *intended*, durably in the
+then record the nonce it is about to write as *intended*, through `RecordNonce`, durably in the
 metadata store ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), before the put, and as *written* after it, so a
 crash between the two still recognises its own nonce. Without the read first, a
 restored stale image of the installation rewrites the claim with a nonce of its
@@ -1978,6 +2000,21 @@ func (g *GC) Conditions(dst []health.Condition) []health.Condition
 func (g *GC) Add(ctx context.Context, ns NamespaceID, v View) error
 func (g *GC) Remove(ctx context.Context, ns NamespaceID) error
 
+// Claim is the start-time claim check (§2.5, RFC 27 §2.1). It reads the claim and
+// writes none; after an operator's AcceptCopy it settles (§3.7) and records the
+// accepted nonce as written. The node calls it before Add and before binding a
+// share of the namespace; it needs no Start.
+func (g *GC) Claim(ctx context.Context, ns NamespaceID, v View) (ClaimState, error)
+
+type ClaimState uint8
+
+const (
+	ClaimHeld    ClaimState = iota + 1 // names this installation with a nonce it recorded
+	ClaimCopy                          // names this installation with a nonce it never recorded or accepted, or this start minted a new instance part
+	ClaimForeign                       // names another installation, is released, or is missing though this installation wrote it
+	ClaimPending                       // the namespace's create has not yet recorded its first claim written
+)
+
 // Blocks is what GC needs from block metadata. Retirement, resurrection, the §3.5
 // verification and the hold and pause gates live inside its transactions; none is a call.
 type Blocks interface {
@@ -2030,10 +2067,16 @@ type namespaceBlocks interface {
 	// raises the epoch, release never lowers it (§7.3).
 	Lease(ctx context.Context, part Partition, on bool) (epoch uint64, held bool, err error)
 	State(ctx context.Context) (NamespaceState, error) // one snapshot
-	// RecordRecheck is called twice per pass: before the claim put, recording the
-	// intended nonce and stamping started in store time; after it, recording the
-	// written nonce and the result (§7.5).
+	// RecordRecheck is called twice per pass: before the claim put, stamping
+	// started in store time; after it, recording the result (§7.5).
 	RecordRecheck(ctx context.Context, r RecheckRecord) error
+	// RecordNonce records the claim nonce intended before a put, and written after
+	// it (§7.5).
+	RecordNonce(ctx context.Context, n NonceRecord) error
+	// Settle moves every retired block whose not_before is at or before store time
+	// to deleted, in K-bounded transactions through BR, without §3.5's verification
+	// (§3.7); its last transaction records the accepted nonce as written.
+	Settle(ctx context.Context) error
 }
 
 type MarkResult struct{ Deleted, Refused []BlockName } // one transaction's, at most K names
@@ -2050,7 +2093,7 @@ type NamespaceState struct {
 	Held      bool          // §6.4, any reason
 	Draining  bool          // §7.6
 	Recheck   RecheckRecord // last: started (store time), finished, passed, drift
-	Nonce     NonceRecord   // last written and intended claim nonce (§7.5)
+	Nonce     NonceRecord   // last written, intended and operator-accepted claim nonce, and whether the first claim was written (§7.5, RFC 27 §2.1)
 }
 
 // Remote is the part of RFC 4 §4.1's Store GC calls; deletes and listing go direct (§3.1).
@@ -2212,7 +2255,7 @@ the implementation, not by timing.
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDue`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDue` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) gates in both commit orders | Table-driven over each gate and the transactions it gates — the hold: `MarkDue`; the pause: `MarkDue`, a relocation commit (`Relocate`) and a listing retirement (`RetireUnrecorded`). For each, from a snapshot taken before the gate is written, commit the transaction (a) after the gate and (b) before it; then (c) begin one after the gate commits. Assert (a) aborts and its retry refuses; (b) commits — with its verification intact for the hold, and for the pause with its records in the `move-base` export and its delete only for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the gate and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
-| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) stale image | Copy an installation's disks, let the original run several `Recheck` periods and commit new blocks, then start the stale copy on a platform that reports no machine-generation change. Assert the copy's first `Recheck` reads the claim, finds a nonce its records do not hold, writes nothing and deletes nothing, while the original keeps serving. Kill the original between recording an intended nonce and its put, restart it: assert it accepts its own nonce. A `Recheck` that rewrites before reading lets the copy win and delete the original's blocks. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) stale image | Copy an installation's disks, let the original run several `Recheck` periods and commit new blocks, then start the stale copy on a platform that reports no machine-generation change. Assert the copy's `Claim` reads the claim, finds a nonce its records do not hold, binds the namespace's shares `Fenced` and adds it to no GC: it writes nothing and deletes nothing, while the original keeps serving. Kill the original between recording an intended nonce and its put, restart it: assert it accepts its own nonce. A `Recheck` that rewrites before reading lets the copy win and delete the original's blocks. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) folder store drift | Turn versioning on at a backup location's folder store mid-run. Assert the next copy and the next sweep wait for a `Recheck` and the store's drift condition is raised; restore the setting, assert both resume. A build that checks the folder store only when it registers copies into the drifted store. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
 | [§3.7](#3.7%20Trash) metadata recovery within the trash | Snapshot the metadata store; then release files, compact blocks and run the deleter for less than one retention; restore the metadata store from the snapshot. Assert every ref resolves and reads, including those whose blocks were compaction sources. Let compaction sources skip the trash; assert the check fails. |
