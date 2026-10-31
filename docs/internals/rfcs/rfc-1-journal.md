@@ -517,6 +517,18 @@ store under a new installation ID, it rewrites the installation ID of the
 journal whose identity is `expect`, and only that
 ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
 
+**A directory the platform cannot keep durable is refused.** `Open`, and
+`Init` for the rules that apply before any file is created, **MUST** refuse,
+with `ErrUnsuitableStorage`, a directory where a sync would not keep synced
+data across a power loss, by the platform rules of [RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile): a mount
+without cache flushes, and on Btrfs a directory with copy on write enabled,
+a file in it without the attribute, or a directory that is not a
+subvolume's root. The error names the rule, the directory, the mount and
+the option that refused it, and what to change. An error met while checking
+(an I/O error, or a mount table that does not describe the directory) is
+returned as itself, never as `ErrUnsuitableStorage`, so a caller can tell an
+installation to fix from a fault.
+
 **A share attached after open raises the counter first.** `Share`'s `floor` is
 the share's own version floor: the highest content version recorded for any file
 of the share, imported records included. A share this journal did not serve when
