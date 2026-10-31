@@ -2877,6 +2877,12 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   extent **MUST** grow at most 2.5 times between the two, with the same bound
   per descent as the index cost ([§3.3](#3.3%20Offload)).
 
+**Suites.** §9.2's edge cases, §9.4's checks, §9.1's model-based run and §9.7's counted checks run
+in the journal's own conformance suite and group, registered with the v2 journal's code; §9.1's
+other kinds (unit, fault-injection, race and import tests) and the fuzz targets' seed corpora run in
+`unit`, on NTFS in `unit/windows`. No suite runs yet §9.6's benchmarks, the soak, §9.3's other
+filesystems or fuzzing past the seed corpus.
+
 ## 10. Open questions
 
 The open questions of the on-disk format and of recovery are

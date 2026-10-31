@@ -2388,6 +2388,12 @@ service benchmark is the adapter's own cost:
 | nightly, dedicated host | tracked, as [RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs) says |
 | manual | contention sweeps and long model runs |
 
+**Suites.** §8's unit and integration tiers run in-process in `unit`, with §6's rows, §9's allowlist
+test and the fuzz seeds; the protocol suites above the adapters are `conformance`, `cthon04` and
+`nfstest`, and the cross-protocol checks through both adapters run in `e2e/cross-protocol`, on
+the pull requests §9 names, beside the landed slices' system scenarios. No suite runs yet the
+multi-node tier, the nightly long model and fuzz runs, or §8's benchmarks.
+
 ## 9. Migration
 
 The service is introduced in slices, each one PR or a few, each leaving the

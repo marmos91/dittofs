@@ -1082,6 +1082,10 @@ corpus, chunk size distribution and CPU with each result.
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
+**Suites.** §8.1's transform conformance and §8.2's chain tests run in `unit`, and §8.1's
+key-management row in `integration`, against its KMIP server. No suite runs yet §8.3's benchmarks,
+fuzzing past the seed corpus, or T13's removal with two nodes holding the key.
+
 ## 9. Open questions
 
 1. **Hiding chunk hashes from the service** — closed. Chunk IDs are keyed under

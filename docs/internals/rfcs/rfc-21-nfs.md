@@ -2631,6 +2631,15 @@ stand in for those steps. A cluster run cannot stand in for §3.3's single-node
 pNFS row or §5.4's single-node restart, which bind only the single-node
 profile.
 
+**Suites.** §11.6's translation tests and fuzz seeds run in `unit`, as do §13's
+rows that inject a fault below the server through the composed single-node
+harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
+`cthon04` and `nfstest`, its other single-node rows against a real server in
+`e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
+those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
+pynfs's reboot tests, the wire tests against a reference NFS server, or any
+row's cluster steps.
+
 ## 14. Observability
 
 Metric names follow [RFC 25 §2](rfc-25-observability.md#2.%20Metrics) and are

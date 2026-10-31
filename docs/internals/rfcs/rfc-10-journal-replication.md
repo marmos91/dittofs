@@ -1561,6 +1561,9 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
 > first run replaces each, and a miss on it is a design finding; the terms derived from settings
 > (drift bound, read lag, gather interval, removal bound, lag trigger) stay.
 
+**Suites.** RFC 10 is deferred with the cluster, and no suite runs its checks yet; Appendix C's
+journal extension checks join `unit` once the extension is built.
+
 ## 16. Open questions
 
 1. **The seal's cost.** Pulling the kept replicas' operations above the baseline

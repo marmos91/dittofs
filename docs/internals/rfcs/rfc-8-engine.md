@@ -3323,6 +3323,13 @@ that does not deduplicate; stop the clock once offloaded ([§11.4](#11.4%20How%2
 stage's occupancy beside B1; record the network distance to the store; run long
 enough to exhaust the local device's write cache.
 
+**Suites.** §15.1 to §15.3's rows run in `unit` on the composed single-node harness (the
+in-process layer, not RFC 17/19/20's kernel-client rows), which carries RFC 0 §1.4's
+single-node checks, and in `integration` where a row needs a metadata or remote store's
+container. The engine's own conformance suite, planned for §15's rows, joins them with the
+engine's first package. No suite runs yet §15.4's benchmarks or the rows that need a second
+node or a shard move.
+
 ## 16. Open questions
 
 1. **Fill policy parameters** ([§7.3](#7.3%20Filling%20is%20a%20decision)): the low-water mark and scan threshold

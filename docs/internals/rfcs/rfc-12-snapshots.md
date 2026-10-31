@@ -1656,6 +1656,12 @@ Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 | Restore throughput: copy every file of a 10⁶-file, 1 TiB snapshot out through the browse path, 64 readers, cold | MB/s and files/s against a live cold read | at least half the live cold read |
 | Subtree cut of one of 64 shards under a sustained writer on every shard | p99 write latency on the other 63 across the cut | unchanged against no cut |
 
+**Suites.** Until RFC 10's simulator is built, the composed harness driven from seeds stands in
+(§5.1): §5.1's model-based run, §5.2's single-node scenarios, the §5.3 rows on them and §5.4's
+counted checks run against a real metadata backend and the remote-tier emulator, in `integration`.
+No suite runs yet the model checker, the rows that need a second shard, a takeover or a subtree cut,
+or §5.5's benchmarks.
+
 ## 6. Observability
 
 Metric names are shown without the deployment's prefix, which the exporter adds.

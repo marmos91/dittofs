@@ -2336,6 +2336,11 @@ row fails the run.
 | bucket and score ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | the bucket is monotone in dead ratio, `small` only for fully live blocks under a quarter of the target; the score never divides by zero |
 | `Recheck` drift rules ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | over random sequences of read, transient and drifted results, drift is raised only on a drifted read or two unread periods in a row |
 
+**Suites.** §11.1's Group A rows, §11.2's model-based run with crashes, §11.4's counted rows and
+§11.7's fuzz seeds run in `unit`; Group A against a remote backend that fails a delete after doing
+it, and §11.3's store faults, run on the emulator in `integration`. No suite runs yet §11.6's
+benchmarks, scale rows and soak, or the rows that need a second node or process.
+
 ## 12. Open questions
 
 1. **The default space-amplification target** ([§4.4](#4.4%20When%20to%20compact%20is%20policy)). 1.25 is proposed; what

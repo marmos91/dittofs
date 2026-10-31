@@ -1624,6 +1624,10 @@ builds a node any other way, and an architecture test fails on a caller of
 | §7 CLI | Run the CLI's whole suite with the host's bootstrap and the store unreadable to the CLI's user: assert every command still works. Assert the generated reference matches the command tree. Assert `go list -deps` of the CLI names no package of the metadata store, the block stores or the control-plane server. | a command that bypasses the API |
 | §9 schema gate | **(cluster)** With one node not upgraded, send a field the new schema adds: refused `400` naming the version. Raise the version after upgrading it: accepted. | a record an old node refuses |
 
+**Suites.** §12's checks run through the API against the node node.New builds, in-process in `unit`,
+the architecture test and the CLI checks among them; the rows that mount shares over NFS and SMB run
+in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi-node rows.
+
 ## 13. Open questions
 
 1. **Which counter a position is of.** [RFC 16](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)

@@ -2705,6 +2705,12 @@ component from a wire is checked at the adapter boundary, against the tables of
 - **Metrics** follow [RFC 25](rfc-25-observability.md) and [§11.2](#11.2%20Observability): closed label sets only, and no
   share, principal, file or name in a label.
 
+**Suites.** §12.1's Group A rows, §12.2's counted rows and §12.5's golden vectors, property tests
+and fuzz seeds run in `unit`, through the shared store tests over the embedded store, and a row
+driven through both protocols' clients belongs in `e2e/cross-protocol`. No suite runs yet §12.4's
+benchmarks, §12.2's shared-guards throughput ratio, or the rows that need a second shard, node or
+failover.
+
 ## 13. Open questions
 
 1. ~~**What a case-insensitive share should cost.**~~ Closed: the entry key is
