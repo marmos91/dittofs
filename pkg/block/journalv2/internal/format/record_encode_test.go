@@ -135,6 +135,7 @@ func TestAppendRecordPanics(t *testing.T) {
 		{"a clone source offset that overflows with the length", cloneTarget.h, RecordBody{Clone: CloneSource{Share: testClone.Share, File: testClone.File, Off: math.MaxInt64, AsOf: testClone.AsOf}}, "clone source offset"},
 		{"a loss reason of 0", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Synced: true}}, "reason 0"},
 		{"a loss reason of 5", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Reason: LossReason(5)}}, "reason 5"},
+		{"a loss carrying a payload", wantRecordAt(t, "loss").h, RecordBody{Loss: testLoss, Payload: []byte{1}}, "carries a payload"},
 	} {
 		func() {
 			defer func() {
