@@ -286,11 +286,12 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 		Offset:        storedOffset,
 	}
 
-	// decision: the D9 bounds are stricter than the byte table, which
-	// bounds no field. They hold while a segment cannot exceed MaxInt64
-	// bytes — the day one could, an in-range extent a core.Extent cannot
-	// hold exists and the refusal must go; until then no record of this
-	// format can carry one.
+	// decision: these bounds — what a stored offset, length, synced-through
+	// offset or whole record's size a read's int64 must hold — are stricter
+	// than the byte table, which bounds no field. They hold while a segment
+	// cannot exceed MaxInt64 bytes: the day one could, an in-range extent a
+	// core.Extent cannot hold exists and the refusal must go; until then no
+	// record of this format can carry one.
 	if h.Extent.Off < 0 {
 		return RecordHeader{}, fmt.Errorf("%w: file offset %d is above MaxInt64", ErrDamaged, uint64(h.Extent.Off))
 	}
