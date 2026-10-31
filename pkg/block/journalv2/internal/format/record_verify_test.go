@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -110,20 +111,21 @@ func TestVerifyRecordBodyRefusesFields(t *testing.T) {
 		}
 	}
 
-	// Clone target: a source offset above MaxInt64, and one that
-	// overflows with the header's length, are damage; an AsOf epoch is
+	// Clone target: a source offset above MaxInt64, and one that overflows
+	// with the header's length — each built from an in-range operand, so
+	// only the rule it names can refuse it — are damage; an AsOf epoch is
 	// its own class.
 	for _, c := range []struct {
 		name string
 		set  func(b []byte)
 		err  error
+		say  string
 	}{
-		{"a source offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[128:136], 0x8000000000000000) }, ErrDamaged},
+		{"a source offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[128:136], 0x8000000000000000) }, ErrDamaged, "source offset 9223372036854775808 is above MaxInt64"},
 		{"a source offset that overflows with the length", func(b []byte) {
-			binary.LittleEndian.PutUint64(b[128:136], 0xffffffffffffffff)
-			rechecksumRecord(b, testIdentity)
-		}, ErrDamaged},
-		{"a non-zero AsOf epoch", func(b []byte) { binary.LittleEndian.PutUint64(b[136:144], 1) }, ErrNonZeroEpoch},
+			binary.LittleEndian.PutUint64(b[128:136], 0x7fffffffffffffff)
+		}, ErrDamaged, "plus length 5135868584551137600"},
+		{"a non-zero AsOf epoch", func(b []byte) { binary.LittleEndian.PutUint64(b[136:144], 1) }, ErrNonZeroEpoch, "AsOf epoch 1, want 0"},
 	} {
 		b := slices.Clone(readGolden(t, "record_clone_target"))
 		c.set(b)
@@ -136,6 +138,10 @@ func TestVerifyRecordBodyRefusesFields(t *testing.T) {
 		verified, err := VerifyRecordBody(b[RecordHeaderSize:152], testIdentity, h)
 		if !errors.Is(err, c.err) {
 			t.Errorf("%s: VerifyRecordBody = %v, want an error matching %v", c.name, err, c.err)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.say) {
+			t.Errorf("%s: VerifyRecordBody = %v, want it to say %q", c.name, err, c.say)
 		}
 		if !recordBodiesEqual(verified, RecordBody{}) {
 			t.Errorf("%s: verified %+v, want the zero body", c.name, verified)

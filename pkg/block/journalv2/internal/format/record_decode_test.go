@@ -3,7 +3,10 @@ package format
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
@@ -166,101 +169,110 @@ func TestUnknownKindIsNeverSteppedOver(t *testing.T) {
 
 // TestDecodeRecordHeaderRefusesFields pins that a header whose checksum
 // verifies but whose fields break the kinds table's zero-field rules, or
-// whose stored values top what a read can hold, is refused as damage: the
-// refusal is checked per case against a record rechecksummed for the edit,
-// so only the field's own rule can fail it, never a stale checksum.
+// whose stored values top what a read can hold, is refused as damage. Each
+// case's record is rechecksummed for its edit, so only the field's own rule
+// can fail it, never a stale checksum — and each case first proves the
+// unedited bytes decode, so a case can never pass because the golden it
+// edits was unusable to begin with. A case's error must also name the rule
+// it targets, so a case cannot pass on a refusal another rule made first.
 func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
-	base := wantRecordAt(t, "release").h
-
-	// cases is built per case below: name, the bytes, the class. The
-	// header decodes at the golden's segment and own offset unless stated.
+	// name, how the bytes are edited, the class, and a piece of that rule's
+	// own message. The header decodes at the golden's segment and own
+	// offset unless stated.
 	type ref struct {
 		name string
 		set  func(b []byte)
 		err  error
+		say  string
 	}
 	perGolden := map[string][]ref{}
 
-	// Reserved bytes at 5, 6, 7: each is its own case.
-	for i := range []int{5, 6, 7} {
+	// Reserved bytes at 5, 6 and 7: each is its own case.
+	for _, i := range []int{5, 6, 7} {
 		perGolden["release"] = append(perGolden["release"], ref{
-			name: "a non-zero reserved byte at " + string(rune('0'+i)),
+			name: fmt.Sprintf("a non-zero reserved byte at %d", i),
 			set:  func(b []byte) { b[i] = 0xff },
 			err:  ErrDamaged,
+			say:  "reserved bytes are not zero",
 		})
 	}
 
-	// Each 64-bit field that a core int64 must hold, set past its top.
+	// Each 64-bit field that a core int64 must hold, set past its top, then
+	// the two overflow rules, each built from in-range halves so only the
+	// rule it names can refuse them.
 	perGolden["release"] = append(perGolden["release"],
-		ref{"file offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[32:40], 0x8000000000000000) }, ErrDamaged},
-		ref{"length above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0x8000000000000000) }, ErrDamaged},
-		ref{"synced-through offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[76:84], 0x8000000000000000) }, ErrDamaged},
+		ref{"file offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[32:40], 0x8000000000000000) }, ErrDamaged, "file offset 9223372036854775808 is above MaxInt64"},
+		ref{"length above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0x8000000000000000) }, ErrDamaged, "length 9223372036854775808 is above MaxInt64"},
+		ref{"synced-through offset above MaxInt64", func(b []byte) { binary.LittleEndian.PutUint64(b[76:84], 0x8000000000000000) }, ErrDamaged, "synced-through offset 9223372036854775808 is above MaxInt64"},
 		ref{"file offset + length overflows", func(b []byte) {
-			binary.LittleEndian.PutUint64(b[32:40], 0xffffffffffffffff)
-			binary.LittleEndian.PutUint64(b[40:48], 2)
-		}, ErrDamaged},
+			binary.LittleEndian.PutUint64(b[32:40], 0x7fffffffffffffff)
+			binary.LittleEndian.PutUint64(b[40:48], 1)
+		}, ErrDamaged, "plus length 1 overflows"},
 	)
 
-	// A write whose length leaves no room for its own record at its own
-	// offset: offset + Size() overflows.
-	maxWrite := slices.Clone(readGolden(t, "record_write"))
-	maxWriteOffset := wantRecordAt(t, "write").h.Offset
-	{
-		binary.LittleEndian.PutUint64(maxWrite[40:48], 0x7fffffffffffffff)
-		rechecksumRecord(maxWrite, testIdentity)
-		_, err := DecodeRecordHeader(maxWrite, testIdentity, testSegment, maxWriteOffset)
-		if !errors.Is(err, ErrDamaged) {
-			t.Errorf("a write whose length overflows its own offset: DecodeRecordHeader = %v, want ErrDamaged", err)
-		}
-	}
+	// A fill whose length leaves no room for its own record at its own
+	// offset: one with file offset 0 is accepted by the extent rules and
+	// refused only by offset + Size().
+	perGolden["fill"] = append(perGolden["fill"],
+		ref{"a length that leaves the record no room at its own offset", func(b []byte) {
+			binary.LittleEndian.PutUint64(b[32:40], 0)
+			binary.LittleEndian.PutUint64(b[40:48], uint64(math.MaxInt64-100))
+		}, ErrDamaged, "overflows"})
 
 	// The kinds table's zero-field rules, per golden.
 	perGolden["truncate"] = append(perGolden["truncate"],
-		ref{"a truncate with a non-zero length", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 1) }, ErrDamaged})
+		ref{"a truncate with a non-zero length", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 1) }, ErrDamaged, "truncate length 1, want 0"})
 	perGolden["deallocate"] = append(perGolden["deallocate"],
-		ref{"a zero-length deallocate", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged})
+		ref{"a zero-length deallocate", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged, "length 0, want more"})
 	perGolden["clone_target"] = append(perGolden["clone_target"],
-		ref{"a zero-length clone target", func(b []byte) { rechecksumRecordBody(b, testIdentity, 56); binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged})
+		ref{"a zero-length clone target", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged, "length 0, want more"})
 	for _, kind := range []string{"delete", "hold", "stamp", "unhold", "forget"} {
 		perGolden[kind] = append(perGolden[kind],
-			ref{"a non-zero file offset", func(b []byte) { binary.LittleEndian.PutUint64(b[32:40], 1) }, ErrDamaged},
-			ref{"a non-zero length", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 1) }, ErrDamaged})
+			ref{"a non-zero file offset", func(b []byte) { binary.LittleEndian.PutUint64(b[32:40], 1) }, ErrDamaged, "file offset 1, want 0"},
+			ref{"a non-zero length", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 1) }, ErrDamaged, "length 1, want 0"})
 	}
 	for _, kind := range []string{"unhold", "forget"} {
 		fid := testRecordFile.Bytes()
-		counter := binary.LittleEndian.AppendUint64(nil, 1)
 		perGolden[kind] = append(perGolden[kind],
 			ref{"a non-zero FileID", func(b []byte) {
-				for i, v := range fid {
-					b[16+i] = v
-				}
-			}, ErrDamaged},
+				copy(b[16:32], fid[:])
+			}, ErrDamaged, "names the FileID"},
 			ref{"a non-zero version counter", func(b []byte) {
-				for i, v := range counter {
-					b[64+i] = v
-				}
-			}, ErrDamaged})
+				binary.LittleEndian.PutUint64(b[64:72], 1)
+			}, ErrDamaged, "names version"})
 	}
 	perGolden["write"] = append(perGolden["write"],
-		ref{"a zero FileID", func(b []byte) { clear(b[16:32]) }, ErrDamaged})
+		ref{"a zero FileID", func(b []byte) { clear(b[16:32]) }, ErrDamaged, "names no FileID"})
 
 	for kind, refs := range perGolden {
 		goldenName := "record_" + kind
+		want := wantRecordAt(t, kind)
+		bodyLen := int(want.h.BodySize())
 		for _, r := range refs {
 			b := slices.Clone(readGolden(t, goldenName))
-			r.set(b)
-			rechecksumRecordBody(b, testIdentity, int(wantRecordAt(t, kind).h.BodySize()))
-			rechecksumRecord(b, testIdentity)
 
-			h, err := DecodeRecordHeader(b, testIdentity, testSegment, wantRecordAt(t, kind).h.Offset)
+			// The unedited bytes, rechecksummed for the loop's own
+			// rewrite, must decode: a case that edits an unusable
+			// golden proves nothing.
+			rechecksumRecordBody(b, testIdentity, bodyLen)
+			if _, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, testSegment, want.h.Offset); err != nil {
+				t.Fatalf("record_%s before %s: DecodeRecordHeader = %v, want no error", kind, r.name, err)
+			}
+
+			r.set(b)
+			rechecksumRecordBody(b, testIdentity, bodyLen)
+
+			h, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, testSegment, want.h.Offset)
 			if !errors.Is(err, r.err) {
-				t.Errorf("%s: %s: DecodeRecordHeader = %v, want an error matching %v", kind, r.name, err, r.err)
+				t.Errorf("record_%s: %s: DecodeRecordHeader = %v, want an error matching %v", kind, r.name, err, r.err)
+				continue
+			}
+			if !strings.Contains(err.Error(), r.say) {
+				t.Errorf("record_%s: %s: DecodeRecordHeader = %v, want it to say %q", kind, r.name, err, r.say)
 			}
 			if h != (RecordHeader{}) {
-				t.Errorf("%s: %s: decoded %+v on refusal, want the zero header", kind, r.name, h)
+				t.Errorf("record_%s: %s: decoded %+v on refusal, want the zero header", kind, r.name, h)
 			}
 		}
 	}
-
-	_ = base
 }
