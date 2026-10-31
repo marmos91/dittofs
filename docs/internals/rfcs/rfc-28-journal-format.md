@@ -293,7 +293,10 @@ requires it and synced, then renamed to `<id>.seg` and the directory synced, so
 a crash leaves either no `<id>.seg` or a whole one; open unlinks any
 `.spare.tmp` it finds. A spare's id is drawn when it is made; its header slot
 is zeros until a stream takes it. So making a segment happens off the write
-path, and a roll costs only the take.
+path, and a roll costs only the take. How many spares the pool keeps ready for
+rolls, its **target**, is `journal.spare_target` ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)),
+proposed at one per append stream (16 at the proposed 16 streams), so every
+stream can roll once without waiting for a spare.
 
 **A retired segment is recycled as a spare.** A segment **sealed full** — one
 its stream left because the next record did not fit — keeps its cap: the seal

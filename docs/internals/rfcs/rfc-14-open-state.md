@@ -1094,8 +1094,14 @@ shard's instance as recorded at the batch's commit
 
 All of it is held against a **file**, never a name or a handle. A named stream
 belongs to its base file here: an open of a stream counts as an open of the base
-file for deny modes, for delete and delete pending, and for keeping the file alive
-(§9.1), as SMB treats a stream as part of its file. A rename does
+file for keeping the file alive (§9.1), and is refused while the base is delete
+pending. Deny modes are judged per stream, as MS-FSA does, with one rule across a
+file and its streams: a delete of the base, an open of it asking delete, or an NFS
+`REMOVE` or `RENAME` of it, is refused beside an open of any of its streams that
+does not share delete, and an open of a stream that does not share delete is
+refused beside an open of the base holding delete (§6). A stream's open cannot
+delete on close or set the
+disposition (§9.4). A rename does
 not disturb it, and two hard links to one file are one lockable object. Keying
 by handle is the subtler error: one client may hold several handles to one file,
 and a lock one handle can see and another cannot is a lock the same client can
@@ -1879,6 +1885,19 @@ For example, alice-pc holds read and write, denying write. A second open for
 read that denies nothing is granted; one for read that denies write is refused,
 since it would deny write to alice-pc, which holds it.
 
+**The check is per stream.** An open is checked only against the opens of the
+same stream, a named stream's or the base file's, as MS-FSA checks sharing; an
+anonymous read or write, which is always of the base file, only against the base
+file's. Across a file and its streams only delete is judged: an open of the base
+asking delete, and an NFS `REMOVE` or `RENAME` of it (§7), is refused beside an
+open of any of its streams whose deny includes delete; and the other way, an open
+of a stream whose deny includes delete is refused beside an open of the base that
+holds delete, so the outcome does not depend on which came first (§3). A stream
+open asking delete beside a base open that does not share delete, and a base
+open that does not share delete beside a stream open holding delete, are not
+refused: the first is what Windows does, and the second keeps the outcome
+independent of order (§3), whether or not a stream can be deleted on its own (§9.4).
+
 **An open that asks for no data access is outside the check, both ways.** An
 open whose `Access` holds none of read, execute, write, append or delete — one
 asking only to read attributes or the security descriptor, or to synchronize —
@@ -1929,7 +1948,7 @@ One table ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)) makes 
 | a caching grant of either protocol | a conflicting open, write, set-attribute, rename or unlink from another client, through either protocol | the grant is recalled within its deadline ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) before the request proceeds |
 | a write grant | a read from another client | recalled to read |
 | a caching grant held by another client — an NFS delegation, an SMB oplock or lease with read or write caching | a byte-range lock request of either protocol, NLM included | recalled to none, as MS-FSA 2.1.5.7 breaks it, before the lock is decided ([§2.10](#2.10%20Lock%20waiters)) |
-| an SMB open whose deny mode includes delete | an NFS `REMOVE` of a name of the file, or a `RENAME` of it or over it | refused, `ErrShareViolation`; checked per operation, as anonymous I/O is ([§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)) |
+| an SMB open of the file, or of any of its named streams, whose deny mode includes delete | an NFS `REMOVE` of a name of the file, or a `RENAME` of it or over it | refused, `ErrShareViolation`; checked per operation, as anonymous I/O is ([§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)) |
 | SMB opens that all share delete | an NFS `REMOVE` of the file's name | the name goes now; the opens keep the file alive until the last close ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)) |
 | a delete-pending file | an open, through either protocol | refused, `ErrDeletePending` ([§9.4](#9.4%20Delete%20on%20close)) |
 
@@ -2262,7 +2281,19 @@ of false, through any such open, clears it. Both reach the table through
 `Opens.Update`. An open asking delete on close without delete in its `Access`
 is refused `ErrInvalid` and nothing is opened (MS-FSA 2.1.5.1); setting or
 clearing the disposition through an open that holds no delete access is
-refused `ErrAccess` and changes nothing.
+refused `ErrAccess` and changes nothing. An open of a named stream asking
+delete on close is refused `ErrInvalid` and nothing is opened, and setting or
+clearing the disposition through one is refused `ErrInvalid`, whatever its
+access, and changes nothing.
+
+> decision: a named stream is not deleted on its own. MS-FSA marks only the
+> stream and removes it at its last close; here the mark would be held in the
+> base file's table and unlink the base file's name, since a delete pending names
+> no stream. Rejected: taking the delete as the base file's, which removes the
+> user's file. The cost: no SMB client can delete a stream, so a Windows unblock,
+> which removes `Zone.Identifier`, and smbtorture `smb2.streams.io`, which the SMB
+> adapter passes today, fail. Allow it once a delete pending can name a stream and
+> the service can unlink one.
 
 **The deferred unlink runs as the principal that marked the file.** Delete
 pending is held in the file's table with the entry — parent and name — the
@@ -2973,7 +3004,7 @@ Deleted numbers are not reused.
 | L33 | An SMB break that times out cuts the grant to none and keeps the opens; a revoked NFS delegation's writes are refused. | A write delegation's holder never answers a recall; open conflictingly: the open proceeds after the deadline and the holder's later writes are `ErrRevoked`. Repeat with an SMB read-write-handle lease: the open proceeds at 35 s, the lease is none, and the holder's open still exists and its next write is accepted. |
 | L34 | A deferred delete runs as the principal that marked the file, never as the last closer. | P with delete access opens delete-on-close; Q without opens too; P closes, then Q: the name is removed. Q cannot set delete pending: `ErrAccess`. An open asking delete on close without delete access: `ErrInvalid`, no open made. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. | Register a recursive watch above a child shard on another primary; create a file in the child: the watch completes with enumerate-directory. |
-| L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: refused; unlink the base's name: the stream open keeps the file alive. Suspend the change time on an SMB open and write: the change attribute advanced. |
+| L36 | Deny modes are judged per stream, and across a file and its streams only for delete; an open of a named stream keeps its base file alive, and cannot delete on close or set the disposition; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: granted, since deny modes are per stream; with the stream's open still held, an NFSv3 `WRITE` to the base: accepted, since an anonymous write is judged only against the base file's opens; unlink the base's name: the stream open keeps the file alive. On a second file, open a stream sharing read and write but not delete: an NFS `REMOVE` and `RENAME` of the base's name, and an SMB open of the base asking delete, each `ErrShareViolation`. On a third file, open the base asking delete, then a stream that does not share delete: `ErrShareViolation`. On a fourth file, open the base for read sharing read and write but not delete, then a stream asking delete: granted; with both closed, open a stream asking delete, then the base for read sharing read and write but not delete: granted. Open a stream with delete access and delete on close: `ErrInvalid`, no open made. Through a stream open holding delete access, set, then clear, the disposition: `ErrInvalid` both times, and its close unlinks nothing. Suspend the change time on an SMB open and write: the change attribute advanced. |
 | L38 | A proposal changes no state until its confirm; it is volatile in the answering node's open state and confirmed only by its principal within one lease period; its caps count per source address, an IPv6 /64 as one. | A confirmed client holds a lock; `Propose` its owner with a new verifier: the lock held and no record written; confirm from another principal: refused. Seventeen proposals from one /64: the seventeenth `ErrDelay`. Principal Q replaces P's pending proposal for a new name: counted. Two hosts alternate proposals under one name: each reboot counted, `client_reboot_loop` raised. RFC 21 §13 holds the wire walk. |
 | L39 | No worker waits on a blocked lock: a waiter is volatile, served first in, first out per range, barred only where its blockers are, and ends only on what §2.10 lists, a replaced callback waiter or a refused callback grant answered; an NLM grant is resent, never released for a silence; no adapter answers a waiting request other than as granted before `CancelLock` returns. | Hold an exclusive lock; owners request blocking exclusive A, shared B, exclusive C while a fourth takes non-waiting shared locks on the held range; release: A first, B, then C, the fourth refused while A waits, no worker held. Owner A1 holds byte 0 and A2 of the same client waits exclusive on [0, ∞): another client's lock on [4096, 8192) is granted. Two blocking NLM locks of one owner on one file: the first is reported `LockWaitOver(granted=false)` when the second replaces it. A callback waiter whose grant would take its client past the range cap: reported `LockWaitOver(granted=false)` when the range frees, nothing held, and the next waiter considered. A poll waiter that stops polling loses its reservation after a lease period. An NLM grant whose acknowledgements are dropped for ten minutes is still resent and held; a refusal releases it. Race a cancel against an unlock 10⁴ times: granted and held, or cancelled and none held. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none, and is asked once per climb to the budget to return down to 2048 where its protocol can be asked. | An NFSv4.1 client opens 5000 files at one primary: grants stop at 4096 and one `Sink.RecallAny` names 2048; return 100, climb back to 4096: a second `RecallAny`. Over SMB: leases stop at 4096, every lease held stays, and one is offered again once the count falls. |

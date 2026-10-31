@@ -1033,8 +1033,10 @@ bytes: still allocated in their segment, backing nothing. Storage returns only
 when a segment is retired — unlinked, or recycled as a spare ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) — by
 repack ([§7.2](#7.2%20Repack)), or because the segment is left holding nothing live, which the
 journal retires on its own once the release records are durable ([§7.1](#7.1%20Releasing%20storage)). `Release` therefore reports nothing freed;
-`UnreclaimedBytes` rises by what it released ([§3.7](#3.7%20State%20introspection)), and `UsedBytes` falls
-only when that retirement has happened, never earlier. An engine that reads space free
+`UnreclaimedBytes` rises by what it released ([§3.7](#3.7%20State%20introspection)), and the storage in use,
+`UsedBytes` − `Spares` × the segment cap, falls only when that retirement has
+happened, never earlier: an unlink lowers `UsedBytes`, while a recycle leaves it
+where it was and adds a spare. An engine that reads space free
 before it is and retries a refused write gets the refusal again ([§6](#6.%20Capacity)).
 
 **A release is recorded.** `Release` appends one **release record** per released
@@ -1156,7 +1158,8 @@ walk can produce is omitted.
 | `ExtentCount` | gauge | placement index entries: held and retained extents and removal markers ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `DropRanges` | gauge | ranges the removal-drop test keeps per file and segment ([§7.2](#7.2%20Repack)) |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
-| `UnreclaimedBytes` | gauge | storage in segments not yet unlinked that backs no held or retained extent and no live record: released or superseded but still on disk; what repack can recover ([§7.2](#7.2%20Repack)) |
+| `Spares` | gauge | spare segments of the pool ([§6](#6.%20Capacity), [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), made or recycled and taken by no stream yet, each counted in `UsedBytes` at the segment cap; the spares that back the headroom and the repack reserve are not counted here. Spares are made off the write path, so the journal's `UsedBytes` can move between any two calls; a check of the storage in use compares `UsedBytes` − `Spares` × the segment cap, read with `Spares` at the pool's target and no write or reservation in flight |
+| `UnreclaimedBytes` | gauge | storage in segments not yet retired that backs no held or retained extent and no live record: released or superseded but still on disk; what repack can recover ([§7.2](#7.2%20Repack)) |
 | `HeadroomBytes` / `RepackReserveBytes` | gauge | the reserved headroom for records without bytes and the repack reserve, each as allocated now ([§6](#6.%20Capacity)) |
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
@@ -1315,7 +1318,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `filled_bytes` | remote bytes placed by `Fill`; with written, the cold-read share of local writes |
 | `fill_refused` | fills refused as older than the file ([§3.4](#3.4%20Fill)) |
 | `offered_bytes`, `marked_bytes` | bytes offered at offload and bytes marked offloaded; the lag between them is offload falling behind |
-| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by unlinking segments ([§7.1](#7.1%20Releasing%20storage)) |
+| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by retiring segments: to the filesystem by an unlink, or to the spare pool by a recycle, as `Repack`'s `freed` counts it ([§7.1](#7.1%20Releasing%20storage), [§7.2](#7.2%20Repack)) |
 | `repacked_bytes` | bytes moved by repack; the write amplification reclamation adds |
 | `reservation_refused` | writes refused at capacity ([§6](#6.%20Capacity)) |
 | `syncs`, `sync_failures` | syncs issued, and failed ([§5.2](#5.2%20Syncing)); syncs against writes shows whether group commit works |
@@ -2178,7 +2181,11 @@ loop to be fast, the journal owes it three things:
   and `UsedBytes` from counters ([§3.7](#3.7%20State%20introspection)), so the engine sees pressure, and what
   repack could recover, before it is refused;
 - a `Repack` that reports the storage it returned, only once it is returned
-  ([§7.2](#7.2%20Repack)), so the engine knows when a retry can succeed without polling.
+  ([§7.2](#7.2%20Repack)), so the engine knows when a retry can succeed without polling. At the
+  journal's maximum, `freed` alone does not say so: a recycle counts in it but
+  leaves `UsedBytes` where it was, so a retry there succeeds only once `UsedBytes`
+  has fallen by the missing bytes, and one refused before that costs no I/O; what
+  the engine does next is [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s.
 
 ## 7. Reclamation mechanisms
 
@@ -2255,7 +2262,8 @@ journal choose from every segment. Segment IDs come from the per-segment
 accounting of [§4.4](#4.4%20Inspection). A pass that could only pick journal-wide would spend
 its budget on the sparsest segments anywhere, and return nothing to the share or
 the segments the refusal was about.
-`UsedBytes` falls at the same moment, never earlier.
+The storage in use, `UsedBytes` − `Spares` × the segment cap, falls at the same
+moment, never earlier.
 
 It is how released storage returns to the filesystem ([§7.1](#7.1%20Releasing%20storage)), retires fragmented segments that still
 cost a descriptor ([§7.4](#7.4%20Open%20descriptors)), and coalesces index entries ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)).
@@ -2424,7 +2432,8 @@ and is compacted only at open grows without bound for as long as the process
 runs, and is compacted by a restart nobody scheduled.
 
 **Retiring a segment is idempotent.** A segment's bytes **MUST** leave the
-accounted footprint exactly once, in the step that removes the segment from the
+storage in use exactly once, out of the accounted footprint by an unlink or into
+the spare pool by a recycle, in the step that removes the segment from the
 set of segments the journal owns, and only if that step found it there. Two
 reclamation paths that can each select a segment — the unlink of a segment a
 release left not held, and repack, say —
@@ -2434,8 +2443,9 @@ A claim taken on a segment **MUST NOT** be released after the segment is retired
 since a released claim on a retired segment is an invitation to retire it again.
 A retire that subtracts nothing **MUST** be counted and logged at `Warn`: it is
 harmless, but it means two paths selected one segment, which is the race this rule
-exists for. The accounted footprint **SHOULD** be checked against the sum of the
-segment set's sizes by verification ([§4.4](#4.4%20Inspection)), and a mismatch reported.
+exists for. Spares are not in the segment set, so the accounted footprint
+**SHOULD** be checked against the sum of the segment set's sizes plus every
+spare at the segment cap by verification ([§4.4](#4.4%20Inspection)), and a mismatch reported.
 
 ### 7.4 Open descriptors
 
@@ -2723,7 +2733,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§6](#6.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
 | [§6](#6.%20Capacity) reserve ahead | `Reserve` n bytes, then fill the share to its limit from another writer; assert `(*Reservation).WriteAt` within n succeeds while a plain `WriteAt` is refused, a `Reserve` past the limit is refused naming it, and `(*Reservation).Close` returns the unused bytes to `ReservedBytes`. Reserve for 10^4 writes beside a writer holding the index one entry below `ExtentLimit`, and with the headroom below half; assert every reserved write succeeds while a plain one is refused naming the index. Reserve for a 1 GiB copy in 1 MiB writes while other writers append 10 GiB to the same stream, with the spare pool at its target; assert no reserved write is refused, the footer and index entries drawn stay within the reservation, and any `spare` refusal falls on an unreserved write. Restart; assert the reservation is gone. |
 | [§3](#3.%20Interface) handle close | Hold a `WriteAt` in flight through a handle and call `Close`; assert `Close` returns only after the write does, a later call through the handle is refused, and the written extent is still held and readable through a new handle for the same tag. |
-| [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum. |
+| [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum with no write in flight: assert the missing bytes are those of the whole segment the write needs, `UsedBytes` plus the segment cap less `MaxBytes`, not its record's; then release and repack offloaded bytes until `UsedBytes` has fallen by at least them, since freed space returns in whole segments, and assert the retry succeeds. |
 | [§6](#6.%20Capacity) share limit | Fill one share to its limit; assert its next write is refused naming the share's limit while another share still writes, and that per-share accounting is the same after reopen. |
 | [§7.2](#7.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
 | [§7.4](#7.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. |
@@ -2739,15 +2749,15 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§4.3](#4.3%20Versions) no version repeats | Set a version limit; `WriteAt` A and read its version, then crash before A syncs; reopen with the durable limit as part of the floor; assert the next `WriteAt` and the next `Draw` each return a version above A's. Exhaust the limit; assert `WriteAt` and `Draw` fail naming it and succeed after `SetVersionLimit` raises it. Open with no `SetVersionLimit`; assert `WriteAt` and `Draw` both fail. A journal that restarts from the maximum on disk issues A's version again. |
 | [§6](#6.%20Capacity) offloaded records below half the headroom | Fill the journal to its maximum and draw the headroom below half; offload a file of 150,000 extents; assert every extent is marked and evictable, no offloaded record is appended, `headroom_draws` does not move, and after a crash the extents are dirty again. Assert a hold or stamp is refused with `ErrNoSpace` naming the headroom while releases and removals still succeed. |
 | [§6](#6.%20Capacity) records without bytes at the limit | Fill the journal to its maximum; assert truncate, deallocate, delete, release, `MarkOffloaded`, a seal and its footer all succeed without `ErrNoSpace`, and `headroom_draws` counts them. Make the filesystem return `ENOSPC` for a content write's new segment; assert that failure is reported as `ENOSPC`, not `ErrNoSpace`. |
-| [§3.5](#3.5%20Release) freed means freed | Release the last held extents of a segment whose unlink the seam holds back; assert `UsedBytes` does not move and `UnreclaimedBytes` keeps the segment until the unlink completes. Repack another segment with the unlink held back; assert `Repack` returns `freed` only once it completes. |
-| [§7.1](#7.1%20Releasing%20storage) storage returned | Release every held extent of a sealed segment; assert it is unlinked without a `Repack` call and accounted footprint falls by its size. Release part of another; assert footprint is unchanged, `UnreclaimedBytes` grows by the released bytes, and footprint falls only once repack has retired the segment. |
+| [§3.5](#3.5%20Release) freed means freed | Each `Stats` read is taken with the spare pool at its target and no write or reservation in flight. Release the last held extents of a segment whose unlink the seam holds back; assert `UsedBytes` − `Spares` × the segment cap does not move and `UnreclaimedBytes` keeps the segment until the unlink completes. Repack another segment, released in part, with the unlink held back; assert `Repack` returns `freed` only once it completes and `UnreclaimedBytes` keeps the segment's released bytes until then. |
+| [§7.1](#7.1%20Releasing%20storage) storage returned | Each `Stats` read is taken with the spare pool at its target and no write or reservation in flight. Release every held extent of a sealed segment; assert it is retired without a `Repack` call, and the storage in use, `UsedBytes` − `Spares` × the segment cap, falls by its size. Release part of another; assert the storage in use is unchanged and `UnreclaimedBytes` grows by the released bytes. |
 | [§8.6](#8.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
 | [§8.1](#8.1%20What%20must%20not%20block%20what) removals do not wait on offload | Stall an offload pass inside `fn`, mid-upload; delete another file whose records share a segment with the offered ones, then truncate and deallocate the offered file itself. Assert each call returns without waiting for `fn`, and that the deleted file's storage is reclaimed once the pass returns. A design that holds a lock across the pass blocks the delete until the upload ends. |
 | [§8.3](#8.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, fills, repack and release concurrently on the same segments under a deadlock detector and a lock-order recorder; assert no cycle, every acquisition follows the total order, no two locks of one domain are held together, the storage guard is taken with no other lock held, and no lock is held across the offload callback. |
 | [§8.7](#8.7%20Shutdown) background joined | Close the store with a repack in flight; assert it stops before any segment is closed and no work continues afterwards. |
 | [§7.2](#7.2%20Repack) removal records dropped per extent | Keep one segment holding file X's filled content at an old version for the whole run; on file Y, issue 10^5 truncates, deallocates and releases, repacking as it goes. Assert Y's header-only records are dropped once no segment holds an older record of Y, and `HeadroomBytes` stays above half its size. A drop test against the lowest pair journal-wide keeps every one of them behind X's segment and drains the headroom. Then, in one file Z, keep one segment holding Z's filled content over `[0, 1 MiB)` for the whole run, and issue 10^5 releases and deallocates over `[1 GiB, 2 GiB)` of Z; assert they are dropped too. A drop test per file keeps them all behind Z's own old segment. |
 | [§7.2](#7.2%20Repack) repack aimed at a share | Fill share A to its limit with records interleaved in segments mostly holding share B's unreclaimed bytes, and leave sparser segments of B alone elsewhere; `Repack` with A's scope. Assert `freed` comes from segments holding A's records and A's `UsedBytes` falls. Repeat with a segment-set scope naming two segments; assert only they are repacked. A journal-wide pass spends its budget on B's sparser segments. |
-| [§6](#6.%20Capacity) segment and record accounting | Write records into an allocated segment; assert the journal's `UsedBytes` does not move while the share's `UsedBytes` rises by each record's bytes and `ReservedBytes` returns to zero after each. Let the segment go idle past the seal threshold; assert the seal truncates its unwritten tail and the journal's `UsedBytes` falls by it. Fill another until it seals full; assert it is not truncated and stays accounted at its cap. |
+| [§6](#6.%20Capacity) segment and record accounting | Each `Stats` read is taken with the spare pool at its target and no write or reservation in flight. Write records into an allocated segment; assert the journal's `UsedBytes` − `Spares` × the segment cap does not move while the share's `UsedBytes` rises by each record's bytes and `ReservedBytes` returns to zero after each. Let the segment go idle past the seal threshold; assert the seal truncates its unwritten tail and the journal's `UsedBytes` − `Spares` × the segment cap falls by it. Fill another until it seals full; assert it is not truncated and stays accounted at its cap. |
 | [§3.3](#3.3%20Offload) pins bounded across offers | Run eight concurrent offers, each over a file with dirty extents scattered one per segment across 200 segments. Assert `PinnedSegments` never exceeds the journal-wide bound plus eight, and each offer still offers at least one extent. A per-offer cap alone lets eight offers pin 512. |
 
 #### Group C — recovery
