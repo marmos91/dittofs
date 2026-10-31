@@ -298,3 +298,42 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeRecordHeaderRefusesAPayloadChecksumOnAHeaderOnlyKind pins that a
+// kind with no body — release, truncate, deallocate, delete, offloaded, unmark
+// and forget — carries the seeded checksum of no bytes at [84,88), and that a
+// header holding anything else there is refused as damage before its body is
+// ever asked for. A scanner that attaches a record without calling the body
+// verify — a reasonable thing to do for one with no body — would otherwise
+// accept a header no writer of this format produces. The golden's own checksum
+// decodes first, so a wrong one cannot pass on a golden that decodes for no
+// reason of its own.
+func TestDecodeRecordHeaderRefusesAPayloadChecksumOnAHeaderOnlyKind(t *testing.T) {
+	for _, kind := range []string{
+		"release", "truncate", "deallocate", "delete", "offloaded", "unmark", "forget",
+	} {
+		want := wantRecordAt(t, kind)
+		b := slices.Clone(readGolden(t, "record_"+kind))
+
+		if _, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, testSegment, want.h.Offset); err != nil {
+			t.Fatalf("record_%s unchanged: DecodeRecordHeader = %v, want no error", kind, err)
+		}
+
+		binary.LittleEndian.PutUint32(b[84:88], wantSeededCRC(testIdentity, nil)^1)
+		rechecksumRecord(b, testIdentity)
+
+		h, err := DecodeRecordHeader(b[:RecordHeaderSize], testIdentity, testSegment, want.h.Offset)
+		if !errors.Is(err, ErrDamaged) {
+			t.Errorf("record_%s: DecodeRecordHeader = %v, want an error matching ErrDamaged", kind, err)
+		}
+		if err == nil {
+			continue // nothing to match a message against
+		}
+		if !strings.Contains(err.Error(), "no body") {
+			t.Errorf("record_%s: DecodeRecordHeader = %v, want it to name the no-body rule", kind, err)
+		}
+		if h != (RecordHeader{}) {
+			t.Errorf("record_%s: decoded %+v on refusal, want the zero header", kind, h)
+		}
+	}
+}
