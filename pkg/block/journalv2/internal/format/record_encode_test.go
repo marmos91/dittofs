@@ -74,12 +74,12 @@ func TestAppendRecordPanics(t *testing.T) {
 			h := write.h
 			h.Kind = Kind(15)
 			return h
-		}(), write.body, "unknown kind"},
+		}(), write.body, "format: unknown kind"},
 		{"kind 0", func() RecordHeader {
 			h := write.h
 			h.Kind = Kind(0)
 			return h
-		}(), write.body, "unknown kind"},
+		}(), write.body, "format: unknown kind"},
 		{"a negative own offset", func() RecordHeader {
 			h := write.h
 			h.Offset = -8
