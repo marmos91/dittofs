@@ -312,10 +312,10 @@ func FuzzRecord(f *testing.F) {
 	f.Add(make([]byte, RecordHeaderSize), uint64(testSegment), testOffset)
 
 	f.Fuzz(func(t *testing.T, in []byte, segment uint64, offset int64) {
-		if len(in) < RecordHeaderSize {
-			return // the decode's length rule is covered by its tests
-		}
-		header := in[:RecordHeaderSize]
+		// A short input is the header the length rule refuses, and the class
+		// and zero-header properties hold for it too, so it is decoded as
+		// far as the header reaches and never further.
+		header := in[:min(RecordHeaderSize, len(in))]
 
 		h, err := DecodeRecordHeader(header, testIdentity, core.SegmentID(segment), offset)
 		if err != nil {
@@ -331,7 +331,10 @@ func FuzzRecord(f *testing.F) {
 			if h != (RecordHeader{}) {
 				t.Fatalf("DecodeRecordHeader = %v with the header %+v, want the zero header on refusal", err, h)
 			}
-			return
+			return // a refused or short input has no body to verify
+		}
+		if len(header) < RecordHeaderSize {
+			t.Fatalf("decoded a header of %d bytes, want %d", len(header), RecordHeaderSize)
 		}
 
 		// A decoded header names the place it was read at and holds
