@@ -1418,7 +1418,13 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   descriptor after a create, a rename or an unlink. Open **MUST** refuse a
   filesystem mounted without cache flushes where the mount options say so
   (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync
-  reaches the device, and a synced record does not survive power loss.
+  reaches the device, and a synced record does not survive power loss. Open
+  **MUST** also refuse ext4 data journaling — the `data=journal` mount mode, or
+  the journal-data file attribute on the journal's directory, which its files
+  inherit: there a sync returns
+  once the data is in the filesystem's own journal, and a failure to write it to
+  its place is reported to a later sync, if at all, so [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s window
+  would fail the wrong writes.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync. There
   is no directory sync: a create, rename or unlink is made durable by opening the
