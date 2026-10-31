@@ -69,6 +69,15 @@ const (
 	LossCorrupt    LossReason = 1 // the record was found corrupt
 	LossStale      LossReason = 2 // the record's offload mark was stale
 	LossFailedSync LossReason = 3 // a failed sync window failed the record
+	// decision: reason 4 is accepted ahead of the format table, which
+	// documents reasons 1 to 3 and leaves the rest zero. A superseding
+	// record is a fourth way a record becomes unreachable, this codec
+	// already writes it here, and refusing it would strand a record this
+	// very format produced. The bound is LossReason.known's ceiling and the
+	// refusal text "%w: loss reason %d, want one of 1-4" and its tests: if
+	// the format's owner rules otherwise — rejects reason 4, renumbers it,
+	// or widens the range — known, the refusal text and those tests all
+	// change with it.
 	LossSuperseded LossReason = 4 // a superseding record replaced it
 )
 
