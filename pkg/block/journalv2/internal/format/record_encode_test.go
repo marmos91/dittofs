@@ -178,10 +178,11 @@ func TestAppendRecordWritesWhatItIsGiven(t *testing.T) {
 			t.Errorf("record_%s: verified %+v, want %+v", name, verified, want.body)
 		}
 
-		// A round trip of the body aliases nothing the decoder wrote:
-		// the payload is the caller's own bytes, never a copy, and the
-		// encoder's buffer holds what was written.
-		if !slices.EqualFunc(b[RecordHeaderSize:RecordHeaderSize+want.h.BodySize()], want.bodyBytes(), func(a, bb byte) bool { return a == bb }) {
+		// The encoder wrote the body it was handed, byte for byte: the
+		// bytes on disk are the golden's body. What this checks is the
+		// values, not where they live — so it is a plain byte compare,
+		// never a test of the payload slice's aliasing.
+		if !slices.Equal(b[RecordHeaderSize:RecordHeaderSize+want.h.BodySize()], want.bodyBytes()) {
 			t.Errorf("record_%s: the bytes on disk are not the body's", name)
 		}
 	}
