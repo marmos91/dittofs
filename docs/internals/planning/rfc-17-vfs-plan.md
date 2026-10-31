@@ -1,12 +1,13 @@
 # RFC 17 filesystem service: implementation plan (stage 2 of #3119)
 
 Stage 2 of wiring the RFC 16 store into the server (#3119, route B): the filesystem service of
-[RFC 17](../rfcs/rfc-17-vfs.md), `*vfs.Server`, the one component that orders every call across
+[RFC 17](../rfcs/rfc-17-vfs.md), `*vfs.Filesystem`, the one component that orders every call across
 the metadata store, open state ([RFC 14](../rfcs/rfc-14-open-state.md), stage 1) and the engine
 ([RFC 8](../rfcs/rfc-8-engine.md), stage 3). Adapters call it through `vfs.Service`; they move onto
 it in stage 5.
 
-**Status:** draft for review. Nothing here is built yet.
+**Status:** draft for review. Pieces 1 and 2 have merged into `feat/storage-v2` (#3533, #3534),
+and so has piece 3's store side (#3532); piece 3 itself is in review (#3535).
 
 **Terms.** A bare §N is RFC 17's; this plan's own sections are "plan §N". Vnn is a row of RFC 17
 §6. Route B: the new service is built beside today's server, and nothing switches over until
@@ -14,10 +15,10 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 
 ## 1. What already exists
 
-- **The store** (`pkg/metadata/kvstore`, merged): the server calls only `Namespace`, `Files` and
-  `Capacity` (RFC 7), short of the calls listed in plan §5 Q3.
-- **Open state** (`pkg/openstate`): stage 1 piece 1 merged (#3256), pieces 2–8 in review (#3330,
-  #3336, #3341, #3344, #3363, #3400; piece 8 as #3456, #3457, #3458, #3417 and #3459).
+- **The store** (`pkg/metadata/kvstore`, merged): the filesystem calls `Namespace`, `Files` and
+  `Capacity` (RFC 7), D4's resolver calls `Principals`, and admission reads the share views; plan §5 Q3 lists the calls among these that are missing.
+- **Open state** (`pkg/openstate`): stage 1 landed on `feat/storage-v2` with #3489 (80d9a1972),
+  pieces 1 to 8, `DropShare` included.
   `vfs.New` takes `*openstate.Table` in `Deps.Open` but keeps only its seven views (§2.3).
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
@@ -27,15 +28,15 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 
 ## 2. Decisions to settle
 
-**D1. Route B: the server is built over the new store, not over today's `metadata.Service`.**
+**D1. Route B: the filesystem is built over the new store, not over today's `metadata.Service`.**
 - `Deps.Meta` is `*kvstore.Store` from the first piece; §2.3's `*metadata.Store` is edited to
   match (D7), since on `feat/storage-v2` that name is today's interface.
 - §9's slices 1–3, which first delegate to today's `metadata.Service` and lock manager, are a
-  migration of today's server; on `feat/storage-v2` they would build a second server that route B
+  migration of today's server; on `feat/storage-v2` they would build a second filesystem that route B
   then deletes. §9 says the same in a `decision:`: slice 1's delegation and slice 3's shim are
   skipped, and slice 0's types come from the new store.
 
-**D2. Single node only.** The server and nothing else of §2: no `Gateway`, `Serve`, `Router`,
+**D2. Single node only.** The filesystem and nothing else of §2: no `Gateway`, `Serve`, `Router`,
 `Transport` or `Peers`, which §9 puts in its own cluster slice. `Deps.Peers` is nil, and every
 call that names a second primary on a cluster runs locally. Left out with it: the multi-node tier,
 moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, pNFS layouts
@@ -46,35 +47,46 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 `*engine.Engine` then satisfies it unchanged. The method list (plan §4) is the contract to agree
 with the journal v2 team before either side builds against it.
 
-**D4. Identity through a minimal real resolver.**
-- `Deps.Identity` is RFC 18 §6.1's `Resolver`, `Resolve(ctx, id Identity, p metadata.SharePolicy,
-  readOnly bool) (*Caller, error)`.
-- Until RFC 18's lands, a minimal one in `internal/identity` implements it over
-  `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups` and `Grant`, and
-  `Records.User` and `Group` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
+**D4. Identity through a minimal real resolver in `internal/vfs/admit` (settled on #3526).**
+- There is one resolver until RFC 18 lands, so `Deps` has no `Identity` field yet; §2.3 keeps
+  `Deps.Identity` as the target RFC 18 brings.
+- It lives in `internal/vfs/admit`, since resolving the caller is admission's step 4 (§4.9), over
+  `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups`, `Grant` and
+  `User` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
   `Caller.Mapped` before squash and `Principal` after it, so open state receives the unsquashed
-  principal (RFC 14's `Caller.Principal`). It is the resolver, not a fake of it, so squash is written once:
+  principal (RFC 14's `Caller.Principal`). It is the resolver, not a fake of it, so squash is
+  written once.
+- It caches nothing, so there is no cache key to get wrong in the meantime:
 
   ```go
   // ponytail: resolves from the store's SharePolicy, Groups and Grant alone,
-  // uncached; RFC 18's resolver replaces it, adding the cache and directories.
+  // uncached; RFC 18's resolver replaces it, behind Deps.Identity, adding the
+  // cache and directories.
   ```
 - `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
 
 **D5. Packages as §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID codecs,
 `Service`, `Callbacks`, `Events`) plus `vfstest` (`Record`, `Null`, `RecordingCallbacks`) and its
-`suite`. `internal/vfs` is the server, one file per operation, with `admit`, `pseudofs`,
+`suite`. `internal/vfs` is the filesystem, one file per operation, with `admit`, `pseudofs`,
 `lockorder`, `quota` and `authz` as subpackages.
 
 **D6. Tests in §8's tiers, cheapest first.** Every piece lands with its unit-tier cases over the
 in-memory store, the fake `Content` and the real open-state table on `sim.TestClock`
 (`pkg/sim/clock.go`); no area fakes an open-state view. The integration tier needs the real
 engine, so it starts with stage 3; until then its cases, and so the V-rows, run against the fake.
+Every stage 2 case is plain `go test` under `pkg/vfs` and `internal/vfs`, so the harness's `unit`
+suite runs it on every PR. RFC 17's integration tier is not the harness's `integration` suite
+(`-tags=integration`, Docker). No registered suite runs `go test -fuzz`, so §8's nightly fuzz
+targets run only their seeds, as unit cases, until one does.
 
 **D7. The RFC moves with the code** (§9): a piece that needs a signature change edits the RFC in
 the same PR. Known now, and more will come as pieces are built:
-- §2.3's `Deps.Meta` becomes `*kvstore.Store` (D1, piece 2);
-- RFC 7 §11.1's `Capacity` gains `Quota`, the read view the server already uses (piece 9);
+- §2.3's `Deps.Meta` becomes `*kvstore.Store` (D1, piece 2). `Deps.Metrics` is a
+  `prometheus.Registerer` until RFC 25's `metrics.Registry` exists, which §2.3 keeps naming,
+  under a `ponytail:` at the field: a `Registerer` takes any label, a `share` label included,
+  which the `Registry` refuses; `Clock` and `Logger` (a `*slog.Logger`, `slog.Default()` when nil)
+  are added when something first uses them (#3526);
+- RFC 7 §11.1's `Capacity` gains `Quota`, the read view the filesystem already uses (piece 9);
 - §3.5 gains `Watches.Changed` after each change committed in a directory (RFC 14 §2.5), and
   §2.3 gives `Names`, `Attributes` and `Data` the `Watches` view (piece 10);
 - from piece 1's build: §3.4's `DecodeStateID` returns `(OpenRef, error)`, and every encoder
@@ -85,54 +97,104 @@ the same PR. Known now, and more will come as pieces are built:
 
 The questions piece 1's build left open, which may add more, are plan §5 Q4.
 
+**D8. What #3526 settled** (written into RFC 7, 14, 16, 17, 21 and 22 by #3529):
+- Every method but `Principals.SignIn` and `Spell` takes a `vfs.Call` (`Identity`, `Protocol`,
+  `Client`, `Session` and `Channel{Seq, Replay}`), not an `Identity` with more fields: the
+  resolver caches only `Identity`, so over NFSv4.1 and SMB two machines signed in as one user
+  never share a client. A call that names no open leaves `Client` unused. NFSv4.0's client is the
+  one on the state its stateid resolves to, or for an operation that names an open or lock owner,
+  that owner's client, and only a client confirmed under NFSv4.0: the NFS adapter answers a
+  stateid whose client was not `NotYours` before calling the filesystem (RFC 21 §5.2 rule 5).
+  NLM's is the host's client record. An NFSv4.0 client is offered no delegation (RFC 21 §5.3), so
+  beyond that the opener-only rule is the whole check, and the address recorded at
+  `SETCLIENTID_CONFIRM` is for callbacks only. The rule is stated once, in RFC 14 §2.2.
+- `Authorize` and `Granted` both take the parent directory (`via`); delete through it needs `via`
+  to hold an entry naming the file, read in the same transaction, with the sticky rule (RFC 19
+  §3.1 step 7).
+- A share's or client rule's read-only narrowing is `ErrReadOnly`; a user's `read` grant is
+  `ErrAccess` (§4.3, RFC 18 §6.1's `ReadOnlyCause`).
+- The export policy stores `MinProof`, `MinProtection` and `ReadOnly`; `Flavors` stays for
+  SECINFO and `MinKerberos` goes (RFC 16 §2.3).
+- `*Filesystem`'s lifecycle close is `Stop`. The node, not `DeleteShare`, joins a removed share:
+  `DeleteShare` marks and answers `202`, and the node calls `JoinShare` then `DropShare` for each
+  shard it is primary of whose share's removal has reached step 3 and whose `rm` row is not yet
+  offloaded, while serving and at start (§2.5, §4.9, RFC 16 §2.3.2 step 3). This store runs only
+  the mark, so until its later steps land, that is each share it has marked.
+- The filesystem keeps no event queue: it calls the sink, which never blocks and alone counts drops
+  (§2.5, §3.3, §7).
+- `Record` and `Spell` are on `Mutates`' read-only list; `Find`, which can mint a principal, is
+  not (§3.1).
+- `*vfs.Server` is `*vfs.Filesystem` (#3529's review).
+- Shard numbers are installation-wide (#3551, RFC 16 §2.3.1): each share has its own shard,
+  numbered from `IDS‖shard` when the share is created and never reused, and the filesystem
+  serves each live share's shard at start and an added share's when it is added.
+
 ## 3. Pieces, in build order
 
 | # | Piece | RFC 17 | Needs |
 |---|---|---|---|
-| 1 | Contract | §3.0–§3.4, §4.3 | `develop`'s RFCs on `feat/storage-v2` |
-| 2 | Server skeleton | §2.3, §2.5, §5.0 | piece 1; the `Content` contract (plan §4); stage 1 piece 2 (`Table.Start`) |
-| 3 | Shares, admission and principals | §3.1 `Shares`, `Principals`, §4.6, §4.9 | piece 2; the store's read views (plan §5 Q3) |
+| 1 | Contract | §3.0-§3.4, §4.3 | `develop`'s RFCs on `feat/storage-v2`, #3526's edits included (D8) |
+| 2 | Filesystem skeleton | §2.3, §2.5, §5.0 | piece 1; the `Content` contract (plan §4); stage 1 piece 2 (`Table.Start`) |
+| 3 | Shares, admission and principals | §3.1 `Shares`, `Principals`, §4.6, §4.9 | piece 2; the store's read views and export-policy minimums (plan §5 Q3); stage 1 piece 8 (`DropShare`) |
 | 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7 |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`) |
 | 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`) |
-| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`); #3202 piece 0's follow-up (`RaiseIncarnations`) |
+| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`); #3202 piece 0's follow-up (`RaiseIncarnations`); the store's read view of shares being removed (plan §5 Q3) |
 | 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
-| 11 | Copy and clone | §5.9 | piece 8; stage 3; stage 1 piece 8 (`CloneOpen`, `CloneClose`) |
+| 11 | Copy and clone | §5.9 | piece 8; the engine's S3 (#3546), not all of stage 3 |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
 beside it, e.g. V31 (→8). V4, V11 and V41 are the cluster's; V19, V20 and V25 complete in
-stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 is piece 10's
-and L20 piece 8's, and L29's restart case piece 7's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
+stage 3, against the real engine. Of the rows outside the V-list: RFC 14's L1 and L63 are piece
+10's and L20 piece 8's, and L29's restart case piece 7's; §6's §4.6 and §5.3 rows are piece 7's, its two §3.2 rows piece 10's;
 its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
 1. **Contract:** `pkg/vfs`'s value types and the aliases §3.0 lists from the metadata store and
    open state (`StateRef`, `Revocation`, `RevokeReason`, `ClientStatus`, `LockRange`,
    `LockWaiter` among them, and `ClientRecord` for RFC 14's `Client`); the error set with
    `Delay`, `StateError`, `CrossError`, `AccessError` and `QuotaError`, `vfs.Errors()` and
-   `vfs.Mutates`; the codecs of every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
+   `vfs.Mutates`; `Call`, which every method but `Principals.SignIn` and `Spell` takes (D8); the codecs of
+   every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
    shard, 5 grace-instance bits, a 40-bit `OpenID`, §10.3); `Service` as its seven areas;
    `vfstest`'s `Record`, `Null`, `RecordingCallbacks` and `suite.Run`; §8's fuzz targets for
    every ID decoder.
    Done when: every codec matches bytes written out by hand from §3.4's layout and RFC 14 §2.11's
    widths (no RFC carries vectors yet, plan §5 Q4), and `vfs.Errors()` holds every sentinel and
    typed kind of §4.3.
-2. **Server skeleton:** `Deps` and `New`; `Deps.Events`, the null sink by default, its queue
-   started at `Start` and flushed at `Close`, its drops counted in `vfs_events_dropped_total`;
-   the four states (built, serving, draining, closed) and
-   the `Start`, `Drain` and `Close` transitions; the server's RFC 14
+2. **Filesystem skeleton:** `Deps` and `New`; `Deps.Events`, the null sink by default, which the
+   filesystem calls directly as it builds each event: no queue, and no drop counter of its own, since
+   the sink never blocks and alone counts its drops (`events_dropped_total`, RFC 25);
+   the four states (built, serving, draining, stopped) and
+   the `Start`, `Drain` and `Stop` transitions; the filesystem's RFC 14
    [`Sink`](../rfcs/rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring), every
-   method stubbed, which the node hands to `Table.Start` with the server's admission lock, since
+   method stubbed, which the node hands to `Table.Start` with the filesystem's admission lock, since
    `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
    [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
    ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
    and its fake; the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
-   admission on every call, uncached; `authz` as the one caller of `Authorize` and `Granted`,
-   emitting the `AccessEvent`s the audit policy selects; §8's fuzz target for handles.
+   admission on every call, uncached, with `MinProof` and `MinProtection` read from the export
+   policy, and a share's or client rule's read-only narrowing carried to `Authorize` in the caller
+   with its cause, so a write it refuses is `ErrReadOnly` (RFC 19 §3.1 step 2) while the read is
+   admitted; D4's resolver in `internal/vfs/admit`; `authz` as the one caller of `Authorize` and
+   `Granted`, passing both the parent as `via`, and emitting the `AccessEvent`s the audit policy
+   selects; §8's fuzz target for handles.
+   - Admission counts each call against its share, and `JoinShare` waits the count out (§4.9).
+     The node's side of a removal, `JoinShare` then `DropShare` for a share seen to leave the
+     share list while serving, its shard, lands here; its run at start is piece 7's.
+     Until a node exists, both run from a stand-in for the removal driver in `internal/vfs`,
+     which admission starts when the share list's version moves, in the background and counted
+     as a call, so a drain waits for it and no call waits on its own share's count:
+
+     ```go
+     // ponytail: joins and drops a share the store marked for removal, and
+     // nothing after; RFC 16 §2.3.2's full removal driver, on the node,
+     // replaces it.
+     ```
    - The pseudo-filesystem is ported from `internal/adapter/nfs/v4/pseudofs`, already rebuilt
      from the share list, to `internal/vfs/pseudofs`, with §3.4's digest, and file IDs and change
      attributes derived from the path and the share list's version, not counters; today's copy
@@ -153,7 +215,11 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 
      §8's cache-key unit case, its cached-against-uncached benchmark, and V9's and V12's cached
      cases wait with the cache.
-   Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass.
+   Done when: V9 (→7), V12 (→10), V13, V14, V39, V40 (→5) pass, and unit cases that fail an
+   admission still reading `Flavors` or answering every narrowing `ErrAccess`: share X, Kerberos
+   only, refuses an NTLM `Root` while share Y, with the same `Flavors` and NTLM allowed, admits
+   it; a write is `ErrReadOnly` for a caller narrowed by `ReadOnly` or by a client rule, and
+   `ErrAccess` for one whose grant is `read`.
 4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
    `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
    delivery to it. The `Sink`'s `Closed` and `GraceEnded` stay stubs until piece 7 builds
@@ -166,14 +232,30 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams and `Access`,
    each returning the `WCC` its reply needs.
    Done when: V22 (→8), V31 (→8) pass.
-7. **Open, close and release recovery:** `Start`'s step 1, `Recovery.ServeShard` for each shard
-   (RFC 14 §11.3); opens, deny modes, delete on close and the four moments of release; the pending
-   releases a shard holds run when its grace ends (`Sink.GraceEnded`);
-   `vfs_deferred_unlink_refusals_total`.
+7. **Open, close and release recovery:** `Start`'s step 1, `Recovery.ServeShard` for each live
+   share's own shard, and for an added share's when it is added (RFC 14 §11.3, D8); the store
+   drawing a share's shard number at its creation (RFC 16 §2.3.1); opens, with `DELETE` and `MAXIMUM_ALLOWED` granted through `via` (§4.6), and a
+   `MAXIMUM_ALLOWED` open on a read-only share granted with every right outside RFC 19's read row
+   stripped, a `DELETE` its parent grants through `via` included (RFC 22 §16.5); deny modes,
+   delete on close and the four moments of release; the pending releases a shard holds run when
+   its grace ends (`Sink.GraceEnded`); `vfs_deferred_unlink_refusals_total`.
+   - The `Call.Client` check, with a case per rule: client B signed in as A's user closing A's
+     open is `NotYours` over SMB and NFSv4.1 (V8). I/O through A's grant by B is V24's (→10),
+     and over NFSv4.0, where the opener is the whole check (RFC 14 §2.2), A's open stateid quoted
+     under another principal is V18's (→8), as RFC 21 §5.2's v4.0 row runs it. A `Delegated`
+     reference on a call with no session is `NotYours` (§3.1), a case beside V24 (→10). A stateid
+     of a client not confirmed under NFSv4.0 is the NFS adapter's to refuse, before any call
+     reaches the filesystem (RFC 21 §5.2 rule 5).
+   - The stand-in's run at start (piece 3), after step 1 has served the share's shard, since a
+     `ServeShard` after a `DropShare` installs the share's persistent opens again; done when a
+     share marked before a restart has no opens, and its holders are told `RevokedShare`, once
+     `Start` returns.
    Done when: V8 (→10), V9, V17, V21, V28, V33, V35 (→10), V38, and RFC 14's L29 pass: open then close, and delete
    on close, run in the unit tier, and each open meeting a deny mode held only in a handle cache
    gets `ErrDelay`, the lease is broken, and the retry succeeds (V21); `ErrShareViolation` comes
-   only after handle caching is broken (§4.3).
+   only after handle caching is broken (§4.3); on a share narrowed to read-only, a
+   `MAXIMUM_ALLOWED` open of an existing file whose parent grants delete-child is granted no right
+   outside the read row, and one asking for `DELETE` by name is `ErrReadOnly`.
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, and the write
    verifier. `WriteOpts.Done` is a no-op until piece 9:
 
@@ -191,8 +273,10 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `Watches.Changed` after each change committed in a directory, from `Names`, `Attributes` and
     `Data` (D7).
     Done when: V6, V7, V8, V12, V23, V24, V34, V35 pass.
-11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after stage 3:
-    against the fake, `Copy` is a memcpy whose tests can only pass.
+11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after the engine's
+    S3 (#3546), not all of stage 3: against the fake, `Copy` is a memcpy whose tests can only
+    pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
+    open through `Deps.Opens` (#3546 §6 point 13).
     Done when: V22, V26, V29, V30, V31 pass.
 
 ## 4. The engine contract
@@ -200,7 +284,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 `Content` is the one interface between stage 2 and stage 3, and the one thing both teams build
 against before either is done. From §3.5 and RFC 8 §12.1:
 
-| Method | The server calls it for |
+| Method | The filesystem calls it for |
 |---|---|
 | `Draw` | a version for any change, under the file's accept lock |
 | `Write`, `Overlay`, `Commit` | the write path (§5.1) and stable commits (§5.8) |
@@ -221,33 +305,35 @@ A check that any `Content` passes (verified bytes back, a version above the last
 returned before its stage) waits for stage 3: run against the fake alone, it only proves the fake
 agrees with itself.
 
-Not the server's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
+Not the filesystem's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
 and `Drop`, and the controls `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats`,
 which are the node's, a removal's or a cut's.
 
 ## 5. Open questions
 
 1. **The engine contract (plan §4):** is `Content` frozen against E11 of #3152 before piece 2?
-2. **D4:** when does RFC 18's resolver land to replace the minimal one?
-3. **Gaps below the server** (§10.4): the store calls the server needs that `feat/storage-v2`
+2. ~~**D4:** when does RFC 18's resolver land to replace the minimal one?~~ Settled on #3526:
+   the minimal one stays in `internal/vfs/admit`, uncached, until RFC 18 lands.
+3. **Gaps below the filesystem** (§10.4): the store calls the filesystem needs that `feat/storage-v2`
    lacks. All are store work, and so ours. Quota records already have a read view,
-   `Capacity.Quota` (`pkg/metadata/kvstore/quota.go`); the share indexes have none but
-   `ControlPlane`, which the server must not call.
+   `Capacity.Quota` (`pkg/metadata/kvstore/quota.go`), and #3532 landed `ShareIndex`,
+   `Principals.User`, `via` on `Files.Granted` and `Files.Authorize`, the read-only cause and
+   the export-policy minimums, with the `kvstoretest` cases this table asked for.
 
    | Needed by | Missing on `feat/storage-v2` |
    |---|---|
-   | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)`; RFC 16's `Records` (`User`, `Group`) |
-   | piece 3 `authz`, piece 6 streams | `Files.Granted`, `Files.Streams` (RFC 7) |
+   | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
+   | piece 6 streams | `Files.Streams` (RFC 7) |
+   | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
-   | piece 3, admission's steps 1–3 | a read view of the share list, path index, export policy, client rules and netgroups |
-   | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2) |
+   | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2); a shard number per share, drawn from `IDS‖shard` at the share's creation (RFC 16 §2.3.1, #3551) |
+   | piece 7, a removal resumed at start | a read view listing the shares being removed: `Shares` lists by name, and the mark deletes the name row |
 
 4. **Piece 1's open questions** (posted on #3264): RFC 21's stateid type tags; the byte order
    inside `other` and `FileId`'s bit layout; when a `FileId` is stale; `ErrLocked`'s holder; one
-   hex vector per ID in RFC 21; whether `Record` and `Spell`, which change nothing, belong on
-   `Mutates`' read-only list, and where `Find`, which can mint, goes; whether `vfs.ErrLost` aliases `openstate.ErrLost`; and §4.3
+   hex vector per ID in RFC 21; whether `vfs.ErrLost` aliases `openstate.ErrLost`; and §4.3
    answers for `ErrStopped`, `ErrLost` and `DelayFrozen`. Until §4.3 answers `ErrStopped`, the
-   server's mapping of open state's errors is not total (#3414 maps `ErrCreateInUse` as
+   filesystem's mapping of open state's errors is not total (#3414 maps `ErrCreateInUse` as
    `StateError` `CreateInUse`).
 
 ## 6. What sets the pace
