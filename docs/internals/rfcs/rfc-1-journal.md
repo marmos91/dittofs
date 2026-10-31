@@ -377,7 +377,13 @@ derived from its identifier.
 
 ```go
 Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
-Open(ctx context.Context, dir string, floor Version, expect JournalID) (*Journal, error)
+Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark) (*Journal, error)
+
+type SyncMark struct {
+    Segment  uint64 // the segment id the stream's last recorded sync reached
+    Offset   int64  // its synced-through offset in that segment
+    Sequence uint64 // the highest sequence number that sync covered
+}
 Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
 (*Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error)
 (*Journal) Forget(ctx context.Context, tag ShareTag) error
@@ -396,13 +402,14 @@ One journal serves several shares. Each share's engine works through its own
 written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), so recovery rebuilds each
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
-this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
+this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)); `marks` are the per-stream sync marks the caller recorded,
+which recovery checks the scanned tails against ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
 
 **A call that does I/O or can wait takes a context first.** Those are the calls
 that append a record, read a segment, sync, or wait on another operation: `Init`,
 `Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
 `WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
-receives a context derived from it), `MarkOffloaded`, `Unmark`, `Release`, the removals of
+receives a context derived from it), `MarkOffloaded`, `Unmark`, `DropOlder`, `Release`, the removals of
 [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`, and the verification of [§4.4](#4.4%20Inspection), which
 reads every segment. A call that only reads or changes
 memory and never waits takes none: `Share`, `Strand`,
@@ -930,6 +937,7 @@ nothing is held there. The engine drops the removed refs at commit
 ```go
 MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error
 Unmark(ctx context.Context, id FileID, extents []Extent) error
+DropOlder(ctx context.Context, id FileID, e Extent, below Version) error
 ```
 
 `MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
@@ -942,6 +950,12 @@ call either on any file at any time. The engine uses them after a restart, to
 reseed the bits from its refs and to clear one no ref justifies
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). How the records are rebuilt, and what a version outside the range
 does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)'s.
+
+`DropOlder` drops the held content of `e` whose version is below `below`, with
+reason `superseded`. Before it publishes each loss event, it appends the synced loss
+record of [§3.8](#3.8%20Loss%20events) for each record piece it drops. Content a snapshot hold keeps
+is not dropped. It becomes retained, as an overwrite would leave it ([§3.11](#3.11%20Snapshot%20holds)).
+The engine calls it only from the reconcile ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 ### 3.4 Fill
 
@@ -1161,6 +1175,7 @@ walk can produce is omitted.
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
+| `SyncMarks` | value | per append stream, the `SyncMark` its last completed sync reached; the group commit records them ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -1168,9 +1183,9 @@ walk can produce is omitted.
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
-| `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
+| `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, and whether it found a corrupt range that names no record, which the engine must reconcile before serving ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
-| `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded and every failed sync window, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
+| `LossGeneration` | value | raised on every loss of corrupt content not yet offloaded, every failed sync window and every corrupt range that names no record, never on a stale loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
 
@@ -1209,7 +1224,8 @@ in-flight operation.
 ### 3.8 Loss events
 
 A **loss event** is an extent the journal stopped holding without being asked:
-dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), or because a failed sync window was
+dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), as superseded by the
+reconcile (`DropOlder`, [§3.3](#3.3%20Offload)), or because a failed sync window was
 failed ([§5.3](#5.3%20A%20failed%20sync)). Each names the share, the file, the extent, the content version,
 the reason, and whether its offloaded bit was set. `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
@@ -1258,8 +1274,9 @@ report the same loss again.
 
 **A loss of content not yet offloaded raises the loss generation.** The journal
 keeps a **loss generation**, a counter it **MUST** raise by one on every loss
-event of a corrupt extent whose offloaded bit was unset, and on every failed
-sync window ([§5.3](#5.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
+event of a corrupt extent whose offloaded bit was unset, on every failed
+sync window ([§5.3](#5.3%20A%20failed%20sync)), and once at open for each corrupt range that names no
+record, whose offloaded bit is unknown ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and exposes as `Stats.LossGeneration` ([§3.7](#3.7%20State%20introspection)). It **MUST NOT** rise for
 a loss of content the remote tier holds and the next read fetches: a corrupt
 extent whose offloaded bit was set, or a stale one whatever its bit. A stale
 extent is older than content the remote tier holds ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so dropping
@@ -1292,8 +1309,8 @@ a loss that took that write, and the client would never learn of it.
 merges two journals' generations into one. A replica (cluster) that sees its
 journal's generation rise records its **loss point** from the loss events behind
 the rise, not from the rise itself — the lowest version among the records they
-name, for each shard the journal holds a replica of
-([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
+name, for each shard the journal holds a replica of, including a range that names
+no record ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
 
 The journal calls out to nothing to report. Everything an operator needs to tell
 a wedged journal from a slow one — at capacity, nothing evictable, syncing
@@ -1670,7 +1687,8 @@ keeps its original numbers, which is the same record copied, not a number issued
 again. A re-append given new numbers would outrank records appended after the
 original — a release, a removal, a later write's loss record — and a crash would
 then bring back what those had covered. On recovery the next of each **MUST** exceed
-every one found on disk, and the next content version the floor too, taken from
+every one found on disk, the next sequence number every sync mark's too
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and the next content version the floor too, taken from
 the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).

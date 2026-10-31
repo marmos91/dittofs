@@ -574,7 +574,7 @@ gives as 0 is written as zero.
 | 7 | `clone target` | the destination | `DstOff`, `Len` | its version | 56 bytes: source `ShareID`, source `FileID`, source offset, `AsOf` (16 bytes, epoch then counter) |
 | 8 | `offloaded` | the file | one extent marked; one record per extent | the newest version marked | none |
 | 9 | `unmark` | the file | one extent unmarked; one record per extent | the version of the content unmarked | none |
-| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window; the rest zero |
+| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window, 4 superseded ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)'s `DropOlder`); the rest zero |
 | 11 | `hold` | the file | 0, 0 | the hold mark | 8 bytes: the cut number ([RFC 6](rfc-6-block-metadata.md)'s `SnapshotCut`) |
 | 12 | `unhold` | zero | 0, 0 | zero | 8 bytes: the cut number |
 | 13 | `stamp` | the file | 0, 0 | `through` | 8 bytes: the cut number |
@@ -1083,6 +1083,47 @@ segment of a stream the torn-tail rule above still decides whether the bad one i
 torn or corrupt: a record found past it that names a synced-through offset beyond
 it proves it synced.
 
+**Corruption that names no record is reconciled against metadata.** Nothing in a
+header that does not verify can be trusted. So when the torn-tail rule makes a
+refused range of a segment with no verifying catalog corruption, the range names
+no file, extent or sequence number, and no loss record can name it. The lost
+record may have superseded an older one held elsewhere. If the journal served that
+older record, a stable overwrite would read as the content it replaced. So the
+journal reports the segment as damaged, raises the loss generation once for the
+range ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and says so in `Stats.Recovery`. The engine serves none of the
+journal's content until it has reconciled it against metadata ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The reconcile drops each held extent that metadata proves
+superseded, and records the drop with a loss record of its own. Recovery itself
+still reads nothing outside the journal ([§3.1](#3.1%20Rebuilding)).
+
+**A lost synced tail is detected against the caller's sync marks.** A device can
+acknowledge a sync and then lose the last records it covered. No later record then
+proves them, so the scan alone reads the loss as a torn tail. The group commit
+records each stream's sync mark in metadata ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and `Open` is handed
+the marks as it is handed the floor ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The check runs after §3.1 has verified every
+unproven tail and before recovery empties any segment it ends, so a segment the
+emptying would unlink is still there to check. A mark's tail is lost when two things hold
+after recovery's own tail re-appends: its segment is on disk with its verifying records
+ending below the mark's offset, and no copy of the record carrying the mark's
+sequence number verifies anywhere. A lost synced tail is a corrupt range that names
+no record, and is reconciled as above. The next sequence number and the next
+segment id exceed every mark's, as they exceed every one on disk. That way a
+restored or drained directory never reissues them. RocksDB's
+`track_and_verify_wals_in_manifest` does the same: it records each log's synced
+size outside the log.
+
+**What the marks cannot see.** A mark is recorded at the next group commit after
+its sync, at most `existence_age` later ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A stability point covering
+an overwrite waits for that commit, so a stable overwrite is always below a mark.
+Three cases remain:
+- On a device that loses acknowledged syncs, records synced since the last mark can
+  vanish undetected.
+- An append or hole fill whose existence has not committed can vanish even below a
+  mark, because nothing in metadata names it for the reconcile to find. The file
+  reads as it did before the write, and only the raised loss generation tells
+  clients, of their unstable writes.
+- Only a journal whose engine group-commits records marks, so a replica-only
+  journal has none.
+
 Each record dropped as corrupt is a loss event with a loss record ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)),
 **unless another copy of it verifies.** A re-append ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), [§3.1](#3.1%20Rebuilding)) or a carried
 header-only record ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) leaves copies with equal numbers; among them recovery
@@ -1268,7 +1309,8 @@ each region has its own required outcome:
 
 - a record header or payload: caught at open by a scan, otherwise on the read
   that would serve it; the extent is dropped and reported as data loss or as
-  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
+  repairable, by its offloaded bit ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), or, for a header §3.3's scan finds corrupt,
+  reconciled by the engine ([§3.3](#3.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer or trailer: recovery scans the segment instead
   ([§3.1](#3.1%20Rebuilding)) and no byte served changes;
 - a segment header: the segment is reported as damaged and its records are still
@@ -1326,7 +1368,8 @@ directory is trusted with its content.
    ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and a settled removal's marker is gone ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A lost
    release only holds offloaded content again ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)); what a lost
    truncate, deallocate or delete would bring back is recovery's to handle, not
-   a pass's. Overturned if one node ever keeps a second local copy to repair
+   a pass's ([§3.3](#3.3%20Torn%20and%20corrupt%20records); a range that names no record is reconciled against
+   metadata by the engine, [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Overturned if one node ever keeps a second local copy to repair
    from.
    **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
    dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.

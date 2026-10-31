@@ -581,9 +581,9 @@ attached, and `Stats` names it and its device.
 
 1. **Open the journal.** Read the version floor for every share the device
    journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
-   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with both
-   ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine opens each journal itself, through
-   `Deps.Open`, reading the floor and the identity from the store; the root
+   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and its sync marks ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), and open the
+   journal with them ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The engine opens each journal itself, through
+   `Deps.Open`, reading the floor, the identity and the marks from the store; the root
    opens none. A share whose removal has reached its
    offload step — its `rm` rows at offloaded or later
    ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) — is never attached at start ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): once the
@@ -698,6 +698,26 @@ attached, and `Stats` names it and its device.
    `engine_reseed_files_remaining` reports the held files it has yet to visit. A bit no ref justifies — metadata lost a commit the journal was told
    of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so
    the extent is offered again; `MarkOffloaded` only ever sets bits.
+
+   **After an open that found corruption naming no record, the reseed also
+   reconciles** ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). It visits every held extent of every file of each
+   share, split at the boundaries of the metadata records below. For each piece it
+   takes the highest of these versions:
+   - the overwrite record over it ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes));
+   - the covering ref's `newest`;
+   - a committed hole or removal over it, or past the committed `size`.
+
+   It needs all of them, because the primary prunes an overwrite record once a ref
+   or a hole covers it. It then calls `DropOlder` with that version
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The dropped content resolves as **Remote** where a ref holds the
+   newer bytes, as a hole or past end of file where a removal does, and as **Lost**
+   where only an overwrite record knows of them. Only the last case raises the
+   file's loss sequence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+
+   Until the reconcile has visited a share's files, every read of that share's
+   content is answered retry-later (`DelayFrozen`), so nothing stale is served. A
+   share attached later by `Bind` is reconciled before it serves. The reconcile
+   runs once per such open.
 8. **Serve.** No file is served before step 3 has run for it.
 
 **`Bind` attaches a share above its floor.** Before a journal serves a share
@@ -785,7 +805,7 @@ start step 4), and every later change arrives the same way.
 // names; the root passes each component's concrete type.
 type Deps struct {
 	Devices   []string  // one journal directory per device; Start opens each (§2.5 step 1)
-	Open      func(dir string, floor Version, expect JournalID) (Journal, error) // RFC 1 §3 Open
+	Open      func(dir string, floor Version, expect JournalID, marks []SyncMark) (Journal, error) // RFC 1 §3 Open
 	Carver    Carver    // RFC 2: Cut and the block assembler's fold
 	Syncer    Syncer    // RFC 3 §1.3: OpenFlow, one flow per share
 	Existence Existence // RFC 6 §10; apart from Content, since both declare Commit
@@ -824,7 +844,7 @@ primary of the file's shard.
 | engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Apply` → `Start(shares)` → serving → `Close`, after the filesystem service and before the syncer and the store |
 | share table | the storage bindings, copy-on-write ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | — | — | internal | engine → engine | swapped by `Bind` and `Drop` |
 | storage binding | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `Bind` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
-| journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor and identity → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
+| journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor, identity and sync marks → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
 | journal handle, one per share per journal | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | its journal | — | the journal's `Share` | engine → storage binding | `Close` then the tag's `Forget` in `Drop`; `Close` alone at node stop |
 | work queue, one per journal | one instance of the shared work scheduler with the engine's two sources, offload and removals ([§6.1](#6.1%20The%20work%20queue)) | journal statistics, the policy functions | the policy functions, the offload pipeline | internal | engine at `Start` step 6 → engine | its dispatch starts at step 7; `Close` stops and joins it |
 | offload pipeline | one state machine per pass ([§6.3](#6.3%20The%20offload%20pipeline)) | the offer, carver, assembler, flow, `Existence`, `Content` | the carver, assembler, flow, `Existence`, `Content` | internal | work queue → the pass | joined by `Close`; a pass outlives no component (E13) |
@@ -1188,7 +1208,9 @@ after a loss, each client resends its recent unstable writes once.
 - **Each file has a loss sequence.** The engine keeps, in memory and monotonic
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
-  corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). `Commit` returns it,
+  corrupt record, a failed window ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)) — and each time the reconcile
+  drops content of the file that only an overwrite record knew was newer
+  ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). `Commit` returns it,
   read after its sync, and `LossSeq` returns it without one, which the service
   reads before it records an open; the filesystem service hands each to open
   state, which fails one SMB flush per open that was open across the loss
@@ -1292,6 +1314,9 @@ older content served as newer.
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
   be committed together, one transaction per bounded batch (below), not one per
   write or per file.
+- Each transaction also records the journal's sync marks (`Stats.SyncMarks`,
+  [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read after the batch's sync, one key per append stream
+  ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
   of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
   proposal: 256), overturned by B5's transactions per stability point rising at
