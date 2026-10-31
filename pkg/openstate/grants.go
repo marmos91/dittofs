@@ -77,6 +77,11 @@ type Grants interface {
 	// admission lock, which the table takes itself: the service must not
 	// hold it when calling, though the answer names the file.
 	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind) error
+	// Openers is each open g, of who's client, covers, as the table holds it
+	// now: a lease's opens under its key, or an oplock's one open, each with
+	// the session it was made or last reconnected on and its opener. A
+	// delegation covers none. It changes nothing.
+	Openers(ctx context.Context, who Caller, g GrantID) ([]Open, error)
 }
 
 type grants struct{ t *Table }
@@ -690,4 +695,28 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
 	return err
+}
+
+func (v grants) Openers(ctx context.Context, who Caller, id GrantID) ([]Open, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return nil, err
+	}
+	h, err := t.resolve(who.Client, entity.FileID{}, id.ref())
+	if err != nil {
+		return nil, err
+	}
+	var opens []Open
+	err = t.step(h.file, func(e *entry) error {
+		if e.grants[id.Token] == nil {
+			return ErrBadState
+		}
+		for _, o := range e.opens {
+			if o.Grant == id {
+				opens = append(opens, o.Open)
+			}
+		}
+		return nil
+	})
+	return opens, err
 }

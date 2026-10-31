@@ -12,54 +12,6 @@ import (
 // not serving, as every call is, and otherwise answered errUnbuilt. Each moves
 // to its own file as it is built.
 
-func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientInfo) (vfs.Proposal, error) {
-	return vfs.Proposal{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
-	return 0, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientID, prev []byte, next []byte) (vfs.ClientRecord, error) {
-	return vfs.ClientRecord{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientRecord, error) {
-	return vfs.ClientRecord{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientStatus, error) {
-	return vfs.ClientStatus{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef) error {
-	return fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Destroy(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
-	return fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) ReclaimComplete(ctx context.Context, c vfs.Call, cl vfs.ClientID, shown []vfs.GraceRef) error {
-	return fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) FreeState(ctx context.Context, c vfs.Call, cl vfs.ClientID, ref vfs.StateRef) error {
-	return fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) TestState(ctx context.Context, c vfs.Call, cl vfs.ClientID, refs []vfs.StateRef) []error {
-	return fs.unbuiltEach(ctx, len(refs))
-}
-
-func (fs *Filesystem) ReleaseLockOwner(ctx context.Context, c vfs.Call, cl vfs.ClientID, o vfs.LockOwner) error {
-	return fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) HostRestarted(ctx context.Context, c vfs.Call, host []byte, state uint32) error {
-	return fs.unbuilt(ctx)
-}
-
 // Lookup, ReadDir and GetAttr answer a pseudo directory; a file of a share
 // is not built yet.
 
@@ -217,10 +169,6 @@ func (fs *Filesystem) TestLock(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 
 func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, rs []vfs.ByteRange, q vfs.Seqs) (uint32, error) {
 	return 0, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) AckRecall(ctx context.Context, c vfs.Call, g vfs.GrantID, to vfs.GrantKind) error {
-	return fs.unbuilt(ctx)
 }
 
 func (fs *Filesystem) Watch(ctx context.Context, c vfs.Call, w vfs.WatchSpec) (vfs.WatchID, error) {
