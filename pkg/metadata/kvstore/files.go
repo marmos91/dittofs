@@ -137,7 +137,8 @@ func (f Files) Root(ctx context.Context, id entity.Identity, share entity.ShareI
 
 // grantFor is a resolved identity's access to share: its own grant decides,
 // even one of none; without one, the widest grant naming any group the
-// identity carries does; without one, a grant naming authenticated users
+// identity carries does, even when every one found is none; without one, a
+// grant naming authenticated users
 // does for an authenticated identity, then one naming everyone. A caller
 // carrying its own Access is held to that. A read-only narrowing is not
 // applied here: narrowed refuses it on its own.
@@ -150,6 +151,7 @@ func grantFor(r kv.Reader, share entity.ShareID, id entity.Identity) (entity.Sha
 		return g.Access, err
 	}
 	var access entity.ShareAccess
+	found := false
 	for _, grp := range append([]entity.Principal{id.Group}, id.Groups...) {
 		if grp.IsZero() {
 			continue
@@ -158,11 +160,11 @@ func grantFor(r kv.Reader, share entity.ShareID, id entity.Identity) (entity.Sha
 		if err != nil {
 			return 0, err
 		}
-		if ok && g.Access > access {
-			access = g.Access
+		if ok {
+			found, access = true, max(access, g.Access)
 		}
 	}
-	if access != entity.AccessNone {
+	if found {
 		return access, nil
 	}
 	defaults := []entity.Principal{entity.Everyone}

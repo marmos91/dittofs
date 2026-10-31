@@ -118,7 +118,7 @@ func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	h, _ := f.create(alice, pub, "x", regular(0o644))
 	must(t, errOf(f.s.Files().Get(ctx, alice, h)))
-	must(t, f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: alice.Principal, Access: entity.AccessNone}))
+	must(t, f.s.ControlPlane().RemoveGrant(ctx, f.share.ID, alice.Principal))
 	if _, e := f.s.Files().Get(ctx, alice, h); !isDenied(e) {
 		t.Errorf("call after the grant was removed: %v", e)
 	}
@@ -161,6 +161,30 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 	}
 	if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Owner, Access: entity.AccessRead}); !isCode(e, merrs.ErrInvalidArgument) {
 		t.Errorf("a grant naming OWNER@: %v", e)
+	}
+	for _, d := range []entity.Principal{entity.Everyone, entity.AuthenticatedUsers} {
+		if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: d, Access: entity.AccessAdmin}); !isCode(e, merrs.ErrInvalidArgument) {
+			t.Errorf("a default grant of admin to %v: %v", d, e)
+		}
+	}
+
+	// A grant of none is stored and blocks, a user's and a group's alike,
+	// where the defaults would admit.
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessNone}))
+	if e := files.Authorize(ctx, inStaff, pub, nil, entity.ReadData); !isDenied(e) {
+		t.Errorf("a group's grant of none gave way to the defaults: %v", e)
+	}
+	erin := user("erin")
+	must(t, cp.PutUser(ctx, erin))
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: erin.Principal, Access: entity.AccessNone}))
+	for _, id := range []entity.Identity{{Principal: erin.Principal}, {Principal: erin.Principal, Authenticated: true}} {
+		if e := files.Authorize(ctx, id, pub, nil, entity.ReadData); !isDenied(e) {
+			t.Errorf("a user's grant of none gave way to the defaults (%+v): %v", id, e)
+		}
+	}
+	must(t, cp.RemoveGrant(ctx, f.share.ID, erin.Principal))
+	if e := files.Authorize(ctx, entity.Identity{Principal: erin.Principal}, pub, nil, entity.ReadData); e != nil {
+		t.Errorf("everyone's read grant after removing the user's none: %v", e)
 	}
 }
 

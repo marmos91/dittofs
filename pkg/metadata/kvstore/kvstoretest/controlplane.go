@@ -281,11 +281,17 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessRead {
 		t.Errorf("own grant = %v", a)
 	}
-	// Setting none removes the own grant; the group's decides again.
+	// Setting none is a grant of its own that blocks; only removing it lets
+	// the group's decide again.
 	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessNone}))
+	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessNone {
+		t.Errorf("own grant of none = %v", a)
+	}
+	must(t, cp.RemoveGrant(ctx, sh.ID, u.Principal))
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessReadWrite {
 		t.Errorf("after removing the own grant = %v", a)
 	}
+	must(t, cp.RemoveGrant(ctx, sh.ID, u.Principal))
 	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: entity.NewShareID(), Principal: u.Principal, Access: entity.AccessRead}); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant on a missing share: %v", err)
 	}
