@@ -251,13 +251,10 @@ func FuzzSeal(f *testing.F) {
 // a verified record re-encodes to exactly the bytes it was read from,
 // padding included.
 func FuzzRecord(f *testing.F) {
-	var goldens []wantRecord
 	// The 14 goldens at their own place, one at the wrong segment and one
 	// at the wrong offset, then their foil bytes, each of which a real
 	// journal could meet.
 	for name, want := range recordGoldens(f) {
-		goldens = append(goldens, want)
-
 		b := readGolden(f, "record_"+name)
 		f.Add(b, uint64(testSegment), want.h.Offset)
 		f.Add(b, uint64(testSegment)+1, want.h.Offset)
@@ -286,14 +283,18 @@ func FuzzRecord(f *testing.F) {
 	rechecksumRecord(epochOne, testIdentity)
 	f.Add(epochOne, uint64(testSegment), recordGoldens(f)["release"].h.Offset)
 
-	// A write with one modification-time byte flipped: its header is
-	// rechecksummed for the edit, so the flip breaks the body alone and
-	// VerifyRecordBody alone can refuse it.
+	// A write with one modification-time byte flipped: the flip is in the
+	// body, past the header the header checksum covers, so the stored
+	// checksums still match the header and only the payload checksum can
+	// refuse it, in VerifyRecordBody, the only place the body is read.
 	mtimeFlipped := slices.Clone(readGolden(f, "record_write"))
 	mtimeFlipped[96] ^= 0xff
-	rechecksumRecord(mtimeFlipped, testIdentity)
 	f.Add(mtimeFlipped, uint64(testSegment), recordGoldens(f)["write"].h.Offset)
 
+	// A write whose padding is dirty. No checksum covers the padding, so
+	// the stored ones still match what they covered and neither needs to
+	// be recomputed for this edit; the record must verify anyway, which
+	// pins that the padding is never judged.
 	dirtyPadding := slices.Clone(readGolden(f, "record_write"))
 	for i := RecordHeaderSize + 21; i < len(dirtyPadding); i++ {
 		dirtyPadding[i] = 0xff

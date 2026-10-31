@@ -8,14 +8,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
-// wantRecord is one of the 14 record goldens: the kind, the header its hex
-// file decodes to — every field at the value the file writes, both checksums
-// read from its bytes — and the body its payload checksum covers. The
-// encoder, the hex file and raw must agree byte for byte, and the decoder
-// must return exactly this header and body.
+// wantRecord is one of the 14 record goldens: the kinds table's literal
+// number, the header its hex file decodes to — every field at the value the
+// file writes, both checksums read from its bytes — and the body its payload
+// checksum covers. The encoder, the hex file and raw must agree byte for
+// byte, and the decoder must return exactly this header and body.
 type wantRecord struct {
-	name string // the hex file's name, record_<name>
-	n    uint8  // the kinds table's literal number
+	n    uint8 // the kinds table's literal number
 	h    RecordHeader
 	body RecordBody
 }
@@ -148,7 +147,7 @@ func (w wantRecord) rawOf() raw.Record {
 }
 
 // recordGoldens returns the 14 records the golden files hold, one per kind,
-// in the kinds table's order.
+// keyed by the hex file's name.
 func recordGoldens(t testing.TB) map[string]wantRecord {
 	t.Helper()
 
@@ -166,20 +165,20 @@ func recordGoldens(t testing.TB) map[string]wantRecord {
 	cloneTargetBody := RecordBody{Clone: testClone}
 
 	goldens := map[string]wantRecord{
-		"write":        {write.Kind.String(), 1, write, writeBody},
-		"fill":         {fill.Kind.String(), 2, fill, fillBody},
-		"release":      {"release", 3, withExtent(KindRelease, extent.Off, extent.Len), RecordBody{}},
-		"truncate":     {"truncate", 4, withExtent(KindTruncate, testRecordFileOffset, 0), RecordBody{}},
-		"deallocate":   {"deallocate", 5, withExtent(KindDeallocate, extent.Off, extent.Len), RecordBody{}},
-		"delete":       {"delete", 6, bare(KindDelete, false), RecordBody{}},
-		"clone_target": {"clone_target", 7, cloneTarget, cloneTargetBody},
-		"offloaded":    {"offloaded", 8, withExtent(KindOffloaded, extent.Off, extent.Len), RecordBody{}},
-		"unmark":       {"unmark", 9, withExtent(KindUnmark, extent.Off, extent.Len), RecordBody{}},
-		"loss":         {"loss", 10, withExtent(KindLoss, extent.Off, extent.Len), RecordBody{Loss: testLoss}},
-		"hold":         {"hold", 11, bare(KindHold, false), RecordBody{Cut: testCut}},
-		"unhold":       {"unhold", 12, bare(KindUnhold, true), RecordBody{Cut: testCut}},
-		"stamp":        {"stamp", 13, bare(KindStamp, false), RecordBody{Cut: testCut}},
-		"forget":       {"forget", 14, bare(KindForget, true), RecordBody{}},
+		"write":        {1, write, writeBody},
+		"fill":         {2, fill, fillBody},
+		"release":      {3, withExtent(KindRelease, extent.Off, extent.Len), RecordBody{}},
+		"truncate":     {4, withExtent(KindTruncate, testRecordFileOffset, 0), RecordBody{}},
+		"deallocate":   {5, withExtent(KindDeallocate, extent.Off, extent.Len), RecordBody{}},
+		"delete":       {6, bare(KindDelete, false), RecordBody{}},
+		"clone_target": {7, cloneTarget, cloneTargetBody},
+		"offloaded":    {8, withExtent(KindOffloaded, extent.Off, extent.Len), RecordBody{}},
+		"unmark":       {9, withExtent(KindUnmark, extent.Off, extent.Len), RecordBody{}},
+		"loss":         {10, withExtent(KindLoss, extent.Off, extent.Len), RecordBody{Loss: testLoss}},
+		"hold":         {11, bare(KindHold, false), RecordBody{Cut: testCut}},
+		"unhold":       {12, bare(KindUnhold, true), RecordBody{Cut: testCut}},
+		"stamp":        {13, bare(KindStamp, false), RecordBody{Cut: testCut}},
+		"forget":       {14, bare(KindForget, true), RecordBody{}},
 	}
 	for name, g := range goldens {
 		if uint8(g.h.Kind) != g.n {
