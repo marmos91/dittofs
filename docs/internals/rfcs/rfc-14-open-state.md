@@ -447,12 +447,18 @@ client and is not revoked, and **MUST** then be authorised as anonymous I/O is:
 the caller's own principal against the file's current ACL and mode and the
 share grant, and against the deny modes held
 ([§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)). The call's client
-(`Caller.Client`) is the one the adapter proved for the call: the client its
-session binds or, where the protocol binds none per call, the client the
-connection established. It is never derived from the reference presented, so a
-delegation stateid sent over another client's connection is `ErrNotYours`. The
-delegation lends no access: a principal that could not read the file on its own
-does not read it through the delegation.
+(`Caller.Client`) is the one the adapter proved for the call: for NFSv4.1 and
+SMB the client its session binds, and for NLM the host's client record.
+**NFSv4.0 has no session, so its client is the one on the state its stateid
+resolves to, or for an operation that names an open or lock owner, that owner's
+client, and only a client confirmed under NFSv4.0: a stateid of any other client,
+a delegation's among them, is `ErrNotYours`.** An NFSv4.0 client is offered no
+delegation ([RFC 21 §5.3](rfc-21-nfs.md#5.3%20Delegations)), so beyond that the
+opener-only rule above is the whole check. The address the adapter records at
+`SETCLIENTID_CONFIRM` is where callbacks go, never a check on a stateid, so a
+client that reconnects from a new address keeps its state. The delegation lends
+no access: a principal that could not read the file on its own does not read it
+through the delegation.
 
 **A reference's sequence is state.** The table numbers the changes to one
 open — an upgrade, a downgrade, a close — and to one lock state; a request
@@ -2597,10 +2603,10 @@ the suite runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20
 
 The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which
 `node.New` builds it into, calls `Start(ctx, sink, order)` with the built
-`*vfs.Server` as the `Sink` and its admission lock as `order`, after the store
+`*vfs.Filesystem` as the `Sink` and its admission lock as `order`, after the store
 and before the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
-`Close`, before the store's. `Start` starts the timer and nothing
+`Stop`, before the store's. `Start` starts the timer and nothing
 else; the service's `Start` then calls `Recovery.ServeShard` for each shard
 this node serves, passing the shard's `GraceInstance`, which the node's start
 transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
@@ -2622,7 +2628,7 @@ and open state is
 left to the next start's grace
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the timers.
 
-![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the server as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
+![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the filesystem as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
 
 ### 11.3 Methods
 
@@ -2668,7 +2674,7 @@ with its shard left zero is refused, never passed.
 
 ```go
 type Caller struct {
-	Client    ClientID      // as the adapter proved it for the call (§2.2); zero for NFSv3
+	Client    ClientID      // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal Principal     // mapped, never squashed
 	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
 }
@@ -2998,7 +3004,7 @@ Deleted numbers are not reused.
 | L60 | A client's first state in a shard is answered only after its shard list commits; a persistent open's every change commits before the answer that reveals it. | The fault KV drops the shard-list commit: the request is refused, never answered as granted. For each field of a persistent open, fail its commit: the client is refused, and a reconnect after a failover shows the state that was answered. |
 | L61 | (cluster) A client's ended record outlives the fan-out until every shard has released its state. | Partition one primary during an expiry, heal it: its state for the client is released within one renewal interval of healing, and the record is deleted only then. |
 | L62 | A request delayed by a recall is not overtaken by a new grant to the holder. | A holder that reopens right after each acknowledgement against a conflicting opener that retries: the opener is granted within two retries. |
-| L63 | A delegation reference is the client's only over its own connection. | NFSv4.0: present a delegation stateid over another client's connection: `ErrNotYours`, the delegation intact (RFC 17 V24's NFSv4.0 case). |
+| L63 | A delegation reference is the client's only on a session that client binds. | NFSv4.1: present a delegation stateid on another client's session: `ErrNotYours`, the delegation intact (RFC 17 V24). |
 | L64 | A reboot never leaves both IDs current, and a renewal of the old ID racing the confirm does not keep it. | Race the old ID's renewal against the new `Boot`'s confirm 10⁴ times: after each, exactly one ID is current and the old one's state is released. |
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
 | L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |

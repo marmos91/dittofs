@@ -158,7 +158,7 @@ Epic 2 makes "done" measurable before any implementation exists, following
   existing `e2e` suite and its framework already start a real `dfs` and mount NFS and SMB,
   and the fixtures specific to the journal land with the first test that uses them (epic
   2, D11). Epic 2 keeps the catalogue, split by the tier each row runs at: the filesystem
-  service's integration tier (`vfs.Server` over the real engine, no kernel client) or a
+  service's integration tier (`vfs.Filesystem` over the real engine, no kernel client) or a
   real `dfs` with kernel clients (epic 2, §7). **Epic 10 writes the start-check
   refusals**, which need no engine, and **epic 11 writes the rest**, listed as known
   failures. Epic 12 turns them green.
@@ -331,8 +331,8 @@ everything before it.
   the RFC 16 metadata store of [#3120](https://github.com/marmos91/dittofs/pull/3120) must
   be on `feat/storage-v2`, because E10's initialisation and E11's engine work both rely
   on it. **The protocol rows have a second one:** a `dfs` serving NFS or SMB on v2 needs
-  the filesystem service, `vfs.Server` (#3119 stage 2, RFC 17), and the adapters moved onto
-  it, not only E11. The write-verifier row is `vfs.Server` behaviour (RFC 17 §5.8). The
+  the filesystem service, `vfs.Filesystem` (#3119 stage 2, RFC 17), and the adapters moved onto
+  it, not only E11. The write-verifier row is `vfs.Filesystem` behaviour (RFC 17 §5.8). The
   rows that need no kernel client (several shares per journal, capacity, cold reads,
   lifecycle) run at the filesystem service's integration tier once E11 and stage 2's
   `vfs.New` exist (epic 2, §7). E12 then burns down the known-failure list.
@@ -1056,7 +1056,7 @@ explicit, recorded decision.
 - **E11 waits on S4a.** It is not estimated, and is planned only once the engine interface
   is agreed with rif (stage 2 of #3119).
 - **The system scenarios wait on stage 2 too.** Under route B, NFS and SMB reach v2 only
-  through `vfs.Server` and the adapters moved onto it, so E11 alone turns no protocol
+  through `vfs.Filesystem` and the adapters moved onto it, so E11 alone turns no protocol
   scenario green (S5).
 - **E10 and E11 depend on #3120.** The metadata RFC 1 assumes (installation ID, share tags,
   the durable version limit, the derived version floor, `Applied`) comes from RFC 16's

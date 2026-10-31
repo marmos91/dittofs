@@ -146,11 +146,11 @@ node that is not its file's primary is forwarded there by that node's gateway,
 which decides nothing; the primary's filesystem service decides it. Every node
 shares one replicated metadata store and one bucket.
 
-![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Server, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's server with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
+![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Filesystem, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's filesystem with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
 
 The layers are drawn in [§1.3](#1.3%20The%20layers); what the gateway and the
-server each do, and why the one interface between nodes is the filesystem
-service, in [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) and [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut).
+filesystem each do, and why the one interface between nodes is the filesystem
+service, in [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides) and [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut).
 
 ### The words you need
 
@@ -432,7 +432,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has. The first release's installation is one node | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
 | **node** | one DittoFS server process, built by `node.New`; every node runs every component and can be a primary or a replica | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type) |
 | **role** | `protocol` or `storage`: one configuration flag. Every node runs both, and a node configured with one refuses to start. The metadata store is not a role: it is an external store every node calls | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type) |
-| **gateway node** / **`vfs.Gateway`** | **(cluster)** the node a client's call arrives at / its implementation of `vfs.Service` that forwards the call to the primary when it is not the primary itself. It decides nothing: `vfs.Serve` fences and deduplicates the call at the primary, and `vfs.Server` there decides it | [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides), [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary) |
+| **gateway node** / **`vfs.Gateway`** | **(cluster)** the node a client's call arrives at / its implementation of `vfs.Service` that forwards the call to the primary when it is not the primary itself. It decides nothing: `vfs.Serve` fences and deduplicates the call at the primary, and `vfs.Filesystem` there decides it | [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides), [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary) |
 | **route envelope** | **(cluster)** what every forwarded call carries: request ID, shard and epoch, sending node and node epoch, hop count | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) |
 | **floating address** / **SMB Witness** | **(cluster)** a client-facing address the cluster owns and a surviving node takes over / the SMB protocol that tells a client an address moved or a node is draining | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing) |
 | **shard** | a set of files with one primary at a time; a share is one shard, and only in a cluster can a subtree or each child of a marked directory be its own. A file is never split across shards | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
@@ -638,14 +638,14 @@ Conformance is checked by a per-component import-graph test.
 
 ### 1.3 The layers
 
-![One binary, one node type: NFS and SMB adapters and pNFS endpoints call one vfs.Service, where vfs.Server decides at the primary and, in a cluster, vfs.Gateway forwards each call there; below it sit the metadata store, open state and the content subsystem, over a transactional KV, journal devices and the remote tier](img/rfc0-architecture.svg)
+![One binary, one node type: NFS and SMB adapters and pNFS endpoints call one vfs.Service, where vfs.Filesystem decides at the primary and, in a cluster, vfs.Gateway forwards each call there; below it sit the metadata store, open state and the content subsystem, over a transactional KV, journal devices and the remote tier](img/rfc0-architecture.svg)
 
 Four layers, each calling only the one below:
 
 | Layer | What it does | Specified in |
 | --- | --- | --- |
 | **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20, the adapter model; RFC 21, NFS, and RFC 22, SMB (draft) |
-| **Filesystem service** | the one protocol-neutral API adapters call, `vfs.Service`; `vfs.Server` decides and orders every client operation across the parts below, at the primary; in a cluster `vfs.Gateway` forwards each call there and decides nothing | [RFC 17](rfc-17-vfs.md) |
+| **Filesystem service** | the one protocol-neutral API adapters call, `vfs.Service`; `vfs.Filesystem` decides and orders every client operation across the parts below, at the primary; in a cluster `vfs.Gateway` forwards each call there and decides nothing | [RFC 17](rfc-17-vfs.md) |
 | **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
 | **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
 
@@ -655,7 +655,7 @@ node every arrow in the picture is a local call. In a cluster several alike
 nodes share one replicated KV, and one interface carries client calls between
 them: a whole
 `vfs.Service` call, forwarded by the gateway of the node it arrived at to the
-file's primary, whose server decides it
+file's primary, whose filesystem decides it
 ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)). The replicated KV beneath
 them is no DittoFS node at all.
 
@@ -690,7 +690,7 @@ cases, and where the two differ for one node, this section wins:
   configured with one role only, and one without a journal device or
   remote-tier credentials. It then builds the metadata store, the remote stores,
   the journal, the syncer, the engine, GC, open state, identity, the
-  filesystem service and last the adapters, handed the `vfs.Server`
+  filesystem service and last the adapters, handed the `vfs.Filesystem`
   directly; it starts them in that order, so the adapters accept clients only
   once everything under them serves, and stops them in reverse. The startup
   checks are
@@ -744,7 +744,7 @@ cases, and where the two differ for one node, this section wins:
 
 | Concern | Single node: binds the first release | Cluster only |
 | --- | --- | --- |
-| composition | one node, built by the composition root above; adapters call `vfs.Server` directly and every arrow in [§1.3](#1.3%20The%20layers) is a local call | `vfs.Gateway` and `vfs.Serve`, the route envelope, forwarding, floating addresses |
+| composition | one node, built by the composition root above; adapters call `vfs.Filesystem` directly and every arrow in [§1.3](#1.3%20The%20layers) is a local call | `vfs.Gateway` and `vfs.Serve`, the route envelope, forwarding, floating addresses |
 | shards | each share is one shard, and the node is its primary; a shard is held in exactly one journal, on one device, while the node keeps one journal per device, so a share writes at one journal device's rate however many devices the node has ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20primary%20per%20shard), [RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) | subtree and per-child shards, the slot table, moves ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)–[§4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | shard record | one per share, naming the node as primary with the journal that serves the share. **Every start raises every shard's incarnation, in the transaction that records the start**, and every journal attach raises the attached share's; so every restart opens a new grace instance ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | replicas, replica count and floor, epoch changes by handover and takeover |
 | node epoch | raised by one at every start, in the same transaction; no lease is renewed | the node lease, its renewal, takeover, grace after takeover |

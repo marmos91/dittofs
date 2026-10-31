@@ -364,7 +364,7 @@ identity, to check a password and an account
 logic: in a cluster, the one thing `New` does differently is build `vfs.Serve`
 and the gateway.
 
-![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 the engine and 5 GC, its sibling, which is never passed into it; 6 open state and 7 identity; 8 the vfs server; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the management API calls identity for sign-in only; the adapters call the vfs service alone, sign-in included; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local server; the server calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer and the metadata views; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
+![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 the engine and 5 GC, its sibling, which is never passed into it; 6 open state and 7 identity; 8 the vfs filesystem; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the management API calls identity for sign-in only; the adapters call the vfs service alone, sign-in included; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local filesystem; the filesystem calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer and the metadata views; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
 
 **What `New` builds, in order.** Each row is built from its own `Deps`; the
 Calls column is the call graph once it is built. The node owns every row and
@@ -378,11 +378,11 @@ store configuration, and the last storage binding to close one releases it.
 | 3 | syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores | the remote stores | 5 / 8 |
 | 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views | the journals, the syncer, the block-metadata views | 5 / 8 |
 | 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | 5 / drains at 5, closes at 7 |
-| 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the server implements | the metadata store, the `Sink` | 5 / 7 |
+| 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the filesystem implements | the metadata store, the `Sink` | 5 / 7 |
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
-| 8 | `*vfs.Server`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
-| 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the server, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the server; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
-| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the server on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
+| 8 | `*vfs.Filesystem`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
+| 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the filesystem, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the filesystem; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
+| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the filesystem on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
 
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
@@ -400,14 +400,14 @@ func New(cfg Config) (*Node, error) {
 		Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(), ...})
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
-	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // its Sink, the server, is handed to its Start (§2.2 step 5)
+	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
-	n.server = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
+	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
 
-	var svc vfs.Service = n.server                                      // one node: the adapters call the server
+	var svc vfs.Service = n.fs                                          // one node: the adapters call the filesystem
 	if cfg.Transport != nil {                                           // (cluster); n.router is RFC 15's
-		checked := vfs.Serve(n.server, cfg.Transport, n.router, ...)    // the fence and the dedup around the server
+		checked := vfs.Serve(n.fs, cfg.Transport, n.router, ...)        // the fence and the dedup around the filesystem
 		svc = vfs.NewGateway(vfs.GatewayDeps{Local: checked, Router: n.router, Transport: cfg.Transport})
 	}
 	n.adapters = core.Deps{Service: svc, ...}                           // handed to each adapter's factory as reconcile enables it; no identity
@@ -421,7 +421,7 @@ every component (step 4), and then starts the rest in build order; `Stop`
 hands over the node's shards before `vfs.Serve` stops, and otherwise stops everything in reverse.
 
 **A call routed locally is fenced too.** In a cluster the gateway's `Local` is
-the checked service `vfs.Serve` returns, never the bare `*vfs.Server`, so a
+the checked service `vfs.Serve` returns, never the bare `*vfs.Filesystem`, so a
 call the gateway keeps on this node passes the node epoch, shard epoch, hop
 count and dedup checks a forwarded call passes. Without them a stale "this
 node is the primary" could act unfenced, and a retry first sent locally could
@@ -481,9 +481,9 @@ type Records interface {
 }
 
 // Reconcile's three calls (§2.3). Unexported, so nothing but reconcile makes them.
-func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // a storage binding in the engine, its namespace in GC, the share open in *vfs.Server
+func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // a storage binding in the engine, its namespace in GC, the share open in *vfs.Filesystem
 func (n *Node) removeShare(ctx context.Context, id metadata.ShareID) error // the same three, in reverse
-func (n *Node) apply(ctx context.Context, c Counters) error                // Apply on identity, *vfs.Server, the engine and GC, each with the values it reads
+func (n *Node) apply(ctx context.Context, c Counters) error                // Apply on identity, *vfs.Filesystem, the engine and GC, each with the values it reads
 ```
 
 The node exports no status call. Readiness and conditions come from
@@ -518,17 +518,21 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 4. **Read the records**: the settings, the share list and the principals
    generation, and apply the provisioning file if one is named
    ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)). Then `apply` (§2.3) hands identity,
-   `*vfs.Server`, the engine and GC their first settings through `Apply`, so
+   `*vfs.Filesystem`, the engine and GC their first settings through `Apply`, so
    every component holds the records' values before any of them starts.
-5. **The content side and the state the server reads**, in build order:
+5. **The content side and the state the filesystem reads**, in build order:
    **(cluster)** shard placement ([RFC 11](rfc-11-ownership.md)); the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of shares this node serves in
    one call; GC, with each served share's namespace; open state for the shards
-   this node acquires, handed the built server as its `Sink`
+   this node acquires, handed the built filesystem as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
    created while the node serves is attached alone.
-6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
-   gateway, the client-address agent and the pNFS data server.
+6. **`*vfs.Filesystem`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
+   gateway, the client-address agent and the pNFS data server. Then every
+   removal a crash interrupted runs its step 3 here: for each shard this node is
+   primary of whose share's removal has reached step 3 and whose `rm` row is
+   not yet offloaded, `JoinShare`, then open state's `DropShare`
+   ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), before any adapter serves.
 7. The **operation runner** (§4.6), which resumes the operations this node
    holds; then the **management API**, which starts accepting calls.
 8. **The first full reconcile** (§2.3) completes, and, **(cluster)**, the node
@@ -562,7 +566,7 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
    waiting for a failover. Then the pNFS data server, the client-address agent
    and the gateway stop, then `vfs.Serve`.
 5. GC drains ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)).
-6. `*vfs.Server`'s `Drain`, then its `Close` ([RFC 17](rfc-17-vfs.md)).
+6. `*vfs.Filesystem`'s `Drain`, then its `Stop` ([RFC 17](rfc-17-vfs.md)).
 7. The event sink, identity and open state close, and then GC.
 8. The engine stops in RFC 8 §2.5's reverse order, which joins and closes every
    storage binding, its journals and its flows; then the syncer and the remote
@@ -588,8 +592,8 @@ The node holds two pictures: the **desired** one, read from records, and the
 
 | Record changed | The node, on each node it concerns |
 | --- | --- |
-| a share created | `addShare`: a storage binding in the engine, the share's namespace in GC, the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
-| a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): the same three, in reverse |
+| a share created | `addShare`: a storage binding in the engine, the share's namespace in GC, the share open in `*vfs.Filesystem`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): at step 3, for each shard this node is primary of whose `rm` row is not yet offloaded, the storage binding to `removing`, `*vfs.Filesystem`'s `JoinShare`, then open state's `DropShare` ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)); then the same three as `addShare`, in reverse |
 | a share's state changed | moves the share's storage binding to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
 | a share's live setting | hands the new value to the storage binding, within RFC 13's live bound |
 | a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No storage binding is replaced |
@@ -600,12 +604,12 @@ The node holds two pictures: the **desired** one, read from records, and the
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
 | a node-scoped or installation-scoped restart-class setting | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
-| a principal, grant or export policy | `apply`, handing identity and `*vfs.Server` the new generation; their generations and versions are in the identity and admission cache keys ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
+| a principal, grant or export policy | `apply`, handing identity and `*vfs.Filesystem` the new generation; their generations and versions are in the identity and admission cache keys ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
 Every row is one of reconcile's three calls (§2.1): a share created or removed
 is `addShare` or `removeShare`, a change of its backends is both, and every
-other row is `apply`, which hands each component — identity, `*vfs.Server`, the
+other row is `apply`, which hands each component — identity, `*vfs.Filesystem`, the
 engine, GC, the adapters and the sidecars — the values it reads.
 
 The node learns of changes the way RFC 13 and RFC 18 already require — by
@@ -1589,9 +1593,9 @@ Conventions are the index's ([Test tiers](rfc-index.md#Test%20tiers)). The tiers
 
 | Tier | What runs |
 | --- | --- |
-| unit | `*vfs.Server` through `vfs.New`, with a fake engine and in-memory metadata, and no node |
+| unit | `*vfs.Filesystem` through `vfs.New`, with a fake engine and in-memory metadata, and no node |
 | unit | the gateway through `vfs.NewGateway`, with a fake `Router` and `Transport` |
-| integration | `*vfs.Server` with the real engine and in-memory stores, without the node |
+| integration | `*vfs.Filesystem` with the real engine and in-memory stores, without the node |
 | multi-node | two `node.New` over one in-memory control-plane store and a loopback `Transport`, driven by writes to the store, with fault injection: a lost reply, a duplicate send, a stale epoch |
 | e2e | the adapters |
 
@@ -1690,7 +1694,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §2.1, RFC 20 §3.4 | adapters hold the filesystem service only; the node drives them | adapters are handed the whole runtime by `SetRuntime(rt any)`, and 22 adapter files (16 internal, 6 public) import the runtime; the runtime knows protocols by name (`GetNFSSettings`, `GetSMBSettings`, `SetNFSExportPolicy`, an NFS mount tracker, an SMB oplock-breaker hook) |
 | §2.1 | the node exports `New`, `Start` and `Stop` | `*Runtime` exports 156 methods, in 23 of the package's 35 files, and hosts GC, the snapshot scheduler, trash and integrity scans, which are their components' own |
 | §2.1, §2.3 | the API writes records, the node applies them | handlers write the database and then call the runtime directly — `AddShare`, `UpdateShare`, `RebindShareBlockStore`, adapter start and stop; a runtime failure after the write is logged as a warning and the request still succeeds (a share whose `AddShare` fails returns `201` and loads at the next restart); share create builds the runtime's share configuration field by field in the handler |
-| §2.2 | start: store, content, the server, API, adapters; stop the reverse with the API after adapters | start opens the control-plane database, seeds the admin, default groups and default adapters, opens metadata stores, loads shares, then serves; inside `Serve` the settings watcher and adapters start before the API; shutdown stops adapters, closes stores and then the API |
+| §2.2 | start: store, content, the filesystem, API, adapters; stop the reverse with the API after adapters | start opens the control-plane database, seeds the admin, default groups and default adapters, opens metadata stores, loads shares, then serves; inside `Serve` the settings watcher and adapters start before the API; shutdown stops adapters, closes stores and then the API |
 | §2.3, §8 | every node reconciles by generation, once a second | changes are applied in-process by direct calls and change callbacks; only adapter settings are polled, every 10 s; there are no node records, so a second node sharing the database sees shares, adapters and users only after a restart |
 | §2.4 | nodes report what they applied | no per-node report; nothing records whether a change took effect |
 | §2.5 | anonymous health answers one word | `/health` and `/health/ready` are unauthenticated and return control-plane database status, share and adapter counts and NFS grace state; the grace route under `/api/v1` with the same data is admin-only |

@@ -37,7 +37,7 @@
   <rect x="104" y="62" width="94" height="44" rx="5" class="pr"/><text x="114" y="80" class="h">adapter</text><text x="114" y="98" class="s">wire only</text>
   <rect x="208" y="62" width="108" height="44" rx="5" class="dr"/><text x="216" y="80" class="m">vfs.Gateway</text><text x="216" y="98" class="s">routes, no auth</text>
   <rect x="348" y="62" width="104" height="44" rx="5" class="dr"/><text x="358" y="80" class="m">vfs.Serve</text><text x="358" y="98" class="s">fence, dedup</text>
-  <rect x="460" y="62" width="110" height="44" rx="5" class="sv"/><text x="470" y="80" class="m">*vfs.Server</text><text x="470" y="98" class="s">decides</text>
+  <rect x="460" y="62" width="110" height="44" rx="5" class="sv"/><text x="466" y="80" class="m" style="font-size:11px">*vfs.Filesystem</text><text x="470" y="98" class="s">decides</text>
   <rect x="578" y="62" width="106" height="44" rx="5" class="sv"/><text x="588" y="80" class="m">Resolver</text><text x="588" y="98" class="s">identity §6.1</text>
   <rect x="700" y="62" width="94" height="44" rx="5" class="st"/><text x="710" y="80" class="h">store</text><text x="710" y="98" class="s">directory</text>
   <rect x="802" y="62" width="92" height="44" rx="5" class="st"/><text x="810" y="80" class="m">Authorize</text><text x="810" y="98" class="s">chokepoint</text>
@@ -114,5 +114,5 @@
   <text x="53" y="776" class="s">14 wire</text>
 
   <text x="16" y="818" class="s">A call whose primary is the gateway node goes to its own Serve through the checked vfs.Service, fenced the same. On a single node</text>
-  <text x="16" y="836" class="s">there is no gateway and no Serve: the adapter calls the *vfs.Server, which runs 6 to 12 itself. Adapters map, squash and grant nothing.</text>
+  <text x="16" y="836" class="s">there is no gateway and no Serve: the adapter calls the *vfs.Filesystem, which runs 6 to 12 itself. Adapters map, squash and grant nothing.</text>
 </svg>

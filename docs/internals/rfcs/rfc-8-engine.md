@@ -217,7 +217,7 @@ Outcome: alice-pc slows down gradually instead of hitting a wall, and no acknowl
 - It is the content data path, one per node — every node runs both roles — serving every
   share whose shards that node is primary of. It decides policy through five small policy
   functions, runs three modules — the work queue, the offload pipeline and the
-  speculator — and is the content **interface** that `*vfs.Server` alone calls
+  speculator — and is the content **interface** that `*vfs.Filesystem` alone calls
   ([RFC 17](rfc-17-vfs.md)). Neither the adapters nor the gateway reach it.
 - Offload always carries its chunks. Cross-file deduplication is not in the
   first release; re-adding it is a later RFC's ([§6.5](#6.5%20The%20dedup%20oracle)).
@@ -322,7 +322,7 @@ it alone names concrete component types. This section specifies what it builds
 for content, on every node: one **journal per device**, the
 syncer, block metadata's view, and one engine over them with a binding per share
 ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Everything else holds a concrete type where there is one
-implementation — `*vfs.Server` holds `*engine.Engine`
+implementation — `*vfs.Filesystem` holds `*engine.Engine`
 ([RFC 17](rfc-17-vfs.md)) — and an interface the consumer declares only where
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires one: the engine declares one per component it calls, in
 `Deps` ([§2.6](#2.6%20Dependencies%20and%20wiring)). Adapters hold only `vfs.Service`, and the gateway behind it never
@@ -748,7 +748,7 @@ total. A batch of files moved out of a shard ([RFC 11 §4](rfc-11-ownership.md#4
 way at its freeze: the runs holding its keys are joined, and its keys are posted
 nowhere until the batch is aborted.
 
-**Stop.** `Close(ctx)` runs these steps in one call, after `*vfs.Server` has
+**Stop.** `Close(ctx)` runs these steps in one call, after `*vfs.Filesystem` has
 stopped and while the metadata store is still open, so the last group commit
 can land.
 
@@ -803,20 +803,20 @@ type Deps struct {
 **Build, start and stop.** `node.New` builds, in order: the metadata store; the
 remote block stores, ref-counted per configuration; the syncer; the engine with
 `New(Deps)`, which opens nothing and is handed `Deps.Open`, not a journal; GC, a sibling of the engine that is
-never passed into it; open state; identity; `*vfs.Server`; in a cluster,
+never passed into it; open state; identity; `*vfs.Filesystem`; in a cluster,
 `vfs.Serve` and the gateway; the adapters. `Node.Start`
 ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)) starts them in that order — the engine's `Start` opening the
 journals and attaching the shares the records say this node serves — and
-`Node.Stop` stops them in reverse, with GC drained before `*vfs.Server` stops.
+`Node.Stop` stops them in reverse, with GC drained before `*vfs.Filesystem` stops.
 The engine closes only the journals, handles and flows it opened.
 
 **The carver is not a component.** It holds no state ([RFC 2](rfc-2-carver.md)): the offload
 pipeline calls its `Cut` at the pass's Carve stage ([§6.3](#6.3%20The%20offload%20pipeline)), and it reaches
 the engine as a value in `Deps`, which the node starts and stops nothing for.
 
-**Only `*vfs.Server` calls the engine.** The adapters hold `vfs.Service`, and in a
-cluster the gateway behind it forwards to the primary's `*vfs.Server`; neither
-holds the engine, so no call reaches it except through the server at the
+**Only `*vfs.Filesystem` calls the engine.** The adapters hold `vfs.Service`, and in a
+cluster the gateway behind it forwards to the primary's `*vfs.Filesystem`; neither
+holds the engine, so no call reaches it except through the filesystem at the
 primary of the file's shard.
 
 | Component | Composed of | Depends on | Calls | Injected | Built by → owned by | Lifecycle |
@@ -2926,7 +2926,7 @@ the rest drains stays invisible to every sum.
 ### 12.1 One content interface, called by the filesystem service
 
 The engine is one concrete type, `*Engine`; nothing declares it as an
-interface. The filesystem server, `*vfs.Server` at the file's primary, is
+interface. The filesystem, `*vfs.Filesystem` at the file's primary, is
 the only caller of the content methods ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); adapters never reach
 the engine. The lifecycle, share and control methods are node-local. Their
 callers are the node ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components), [§2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which starts and stops the
@@ -2994,7 +2994,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error                      /
 func (e *Engine) Unbind(ctx context.Context, id ShareID, keepHolds bool) error // removal step 3: refuse, join; with keepHolds, offload what kept snapshots' holds cover
 func (e *Engine) Drop(ctx context.Context, id ShareID) error                   // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
-// Content: called only by *vfs.Server, at the file's primary (RFC 17 §2.1).
+// Content: called only by *vfs.Filesystem, at the file's primary (RFC 17 §2.1).
 func (e *Engine) Write(ctx context.Context, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
