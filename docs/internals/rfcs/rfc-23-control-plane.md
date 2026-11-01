@@ -481,7 +481,7 @@ type Records interface {
 }
 
 // Reconcile's three calls (§2.3). Unexported, so nothing but reconcile makes them.
-func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // a storage binding in the engine, its namespace in GC, the share open in *vfs.Server
+func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // its namespace's Claim (§2.2 step 5), a storage binding in the engine, its namespace in GC once held, the share open in *vfs.Server
 func (n *Node) removeShare(ctx context.Context, id metadata.ShareID) error // the same three, in reverse
 func (n *Node) apply(ctx context.Context, c Counters) error                // Apply on identity, *vfs.Server, the engine and GC, each with the values it reads
 ```
@@ -526,15 +526,23 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    serves names, and every one the node adds to GC without a share, which reads the namespace's claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and decides that namespace's
    shares before the engine serves any of them or GC starts on it:
    - **held**: they serve;
-   - **copy** — the claim names this installation with a nonce it never
-     recorded, or this start minted a new instance part: they are bound `Fenced`, serving reads and refusing writes as
-     [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, until an operator accepts the copy;
+   - **copy** — the claim names this installation with a nonce it did not
+     record under its current instance part: they are bound `Fenced`, serving reads and refusing writes as
+     [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s copied-image row says, until an operator accepts the copy
+     (`:accept-copy`, §3.3);
    - **foreign** — the claim names another installation, is `released`, or is
      missing on a namespace whose claim this installation wrote — and
      **pending** — a namespace still being created — and a `Claim` that failed:
-     they are not attached, and the health condition `namespace_unclaimed` names the
-     namespace and the answer. Reconcile runs `Claim` again and attaches them
-     once it answers held.
+     they are not attached.
+
+   Every answer but held raises the health condition `namespace_unclaimed`
+   ([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)), naming the namespace and the answer. The node runs
+   `Claim` again for each such namespace whenever the share list version moves —
+   an `:accept-copy`, a create's claim step and an import each move it — and at
+   its next reconcile pass after a `Claim` that failed (§2.3). Once it answers
+   held, the node attaches the namespace's unattached shares, rebinds its
+   `Fenced` ones `Serving` through the engine's `Bind`
+   ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), and adds the namespace to GC.
 
    None of these fails the start. Then the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of attached shares in
@@ -542,8 +550,9 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    this node acquires, handed the built server as its `Sink`
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
    created while the node serves is attached alone, decided by its namespace's
-   `Claim` the same way; the node runs that `Claim` first when no share on the
-   node names the namespace yet.
+   answer the same way: the node runs `Claim` first unless the namespace has
+   answered held in this process, so a share created into a `Fenced` namespace
+   is bound `Fenced` too.
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
    gateway, the client-address agent and the pNFS data server.
 7. The **operation runner** (§4.6), which resumes the operations this node
@@ -605,7 +614,7 @@ The node holds two pictures: the **desired** one, read from records, and the
 
 | Record changed | The node, on each node it concerns |
 | --- | --- |
-| a share created | `addShare`: a storage binding in the engine, the share's namespace in GC, the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| a share created | `addShare`: its namespace's `Claim`, decided as §2.2 step 5 says; a storage binding in the engine, `Fenced` on a copy; the share's namespace in GC once it answers held; the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): the same three, in reverse |
 | a share's state changed | moves the share's storage binding to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
 | a share's live setting | hands the new value to the storage binding, within RFC 13's live bound |
@@ -815,6 +824,14 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
 - a remote store is deleted only when no namespace names it; a namespace only
   when no share names it, after which GC drains it ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
   namespace's status shows the drain.
+
+**Accepting a copy is an action on a namespace**, `POST /namespaces/{id}:accept-copy`,
+and the CLI's `namespace accept-copy`: the operator's statement that this
+installation, a copy, holds the namespace from now on
+([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). It is an operation (§4.6) the operation runner drives
+through GC's `AcceptCopy` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), refused `409` `not_a_copy` unless the
+namespace's claim answers copy, and it moves the share list version when it
+succeeds, so every node runs the namespace's `Claim` again (§2.2 step 5).
 
 GC's two index rebuilds are actions on a namespace,
 `POST /namespaces/{id}:rebuild-index` and
@@ -1124,7 +1141,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, a signing-key rotation, an index rebuild, a location's loss — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 
@@ -1161,7 +1178,7 @@ type Progress struct {
   The operation record **MUST NOT** choose a driver for such work. Its progress
   is read from the owner's durable cursor, so a restart loses none of it.
 - **Work no component drives on its own** — a credential or signing-key rotation, GC's index
-  rebuilds, a provisioning reload — is driven by the operation runner (§2.2) of a
+  rebuilds and a copy's acceptance, a provisioning reload — is driven by the operation runner (§2.2) of a
   node, under a claim in the operation record: (node, node epoch,
   expiry), the expiry 30 s ahead and renewed every 10 s, both fixed.
   **(cluster)** A claim that lapses is taken by any node, which resumes from the

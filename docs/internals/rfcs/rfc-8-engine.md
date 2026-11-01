@@ -467,7 +467,7 @@ scaling device.
 - **The rules for using both:** its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its policy state — access pattern, dirty ages,
   backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets —
   its share of journal capacity, transfers and pacing; and its state: adding,
-  serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
+  serving, quiesced, fenced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
 
 The binding is the engine's own, unexported; no caller sees it. Its identifiers
 and settings are copied from the share record at `Bind`, and the metadata store
@@ -505,7 +505,7 @@ engine.
 
 **`Bind` adds a binding or changes one.** For a share the engine does not
 serve it attaches it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). For one it serves it applies the change: a
-state change, quiesced and back, or a backend change, which replaces the binding
+state change, quiesced or fenced and back, or a backend change, which replaces the binding
 ([§2.1](#2.1%20Content%20composition)). Two changes belong to a re-home ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a `Bind`
 naming a new write namespace first publishes the binding with it, then returns
 once every pass the pass registry ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)) lists under the old one is joined
@@ -3032,6 +3032,13 @@ type Share struct { // fields indicative
 	Settings  ShareSettings // validated by Bind (§2.4)
 }
 type ShareState uint8
+
+const (
+	Serving  ShareState = iota + 1
+	Quiesced
+	Closing             // a re-home's finish
+	Fenced              // reads only; writes answer ErrNoSpace (§11.2's copied-image row). Bind with Serving lifts it
+)
 
 type WriteOpts struct {
 	Suspend TimeMask // Modify, Access: times this write leaves alone
