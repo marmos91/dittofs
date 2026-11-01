@@ -476,7 +476,7 @@ package identity // internal/identity
 
 type Deps struct {
 	Principals metadata.Principals // RFC 16 §3: lookups by spelling, groups, grants, a share's policy
-	Records    metadata.Records    // RFC 16 §3: one principal's record
+	Records    metadata.Records    // RFC 16 §3: one group's record
 	Mint       metadata.Minter     // RFC 16 §3: the only writes (§2.4, §5.1)
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream

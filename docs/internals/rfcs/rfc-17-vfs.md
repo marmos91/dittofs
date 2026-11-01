@@ -1551,7 +1551,7 @@ reclaiming tree connect's `ShareID` is the open's
 > operator workflow is shown to need it, and then per node and labelled as such.
 
 **The NFSv4 pseudo-filesystem is a function of the share list.** The filesystem on
-every node builds it from the share path index, and must build the
+every node builds it from `ShareIndex.List`, and must build the
 same one, because a client moved between nodes presents the handles it already
 holds. A pseudo directory lists only the components that lead to a share the
 caller would be admitted to. Its handles, numeric ids, `fsid`, change attribute
@@ -1791,7 +1791,7 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
 	}
-	max, _ := s.authz.Granted(ctx, c, f.Handle, r.Parent) // MaximalAccess, without a backup intent's privilege
+	max, _ := s.authz.Rights(ctx, c, f.Handle, r.Parent, allRights) // Files.Granted with every right as want, so the parent's DELETE is kept; MaximalAccess, without a backup intent's privilege
 	return OpenResult{Ref: refOf(o.Open, f.Handle), File: f, MaximalAccess: max, Grant: o.Grant, Confirm: o.Confirm, Created: dir != nil, Dir: dir}, false, nil
 }
 ```

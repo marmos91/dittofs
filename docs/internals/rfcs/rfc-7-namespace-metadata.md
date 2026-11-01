@@ -1708,7 +1708,7 @@ A client removed from a grant is then refused on its next call, whatever handles
 against the grant like every other call; the filesystem service calls it when
 a client mounts or tree-connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
-**The store names fewer read-only causes than `Caller` does.** RFC 18's
+**The store names different read-only causes from `Caller`.** RFC 18's
 `ReadOnlyCause` is `NotNarrowed`, `Grant` or `Share`. The identity this
 component receives carries `NotNarrowed`, `NarrowedByShare` (the policy's
 `ReadOnly` flag) or `NarrowedByClient` (a client rule): it splits RFC 18's
