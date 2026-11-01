@@ -693,7 +693,7 @@ type Service interface {
 // TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP (never a null or guest one), an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, each authenticated SMB SESSION_SETUP (never a null or guest one), which registers that session's principal, an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
@@ -1019,6 +1019,8 @@ no principal, and its `ClientGuid` travels in clear, so anyone can send a
 machine's and hold a session under its record
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
 registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
+and each later authenticated session connects again, which records that
+session's principal and keeps the client's one `Callbacks`,
 and a null or guest session never joins a client, so its opens are offered no
 lease or oplock. The filesystem picks the session for a lease or oplock break
 from the grant's opens, each with its session and opener, as RFC 14's

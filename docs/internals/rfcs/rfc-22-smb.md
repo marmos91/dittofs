@@ -2803,7 +2803,7 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` | |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at each one that completes for the connection's `ClientGuid`: the first registers the client, and each records its session's principal | |
 | `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
