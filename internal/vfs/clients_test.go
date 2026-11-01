@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -745,33 +746,48 @@ func TestStopEndsTheCallbacksBeingDelivered(t *testing.T) {
 	}
 }
 
-// Every error open state names maps to one of the service's own, never to
-// the ErrUnavailable an unknown failure is, but open state stopped, which is
-// the draining filesystem's ErrUnavailable itself.
+// Every error open state names maps to the service's own error for it, open
+// state stopped included, which is the draining filesystem's ErrUnavailable.
 func TestEveryOpenStateErrorIsMapped(t *testing.T) {
-	for _, err := range []error{
-		openstate.ErrBadState, openstate.ErrStaleState, openstate.ErrNotYours, openstate.ErrOldState,
-		openstate.ErrStaleClient, openstate.ErrClientInUse, openstate.ErrClientBusy, openstate.ErrNoRecall,
-		openstate.ErrInvalid, openstate.ErrGrace, openstate.ErrNoReclaim, openstate.ErrReclaimConflict,
-		openstate.ErrShareViolation, openstate.ErrDeletePending, openstate.ErrAccess, openstate.ErrLocked,
-		openstate.ErrRangeNotLocked, openstate.ErrBadSeqID, openstate.ErrLocksHeld, openstate.ErrCreateInUse,
-		openstate.ErrRevoked, openstate.ErrInstanceVersion, openstate.ErrRecordChanged, openstate.ErrLost,
-		&openstate.DelayError{Cause: openstate.DelayRecall}, &openstate.DelayError{Cause: openstate.DelayResources},
-		&openstate.DelayError{Cause: openstate.DelayFrozen}, &openstate.DelayError{Cause: openstate.DelayCommit},
-		&openstate.DelayError{Cause: openstate.DelayConflict},
-		&openstate.LockedError{}, &openstate.RevokedError{Cause: openstate.RevokedGrant},
+	state := func(k vfs.StateKind) error { return &vfs.StateError{Kind: k} }
+	delay := func(c vfs.DelayCause) error { return &vfs.Delay{Cause: c} }
+	for _, c := range []struct{ err, want error }{
+		{openstate.ErrBadState, state(vfs.StateBadState)},
+		{openstate.ErrStaleState, state(vfs.StateStaleState)},
+		{openstate.ErrNotYours, state(vfs.StateNotYours)},
+		{openstate.ErrOldState, state(vfs.StateOldState)},
+		{openstate.ErrStaleClient, state(vfs.StateStaleClient)},
+		{openstate.ErrClientInUse, state(vfs.StateClientInUse)},
+		{openstate.ErrClientBusy, state(vfs.StateClientBusy)},
+		{openstate.ErrNoRecall, state(vfs.StateNoRecall)},
+		{openstate.ErrNoReclaim, state(vfs.StateNoReclaim)},
+		{openstate.ErrReclaimConflict, state(vfs.StateReclaimConflict)},
+		{openstate.ErrBadSeqID, state(vfs.StateBadSeqID)},
+		{openstate.ErrLocksHeld, state(vfs.StateLocksHeld)},
+		{openstate.ErrCreateInUse, state(vfs.StateCreateInUse)},
+		{openstate.ErrRecordChanged, state(vfs.StateRecordChanged)},
+		{openstate.ErrRevoked, state(vfs.StateRevoked)},
+		{&openstate.RevokedError{Cause: openstate.RevokedGrant}, state(vfs.StateRevoked)},
+		{&openstate.RevokedError{Cause: openstate.RevokedByAdmin}, &vfs.StateError{Kind: vfs.StateRevoked, Admin: true}},
+		{openstate.ErrInvalid, vfs.ErrInvalid},
+		{openstate.ErrGrace, vfs.ErrGrace},
+		{openstate.ErrShareViolation, vfs.ErrShareViolation},
+		{openstate.ErrInstanceVersion, vfs.ErrShareViolation},
+		{openstate.ErrDeletePending, vfs.ErrDeletePending},
+		{openstate.ErrAccess, vfs.ErrAccess},
+		{openstate.ErrLocked, vfs.ErrLocked},
+		{&openstate.LockedError{}, vfs.ErrLocked},
+		{openstate.ErrRangeNotLocked, vfs.ErrRangeNotLocked},
+		{openstate.ErrLost, vfs.ErrLost},
+		{openstate.ErrStopped, vfs.ErrUnavailable},
+		{&openstate.DelayError{Cause: openstate.DelayRecall}, delay(vfs.DelayRecall)},
+		{&openstate.DelayError{Cause: openstate.DelayResources}, delay(vfs.DelayResources)},
+		{&openstate.DelayError{Cause: openstate.DelayFrozen}, delay(vfs.DelayFrozen)},
+		{&openstate.DelayError{Cause: openstate.DelayCommit}, delay(vfs.DelayCommit)},
+		{&openstate.DelayError{Cause: openstate.DelayConflict}, delay(vfs.DelayConflict)},
 	} {
-		got := openErr(err)
-		var d *vfs.Delay
-		if errors.Is(got, vfs.ErrUnavailable) || errors.As(got, &d) && d.Cause == 0 || !neutral(got) {
-			t.Errorf("%v maps to %v", err, got)
+		if got := openErr(c.err); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%v maps to %#v, want %#v", c.err, got, c.want)
 		}
-	}
-	if got := openErr(openstate.ErrStopped); got != vfs.ErrUnavailable {
-		t.Errorf("open state stopped maps to %v, want the draining answer, ErrUnavailable itself", got)
-	}
-	var se *vfs.StateError
-	if got := openErr(&openstate.RevokedError{Cause: openstate.RevokedByAdmin}); !errors.As(got, &se) || se.Kind != vfs.StateRevoked || !se.Admin {
-		t.Errorf("an administrator's revoke maps to %v", got)
 	}
 }
