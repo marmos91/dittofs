@@ -2283,8 +2283,9 @@ is refused `ErrInvalid` and nothing is opened (MS-FSA 2.1.5.1); setting or
 clearing the disposition through an open that holds no delete access is
 refused `ErrAccess` and changes nothing. An open of a named stream asking
 delete on close is refused `ErrInvalid` and nothing is opened, and setting or
-clearing the disposition through one is refused `ErrInvalid`, whatever its
-access, and changes nothing.
+clearing the disposition through one holding delete access is refused
+`ErrInvalid` and changes nothing; without delete access it is `ErrAccess`, as
+on any file.
 
 > decision: a named stream is not deleted on its own. MS-FSA marks only the
 > stream and removes it at its last close; here the mark would be held in the
