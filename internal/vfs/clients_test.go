@@ -45,6 +45,15 @@ func none(t *testing.T, who string, cb *vfstest.RecordingCallbacks) {
 	}
 }
 
+// fastRetry makes grantRetry a millisecond until the test's cleanups, those
+// registered after it included, have run: a filesystem's Stop then waits for
+// every delivery reading it.
+func fastRetry(t *testing.T) {
+	d := grantRetry
+	t.Cleanup(func() { grantRetry = d })
+	grantRetry = time.Millisecond
+}
+
 // signedIn is a call from SMB session id, signed in as p.
 func signedIn(p entity.Principal, id uint64) vfs.Call {
 	c := proven(p, inLab)
@@ -401,8 +410,7 @@ func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
 // A recall whose send fails is sent again through the path the client
 // registers next, and each failure is counted.
 func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
-	defer func(d time.Duration) { grantRetry = d }(grantRetry)
-	grantRetry = time.Millisecond
+	fastRetry(t)
 	s := newShares(t, nil, nil)
 	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
@@ -663,8 +671,7 @@ func TestNoPathWithoutAnAdmittedConnect(t *testing.T) {
 // A lock grant the client gives no answer to is sent again; one it answers
 // is not, and a wait that ended ungranted is sent once whatever the answer.
 func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
-	defer func(d time.Duration) { grantRetry = d }(grantRetry)
-	grantRetry = time.Millisecond
+	fastRetry(t)
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	var silent atomic.Int32
@@ -789,5 +796,192 @@ func TestEveryOpenStateErrorIsMapped(t *testing.T) {
 		if got := openErr(c.err); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%v maps to %#v, want %#v", c.err, got, c.want)
 		}
+	}
+}
+
+func stateKind(err error, k vfs.StateKind) bool {
+	var se *vfs.StateError
+	return errors.As(err, &se) && se.Kind == k
+}
+
+// Each call on a client open state does not hold reaches open state, and
+// answers its refusal.
+func TestEachClientCallReachesOpenState(t *testing.T) {
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
+	for name, err := range map[string]error{
+		"AddSession":       func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
+		"Renew":            func() error { _, err := s.Renew(ctx, c, gone); return err }(),
+		"ReclaimComplete":  s.ReclaimComplete(ctx, c, gone, nil),
+		"ReleaseLockOwner": s.ReleaseLockOwner(ctx, c, gone, vfs.LockOwner{Client: gone, Name: []byte("pid 1")}),
+	} {
+		if !stateKind(err, vfs.StateStaleClient) {
+			t.Errorf("%s of a client open state does not hold answered %v, want StaleClient", name, err)
+		}
+	}
+	if err := s.FreeState(ctx, c, gone, vfs.StateRef{}); !stateKind(err, vfs.StateStaleState) {
+		t.Errorf("FreeState of no state answered %v, want StaleState", err)
+	}
+	if errs := s.TestState(ctx, c, gone, []vfs.StateRef{{}}); len(errs) != 1 || !stateKind(errs[0], vfs.StateStaleState) {
+		t.Errorf("TestState of no state answered %v, want StaleState", errs)
+	}
+}
+
+// A host's restart ends the client of its old NSM state, which is told.
+func TestAHostRestartEndsItsOldClient(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HostRestarted(t.Context(), claimed(1000, inLab), []byte("build01"), 2); err != nil {
+		t.Fatal(err)
+	}
+	got := calls(t, cb, 1)
+	if r, ok := got[0].Args[0].(vfs.Revocation); got[0].Method != "Revoked" || !ok || r.Client != id {
+		t.Errorf("the restarted host's old client saw %v, want its revocation", got)
+	}
+}
+
+// A disabled user connects no client.
+func TestADisabledUserConnectsNoClient(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	alice.Disabled = true
+	s.must(t, s.cp.PutUser(t.Context(), alice))
+	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a disabled user's Connect answered %v, want ErrAccess", err)
+	}
+	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
+		t.Errorf("a disabled user's Connect registered %d paths", n)
+	}
+}
+
+// The latest Connect's path is the client's: a callback raised after goes
+// there, carrying what open state raised, and not to an earlier path.
+func TestTheLatestConnectsPathTakesTheClientsCallbacks(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	first, latest := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 2), smb("alice-pc", 1), latest); err != nil {
+		t.Fatal(err)
+	}
+	s.RecallAny(id, 3)
+	if got := calls(t, latest, 1); got[0].Method != "RecallAny" || got[0].Args[0] != 3 {
+		t.Errorf("the latest path saw %v, want RecallAny keeping 3", got)
+	}
+	none(t, "the first path", first)
+}
+
+// A recall carries the kind it goes to; one of a grant that is gone goes
+// nowhere, not to the client's path; and the client's answer to a
+// delegation's recall, which has no opener to check, is taken.
+func TestADelegationsRecall(t *testing.T) {
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	alice := s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	cb := &vfstest.RecordingCallbacks{}
+	id := laptop(t, s, cb)
+	g := delegate(t, s, id)
+	recalled := g
+	recalled.Recall = &openstate.Recall{To: openstate.GrantRead}
+	s.RecallGrant(recalled)
+	if got := calls(t, cb, 1); got[0].Args[1] != openstate.GrantRead {
+		t.Errorf("the recall saw %v, want it to read caching", got)
+	}
+	s.RecallGrant(openstate.CachingGrant{ID: openstate.GrantID{}, Client: id})
+	time.Sleep(50 * time.Millisecond)
+	if n := len(cb.Calls()); n != 1 {
+		t.Errorf("a recall of a grant that is gone reached the client: %v", cb.Calls())
+	}
+
+	build01, err := s.Connect(ctx, signedIn(alice.Principal, 3), smb("build01", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delay *openstate.DelayError
+	if _, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: build01, Principal: alice.Principal, Protocol: entity.ProtocolSMB},
+		openstate.FileKey{Share: s.share, ID: g.File}, openstate.OpenRequest{Access: entity.WriteData}); !errors.As(err, &delay) {
+		t.Fatalf("build01's write open answered %v, want a delay behind the recall", err)
+	}
+	asLaptop := claimed(1000, inLab)
+	asLaptop.Client = id
+	if err := s.AckRecall(ctx, asLaptop, g.ID, openstate.GrantNone); err != nil {
+		t.Errorf("the client's answer to its delegation's recall: %v", err)
+	}
+}
+
+// A lock grant the client refuses is handed back to open state, which
+// releases the lock: another host then takes the range.
+func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	host := func(name string, cb *vfstest.RecordingCallbacks) openstate.Caller {
+		id, err := s.Connect(ctx, claimed(1000, inLab), nlmHost(name, 1), cb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return openstate.Caller{Client: id, Protocol: entity.ProtocolNLM}
+	}
+	a, b, c := host("a", &vfstest.RecordingCallbacks{}), host("b", &vfstest.RecordingCallbacks{Refuse: true}), host("c", &vfstest.RecordingCallbacks{})
+	file := openstate.FileKey{Share: s.share, ID: entity.NewFileID()}
+	r := openstate.ByteRange{Offset: 0, Length: 10}
+	lock := func(who openstate.Caller, wait openstate.WaitKind) (openstate.LockResult, error) {
+		return s.tab.Locks().Lock(ctx, who, file, openstate.LockReq{
+			Owner: openstate.LockOwner{Client: who.Client, Name: []byte("pid 1")}, Open: openstate.OpenRef{Kind: openstate.RefAnonymous},
+			Ranges: []openstate.LockRange{{ByteRange: r, Exclusive: true}}, Wait: wait,
+		})
+	}
+	if _, err := lock(a, 0); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := lock(b, openstate.WaitCallback); err != nil || !res.Waiting {
+		t.Fatalf("b's lock answered %+v, %v; want it waiting", res, err)
+	}
+	if _, err := s.tab.Locks().Unlock(ctx, a, file, openstate.OpenRef{Kind: openstate.RefAnonymous},
+		openstate.LockOwner{Client: a.Client, Name: []byte("pid 1")}, []openstate.ByteRange{r}, openstate.Seqs{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		if _, err := lock(c, 0); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("the range b refused stays locked")
+}
+
+// A lock grant goes on being sent only while the client has a path: once
+// its session ends, the grant is sent no more.
+func TestALockGrantStopsAtThePathsEnd(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }}
+	id, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	calls(t, cb, 3)
+	if err := s.Disconnect(t.Context(), signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	n := len(cb.Calls())
+	time.Sleep(50 * time.Millisecond)
+	if m := len(cb.Calls()); m != n {
+		t.Errorf("the grant was sent %d times more after the client's path ended", m-n)
 	}
 }
