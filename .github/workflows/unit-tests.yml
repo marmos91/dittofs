@@ -101,6 +101,15 @@ jobs:
             ./internal/... \
             ./cmd/...
 
+      # The journal index's and the profiler's checks that skip under -race,
+      # and the planted-bug proof: options of the unit suite, run by dt so a
+      # run that finds no test fails rather than passing.
+      - name: Run the journal index checks without -race
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
+        run: |
+          test/harness/bin/dt run unit/journal-index --ci
+          test/harness/bin/dt run unit/journal-plant --ci
+
       - name: Upload coverage to Codecov
         if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         uses: codecov/codecov-action@v7

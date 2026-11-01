@@ -22,8 +22,8 @@ func testImmutableAndAppendOnly(t *testing.T, kvo Opener) {
 
 	for name, e := range map[string]error{
 		"chmod":  errOf(files.SetAttrs(ctx, alice, h, entity.Attrs{}.WithMode(0o600))),
-		"write":  files.Authorize(ctx, alice, h, entity.WriteData),
-		"append": files.Authorize(ctx, alice, h, entity.AppendData),
+		"write":  files.Authorize(ctx, alice, h, nil, entity.WriteData),
+		"append": files.Authorize(ctx, alice, h, nil, entity.AppendData),
 		"xattr":  files.SetXattr(ctx, alice, h, entity.Xattr{Name: []byte("k"), Value: []byte("v")}),
 		"link":   ns.Link(ctx, alice, pub, []byte("y"), h),
 	} {
@@ -49,10 +49,10 @@ func testImmutableAndAppendOnly(t *testing.T, kvo Opener) {
 	must(t, errOf(files.SetAttrs(ctx, f.admin, h, entity.Attrs{}.WithFlags(entity.FlagAppendOnly))))
 
 	// Append-only: appends, no overwrite, no removal.
-	if e := files.Authorize(ctx, alice, h, entity.AppendData); e != nil {
+	if e := files.Authorize(ctx, alice, h, nil, entity.AppendData); e != nil {
 		t.Errorf("append to an append-only file: %v", e)
 	}
-	if e := files.Authorize(ctx, alice, h, entity.WriteData); !isPerm(e) {
+	if e := files.Authorize(ctx, alice, h, nil, entity.WriteData); !isPerm(e) {
 		t.Errorf("overwrite of an append-only file: %v", e)
 	}
 	if _, e := ns.Unlink(ctx, alice, pub, []byte("x")); !isPerm(e) {
@@ -91,16 +91,16 @@ func testStoredACLDecides(t *testing.T, kvo Opener) {
 		{Type: entity.ACEAllow, Mask: entity.ReadData | entity.Delete, Who: staff},
 	}})
 	must(t, e)
-	if e := files.Authorize(ctx, carol, h, entity.ReadData); e != nil {
+	if e := files.Authorize(ctx, carol, h, nil, entity.ReadData); e != nil {
 		t.Errorf("group allow: %v", e)
 	}
-	if e := files.Authorize(ctx, bob, h, entity.ReadData); !isDenied(e) {
+	if e := files.Authorize(ctx, bob, h, nil, entity.ReadData); !isDenied(e) {
 		t.Errorf("deny before the group allow: %v", e)
 	}
-	if e := files.Authorize(ctx, alice, h, entity.ReadData); !isDenied(e) {
+	if e := files.Authorize(ctx, alice, h, nil, entity.ReadData); !isDenied(e) {
 		t.Errorf("no entry for alice: %v", e)
 	}
-	if e := files.Authorize(ctx, carol, h, entity.WriteData); !isDenied(e) {
+	if e := files.Authorize(ctx, carol, h, nil, entity.WriteData); !isDenied(e) {
 		t.Errorf("a right no entry grants: %v", e)
 	}
 	// RFC 7 §12.1's removal rights: delete on the file, no right on the
@@ -124,6 +124,46 @@ func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
 	}
 }
 
+// A share's grants decide in order: a principal's own grant, then the
+// widest of its groups', then a grant naming authenticated users for an
+// authenticated caller, then one naming everyone.
+func testDefaultGrants(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	cp, files := f.s.ControlPlane(), f.s.Files()
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	dave := user("dave")
+	must(t, cp.PutUser(ctx, dave))
+	claimed := entity.Identity{Principal: dave.Principal}
+	proven := entity.Identity{Principal: dave.Principal, Authenticated: true}
+	if e := files.Authorize(ctx, proven, pub, nil, entity.ReadData); !isDenied(e) {
+		t.Errorf("no grant at all: %v", e)
+	}
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Everyone, Access: entity.AccessRead}))
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}))
+	if e := files.Authorize(ctx, claimed, pub, nil, entity.ReadData); e != nil {
+		t.Errorf("everyone's read grant, read: %v", e)
+	}
+	if e := files.Authorize(ctx, claimed, pub, nil, entity.WriteData); !isDenied(e) {
+		t.Errorf("an unauthenticated caller took authenticated users' read-write: %v", e)
+	}
+	if e := files.Authorize(ctx, proven, pub, nil, entity.WriteData); e != nil {
+		t.Errorf("authenticated users' read-write, write: %v", e)
+	}
+	if a, err := f.s.Principals().Grant(ctx, f.share.ID, dave.Principal); err != nil || a != entity.AccessReadWrite {
+		t.Errorf("Grant of a signed-in user with no grant of its own: %v, %v", a, err)
+	}
+	staff := f.group("staff")
+	must(t, cp.AddMember(ctx, entity.Membership{Group: staff, Member: dave.Principal}))
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessRead}))
+	inStaff := entity.Identity{Principal: dave.Principal, Groups: []entity.Principal{staff}, Authenticated: true}
+	if e := files.Authorize(ctx, inStaff, pub, nil, entity.WriteData); !isDenied(e) {
+		t.Errorf("a group's read grant gave way to authenticated users': %v", e)
+	}
+	if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Owner, Access: entity.AccessRead}); !isCode(e, merrs.ErrInvalidArgument) {
+		t.Errorf("a grant naming OWNER@: %v", e)
+	}
+}
+
 // RFC 7 §2.6 and RFC 16 §2.2's well-known principals: each is matched by a
 // field of the identity, never by privilege; a deny naming an unknown
 // special principal is refused, an allow naming one grants nothing; an
@@ -143,6 +183,7 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 	read := entity.ReadData
 	authed, admin := bob, bob
 	authed.Authenticated, admin.Admin = true, true
+	anonymous := entity.Identity{Principal: entity.AnonymousPrincipal, Access: entity.AccessRead}
 	for _, c := range []struct {
 		who          entity.Principal
 		yes, no      entity.Identity
@@ -151,22 +192,23 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 		{entity.AuthenticatedUsers, authed, bob, "Authenticated Users", "an asserted identity"},
 		{entity.BuiltinUsers, authed, bob, "BUILTIN\\Users", "an asserted identity"},
 		{entity.Administrators, admin, bob, "Administrators", "a caller not marked admin"},
+		{entity.AnonymousPrincipal, anonymous, bob, "anonymous", "a caller acting as itself"},
 	} {
 		must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: c.who}))
-		if err := files.Authorize(ctx, c.yes, h, read); err != nil {
+		if err := files.Authorize(ctx, c.yes, h, nil, read); err != nil {
 			t.Errorf("%s did not match its caller: %v", c.name, err)
 		}
-		if err := files.Authorize(ctx, c.no, h, read); err == nil {
+		if err := files.Authorize(ctx, c.no, h, nil, read); err == nil {
 			t.Errorf("%s matched %s", c.name, c.reason)
 		}
 	}
 	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Network}))
-	if err := files.Authorize(ctx, bob, h, read); err != nil {
+	if err := files.Authorize(ctx, bob, h, nil, read); err != nil {
 		t.Errorf("NETWORK did not match every caller: %v", err)
 	}
 	for _, who := range []entity.Principal{entity.System, entity.CreatorOwner} {
 		must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: who}))
-		if err := files.Authorize(ctx, admin, h, read); err == nil {
+		if err := files.Authorize(ctx, admin, h, nil, read); err == nil {
 			t.Errorf("%v matched a caller", who)
 		}
 	}
@@ -176,7 +218,7 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 		t.Errorf("a deny naming an unknown special principal was stored: %v", err)
 	}
 	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: unknown}))
-	if err := files.Authorize(ctx, bob, h, read); err == nil {
+	if err := files.Authorize(ctx, bob, h, nil, read); err == nil {
 		t.Error("an allow naming an unknown special principal granted")
 	}
 
@@ -189,11 +231,11 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 	}
 
 	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.OwnerRights}))
-	if err := files.Authorize(ctx, alice, h, entity.WriteACL); err == nil {
+	if err := files.Authorize(ctx, alice, h, nil, entity.WriteACL); err == nil {
 		t.Error("an owner-rights entry left the owner its implicit write ACL")
 	}
 	must(t, errOf(files.SetACL(ctx, f.admin, h, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: read, Who: entity.Owner}}})))
-	if err := files.Authorize(ctx, alice, h, entity.WriteACL); err != nil {
+	if err := files.Authorize(ctx, alice, h, nil, entity.WriteACL); err != nil {
 		t.Errorf("without owner rights the owner lost its implicit write ACL: %v", err)
 	}
 }
@@ -246,7 +288,7 @@ func testInheritance(t *testing.T, kvo Opener) {
 			t.Errorf("finance lost modify: %+v", acl.Entries)
 		}
 	}
-	if err := files.Authorize(ctx, bob, doc, entity.WriteData|entity.Delete); err != nil {
+	if err := files.Authorize(ctx, bob, doc, nil, entity.WriteData|entity.Delete); err != nil {
 		t.Errorf("bob cannot write or delete his own file: %v", err)
 	}
 
@@ -263,5 +305,108 @@ func testInheritance(t *testing.T, kvo Opener) {
 	_, plain := f.create(bob, pub, "plain", kvstore.NewFile{Type: entity.Regular, Mode: 0o777, Umask: 0o022})
 	if plain.Mode&0o777 != 0o755 {
 		t.Errorf("with nothing inherited the umask left mode %o, want 755", plain.Mode&0o777)
+	}
+}
+
+// Delete is granted through the directory a file was resolved by: a group
+// member of a group-writable directory may delete her own file through it,
+// though the file's mode grants no delete. A directory that does not hold the
+// file grants nothing, and the sticky rule holds through the parent too.
+func testDeleteThroughParent(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	team := f.group("team")
+	bob := f.member("bob", entity.Principal{}, team)
+	carol := f.member("carol", entity.Principal{}, team)
+	shared := kvstore.NewFile{Type: entity.Directory, Mode: 0o775, Attrs: entity.Attrs{}.WithGroup(team)}
+	dir, _ := f.create(f.admin, f.root, "team", shared)
+	other, _ := f.create(f.admin, f.root, "other", shared)
+	doc, _ := f.create(bob, dir, "report.txt", regular(0o644))
+	sub, _ := f.create(bob, dir, "drafts", directory(0o755))
+
+	if err := files.Authorize(ctx, bob, doc, nil, entity.Delete); !isDenied(err) {
+		t.Errorf("delete on a 0644 file with no parent: %v", err)
+	}
+	for _, h := range []entity.Handle{doc, sub} {
+		if err := files.Authorize(ctx, bob, h, dir, entity.Delete); err != nil {
+			t.Errorf("delete through the group-writable directory holding it: %v", err)
+		}
+		if got, err := files.Granted(ctx, bob, h, dir, entity.Delete|entity.ReadAttributes); err != nil || got != entity.Delete|entity.ReadAttributes {
+			t.Errorf("Granted through the directory holding it: %#x, %v", got, err)
+		}
+		if err := files.Authorize(ctx, bob, h, other, entity.Delete); !isDenied(err) {
+			t.Errorf("delete through a writable directory not holding it: %v", err)
+		}
+		if got, _ := files.Granted(ctx, bob, h, other, entity.Delete); got != 0 {
+			t.Errorf("Granted through a directory not holding it: %#x", got)
+		}
+	}
+	// A removed directory keeps its record, and its parent, until released;
+	// the directory it was removed from no longer holds it.
+	if _, err := f.s.Namespace().Unlink(ctx, bob, dir, []byte("drafts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Authorize(ctx, bob, sub, dir, entity.Delete); !isDenied(err) {
+		t.Errorf("delete of a removed directory through its old parent: %v", err)
+	}
+
+	narrowed := bob
+	narrowed.ReadOnly = entity.NarrowedByClient
+	if err := files.Authorize(ctx, narrowed, doc, dir, entity.Delete); !isCode(err, merrs.ErrReadOnly) {
+		t.Errorf("a caller narrowed to read-only deletes through the directory holding it: %v", err)
+	}
+	if got, err := files.Granted(ctx, narrowed, doc, dir, entity.Delete); err != nil || got != 0 {
+		t.Errorf("Granted to a narrowed caller through the directory holding it: %#x, %v", got, err)
+	}
+
+	must(t, errOf(files.SetAttrs(ctx, f.admin, dir, entity.Attrs{}.WithMode(0o1775))))
+	if err := files.Authorize(ctx, carol, doc, dir, entity.Delete); !isDenied(err) {
+		t.Errorf("carol deletes bob's file through a sticky directory: %v", err)
+	}
+	if err := files.Authorize(ctx, bob, doc, dir, entity.Delete); err != nil {
+		t.Errorf("bob deletes his own file through a sticky directory: %v", err)
+	}
+
+	// A stored ACL granting the group delete-a-child does not lift the
+	// sticky rule.
+	must(t, errOf(files.SetACL(ctx, f.admin, dir, entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEAllow, Mask: entity.EntryRights, Who: entity.Owner},
+		{Type: entity.ACEAllow, Mask: entity.ReadData | entity.Execute | entity.WriteData | entity.DeleteChild, Who: team},
+	}})))
+	if d, err := files.Get(ctx, f.admin, dir); err != nil || d.Mode&entity.ModeSticky == 0 {
+		t.Fatalf("the directory after its ACL was set: mode %o, %v", d.Mode, err)
+	}
+	if err := files.Authorize(ctx, carol, doc, dir, entity.Delete); !isDenied(err) {
+		t.Errorf("carol deletes bob's file through a sticky directory whose ACL grants her group delete-a-child: %v", err)
+	}
+	if err := files.Authorize(ctx, bob, doc, dir, entity.Delete); err != nil {
+		t.Errorf("bob deletes his own file through the sticky directory with an ACL: %v", err)
+	}
+}
+
+// Privilege grants every entry right and nothing beyond them: a generic,
+// maximal-access or system-security bit is refused, and left out of what
+// Granted answers. System security is an administrator's alone, and stays so
+// under a read-only narrowing.
+func testPrivilegeGrantsOnlyEntryRights(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	h, _ := f.create(f.admin, f.root, "f", regular(0o755))
+	if got, err := files.Granted(ctx, f.admin, h, nil, ^entity.AccessMask(0)); err != nil || got != entity.EntryRights {
+		t.Errorf("a privileged caller is granted %#x, %v; want %#x", got, err, entity.EntryRights)
+	}
+	const genericAll, maximal = 0x10000000, 0x02000000
+	for _, bit := range []entity.AccessMask{genericAll, maximal, entity.SystemSecurity} {
+		if err := files.Authorize(ctx, f.admin, h, nil, bit); !isDenied(err) {
+			t.Errorf("a privileged caller asking %#x: %v", bit, err)
+		}
+	}
+	admin := entity.Identity{Principal: f.admin.Principal, Authenticated: true, Admin: true}
+	narrowed := admin
+	narrowed.ReadOnly = entity.NarrowedByShare
+	for _, id := range []entity.Identity{admin, narrowed} {
+		if err := files.Authorize(ctx, id, h, nil, entity.SystemSecurity); err != nil {
+			t.Errorf("an administrator asking system security, narrowed %v: %v", id.ReadOnly, err)
+		}
 	}
 }

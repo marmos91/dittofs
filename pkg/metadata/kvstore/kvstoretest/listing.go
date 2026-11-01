@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -53,6 +54,12 @@ func testEntries(t *testing.T, kvo Opener) {
 	rest, _ := names(t, ns.Entries(ctx, f.admin, f.root, cookies[299]))
 	if len(rest) != n-300 || rest[0] != got[300] {
 		t.Fatalf("resume: %d entries starting %q", len(rest), rest[0])
+	}
+	// No entry follows a cookie above every digest, the largest one included.
+	for _, after := range []uint64{1 << 63, math.MaxUint64} {
+		if rest, _ := names(t, ns.Entries(ctx, f.admin, f.root, after)); len(rest) != 0 {
+			t.Fatalf("after %#x: %d entries, want none", after, len(rest))
+		}
 	}
 	// EntriesPlus carries each child's record.
 	for l, err := range ns.EntriesPlus(ctx, f.admin, f.root, cookies[n-3]) {

@@ -137,8 +137,14 @@ func (f Files) Root(ctx context.Context, id entity.Identity, share entity.ShareI
 
 // grantFor is a resolved identity's access to share: its own grant decides,
 // even one of none; without one, the widest grant naming any group the
-// identity carries does.
+// identity carries does; without one, a grant naming authenticated users
+// does for an authenticated identity, then one naming everyone. A caller
+// carrying its own Access is held to that. A read-only narrowing is not
+// applied here: narrowed refuses it on its own.
 func grantFor(r kv.Reader, share entity.ShareID, id entity.Identity) (entity.ShareAccess, error) {
+	if id.Access != entity.AccessNone {
+		return id.Access, nil
+	}
 	g, ok, err := grantIn(r, share, id.Principal.ID)
 	if err != nil || ok {
 		return g.Access, err
@@ -156,7 +162,19 @@ func grantFor(r kv.Reader, share entity.ShareID, id entity.Identity) (entity.Sha
 			access = g.Access
 		}
 	}
-	return access, nil
+	if access != entity.AccessNone {
+		return access, nil
+	}
+	defaults := []entity.Principal{entity.Everyone}
+	if id.Authenticated {
+		defaults = []entity.Principal{entity.AuthenticatedUsers, entity.Everyone}
+	}
+	for _, d := range defaults {
+		if g, ok, err := grantIn(r, share, d.ID); err != nil || ok {
+			return g.Access, err
+		}
+	}
+	return entity.AccessNone, nil
 }
 
 // newRoot is a share's root directory: no entry names it, its parent is

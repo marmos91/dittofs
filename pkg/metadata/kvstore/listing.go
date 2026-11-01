@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"iter"
+	"math"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
@@ -71,6 +72,11 @@ func listPage(r kv.Reader, id entity.Identity, dir entity.Handle, after uint64, 
 	}
 	if err := authorize(r, id, d, entity.ListDirectory); err != nil {
 		return nil, err
+	}
+	// Every digest has its top bit clear, so no entry follows the largest
+	// cookie, and its successor would wrap to the start of the directory.
+	if after == math.MaxUint64 {
+		return nil, nil
 	}
 	prefix := entriesPrefix(share, d.ID)
 	var cursor []byte

@@ -65,10 +65,10 @@ func testModeBitRights(t *testing.T, kvo Opener) {
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	h, _ := f.create(alice, pub, "doc", kvstore.NewFile{Type: entity.Regular, Mode: 0o664, Attrs: entity.Attrs{}.WithGroup(staff)})
 	const genericWrite = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.WriteAttributes | entity.Synchronize
-	if err := files.Authorize(ctx, bob, h, genericWrite|entity.ReadData); err != nil {
+	if err := files.Authorize(ctx, bob, h, nil, genericWrite|entity.ReadData); err != nil {
 		t.Errorf("a group member's GENERIC_READ and GENERIC_WRITE open of a 0664 file: %v", err)
 	}
-	if err := files.Authorize(ctx, carol, h, genericWrite); err == nil {
+	if err := files.Authorize(ctx, carol, h, nil, genericWrite); err == nil {
 		t.Error("an outsider's GENERIC_WRITE open of a 0664 file was granted")
 	}
 	at := time.Unix(1_900_000_000, 0)
@@ -89,11 +89,11 @@ func testModeBitRights(t *testing.T, kvo Opener) {
 
 	plain, _ := f.create(f.admin, pub, "plain", regular(0o644))
 	prog, _ := f.create(f.admin, pub, "prog", regular(0o744))
-	if err := files.Authorize(ctx, f.admin, plain, entity.Execute); err == nil {
+	if err := files.Authorize(ctx, f.admin, plain, nil, entity.Execute); err == nil {
 		t.Error("a privileged caller executes a file with no x bit")
 	}
 	for name, x := range map[string]entity.Handle{"a file with an x bit": prog, "a directory": pub} {
-		if err := files.Authorize(ctx, f.admin, x, entity.Execute); err != nil {
+		if err := files.Authorize(ctx, f.admin, x, nil, entity.Execute); err != nil {
 			t.Errorf("a privileged caller executes %s: %v", name, err)
 		}
 	}

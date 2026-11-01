@@ -462,6 +462,28 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	if err := cp.PutExportPolicy(ctx, pol); err == nil {
 		t.Error("a client rule granted admin")
 	}
+	pol.Clients[0].Access = entity.AccessRead
+
+	// A protection floor with a proof below a verified one is refused: the
+	// unverified caller it admits carries no protection at all.
+	for _, proof := range []entity.ProofKind{entity.ProofNone, entity.ProofClaimed} {
+		pol.MinProof, pol.MinProtection = proof, entity.ProtectionIntegrity
+		if err := cp.PutExportPolicy(ctx, pol); err == nil {
+			t.Errorf("a policy admitting proof %v with an integrity floor was saved", proof)
+		}
+	}
+	// A verified proof takes the floor: NTLM with sealing, and Kerberos with
+	// the integrity floor refused above.
+	for proof, floor := range map[entity.ProofKind]entity.Protection{
+		entity.ProofSecret: entity.ProtectionPrivacy, entity.ProofTicket: entity.ProtectionIntegrity,
+	} {
+		pol.MinProof, pol.MinProtection, pol.ReadOnly = proof, floor, true
+		must(t, cp.PutExportPolicy(ctx, pol))
+		if got, err := cp.ExportPolicy(ctx, sh.ID); err != nil || got.MinProof != proof ||
+			got.MinProtection != floor || !got.ReadOnly {
+			t.Errorf("the minimums and read-only read back as %+v, %v", got, err)
+		}
+	}
 }
 
 func testNetgroupsAndSettings(t *testing.T, kvo Opener) {

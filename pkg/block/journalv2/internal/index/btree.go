@@ -9,15 +9,26 @@ import "sync/atomic"
 // rightmost path from it holds at least minItems, so a merge of a node at
 // minItems with a sibling at minItems, plus their separator, always fits.
 //
-// ponytail: leaves are only as full as the insert order leaves them: about 94%
-// for ascending or nearly ascending keys, 69% for random ones, 59% after heavy
-// churn and 50% for descending ones. A held extent's entry is 48 bytes, its
+// An insert that would split a full child first offers the child's last key
+// to a right sibling with room, as a B*-tree rotates, so leaves fill
+// whichever order keys arrive in: about 94% ascending, about 72% random and
+// nearly full descending — leaves fill because a full child hands a key to
+// its right sibling before the two ever split; TestRotatedInsertsFillLeaves
+// holds the fill. A held extent's entry is 48 bytes, its
 // 8-byte key beside a 40-byte value, so a leaf of 31 is 1,504 bytes, just
-// inside the allocator's 1,536-byte size class; a 32nd slot would round it up
-// to 1,792. Ascending keys cost about 53 bytes an entry, within the index's
-// budget of 56, and random ones about 65, outside it. Upgrade when a workload
-// that writes out of order holds enough extents for that to matter: splitting
-// into a sibling with room, as a B*-tree does, raises the fill of every order.
+// inside the allocator's 1,536-byte size class; a 32nd slot would round it
+// up to 1,792. Ascending keys cost about 53 bytes an entry, within the
+// index's budget of 56, and random ones about 68, inside the 72 the RFC
+// holds random order to. The rightmost child has no right sibling and keeps
+// its biased split, so runs of ascending keys still fill the right edge
+// first.
+//
+// ponytail: only a right sibling is offered a key, so random-order fill
+// stops at about 72% and the index holds about 68.5 bytes an entry against
+// the 72 bound — about 3.5 of headroom, which a change of the allocator's
+// size classes could eat. Upgrade to also try the left sibling, or a
+// three-way redistribution across both, when a workload that writes out of
+// order sits within a byte or two of the bound.
 const (
 	maxItems = 31
 	minItems = (maxItems - 1) / 2
@@ -152,10 +163,12 @@ func ascendNode[V any](n *node[V], from uint64, bounded bool, fn func(uint64, V)
 // inside the last leaf, and an even split for it would strand that leaf half
 // full just the same.
 //
-// decision: nothing biases the leftmost path, so keys inserted in descending
-// order, a file written back to front, leave the leaves about half full. A
-// journal's writers rarely write in that order; mirror the bias on the left
-// edge if a workload that does shows up in the index's bytes per entry.
+// decision: a rotating insert reaches the leftmost path too, so keys
+// inserted in descending order, a file written back to front, fill their
+// leaves by handing keys right rather than by any left-edge bias of the
+// split. Overturn this only by measuring a descending workload's bytes per
+// entry against a rotated tree's, not against the half-full leaves of a
+// splitting tree.
 func (t *btree[V]) set(k uint64, v V) (old V, replaced bool) {
 	if t.root == nil {
 		t.root = &node[V]{}
@@ -185,6 +198,14 @@ type promoted[V any] struct {
 // insert sets k to v in n's subtree, replacing the value if k is held. It
 // returns what n's split hands up when the insert overflowed n. rightmost says
 // whether n is on the tree's rightmost path.
+//
+// A full child whose last key is above k, and which does not already hold k,
+// hands that key to a right sibling with room rather than splitting at once,
+// allocating nothing and keeping leaves fuller whichever order keys arrive
+// in. The rotation runs only when k stays below the key that moves up and
+// the descent is an insert rather than a replace, so the child the search
+// chose is still the child that holds k and a replace never moves a key;
+// only when the sibling is full too does the insert split, as before.
 func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, up promoted[V], cmps uint64) {
 	i, found, cmps := n.search(k)
 	if found {
@@ -194,12 +215,50 @@ func (n *node[V]) insert(k uint64, v V, rightmost bool) (old V, replaced bool, u
 	if n.children == nil {
 		return old, false, n.insertOrSplit(i, k, v, nil, rightmost), cmps
 	}
+	// The rotation is skipped when the chosen child already holds k, so a
+	// replace never moves a key: the descent changes nothing, and a later
+	// replace of a key below a full child with a roomy sibling answers from
+	// the shape the tree already has. The look is one descent, made only
+	// when the child is full and the sibling has room — the rare case an
+	// insert rotates in.
+	if c := n.children[i]; i < n.count && c.count >= maxItems && k < c.keys[c.count-1] && n.children[i+1].count < maxItems && !c.has(k) {
+		n.rotateRight(i)
+	}
 	old, replaced, below, c := n.children[i].insert(k, v, rightmost && i == n.count)
 	cmps += c
 	if below.right != nil {
 		up = n.insertOrSplit(i, below.key, below.val, below.right, rightmost)
 	}
 	return old, replaced, up, cmps
+}
+
+// has reports whether k is held anywhere in n's subtree: one descent, reading
+// only. Its comparisons go uncounted, like any read outside the counted
+// operations; it runs once per insert at most, only when a rotation is in
+// reach and the key arrives below the full child.
+func (n *node[V]) has(k uint64) bool {
+	for n != nil {
+		i, found, _ := n.search(k)
+		if found {
+			return true
+		}
+		if n.children == nil {
+			return false
+		}
+		n = n.children[i]
+	}
+	return false
+}
+
+// rotateRight moves child i's last key — and the subtree after it, in an
+// inner node — up into separator i, and the separator down into child i+1's
+// front: one key each way, allocating nothing, changing no key count on n.
+// The child keeps minItems (it was full), so every delete invariant holds.
+func (n *node[V]) rotateRight(i int) {
+	k, v, ch := n.children[i].popLast()
+	r := n.children[i+1]
+	r.pushFirst(n.keys[i], n.vals[i], ch)
+	n.keys[i], n.vals[i] = k, v
 }
 
 // insertOrSplit puts k and v at slot i, and right after them in an inner
