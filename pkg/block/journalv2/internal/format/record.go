@@ -75,10 +75,10 @@ func (h RecordHeader) Size() int64 {
 // record no room for itself at its own offset; a write or fill whose payload
 // is not the length in bytes; another kind carrying a payload; a non-zero
 // epoch in the version or in the clone's AsOf; a clone source offset that
-// overflows with the length; a loss reason outside 1–4. It does not enforce
-// the kinds table's zero-field rules, which no writer of this package can
-// express: a record that breaks them is refused at the API before
-// AppendRecord is reached. Nor does it police a body's fields against the
+// overflows with the length; a loss reason outside 1–4; a header breaking the
+// kinds table's zero-field rules, which the decoder refuses as damage, so
+// what the writer hands over never comes back as a record it has to refuse.
+// It does not police a body's fields against the
 // wrong kind — a fill's modification time, a write's cut — which encode
 // nothing: what the layout does not write cannot reach the disk.
 func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body RecordBody) []byte {
@@ -140,6 +140,12 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		if body.Clone.Off+h.Extent.Len < 0 {
 			panic(fmt.Sprintf("format: clone source offset %d plus the length %d overflows", body.Clone.Off, h.Extent.Len))
 		}
+	}
+
+	// The kinds table's zero-field rules, which the decoder refuses as damage:
+	// a reader of this format could never take such a record back.
+	if err := checkFields(h); err != nil {
+		panic(err)
 	}
 
 	start := len(dst)

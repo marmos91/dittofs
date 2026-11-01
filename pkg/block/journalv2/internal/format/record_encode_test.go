@@ -136,6 +136,26 @@ func TestAppendRecordPanics(t *testing.T) {
 		{"a loss reason of 0", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Synced: true}}, "reason 0"},
 		{"a loss reason of 5", wantRecordAt(t, "loss").h, RecordBody{Loss: Loss{Dropped: 1, Reason: LossReason(5)}}, "reason 5"},
 		{"a loss carrying a payload", wantRecordAt(t, "loss").h, RecordBody{Loss: testLoss, Payload: []byte{1}}, "carries a payload"},
+		{"a delete with a non-zero file offset", func() RecordHeader {
+			h := wantRecordAt(t, "delete").h
+			h.Extent.Off = 1
+			return h
+		}(), RecordBody{}, "delete file offset 1, want 0"},
+		{"a release with a zero FileID", func() RecordHeader {
+			h := wantRecordAt(t, "release").h
+			h.File = core.FileID{}
+			return h
+		}(), RecordBody{}, "release names no FileID, want one"},
+		{"a truncate with a non-zero length", func() RecordHeader {
+			h := wantRecordAt(t, "truncate").h
+			h.Extent.Len = 1
+			return h
+		}(), RecordBody{}, "truncate length 1, want 0"},
+		{"an unhold naming a FileID", func() RecordHeader {
+			h := wantRecordAt(t, "unhold").h
+			h.File = testRecordFile
+			return h
+		}(), RecordBody{}, "unhold names the FileID"},
 	} {
 		func() {
 			defer func() {
