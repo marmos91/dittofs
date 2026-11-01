@@ -608,8 +608,9 @@ the wire:
   `SETCLIENTID` for a name confirmed by `EXCHANGE_ID`, or the reverse, is a new
   `Boot`: a reboot, confirmed as any is, which expires the old client ID and its
   state, never the same instance (RFC 8881 §2.4.1). A client's state is never
-  shared across minor versions: over NFSv4.0 a stateid of a client
-  `EXCHANGE_ID` confirmed is refused (§5.2 rule 5). A confirm that finds the record but comes from another
+  shared across minor versions: over NFSv4.0 a delegation stateid of a client
+  `EXCHANGE_ID` confirmed is refused, and an open or lock stateid answers to
+  its opener's principal (§5.2 rule 5). A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
 - **`CREATE_SESSION` is sequenced by the adapter's record.** The NFS adapter
@@ -933,17 +934,13 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    session and no client ID of its own, so the call's client is the one on the
    state its stateid resolves to, as
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, and rule 4 has
-   nothing to compare it with. Whichever way an NFSv4.0 call's client is taken,
-   from the state or by rule 4 from an owner, it is only a client confirmed
-   under NFSv4.0: the adapter reads the confirming minor version from the
-   record's `Adapter` bytes (§3.5) before it sets the call's client, and a
-   stateid of a client `EXCHANGE_ID` confirmed, a delegation's among them, is
-   `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)) and changes no state. That
-   refusal is the adapter's own, answered before any service call, so a
-   `NotYours` the service returns on `READ`, `WRITE` or `SETATTR` is always the
-   principal case below. A v4.0 `OPEN`, `RELEASE_LOCKOWNER` or `RENEW` that
-   names such a client's ID or owner is `NFS4ERR_STALE_CLIENTID`, as knfsd
-   answers it. The request's credential **MUST** instead name
+   nothing to compare it with. A delegation stateid over NFSv4.0 is refused by
+   the service, since the call has no session
+   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)): `NFS4ERR_BAD_STATEID`
+   (`ErrState` (`NotYours`)), and it changes no state. A v4.0 `OPEN`,
+   `RELEASE_LOCKOWNER` or `RENEW` that names the client ID or owner of a client
+   `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`. The request's
+   credential **MUST** instead name
    the principal that made the open the stateid names (`Open.Principal`,
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); the service refuses one
    naming any other principal with `ErrState` (`NotYours`), which on these three
@@ -2403,7 +2400,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`StaleState`) — a stateid whose state was lost with its shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)): its record is gone and its bits name an earlier grace instance, or its shard is in grace (§5.2 rule 1) | `NFS4ERR_STALE_STATEID` (§5.4) | — |
 | `ErrPerm` — an immutable or append-only file, or a change of owner, group or flags the caller may not make ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_PERM` | `NFS3ERR_PERM` |
 | `ErrUnavailable`, `ErrCorrupt`, `ErrLost` on a read ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) | a short read of the verified bytes, then `NFS4ERR_DELAY` for `ErrUnavailable` and `NFS4ERR_IO` for the others | `NFS3ERR_JUKEBOX` for `ErrUnavailable`, `NFS3ERR_IO` for the others |
-| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR` refused by rule 5's principal check (§5.2); `NFS4ERR_BAD_STATEID` otherwise, a stateid of a client another minor version confirmed included | — |
+| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR` under an open or lock stateid (rule 5's principal check, §5.2); `NFS4ERR_BAD_STATEID` otherwise, a delegation stateid's included | — |
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrState` (`BadSeqID`) | `NFS4ERR_BAD_SEQID` | — |
 | `ErrState` (`LocksHeld`) — `RELEASE_LOCKOWNER` of an owner still holding locks, `FREE_STATEID` of a lock state holding locks or of a live open or delegation; nothing changed | `NFS4ERR_LOCKS_HELD` | — |
