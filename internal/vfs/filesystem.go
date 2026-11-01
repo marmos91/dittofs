@@ -141,7 +141,8 @@ type Filesystem struct {
 	beforeShareRead func() // run by admission before it reads the share; nil but in tests
 	beforeBuild     func() // run by tree before it reads the share list to build; nil but in tests
 
-	inflight prometheus.Gauge
+	inflight       prometheus.Gauge
+	callbackErrors *prometheus.CounterVec
 }
 
 var (
@@ -171,14 +172,20 @@ func New(d Deps) (*Filesystem, error) {
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",
 		}),
+		callbackErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "dittofs", Name: "vfs_callback_errors_total",
+			Help: "Callbacks that failed, or found no path to the client, by kind.",
+		}, []string{"kind"}),
 	}
 	if fs.events == nil {
 		fs.events = noEvents{}
 	}
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
-		if err := d.Metrics.Register(fs.inflight); err != nil {
-			return nil, fmt.Errorf("vfs: %w", err)
+		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors} {
+			if err := d.Metrics.Register(c); err != nil {
+				return nil, fmt.Errorf("vfs: %w", err)
+			}
 		}
 	}
 	fs.stop, fs.cancel = context.WithCancel(context.Background())

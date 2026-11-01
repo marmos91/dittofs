@@ -17,7 +17,8 @@ import (
 // table's goroutine never waits on a client, and a method that took that lock
 // itself, or through a table call that serves waiters, would wait on its own
 // caller. An event with no path to go by is dropped: a recall then ends at its
-// deadline, as one the client never answered.
+// deadline, as one the client never answered. A callback that fails, or
+// finds no path, is counted in vfs_callback_errors_total by its kind.
 //
 // A recall of a lease or an oplock, an SMB break, goes by the opens it
 // covers, never by the client: to the session holding one of them, else to a
@@ -43,7 +44,8 @@ import (
 const callbackDeadline = 35 * time.Second
 
 // grantRetry is how long a lock grant the client did not answer waits before
-// it is sent again.
+// it is sent again, and how often a recall whose send failed looks for a new
+// path to send it through.
 //
 // ponytail: a fixed pause, retried until the client answers, its path ends,
 // or the filesystem stops, one goroutine per grant
@@ -57,7 +59,7 @@ var grantRetry = 10 * time.Second
 // everywhere, so the client is only told; with peers, end it at each primary
 // of shards through Peers.ClientState first.
 func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID, why openstate.RevokeReason) {
-	fs.deliver(fs.latest(c), func(ctx context.Context, cb vfs.Callbacks) {
+	fs.deliver(fs.latest("Revoked", c), func(ctx context.Context, cb vfs.Callbacks) {
 		cb.Revoked(ctx, vfs.Revocation{Client: c, Reason: why})
 	})
 	fs.reg.unregister(c)
@@ -75,18 +77,22 @@ func (fs *Filesystem) Closed(f entity.FileID, r openstate.CloseResult) {}
 // as the lock stays granted until it answers.
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
-	fs.deliver(fs.latest(c), func(ctx context.Context, cb vfs.Callbacks) {
+	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
 		refused, err := cb.LockWaitOver(ctx, w, granted)
 		for granted && err != nil {
+			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
 			select {
 			case <-fs.stop.Done():
 				return
 			case <-time.After(grantRetry):
 			}
-			if cb = fs.reg.latest(c); cb == nil {
+			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
 				return
 			}
 			refused, err = grantAgain(fs.stop, cb, w)
+		}
+		if err != nil {
+			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
 		}
 		if granted {
 			unlock := fs.Admission(w.File)
@@ -103,29 +109,60 @@ func grantAgain(stop context.Context, cb vfs.Callbacks, w openstate.LockWaiter) 
 	return cb.LockWaitOver(ctx, w, true)
 }
 
+// RecallGrant sends the recall through its path. One whose send fails is
+// sent again through the next path the grant's client registers, until the
+// callback's deadline: a client that reconnects with a new path is recalled
+// through it.
 func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 	to := openstate.GrantNone
 	if g.Recall != nil {
 		to = g.Recall.To
 	}
-	fs.deliver(func(ctx context.Context) vfs.Callbacks {
+	path := func(ctx context.Context) vfs.Callbacks {
 		opens, err := fs.grants.Openers(ctx, openstate.Caller{Client: g.Client}, g.ID)
 		switch {
 		case err != nil:
 			return nil // gone since: nothing is left to recall
 		case len(opens) == 0:
-			return fs.reg.latest(g.Client) // a delegation, the client's own
+			return fs.counted("RecallGrant", fs.reg.latest(g.Client)) // a delegation, the client's own
 		}
-		return fs.reg.breakPath(g.Client, opens)
-	}, func(ctx context.Context, cb vfs.Callbacks) { _ = cb.RecallGrant(ctx, g, to) })
+		return fs.counted("RecallGrant", fs.reg.breakPath(g.Client, opens))
+	}
+	fs.deliver(path, func(ctx context.Context, cb vfs.Callbacks) {
+		for cb.RecallGrant(ctx, g, to) != nil {
+			fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
+			if cb = nextPath(ctx, path, cb); cb == nil {
+				return
+			}
+		}
+	})
+}
+
+// nextPath waits, grantRetry at a time, for path to answer a path other than
+// cb, and answers it; nil once path answers none or ctx ends.
+func nextPath(ctx context.Context, path func(context.Context) vfs.Callbacks, cb vfs.Callbacks) vfs.Callbacks {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(grantRetry):
+		}
+		if next := path(ctx); next != cb {
+			return next
+		}
+	}
 }
 
 func (fs *Filesystem) RecallAny(c entity.ClientID, keep int) {
-	fs.deliver(fs.latest(c), func(ctx context.Context, cb vfs.Callbacks) { _ = cb.RecallAny(ctx, keep) })
+	fs.deliver(fs.latest("RecallAny", c), func(ctx context.Context, cb vfs.Callbacks) {
+		if cb.RecallAny(ctx, keep) != nil {
+			fs.callbackErrors.WithLabelValues("RecallAny").Inc()
+		}
+	})
 }
 
 func (fs *Filesystem) Revoked(r openstate.Revocation) {
-	fs.deliver(fs.latest(r.Client), func(ctx context.Context, cb vfs.Callbacks) { cb.Revoked(ctx, r) })
+	fs.deliver(fs.latest("Revoked", r.Client), func(ctx context.Context, cb vfs.Callbacks) { cb.Revoked(ctx, r) })
 }
 
 // Notify delivers nothing yet.
@@ -161,10 +198,19 @@ func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send fun
 	})
 }
 
-// latest is a path for deliver: client c's latest path as it is now.
-func (fs *Filesystem) latest(c entity.ClientID) func(context.Context) vfs.Callbacks {
-	cb := fs.reg.latest(c)
+// latest is a path for deliver: client c's latest path as it is now, a
+// callback of kind dropped for want of one counted.
+func (fs *Filesystem) latest(kind string, c entity.ClientID) func(context.Context) vfs.Callbacks {
+	cb := fs.counted(kind, fs.reg.latest(c))
 	return func(context.Context) vfs.Callbacks { return cb }
+}
+
+// counted is cb, counting a callback of kind dropped when it is nil.
+func (fs *Filesystem) counted(kind string, cb vfs.Callbacks) vfs.Callbacks {
+	if cb == nil {
+		fs.callbackErrors.WithLabelValues(kind).Inc()
+	}
+	return cb
 }
 
 // registry is each client's callback paths at this node: the one its latest

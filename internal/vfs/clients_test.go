@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs"
 	"github.com/marmos91/dittofs/pkg/vfs/vfstest"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // smb is an SMB machine's client: its ClientGuid, under one Boot.
@@ -364,6 +365,73 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	calls(t, cb, 1)
 	if got := breaks(cb); len(got) != 1 || got[0] != res.Grant.ID {
 		t.Errorf("the client saw %v, want the delegation's recall", cb.Calls())
+	}
+}
+
+// laptop proposes and connects NFSv4 client "laptop" as uid 1000, with cb as
+// its path, and answers its ID.
+func laptop(t *testing.T, s *shares, cb vfs.Callbacks) vfs.ClientID {
+	t.Helper()
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}}
+	p, err := s.Propose(t.Context(), claimed(1000, inLab), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = &p
+	id, err := s.Connect(t.Context(), claimed(1000, inLab), info, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// delegate opens a fresh file for client cl with a read delegation, and
+// answers the delegation.
+func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
+	t.Helper()
+	res, err := s.tab.Opens().Open(t.Context(), openstate.Caller{Client: cl, Protocol: entity.ProtocolNFSv4},
+		openstate.FileKey{Share: s.share, ID: entity.NewFileID()}, openstate.OpenRequest{Access: entity.ReadData, Want: openstate.GrantRead})
+	if err != nil || res.Grant == nil {
+		t.Fatalf("the delegated open answered %+v, %v", res.Grant, err)
+	}
+	return *res.Grant
+}
+
+// A recall whose send fails is sent again through the path the client
+// registers next, and each failure is counted.
+func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
+	defer func(d time.Duration) { grantRetry = d }(grantRetry)
+	grantRetry = time.Millisecond
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	lost := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}
+	id := laptop(t, s, lost)
+	g := delegate(t, s, id)
+	s.RecallGrant(g)
+	calls(t, lost, 1)
+	fresh := &vfstest.RecordingCallbacks{}
+	if again := laptop(t, s, fresh); again != id {
+		t.Fatalf("the reconnect answered client %v, want %v", again, id)
+	}
+	calls(t, fresh, 1)
+	if got := breaks(fresh); len(got) != 1 || got[0] != g.ID {
+		t.Errorf("the client's new path saw %v, want the recall", fresh.Calls())
+	}
+	if n := len(lost.Calls()); n != 1 {
+		t.Errorf("the failed path was sent the recall %d times, want once", n)
+	}
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallGrant")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallGrant} is %v, want 1", n)
+	}
+}
+
+// A callback with no path to go by is counted.
+func TestACallbackWithNoPathIsCounted(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.RecallAny(42, 0)
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallAny")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallAny} is %v, want 1", n)
 	}
 }
 
