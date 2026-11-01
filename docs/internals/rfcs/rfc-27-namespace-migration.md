@@ -154,7 +154,8 @@ writes the claim `released`.
    at every recheck, catches it at start. The copy reads the claim before
    rewriting it ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 4. The claim holds the original's newer nonce, which the copy never recorded.
-   The copy stops writing, its GC stops deleting, and it alerts
+   Its `Claim` answers copy: the namespace's shares serve reads only, GC does
+   not start on it, and it alerts
    ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 
 Outcome: a copy of an installation's disks never silently becomes a second
@@ -327,10 +328,10 @@ process per namespace writes the claim, as at every later period.
 the one that wrote the claim's nonce, holds the namespace. It is an operation,
 each step idempotent: it records the nonce the claim carries as *accepted* in
 the namespace's nonce record; runs [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)'s settle, whose last transaction
-records that nonce as written under the current instance part; then reads the
-claim again. A nonce changed meanwhile means the other copy is still writing:
-the operation fails naming it, and the namespace stays a copy. Otherwise the
-next `Claim` answers held, and the holder's first `Recheck` rewrites the claim
+records that nonce as written under the current instance part; then runs
+`Claim`. A copy answer means the other copy rewrote the claim meanwhile and is
+still writing: the operation fails naming it, and the namespace stays a copy.
+Otherwise it answers held, and the holder's first `Recheck` rewrites the claim
 with a fresh nonce and the current instance part.
 
 **A new namespace's first claim is written by the path that creates it** — the
@@ -341,8 +342,10 @@ after a crash ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20opera
 does (below), and sets `claimed` in the nonce record in the transaction that
 records the nonce written. Where a claim already exists at the prefix it puts
 nothing and fails, naming the prefix — unless the claim names this installation
-with the nonce this step recorded as intended, which is its own put before a
-crash: it then records that nonce written and sets `claimed`. Until `claimed` is set `Claim` answers
+with the nonce this step recorded as intended under the current instance part,
+which is its own put before a crash: it then records that nonce written and sets
+`claimed`. A nonce recorded under an earlier part fails the step, and the
+namespace answers copy. Until `claimed` is set `Claim` answers
 **pending**, and no share of the namespace attaches. Once `claimed` is set, a missing claim is **foreign**: something
 deleted it, and the namespace is not new.
 

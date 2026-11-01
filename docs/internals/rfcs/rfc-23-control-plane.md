@@ -532,14 +532,16 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
      (`:accept-copy`, §3.3);
    - **foreign** — the claim names another installation, is `released`, or is
      missing on a namespace whose claim this installation wrote — and
-     **pending** — a namespace still being created — and a `Claim` that failed:
+     **pending** — a namespace still being created — and **unread**, a `Claim`
+     that failed:
      they are not attached.
 
    Every answer but held raises the health condition `namespace_unclaimed`
    ([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)), naming the namespace and the answer. The node runs
-   `Claim` again for each such namespace whenever the share list version moves —
-   an `:accept-copy`, a create's claim step and an import each move it — and at
-   its next reconcile pass after a `Claim` that failed (§2.3). Once it answers
+   `Claim` again for each such namespace when its nonce record changes — an
+   `:accept-copy`'s settle, a create's claim step and an import each write it —
+   reading those records at each once-a-second counter read (§2.3); an unread
+   namespace it retries at that read, backing off to once a minute. Once it answers
    held, the node attaches the namespace's unattached shares, rebinds its
    `Fenced` ones `Serving` through the engine's `Bind`
    ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), and adds the namespace to GC.
@@ -616,11 +618,11 @@ The node holds two pictures: the **desired** one, read from records, and the
 | --- | --- |
 | a share created | `addShare`: its namespace's `Claim`, decided as §2.2 step 5 says; a storage binding in the engine, `Fenced` on a copy; the share's namespace in GC once it answers held; the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): the same three, in reverse |
-| a share's state changed | moves the share's storage binding to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
+| a share's state changed | moves the share's storage binding to quiescing and back — back to `Fenced`, not serving, while its namespace answers copy (§2.2 step 5) — ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
 | a share's live setting | hands the new value to the storage binding, within RFC 13's live bound |
 | a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No storage binding is replaced |
 | a `Secret`'s new version | the component holding the reference resolves it again within the live bound, and the node reports the version it holds (§2.4, [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)) |
-| a change [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) counts as a change of a share's backends | builds the new context beside the old, switches admission to it, then joins and closes the old one. A new context that fails to build leaves the old one serving and the record refused |
+| a change [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) counts as a change of a share's backends | builds the new context beside the old, `Fenced` while its namespace answers copy, switches admission to it, then joins and closes the old one. A new context that fails to build leaves the old one serving and the record refused |
 | an adapter enabled or disabled | starts it, or drains and stops it |
 | an adapter's live setting | applies it to connections set up afterwards ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)) |
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
@@ -768,7 +770,9 @@ RFC 16's rules, the settings with each component's validator, and refuses a
 share whose namespace names no remote store ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)). The transaction
 writes the share's records, its root directory, its state `enabled`, its export
 policy as the request states it — the flavours are required, with no default —
-and raises `ShareList`; it writes **no grant**.
+and raises `ShareList`; it writes **no grant**. A new namespace's first claim
+follows the transaction as an operation (§4.6, [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), and the
+share serves once it has run.
 A new share is reachable by nobody until an operator grants it.
 
 > decision: a new share admits nobody. An open default is one operator's
@@ -830,8 +834,8 @@ and the CLI's `namespace accept-copy`: the operator's statement that this
 installation, a copy, holds the namespace from now on
 ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). It is an operation (§4.6) the operation runner drives
 through GC's `AcceptCopy` ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), refused `409` `not_a_copy` unless the
-namespace's claim answers copy, and it moves the share list version when it
-succeeds, so every node runs the namespace's `Claim` again (§2.2 step 5).
+namespace's claim answers copy. Its settle writes the namespace's nonce record,
+so every node runs the namespace's `Claim` again (§2.2 step 5).
 
 GC's two index rebuilds are actions on a namespace,
 `POST /namespaces/{id}:rebuild-index` and
@@ -1178,7 +1182,7 @@ type Progress struct {
   The operation record **MUST NOT** choose a driver for such work. Its progress
   is read from the owner's durable cursor, so a restart loses none of it.
 - **Work no component drives on its own** — a credential or signing-key rotation, GC's index
-  rebuilds and a copy's acceptance, a provisioning reload — is driven by the operation runner (§2.2) of a
+  rebuilds, a new namespace's first claim and a copy's acceptance, a provisioning reload — is driven by the operation runner (§2.2) of a
   node, under a claim in the operation record: (node, node epoch,
   expiry), the expiry 30 s ahead and renewed every 10 s, both fixed.
   **(cluster)** A claim that lapses is taken by any node, which resumes from the

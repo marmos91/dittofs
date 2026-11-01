@@ -467,7 +467,8 @@ scaling device.
 - **The rules for using both:** its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its policy state — access pattern, dirty ages,
   backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets —
   its share of journal capacity, transfers and pacing; and its state: adding,
-  serving, quiesced, fenced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
+  serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), or fenced, a binding-only
+  state the share record does not hold ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)).
 
 The binding is the engine's own, unexported; no caller sees it. Its identifiers
 and settings are copied from the share record at `Bind`, and the metadata store
@@ -2902,7 +2903,7 @@ Only what the engine adds to [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%
 | Journal sync fails | the journal fails or re-appends the window; a failed window is reported once to the next `Sync` of each file with a write in it, and raises that file's loss sequence and the journal's loss generation ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)) |
 | Crash | recovers, re-applies existence, rebuilds the queue, reseeds, then re-offers ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | Shard moved, handed over or its lease lost | the old primary drains the shard's work before the record moves, or at once on a lease loss; a pass that meets the stale epoch stops ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [§6.3](#6.3%20The%20offload%20pipeline), O7) |
-| Node started from a copied image | serves reads of offloaded content and refuses every write at once with `ErrNoSpace`, the second row of [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table, offering and evicting nothing, until an operator says whether this copy is the installation ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). Where the platform offers no machine-generation identifier ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)), the cause is a namespace claim read that carries a nonce this installation did not record ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)): the node binds that namespace's shares `Fenced`, and the engine answers them the same way until the operator's `AcceptCopy` and a rebind as serving |
+| Node started from a copied image | acts per namespace, never node-wide: the node binds the shares of every namespace whose claim answers copy `Fenced` ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), whether the platform reported the copy or the claim's nonce revealed it, and the engine serves their reads of offloaded content and refuses their every write at once with `ErrNoSpace`, the second row of [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table, offering and evicting nothing for them, until the operator's `:accept-copy` and a rebind as serving ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)) |
 
 ### 11.3 The engine surfaces no serialization conflict
 

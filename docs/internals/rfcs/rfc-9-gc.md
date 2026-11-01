@@ -489,18 +489,20 @@ The first partition's holder
 rewrites the claim at its first `Recheck` after `Add`, as at every later one
 ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). It needs no `Start` and opens no flow. It answers by [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s
 rule: **held**, **copy**, **foreign** or **pending**, or an error when it could not read the
-claim, which the node treats as not yet checked. `Claim` writes nothing, ever.
+claim, which the node treats as **unread**, not yet checked. `Claim` writes nothing, ever.
 
 **`AcceptCopy` is the one write that ends a copy's fence**, and it is GC's too.
 The operation runner calls it for an operator's `:accept-copy`
 ([RFC 23 §3.3](rfc-23-control-plane.md#3.3%20Stores%20and%20namespaces)), on one node, with the namespace not in GC. It records the
-claim's nonce as accepted through `RecordNonce`, runs [§3.7](#3.7%20Trash)'s settle through
-`Blocks.Settle`, and reads the claim again, as [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says. `Settle`
-reads the nonce record itself: its last transaction, only while `accepted` is
-still set, records the accepted nonce as written under the current instance
-part and clears `accepted`. Each step is idempotent, so a resumed operation
-repeats it harmlessly. A claim whose nonce has changed by the final read stays a
-copy, since `Claim` compares the claim it reads with the record.
+claim's nonce as accepted through `RecordNonce`, which leaves the record's
+instance part as it is, so `Accepted` alone never makes `Claim` answer held; runs
+[§3.7](#3.7%20Trash)'s settle through `Blocks.Settle`; and ends by running `Claim`, as
+[RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says. `Settle` reads the nonce record itself: its last
+transaction, only while `accepted` is still set, sets the record's instance part
+to the current one, records the accepted nonce as written, and clears `accepted`
+and the intended nonce. Each step is idempotent, so a resumed operation repeats
+it harmlessly, and a resumed final step that finds a `Recheck`'s newer nonce
+still answers held.
 
 **Namespaces come and go while GC runs.** The node adds and removes contexts
 ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)). A namespace whose drain deletes its `NS‖ns` records
@@ -1737,7 +1739,8 @@ reads the `keys` object back and re-puts it under its own key lock when it lags.
 **The claim is read before it is rewritten, and the nonce is recorded before it
 is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
 ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
-nonce this installation recorded as written or intended; on a mismatch it
+nonce this installation recorded as written or intended under its current
+instance part ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)); on a mismatch it
 writes nothing, stops writing the namespace and issues no delete. It **MUST**
 then record the nonce it is about to write as *intended*, through `RecordNonce`, durably in the
 metadata store ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), before the put, and as *written* after it, so a
@@ -2023,7 +2026,7 @@ func (g *GC) AcceptCopy(ctx context.Context, ns NamespaceID, v View) error
 type ClaimState uint8
 
 const (
-	ClaimHeld    ClaimState = iota + 1 // names this installation with a nonce it recorded
+	ClaimHeld    ClaimState = iota + 1 // names this installation with a nonce recorded under its current instance part
 	ClaimCopy                          // names this installation with a nonce not recorded under its current instance part
 	ClaimForeign                       // names another installation, is released, or is missing though this installation wrote it
 	ClaimPending                       // the namespace's create has not yet recorded its first claim written
@@ -2117,8 +2120,8 @@ type NamespaceState struct {
 type NonceRecord struct {
 	Instance [16]byte // the instance part the nonces below were recorded under
 	Intended [16]byte // recorded before a claim put
-	Written  [16]byte // recorded after it; Settle sets it from Accepted
-	Accepted [16]byte // set by AcceptCopy, cleared by Settle; zero when none
+	Written  [16]byte // recorded after it; Settle sets it from Accepted, Instance to the current part, and zeroes Intended
+	Accepted [16]byte // set by AcceptCopy without touching Instance, cleared by Settle; zero when none
 	Claimed  bool     // the namespace's first claim is recorded written
 }
 
