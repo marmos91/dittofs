@@ -216,8 +216,8 @@ func TestADisconnectLeavesTheClientsCallbacks(t *testing.T) {
 			t.Errorf("after %d logoffs the client saw %v, want RecallAny, Revoked and LockWaitOver each %d times", i+1, got, i+1)
 		}
 	}
-	if n := len(s.reg.smb); n != 0 {
-		t.Errorf("a client with no session left keeps %d session sets", n)
+	if n := len(s.reg.smb[id]); n != 0 {
+		t.Errorf("a client with no session left keeps %d sessions", n)
 	}
 	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
 	if n := len(s.reg.cb); n != 0 {
@@ -1021,4 +1021,104 @@ func TestALockGrantStopsAtThePathsEnd(t *testing.T) {
 	if m := len(cb.Calls()); m != n {
 		t.Errorf("the grant was sent %d times more after the client ended", m-n)
 	}
+}
+
+// A break that finds no session to go to waits for one: alice's only
+// session ends, her lease's open kept as durable, and a break raised then is
+// sent to the session she signs in on again within its deadline.
+func TestABreakWithNoSessionGoesToTheNextOneSignedIn(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.RecallGrant(g)
+	none(t, "alice-pc with no session", pc)
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), pc); err != nil {
+		t.Fatal(err)
+	}
+	calls(t, pc, 1)
+	if got := breakSessions(pc); len(got) != 1 || got[0] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went to sessions %v, want alice's new one, 2", got)
+	}
+}
+
+// A break whose send failed is sent again through Callbacks of a type that
+// cannot be compared: its routes are told apart without comparing them.
+func TestAFailedBreakThroughIncomparableCallbacksIsSentAgain(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	rec := &vfstest.RecordingCallbacks{Answer: func(_ context.Context, c vfstest.Callback) error {
+		if c.Args[0] == (vfs.SessionRef{ID: 1}) {
+			return errors.New("session gone")
+		}
+		return nil
+	}}
+	pc := valueCallbacks{RecordingCallbacks: rec}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), pc); err != nil {
+		t.Fatal(err)
+	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	s.RecallGrant(g)
+	calls(t, rec, 1)
+	time.Sleep(20 * time.Millisecond)
+	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	calls(t, rec, 2)
+	if got := breakSessions(rec); len(got) != 2 || got[1] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went to sessions %v, want 1, then 2", got)
+	}
+}
+
+// A lock grant to an SMB client whose every session ended is not sent again
+// meanwhile, and is once a session signs in.
+func TestALockGrantWaitsForASession(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	var answer atomic.Bool
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error {
+		if answer.Load() {
+			return nil
+		}
+		return context.DeadlineExceeded
+	}}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	calls(t, cb, 2)
+	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	n := len(cb.Calls())
+	time.Sleep(50 * time.Millisecond)
+	if m := len(cb.Calls()); m != n {
+		t.Errorf("with no session the grant was sent %d times more", m-n)
+	}
+	answer.Store(true)
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), cb); err != nil {
+		t.Fatal(err)
+	}
+	calls(t, cb, n+1)
 }
