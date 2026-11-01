@@ -1521,7 +1521,7 @@ reclaiming tree connect's `ShareID` is the open's
 > operator workflow is shown to need it, and then per node and labelled as such.
 
 **The NFSv4 pseudo-filesystem is a function of the share list.** The filesystem on
-every node builds it from the share path index, and must build the
+every node builds it from `ShareIndex.List`, and must build the
 same one, because a client moved between nodes presents the handles it already
 holds. A pseudo directory lists only the components that lead to a share the
 caller would be admitted to. Its handles, numeric ids, `fsid`, change attribute

@@ -495,8 +495,11 @@ type ShareGrant struct {
 // otherwise MinProof Secret. None admits what allow_auth_sys admits today —
 // AUTH_SYS and AUTH_NONE callers and guest sessions — so no existing mount
 // breaks, and a share's SMB guest flag is set when today's adapter-wide guest
-// setting is on and the share has allow_auth_sys, the two gates a guest passes
-// today (RFC 22 §5.1); an administrator who wants AUTH_NONE and guests
+// setting is on, the adapter does not require signing and the share has
+// allow_auth_sys, the three gates a guest passes today, and the share's
+// encrypt flag (below) is off: a share that encrypts admits no guest
+// (RFC 22 §5.1), and today's guest got a tree there it could not use. An
+// administrator who wants AUTH_NONE and guests
 // refused raises MinProof to Claimed. min_kerberos_level krb5i → MinProtection Integrity,
 // krb5p → Privacy, krb5 or none → None; on a share whose mapped MinProof admits
 // AUTH_SYS (None or Claimed) it is None whatever the level, because today's
@@ -1100,8 +1103,11 @@ type Principals interface {
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	// A caller of Grant reads S‖id‖gv before the grants it keys a cache entry on.
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, bool, error) // false: no grant names p; a stored none is (none, true)
-	// User is p's user record: the Disabled flag and the deleted mark
-	// resolution refuses, which a Principal lacks. A deleted user is not found.
+	// User is p's user record: the Disabled flag resolution refuses, which a
+	// Principal lacks. A deleted user is not found, which resolution refuses
+	// as it does a disabled one. A well-known principal (anonymous, root;
+	// RFC 18 §2.1) has no user record: resolution does not call User for it,
+	// so neither is ever refused as disabled or deleted.
 	User(ctx context.Context, p Principal) (User, error)
 	// SharePolicy reads what resolution needs of one share in one snapshot, so a
 	// squash, an anonymous principal and the versions a cache keys on never come
