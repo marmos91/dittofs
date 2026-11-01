@@ -281,7 +281,7 @@ create, open, allocate, write at an offset, read, read bypassing the page cache,
 sync, truncate, close, rename, unlink, and sync the directory. A test wraps the
 real files and directory and remembers every write, allocation and truncate
 since its file's last sync and every create, rename and unlink since the last
-directory sync; a simulated crash discards exactly those — a file allocated
+directory sync; a simulated crash decides which of those survive — none, part of one, or any subset ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)) — a file allocated
 and never synced comes back short or unallocated — and reopens the journal on
 the same directory. The seam consults the set's one fault interface
 ([the index's test harness](rfc-index.md#Test%20harness), item 1) before each call, and can fail or delay any one of them,
