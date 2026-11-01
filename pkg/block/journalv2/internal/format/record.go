@@ -221,7 +221,7 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 // at the given segment and offset. An error matching ErrDamaged means the
 // bytes are not a record of this journal: a wrong length, magic or checksum
 // against this identity's seed, reserved bytes that are not zero, a stored own
-// offset that is not a multiple of 8, a field outside the bounds or inside the
+// offset that is not a multiple of 8, a field outside the bounds or breaking the
 // kinds table's zero-field rules, or a header of a kind with no body whose
 // payload slot is not the checksum of no bytes — another journal's record
 // lands here too, indistinguishable from damage, as with a seal marker, which
