@@ -1033,8 +1033,8 @@ open finds its failed slot as above. **A segment recovery ends is emptied before
 Nothing can prove its records synced any more. Left in place, later damage to them would
 read as torn. So, once every unproven tail has been verified in place or re-appended ([§3.1](#3.1%20Rebuilding)),
 recovery empties the segments it ends one at a time, drawing on the repack reserve
-([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). Before the first, it appends the loss record of each record it dropped as corrupt to a
-new segment drawing on the repack reserve and syncs it with the directory; then it retires every attached segment that is not held
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). Before the first, it appends the loss record of each record it dropped as corrupt,
+drawing on the headroom ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and syncs them; then it retires every attached segment that is not held
 ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), never a spare, recycling or unlinking it as [§2.2](#2.2%20Segments) decides at retirement. Each segment it
 retires refills the reserve before the next is emptied. For each segment it empties, it
 re-appends, whole and never merged, keeping their numbers, the records of the segment
