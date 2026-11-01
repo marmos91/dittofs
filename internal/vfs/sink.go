@@ -32,8 +32,11 @@ import (
 // machine's ClientGuid may receive them. They carry no cached data: a
 // revocation tells of state ended already, and a lock wait's end tells only
 // that a range was granted, so the stranger can hold up the machine's lock
-// wait, not read its data. Overturned by routing a lock wait's end by its
-// open, as a break goes.
+// wait, not read its data. A lock wait's end is not routed by its open as a
+// break is, since a callback names no session for the adapter to deliver on:
+// the path is the session, and one picked by open would leave Revoked and
+// RecallAny on the latest anyway. Overturned once a callback carries the
+// session it goes to, or if an SMB lock completion is seen held up this way.
 //
 // ponytail: one goroutine per callback, so two raised for one client may
 // reach it out of order. Queue each client's callbacks in order if an

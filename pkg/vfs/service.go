@@ -32,8 +32,10 @@ type Clients interface {
 	// held by the node that answered it.
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error)
 	// Connect registers info, confirming info.Proposal where set, with cb as its
-	// callback path. Again on another node it moves the path there, refused
-	// StateError ClientInUse for any principal but the client's own.
+	// callback path. Again on another node it moves the path there; for an
+	// NFSv4 client, refused StateError ClientInUse for any principal but the
+	// client's own. An SMB client is connected by each authenticated session,
+	// whatever its principal, as its breaks go by open.
 	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
 	// AddSession records this node's session and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
