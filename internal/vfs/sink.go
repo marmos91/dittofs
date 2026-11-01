@@ -211,13 +211,21 @@ func (r *registry) register(id entity.ClientID, sess entity.SessionRef, p entity
 
 // dropSession drops session sess's path of client id, and the client's
 // latest path when that session registered it, so nothing goes by a
-// session that has ended.
+// session that has ended: another session of the client still connected
+// then holds the latest path.
 func (r *registry) dropSession(id entity.ClientID, sess entity.SessionRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.smb[id], sess)
 	if l, ok := r.byID[id]; ok && l.sess == sess {
 		delete(r.byID, id)
+		for s, p := range r.smb[id] {
+			r.byID[id] = latestPath{s, p.cb}
+			break
+		}
+	}
+	if len(r.smb[id]) == 0 {
+		delete(r.smb, id)
 	}
 }
 

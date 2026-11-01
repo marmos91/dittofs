@@ -185,6 +185,73 @@ func TestADisconnectEndsTheLatestPathItRegistered(t *testing.T) {
 	none(t, "the disconnected session", cb)
 }
 
+// When the session that registered the client's latest path ends, another
+// session of the client still connected takes it: alice and bob share a PC,
+// bob, the latest, logs off, and alice's session receives every callback
+// that goes by the latest path. Her logoff then leaves the client no path.
+func TestADisconnectHandsTheLatestPathToALiveSession(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	alicePC, bobPC := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("shared-pc", 1), alicePC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Connect(ctx, signedIn(bob.Principal, 2), smb("shared-pc", 1), bobPC); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Disconnect(ctx, signedIn(bob.Principal, 2), id, vfs.SessionRef{ID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	s.RecallAny(id, 0)
+	s.Revoked(openstate.Revocation{Client: id, Reason: vfs.RevokedByAdmin})
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, false)
+	got := map[string]bool{}
+	for _, c := range calls(t, alicePC, 3) {
+		got[c.Method] = true
+	}
+	if !got["RecallAny"] || !got["Revoked"] || !got["LockWaitOver"] {
+		t.Errorf("alice's session saw %v, want RecallAny, Revoked and LockWaitOver", alicePC.Calls())
+	}
+	none(t, "bob's ended session", bobPC)
+
+	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
+		t.Errorf("a client with no session left holds %d paths", n)
+	}
+}
+
+// A disconnect of a session that did not register the latest path leaves
+// it: each of five of alice's earlier sessions ends, and the latest still
+// receives the client's callbacks.
+func TestADisconnectKeepsTheLatestPathItDidNotRegister(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	var id vfs.ClientID
+	for sess := range uint64(10) {
+		var err error
+		if id, err = s.Connect(ctx, signedIn(alice.Principal, sess+1), smb("alice-pc", 1), &vfstest.RecordingCallbacks{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest := &vfstest.RecordingCallbacks{}
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 11), smb("alice-pc", 1), latest); err != nil {
+		t.Fatal(err)
+	}
+	for sess := range uint64(5) {
+		if err := s.Disconnect(ctx, signedIn(alice.Principal, sess+1), id, vfs.SessionRef{ID: sess + 1}); err != nil {
+			t.Fatal(err)
+		}
+		s.RecallAny(id, 0)
+		calls(t, latest, int(sess)+1)
+	}
+}
+
 // A destroyed client's path is dropped: a callback raised after goes
 // nowhere.
 func TestADestroyedClientsPathIsDropped(t *testing.T) {
