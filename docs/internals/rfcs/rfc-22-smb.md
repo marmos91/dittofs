@@ -854,6 +854,9 @@ up its cache, and how a reconnect finds its open.
   ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), and the chokepoint
   decides
   ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
+  A `MAXIMUM_ALLOWED` open and the `MxAc` answer pass every right as
+  `Files.Granted`'s `want`, not the client's `DesiredAccess`, so they keep the
+  `DELETE` the parent grants (§11).
   Without it, in a 0775 directory a group member can delete over NFS a file
   she cannot delete or rename from Explorer.
 
@@ -1779,8 +1782,9 @@ step 5). An open asking `MAXIMUM_ALLOWED`
 the `MxAc` create context and `MaximalAccess` are answered from
 `Files.Granted`, through the service's `Access`
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter passes
-the directory the open resolved through, as for `DELETE` at open (§6.1), so the
-`DELETE` granted through the parent is in the answer.
+the directory the open resolved through, as for `DELETE` at open (§6.1), and
+every right as `want`, not the client's `DesiredAccess`, so the `DELETE` granted
+through the parent is in the answer.
 
 **Setting the owner or group** follows
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
