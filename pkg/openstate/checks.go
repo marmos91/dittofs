@@ -207,7 +207,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	smb := who.Protocol == entity.ProtocolSMB
 	var out outbox
 	err = t.step(f.ID, func(e *entry) error {
-		own := func(g *grant) bool { return g.client == who.Client }
+		own := func(g *grant) bool { return g.client == who.Client && (!g.covers() || e.openedBy(g, who.Principal)) }
 		if via != nil {
 			_, k, err := t.findOpen(who, *via)
 			if err != nil {
@@ -216,6 +216,9 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 			o := e.opens[k.token]
 			if o == nil {
 				return ErrBadState
+			}
+			if !t.mayUse(o, who) {
+				return ErrNotYours // an open is used only by its opener
 			}
 			own = func(g *grant) bool { return g.heldBy(who.Client, o.lease, o) }
 		}

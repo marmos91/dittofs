@@ -117,12 +117,13 @@ type OpenRequest struct {
 	Loss          uint64    // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
 	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
-	Lease         LeaseKey  // the key of the lease to cover it; zero: none
-	Parent        LeaseKey  // a v2 lease request's parent key, kept with a new lease for the adapter; zero: none
-	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
-	Want          GrantKind // the grant kind asked for; none: no grant
-	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
-	Reclaim       bool      // the open is one the client held before its shard lost its state
+	Lease         LeaseKey           // the key of the lease to cover it; zero: none
+	Conn          []entity.Principal // SMB: the principals of the other sessions signed in on the open's connection; one among an existing lease's openers lets the caller join it
+	Parent        LeaseKey           // a v2 lease request's parent key, kept with a new lease for the adapter; zero: none
+	Epoch         *uint16            // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
+	Want          GrantKind          // the grant kind asked for; none: no grant
+	SetID         bool               // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
+	Reclaim       bool               // the open is one the client held before its shard lost its state
 
 	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
 	Durable    DurableKeys
@@ -445,6 +446,22 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			t.idx.Unlock()
 			if held && u.file != f.ID {
 				return ErrInvalid // a key names one grant, on one file
+			}
+			// A key travels in clear, and joining makes the caller one of
+			// the lease's openers, whose breaks it may then answer: a caller
+			// whose principal, and every one of Conn, is none of the key's
+			// openers' is granted the open with no grant, under no key.
+			//
+			// decision: the first principal to open under a key owns it, and
+			// a key travels in clear, so another user of the client who
+			// opens first under alice's key keeps her from caching that
+			// file: she is granted her open uncached. It denies caching
+			// only, never data or another's breaks. Bind a key to the
+			// principal that chose it, as an adapter-signed key would, if a
+			// user is seen pre-empting another's keys.
+			if !e.joins(who, r.Lease, r.Conn) {
+				r.Lease, r.Parent, r.Epoch, r.Want = LeaseKey{}, LeaseKey{}, nil, GrantNone
+				o.lease = LeaseKey{}
 			}
 		}
 		// A new open past its client's cap, or whose shard its client's

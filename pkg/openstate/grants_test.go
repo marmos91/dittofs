@@ -1310,3 +1310,141 @@ func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
 		t.Errorf("an anonymous write by the holder: %v, want ErrShareViolation", err)
 	}
 }
+
+// openers is the opens g covers on file, as held now.
+func (f *fixture) openers(t *testing.T, file FileKey, g GrantID) []Open {
+	t.Helper()
+	var os []Open
+	if err := f.step(file.ID, func(e *entry) error {
+		for _, h := range e.opens {
+			if h.Grant == g {
+				os = append(os, h.Open)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return os
+}
+
+// A lease key joins its lease only for a principal among the lease's
+// openers', or one signed in on the caller's connection. Another user's
+// session of the same client presenting the key breaks the lease as another
+// key would, and is granted its open with no grant and under no key. Once the
+// opener's persistent open is disconnected, a break of the lease covers that
+// open alone, so it routes to no session of the other user; the other user's
+// answer to it is ErrNotYours, and a change it makes with no open is not the
+// lease's own.
+func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
+	k := LeaseKey{7}
+	for _, tc := range []struct {
+		name string
+		conn bool
+	}{{"another user", false}, {"another user beside an opener", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			alice := f.caller(t, smbMachine("pc"))
+			bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+			file, _ := f.fileIn(t, "doc")
+			_, g := f.grantOpen(t, alice, file, keep(OpenRequest{Access: rd | wr, Lease: k, Want: rwh}, entity.DurabilityPersistent, s1, time.Minute, 1))
+			if g == nil || g.Kind != rwh {
+				t.Fatalf("alice's lease %+v, want RWH", g)
+			}
+			r := keep(OpenRequest{Access: rd, Lease: k, Want: rwh}, entity.DurabilityNone, s2, 0, 0)
+			if tc.conn {
+				r.Conn = []entity.Principal{entity.NewUser(), alice.Principal}
+			} else {
+				// Not joining, bob's open breaks alice's write caching, as
+				// another key's would, and her answer is her own.
+				if _, err := f.open(bob, file, r); delayedFor(err) != DelayRecall {
+					t.Fatalf("bob's open under alice's key: %v, want ErrDelay(DelayRecall)", err)
+				}
+				rs := f.sink.takeRecalls()
+				if len(rs) != 1 || rs[0].g.ID != g.ID {
+					t.Fatalf("recalls %+v, want alice's lease", rs)
+				}
+				if err := f.ack(alice, g, rs[0].to); err != nil {
+					t.Fatalf("alice's answer: %v", err)
+				}
+			}
+			res, err := f.Opens().Open(ctx, bob, file, r)
+			if err != nil {
+				t.Fatalf("bob's open under alice's key: %v, want it granted", err)
+			}
+			ob, gb := res.Open, res.Grant
+			var who []entity.Principal
+			for _, o := range f.openers(t, file, g.ID) {
+				who = append(who, o.Principal)
+			}
+			held := f.kept().keys[clientKey{alice.Client, k}].opens
+			if tc.conn {
+				if gb == nil || gb.ID != g.ID || ob.Grant != g.ID || len(who) != 2 || held != 2 {
+					t.Fatalf("bob's open beside alice: grant %+v, covered by %v, openers %v, key held by %d; want alice's lease, joined", gb, ob.Grant, who, held)
+				}
+				return
+			}
+			if gb != nil || ob.Grant != (GrantID{}) || !slices.Equal(who, []entity.Principal{alice.Principal}) || held != 1 {
+				t.Fatalf("bob's open: grant %+v, covered by %v, openers %v, key held by %d; want no grant, alice the only opener, the key hers alone", gb, ob.Grant, who, held)
+			}
+			f.disconnect(t, alice, s1)
+			c := f.caller(t, smb("pc-c"))
+			if _, err := f.open(c, file, OpenRequest{Access: rd, Deny: wr}); delayedFor(err) != DelayRecall {
+				t.Fatalf("a conflicting open: %v, want ErrDelay(DelayRecall)", err)
+			}
+			rs := f.sink.takeRecalls()
+			if len(rs) != 1 || rs[0].g.ID != g.ID {
+				t.Fatalf("recalls %+v, want alice's lease", rs)
+			}
+			for _, o := range f.openers(t, file, g.ID) {
+				if o.Session != s1 || o.Principal != alice.Principal {
+					t.Errorf("the lease covers %+v; its break would route past alice's session", o)
+				}
+			}
+			if err := f.ack(bob, g, rs[0].to); !errors.Is(err, ErrNotYours) {
+				t.Errorf("bob's answer to the break: %v, want ErrNotYours", err)
+			}
+			if got := f.grantNow(t, file, g.ID); got.Recall == nil {
+				t.Errorf("bob's answer ended the break: %+v", got)
+			}
+			if err := f.Checks().CheckChange(ctx, bob, file, nil, ChangeRename); delayedFor(err) != DelayRecall {
+				t.Errorf("bob's rename through no open, alice's lease recalling: %v, want ErrDelay(DelayRecall)", err)
+			}
+		})
+	}
+}
+
+// A change through an open is the caller's own only when the caller may use
+// that open: another user of the opener's client naming it is refused, and
+// alice's lease stays as it was.
+func TestChangeThroughAnotherUsersOpen(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	oa, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{7}, Want: rwh})
+	if g == nil || g.Kind != rwh {
+		t.Fatalf("alice's lease %+v, want RWH", g)
+	}
+	if err := f.Checks().CheckChange(ctx, bob, file, ptr(refOf(oa)), ChangeRename); !errors.Is(err, ErrNotYours) {
+		t.Errorf("bob's rename through alice's open: %v, want ErrNotYours", err)
+	}
+	if got := f.grantNow(t, file, g.ID); got.Kind != rwh || got.Recall != nil {
+		t.Errorf("alice's lease after bob's rename: %+v, want RWH, unrecalled", got)
+	}
+}
+
+// A caller refused a lease's key is offered nothing in its place, not even
+// the oplock its request would be offered with no key.
+func TestRefusedLeaseKeyOffersNoOplock(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
+		t.Fatal("alice was offered no lease")
+	}
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g != nil {
+		t.Errorf("bob's open under alice's key: offered %+v, want nothing", g)
+	}
+}

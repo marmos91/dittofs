@@ -156,6 +156,40 @@ func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
 	return true
 }
 
+// joins reports whether who may open e's file under key: no open of who's
+// client holds the key there, or one that does is of who's principal or of
+// one in conn.
+//
+// decision: any principal signed in on an opener's connection joins the
+// lease and may answer its breaks, so on one connection shared by several
+// users, as a terminal server's is, each user's opens share the others'
+// leases; Windows, judging a lease by its client alone, shares more.
+// Withdraw it, judging the caller's principal alone, if such a connection is
+// seen carrying users who must not share caching.
+func (e *entry) joins(who Caller, key LeaseKey, conn []entity.Principal) bool {
+	held := false
+	for _, h := range e.opens {
+		if h.Client != who.Client || h.lease != key {
+			continue
+		}
+		if h.Principal == who.Principal || slices.Contains(conn, h.Principal) {
+			return true
+		}
+		held = true
+	}
+	return !held
+}
+
+// openedBy reports whether p is the principal of one of the opens g covers.
+func (e *entry) openedBy(g *grant, p entity.Principal) bool {
+	for _, h := range e.opens {
+		if h.Grant == g.id && h.Principal == p {
+			return true
+		}
+	}
+	return false
+}
+
 // public is g as a caller sees it, on e's file.
 func (g *grant) public(f entity.FileID) CachingGrant {
 	p := CachingGrant{ID: g.id, Client: g.client, File: f, Kind: g.fsm.Kind, Key: g.key, Epoch: g.fsm.Epoch, V2: g.fsm.V2, Parent: g.parent}
@@ -638,6 +672,9 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		g := e.grants[id.Token]
 		if g == nil {
 			return ErrBadState
+		}
+		if g.covers() && !e.openedBy(g, who.Principal) {
+			return ErrNotYours // a lease or oplock is answered only by its openers
 		}
 		inFlight := g.fsm.Recall != nil
 		if !inFlight && g.covers() {
