@@ -213,16 +213,19 @@ turn `unit` red.
   | RFC 1 §9.2, RFC 28 §4.1 | each bold heading of the list (`Extent shape`, `Lifecycle`, `Capacity and storage`, `Opening`); bullets above the first heading form one row keyed by the section alone | `rfc1 / 9.2 / "Extent shape"`, `rfc28 / 4.1 / -` |
   | RFC 1 §9.7 | each bold item (`syncs per write`, `index cost`, …) | `rfc1 / 9.7 / "syncs per write"` |
   | RFC 1 §9.1 | the `Model-based` row of the table | `rfc1 / 9.1 / "Model-based"` |
-  | RFC 28 §4.4 | each bold kind of damage (`Bit corruption`, `Crashes`), and each row of the edits table by its `Edit` cell | `rfc28 / 4.4 / "Crashes"`, `rfc28 / 4.4 / edit / "a segment deleted"` |
+  | RFC 28 §4.4 | each bold kind of damage (`Bit corruption`, `Crashes`, `Edits from outside`), and each row of the edits table by its `Edit` cell | `rfc28 / 4.4 / "Crashes"`, `rfc28 / 4.4 / edit / "a segment deleted"` |
   | RFC 0 §1.4, RFC 8 §15 | the named rows only: `clock bound`, and `one clock` | `rfc0 / 1.4 / "clock bound"` |
 
-  A whole section is in scope for the first five sources, so a row added to one fails CI
-  until it is mapped. From RFC 0 and RFC 8 only the named rows are, since the rest of those
-  tables is other components' checks; for them the check fails only when a named row
-  disappears.
+  A whole section is in scope for every source but RFC 1 §9.1, RFC 0 and RFC 8, so a row
+  added to one fails CI until it is mapped. From those three only the named rows are, since
+  the rest of those tables is other tiers' or other components' checks; for them the check
+  fails only when a named row disappears.
 - *The map:* `test/journalv2/trace.yaml`. Each row maps to a list of tests, or to
-  `owner: epic N` with a reason, or both when a row is split (D9 shows how).
-- *The check:* `test/journalv2/trace_test.go`, run by `unit`. It parses the rows of the
+  `owner: epic N` with a reason, or both when a row is split (D9 shows how). `owner:` names
+  only an owner outside this epic (§6), or `parked`. A row whose test a subtask of this epic
+  has not written yet carries `pending: 2.x` instead, and that subtask removes it when the
+  test lands, so none is left at S2; a row with tests that is still pending fails the check.
+- *The check:* `test/journalv2/trace_test.go`, run by `lint-repo`. It parses the rows of the
   scope above straight from the RFC files, and the conformance package's test functions
   with `go/parser`. It fails when an in-scope row has no entry, when an entry names a row
   that no longer exists, when a named test does not exist, or when a test of the suite is
@@ -563,7 +566,7 @@ Every conformance subtask also:
     (on the test host's filesystem; the speculative-preallocation leg is parked, §6),
     generation never repeats, stats are cheap (the part the public surface can show:
     `Stats` returns while a write is held at the seam, and its cost is flat from 10³ to
-    10⁵ held extents), named inequalities hold, backlog age, clean bytes count as
+    10⁵ held extents; the rest is epic 8's, §6), named inequalities hold, backlog age, clean bytes count as
     occupancy, metrics are reachable, loss events, segment held-bytes (against a walk of
     `Inspect().All()`), verification reports.
   - **The clock check** (RFC 8 §15's "one clock", the journal's half, through the
@@ -769,7 +772,7 @@ Every conformance subtask also:
   - deleting a row's entry, renaming a mapped test, adding a conformance test with no
     entry, or adding a bullet heading to RFC 1 §9.2 each fails `trace_test.go`.
 - **Rules:**
-  - 1, 10: the check fails on each of the three plants above.
+  - 1, 10: the check fails on each of the four plants above.
   - 6: the map and the known list are kept together: a test leaving `known.yaml` stays in
     `trace.yaml`.
 
@@ -786,7 +789,7 @@ Every conformance subtask also:
 - **Done when:**
   - `dt run journal` is green on `develop`'s CI, with every conformance test graded
     `known`;
-  - `trace_test.go` and the components' tests are green in `unit`;
+  - `trace_test.go` is green in `lint-repo`, and the components' tests in `unit`;
   - the team has approved, and S2 is reached.
 - **Rules:**
   - 6: from S2 on, each implementation epic removes the entries it turns green.
@@ -802,9 +805,10 @@ Every other row in D3's scope lands as a test in this epic (§5). These do not, 
 | --- | --- | --- |
 | RFC 1 B "bounds" | epic 4 | comparison counts per lookup need the index's counters |
 | RFC 1 B "no deadlock", lock-order half | epic 8 | the lock-order recorder is internal to the data path |
+| RFC 1 D "stats are cheap", lock and walk halves | epic 8 | the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing needs a counted hook in the journal; both are internal to the data path, and the public half is 2.5b |
 | RFC 1 C "stranded tag salvaged after serving" | epic 11 | needs the store, a recovery import, `salvage.path` and the master key |
 | RFC 1 D "accounting follows the cap", speculative-preallocation leg | parked | needs a filesystem host nobody provisions (XFS); the leg on the test host's filesystem is here |
-| RFC 28 A "directory flush on NTFS" | epic 3 | real NTFS and a power cut |
+| RFC 28 A "directory flush on NTFS" | parked | epic 3 parks it (its §8): no host has real NTFS and a power cut |
 | RFC 28 C "record layout", "trailer" | epic 3 | golden vectors of the encoders |
 | RFC 28 C "kind values", "segment header and seal marker", "`format` file", encoding halves | epic 3 | golden vectors of the encoders, compared with `raw` (D9) |
 | RFC 1 §9.7 "index cost", "index memory" | epic 4 | the index's comparison counters and its bytes per entry |
@@ -955,7 +959,8 @@ pkg/sim        ──► standard library
 journalv2test  ──► journalv2, internal/core, internal/storage, pkg/sim
 conformance    ──► journalv2, journalv2test, journalv2test/model, journalv2test/raw,
                    pkg/sim (fault rules only; the clock through the fixture, D10)
-test/journalv2 ──► standard library (reads the RFCs and the conformance sources)
+test/journalv2 ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, the RFCs and
+                   the conformance sources)
 ```
 
 ---
