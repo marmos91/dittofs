@@ -1936,7 +1936,8 @@ its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segmen
 ending of a segment without sealing it ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); this rule governs each
 whole: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
-copies them. For the window, the journal **MUST** do one of two things:
+copies them. For the window, the journal **MUST** do one of two things,
+unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)):
 
 - **re-append it.** Append those records again to the new segment and sync it;
   the writes' `Sync` calls wait for the new sync. A re-appended record keeps the
@@ -1947,12 +1948,13 @@ copies them. For the window, the journal **MUST** do one of two things:
   memory, never against the checksum read back with it. The page cache of a
   failed segment is not evidence: a read that does not verify against the kept
   checksum fails that record's part of the window instead. **A header-only
-  record is always re-appended, never failed**: the journal keeps every one of a
+  record is always re-appended, never failed**, outside a read-only journal
+  ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)): the journal keeps every one of a
   window in memory until it is synced, since it is a header and at most a 32-byte
   payload, so a removal, release, offloaded, unmark, loss, hold, unhold, stamp or
-  forget record never becomes a loss. Failing one would have no defined meaning —
-  a failed truncate or release would bring back what it removed — and nothing
-  forces it, because its bytes never depend on the failed segment's pages;
+  forget record never becomes a loss. Failing one here would bring back what
+  it removed, which only a journal that can append nothing has reason to do,
+  and nothing else forces it, because its bytes never depend on the failed segment's pages;
 - **fail it.** Drop exactly the window's records from the index, each as a loss
   event with an unsynced loss record in the new segment naming it by sequence
   number ([§3.8](#3.8%20Loss%20events)). Content those records superseded was kept, because a
@@ -2025,20 +2027,34 @@ written again until it is closed and reopened, and that open's recovery
 > append to.
 
 **The state ends with a reopen, not with an operator.** While read-only, the
-journal tries to make a spare every 30 s, a constant of the implementation;
-once one is made, it
+journal probes every 30 s, a constant of the implementation. A probe first runs
+the checks open makes of the mount and the directory ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), not
+recovery, and only once they pass tries to make a spare, which it keeps as the
+reopen's first. A probe whose checks fail creates nothing, so it leaves nothing
+to unlink on a mount that may still be read-only, and the probes hold at most
+one spare. A device that takes writes again but that open would refuse —
+remounted without cache flushes, say — so stays read-only, with
+`journal_read_only` naming the failed check. Once a spare is made, the journal
 reports the device writable again, and its caller closes and reopens it
 ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), so the state resolves on its own once the cause is removed
 ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A reopen before then would fail at recovery's first write and
-serve nothing, so the caller does not attempt one. The probe also runs the
-checks open makes of the mount and the directory ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), not
-recovery, so a device that takes writes again but that open would refuse —
-remounted without cache flushes, say — stays read-only, with
-`journal_read_only` naming the failed check. A reopen refused anyway by one of
-those checks leaves the journal closed: its shares answer writes, and reads of
-content only it held, retry-later, `journal_read_only` names the refusal, and
-the caller retries the open at the same interval. A reopen refused by recovery
-is any failed open's ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+serve nothing, so the caller does not attempt one. The caller's reopen runs on
+a running engine ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). One refused for any cause but a missing or
+foreign journal — a check failing again, or recovery's I/O on a device that
+failed between probe and open — leaves the journal closed: its shares answer
+writes, and reads of content only it held, retry-later, `journal_read_only`
+names the refusal, and the caller retries the open at the same interval. A
+missing or foreign journal is not this state but a lost journal device
+([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), gated as at start.
+
+> decision: a journal closed by a refused reopen answers retry-later whatever
+> refused it, though a check refusal such as a mount without cache flushes is
+> one only an operator clears and would otherwise be an immediate error. It is
+> reached only by a race, a check that passed at the probe and failed at the
+> open moments later, and `journal_read_only` names the check for the operator
+> who clears it. Overturned if
+> `journal_read_only` shows a journal held closed by a check, which would map
+> the refusal as the entering error is mapped.
 
 > ponytail: read-only is left only by a reopen, and the probe is a fixed 30 s,
 > so a device that fails now and then can cycle through read-only and reopen,
@@ -2793,7 +2809,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | Requirement | Check |
 | --- | --- |
 | [§6](#6.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
-| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only stops the drain | Write and `Sync` A, write B, then from the next sync on fail every call that writes, including write, sync, create, allocate, rename, unlink, truncate and directory sync, with `EROFS` at the seam, reads still served as on a read-only mount, and separately fail a sync and then the first sync in the spare the stream takes. Assert the journal turns read-only, takes no further spare, `WriteAt`, `Release` and B's `Sync` fail at once with `ErrJournalReadOnly`, A still reads back, an offload's `report` succeeds, and `Stats` names the state; assert the loss generation rose once, a truncate in B's window is undone and its `Sync` fails with `ErrJournalReadOnly`, an offloaded extent is not evicted, and a spare is tried every 30 s; clear the faults and assert a spare is made, `Stats` reports it, and after the reopen A is held, the offloaded extent is offered again, and the journal writes again. A journal that answers each `EROFS` with a new segment drains its spares. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only stops the drain | Write and `Sync` A, write B, then from the next sync on fail every call that writes, including write, sync, create, allocate, rename, unlink, truncate and directory sync, with `EROFS` at the seam, reads still served as on a read-only mount, and separately fail a sync and then the first sync in the spare the stream takes. Assert the journal turns read-only, takes no further spare, `WriteAt`, `Release` and B's `Sync` fail at once with `ErrJournalReadOnly`, A still reads back, an offload's `report` succeeds, and `Stats` names the state; assert the loss generation rose once, a truncate in B's window is undone and its `Sync` fails with `ErrJournalReadOnly`, an offloaded extent is not evicted, and a spare is tried every 30 s; clear the faults and assert a spare is made, `Stats` reports it, and after the reopen A is held, the offloaded extent is offered again, and the journal writes again. Separately, with the device writable, make the probe's checks fail as on a mount without cache flushes: assert the journal stays read-only, no spare file is created, and `journal_read_only` names the check. Make a check pass at the probe and fail at the open: assert the journal stays closed, writes and reads of content only it held answer retry-later, `journal_read_only` names the refusal, and the open is retried 30 s later and succeeds once the check passes. A journal that answers each `EROFS` with a new segment drains its spares. |
 | [§6](#6.%20Capacity) reserve ahead | `Reserve` n bytes, then fill the share to its limit from another writer; assert `(*Reservation).WriteAt` within n succeeds while a plain `WriteAt` is refused, a `Reserve` past the limit is refused naming it, and `(*Reservation).Close` returns the unused bytes to `ReservedBytes`. Reserve for 10^4 writes beside a writer holding the index one entry below `ExtentLimit`, and with the headroom below half; assert every reserved write succeeds while a plain one is refused naming the index. Reserve for a 1 GiB copy in 1 MiB writes while other writers append 10 GiB to the same stream, with the spare pool at its target; assert no reserved write is refused, the footer and index entries drawn stay within the reservation, and any `spare` refusal falls on an unreserved write. Restart; assert the reservation is gone. |
 | [§3](#3.%20Interface) handle close | Hold a `WriteAt` in flight through a handle and call `Close`; assert `Close` returns only after the write does, a later call through the handle is refused, and the written extent is still held and readable through a new handle for the same tag. |
 | [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum. |
