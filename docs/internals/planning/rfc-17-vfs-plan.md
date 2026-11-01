@@ -136,10 +136,10 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 | 1 | Contract | §3.0-§3.4, §4.3 | `develop`'s RFCs on `feat/storage-v2`, #3526's edits included (D8) |
 | 2 | Filesystem skeleton | §2.3, §2.5, §5.0 | piece 1; the `Content` contract (plan §4); stage 1 piece 2 (`Table.Start`) |
 | 3 | Shares, admission and principals | §3.1 `Shares`, `Principals`, §4.6, §4.9 | piece 2; the store's read views and export-policy minimums (plan §5 Q3); stage 1 piece 8 (`DropShare`) |
-| 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7 |
+| 4 | Clients and callbacks | §3.1 `Clients`, §3.2 | piece 2; stage 1 pieces 2, 4, 5, 6, 7; open state's read of a grant's openers (`Grants.Openers`) |
 | 5 | Names | §5.4, §5.10 | piece 3; stage 1 pieces 3 (`CheckChange`), 6 (`Renamed`) |
 | 6 | Attributes | §5.5, §5.7 | piece 3; the store's read views (`Streams`); stage 1 pieces 3 (`CheckChange`, `Update`) |
-| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`); #3202 piece 0's follow-up (`RaiseIncarnations`); the store's read view of shares being removed (plan §5 Q3) |
+| 7 | Open, close and release recovery | §2.5, §5.3 | pieces 3, 4, 5; stage 1 pieces 3, 6 (`ServeShard`), 7 (`GraceEnded`); the store's read view of shares being removed (plan §5 Q3) |
 | 8 | Data | §5.1, §5.2, §5.8 | piece 7 |
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
@@ -220,11 +220,17 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    only, refuses an NTLM `Root` while share Y, with the same `Flavors` and NTLM allowed, admits
    it; a write is `ErrReadOnly` for a caller narrowed by `ReadOnly` or by a client rule, and
    `ErrAccess` for one whose grant is `read`.
-4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
-   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the `Sink`'s
-   delivery to it. The `Sink`'s `Closed` and `GraceEnded` stay stubs until piece 7 builds
+4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view; `Connect`,
+   from an authenticated session only for SMB, never a null or guest one, registering the
+   client's callback path, the latest winning; and the `Sink`'s delivery of every callback by
+   that path but an SMB lease or oplock break, which goes by the grant's opens: to a session
+   holding one, else to a session of the client signed in as one of their openers, else nowhere
+   (§3.2 and RFC 14 §2.1 at #3547). Open state gains the read of a grant's opens this needs,
+   with its RFC 14 §11.3 line (D7), and `AckRecall` on a lease or oplock is `NotYours` from any
+   principal but an opener's. `Notify` stays a stub until piece 10 builds `Watch`, and the
+   `Sink`'s `Closed` and `GraceEnded` until piece 7 builds
    release.
-   Done when: V36 passes.
+   Done when: V36 (→8) passes.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change; §8's fuzz targets
    for cursors and names.
@@ -326,7 +332,7 @@ which are the node's, a removal's or a cut's.
    | piece 6 streams | `Files.Streams` (RFC 7) |
    | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
-   | piece 7 `Start`, V17 and V35's restarts | a per-shard grace instance and incarnation, raised by the node's start transaction (RFC 14 §4.4, §11.2); a shard number per share, drawn from `IDS‖shard` at the share's creation (RFC 16 §2.3.1, #3551) |
+   | piece 7 `Start`, V17 and V35's restarts | a shard number per share, drawn from `IDS‖shard` at the share's creation (RFC 16 §2.3.1, #3551); the per-shard incarnation and grace instance are in (`Store.RaiseIncarnations` and `Shard`, #3463), and only the start's call to them is piece 7's (RFC 14 §4.4, §11.2) |
    | piece 7, a removal resumed at start | a read view listing the shares being removed: `Shares` lists by name, and the mark deletes the name row |
 
 4. **Piece 1's open questions** (posted on #3264): RFC 21's stateid type tags; the byte order
