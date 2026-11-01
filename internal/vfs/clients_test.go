@@ -184,6 +184,47 @@ func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 	}
 }
 
+// A session's disconnect leaves the client's Callbacks, as its other
+// sessions and its durable opens outlive the session: alice and bob share a
+// PC, bob, the latest to connect, logs off, then alice, and every callback
+// that names no session still reaches the client, until the client ends.
+func TestADisconnectLeavesTheClientsCallbacks(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("shared-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Connect(ctx, signedIn(bob.Principal, 2), smb("shared-pc", 1), pc); err != nil {
+		t.Fatal(err)
+	}
+	for i, who := range []vfs.Call{signedIn(bob.Principal, 2), signedIn(alice.Principal, 1)} {
+		if err := s.Disconnect(ctx, who, id, who.Session); err != nil {
+			t.Fatal(err)
+		}
+		s.RecallAny(id, 0)
+		s.Revoked(openstate.Revocation{Client: id, Reason: vfs.RevokedByAdmin})
+		s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, false)
+		got := map[string]int{}
+		for _, c := range calls(t, pc, 3*(i+1)) {
+			got[c.Method]++
+		}
+		if got["RecallAny"] != i+1 || got["Revoked"] != i+1 || got["LockWaitOver"] != i+1 {
+			t.Errorf("after %d logoffs the client saw %v, want RecallAny, Revoked and LockWaitOver each %d times", i+1, got, i+1)
+		}
+	}
+	if n := len(s.reg.smb); n != 0 {
+		t.Errorf("a client with no session left keeps %d session sets", n)
+	}
+	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
+	if n := len(s.reg.cb); n != 0 {
+		t.Errorf("an ended client keeps %d Callbacks", n)
+	}
+}
+
 // A destroyed client's path is dropped: a callback raised after goes
 // nowhere.
 func TestADestroyedClientsPathIsDropped(t *testing.T) {
@@ -244,6 +285,40 @@ func TestAnSMBBreakOfDisconnectedOpensGoesOnlyToAnOpenersSession(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got := breakSessions(pc); len(got) != 1 {
 		t.Errorf("with no opener's session left, breaks went to sessions %v, want only the first", got)
+	}
+}
+
+// A break whose send to the session holding the open fails, as that
+// session ended meanwhile, is sent again to the session it goes to next,
+// through the same Callbacks.
+func TestAFailedBreakGoesToTheNextSession(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	pc := &vfstest.RecordingCallbacks{Answer: func(_ context.Context, c vfstest.Callback) error {
+		if c.Args[0] == (vfs.SessionRef{ID: 1}) {
+			return errors.New("session gone")
+		}
+		return nil
+	}}
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), pc); err != nil {
+		t.Fatal(err)
+	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	s.RecallGrant(g)
+	calls(t, pc, 1)
+	if err := s.Disconnect(ctx, signedIn(alice.Principal, 1), id, vfs.SessionRef{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	calls(t, pc, 2)
+	if got := breakSessions(pc); len(got) != 2 || got[0] != (vfs.SessionRef{ID: 1}) || got[1] != (vfs.SessionRef{ID: 2}) {
+		t.Errorf("the break went to sessions %v, want 1, then 2 once 1 ended", got)
 	}
 }
 
