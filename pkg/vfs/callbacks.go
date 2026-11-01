@@ -3,13 +3,16 @@ package vfs
 import "context"
 
 // Callbacks is implemented by each adapter and registered per client at
-// Connect: the service calls up through it and never imports an adapter.
+// Connect, the latest Connect's replacing any earlier: the service calls up
+// through it and never imports an adapter.
 // A callback must not block past its context's deadline, and one that fails
 // or times out is taken as the client not answering: a recall unanswered by
 // its deadline revokes the grant.
 type Callbacks interface {
-	// RecallGrant is an NFS CB_RECALL, or an SMB lease or oplock break.
-	RecallGrant(ctx context.Context, g CachingGrant, to GrantKind) error
+	// RecallGrant is an NFS CB_RECALL on the client's back channel, s zero,
+	// or an SMB lease or oplock break on session s, which the service picked:
+	// the adapter delivers it there and nowhere else.
+	RecallGrant(ctx context.Context, s SessionRef, g CachingGrant, to GrantKind) error
 	// Notify delivers the changes watch w matched.
 	Notify(ctx context.Context, w WatchID, changes []Change) error
 	// Revoked is state ended without the client asking: the adapter answers

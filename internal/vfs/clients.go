@@ -11,7 +11,7 @@ import (
 )
 
 // The Clients area: client records and leases over open state's Clients,
-// Recovery, Locks and Grants views, and the callback paths Connect fills. A call
+// Recovery, Locks and Grants views, and the Callbacks Connect registers. A call
 // here names no share, so its caller is mapped under no share's policy and
 // never squashed: the principal a client record's Owner names.
 //
@@ -67,14 +67,14 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 }
 
 // Connect makes the client current in open state and registers cb as its
-// callback path, replacing any this node held for it: who may connect a
-// client is open state's to refuse, by the principal its record names. An
-// SMB client is connected by each authenticated session, which also
-// registers cb as that session's path, signed in as its caller: its breaks
-// go by those (Sink). A null or guest session, or a call naming no session,
-// never joins an SMB client, and is ErrInvalid. So is a zero info.Recovery:
-// the kind sticks for the record's life, and a client of none is never told
-// of a lost shard, so it holds the shard's grace open for the whole period.
+// Callbacks, replacing any this node held for it: who may connect a client
+// is open state's to refuse, by the principal its record names. An SMB
+// client is connected by each authenticated session, which also records the
+// session, signed in as its caller: its breaks go to those (Sink). A null or
+// guest session, or a call naming no session, never joins an SMB client, and
+// is ErrInvalid. So is a zero info.Recovery: the kind sticks for the record's
+// life, and a client of none is never told of a lost shard, so it holds the
+// shard's grace open for the whole period.
 func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -136,9 +136,9 @@ func (fs *Filesystem) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (v
 	return st, openErr(err)
 }
 
-// Disconnect ends session sess of the client in open state, and its path
+// Disconnect ends session sess of the client in open state, and forgets it
 // here: a break of the opens it held goes to another session signed in as
-// their opener, or nowhere.
+// their opener, or nowhere. The client keeps its Callbacks.
 func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef) error {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -149,7 +149,7 @@ func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	return openErr(fs.clients.Disconnect(ctx, cl, sess))
 }
 
-// Destroy deletes the client in open state, then its callback paths here.
+// Destroy deletes the client in open state, then its Callbacks here.
 func (fs *Filesystem) Destroy(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -226,8 +226,8 @@ func (fs *Filesystem) ReleaseLockOwner(ctx context.Context, c vfs.Call, cl vfs.C
 }
 
 // HostRestarted connects the host under its new NSM state, which ends the
-// client of its old one as a reboot does. It registers no callback path:
-// the host's next call connects with one.
+// client of its old one as a reboot does. It registers no Callbacks:
+// the host's next call connects with them.
 func (fs *Filesystem) HostRestarted(ctx context.Context, c vfs.Call, host []byte, state uint32) error {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {

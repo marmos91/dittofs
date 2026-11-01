@@ -31,11 +31,13 @@ type Clients interface {
 	// Propose is a two-step client's first call; it changes no state and is
 	// held by the node that answered it.
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error)
-	// Connect registers info, confirming info.Proposal where set, with cb as its
-	// callback path. Again on another node it moves the path there; for an
-	// NFSv4 client, refused StateError ClientInUse for any principal but the
-	// client's own. An SMB client is connected by each authenticated session,
-	// whatever its principal, as its breaks go by open.
+	// Connect registers info, confirming info.Proposal where set, with cb as
+	// the client's one Callbacks, the latest Connect's replacing any earlier.
+	// Again on another node it moves them there; for an NFSv4 client, refused
+	// StateError ClientInUse for any principal but the client's own. An SMB
+	// client is connected by each authenticated session, whatever its
+	// principal, which records the session and who signed in on it: a break
+	// names the session it goes to, picked by open.
 	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
 	// AddSession records this node's session and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes

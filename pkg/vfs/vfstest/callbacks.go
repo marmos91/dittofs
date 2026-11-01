@@ -47,8 +47,8 @@ func (r *RecordingCallbacks) record(ctx context.Context, method string, args ...
 	return r.Answer(ctx, c)
 }
 
-func (r *RecordingCallbacks) RecallGrant(ctx context.Context, g vfs.CachingGrant, to vfs.GrantKind) error {
-	return r.record(ctx, "RecallGrant", g, to)
+func (r *RecordingCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, g vfs.CachingGrant, to vfs.GrantKind) error {
+	return r.record(ctx, "RecallGrant", s, g, to)
 }
 
 func (r *RecordingCallbacks) Notify(ctx context.Context, w vfs.WatchID, changes []vfs.Change) error {
