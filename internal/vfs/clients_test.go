@@ -152,14 +152,14 @@ func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	holding, other := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
-	id, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), holding)
+	id, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), other)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
-	if _, err := s.Connect(ctx, signedIn(alice.Principal, 2), smb("alice-pc", 1), other); err != nil {
+	if _, err := s.Connect(ctx, signedIn(alice.Principal, 1), smb("alice-pc", 1), holding); err != nil {
 		t.Fatal(err)
 	}
+	g := leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
 	for range 10 {
 		s.RecallGrant(g)
 	}
