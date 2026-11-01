@@ -507,6 +507,77 @@ func TestAClientsAdapterBytesComeBackFromItsRecord(t *testing.T) {
 	}
 }
 
+// nlmHost is an NLM host's client under NSM state state, its recovery the
+// restart notice.
+func nlmHost(name string, state uint32) vfs.ClientInfo {
+	return vfs.ClientInfo{Protocol: entity.ProtocolNLM, Name: []byte(name), Boot: entity.NSMBoot(state), Recovery: entity.RecoverNotice}
+}
+
+// lockAndUnlock locks and unlocks a range of a fresh file as client cl,
+// leaving it holding nothing.
+func lockAndUnlock(t *testing.T, s *shares, cl vfs.ClientID) {
+	t.Helper()
+	who := openstate.Caller{Client: cl, Protocol: entity.ProtocolNLM}
+	file := openstate.FileKey{Share: s.share, ID: entity.NewFileID()}
+	o := openstate.LockOwner{Client: cl, Name: []byte("pid 1")}
+	r := openstate.ByteRange{Offset: 0, Length: 1}
+	if _, err := s.tab.Locks().Lock(t.Context(), who, file, openstate.LockReq{
+		Owner: o, Open: openstate.OpenRef{Kind: openstate.RefAnonymous}, Ranges: []openstate.LockRange{{ByteRange: r, Exclusive: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.tab.Locks().Unlock(t.Context(), who, file, openstate.OpenRef{Kind: openstate.RefAnonymous}, o, []openstate.ByteRange{r}, openstate.Seqs{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A client's record keeps the recovery kind its adapter picked, and an NLM
+// host's ends once it holds nothing: its next Connect makes a new client,
+// and the old one's path is dropped.
+func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	old := &vfstest.RecordingCallbacks{}
+	id, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := s.Record(ctx, claimed(1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
+		t.Fatalf("the host's record answered recovery %v, %v; want the notice", rec.Recovery, err)
+	}
+	lockAndUnlock(t, s, id)
+	again, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), &vfstest.RecordingCallbacks{})
+	if err != nil || again == id {
+		t.Fatalf("the idle host's next Connect answered %v, %v; want a new client", again, err)
+	}
+	s.RecallAny(id, 0)
+	none(t, "the idle host's ended client", old)
+	if _, ok := s.reg.byID[id]; ok {
+		t.Error("the idle host's ended client keeps its path")
+	}
+}
+
+// A host's restart connects it with the restart notice as its recovery.
+func TestAHostRestartConnectsItWithTheNotice(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	if err := s.HostRestarted(ctx, claimed(1000, inLab), []byte("build01"), 2); err != nil {
+		t.Fatal(err)
+	}
+	info := nlmHost("build01", 2)
+	info.Recovery = 0
+	id, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := s.Record(ctx, claimed(1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
+		t.Errorf("the restarted host's record answered recovery %v, %v; want the notice", rec.Recovery, err)
+	}
+}
+
 // A Connect open state refuses registers no path.
 func TestNoPathWithoutAnAdmittedConnect(t *testing.T) {
 	s := newShares(t, nil, nil)

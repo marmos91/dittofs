@@ -48,7 +48,7 @@ func record(info vfs.ClientInfo, p entity.Principal) openstate.Client {
 	}
 	return openstate.Client{ClientRecord: entity.ClientRecord{
 		Protocol: info.Protocol, Name: info.Name, Boot: info.Boot,
-		Owner: p, Protect: info.Protect, Adapter: info.Adapter,
+		Owner: p, Protect: info.Protect, Adapter: info.Adapter, Recovery: info.Recovery,
 	}}
 }
 
@@ -91,11 +91,15 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return 0, openErr(err)
 	}
+	var host string
 	var sess vfs.SessionRef
-	if smb {
+	switch info.Protocol {
+	case entity.ProtocolSMB:
 		sess = c.Session
+	case entity.ProtocolNLM:
+		host = string(info.Name)
 	}
-	fs.reg.register(id, sess, who.Principal, cb)
+	fs.reg.register(id, host, sess, who.Principal, cb)
 	return id, nil
 }
 
@@ -228,7 +232,7 @@ func (fs *Filesystem) HostRestarted(ctx context.Context, c vfs.Call, host []byte
 		return err
 	}
 	defer done()
-	rec := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNLM, Name: host, Boot: entity.NSMBoot(state)}}
+	rec := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNLM, Name: host, Boot: entity.NSMBoot(state), Recovery: entity.RecoverNotice}}
 	_, err = fs.clients.Connect(ctx, rec, nil)
 	return openErr(err)
 }

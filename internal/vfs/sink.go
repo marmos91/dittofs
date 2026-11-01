@@ -169,11 +169,16 @@ func (fs *Filesystem) latest(c entity.ClientID) func(context.Context) vfs.Callba
 
 // registry is each client's callback paths at this node: the one its latest
 // Connect registered, with the session it came on, and an SMB client's per
-// session, with the principal each session signed in as.
+// session, with the principal each session signed in as; and the client each
+// NLM host last connected as.
+//
+// ponytail: an NLM host's entry stays once its client has ended, one per host
+// ever connected. Drop it with the client's paths if host churn shows it.
 type registry struct {
 	mu   sync.Mutex
 	byID map[entity.ClientID]latestPath
 	smb  map[entity.ClientID]map[entity.SessionRef]session
+	nlm  map[string]entity.ClientID
 }
 
 // latestPath is the path a client's latest Connect registered, and its
@@ -190,15 +195,24 @@ type session struct {
 }
 
 func newRegistry() *registry {
-	return &registry{byID: map[entity.ClientID]latestPath{}, smb: map[entity.ClientID]map[entity.SessionRef]session{}}
+	return &registry{byID: map[entity.ClientID]latestPath{}, smb: map[entity.ClientID]map[entity.SessionRef]session{}, nlm: map[string]entity.ClientID{}}
 }
 
 // register makes cb client id's latest path and, for a non-zero sess, that
 // session's, signed in as p. A reboot's ended ID has already gone, through
-// ClientEnded.
-func (r *registry) register(id entity.ClientID, sess entity.SessionRef, p entity.Principal, cb vfs.Callbacks) {
+// ClientEnded. For a non-empty NLM host, it drops the path of the client the
+// host connected as before when that is another: open state deletes an idle
+// host's record without raising ClientEnded, and the host's next Connect
+// makes a new client.
+func (r *registry) register(id entity.ClientID, host string, sess entity.SessionRef, p entity.Principal, cb vfs.Callbacks) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if old, ok := r.nlm[host]; ok && old != id {
+		delete(r.byID, old)
+	}
+	if host != "" {
+		r.nlm[host] = id
+	}
 	r.byID[id] = latestPath{sess, cb}
 	if sess == (entity.SessionRef{}) {
 		return

@@ -374,7 +374,11 @@ type ClientInfo struct {
 	Protect  bool   // state protection: only the client's owner may act on its state
 	Adapter  []byte // the adapter's own bytes, kept with the record, never read by the service and handed back by Record: NFSv4 keeps there the minor version that confirmed the client
 	Proposal *Proposal
+	Recovery RecoveryKind // how a loss of the client's state reaches it, the adapter's pick: status for NFSv4.1, refusal for NFSv4.0, reconnect for SMB, notice for NLM
 }
+
+// RecoveryKind is how a loss of a client's state reaches it.
+type RecoveryKind = entity.RecoveryKind
 
 // AuthFlavor is a flavour a share admits.
 type AuthFlavor uint8
