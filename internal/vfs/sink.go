@@ -38,8 +38,8 @@ import (
 // reach it out of order. Queue each client's callbacks in order if an
 // adapter is found acting on a revocation before the recall it ends.
 
-// callbackDeadline bounds each callback: the recall deadline, past which a
-// client's answer changes nothing.
+// callbackDeadline bounds each callback: the lease or oplock break deadline,
+// past which a client's answer changes nothing.
 const callbackDeadline = 35 * time.Second
 
 // grantRetry is how long a lock grant the client did not answer waits before
