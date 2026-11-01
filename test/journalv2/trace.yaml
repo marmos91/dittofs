@@ -184,6 +184,8 @@ rfc1 / 9.4 / D / "generation never repeats":
   tests: [TestRFC1D_GenerationNeverRepeats]
 rfc1 / 9.4 / D / "stats are cheap":
   tests: [TestRFC1D_StatsTakeNoWriteLock, TestRFC1D_StatsCostIsFlat]
+  owner: epic 8
+  reason: 'the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing a counted hook in the journal: both are internal to the data path; the public half is the tests'
 rfc1 / 9.4 / D / "named inequalities hold":
   tests: [TestRFC1D_NamedInequalitiesHold]
 rfc1 / 9.4 / D / "backlog age":
@@ -216,8 +218,8 @@ rfc28 / 4.2 / A / "unproven tail verified at open":
 rfc28 / 4.2 / A / "failed directory sync is a failed window":
   pending: 2.13b
 rfc28 / 4.2 / A / "directory flush on NTFS":
-  owner: epic 3
-  reason: 'real NTFS and a power cut'
+  owner: parked
+  reason: 'epic 3 parks it: no host has real NTFS and a power cut'
 rfc28 / 4.2 / A / "a zero slot is not the end":
   pending: 2.13b
 rfc28 / 4.2 / B / "segment reclaimable":
