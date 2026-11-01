@@ -1175,7 +1175,7 @@ walk can produce is omitted.
 | `HeadroomBytes` / `RepackReserveBytes` | gauge | the reserved headroom for records without bytes and the repack reserve, each as allocated now ([§6](#6.%20Capacity)) |
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
-| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header, torn tail or torn slot is never one. A damaged segment that an open then empties and unlinks stays counted until the journal closes, with its row in the per-segment breakdown of [§4.4](#4.4%20Inspection) |
+| `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header, torn tail or torn slot is never one. A damaged segment that an open then empties and unlinks, or retires before emptying, stays counted until the journal closes, with its row in the per-segment breakdown of [§4.4](#4.4%20Inspection) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -1743,7 +1743,7 @@ without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
 state, allocated storage, held bytes, and whether it is damaged (as `DamagedSegments` counts). A damaged
-segment an open emptied and unlinked keeps its row until the journal closes, marked unlinked, with no
+segment an open emptied and unlinked, or retired before emptying, keeps its row under its old id until the journal closes, marked unlinked, with no
 storage and no held bytes. `Stats` ([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
@@ -1925,7 +1925,7 @@ failed sync of a segment, **everything written to that segment since its last
 successful sync is not durable**, the segment takes no further append — not
 even a seal marker: **a failed segment is never sealed while the journal runs** (a seal whose own sync
 failed may leave a durable seal marker and catalog, but no successor names the
-segment, so recovery does not treat it as sealed) — and the stream
+segment, so recovery does not treat it as sealed, though a marker that verifies still proves the records before it synced, [RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
 failed segment stays accounted at its cap to the journal until it is unlinked
 ([§7.3](#7.3%20Accounting)), and is a repack candidate once its window is resolved, not before:
@@ -1938,7 +1938,7 @@ for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3
 and only once repack has carried those records forward. **A failed append ends
 its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole until an
 open ends or seals it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), even if its sync
-fails at open; one whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
+fails at open, unless the open fails for want of a spare; its emptying reads only records synced before this open, whose clean pages the failed sync did not touch. One whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things,
 unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)):
