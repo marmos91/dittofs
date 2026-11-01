@@ -2,8 +2,8 @@
 # the epic that owns it, or to both when the row is split. trace_test.go parses the rows from
 # the RFC files and the tests from the conformance package, and fails on a row with no entry,
 # an entry for a row that is gone, a test that does not exist, or a test in no entry. A test
-# that turns green leaves known.yaml and stays here. "epic 2, 2.x" names the subtask whose
-# test is not written yet: it replaces the owner with the test when it lands.
+# that turns green leaves known.yaml and stays here. "pending: 2.x" names the subtask whose
+# test is not written yet; the subtask removes it when the test lands.
 rfc1 / 9.4 / A / "no zero-fill":
   tests: [TestRFC1A_NoZeroFill]
 rfc1 / 9.4 / A / "write during offload":
@@ -23,74 +23,55 @@ rfc1 / 9.4 / A / "partial release keeps the record whole":
 rfc1 / 9.4 / A / "release frees nothing inside a segment":
   tests: [TestRFC1A_ReleaseFreesNothingInsideSegment]
 rfc1 / 9.4 / A / "repack copies the live part":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "crash mid-repack":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "unlink under read":
   tests: [TestRFC1A_UnlinkUnderRead]
 rfc1 / 9.4 / A / "repack under read":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "removals survive to `Since`":
   tests: [TestRFC1A_RemovalsSurviveToSince]
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "removal during offload":
   tests: [TestRFC1A_RemovalDuringOffload]
 rfc1 / 9.4 / A / "neighbours are frozen":
   tests: [TestRFC1A_NeighboursAreFrozen]
 rfc1 / 9.4 / A / "removal records carried forward":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "copy loses to a newer write":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "loss raises the loss generation":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "a recycled segment keeps its new records":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "failed sync window":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "offered bytes verified":
   tests: [TestRFC1A_OfferedBytesVerified]
 rfc1 / 9.4 / A / "repack verifies the whole source":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "retained extents survive repack":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "removal dropped by version":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "drops decided after the pass's copies":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "carried release keeps its sequence":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "re-append trusts no page cache":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "loss by exact record":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "a synced loss masks what it superseded":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "a failed window is reported once":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "a re-append keeps its numbers":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.4 / A / "no pin on a segment under repack":
   tests: [TestRFC1A_NoPinOnSegmentUnderRepack]
 rfc1 / 9.4 / B / "reservation":
@@ -155,62 +136,44 @@ rfc1 / 9.4 / B / "segment and record accounting":
 rfc1 / 9.4 / B / "pins bounded across offers":
   tests: [TestRFC1B_PinsBoundedAcrossOffers]
 rfc1 / 9.4 / C / "reseed after repack":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "release survives restart":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "release record lost":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "fill beats an older write":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "stale Fill":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "incremental report":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "epoch half is zero":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "monotonicity":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "attached share raises the counter":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "unclaimed tags are the caller's to name":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "a cancelled call changes nothing or completes":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "restamp after a lost store":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "forget leaves nothing to settle":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "unclaimed tag reported":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "a file is its share's":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "stranded tag salvaged after serving":
   owner: epic 11
   reason: 'needs the store, a recovery import, salvage.path and the master key'
 rfc1 / 9.4 / C / "clone target survives a crash":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "header-only records are never failed":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / C / "a loss survives restart":
-  owner: epic 2, 2.11
-  reason: 'test not written yet'
+  pending: 2.11
 rfc1 / 9.4 / D / "wedge is visible":
   tests: [TestRFC1D_WedgeIsVisibleDirty, TestRFC1D_WedgeIsVisibleUnreclaimed]
 rfc1 / 9.4 / D / "accounting follows the cap":
@@ -237,143 +200,107 @@ rfc1 / 9.4 / D / "verification reports":
   tests: [TestRFC1D_VerificationReports]
 
 rfc28 / 4.2 / A / "corrupt, dirty":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "corrupt, offloaded":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "directory entry survives":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "footer is not authoritative":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "unmark clears":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "write carries its mtime":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "unproven tail verified at open":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "failed directory sync is a failed window":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / A / "directory flush on NTFS":
   owner: epic 3
   reason: 'real NTFS and a power cut'
 rfc28 / 4.2 / A / "a zero slot is not the end":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / B / "segment reclaimable":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "rebuild":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "sources agree":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "synced damage is not a torn tail":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "bits survive restart":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "reseed by version":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "trailer torn":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "truncated sealed segment":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "foreign segment":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "version floor":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "stale extent":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "unidentified directory":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "journal gone":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "spares are re-adopted":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "a spare is whole or absent":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "retired segments are recycled":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "a recycled segment's old catalog is never read":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "interrupted `Init`":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "unknown version":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "neighbours survive":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "a scan resynchronises":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "torn tail cut off":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "a bad copy does not mask a good one":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.2 / C / "record layout":
   owner: epic 3
   reason: 'golden vectors of the encoders'
 rfc28 / 4.2 / C / "kind values":
-  owner: epic 3 (encoding half); epic 2, 2.13b (refusal half)
-  reason: 'encoding half: golden vectors of the encoders, compared with raw; refusal half: not written yet'
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+  pending: 2.13b
 rfc28 / 4.2 / C / "segment header and seal marker":
-  owner: epic 3 (encoding half); epic 2, 2.13b (refusal half)
-  reason: 'encoding half: golden vectors of the encoders, compared with raw; refusal half: not written yet'
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+  pending: 2.13b
 rfc28 / 4.2 / C / "`format` file":
-  owner: epic 3 (encoding half); epic 2, 2.13b (refusal half)
-  reason: 'encoding half: golden vectors of the encoders, compared with raw; refusal half: not written yet'
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+  pending: 2.13b
 rfc28 / 4.2 / C / "trailer":
   owner: epic 3
   reason: 'golden vectors of the encoders'
 
 rfc1 / 9.2 / "Extent shape":
-  owner: epic 2, 2.12
-  reason: 'test not written yet'
+  pending: 2.12
 rfc1 / 9.2 / "Lifecycle":
-  owner: epic 2, 2.12
-  reason: 'test not written yet'
+  pending: 2.12
 rfc1 / 9.2 / "Capacity and storage":
-  owner: epic 2, 2.12
-  reason: 'test not written yet'
+  pending: 2.12
 
 rfc28 / 4.1 / -:
-  owner: epic 2, 2.12
-  reason: 'test not written yet'
+  pending: 2.12
 rfc28 / 4.1 / "Opening":
-  owner: epic 2, 2.12
-  reason: 'test not written yet'
+  pending: 2.12
 
 rfc1 / 9.7 / "syncs per write":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.7 / "mixed durability":
-  owner: epic 2, 2.8
-  reason: 'test not written yet'
+  pending: 2.8
 rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'
@@ -388,41 +315,29 @@ rfc1 / 9.7 / "report cost":
   reason: 'needs offload over the index''s counters'
 
 rfc28 / 4.4 / "Bit corruption":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / "Crashes":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / "Edits from outside":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "bytes of a record changed":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "a segment deleted":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "the `format` file removed or changed":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "the whole directory deleted, emptied or replaced":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "a file the journal did not name added":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "a sealed segment truncated":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "a valid segment copied in from another journal":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "the whole directory restored from an old copy":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 rfc28 / 4.4 / edit / "one old segment of this journal restored":
-  owner: epic 2, 2.13b
-  reason: 'test not written yet'
+  pending: 2.13b
 
 rfc1 / 9.1 / "Model-based":
   tests: [TestModel]

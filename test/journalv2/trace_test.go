@@ -26,15 +26,17 @@ type traceEntry struct {
 	Tests  []string `yaml:"tests"`
 	Owner  string   `yaml:"owner"`
 	Reason string   `yaml:"reason"`
+	// Pending names the subtask that writes the row's test, until that test lands.
+	Pending string `yaml:"pending"`
 }
 
 var (
 	link      = regexp.MustCompile(`^\[[^\]]*\]\([^)]*\)\s*`)
 	group     = regexp.MustCompile(`^#+ Group ([A-Z]) `)
-	heading   = regexp.MustCompile(`^\*\*([^*]+)\*\*(:.*)?$`)
+	heading   = regexp.MustCompile(`^\*\*([^*]+?)\.?\*\*([.:]|\s|$)`)
 	boldItem  = regexp.MustCompile(`^- \*\*([^*]+)\*\*`)
-	boldKind  = regexp.MustCompile(`^\*\*([^*]+)\.\*\* `)
-	tableCell = regexp.MustCompile(`^\| ([^|]+) \|`)
+	boldKind  = heading
+	tableCell = regexp.MustCompile(`^\|\s*((?:[^|\\]|\\.)+?)\s*\|`)
 )
 
 // section returns the lines of the section whose heading starts with title, up to the
@@ -75,8 +77,9 @@ func section(t *testing.T, file, title string) []string {
 	return out
 }
 
-// firstCells returns the first cell of every body row of the section's tables, with a
-// leading section link stripped, keyed by the group heading above the table, if any.
+// firstCells returns the first cell of every row of the section's tables but the separator,
+// header included, with a leading section link stripped, keyed by the group heading above the
+// table, if any.
 func firstCells(lines []string) [][2]string {
 	var out [][2]string
 	g := ""
@@ -189,13 +192,16 @@ func suiteTests(t *testing.T) map[string]bool {
 // or an owner, that every entry names a row that exists and tests that exist, and that
 // every test of the suite checks some row.
 func TestTrace(t *testing.T) {
-	raw, err := os.ReadFile("trace.yaml")
+	f, err := os.Open("trace.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = f.Close() }()
 	var trace map[string]traceEntry
-	if err := yaml.Unmarshal(raw, &trace); err != nil {
-		t.Fatal(err)
+	dec := yaml.NewDecoder(f)
+	dec.KnownFields(true)
+	if err := dec.Decode(&trace); err != nil {
+		t.Fatalf("trace.yaml: %v", err)
 	}
 	tests := suiteTests(t)
 
@@ -210,16 +216,25 @@ func TestTrace(t *testing.T) {
 		}
 	}
 
+	keys := make([]string, 0, len(trace))
+	for row := range trace {
+		keys = append(keys, row)
+	}
+	sort.Strings(keys)
 	mapped := map[string]bool{}
-	for row, e := range trace {
+	for _, row := range keys {
+		e := trace[row]
 		if !inScope[row] {
 			t.Errorf("trace.yaml names row %s, which the RFCs no longer have", row)
 		}
-		if len(e.Tests) == 0 && e.Owner == "" {
+		if len(e.Tests) == 0 && e.Owner == "" && e.Pending == "" {
 			t.Errorf("row %s maps to neither a test nor an owner", row)
 		}
 		if e.Owner != "" && e.Reason == "" {
 			t.Errorf("row %s names owner %q without a reason", row, e.Owner)
+		}
+		if e.Pending != "" && len(e.Tests) > 0 {
+			t.Errorf("row %s has tests but is still pending on %s", row, e.Pending)
 		}
 		for _, name := range e.Tests {
 			if !tests[name] {
