@@ -2016,15 +2016,21 @@ written again until it is closed and reopened, and that open's recovery
 - dirty content stays held and served, and offload goes on uploading it, but
   `report` sets offloaded bits in memory only, as below half the headroom ([§6](#6.%20Capacity)),
   so nothing is evicted and a reopen offers those extents again, a redundant
-  upload at worst ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)).
+  upload at worst, which the engine's reseed avoids by marking what offload
+  committed before it offers ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)).
 
 > decision: a read-only journal is the one place a window's header-only records
 > are failed, against §5.3's rule, because nothing can be appended. They are
 > undone rather than kept in memory because the engine syncs a removal before
 > its metadata transaction ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): a failed `Sync` means the removal did
 > not happen, and a removal kept in memory would hide content the metadata
-> still names. Overturned by a journal that keeps a second device it can still
-> append to.
+> still names. The ceiling: the records may still lie whole in the segment whose
+> sync failed, and the reopen's recovery can hold a removal again, which the
+> engine then applies, metadata included, as it applies a removal a crash cut
+> off ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3). So an error from such a `Sync` means the removal
+> did not happen yet, not that it never will; journal and metadata agree either
+> way. Overturned by a journal that keeps a second device it can still append
+> to.
 
 **The state ends with a reopen, not with an operator.** While read-only, the
 journal probes every 30 s, a constant of the implementation. A probe first runs
