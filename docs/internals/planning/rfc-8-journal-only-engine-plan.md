@@ -122,16 +122,16 @@ with stage 2:
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
   `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Opens` is open
   state's two clone calls, as RFC 14 §9.2 names them: `CloneOpen`, which takes over the
-  source record the clone's phase 1 writes and so runs after it, taken just before the
-  clone's last batch, and `CloneClose`, called after that batch (epic 8). `Closed` is open
+  source record the clone's phase 1 writes and so runs after it, taken before
+  `Content.Resume` runs phase 2, and `CloneClose`, called once `Resume` returns (epic 8). `Closed` is open
   state's `Sink.Closed` as a function, `func(entity.FileID, openstate.CloseResult)`: the
   engine hands it what `CloneClose` leaves, an orphan whose release only the service can
   run. The service implements `Sink` already and is built after the engine, so the root
   passes a closure over it. A release's mark stays the service's (epic 5). Each
   interface holds exactly the methods this part calls: `Opens`' `CloneOpen` and `CloneClose`; the journal's `Share`,
   `Forget`, `Strand`, `Stats`, `Draw`, `SetVersionLimit`, `Repack` (`journalv2` declares it
-  on `*Journal`, scoped by its argument), `Close`, and the scope sync and seal of §6 point 8
-  once RFC 1 declares them; the handle's `WriteAt`, `ReadAt`, `Sync`,
+  on `*Journal`, scoped by its argument), `Close`, and §6 point 8's scope sync, seal and
+  per-segment unreclaimed figure once RFC 1 declares them; the handle's `WriteAt`, `ReadAt`, `Sync`,
   `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, `Reserve`, `Close`, `Since`, `Settle`,
   `Files`. `Existence` declares `Clone`, where `kvstore` has it, not on `Content` as RFC 6
   §10.1 does; the RFC follows the code (§6 point 2). `Journal` and `Handle` are
@@ -221,8 +221,9 @@ with a known file.
   `ErrUnavailable`, never zeros or `ErrLost`; a refused write on a full journal answers
   `ErrDelay` with `DelayCapacity` while the sealed segments of the refusal's scope hold
   unreclaimed bytes (journal-wide for the journal's own capacity, so a share with none of its
-  own waits on another share's), and `ErrNoSpace` at once when they hold none, dirty bytes
-  counting as nothing that can be freed, the first write's bytes still read back; two refusals racing for the
+  own waits on another share's), and `ErrNoSpace` when, the scope synced and sealed, its
+  sealed segments still hold none, dirty bytes counting as nothing that can be freed, the
+  first write's bytes still read back; two refusals racing for the
   only unreclaimed segments, the first refusal's repack held mid-pass at the journal's
   storage seam, where the second's repack finds them taken and answers `ErrDelay`, never
   `ErrNoSpace`, and is served once the hold is let go; a share at its limit whose last
@@ -235,7 +236,11 @@ with a known file.
   served after the engine seals that segment, which an engine that never seals fails with an
   endless `ErrDelay`; and a refusal while a failed window is unresolved answers `ErrDelay`,
   and the write is served once the window resolves, which an engine counting only what
-  repack can take now fails with `ErrNoSpace`.
+  repack can take now fails with `ErrNoSpace`. The window is made with the journal's crash
+  seam, as the journal's own failed-window row makes it (a `sim` schedule failing the
+  segment's sync, set by `Seam.SetFault`), and held unresolved by a `FaultAction.Delay` on
+  that seam until the test advances the schedule's clock; T2.3's fault seam injects store
+  faults only.
 - **v1's bug history**: the defects RFC 8 Appendix A listed (setters, assertions, an
   uncovered extent read as zeros, a deallocate writing zeros, a bounded join then a close
   under running loops) are each one of the rows above. #3547 drops the appendix,
@@ -487,16 +492,17 @@ flowchart TD
   epic 4's group commit and epic 5's loop exist.
 - **Where the team converges:** epics 1 and 2 before S2; epic 9 and epic 10 after S3.
 - **Where the tracks wait on each other:** the graph's cross-track edges are E3 to E4, E4
-  to E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, the loss
+  to E6 and E7, E5 to E6, and E5 and E6 to E8. Track B starts epic 4 on the verifier, the loss
   sequence and the split, which need nothing of epic 3, and reaches the group commit once
   epic 3's per-file state lands. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
   engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. T7.1, the
-  refusal mapping on `Write`'s path, fills most of it: it needs epic 3 and the fake journal
-  alone, its version-limit row wired to epic 6's raise once that lands, so track A builds it
-  then and track C keeps the rest of epic 7. T8.1's admission
-  checks, which need no removal, fill the rest.
+  refusal mapping on `Write`'s path, fills most of it: it needs epic 3, T4.6's per-file
+  report and the fake journal, its version-limit row wired to epic 6's raise once that
+  lands, and its last step built against §6 point 8's three calls once RFC 1 names them, so
+  track A builds it then and track C keeps the rest of epic 7. T8.1's admission checks,
+  which need no removal, fill the rest.
 - **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
   and each middle epic extends `enginev2test`'s fake with the journal calls it owns, so no
   track waits on another for a fake.
@@ -566,9 +572,10 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
 - T2.2 The fixture: the engine over the real journal on a temporary directory, `kvstore` on
   an in-memory `kv.KV`, the real open-state table over the same `kv.KV` with `ServeShard`
   called for each bound share's own shard and passed as `Deps.Opens`, `sim.TestClock`, the journal's crash seam,
-  and the journal's profiling harness wired to it, one `prof.Watch` call. T4.7, T5.4, T7.1
-  and T8.3 test over it rather than build a second fixture; those tests sit behind
-  `engine_conformance`, listed in `known.yaml` until the journal calls they need land.
+  and the journal's profiling harness wired to it, one `prof.Watch` call. T4.7, T5.4, T5.5's
+  crash, T6.5, T7.1 and T8.3 test over it rather than build a second fixture; every test over
+  it sits behind `engine_conformance`, listed in `known.yaml` until the journal calls it needs
+  land (rule 6).
 - T2.3 The fault-injecting `kv.KV`: stalls, errors, and a chosen file's failure surfacing as
   its entry in `Existence.Commit`'s `map[FileID]error`, from a `sim.Fault` schedule;
   transaction counts from `kv.Counts`.
@@ -694,7 +701,9 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   commit paths, tested with T4.7's reservation counter.
 - T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
-  fixed backoff, `removal_stalled` after five failed batches.
+  fixed backoff, `removal_stalled` after five failed batches. A clone's `CloneOpen` answered
+  `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
+  the five (T8.3).
 - T5.4 A release's contract with the service: `Delete` answers one of four outcomes. Phase
   1 committed: the service answers `done(true)`. Aborted by a holder: `done(false)` clears
   the mark, and the engine settles the abort, without its removal, and reports it as data
@@ -707,8 +716,11 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
   it. Into an extent a clone registered (T8.1): `ErrDelay`, answered before the journal's
-  `Delete`, so nothing is dropped; the service answers `done(false)`, and the clone's
-  `CloneClose` re-drives the release (T8.3). The routine that settles and reports an abort
+  `Delete`, so nothing is dropped, with the same channel, which yields retry once the clone
+  drops its registration, or stopped when `Close` or `Drop` comes first, the unlink's
+  pending release then running at the next start; the service answers `done(false)` and runs
+  the release again on retry. That branch reads T8.1's registration, so it is built and
+  tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
   racing the last close loses no bytes; an aborted phase 1 leaves the file openable, the
@@ -852,13 +864,20 @@ excluded. Spans: a clone's batches as root spans.
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
   record; the uncarved carry. Until the clone is done, T8.1's registration holds the
   source: its release is a removal into the registered extent, answered `ErrDelay` before
-  the journal's `Delete`, so nothing is dropped; the service answers `done(false)`, and
-  `CloneClose`'s orphan report re-drives the release (T8.3).
-- T8.3 The clone-kind open: phase 2, and just before its last batch,
-  `Deps.Opens.CloneOpen` with the destination and the version `CloneTarget` drew, which
-  takes over the record, or finds the hold `install` made when the shard began; the last
-  batch deletes the record, then `CloneClose`, whose orphan report goes to `Deps.Closed`,
-  so the service runs the source's release. The service takes no open. `CloneOpen`'s
+  the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields retry
+  when the registration drops (T8.3); the service answers `done(false)` and runs the release
+  again then. T5.4's `ErrDelay` branch is built and tested here, where the registration is.
+- T8.3 The clone-kind open and phase 2. Before `Content.Resume`, which runs every batch of
+  phase 2 in one call and whose last batch deletes the record, `Deps.Opens.CloneOpen` with
+  the destination and the version `CloneTarget` drew, which takes over the record, or finds
+  the hold `install` made when the shard began. Once `Resume` returns, `CloneClose`, whose
+  orphan report goes to `Deps.Closed`: an unlink after `CloneOpen` finds the hold in the
+  table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and only that
+  report runs it. Then the registration drops, which yields retry on T5.4's channel to every
+  release it answered `ErrDelay`: an unlink before `CloneOpen` leaves the table no entry,
+  so no orphan, and the service runs that release again. Both paths can meet the
+  registration only before it drops, and both then hold the channel, so neither loses the
+  release. The service takes no open. `CloneOpen`'s
   `FileKey` names the source share's own shard, which `Bind` gave the engine in `Share`
   (§1.3), so a clone in a second share is never answered `DelayFrozen` for a shard the
   fixture does not serve:
@@ -870,23 +889,28 @@ excluded. Spans: a clone's batches as root spans.
   ```
 
   `DelayFrozen`, a shard not begun yet because the removal loop runs from the engine's
-  `Start` and `ServeShard` from the service's, after it, fails the last batch alone, which
-  the loop retries with its backoff; no step of `Start` waits on it. Any other failure of
-  `CloneOpen` is logged and holds nothing: the last batch drops the record in its own
-  transaction, and no `CloneClose` follows. `ErrBadState` from `CloneClose` after the last
-  batch is success, since a restart before `install` drops the hold. Tested over T2.2's
-  fixture: the source unlinked between phase 1 and the last batch keeps its content, the
-  release answered `ErrDelay` with no byte dropped, and once the clone is done
-  `Deps.Closed` gets the orphan and the release runs, the source's bytes then gone; a
-  `CloneOpen` that fails other than `DelayFrozen` leaves phase 2 to finish.
+  `Start` and `ServeShard` from the service's, after it, and `ErrStopped`, the table not
+  started yet, hold phase 2 before `Resume`, which the loop retries with its backoff,
+  counted toward no `removal_stalled` (T5.3); no step of `Start` waits on it. Any other
+  failure of `CloneOpen` is logged and holds nothing: `Resume` runs, its last batch drops
+  the record, and no `CloneClose` follows. `ErrBadState` from `CloneClose` is success, since
+  a restart before `install` drops the hold. Tested over T2.2's fixture: the source unlinked
+  between phase 1 and `CloneOpen`, held there by `DelayFrozen`, keeps its content, the
+  release answered `ErrDelay` with no byte dropped, and runs again once the registration
+  drops, the source's bytes then gone; the source unlinked during `Resume` keeps its
+  content until `Deps.Closed` gets the orphan and the release runs; a `CloneOpen` that fails
+  other than `DelayFrozen` or `ErrStopped` leaves phase 2 to finish.
 - T8.4 The destination held until done; removals of it held; a retry joining a running
   clone; `ErrDelay` at the deadline, success once done.
 - T8.5 `Copy` as 64 MiB bounded clones with a short count, the chunk's `decision:` marker.
 - T8.6 Rebuild at start: the registration from the source's clone-kind open record when
   phase 1 wrote it, otherwise from the journal's clone marker, holding the source until the
-  clone is done; the open is T8.3's, taken before the last batch, so no start step calls
+  clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
   `CloneOpen`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
-  13).
+  13). A source unlinked before the restart is reported by neither of T8.3's paths: the
+  hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
+  it stands and `CloneClose` reports no orphan. Its bytes stay until the next start, the
+  ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
 
 ### Epic 9 — Integration: the filesystem service over the engine
 
@@ -908,8 +932,9 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
 - T9.4 RFC 17's V19, V20 (adapted: `DelayCapacity` while superseded records remain, served
   after repack; dirty bytes freed by offload are the second part's), V22, V25 (adapted: a
   shard handed away and back is the second part's) and V26 (adapted: the shard crossing is
-  the cluster's), registered red and turned green here. V22's copy and clone cases and V26
-  wait on stage 2 piece 11, which needs S3, not all of stage 3. The rows import
+  the cluster's), registered red here. V22's copy and clone cases and V26 wait on stage 2
+  piece 11, which needs S3, not all of stage 3, and is done when they pass, so piece 11
+  turns them green and drops their entries (rule 6); T9.4 turns the rest green. The rows import
   `internal/vfs`, so they live in a package outside `pkg/block/enginev2` (rule 7), which
   T9.4 adds to `engine-conformance`'s `cmd`, behind its tag and listed in its `known.yaml`.
 - T9.5 The composition's observability: the spans `engine.sync` and
@@ -954,12 +979,14 @@ follows the journal's, not this part's (§6 point 7).
    (epic 7, point 8); and RFC 16's own shard per share (T8.3).
    Owed beside them, though #3543 did not settle it: RFC 6 §10.1 puts `Clone` on `Content`,
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
-   §10.1 moves it to `Existence`. Owed too: RFC 8 §2.6 gains `Opens`, open state's
-   `CloneOpen` and `CloneClose`, and `Closed`, for the orphan `CloneClose` leaves; §8.1's
-   "the engine reads and writes no open state" narrows to a release; and §9.1's clone open
-   "entered in the source's open table at its primary at admission" becomes the engine's,
-   taken before the last batch, with the registration holding the source until the clone
-   is done (point 13).
+   §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
+   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); RFC 8 §2.6 gains
+   `Opens`, open state's `CloneOpen` and `CloneClose`, and `Closed`, for the orphan
+   `CloneClose` leaves; §8.1's "the engine reads and writes no open state" narrows to a
+   release; and §9.1's clone open "entered in the source's open table at its primary at
+   admission" becomes the engine's, taken before phase 2, with the registration holding the
+   source until the clone is done and a release it delayed run again when it drops (point
+   13).
 
 **Still open, outside #3543**
 3. **C3 and C10:** a suspended write's `ctime` (RFC 28's) and the request ID's ctx key
@@ -994,21 +1021,24 @@ follows the journal's, not this part's (§6 point 7).
 **For rif's team (stages 1 and 2)**
 9. **Stage 2 pieces 8 and 11.** Piece 8, Data, gates epic 9's data cases. Piece 11, Copy and
    clone, gates T9.4's V22 copy and clone cases and V26, and needs only S3 of stage 3. The
-   RFC 17 plan (#3530) builds piece 11 "after stage 3" and lists "stage 1 piece 8
-   (`CloneOpen`, `CloneClose`)" among its Needs; it should read "after S3", and its Needs
-   should drop the open, since stage 2's clone path calls `Clone` and takes no open (point
-   13). That edit is #3530's.
+   RFC 17 plan (#3530) builds piece 11 "after the engine's S3 (#3546), not all of stage 3",
+   with no open among its Needs, since stage 2's clone path calls `Clone` and takes no open
+   (point 13).
 10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
     so the `Content` check runs over it (T9.2).
-11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests.
+11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests. The same
+    follow-up could lift T8.6's ceiling: `CloneClose` reporting an orphan for a source whose
+    release waits for a start, the upgrade its own `decision:` names.
 12. **A throwaway front end** (a CLI or FUSE) before stage 5's adapters: not planned; the
     integration tier is how the part is used before then.
 13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Opens`, not the
     service's: `CloneOpen` takes over the source record the clone's phase 1 writes, matched
     on the version `CloneTarget` draws, so nothing can call it before phase 1; the engine
-    takes it just before the last batch, and RFC 14 §9.2 has the clone's last batch call
-    `CloneClose`, whose orphan the engine hands the service through `Deps.Closed`. Until the
-    clone is done, the source is held by the registration, not the open. Stage 2's clone path calls `Clone` and
+    takes it before `Content.Resume` runs phase 2, and calls `CloneClose` once `Resume`
+    returns, as RFC 14 §9.2 has it follow the clone's last batch, handing the service its
+    orphan through `Deps.Closed`.
+    Until the clone is done, the source is held by the registration, not the open, and a
+    release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
     takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
     view of it" narrows to releases, and §2.6 gains the member (§6 point 2).
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
