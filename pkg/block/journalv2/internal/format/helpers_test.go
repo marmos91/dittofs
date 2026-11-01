@@ -55,8 +55,9 @@ var testSegmentHeader = SegmentHeader{
 }
 
 // testOffset is the seal marker's own offset in the segment: raw's test
-// value, a byte range no other field's.
-const testOffset int64 = 0x2827262524232221
+// value shifted into the multiple of 8 a record slot's offset is, a byte
+// range no other field's.
+const testOffset int64 = 0x2827262524232220
 
 // testSealMarker is the marker the seal golden holds: it seals testSegment
 // at testOffset, written under testIdentity, so a decode under that

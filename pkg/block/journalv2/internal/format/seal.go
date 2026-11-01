@@ -21,12 +21,12 @@ type SealMarker struct {
 // identity, and returns the result: the magic, the segment, the marker's own
 // offset, and the checksum of the bytes this call appends, never of a
 // caller's prefix. The checksum is seeded with the identity, so the marker
-// verifies only under the journal that wrote it. The offset is a slot's, so
-// it is 0 or more; a negative one is a caller's bug and panics rather than
-// writing a marker its own decoder would refuse.
+// verifies only under the journal that wrote it. The offset is a record
+// slot's, so it is a non-negative multiple of 8; another value is a caller's
+// bug and panics rather than writing a marker its own decoder would refuse.
 func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte {
-	if m.Offset < 0 {
-		panic(fmt.Sprintf("format: seal marker offset %d is below 0", m.Offset))
+	if m.Offset < 0 || m.Offset%8 != 0 {
+		panic(fmt.Sprintf("format: seal marker offset %d is below 0 or not a multiple of 8", m.Offset))
 	}
 
 	start := len(dst)
@@ -43,7 +43,8 @@ func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte 
 // the given segment and offset. An error matching ErrDamaged means the bytes
 // are not a seal marker of this journal: a wrong length, magic or checksum
 // against this identity's seed, reserved bytes that are not zero, or an own
-// offset too large for the int64 a read offset is. An error matching
+// offset that names no record slot — too large for the int64 a read offset
+// is, or off the multiple of 8 a slot starts at. An error matching
 // ErrWrongPlace means the marker verifies but names another segment or
 // another offset than the ones it was read at — it was written somewhere
 // else, so a copy inside a payload never ends a scan — and it comes with the
@@ -90,6 +91,15 @@ func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID,
 	// refusal must go; until then no marker of this format can carry one.
 	if m.Offset < 0 {
 		return SealMarker{}, fmt.Errorf("%w: own offset %d is above MaxInt64", ErrDamaged, uint64(m.Offset))
+	}
+	// A marker sits at a record slot, and a record starts at a multiple of
+	// 8 bytes within its segment, so a stored own offset off that grid
+	// names no slot and is refused here, before the place comparison —
+	// never reported as a marker written somewhere else. The stored offset
+	// is what is judged; the read offset, which a caller could hand over
+	// misaligned, takes no part in the refusal.
+	if m.Offset%8 != 0 {
+		return SealMarker{}, fmt.Errorf("%w: own offset %d is not a multiple of 8", ErrDamaged, m.Offset)
 	}
 	if m.Segment != segment || m.Offset != offset {
 		return m, fmt.Errorf("%w: segment %d, offset %d, want the segment %d and offset %d it was read at", ErrWrongPlace, m.Segment, m.Offset, segment, offset)

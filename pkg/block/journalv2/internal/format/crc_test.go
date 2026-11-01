@@ -65,9 +65,9 @@ func TestSeededCRC32CIsTheCRCOfTheIdentityThenTheBytes(t *testing.T) {
 	}
 
 	// The golden's span seeded with testIdentity, computed by hand, pins
-	// the whole codec: the same bytes unseeded give 0x62df0dba, so a seed
+	// the whole codec: the same bytes unseeded give 0x53aed98a, so a seed
 	// that is dropped or appended after the bytes reads back wrong here.
-	if got, want := crc32cSeeded(identitySeed(testIdentity), covered), uint32(0x0b0bbe8b); got != want {
+	if got, want := crc32cSeeded(identitySeed(testIdentity), covered), uint32(0x3a7a6abb); got != want {
 		t.Errorf("crc32cSeeded(the golden's first 28 bytes) = 0x%08x, want 0x%08x", got, want)
 	}
 	if got, want := crc32cSeeded(identitySeed(testIdentity), covered), crc32c(covered); got == want {

@@ -194,6 +194,19 @@ func FuzzSeal(f *testing.F) {
 	rechecksumSeal(reserved, testIdentity)
 	f.Add(reserved, uint64(testSegment), testOffset)
 
+	// A marker whose own offset is not a multiple of 8 — no record slot
+	// holds one — rechecksummed, read both at its own misaligned offset
+	// and at an aligned one: whichever the caller passes, the stored
+	// offset is what is refused.
+	misaligned := slices.Clone(golden)
+	binary.LittleEndian.PutUint64(misaligned[16:24], 0x2827262524232221)
+	rechecksumSeal(misaligned, testIdentity)
+
+	f.Add(misaligned, uint64(testSegment), testOffset)
+
+	f.Add(misaligned, uint64(testSegment), int64(0x2827262524232221))
+	f.Add(misaligned, uint64(testSegment), testOffset)
+
 	f.Fuzz(func(t *testing.T, in []byte, segment uint64, offset int64) {
 		m, err := DecodeSealMarker(in, testIdentity, core.SegmentID(segment), offset)
 
@@ -206,6 +219,9 @@ func FuzzSeal(f *testing.F) {
 			}
 			if m.Segment != core.SegmentID(segment) || m.Offset != offset {
 				t.Fatalf("decoded %+v, want the segment %d and offset %d it was read at", m, segment, offset)
+			}
+			if m.Offset < 0 || m.Offset%8 != 0 {
+				t.Fatalf("decoded an own offset of %d, want the non-negative multiple of 8 a record slot starts at", m.Offset)
 			}
 			if got := AppendSealMarker(nil, testIdentity, m); !slices.Equal(got, in) {
 				t.Fatalf("AppendSealMarker =\n% x\nwant the input\n% x", got, in)

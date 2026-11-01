@@ -7,7 +7,8 @@ var (
 	// structure of a version this binary reads: a wrong length, magic or
 	// checksum, or a field the structure forbids — reserved bytes that are
 	// not zero, a segment id of zero, a stored offset that tops what a
-	// read offset can hold.
+	// read offset can hold or misses the multiple of 8 a record slot
+	// starts at.
 	ErrDamaged = errors.New("format: damaged")
 
 	// ErrUnknownVersion is matched by a decode error when the structure

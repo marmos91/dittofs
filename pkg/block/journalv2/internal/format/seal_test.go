@@ -192,16 +192,57 @@ func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 	}
 }
 
-// TestAppendSealMarkerPanicsOnANegativeOffset pins that an encoder handed an
-// offset no read could ever pass crashes rather than writing a marker its
-// own decoder refuses: the bound is a programming invariant of the callers,
-// not something the bytes can carry, so it is refused at the call, not
-// encoded onto disk.
-func TestAppendSealMarkerPanicsOnANegativeOffset(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Errorf("AppendSealMarker with a negative offset returned; want a panic")
+// TestDecodeSealMarkerRefusesAMisalignedOwnOffset pins that a marker whose
+// own offset is not a multiple of 8 is refused as damage: the marker sits at
+// a record slot, and a record starts at a multiple of 8 bytes within its
+// segment. The stored offset is what is judged — read at the same misaligned
+// offset or an aligned one, the outcome is the same, never a wrong place.
+func TestDecodeSealMarkerRefusesAMisalignedOwnOffset(t *testing.T) {
+	// The encoder refuses to write a misaligned offset, so the field is
+	// set by hand and rechecksummed: one byte shifted off the golden's
+	// alignment.
+	b := slices.Clone(readGolden(t, "seal"))
+	binary.LittleEndian.PutUint64(b[16:24], 0x2827262524232221)
+	rechecksumSeal(b, testIdentity)
+
+	for _, c := range []struct {
+		name   string
+		offset int64
+	}{
+		{"read at the same misaligned offset", 0x2827262524232221},
+		{"read at an aligned offset", testOffset},
+	} {
+		m, err := DecodeSealMarker(b, testIdentity, testSegment, c.offset)
+		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
+			t.Errorf("%s: DecodeSealMarker = %v, want an error matching ErrDamaged and not ErrWrongPlace", c.name, err)
 		}
-	}()
-	AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: -1})
+		if m != (SealMarker{}) {
+			t.Errorf("%s: decoded %+v on damage, want the zero marker", c.name, m)
+		}
+	}
+}
+
+// TestAppendSealMarkerPanicsOnAnOffsetNoSlotHolds pins that an encoder handed
+// an offset no record slot could hold crashes rather than writing a marker
+// its own decoder refuses: the bound is a programming invariant of the
+// callers, not something the bytes can carry, so it is refused at the call,
+// not encoded onto disk. A slot starts at a multiple of 8 bytes within its
+// segment, and no offset is below 0.
+func TestAppendSealMarkerPanicsOnAnOffsetNoSlotHolds(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		offset int64
+	}{
+		{"below 0", -1},
+		{"not a multiple of 8", 33},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("AppendSealMarker with an offset %s returned; want a panic", c.name)
+				}
+			}()
+			AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: c.offset})
+		}()
+	}
 }
