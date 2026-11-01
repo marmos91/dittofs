@@ -1742,8 +1742,9 @@ bulk — and to verify it against the segments, without mutating the store and
 without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
-state, allocated storage, held bytes, and whether it is damaged (as `DamagedSegments` counts). `Stats`
-([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
+state, allocated storage, held bytes, and whether it is damaged (as `DamagedSegments` counts). A damaged
+segment an open emptied and unlinked keeps its row until the journal closes, marked unlinked, with no
+storage and no held bytes. `Stats` ([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
 that the segments do not support, the records precedence says the index must hold, retain or mark but which it lacks, and the footers ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)) that did not verify. Repair is a
@@ -1922,7 +1923,7 @@ sync can succeed without having written them, and a read of those pages can
 return what the device held before rather than what was written. So after a
 failed sync of a segment, **everything written to that segment since its last
 successful sync is not durable**, the segment takes no further append — not
-even a seal marker: **a failed segment is never sealed** (a seal whose own sync
+even a seal marker: **a failed segment is never sealed while the journal runs** (a seal whose own sync
 failed may leave a durable seal marker and catalog, but no successor names the
 segment, so recovery does not treat it as sealed) — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
@@ -1936,8 +1937,8 @@ elsewhere or failed, so repack carries those forward and unlinks the rest, as
 for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). It is unlinked, never recycled,
 and only once repack has carried those records forward. **A failed append ends
 its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole until an
-open ends or seals it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); one whose sync
-fails at open is a failed one, even if a torn slot ends it too. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
+open ends or seals it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), even if its sync
+fails at open; one whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things,
 unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)):
