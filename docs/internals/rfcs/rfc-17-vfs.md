@@ -1020,7 +1020,10 @@ machine's and hold a session under its record
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
 registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
 and a null or guest session never joins a client, so its opens are offered no
-lease or oplock. The filesystem picks the session for a lease or oplock break:
+lease or oplock. The filesystem picks the session for a lease or oplock break
+from the grant's opens, each with its session and opener, as RFC 14's
+`Grants.Openers` returns them
+([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)):
 one holding one of the grant's opens, each signed in as its opener; when every
 such open is disconnected, only a session of that client signed in as one of
 the openers; and when there is none, none, so the break is sent nowhere and

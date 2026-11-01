@@ -696,7 +696,8 @@ carries many users' sessions at once.
   one of the lease's opens (MS-SMB2 3.3.4.7); if every one is disconnected,
   only to a session of that client signed in as one of the openers; and if
   there is none, nowhere, so the break times out (§6.3). The service names the
-  session, and the adapter sends on that session's connection and nowhere
+  session, found from the lease's opens through `Grants.Openers`
+  ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)), and the adapter sends on that session's connection and nowhere
   else. An acknowledgement is checked against the open's principal, not only
   the `ClientGuid`; one arriving on the connection the break was sent on is
   made as the session the break was sent to, since the sessions of one

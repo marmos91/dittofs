@@ -299,8 +299,9 @@ durable reconnect re-attaches an open only for its opener's principal
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens), MS-SMB2 3.3.5.9.12).
 When every open of the grant is disconnected, the break goes only to a session
 of that client signed in as one of the openers; when there is none, it is sent
-nowhere and runs to its deadline (§5.3). The service picks that session and
-names it to the adapter, which delivers to it and to no other.
+nowhere and runs to its deadline (§5.3). The service picks that session from
+the grant's opens as `Grants.Openers` returns them
+([§11.3](#11.3%20Methods)) and names it to the adapter, which delivers to it and to no other.
 `AckRecall` on a lease or oplock is
 admitted only from a caller whose principal is one of its openers', never on
 the client alone, and is `ErrNotYours` otherwise. A lease is joined the same
@@ -2793,6 +2794,7 @@ type Locks interface {
 
 type Grants interface {
 	AckRecall(ctx, who Caller, g GrantID, to GrantKind) error               // no recall in flight: a delegation's return, else ErrNoRecall (§2.4); to GrantNone: a return; a lease or oplock only from one of its openers' principals, else ErrNotYours (§2.1)
+	Openers(ctx, who Caller, g GrantID) ([]Open, error)                     // the opens g covers, of who's client, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1); a delegation covers none; changes nothing
 }
 
 type Watches interface {
