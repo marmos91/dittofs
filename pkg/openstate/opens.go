@@ -291,9 +291,18 @@ func (t *Table) Opens() Opens { return opens{t} }
 // open is an Open and what the table holds beside it.
 type open struct {
 	Open
-	share   entity.ShareID
-	lease   LeaseKey // the lease key it was opened under; zero: none
-	durable bool     // its record is in the store
+	share entity.ShareID
+	lease LeaseKey // the lease key it was opened under; zero: none
+	// asked is the lease key its create presented, kept where the key was
+	// refused, so a replay of the create is answered.
+	//
+	// ponytail: asked is not written in the open's record, so after a
+	// restart a durable open's reconnect and then a replay of its
+	// refused-key create is answered ErrNotYours. Write it as a record field,
+	// which costs a field in every store's open encoding, if a client is seen
+	// failing such a replay.
+	asked   LeaseKey
+	durable bool // its record is in the store
 	// unlinking: an unlink's records list it, and its commit has yet to run;
 	// a close by the table meanwhile leaves late for the commit to raise.
 	unlinking bool
@@ -413,7 +422,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	r.Owner.Name = slices.Clone(r.Owner.Name)
-	o := &open{share: f.Share, lease: r.Lease, Open: Open{
+	o := &open{share: f.Share, lease: r.Lease, asked: r.Lease, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 		Durability: r.Durability, Session: r.Session, Durable: r.Durable, Channel: Channel{Seq: r.Channel},
@@ -617,7 +626,7 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 		switch {
 		case !r.Replay || o.parked != 0 || o.Session != r.Session:
 			return true, ErrCreateInUse
-		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease:
+		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease && o.asked != r.Lease:
 			return true, ErrNotYours
 		}
 		*res = OpenResult{Open: o.Open, Grant: e.grantOf(o), Replayed: true}

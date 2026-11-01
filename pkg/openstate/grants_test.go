@@ -1331,7 +1331,8 @@ func (f *fixture) openers(t *testing.T, file FileKey, g GrantID) []Open {
 // A lease key joins its lease only for a principal among the lease's
 // openers', or one signed in on the caller's connection. Another user's
 // session of the same client presenting the key breaks the lease as another
-// key would, and is granted its open with no grant and under no key. Once the
+// key would, and is granted its open with no grant and under no key, which a
+// replay of its create answers again. Once the
 // opener's persistent open is disconnected, a break of the lease covers that
 // open alone, so it routes to no session of the other user; the other user's
 // answer to it is ErrNotYours, and a change it makes with no open is not the
@@ -1351,7 +1352,7 @@ func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
 			if g == nil || g.Kind != rwh {
 				t.Fatalf("alice's lease %+v, want RWH", g)
 			}
-			r := keep(OpenRequest{Access: rd, Lease: k, Want: rwh}, entity.DurabilityNone, s2, 0, 0)
+			r := keep(OpenRequest{Access: rd, Lease: k, Want: rwh}, entity.DurabilityNone, s2, 0, 2)
 			if tc.conn {
 				r.Conn = []entity.Principal{entity.NewUser(), alice.Principal}
 			} else {
@@ -1386,6 +1387,10 @@ func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
 			}
 			if gb != nil || ob.Grant != (GrantID{}) || !slices.Equal(who, []entity.Principal{alice.Principal}) || held != 1 {
 				t.Fatalf("bob's open: grant %+v, covered by %v, openers %v, key held by %d; want no grant, alice the only opener, the key hers alone", gb, ob.Grant, who, held)
+			}
+			r.Replay = true
+			if again, err := f.Opens().Open(ctx, bob, file, r); err != nil || !again.Replayed || again.Open.ID != ob.ID || again.Grant != nil {
+				t.Fatalf("a replay of bob's create: %+v, %v; want his open, Replayed, with no grant", again, err)
 			}
 			f.disconnect(t, alice, s1)
 			c := f.caller(t, smb("pc-c"))
