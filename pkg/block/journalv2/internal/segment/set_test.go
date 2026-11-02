@@ -418,7 +418,92 @@ func TestAddRecordOfNoBytesIsRefused(t *testing.T) {
 	}
 }
 
-// TestRecycleRefusals: a failed recycle — the old segment sealed early or
+// TestAddRecordBeyondTheSegmentsSizeIsRefused: a record's bytes sit inside the
+// storage the segment is accounted at, so a record that would take the
+// segment's held bytes past its accounted size charges a share for storage the
+// segment does not have. It is refused, and both the share's total and every
+// counter stay as they were. The record that lands exactly at the size fits:
+// the cap itself is a size, not a bound past it.
+func TestAddRecordBeyondTheSegmentsSizeIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id := core.SegmentID(1)
+	tag := core.ShareTag(2)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, segCap); err != nil {
+		t.Fatalf("AddRecord at the cap: %v", err)
+	}
+	before := s.Counters()
+	if err := s.AddRecord(id, tag, 1); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("AddRecord one byte past the cap: %v, want %v", err, ErrBadSize)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused record changed the counters: %v, want %v", after, before)
+	}
+	if n := s.ShareBytes(tag); n != segCap {
+		t.Fatalf("the refused record moved the share's bytes to %d, want %d", n, segCap)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestShrinkBelowTheRecordsItHoldsIsRefused: a cut that leaves the segment
+// accounted below the record bytes its entries hold charges shares for storage
+// the segment no longer accounts for. Both cuts the format knows — a seal's
+// truncation and a torn-tail cut of an ended segment — run after the segment
+// took its last record, and each leaves the size at or above the record bytes
+// the file keeps, so a size below them is refused before anything moves.
+func TestShrinkBelowTheRecordsItHoldsIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id := core.SegmentID(1)
+	tag := core.ShareTag(2)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 600); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if err := s.End(id); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	before := s.Counters()
+
+	if err := s.Shrink(id, 599); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("a shrink below the held records: %v, want %v", err, ErrBadSize)
+	}
+	if err := s.Shrink(id, 0); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("a shrink to nothing under held records: %v, want %v", err, ErrBadSize)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused shrinks changed the counters: %v, want %v", after, before)
+	}
+	if n := s.ShareBytes(tag); n != 600 {
+		t.Fatalf("the refused shrinks moved the share's bytes to %d, want 600", n)
+	}
+	// The cut that lands exactly on the record bytes is the floor: the file
+	// holds the records and nothing else.
+	if err := s.Shrink(id, 600); err != nil {
+		t.Fatalf("a shrink to the held records: %v, want it accepted as the floor", err)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
 // not sealed at all, or the fresh id already owned — leaves every counter and
 // every map exactly as it was: every refusal is checked before anything
 // changes.

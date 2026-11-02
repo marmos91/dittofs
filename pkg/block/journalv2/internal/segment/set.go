@@ -123,13 +123,20 @@ type Set struct {
 
 // entry is one segment of the set: its state, the size it is accounted at,
 // its claim flag, and the record bytes per share tag it holds. The claim
-// lives here so it leaves with the segment the day it is retired. Its fields
-// are guarded by the mu of the Set that holds it, and only that Set reaches
-// an entry — the capacity lock domain its owner names covers it.
+// lives here so it leaves with the segment the day it is retired. The record
+// bytes and the size are one invariant: what the segment holds never exceeds
+// what it is accounted at, so a record that would break the bound is refused
+// where it is charged, and a cut that would break it is refused where the
+// size is lowered. Its fields are guarded by the mu of the Set that holds it,
+// and only that Set reaches an entry — the capacity lock domain its owner
+// names covers it.
 type entry struct {
 	state   State
 	size    int64
 	claimed bool
+	// held is the total record bytes the entries below hold for every share
+	// together — the running bound against size, not a derived sum.
+	held int64
 	// tags is nil until the first record byte is accounted to the segment.
 	tags map[core.ShareTag]int64
 }
@@ -275,6 +282,15 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	if size <= 0 || size > e.size {
 		return ErrBadSize
 	}
+	// The cut may lower the size only as far as the record bytes the segment
+	// still holds: below them the set would charge shares for storage the
+	// segment no longer accounts for. Both cuts the format knows — a seal's
+	// truncation and the torn-tail cut of an ended segment — run after the
+	// segment took its last record, and each leaves the size at or above
+	// those bytes, so a lower cut is a caller bug.
+	if size < e.held {
+		return ErrBadSize
+	}
 	s.c.UsedBytes -= e.size - size
 	e.size = size
 	return nil
@@ -306,9 +322,17 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
 	if n <= 0 {
 		return ErrBadSize
 	}
+	// The record's bytes sit inside storage the segment already accounts for,
+	// so the running total of its record bytes cannot pass its size: a
+	// record that would take it past charges a share for storage the segment
+	// does not have, and is refused before anything moves.
+	if e.held+n > e.size {
+		return ErrBadSize
+	}
 	if e.tags == nil {
 		e.tags = make(map[core.ShareTag]int64)
 	}
+	e.held += n
 	e.tags[tag] += n
 	s.tags[tag] += n
 	return nil
@@ -473,7 +497,8 @@ func (s *Set) Counters() Counters {
 }
 
 // Check walks the set and reports whether the accounted footprint is the sum
-// of every segment's accounted size plus every spare at the segment cap, and
+// of every segment's accounted size plus every spare at the segment cap,
+// whether each segment's held record bytes fit its accounted size, and
 // whether each maintained count matches what it is counted from. It is the
 // verification of last resort, called by recovery's checks and by tests, not
 // on any write path, and reports a mismatch as an error naming both figures
@@ -487,7 +512,11 @@ func (s *Set) Check() error {
 		segments int64
 		sealed   int64
 	)
-	for _, e := range s.segs {
+	for id, e := range s.segs {
+		if e.held > e.size {
+			return fmt.Errorf("%w: segment %d holds %d record bytes but is accounted at %d",
+				ErrMismatch, uint64(id), e.held, e.size)
+		}
 		sum += e.size
 		segments++
 		if e.state == Sealed {

@@ -72,12 +72,15 @@ func decode(data []byte, segCap int64) []op {
 	return ops
 }
 
-// oracleSeg is what the plain-map oracle knows about one segment: its state
-// and the size it is accounted at. Its record bytes live in the oracle's
-// per-segment segTags.
+// oracleSeg is what the plain-map oracle knows about one segment: its state,
+// the size it is accounted at and the record bytes it holds — the same
+// running bound the ledger's entry keeps, mirrored so a record past the size
+// and a cut below the bytes it holds refuse here too. Its record bytes per
+// share live in the oracle's per-segment segTags, whose sum is held.
 type oracleSeg struct {
 	state State
 	size  int64
+	held  int64
 }
 
 // oracle predicts the ledger's counters and per-tag bytes from plain maps
@@ -112,6 +115,9 @@ func (o *oracle) addTag(id core.SegmentID, tag core.ShareTag, n int64) {
 	}
 	o.segTags[id][tag] += n
 	o.tags[tag] += n
+	seg := o.segs[id]
+	seg.held += n
+	o.segs[id] = seg
 }
 
 // releaseSeg releases the segment's per-tag bytes from the shares' totals.
@@ -183,6 +189,9 @@ func (o *oracle) apply(op op) (err error) {
 		if op.n <= 0 || op.n > seg.size {
 			return ErrBadSize
 		}
+		if op.n < seg.held {
+			return ErrBadSize
+		}
 		seg.size = op.n
 		o.segs[op.id] = seg
 		return nil
@@ -195,6 +204,9 @@ func (o *oracle) apply(op op) (err error) {
 			return ErrWrongState
 		}
 		if op.n <= 0 {
+			return ErrBadSize
+		}
+		if seg.held+op.n > seg.size {
 			return ErrBadSize
 		}
 		o.addTag(op.id, op.tag, op.n)
@@ -375,6 +387,14 @@ var corpus = []seed{
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0), // refused: already sealed
 		op6(opEnd, 1, 0, 0, 4, 0), // refused: a sealed segment is never ended
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+	{"records within the segment's size", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 0, 4, 5),
+		op6(opAddRecord, 1, 0, 0, 1, 0), // the cap itself: refused, it does not fit
+		op6(opSeal, 1, 0, 0, 4, 0),
+		op6(opShrink, 1, 0, 0, 4, 2), // refused: below the bytes the segment holds
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 1},
 }
