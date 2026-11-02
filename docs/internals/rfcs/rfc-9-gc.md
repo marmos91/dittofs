@@ -478,7 +478,7 @@ up to store time, and runs a first `Recheck`. No delete is issued until that
 
 **`Claim` is the start-time claim check, and it is GC's.** The node calls
 `Claim` for a namespace before it adds it to GC or binds a share of it: at every
-start, and when a namespace is new to the node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). Every node
+start, when a namespace is new to the node, and when the claim generation moves ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). Every node
 calls it, and it writes no claim: it reads the namespace's nonce record through
 `Blocks.State`, then the claim through `Remote`, then the record again, and takes
 a nonce found in either read of the record as recorded, so a holder's `Recheck`
@@ -1743,10 +1743,11 @@ is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
 nonce this installation recorded as written or intended under its current
 instance part ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)); on a mismatch it
 writes nothing, issues no delete, and records the mismatch through
-`RecordNonce` (`Mismatch`), which raises the installation's claim generation
-([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)): every node then runs the namespace's `Claim` again, which
-answers copy while `Mismatch` is set, so the node removes the namespace from GC
-and rebinds its shares `Fenced` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). It **MUST**
+`RecordNonce` (`Mismatch`, or, for a claim naming another installation, the
+claim it read), which raises the installation's claim generation
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)): every node, this one included, runs the namespace's
+`Claim` again within one counter read, which answers copy or foreign, so the node
+removes the namespace from GC and rebinds its shares `Fenced` or detaches them ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). It **MUST**
 then record the nonce it is about to write as *intended*, through `RecordNonce`, durably in the
 metadata store ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), before the put, and as *written* after it, so a
 crash between the two still recognises its own nonce. Without the read first, a
@@ -1903,17 +1904,22 @@ The check runs in the transaction that removes the last thing it reads:
 A namespace any of them still names stays as it is until the one that removes
 the last runs the check. A namespace whose `Claim` does not answer held when the
 check passes — pending, foreign or copy — is not in GC, and its remote objects
-are not this installation's to delete: the drain deletes its `NS‖ns` and block
-records in batched transactions and issues no remote delete, then deletes the
-drain mark. An unread namespace waits until `Claim` reads it.
+are not this installation's to delete. The node that removed its last share
+calls GC's `Forget` for it: in batched transactions it deletes the namespace's
+block records and its `NS‖ns` records but its keys, issuing no remote delete;
+then runs step 2's key check below and destroys the keys only when it passes;
+then deletes the drain mark. An unread namespace waits: the node retries its
+`Claim` as for any unread namespace ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5), draining ones
+included.
 
 > decision: a drain of a namespace this installation does not hold forgets it
 > rather than collecting it. A pending namespace put nothing but, at most, its
 > own claim; a foreign or copy namespace's objects belong to whichever
 > installation holds the claim, and deleting them would destroy its data. The
 > cost is objects left behind when the holder is gone for good. Overturned if an
-> operator needs to reclaim them, and then through `:accept-copy` first, which
-> makes the namespace held and its drain an ordinary one.
+> operator needs to reclaim them: a copy's through `:accept-copy` first, which
+> makes the namespace held and its drain an ordinary one; a foreign or pending
+> namespace's have no reclaim path here.
 
 Then, for a held namespace:
 
@@ -2042,6 +2048,11 @@ func (g *GC) Claim(ctx context.Context, ns NamespaceID, v View) (ClaimState, err
 // in GC while it runs.
 func (g *GC) AcceptCopy(ctx context.Context, ns NamespaceID, v View) error
 
+// Forget drains a namespace whose Claim does not answer held (§7.6): records
+// only, keys after step 2's check, no remote delete. The node calls it once the
+// drain mark is written; idempotent, and resumed at restart while the mark exists.
+func (g *GC) Forget(ctx context.Context, ns NamespaceID, v View) error
+
 type ClaimState uint8
 
 const (
@@ -2148,7 +2159,6 @@ type NonceRecord struct {
 // A NonceRecord write that can change a Claim answer — Mismatch, Settle, the
 // first claim's Claimed, an import — raises the installation's claim generation
 // in the same transaction (RFC 16 §4.2). A Recheck's routine rewrite does not.
-}
 
 // Remote is the part of RFC 4 §4.1's Store GC calls; deletes and listing go direct (§3.1).
 type Remote interface {

@@ -303,8 +303,9 @@ this order, each step done before the next:
 A claim read that names this installation's identity but carries a nonce it did
 not record means another process with the same identity is writing it: the
 reader **MUST** stop writing to the namespace, and its GC **MUST** issue no
-further delete, at once, and alert. A running holder that finds it records the
-mismatch, and every node fences the namespace's shares as at start
+further delete at once, and alert. A running holder that finds it records the
+mismatch, and every node, the holder's own included, fences the namespace's
+shares as at start within one counter read, about a second
 ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). Reading before rewriting is what lets the
 original win against a stale image: a disk image restored from yesterday records
 yesterday's nonces, finds the original's newer one at its first start, and stops
@@ -324,11 +325,9 @@ an earlier part's nonce answers copy, and `:accept-copy` applies to it.
 
 **At start every node reads the claim, and none writes it.** GC's `Claim`
 ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) reads it before any share of the namespace attaches, and its
-answer decides them ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5): a claim naming this installation's
-identity, under any instance part, with a nonce recorded under the current one
-is **held**; with any other nonce, a **copy**, whose shares serve reads and
-refuse writes; one naming another installation, or `released`, is **foreign**,
-and its shares are not attached. The
+answer decides them ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5) by the order above: a copy's
+shares serve reads and refuse writes; a foreign, pending or unread namespace's
+are not attached. The
 start's rewrite is the first `Recheck` of the first partition's holder, so one
 process per namespace writes the claim, as at every later period.
 
@@ -354,10 +353,12 @@ nothing and fails, naming the prefix — unless the claim names this installatio
 with the nonce this step recorded as intended under the current instance part,
 which is its own put before a crash: it then records that nonce written and sets
 `claimed`. A nonce recorded under an earlier part fails the step, and the
-namespace answers copy. A create's step that fails because another claim holds
-the prefix undoes the create: one transaction deletes the share and namespace
-records it wrote, which no client reached because nothing attached, and raises
-`ShareList`; the operation fails naming the prefix. Until `claimed` is set `Claim` answers
+namespace answers copy. A first-claim step that finds a claim naming another
+installation, or `released`, undoes its path: one transaction deletes the
+namespace records it wrote and any share it created — a create's or a restore's
+— which no client reached because nothing attached, and raises `ShareList`; a
+re-home's share stays in the namespace it serves from; an import refuses as
+§2.2 says. The operation fails naming the prefix. Until `claimed` is set `Claim` answers
 **pending**, and no share of the namespace attaches. Once `claimed` is set, a missing claim is **foreign**: something
 deleted it, and the namespace is not new.
 

@@ -538,16 +538,18 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 
    Every answer but held raises the health condition `namespace_unclaimed`
    ([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)), naming the namespace and the answer. The node runs
-   `Claim` again for every namespace it serves or holds unattached when the
-   installation's **claim generation** moves — an `:accept-copy`'s settle, a
-   create's claim step, an import and a `Recheck` that found a mismatch each
+   `Claim` again for every namespace it serves, holds unattached or is draining
+   when the installation's **claim generation** moves — an `:accept-copy`'s
+   settle, a first claim (a create, re-home, restore or import) and a `Recheck`
+   that found a mismatch each
    raise it ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) — reading it with the other counters once a
    second (§2.3); an unread namespace it retries at that read, backing off to
    once a minute. Once it answers held, the node attaches the namespace's
    unattached shares, rebinds its `Fenced` ones to the state their share record
    holds, `Serving` or quiesced, through the engine's `Bind`
    ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), and adds the namespace to GC. A namespace that answered
-   held and now answers copy is removed from GC, and its shares rebind `Fenced`.
+   held and now answers anything else is removed from GC: on copy its shares
+   rebind `Fenced`, on any other answer they detach.
 
    > ponytail: a moved claim generation reruns `Claim` for every namespace the
    > node has, one remote read each. It moves only on a create, an import, an
@@ -834,7 +836,7 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). The operation reports the nodes still holding the
   old version, and succeeds only when the old version is gone;
 - a remote store is deleted only when no namespace names it; a namespace only
-  when no share names it, after which GC drains it ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
+  when no share names it, after which GC drains it — collecting a held namespace, forgetting any other ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
   namespace's status shows the drain.
 
 **Accepting a copy is an action on a namespace**, `POST /namespaces/{id}:accept-copy`,
@@ -1238,7 +1240,7 @@ status, and a test proves it total (§12):
 | `401` | no valid token |
 | `403` | the role does not permit the call; a token that may only change its password |
 | `404` | no such resource, or one the caller may not know exists |
-| `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin |
+| `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin, a namespace that is not a copy |
 | `412`, `428` | §4.4 and §4.5 |
 | `422` | an idempotency key reused with another request |
 | `429` | sign-in throttled (§5.3) |

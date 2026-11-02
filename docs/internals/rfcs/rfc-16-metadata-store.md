@@ -394,7 +394,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -742,6 +742,7 @@ type NodeStatus struct {
 	Settings       uint64 // CFGGEN reconciled through
 	ShareList      uint64 // SL reconciled through
 	Principals     uint64 // PGEN reconciled through
+	Claims         uint64 // CGEN reconciled through
 	Refused        []RefusedRecord // each with the generation and the error
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
@@ -974,7 +975,8 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    and this step runs it: when nothing that gate reads still names the
    namespace, it is drained. The check reads each of them with tracking and
    writes the drain mark in step 6's last transaction. The drain then runs
-   RFC 9 §7.6, steps 1–3, as written there.
+   RFC 9 §7.6 as written there: steps 1–3 for a namespace this installation
+   holds, `Forget` for any other.
 
 > decision: removal frees the name at once and the space later. A client sees the share
 > gone at the first commit. The bytes stay in the bucket until GC has deleted
@@ -1594,6 +1596,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
+| | `CGEN` | ClaimGeneration: one installation-wide counter, raised by every `NS‖ns‖claim` write that can change a namespace's `Claim` answer; every node reads it once a second with `SL` and `PGEN` and reruns `Claim` when it moves ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5) |
 | | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the restart-notice number, one per installation; raised durably before the grace of any failover that lost locks of clients that recover by notice, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
@@ -2176,9 +2179,10 @@ interface, and adds a lost commit reply as its own setting ([the index's test ha
   reads as it did, and deleting the last one leaves no key carrying the
   `ShareID`; with the default disposition on a share with snapshots, and with
   `delete` while a backup holds one, it is refused and changes nothing;
-- a namespace drained after its last share's removal (RFC 9 §7.6): every block
-  is deleted, then its keys destroyed, then its records gone; a share creation
-  into it while draining is refused.
+- a namespace drained after its last share's removal (RFC 9 §7.6): when held,
+  every block is deleted, then its keys destroyed, then its records gone; when
+  foreign, copy or pending, its records are gone and no remote object is
+  deleted; a share creation into it while draining is refused.
 
 ## 7. Benchmarks and profiling
 
