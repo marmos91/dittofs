@@ -171,6 +171,9 @@ func TestRFC28A_DirectoryEntrySurvives(t *testing.T) {
 // read is taken as one that waited, and either outcome the row allows for
 // that case is accepted, so the read can let a journal pass a case it would
 // have failed only by being slower than the test, never fail a correct one.
+// The read comes right after the Sync is started, so it almost never sees
+// it returned, and the fifth write's branch rarely runs: the check covers
+// the case of a Sync that waited far more often than the other.
 //
 // decision: that the seal waits is read from the segment's live bytes while
 // the append is held, so a seal that runs late is caught only if it still
@@ -194,7 +197,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		middle <- err
 	}()
 
-	<-held.Reached()
+	waitAtHold(t, parked{held: held, done: middle}, "the middle write")
 	third := pattern(fmtTag("z", 0, 3, 0), size)
 	_, err := tryWrite(t, h, journalv2test.File(3), 0, third)
 	if err != nil {
@@ -229,9 +232,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		}
 	}
 
-	if err := f.Seam.Schedule(journalv2test.Failing(journalv2test.OpWrite, name, 1, syscall.EIO)); err != nil {
-		t.Fatalf("fail the middle write: %v", err)
-	}
+	f.FailNext(journalv2test.OpWrite, name, 1)
 	held.Release()
 
 	err = <-middle
@@ -323,7 +324,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		appended <- err
 	}()
 
-	<-append1.Reached()
+	waitAtHold(t, parked{held: append1, done: appended}, "the held append")
 
 	// The rolling write's piece in the held segment, if it has one, parks at
 	// a hold of its own, so the failure below falls on the held append.
@@ -339,9 +340,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		t.Fatalf("segment %d carries a seal marker while an append into it is in flight", seg)
 	}
 
-	if err := k.Seam.Schedule(journalv2test.Failing(journalv2test.OpWrite, segName, 1, syscall.EIO)); err != nil {
-		t.Fatalf("fail the held append: %v", err)
-	}
+	k.FailNext(journalv2test.OpWrite, segName, 1)
 	append1.Release()
 
 	err = <-appended
