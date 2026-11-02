@@ -252,11 +252,16 @@ func newRegistry() *registry {
 // ClientEnded. For a non-empty NLM host, it drops the path of the client the
 // host connected as before when that is another: open state deletes an idle
 // host's record without raising ClientEnded, and the host's next Connect
-// makes a new client.
+// makes a new client. It registers nothing for a host already connected as
+// a newer client: IDs only grow, so id is one open state has deleted, and a
+// Connect that got it registering late must not displace the live one.
 func (r *registry) register(id entity.ClientID, host string, sess entity.SessionRef, p entity.Principal, cb vfs.Callbacks) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.nlm[host]; ok && old != id {
+		if old > id {
+			return
+		}
 		delete(r.byID, old)
 	}
 	if host != "" {

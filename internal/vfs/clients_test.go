@@ -648,6 +648,19 @@ func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 	}
 }
 
+// Two Connects of one NLM host registering out of order leave the newer
+// client's path: the one that got the idle-dropped client's ID registers
+// nothing over it.
+func TestAnNLMHostsLateRegisterKeepsItsNewerClient(t *testing.T) {
+	r := newRegistry()
+	live, stale := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
+	r.register(2, "build01", entity.SessionRef{}, entity.Principal{}, live)
+	r.register(1, "build01", entity.SessionRef{}, entity.Principal{}, stale)
+	if r.latest(2) != live || r.nlm["build01"] != 2 {
+		t.Errorf("after a late register of the dropped client, the host maps to %v and its new client's path is %v", r.nlm["build01"], r.latest(2))
+	}
+}
+
 // A host's restart connects it with the restart notice as its recovery.
 func TestAHostRestartConnectsItWithTheNotice(t *testing.T) {
 	s := newShares(t, nil, nil)
