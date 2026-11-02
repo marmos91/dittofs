@@ -121,10 +121,13 @@ func (o *oracle) addTag(id core.SegmentID, tag core.ShareTag, n int64) {
 }
 
 // releaseSeg releases the segment's per-tag bytes from the shares' totals.
+// The bytes the entries name are non-negative by construction, so a total
+// that does not reach exactly zero is a divergence the fuzz reports at the
+// comparison, not one this delete hides.
 func (o *oracle) releaseSeg(id core.SegmentID) {
 	for tag, n := range o.segTags[id] {
 		o.tags[tag] -= n
-		if o.tags[tag] <= 0 {
+		if o.tags[tag] == 0 {
 			delete(o.tags, tag)
 		}
 	}

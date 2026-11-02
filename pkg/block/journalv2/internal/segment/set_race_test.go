@@ -120,8 +120,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		if c2.Segments != 0 {
 			t.Fatalf("round %d, retire against recycle: the set still holds %d segments, want the one id gone whichever call took it", round, c2.Segments)
 		}
-		switch recycleWon := recycled.Load() == 1; {
-		case !recycleWon && c2.UsedBytes != 0 || recycleWon && c2.UsedBytes != segCap:
+		if recycleWon := recycled.Load() == 1; !recycleWon && c2.UsedBytes != 0 || recycleWon && c2.UsedBytes != segCap {
 			t.Fatalf("round %d, retire against recycle: the recycle won %v, but the footprint is %d with %d spares", round, recycleWon, c2.UsedBytes, c2.Spares)
 		}
 		if recycled.Load() == 1 && c2.Spares != 1 {

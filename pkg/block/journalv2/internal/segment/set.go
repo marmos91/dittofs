@@ -364,6 +364,17 @@ func (s *Set) Claim(id core.SegmentID) bool {
 
 // Release clears a claim. Releasing what is not claimed, or a segment already
 // retired — whose claim left with it — changes nothing.
+//
+// decision: releasing a retired id reaches nothing and clears nothing, so the
+// claim of a retired segment cannot be erased by a late release — and the
+// same holds for the fresh id a recycle minted, because ids are never reused
+// under a live set: a segment's id starts at 1 and ascends (RFC 1 R9), and
+// every recycle mints a fresh id beyond every id the set has ever held
+// (RFC 1 R16). A reused id could make this release land on the new segment
+// that owns it, so the holder's own claim checks — which read the flag and
+// the state together — are the ceiling that holds until then. Withdrawn if
+// ids ever become reusable, in which case the claim must carry the id of the
+// retired segment rather than reaching by it.
 func (s *Set) Release(id core.SegmentID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -527,10 +538,13 @@ func (s *Set) Check() error {
 		sum += s.cap
 	}
 
-	// Every share's total is the sum of the bytes its segments' entries
-	// hold for it, so a release that dropped or doubled one is a broken
-	// ledger the check reports here — a zeroed share has no entry to sum,
-	// which is why the walk keeps the shares' bytes and not the entries'.
+	// Every share's total is the sum of the bytes its segments' entries hold
+	// for it: the walk sums each entry's own tags into a fresh map and
+	// compares, so a release that dropped or doubled one — or a charge that
+	// reached a share's total without its segment's entry — is a broken
+	// ledger the check reports here. A share that reaches zero leaves the
+	// ledger's map, so it also holds no entry to sum: the two maps agree in
+	// length first, then byte for byte.
 	held := make(map[core.ShareTag]int64)
 	for _, e := range s.segs {
 		for tag, n := range e.tags {

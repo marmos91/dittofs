@@ -881,6 +881,12 @@ func TestShrinkRefusesAnActiveSegment(t *testing.T) {
 	if err := s.Take(id); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
+	// The segment holds record bytes the refused shrinks must leave alone:
+	// an assertion against an empty share pins nothing.
+	tag := core.ShareTag(1)
+	if err := s.AddRecord(id, tag, 64); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
 	before := s.Counters()
 
 	if err := s.Shrink(id, half(segCap)); !errors.Is(err, ErrWrongState) {
@@ -892,8 +898,8 @@ func TestShrinkRefusesAnActiveSegment(t *testing.T) {
 	if after := s.Counters(); after != before {
 		t.Fatalf("the refused shrinks changed the counters: %v, want %v", after, before)
 	}
-	if n := s.ShareBytes(1); n > 0 {
-		t.Fatalf("the refused shrinks released record bytes: %d", n)
+	if n := s.ShareBytes(tag); n != 64 {
+		t.Fatalf("the refused shrinks moved the held records to %d, want the 64 charged", n)
 	}
 	if err := s.Check(); err != nil {
 		t.Fatalf("%v", err)
