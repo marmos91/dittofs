@@ -32,7 +32,7 @@ func (f *fixture) connect(t *testing.T, c Client) entity.ClientID {
 	if err != nil {
 		t.Fatalf("Propose: %v", err)
 	}
-	id, err := f.Connect(ctx, c, &p)
+	id, _, err := f.Connect(ctx, c, &p)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestClientFoundByName(t *testing.T) {
 	if _, err := f.Propose(ctx, nfs("host-a", 1, bob), addr); !errors.Is(err, ErrClientInUse) {
 		t.Errorf("a proposal from another principal: %v, want ErrClientInUse", err)
 	}
-	if _, err := f.Connect(ctx, nfs("host-a", 1, bob), nil); !errors.Is(err, ErrClientInUse) {
+	if _, _, err := f.Connect(ctx, nfs("host-a", 1, bob), nil); !errors.Is(err, ErrClientInUse) {
 		t.Errorf("a one-step connect from another principal: %v, want ErrClientInUse", err)
 	}
 	if rec, err := f.Record(ctx, id); err != nil || rec.Pending != nil {
@@ -141,7 +141,7 @@ func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 		t.Errorf("the old ID's state after a proposal: %v", err)
 	}
 
-	if _, err := f.Connect(ctx, nfs("host-a", 2, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
+	if _, _, err := f.Connect(ctx, nfs("host-a", 2, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
 		t.Errorf("confirm from another principal: %v, want ErrClientInUse", err)
 	}
 	if rec, err := f.Record(ctx, id); err != nil || rec.Pending == nil {
@@ -155,12 +155,12 @@ func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 		{"another client ID", reboot, Proposal{Client: p.Client + 1, Confirm: p.Confirm}},
 		{"another confirm", reboot, Proposal{Client: p.Client, Confirm: [8]byte{^p.Confirm[0]}}},
 	} {
-		if _, err := f.Connect(ctx, tc.c, &tc.p); !errors.Is(err, ErrStaleClient) {
+		if _, _, err := f.Connect(ctx, tc.c, &tc.p); !errors.Is(err, ErrStaleClient) {
 			t.Errorf("confirm with %s: %v, want ErrStaleClient", tc.name, err)
 		}
 	}
 	f.clock.advance(leasePeriod)
-	if _, err := f.Connect(ctx, reboot, &p); !errors.Is(err, ErrStaleClient) {
+	if _, _, err := f.Connect(ctx, reboot, &p); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("confirm a lease period after the proposal: %v, want ErrStaleClient", err)
 	}
 }
@@ -182,7 +182,7 @@ func TestConfirmAfterExpiryIsStale(t *testing.T) {
 		},
 		"rebooted in one step": func(t *testing.T, f *fixture, c Client, _ entity.ClientID) {
 			c.Boot = [8]byte{2}
-			if _, err := f.Connect(ctx, c, nil); err != nil {
+			if _, _, err := f.Connect(ctx, c, nil); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -197,7 +197,7 @@ func TestConfirmAfterExpiryIsStale(t *testing.T) {
 				t.Fatalf("a proposal under the same Boot: %d, %v; want %d", p.Client, err, id)
 			}
 			end(t, f, c, id)
-			if got, err := f.Connect(ctx, c, &p); !errors.Is(err, ErrStaleClient) {
+			if got, _, err := f.Connect(ctx, c, &p); !errors.Is(err, ErrStaleClient) {
 				t.Errorf("confirm after the client ended: %d, %v; want ErrStaleClient", got, err)
 			}
 			if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
@@ -225,7 +225,7 @@ func TestLapsedClientIsNotRevived(t *testing.T) {
 		t.Fatalf("a proposal under the same Boot: %d, %v; want %d", pb.Client, err, bid)
 	}
 	f.clock.advance(2 * time.Second)
-	if _, err := f.Connect(ctx, b, &pb); !errors.Is(err, ErrStaleClient) {
+	if _, _, err := f.Connect(ctx, b, &pb); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("confirming a proposal for a client since lapsed: %v, want ErrStaleClient", err)
 	}
 	if _, err := f.Renew(ctx, id); !errors.Is(err, ErrStaleClient) {
@@ -441,7 +441,7 @@ func TestRebootRaceLeavesOneID(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		wg.Go(func() { _, _ = g.Renew(ctx, old) })
-		if _, err := g.Connect(ctx, nfs(name, 2, owner), &p); err != nil {
+		if _, _, err := g.Connect(ctx, nfs(name, 2, owner), &p); err != nil {
 			t.Fatal(err)
 		}
 		wg.Wait()
@@ -501,16 +501,17 @@ func TestLastDisconnectLetsDestroyThrough(t *testing.T) {
 	f := newFixture(t)
 	alice := entity.NewUser()
 	id := f.connect(t, nfs("laptop", 1, alice))
-	if _, err := f.AddSession(ctx, id, nodeOf(s1), nil, nil); err != nil {
+	rec, err := f.AddSession(ctx, id, nodeOf(s1), nil, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Disconnect(ctx, id, s1, SessionEnd{}); err != nil {
+	if _, err := f.Disconnect(ctx, id, s1, SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Destroy(ctx, Caller{Client: id, Principal: alice}); !errors.Is(err, ErrClientBusy) {
 		t.Fatalf("Destroy with a node listed: %v, want ErrClientBusy", err)
 	}
-	if err := f.Disconnect(ctx, id, s1, SessionEnd{Last: true}); err != nil {
+	if _, err := f.Disconnect(ctx, id, s1, SessionEnd{Last: true, Gen: rec.Reach.GenOf(nodeOf(s1))}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, err := f.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 0 {
@@ -550,29 +551,107 @@ func TestAnEntryUnderAnOldEpochIsAbsent(t *testing.T) {
 	}
 }
 
+// A last Disconnect at a Gen a later listing raised removes nothing: the
+// session set up meanwhile keeps the node listed, and the Disconnect of that
+// session, at its own Gen, then unlists it.
+func TestALastDisconnectAtAStaleGenKeepsTheEntry(t *testing.T) {
+	f := newFixture(t)
+	id, first, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil || second <= first {
+		t.Fatalf("a second session's Connect: Gen %d after %d, %v; want it raised", second, first, err)
+	}
+	this := entity.SessionRef{ID: 1}
+	if gen, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: first}); err != nil || gen != second {
+		t.Fatalf("a last Disconnect at the stale Gen: Gen %d, %v; want the entry's current Gen %d", gen, err, second)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || rec.Reach.GenOf(nodeOf(this)) != second {
+		t.Fatalf("after a last Disconnect at the stale Gen: sessions %v, %v; want the newer entry kept", rec.Reach.Sessions, err)
+	}
+	if gen, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: second}); err != nil || gen != 0 {
+		t.Fatalf("a last Disconnect at the current Gen: Gen %d, %v; want zero, the entry gone", gen, err)
+	}
+	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("after a last Disconnect at the current Gen: %v, want the record released, ErrStaleClient", err)
+	}
+	if _, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: second}); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("a repeat of the last Disconnect after the release: %v, want ErrStaleClient", err)
+	}
+}
+
+// An entry removed and listed again takes a Gen above every one the record
+// gave, so a repeat of the Disconnect that removed it cannot remove the new
+// entry.
+func TestAnEntryListedAgainTakesAHigherGen(t *testing.T) {
+	f := newFixture(t)
+	id := f.connect(t, nfs("laptop", 1, entity.NewUser()))
+	rec, err := f.AddSession(ctx, id, nodeOf(s1), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := rec.Reach.GenOf(nodeOf(s1))
+	if _, err := f.Disconnect(ctx, id, s1, SessionEnd{Last: true, Gen: first}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err = f.AddSession(ctx, id, nodeOf(s1), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if again := rec.Reach.GenOf(nodeOf(s1)); again <= first {
+		t.Errorf("the entry listed again after its removal: Gen %d, want above %d", again, first)
+	}
+}
+
+// An SMB Connect at a new node epoch lists the node again under that epoch,
+// replacing its older-epoch entry rather than taking the node as listed
+// already, at a raised Gen; the entry then counts, so Destroy is refused.
+func TestAConnectAtANewEpochReplacesTheEntry(t *testing.T) {
+	f := newFixture(t)
+	id, gen, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := f.Record(ctx, id)
+	if err != nil || len(old.Reach.Sessions) != 1 {
+		t.Fatalf("after the first Connect: sessions %v, %v; want one", old.Reach.Sessions, err)
+	}
+	f.Stop()
+	g := reopen(t, f.fs, f.clock)
+	if _, again, err := g.Connect(ctx, smb("pc-a"), nil); err != nil || again <= gen {
+		t.Fatalf("a Connect at the new epoch: Gen %d after %d, %v; want it raised", again, gen, err)
+	}
+	rec, err := g.Record(ctx, id)
+	if err != nil || len(rec.Reach.Sessions) != 1 || rec.Reach.Sessions[0].Epoch <= old.Reach.Sessions[0].Epoch {
+		t.Fatalf("after a Connect at the new epoch: sessions %v, %v; want one entry, above epoch %d", rec.Reach.Sessions, err, old.Reach.Sessions[0].Epoch)
+	}
+	if err := g.Destroy(ctx, Caller{Client: id}); !errors.Is(err, ErrClientBusy) {
+		t.Errorf("Destroy of a client listed again at the new epoch: %v, want ErrClientBusy", err)
+	}
+}
+
 // An SMB record holding no open is not released while a node is still
 // listed in its Reach.Sessions: only the last node's last Disconnect
 // releases it.
 func TestAnSMBRecordStaysWhileANodeIsListed(t *testing.T) {
 	f := newFixture(t)
-	id := f.connect(t, smb("pc-a"))
-	on1, on2 := entity.SessionRef{Node: 1, ID: 1}, entity.SessionRef{Node: 2, ID: 1}
-	for _, s := range []entity.SessionRef{on1, on2} {
-		rec, err := f.Record(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.AddSession(ctx, id, nodeOf(s), rec.Adapter, rec.Adapter); err != nil {
-			t.Fatal(err)
-		}
+	id := f.connect(t, smb("pc-a")) // lists this node, node zero
+	on1, on2 := entity.SessionRef{ID: 1}, entity.SessionRef{Node: 2, ID: 1}
+	rec, err := f.Record(ctx, id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := f.Disconnect(ctx, id, on1, SessionEnd{Last: true}); err != nil {
+	if rec, err = f.AddSession(ctx, id, nodeOf(on2), rec.Adapter, rec.Adapter); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Disconnect(ctx, id, on1, SessionEnd{Last: true, Gen: rec.Reach.GenOf(nodeOf(on1))}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, err := f.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 1 || rec.Reach.Sessions[0].Node != nodeOf(on2) {
 		t.Fatalf("with node 2 still listed: sessions %v, %v; want the record kept, listing node 2", rec.Reach.Sessions, err)
 	}
-	if err := f.Disconnect(ctx, id, on2, SessionEnd{Last: true}); err != nil {
+	if _, err := f.Disconnect(ctx, id, on2, SessionEnd{Last: true, Gen: rec.Reach.GenOf(nodeOf(on2))}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
@@ -589,7 +668,7 @@ func TestStartAndStop(t *testing.T) {
 	file := anyFile()
 	calls := map[string]func() error{
 		"Propose":    func() error { _, err := g.Propose(ctx, nfs("host-b", 1, entity.NewUser()), addr); return err },
-		"Connect":    func() error { _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },
+		"Connect":    func() error { _, _, err := g.Connect(ctx, nfs("host-b", 1, entity.Principal{}), nil); return err },
 		"AddSession": func() error { _, err := g.AddSession(ctx, id, entity.NodeID{15: 1}, nil, []byte{1}); return err },
 		"Renew":      func() error { _, err := g.Renew(ctx, id); return err },
 		"Expire":     func() error { return g.Expire(ctx, id) },
@@ -640,7 +719,7 @@ func TestStartAndStop(t *testing.T) {
 		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
 		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
 		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
-		"Disconnect":  func() error { return g.Disconnect(ctx, id, entity.SessionRef{}, SessionEnd{}) },
+		"Disconnect":  func() error { _, err := g.Disconnect(ctx, id, entity.SessionRef{}, SessionEnd{}); return err },
 		"ChannelDown": func() error { return g.ChannelDown(ctx, id) },
 		"Reconnect": func() error {
 			_, err := g.Opens().Reconnect(ctx, Caller{Client: id}, 1, ReconnectMatch{}, entity.SessionRef{})
@@ -747,7 +826,7 @@ func TestSinkMayCallBack(t *testing.T) {
 	f.clock.advance(leasePeriod)
 	done = make(chan struct{})
 	go func() {
-		_, _ = f.Connect(ctx, nfs("host-a", 1, owner), nil)
+		_, _, _ = f.Connect(ctx, nfs("host-a", 1, owner), nil)
 		close(done)
 	}()
 	select {
@@ -866,15 +945,15 @@ func TestRefusedConfirmMayBeRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.fail.Store(true)
-	_, err = f.Connect(ctx, c, &p)
+	_, _, err = f.Connect(ctx, c, &p)
 	st.fail.Store(false)
 	if !errors.Is(err, errWrite) {
 		t.Fatalf("a confirm over a refusing store: %v, want its error", err)
 	}
-	if _, err := f.Connect(ctx, nfs("host-a", 1, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
+	if _, _, err := f.Connect(ctx, nfs("host-a", 1, entity.NewUser()), &p); !errors.Is(err, ErrClientInUse) {
 		t.Errorf("another principal's confirm of the name: %v, want ErrClientInUse", err)
 	}
-	if id, err := f.Connect(ctx, c, &p); err != nil || id != p.Client {
+	if id, _, err := f.Connect(ctx, c, &p); err != nil || id != p.Client {
 		t.Errorf("the same confirm retried: %d, %v; want %d", id, err, p.Client)
 	}
 }

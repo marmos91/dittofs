@@ -199,11 +199,11 @@ func kindOf(s uint8) GrantKind {
 	return k
 }
 
-func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) error {
+func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) (uint64, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// A disconnect names a client, not a file, so the waiters its closes
 	// free are served after it, under each file's admission lock.
@@ -236,31 +236,54 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 	}
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
+	// The closes run before the node is unlisted, so a failure before this
+	// point leaves the entry for the caller's repeat, which finds the closed
+	// opens gone and closes nothing twice.
+	//
+	// ponytail: this node is every primary of the client's state and its
+	// lease owner, so the closes above are every primary's. With the cluster,
+	// send the end to each primary holding the client's state first, and
+	// unlist here only once each has acknowledged.
 	if !end.Last {
-		return nil
+		return 0, nil
 	}
-	return t.leaveReach(ctx, c, nodeOf(s))
+	return t.leaveReach(ctx, c, nodeOf(s), end.Gen)
 }
 
-// leaveReach takes node, and every entry under an earlier epoch, out of c's
-// Reach.Sessions, under the client step. An SMB record left with no live
-// node and no state is released: nothing else ends it.
-func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.NodeID) error {
+// leaveReach takes node's entry at gen, and every entry under an earlier
+// epoch, out of c's Reach.Sessions, under the client step; an entry at
+// another Gen was listed again since, and stays, and its Gen is returned.
+// An SMB record left with no live node and no state is released: nothing
+// else ends it.
+func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.NodeID, gen uint64) (uint64, error) {
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
 	t.cmu.Lock()
 	epoch := t.epoch
 	t.cmu.Unlock()
+	var kept uint64
 	rec, err := t.setReach(ctx, c, func(r *entity.Reach) {
-		r.Sessions = slices.DeleteFunc(slices.Clone(r.Sessions), func(n entity.ReachNode) bool { return n.Node == node || n.Epoch < epoch })
+		kept = 0
+		r.Sessions = slices.DeleteFunc(slices.Clone(r.Sessions), func(n entity.ReachNode) bool {
+			if n.Epoch < epoch {
+				return true
+			}
+			if n.Node == node && n.Gen != gen {
+				kept = n.Gen
+			}
+			return n.Node == node && n.Gen == gen
+		})
 	})
-	if err != nil || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
-		return err
+	if err != nil {
+		return 0, err
+	}
+	if kept != 0 || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
+		return kept, nil
 	}
 	// A parked open is held, so a durable open's Timeout still running
 	// keeps the record too.
 	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
-		return staleIfGone(err)
+		return 0, staleIfGone(err)
 	}
 	t.cmu.Lock()
 	delete(t.leases, c)
@@ -268,7 +291,7 @@ func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.N
 	t.cmu.Unlock()
 	t.unreclaim(c)
 	t.dropRevoked(c)
-	return nil
+	return 0, nil
 }
 
 // park keeps o, of e, disconnected until its Timeout passes. Its waiters

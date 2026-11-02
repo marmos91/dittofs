@@ -158,8 +158,10 @@ func (c Clients) Put(ctx context.Context, prev, next entity.ClientRecord) (cur e
 // read; otherwise it writes nothing and returns ErrRecordChanged with the
 // current record. So a replayed setup call, on any node or after a restart,
 // finds the first call's bytes rather than recording a second session. The
-// node is listed once, under the epoch node names: an entry it had under an
-// earlier epoch is replaced.
+// node is listed once, under the epoch node names, replacing the entry it
+// had, under an earlier epoch or this one, with one whose Gen is the
+// record's Reach.Gen raised by one, so no Gen repeats across an entry's
+// removal; node.Gen is not read.
 func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity.ReachNode, prev, next []byte) (cur entity.ClientRecord, err error) {
 	if len(next) > MaxAdapter {
 		return entity.ClientRecord{}, merrs.NewInvalidArgumentError(fmt.Sprintf("adapter bytes over %d", MaxAdapter))
@@ -173,6 +175,8 @@ func (c Clients) AddSession(ctx context.Context, id entity.ClientID, node entity
 		}
 		up := cur
 		up.Adapter = next
+		up.Reach.Gen++
+		node.Gen = up.Reach.Gen
 		up.Reach.Sessions = append(slices.DeleteFunc(slices.Clone(cur.Reach.Sessions), func(n entity.ReachNode) bool { return n.Node == node.Node }), node)
 		if err := setClient(tx, cur, up); err != nil {
 			return err

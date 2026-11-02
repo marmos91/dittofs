@@ -103,14 +103,29 @@ type Reach struct {
 	Callback NodeID      // the node holding its back channel; zero: none
 	Down     bool        // the back channel is lost, until the client rebinds
 	Sessions []ReachNode // the nodes holding a session of it, each once
+	Gen      uint64      // the highest Gen any entry has taken; never lowered, so no Gen repeats across an entry's removal
 }
 
 // ReachNode is a node holding a session of a client, under the node epoch it
-// was added in: an entry older than its node's current epoch is a restarted
-// node's, and counts as absent.
+// was listed in: an entry older than its node's current epoch counts as
+// absent until the node is listed again. Gen is set above the record's
+// Reach.Gen at every listing of the node, so the end of its last session
+// removes the entry only at the Gen it saw, never one a later listing wrote,
+// even after the entry was removed and listed again.
 type ReachNode struct {
 	Node  NodeID
 	Epoch uint64
+	Gen   uint64
+}
+
+// GenOf is node's entry's Gen, zero when node is not listed.
+func (r Reach) GenOf(node NodeID) uint64 {
+	for _, n := range r.Sessions {
+		if n.Node == node {
+			return n.Gen
+		}
+	}
+	return 0
 }
 
 // ShardMark is one shard the client holds state in, and Done: the grace

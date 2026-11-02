@@ -289,6 +289,13 @@ func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 	if t.sink != nil || t.stopped {
 		return errors.New("openstate: table already started")
 	}
+	// ponytail: the epoch rises only here, at a start, when this node holds
+	// no session: each client's next session lists the node again through
+	// Connect or AddSession, replacing its older-epoch entry. A node epoch
+	// rising under live sessions, at a lease a takeover renewed, is a
+	// cluster's; then list the node again for each client it holds a session
+	// of, Connect for SMB and AddSession with the current Adapter as both
+	// prev and next for NFSv4.1.
 	t.epoch = epoch
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	t.order = order

@@ -93,13 +93,16 @@ type Clients interface {
 	// reboot: the old ID ends as the new one appears, and a known name whose
 	// lease has lapsed ends its old ID first. The waiters the ended ID's
 	// release frees are served under each file's admission lock, which the
-	// table takes itself: the service must not hold one when calling.
-	Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, error)
+	// table takes itself: the service must not hold one when calling. An
+	// SMB client's Connect also lists this node in its Reach.Sessions, as
+	// AddSession does, and returns the entry's Gen; any other's gen is zero.
+	Connect(ctx context.Context, c Client, p *Proposal) (id entity.ClientID, gen uint64, err error)
 	// Record is the record as written, Adapter included; it changes nothing.
 	Record(ctx context.Context, c entity.ClientID) (Client, error)
-	// AddSession records node's session, under this node's epoch, and
-	// writes next as Adapter if it still equals prev; otherwise it writes
-	// nothing and returns ErrRecordChanged with the current record.
+	// AddSession records node's session, listing node in Reach.Sessions
+	// under this node's epoch with its Gen raised, replacing the entry it
+	// had, and writes next as Adapter if it still equals prev; otherwise it
+	// writes nothing and returns ErrRecordChanged with the current record.
 	AddSession(ctx context.Context, c entity.ClientID, node entity.NodeID, prev, next []byte) (Client, error)
 	// Renew renews a client's lease for another period, writing nothing.
 	Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error)
@@ -140,19 +143,26 @@ type Clients interface {
 	// lock, deny mode and lease it holds, until its Timeout passes without
 	// a reconnect; the timer then closes it. Either way the kept opens'
 	// waiters go, answered not granted, another session's opens are left
-	// alone, and no open is attached to s again. With Last, s's node leaves
-	// c's Reach.Sessions in the same call, as do entries under an earlier
-	// epoch; an SMB record then left with no node and no state is released,
-	// as nothing else ends it. The waiters the closes free are served under
-	// each file's admission lock, which the table takes itself: the service
-	// must not hold one when calling.
-	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) error
+	// alone, and no open is attached to s again. Each close releases the
+	// open's locks, and raises Closed for an orphan or a pending unlink it
+	// leaves, as any close the table makes does. With Last, once the closes
+	// have run, s's node leaves c's Reach.Sessions if its entry's Gen is
+	// still end.Gen, and entries under an earlier epoch leave with it; an SMB
+	// record then left with no node and no state is released, as nothing
+	// else ends it. An entry at another Gen, a later listing's, stays, and
+	// its Gen is returned for the caller to decide again on; gen is zero
+	// once the entry is gone, and a Last on a released record is
+	// ErrStaleClient. The waiters the closes free are served under each
+	// file's admission lock, which the table takes itself: the service must
+	// not hold one when calling.
+	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) (gen uint64, err error)
 }
 
 // SessionEnd is how Disconnect ends one session.
 type SessionEnd struct {
-	Logoff bool // a logoff or a failed re-authentication's teardown: every open of the session closes
-	Last   bool // the node's last session of the client: the node leaves Reach.Sessions in the same call
+	Logoff bool   // a logoff or a failed re-authentication's teardown: every open of the session closes
+	Last   bool   // the node's last session of the client: the node leaves Reach.Sessions in the same call, at Gen
+	Gen    uint64 // with Last: the node's entry's Gen when its last session was decided; a later listing's keeps the entry, and Disconnect returns its Gen
 }
 
 // nodeOf is the node a session ref names, as Reach.Sessions lists it: its
@@ -296,15 +306,15 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	return Proposal{p.ID, p.Confirm}, nil
 }
 
-func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, error) {
+func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, uint64, error) {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	rec, err := admit(c)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	out := outbox{timer: true}
 	t.cstep.Lock()
@@ -316,9 +326,32 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return rec.ID, nil
+	if rec.Protocol != entity.ProtocolSMB {
+		return rec.ID, 0, nil
+	}
+	gen, err := v.listNode(ctx, rec.ID)
+	return rec.ID, gen, err
+}
+
+// listNode lists this node in client id's Reach.Sessions, keeping the
+// record's adapter bytes, and returns the entry's Gen.
+//
+// decision: this node is listed under the zero node ID, as a session ref
+// names node zero on a single node. Name the node's own ID with the cluster.
+func (v clients) listNode(ctx context.Context, id entity.ClientID) (uint64, error) {
+	rec, err := v.t.d.Records.Clients().Get(ctx, id)
+	for err == nil {
+		var cl Client
+		if cl, err = v.AddSession(ctx, id, entity.NodeID{}, rec.Adapter, rec.Adapter); err == nil {
+			return cl.Reach.GenOf(entity.NodeID{}), nil
+		}
+		if errors.Is(err, ErrRecordChanged) {
+			rec, err = cl.ClientRecord, nil
+		}
+	}
+	return 0, staleIfGone(err)
 }
 
 // connect makes rec current, under the client step, and returns the record a

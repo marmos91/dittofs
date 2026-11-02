@@ -154,7 +154,7 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 	must(t, cs.Create(ctx, cl))
 	n1, n2 := entity.ReachNode{Node: entity.NodeID{15: 1}, Epoch: 1}, entity.ReachNode{Node: entity.NodeID{15: 2}, Epoch: 1}
 	got, err := cs.AddSession(ctx, cl.ID, n1, []byte("v0"), []byte("first"))
-	if err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
+	if n1.Gen = 1; err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
 		t.Fatalf("the first session: %+v, %v", got, err)
 	}
 
@@ -165,10 +165,10 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 		t.Errorf("a replay after a restart: %+v, %v", cur, err)
 	}
 	if got, err := cs.AddSession(ctx, cl.ID, n1, []byte("first"), []byte("third")); err != nil ||
-		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
-		t.Errorf("a node's second session: %+v, %v", got, err)
+		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{{Node: n1.Node, Epoch: 1, Gen: 2}}) {
+		t.Errorf("a node's second session: %+v, %v; want its one entry, its Gen raised", got, err)
 	}
-	restarted := entity.ReachNode{Node: n1.Node, Epoch: 2}
+	restarted := entity.ReachNode{Node: n1.Node, Epoch: 2, Gen: 3}
 	if got, err := cs.AddSession(ctx, cl.ID, restarted, []byte("third"), []byte("third")); err != nil ||
 		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{restarted}) {
 		t.Errorf("a session of the node after its restart: %+v, %v; want its entry under the new epoch", got, err)

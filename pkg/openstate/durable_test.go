@@ -42,7 +42,7 @@ func byID(o Open) OpenRef {
 
 func (f *fixture) disconnect(t *testing.T, who Caller, s entity.SessionRef) {
 	t.Helper()
-	if err := f.Disconnect(ctx, who.Client, s, SessionEnd{}); err != nil {
+	if _, err := f.Disconnect(ctx, who.Client, s, SessionEnd{}); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 }
@@ -124,7 +124,7 @@ func TestLogoffClosesTheSessionsOpens(t *testing.T) {
 	r.Access = rd | wr
 	op := f.mustOpen(t, a, persistent, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
 	oo := f.mustOpen(t, a, other, keep(batch, entity.DurabilityDurable, s2, time.Minute, 3))
-	if err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
+	if _, err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
 		t.Fatal(err)
 	}
 	for name, o := range map[string]Open{"durable": od, "persistent": op} {
@@ -134,6 +134,32 @@ func TestLogoffClosesTheSessionsOpens(t *testing.T) {
 	}
 	if _, held := f.byID[oo.ID]; !held {
 		t.Error("another session's open was closed by the logoff")
+	}
+}
+
+// A logoff's closes release what a Close would: the lock its persistent open
+// held goes, and the waiter behind it is granted, under the file's admission
+// lock.
+func TestALogoffReleasesTheSessionsLocks(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.caller(t, smb("pc-a")), f.caller(t, smb("pc-b"))
+	file, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	op := f.mustOpen(t, a, file, keep(r, entity.DurabilityPersistent, s1, time.Minute, 1))
+	f.mustLock(t, a, file, LockReq{Owner: smbOwner(a, op), Open: byID(op), Ranges: []LockRange{x(0, 10)}})
+	bo := f.mustOpen(t, b, file, OpenRequest{Access: rd})
+	if res, err := f.lock(b, file, LockReq{Owner: smbOwner(b, bo), Open: byID(bo), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); err != nil || !res.Waiting {
+		t.Fatalf("b's lock behind a's: %+v, %v; want waiting", res, err)
+	}
+	f.ordered(file)
+	if _, err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := granted(t, f.sink.takeWaits()); len(got) != 1 {
+		t.Errorf("waiters granted by the logoff: %v, want b's", got)
+	}
+	if !f.ordered(file) {
+		t.Error("the waiter the logoff freed was served without the file's admission lock")
 	}
 }
 
