@@ -2796,7 +2796,7 @@ type Locks interface {
 
 type Grants interface {
 	AckRecall(ctx, who Caller, g GrantID, to GrantKind) error               // no recall in flight: a delegation's return, else ErrNoRecall (§2.4); to GrantNone: a return; a lease or oplock only from one of its openers' principals, else ErrNotYours (§2.1)
-	Openers(ctx, who Caller, g GrantID) ([]Open, error)                     // the opens g covers, of who's client, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1); a delegation covers none; changes nothing
+	Openers(ctx, g GrantID) ([]Open, error)                                 // the opens g covers, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1); a delegation covers none; changes nothing
 }
 
 type Watches interface {
