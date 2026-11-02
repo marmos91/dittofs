@@ -412,9 +412,18 @@ type Clock interface {
 }
 
 // Fault is consulted by a seam before each named operation, on a seeded
-// schedule read from the Clock. Its results are standard-library values.
+// schedule read from the Clock. A delay is waited out before the rest is
+// applied. Zero values pass. err alone fails the operation. tearAfter > 0
+// tears a write after that many bytes: with err nil the write is reported
+// whole and only those bytes can become durable, at the next sync covering
+// them; with err set only they land, and the write fails. tearAfter < 0 loses
+// a write or a sync, a directory sync included: it is reported done and makes
+// nothing durable. A tear of any operation but a write, or a loss of any but
+// these or with err set, is a mistake in the check, which the seam refuses.
+// What a lost or torn write reads back before a crash, and what a later sync
+// makes of it, is the seam's model: the storage seam's is RFC 1 §1.3.
 type Fault interface {
-    At(op string, key []byte) (delay time.Duration, err error, tearAfter int) // zero values pass; err fails the operation; tearAfter > 0 tears a write after that many bytes
+    At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
 ```
 

@@ -281,11 +281,23 @@ create, open, allocate, write at an offset, read, read bypassing the page cache,
 sync, truncate, close, rename, unlink, and sync the directory. A test wraps the
 real files and directory and remembers every write, allocation and truncate
 since its file's last sync and every create, rename and unlink since the last
-directory sync; a simulated crash discards exactly those — a file allocated
+directory sync; a simulated crash decides which of those survive — none, part of one, or any subset ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)) — a file allocated
 and never synced comes back short or unallocated — and reopens the journal on
 the same directory. The seam consults the set's one fault interface
-([the index's test harness](rfc-index.md#Test%20harness), item 1), and can fail any one call, so a failed sync, a failed directory sync and
-a failed uncached read are each reachable. Killing the process instead leaves unsynced
+([the index's test harness](rfc-index.md#Test%20harness), item 1) before each call, and can fail or delay any one of them,
+tear a write, and lose a write, a sync or a directory sync, so a failed sync, a failed directory sync, a failed uncached read and a
+sync that reports success and makes nothing durable are each reachable. A lost
+or silently torn write lands in the file whole, so every cached read before a
+crash sees all of it, while an uncached read sees only what a sync made durable;
+what is lost is its durability: no later sync makes the lost bytes durable and
+no crash keeps them. A silently torn write's bytes before the cut are an ordinary
+write: the next sync that covers them makes them durable. A write torn with an
+error lands only those bytes, so a cached read sees them over what the file
+held before, and the same next sync makes them durable. A lost sync or directory sync leaves what it would have
+covered unsynced, so the next one covers it; a failed one instead loses it, as
+[§5.3](#5.3%20A%20failed%20sync) assumes of a real device: no later sync makes it durable, though a
+crash may still keep it. A crash is a separate seam operation, never a call's
+fault. Killing the process instead leaves unsynced
 writes in the page cache, and proves a durability the journal does not have.
 
 **Time is virtual.** The sync timer ([§5.2](#5.2%20Syncing)), write stalls and every bounded wait
@@ -2608,7 +2620,7 @@ section is the journal's plan.
 | --- | --- | --- |
 | Unit | pure logic with no storage: the placement index, coalescing, overlap splitting, the record and catalog codecs | table-driven, in memory; the only place an in-memory stand-in is allowed |
 | Conformance | every check in [§9.4](#9.4%20The%20checks) | real filesystem in a temporary directory, virtual time, on every supported platform ([§9.3](#9.3%20Environments%20a%20check%20set%20must%20cover)) |
-| Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and unlink | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
+| Fault injection | crashes that lose, tear or reorder unsynced writes, flipped bits, outside edits ([RFC 28 §4.4](rfc-28-journal-format.md#4.4%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and unlink; a delayed call, a torn write, and a write or sync that reports success and makes nothing durable | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own): its fault interface fails, delays, tears or loses exactly the calls named, and its simulated crash chooses which unsynced writes survive |
 | Model-based | sequences no hand-written case thinks of | random sequences of `WriteAt`, `Fill`, `Offload`, `Release`, `Truncate`, `Deallocate`, `Delete`, `Settle`, repack, crash and reopen, compared after every step against a reference model: each file's bytes, each extent's offloaded bit, and the removal markers `Since` yields. A failing sequence is shrunk to the shortest that still fails and kept as a regression case |
 | Fuzz | parsers of bytes the journal did not just write: records, segment headers and trailers, catalogs | coverage-guided fuzzing; the property is that any input is either accepted as valid or rejected, never panics and never yields an extent the bytes do not contain |
 | Concurrency | [§8](#8.%20Concurrency): lock order, readers against reclamation, progress | data-race detector, at least two files on two streams, virtual time for the waits |
@@ -2700,7 +2712,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§7.2](#7.2%20Repack) copy loses to a newer write | Hold a repack after it has read a record and before it appends the copy; overwrite the extent and `Sync`, with no hold; let the repack continue; assert the new bytes are served, before and after reopen, and no copy of the old record was appended. Repeat with the overwrite unsynced: assert the copy is appended as retained, the source segment is unlinked, and failing the overwrite's window then serves the old bytes, before and after reopen. A pass that skips a source that has just become retained loses the flushed write when the window fails. |
 | [§3.8](#3.8%20Loss%20events) loss raises the loss generation | Read `LossGeneration`; drop a corrupt dirty extent and assert it rose by one; drop a corrupt offloaded extent and a stale one and assert it did not move; fail a sync and resolve it by failing its window, and assert it rose again before the failing `Sync` returned; fail another and resolve it by re-appending, and assert it did not move. A design without the generation leaves the write verifier unchanged, and a client never resends the writes the loss took. |
 | [§7.1](#7.1%20Releasing%20storage) a recycled segment keeps its new records | Run writes and repack until a segment sealed full is retired and recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); write and `Sync` A into it while its new records stop short of the old seal marker; close cleanly and reopen, then crash and reopen. Assert A reads back both times and no extent of the segment's old life is held. Then write and `Sync` B into a recycled segment and fail a later append there at the seam; assert the segment is a repack candidate only once that append's window is resolved, is unlinked, never recycled, only after repack carried B forward, and B reads back after the retirement and after a reopen. The format-level half, with the zeroing dropped at the seam and a failed append, is [RFC 28 §4.2](rfc-28-journal-format.md#4.2%20The%20checks)'s. |
-| [§5.3](#5.3%20A%20failed%20sync) failed sync window | Write A and B to one segment; fail the sync at the seam and drop the unsynced writes; let a later sync of the segment succeed; assert `Sync` for A and B either failed or returned only after A and B were synced in another segment, and that after a crash both read back or `Sync` reported the failure. |
+| [§5.3](#5.3%20A%20failed%20sync) failed sync window | Write A and B to one segment; fail the sync at the seam, which loses its window; let a later sync of the segment succeed; assert `Sync` for A and B either failed or returned only after A and B were synced in another segment, and that after a crash both read back or `Sync` reported the failure. |
 | [§3.3](#3.3%20Offload) offered bytes verified | Write a 1 MiB record, corrupt one byte at its end through the seam, offload with `limit` covering only its first 64 KiB; assert `Offered` returns no byte of it, the record is dropped as corrupt, and no report marks it. A design that checks only the bytes it returns hands the carver the first 64 KiB as good and the next pass the rotted rest. |
 | [§7.2](#7.2%20Repack) repack verifies the whole source | Release the middle of an offloaded 1 MiB record, then corrupt a byte in the released middle; repack its segment; assert nothing of the record is copied, it is dropped as corrupt, and both ends read `missing` rather than bytes under a fresh checksum. |
 | [§3.11](#3.11%20Snapshot%20holds) retained extents survive repack | Hold a cut over dirty v1, overwrite with v2, repack the segment holding v1, crash and reopen; assert `ReadAt` serves v2, the next offer carries v1 in `Superseded`, and after v1's commit is reported it leaves the index. A design that keeps only held extents in the index loses v1 at the repack. |

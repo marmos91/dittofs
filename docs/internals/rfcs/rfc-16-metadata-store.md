@@ -2116,7 +2116,8 @@ serial order of the committed operations.
 
 ### 6.4 Faults and crashes
 
-A fault-injecting `KV` wrapper fails, delays or reorders at every call:
+A fault-injecting `KV` wrapper fails or delays any call through the set's fault
+interface, and adds a lost commit reply as its own setting ([the index's test harness](rfc-index.md#Test%20harness), item 1); the power losses and the kill below are crashes, never a call's fault:
 
 - concurrent `Update`s on the embedded store, with power cut after some return: assert every returned `Update` survives, and that the commits shared syncs (fewer syncs than commits);
 - a conflict on the Nth `Update` attempt (retry must converge, never apply twice);
