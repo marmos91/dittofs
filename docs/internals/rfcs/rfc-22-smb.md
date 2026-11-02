@@ -1846,10 +1846,12 @@ an empty `want`. A `MAXIMUM_ALLOWED` open with `FILE_OPEN_FOR_BACKUP_INTENT` is
 not resolved through `Access`, which computes without the open's privilege
 ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)):
 the adapter passes the maximal request to the open, and the service resolves it
-there with the privilege it marks the open with, every entry right within the
-ceiling for a privileged caller
-([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)),
-refusing it `ErrAccess` when that is empty.
+there to `G` as
+[RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)
+computes it with the privilege it marks the open with, so execute on a
+non-directory and what the flags refuse stay out
+([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)),
+and refuses it `ErrAccess` when that `G` is empty.
 
 **Setting the owner or group** follows
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):

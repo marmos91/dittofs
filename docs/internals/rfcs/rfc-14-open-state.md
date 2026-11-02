@@ -532,9 +532,11 @@ whether the call that created them had a session (`Sessioned`, copied from
 `Caller.Sessioned`, which RFC 17 sets when `Call.Session` is), and a call with
 no session that presents a reference to state so marked is `ErrNotYours`,
 whatever its principal, a delegation's among them; a call naming only a client
-ID presents none, and a `Peers` call, which carries no `Call`, is exempt. The primary checks the state it holds,
+ID presents none, and the NFS adapter refuses that one from the client record's
+minor version ([RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)); a `Peers` call, which carries no `Call`, is exempt. The primary checks the state it holds,
 never a client record, which in a cluster it does not hold (§11.2), and the
-refusal says so (RFC 17's `StateError{NotYours, Sessioned: true}`), so the
+refusal says so (`ErrNotYoursSessioned`, which wraps `ErrNotYours` and RFC 17
+maps to `StateError{NotYours, Sessioned: true}`), so the
 adapter answers it without reading the record. An NFSv4.0 client is offered no
 delegation ([RFC 21 §5.3](rfc-21-nfs.md#5.3%20Delegations)), so beyond that the
 opener-only rule above is the whole check. The address the adapter records at
@@ -3022,7 +3024,8 @@ const (
 
 // The filesystem service returns these to adapters as RFC 17 §4.3's errors:
 // the state refusals as ErrState kinds (ErrStaleClient as StateError
-// StaleClient, and so on), the rest under their own names. ErrLost is the
+// StaleClient, ErrNotYoursSessioned as StateError{NotYours, Sessioned:
+// true}, and so on), the rest under their own names. ErrLost is the
 // content error the engine and the service share, returned by Flushed.
 var (
 	ErrGrace           = errors.New("openstate: in grace period")
@@ -3039,6 +3042,7 @@ var (
 	ErrOldState        = errors.New("openstate: reference sequence older than the state's")
 	ErrDelay           = errors.New("openstate: retry later")
 	ErrNotYours        = errors.New("openstate: state held by another client or principal")
+	ErrNotYoursSessioned = fmt.Errorf("%w: state created on a session, presented without one", ErrNotYours) // §2.2
 	ErrDeletePending   = errors.New("openstate: file is delete pending")
 	ErrFileOpen        = errors.New("openstate: the file has an open") // §9.1: Releasing on a file any open holds, a clone's hold included
 	ErrReleasing       = errors.New("openstate: the file is being released") // §9.1: an open, or a second Releasing, while the mark is set; the service answers it stale

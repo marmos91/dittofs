@@ -858,7 +858,9 @@ a reference to state created on a session — an `OpenRef`, `StateRef` or
 `StateError{NotYours, Sessioned: true}`, whatever its principal: the state
 carries the mark (`Sessioned`), so the file's primary checks it without a
 client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
-argument names no state and is not checked, so `DESTROY_CLIENTID` sent alone
+argument names no state and is not checked here (the NFS adapter checks a
+v4.0 one against the record's minor version,
+[RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)), so `DESTROY_CLIENTID` sent alone
 and a second `CREATE_SESSION` pass, and `Peers` calls, which carry no `Call`,
 are exempt. The service **MUST** then authorise the call as for an
 anonymous open: the `Identity`'s principal against the file
@@ -1307,7 +1309,8 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
 refusals (`Sessioned` is set only on a `NotYours` for state created on a
-session, presented by a call with none, [§3.1](#3.1%20Operations)): `ClientInUse` (a client name another principal holds), `ClientBusy`
+session, presented by a call with none, [§3.1](#3.1%20Operations), which
+RFC 14 returns as `ErrNotYoursSessioned`): `ClientInUse` (a client name another principal holds), `ClientBusy`
 (`Destroy` with state left), `RecordChanged` (a client record's adapter bytes
 changed since the adapter read them: reread and decide again), `AdapterVersion`
 (adapter bytes of a version this node cannot read), `StaleClient` (a client
