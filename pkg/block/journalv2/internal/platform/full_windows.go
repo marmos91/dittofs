@@ -14,10 +14,13 @@ import (
 // as the platform's *fs.PathError wrapping syscall.ENOSPC, never as a
 // NoSpaceError. On Windows syscall.ENOSPC is a code Go invents and no call
 // returns, and syscall.Errno's Is does not match either Windows code with
-// it, so the platform maps them here, on every error a Windows call returns:
-// the opens, writes, size reads and sets, flushes and closes. The error
-// still unwraps to the code Windows returned, so neither the code nor its
-// message is lost.
+// it, so the platform maps them here, on every error a call through the
+// table returns: the opens, writes, size reads and sets, flushes and the
+// directory's close. The error still unwraps to the code Windows returned,
+// so neither the code nor its message is lost. Rename, Remove, List, ReadAt
+// and Close go through the os package and keep its errors: map Rename's too
+// if NTFS refuses a rename for a full volume, since RFC 28 §2.2 answers a
+// spare that failed with ENOSPC as a full device.
 type diskFull struct {
 	errno syscall.Errno
 }

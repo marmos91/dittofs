@@ -94,6 +94,20 @@ func TestWriteAtCalls(t *testing.T) {
 
 	expectPathError(t, err, windows.ERROR_IO_DEVICE, path)
 
+	r.shortNext(true)
+	r.failNext("writeFile", nil, windows.ERROR_IO_DEVICE)
+	n, err = f.WriteAt([]byte("abcdef"), 0)
+
+	if log := r.take(); len(log) != 2 {
+		t.Fatalf("want the short write and the failed one, got %v", log)
+	}
+
+	if n != 3 {
+		t.Fatalf("a write that failed after 3 bytes reports %d, want 3", n)
+	}
+
+	expectPathError(t, err, windows.ERROR_IO_DEVICE, path)
+
 	_, err = f.WriteAt([]byte("x"), -1)
 
 	if log := r.take(); len(log) != 0 {
@@ -178,10 +192,11 @@ func TestTruncateCalls(t *testing.T) {
 // TestDiskFull checks a full volume reaches the caller as the core's
 // NoSpaceError decision says a full filesystem does: an *fs.PathError naming
 // the file or the directory that errors.Is matches with syscall.ENOSPC, for
-// both codes Windows reports it with, from every Windows call the platform
-// makes: Create, Open, WriteAt, Truncate, Size, Sync, every call of Allocate
-// and of SyncDir. The error still matches its own Windows code, and the call
-// is not made again. Another error is not taken for a full volume.
+// both codes Windows reports it with, from every call the platform makes
+// through its table: Create, Open, WriteAt, Truncate, Size, Sync, every call
+// of Allocate and of SyncDir. The error still matches its own Windows code,
+// and the call is not made again. Another error is not taken for a full
+// volume.
 func TestDiskFull(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 

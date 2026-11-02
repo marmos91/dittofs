@@ -45,9 +45,7 @@ var zeros [zeroChunk]byte
 // valid data length to the end, which is what RFC 28 Appendix A sets it for:
 // an append below it commits no filesystem metadata at each flush. The fill
 // is paid only when the pool of spares grows, off the write path (RFC 28
-// Appendix A). This differs from the current text of RFC 28 Appendix A,
-// which sets the valid data length and writes zeros only where that call is
-// not permitted. Revisit only if RFC 28 §2.2 stops requiring that an allocated
+// Appendix A). Revisit only if RFC 28 §2.2 stops requiring that an allocated
 // region no record has reached reads as zeros.
 func (f *file) Allocate(off, n int64) error {
 	if off < 0 || n < 0 || off > math.MaxInt64-n {
