@@ -2331,7 +2331,7 @@ so a renewal — every `SEQUENCE`, every NFSv4.0 `RENEW` — writes no record.
 | --- | --- | --- | --- |
 | `Client.Pending`, `Pending.Confirm` | `SETCLIENTID` / `EXCHANGE_ID` before its confirm; the confirm verifier, the `eir_sequenceid` | the NFSv4.0 callback address, until the confirm takes it | §3.5, §4.1 |
 | `AddSession` | `CREATE_SESSION` | its sequence and last reply, which answer a replay | §3.5 |
-| `SessionEnd.Last`, `Gen` | the node's last `DESTROY_SESSION` of the client, with the node entry's `Gen` its latest `AddSession` returned | — | §5.1 |
+| `SessionEnd.Last`, `Gen` | the node's last `DESTROY_SESSION` of the client, with the node entry's latest `Gen`: on each `AddSession`'s success, a re-list's included, the adapter reads its node's entry's `Gen` from the record returned, and on a newer `Gen` from `Disconnect` decides again | — | §5.1 |
 | `StateRef{Type, Shard, Instance, Token, Seq}` | stateid: `other` (shard, grace-instance bits, token), `seqid`; `seqid` 0 is `Seq` 0, current | — | §5.2 |
 | `OpenMode.Access` / `Deny` | `share_access` / `share_deny`: read and write each way; NFSv4 has no delete bit, so an NFS open never denies delete | — | below |
 | an open with `Via` zero: counted under no directory, no delete through a parent ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)); `Reclaim` for `CLAIM_PREVIOUS` | `OPEN` claim types `CLAIM_FH`, `CLAIM_PREVIOUS`, `CLAIM_DELEG_CUR_FH`, `CLAIM_DELEG_PREV_FH` | — | below |

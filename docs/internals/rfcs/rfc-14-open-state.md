@@ -211,19 +211,20 @@ type Reach struct {
 	Callback NodeID   // (cluster) the gateway node holding its back channel; zero: none
 	Down     bool     // the back channel is lost: signalled to the client, no grant offered, until it rebinds
 	Sessions []ReachNode // (cluster) gateway nodes holding a session of it, one entry per node (below); Destroy is refused while any remains
+	Gen      uint64      // the highest Gen any entry has taken; never lowered, so no Gen repeats across an entry's removal
 }
 
 type ReachNode struct {
 	Node  NodeID
 	Epoch uint64 // the node epoch it was listed under (RFC 11 §3.1): an entry at an older epoch than its node's current one counts as absent until Connect or AddSession replaces it (below)
-	Gen   uint64 // raised by every Connect or AddSession that lists the node; a Last removes the entry only at the Gen it names
+	Gen   uint64 // set above Reach.Gen by every Connect or AddSession that lists the node; a Last removes the entry only at the Gen it names
 }
 
 // SessionEnd is how Disconnect ends one session.
 type SessionEnd struct {
 	Logoff bool // SMB LOGOFF or a failed re-authentication's teardown: every open of the session closes, durable and persistent included; otherwise its last channel ended: volatile opens close, the rest start their Timeout (§8.1)
 	Last   bool   // the node's last session of the client: removes the node's Reach.Sessions entry in the same step, if its Gen is still Gen
-	Gen    uint64 // with Last: the entry's Gen when the adapter decided last; a newer one means the node was listed again meanwhile, and the entry stays
+	Gen    uint64 // with Last: the latest Gen the adapter holds for the entry when it decided last; a newer one means the node was listed again meanwhile: the entry stays and Disconnect returns its Gen
 }
 
 // ShardMark is one shard the client holds state in.
@@ -359,19 +360,28 @@ The adapter decides first and last under a per-client step on its node, held
 only around that local decision, never across the call it leads to, so no
 `SESSION_SETUP` waits behind another session's `LOGOFF` and its slowest
 primary. The entry's `Gen` orders the calls instead: every `Connect` or
-`AddSession` that lists the node raises it, and the last session's
-`Disconnect` passes the `Gen` the adapter saw when it decided last and removes
-the entry only if it still matches. So a session set up while the last one
-ends either lists the node again before the removal, which then removes
-nothing, or runs after it and adds the node back: a node holding a session is
-never left unlisted.
+`AddSession` that lists the node, a re-list at a new epoch included, sets it
+above every `Gen` the record has given, so none repeats across a removal, and
+the adapter stores every `Gen` such a call returns. The last session's
+`Disconnect` passes the latest `Gen` the adapter held when it decided last and
+removes the entry only if it still matches. On a mismatch the entry stays and
+`Disconnect` returns its current `Gen`; the adapter stores it and decides again
+under its step, repeating the `Disconnect` with that `Gen` if the node still
+holds no session of the client, and stopping otherwise. So a session set up
+while the last one ends either lists the node again before the removal, which
+then removes nothing, or runs after it and adds the node back: a node holding a
+session is never left unlisted. And a re-list, which has no session behind it,
+never keeps a node listed that holds none: its `Gen` sends the last session's
+end round once more.
 
 **A `Disconnect` closes at the primaries before it unlists.** In a cluster the
 lease owner sends the session's end to each primary holding the client's state
 first and runs its own step, with `Last`'s removal, only once every one has
 acknowledged. A primary that does not answer fails the call with the entry
 kept, and the adapter repeats it until it succeeds; a repeat finds the closed
-opens gone and closes nothing twice. Otherwise a `Last` committed before an
+opens gone and closes nothing twice. The repeats end with the record: once it
+is released, a repeat is `ErrStaleClient`, and the adapter counts that, or a
+`Disconnect` finding the node's entry already gone, as success. Otherwise a `Last` committed before an
 unreachable primary closed its share of the session would leave that
 primary's durable opens open, and, with the node's lease live, their `Timeout`
 would never start.
@@ -2889,7 +2899,7 @@ type Clients interface {
 	Destroy(ctx, who Caller) error                                          // ErrClientBusy while a session or held state remains; releases nothing; the revoked set goes with the record
 	Rebind(ctx, who Caller, node NodeID) error                              // a new back channel: sets Reach.Callback, clears Reach.Down
 	ChannelDown(ctx, c ClientID) error                                      // the back channel's node is lost: sets Reach.Down; no grant until Rebind (§4.1)
-	Disconnect(ctx, c ClientID, s SessionRef, end SessionEnd) error         // ends one session as end says, at each primary before the lease owner; its closes reach Sink.Closed (§11.1); Last also removes the node's Reach.Sessions entry at end.Gen (§2.1)
+	Disconnect(ctx, c ClientID, s SessionRef, end SessionEnd) (gen uint64, err error) // ends one session as end says, at each primary before the lease owner; its closes reach Sink.Closed (§11.1); Last also removes the node's Reach.Sessions entry at end.Gen, or leaves a newer one and returns its Gen; zero once the entry is gone; ErrStaleClient once the record is released (§2.1)
 }
 
 type Opens interface {
@@ -3193,7 +3203,7 @@ Deleted numbers are not reused.
 | L49 | A state reference carries its type, shard, grace-instance bits and ≥64 random bits; a miss is stale in grace or for another instance's bits, bad otherwise. | A recall misses its deadline: `ErrRevoked` until `FreeState`. An expired client's references are `ErrBadState`, as a forged one. A single-node restart under an NFSv4.0 lock: `ErrStaleState`, and the reclaim granted. Restart 40 times: a reference of the first instance is never answered as anything but stale or bad. **(cluster)** After a batch move, `TestState` and `FreeState` answer as before and a reconnect by the old `FileId` succeeds; fail the receiving shard over: the moved reference is stale, the forwarding entry kept, and works after the reclaim. |
 | L50 | An expired or revoked client's state is released in every view; an administrator's revoke keeps its record, sessions and revoked references, each answered revoked until freed, and empties its `Shards`, so no reclaim survives a restart; an ownerless client's revoke deletes its record; `Destroy` releases nothing. | Grant through one adapter, let the lease expire, open conflictingly through the other: granted without a restart. Revoke a client: its state is released for others at once, each reference `ErrRevoked` with `AdminRevoked` set and `RecallableRevoked` clear until freed. Revoke X, let Y take its lock, restart: X's reclaim is `ErrNoReclaim`, and its next ordinary open lists the shard again. Revoke an NLM host and restart: no notice, no record, a reclaim `ErrNoReclaim`. `Destroy` with a session or state: `ErrClientBusy`, nothing released; with only revoked references: the record and its revoked set gone. |
 | L51 | No grant with write caching is offered on a file whose mode has the setuid or setgid bit, and a mode change that sets either bit recalls the write caching of every grant held on the file. | Open a setuid file for write as a non-owner: no write grant offered, over NFS and SMB, and for setgid. Grant a write delegation, then set setuid from another client: the delegation is recalled before the mode change returns; a `ChangeSetID` from the holder itself recalls its own write caching too. pjdfstest `chmod/12.t` is the e2e half (§13). |
-| L52 | An SMB logoff closes only its own session's opens and releases nothing else; a node leaves `Reach.Sessions` at its last session of the client, and the record is not released while any node remains. | Two sessions under one `ClientGuid` each hold opens; log one off: only its opens close, and the node stays listed. Log the other off: one `Disconnect` with `Last`, the node unlisted and the record released. Hold one idle session on each of two nodes with no open: the record stays until both end. Race a `SESSION_SETUP` against a node's last `LOGOFF`: the node is listed exactly when it holds a session, and the setup does not wait for the `LOGOFF`. Restart a listed node: its old entry counts as absent and `Destroy` succeeds. Mark a listed node lapsed and let it take a new lease with its session alive: it is listed again at the new epoch. `LOGOFF` the last session holding a delete-on-close open: the file is released. Make one primary unreachable during a `LOGOFF`: the entry stays until a repeat succeeds there. |
+| L52 | An SMB logoff closes only its own session's opens and releases nothing else; a node leaves `Reach.Sessions` at its last session of the client, and the record is not released while any node remains. | Two sessions under one `ClientGuid` each hold opens; log one off: only its opens close, and the node stays listed. Log the other off: one `Disconnect` with `Last`, the node unlisted and the record released. Hold one idle session on each of two nodes with no open: the record stays until both end. Race a `SESSION_SETUP` against a node's last `LOGOFF`: the node is listed exactly when it holds a session, and the setup does not wait for the `LOGOFF`. Restart a listed node: its old entry counts as absent and `Destroy` succeeds. Mark a listed node lapsed and let it take a new lease with its session alive: it is listed again at the new epoch. `LOGOFF` the last session holding a delete-on-close open: the file is released. Make one primary unreachable during a `LOGOFF`: the entry stays until a repeat succeeds there. Re-list a node at a new epoch while its last session ends, the re-list's `Connect` landing before the `Disconnect`: the `Disconnect` returns the new `Gen`, the adapter's repeat unlists the node, and the record is released. Repeat a `Disconnect` after the record is released: `ErrStaleClient`, counted as success. |
 | L53 | (cluster) The opens of sessions held by a node whose node lease lapsed are timed as disconnected from the lapse. | Kill the node holding a session with SMB durable opens: each `Timeout` starts at the lapse, and a reconnect through another node finds them. |
 | L54 | The stateid index, the per-client index, the per-`Via` counts and the grant-budget counts are derived from the files' entries. | Model layer: after any operation sequence, each equals the rebuild `export_test.go` exposes; after `Expire`, the client is in none of them. |
 | L55 | Watches are bounded per client, and a watch's undelivered changes are bounded: it hands the `Sink` at most 65 changes a sweep. | Register watches past 1,024: `ErrDelay` (`DelayResources`). A burst of 10⁵ changes under one watch whose client does not read leaves one pending `ChangeEnumerate` and a bounded heap. Across sweeps of more than 65 changes each, no sweep hands the `Sink` more than 65 for the watch. |
