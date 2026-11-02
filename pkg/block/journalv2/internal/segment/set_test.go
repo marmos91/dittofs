@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -892,6 +893,75 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 		t.Fatal("a held total above the size was not reported")
 	} else if !errors.Is(err, ErrMismatch) {
 		t.Fatalf("a held total above the size: %v, want it to wrap %v", err, ErrMismatch)
+	}
+}
+
+// TestCheckComparesEveryMaintainedCountWithTheSet: each counter the ledger
+// maintains — the footprint, the segments, the sealed, the spares — is one the
+// check re-derives by walking the set, and the shares' totals are re-derived
+// from the entries' own tags. A counter that drifted from what the set's own
+// state makes of it is a broken ledger: the check names it, because the
+// maintained figures are precisely the ones nothing recomputes at read time.
+func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	// A ledger holding one spare, one sealed and one active segment with
+	// records of one share: every count the check re-derives has something to
+	// disagree with once its counter drifts.
+	drift := func(name, says string, corrupt func(*Set)) {
+		s := NewSet(segCap, nil)
+		spares := []core.SegmentID{1, 2}
+		for _, id := range spares {
+			if err := s.AddSpare(id); err != nil {
+				t.Fatalf("AddSpare %d: %v", id, err)
+			}
+		}
+		if err := s.Take(1); err != nil {
+			t.Fatalf("Take: %v", err)
+		}
+		if err := s.Take(2); err != nil {
+			t.Fatalf("Take: %v", err)
+		}
+		if err := s.AddRecord(2, core.ShareTag(3), 400); err != nil {
+			t.Fatalf("AddRecord: %v", err)
+		}
+		if err := s.Seal(1, true); err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+		if err := s.Check(); err != nil {
+			t.Fatalf("the consistent set: %v", err)
+		}
+
+		s.mu.Lock()
+		corrupt(s)
+		s.mu.Unlock()
+		if err := s.Check(); err == nil {
+			t.Fatalf("a drifted %s was not reported", name)
+		} else if !errors.Is(err, ErrMismatch) {
+			t.Fatalf("a drifted %s was reported as %v, want it to wrap %v", name, err, ErrMismatch)
+		} else if !strings.Contains(err.Error(), says) {
+			t.Fatalf("a drifted %s was reported as %q, want it to come from the branch that names it (containing %q)", name, err, says)
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		corrupt func(*Set)
+		// says is a fragment the drift's own error branch carries: the check
+		// names the drifted figure, not just any mismatch it can find.
+		says string
+	}{
+		{"footprint", func(s *Set) { s.c.UsedBytes -= segCap }, "the set's sizes make"},
+		{"segment count", func(s *Set) { s.c.Segments-- }, "counts do not match"},
+		{"sealed count", func(s *Set) { s.c.Sealed++ }, "counts do not match"},
+		{"spare count", func(s *Set) { s.c.Spares++ }, "counts do not match"},
+		// no entry charges it, so only the shares' totals comparison can
+		// report it
+		{"share total", func(s *Set) { s.tags[core.ShareTag(9)] = 1 }, "shares' record bytes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			drift(c.name, c.says, c.corrupt)
+		})
 	}
 }
 
