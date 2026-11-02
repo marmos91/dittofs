@@ -120,7 +120,7 @@ func TestScanAttachesEveryKindAndSeals(t *testing.T) {
 	}
 }
 
-// TestScanCorruptedLengthResynchronises is the issue's own done-when: a
+// TestScanCorruptedLengthResynchronises is the resync's own done-when: a
 // record's length bytes edited — the checksums left stale, or redone so only
 // the length's own rule can refuse — is passed over as bad bytes, the
 // records around it attach, and the scan counts itself as one that
