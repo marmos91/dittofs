@@ -81,11 +81,21 @@ func declaredInterfaces(pkg *types.Package) map[string]*types.Interface {
 }
 
 // uncalled names, as Interface.Method, every method of a declared interface
-// the package never calls.
-func uncalled(pkg *types.Package, info *types.Info) []string {
+// the package never calls. Only a selection that is called counts: a method
+// value or a selection discarded with _ = calls nothing.
+func uncalled(files []*ast.File, pkg *types.Package, info *types.Info) []string {
 	called := map[types.Object]bool{}
-	for _, sel := range info.Selections {
-		called[sel.Obj()] = true
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if fun, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+					if sel := info.Selections[fun]; sel != nil {
+						called[sel.Obj()] = true
+					}
+				}
+			}
+			return true
+		})
 	}
 	var out []string
 	for name, it := range declaredInterfaces(pkg) {
@@ -103,17 +113,23 @@ func uncalled(pkg *types.Package, info *types.Info) []string {
 // is one the engine calls: an interface holds exactly what its consumer
 // needs.
 func TestRFC8C_DeclaredInterfaces(t *testing.T) {
-	_, _, seeded, seededInfo := sourcePackage(t, `package seeded
-type Store interface{ Used(); Unused() }
+	_, seededFiles, seeded, seededInfo := sourcePackage(t, `package seeded
+type Store interface{ Used(); Valued(); Discarded(); Unused() }
 type Deps struct{ S Store }
-func use(d Deps) { d.S.Used() }
+func use(d Deps) {
+	d.S.Used()
+	f := d.S.Valued
+	_ = f
+	_ = d.S.Discarded
+}
 `)
-	if got := uncalled(seeded, seededInfo); !slices.Equal(got, []string{"Store.Unused"}) {
-		t.Fatalf("seeded source: uncalled %v, want [Store.Unused]", got)
+	want := []string{"Store.Discarded", "Store.Unused", "Store.Valued"}
+	if got := uncalled(seededFiles, seeded, seededInfo); !slices.Equal(got, want) {
+		t.Fatalf("seeded source: uncalled %v, want %v", got, want)
 	}
 
-	_, _, pkg, info := enginePackage(t)
-	if got := uncalled(pkg, info); len(got) > 0 {
+	_, files, pkg, info := enginePackage(t)
+	if got := uncalled(files, pkg, info); len(got) > 0 {
 		t.Errorf("the engine never calls %d declared methods: %v", len(got), got)
 	}
 }
