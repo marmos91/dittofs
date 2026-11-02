@@ -928,9 +928,9 @@ func TestEdge_ReleaseMiddleEndsAndAll(t *testing.T) {
 // TestEdge_FullyReleasedSegmentReclaimedWithoutRead checks that a segment
 // whose every record is released is retired on its own, once its releases
 // are durable, without a repack and without one read of it: the segment
-// leaves the journal's set, the accounted storage falls by the segment's
-// account on the unlink path and stays whole on the recycle, and the freed
-// counter debits exactly the account on both paths.
+// leaves the journal's set, the accounted storage moves in whole caps and
+// by no more than the segment's account, and the freed counter debits
+// exactly the account on both retire paths.
 func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -968,12 +968,12 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	// The retire is one of two paths, and both are visible at the seam: the
 	// retire unlinks the segment's name — a recycle that fails lands there
 	// too, its fallback unlink — or renames it to a fresh one for the spare
-	// pool. Which path ran decides what the accounting must show: a recycle's
-	// rename is the take of a spare whose cap stays in the journal's account,
-	// an unlink hands the cap back to the filesystem. The path is therefore
-	// read, not assumed, before the checks below.
+	// pool. Both are accounted at a whole cap, so a footprint that cannot see
+	// spares does not tell the paths apart: the move below is checked in whole
+	// caps and bounded by the account, and the freed counter, which both
+	// paths debit exactly, is where the retire's whole account is named.
 	unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
-	wantRetireAccounted(t, f, beforeUsed, info.Allocated, unlinked)
+	wantRetireAccounted(t, f, "a retire without a repack", seg, beforeUsed, info.Allocated)
 
 	// Freed counts what retiring actually returned — to the filesystem by an
 	// unlink or to the spare pool by a recycle — so both paths debit the
@@ -1365,8 +1365,8 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 // TestEdge_SegmentRetiredByEvictionAndRepack checks that when a segment's
 // own retirement, once every record of it is released, and a repack aimed at
 // it both select it, the segment leaves the journal once, the accounted
-// storage falling by the segment's account on the unlink path and by none
-// on the recycle, whichever of the two reaches the retire first.
+// storage moving in whole caps and by no more than the segment's account,
+// whichever of the two reaches the retire first.
 func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	for _, firstIs := range []string{"repack", "eviction"} {
 		t.Run(firstIs, func(t *testing.T) {
@@ -1507,10 +1507,15 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			// The retire that landed took one of the two paths, and both are
 			// visible at the seam: an unlink of the segment's name — which a
 			// failed recycle's fallback also is — or a rename to a fresh one
-			// for the spare pool. The path decides what the accounting below
-			// must show, so it is read, not assumed.
-			unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
-			wantRetireAccounted(t, f, beforeUsed, s.Allocated, unlinked)
+			// for the spare pool. Both are accounted at a whole cap, so the
+			// move is checked in whole caps, bounded by the account, and the
+			// freed counter below names the retire's whole account; the
+			// double selection's retire charge is the bound this fall keeps.
+			wantRetireAccounted(t, f, "a double selection's retire", seg, beforeUsed, s.Allocated)
+			freed := after.Counters.FreedBytes - before.Counters.FreedBytes
+			if freed != uint64(s.Allocated) {
+				t.Fatalf("a double selection whose retire %s a segment accounted at %d moved freed by %d, want exactly its account", retirePath(f.Seam.CallsFor(journalv2test.OpRemove, name) > 0), s.Allocated, freed)
+			}
 			if after.UsedBytes < 0 {
 				t.Fatalf("UsedBytes = %d after the retirement, want it never below zero", after.UsedBytes)
 			}
@@ -1924,32 +1929,34 @@ func retirePath(unlinked bool) string {
 	return "recycled"
 }
 
-// wantRetireAccounted fails the test unless the storage the journal accounts
-// fell by allocated after a retire that unlinked the segment, or held at its
-// level after one that recycled the segment into the spare pool — give or
-// take whole spares — and returns UsedBytes as it settled. The caller reads
-// before before the retire and settles the spare pool through wantAccounted
-// on both sides; the fall is checked here, once, so a correction lands in
-// one place.
+// wantRetireAccounted fails the test unless, once the retire named by what
+// has run, the segment is no longer listed and the storage the journal
+// accounts moved in whole segment caps, falling by no more than the
+// segment's account. The caller reads before before the retire, settles the
+// spare pool on both sides, and checks the freed counter exactly, which is
+// where the unlink's debit is named: a footprint that cannot see spares does
+// not tell the unlink path from the recycle, both segments being accounted
+// at a whole cap, so the move is checked, not the path.
 //
-// decision: the fall is compared modulo whole segment caps because spares are
-// made and consumed off the write path and Stats does not report them, so an
-// equality to the byte races a spare refill or take the journal is allowed to
-// run between the two reads. Whether a full-size segment is recycled or
-// unlinked is the spare pool's own choice made at the retire, never the
-// check's. Overturned once Stats reports the spares, when both sides can be
-// subtracted and the fall compared exactly.
-func wantRetireAccounted(t *testing.T, f *journalv2test.Fixture, before, allocated int64, unlinked bool) int64 {
+// decision: the move is compared modulo whole segment caps and bounded above
+// by the account alone, because the journal accounts spares in UsedBytes
+// without listing them and Stats does not report them, so an equality to the
+// byte races a spare refill the journal is allowed to run between the two
+// reads. A refill moves the after read upward, so no correct move falls by
+// more than the account, while a double retire falls past it and the freed
+// counter names it. The congruence holds for a segment accounted at a whole
+// cap, which is what the callers pass. Overturned once Stats reports the
+// spares, when the two reads subtract them and the fall compares exactly,
+// per path.
+func wantRetireAccounted(t *testing.T, f *journalv2test.Fixture, what string, seg journalv2.SegmentID, before, allocated int64) {
 	t.Helper()
 
 	wantAccounted(t, f, "after the retirement")
+	if _, ok := segmentInfo(f, seg); ok {
+		t.Fatalf("%s left segment %d still listed", what, seg)
+	}
 	after := f.J.Stats().UsedBytes
-	want := int64(0)
-	if unlinked {
-		want = allocated
+	if fell := before - after; !sameBut(before, after, 0) || fell > allocated {
+		t.Fatalf("%s moved the accounted storage from %d to %d, want a move in whole segment caps that falls by at most the segment's %d account", what, before, after, allocated)
 	}
-	if fell := before - after; !sameBut(before, after, want) || fell < 0 {
-		t.Fatalf("the accounted storage moved from %d to %d over a retire that %s, want %d leave it, give or take whole spares", before, after, retirePath(unlinked), want)
-	}
-	return after
 }
