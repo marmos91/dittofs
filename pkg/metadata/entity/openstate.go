@@ -100,9 +100,17 @@ type ClientLease struct {
 
 // Reach is how a recall reaches the client.
 type Reach struct {
-	Callback NodeID   // the node holding its back channel; zero: none
-	Down     bool     // the back channel is lost, until the client rebinds
-	Sessions []NodeID // the nodes holding a session of it, each once
+	Callback NodeID      // the node holding its back channel; zero: none
+	Down     bool        // the back channel is lost, until the client rebinds
+	Sessions []ReachNode // the nodes holding a session of it, each once
+}
+
+// ReachNode is a node holding a session of a client, under the node epoch it
+// was added in: an entry older than its node's current epoch is a restarted
+// node's, and counts as absent.
+type ReachNode struct {
+	Node  NodeID
+	Epoch uint64
 }
 
 // ShardMark is one shard the client holds state in, and Done: the grace

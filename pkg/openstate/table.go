@@ -73,7 +73,8 @@ type Table struct {
 	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
 	adopted map[entity.ClientID]struct{}      // the clients install made known here, until they come back or hold nothing
 	shards  map[ShardID]*served
-	sink    Sink // nil before Start and after Stop
+	sink    Sink   // nil before Start and after Stop
+	epoch   uint64 // the node epoch Start raised: a Reach.Sessions entry under an earlier one counts as absent
 	stopped bool
 	stop    func()
 
@@ -262,7 +263,8 @@ func (t *Table) Recovery() Recovery { return recovery{t} }
 // or a deadline must fire on the instant.
 const sweepEvery = 10 * time.Second
 
-// Start starts the timer and takes the service's Sink and admission lock.
+// Start raises the node epoch, starts the timer and takes the service's Sink
+// and admission lock.
 // Before Start and after Stop every mutating call is ErrStopped, and a table
 // starts once. The timer outlives ctx: only Stop ends it.
 //
@@ -278,11 +280,16 @@ func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 	if sink == nil || order == nil {
 		return errors.New("openstate: Start needs a Sink and an Order")
 	}
+	epoch, err := t.d.Records.RaiseNodeEpoch(ctx)
+	if err != nil {
+		return err
+	}
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	if t.sink != nil || t.stopped {
 		return errors.New("openstate: table already started")
 	}
+	t.epoch = epoch
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	t.order = order
 	t.timer.Go(func() {

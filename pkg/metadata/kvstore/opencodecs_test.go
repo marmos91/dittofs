@@ -22,7 +22,7 @@ func openCodecCases() []codecCase {
 	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
 	cl := entity.ClientRecord{ID: 7, Protocol: entity.ProtocolNFSv4, Name: []byte("host"), Boot: [8]byte{7: 1},
 		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
-		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1, n2}}, Ended: true, Adapter: []byte{0x01, 0xAB}}
+		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.ReachNode{{Node: n1, Epoch: 3}, {Node: n2, Epoch: 4}}}, Ended: true, Adapter: []byte{0x01, 0xAB}}
 	smb := entity.ClientRecord{ID: 8, Protocol: entity.ProtocolSMB, Name: []byte{0x11, 0x22}, Adapter: []byte{}}
 	op := entity.OpenRecord{ID: 9, Client: 7, Principal: alice, File: fid, Access: 0x1F, Privileged: true, Deny: 0x02,
 		Durability: entity.DurabilityPersistent, DeleteOnClose: true, DeleteBy: group,
@@ -39,7 +39,7 @@ func openCodecCases() []codecCase {
 	return []codecCase{
 		{"client", cl, encodeClient(cl),
 			"01" + "02" + "04" + hex.EncodeToString([]byte("host")) + "0000000000000001" + ph + "01" + "02" +
-				f16(1) + f16(2) + "01" + "02" + f16(1) + f16(2) + "01" + "0201ab",
+				f16(1) + f16(2) + "01" + "02" + f16(1) + hexU64(3) + f16(2) + hexU64(4) + "01" + "0201ab",
 			func(b []byte) (any, error) { return decodeClient(7, b) }},
 		{"smb client", smb, encodeClient(smb),
 			"01" + "04" + "021122" + "0000000000000000" + "00" + strings.Repeat("00", 16) + "00" + "00" +

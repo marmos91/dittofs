@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -495,53 +494,85 @@ func TestDestroy(t *testing.T) {
 	}
 }
 
-// RemoveSession takes a node out of the client's Reach.Sessions, and the
-// client's Destroy, refused while the node was listed, then succeeds.
-func TestRemoveSessionLetsDestroyThrough(t *testing.T) {
+// A Disconnect with Last takes its session's node out of the client's
+// Reach.Sessions in the same call, and the client's Destroy, refused while
+// the node was listed, then succeeds; one without Last leaves it listed.
+func TestLastDisconnectLetsDestroyThrough(t *testing.T) {
 	f := newFixture(t)
 	alice := entity.NewUser()
 	id := f.connect(t, nfs("laptop", 1, alice))
-	n1 := entity.NodeID{15: 1}
-	if _, err := f.AddSession(ctx, id, n1, nil, nil); err != nil {
+	if _, err := f.AddSession(ctx, id, nodeOf(s1), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Disconnect(ctx, id, s1, SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Destroy(ctx, Caller{Client: id, Principal: alice}); !errors.Is(err, ErrClientBusy) {
 		t.Fatalf("Destroy with a node listed: %v, want ErrClientBusy", err)
 	}
-	if err := f.RemoveSession(ctx, id, n1); err != nil {
+	if err := f.Disconnect(ctx, id, s1, SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, err := f.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 0 {
-		t.Fatalf("after RemoveSession: sessions %v, %v; want none", rec.Reach.Sessions, err)
+		t.Fatalf("after the last Disconnect: sessions %v, %v; want none", rec.Reach.Sessions, err)
 	}
 	if err := f.Destroy(ctx, Caller{Client: id, Principal: alice}); err != nil {
-		t.Errorf("Destroy after RemoveSession: %v", err)
+		t.Errorf("Destroy after the last Disconnect: %v", err)
+	}
+}
+
+// A Reach.Sessions entry recorded under an earlier start's node epoch counts
+// as absent: after a restart the client's Destroy goes through, though the
+// entry is still written, and a session recorded again keeps it busy.
+func TestAnEntryUnderAnOldEpochIsAbsent(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	id := f.connect(t, nfs("laptop", 1, alice))
+	again := f.connect(t, nfs("desktop", 1, alice))
+	for _, c := range []entity.ClientID{id, again} {
+		if _, err := f.AddSession(ctx, c, entity.NodeID{}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Stop()
+	g := reopen(t, f.fs, f.clock)
+	if rec, err := g.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 1 {
+		t.Fatalf("after a restart: sessions %v, %v; want the entry still written", rec.Reach.Sessions, err)
+	}
+	if _, err := g.AddSession(ctx, again, entity.NodeID{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Destroy(ctx, Caller{Client: again, Principal: alice}); !errors.Is(err, ErrClientBusy) {
+		t.Errorf("Destroy of a client listed again after the restart: %v, want ErrClientBusy", err)
+	}
+	if err := g.Destroy(ctx, Caller{Client: id, Principal: alice}); err != nil {
+		t.Errorf("Destroy of a client listed only under the old epoch: %v, want it through", err)
 	}
 }
 
 // An SMB record holding no open is not released while a node is still
-// listed in its Reach.Sessions: only the last node's RemoveSession releases
-// it.
+// listed in its Reach.Sessions: only the last node's last Disconnect
+// releases it.
 func TestAnSMBRecordStaysWhileANodeIsListed(t *testing.T) {
 	f := newFixture(t)
 	id := f.connect(t, smb("pc-a"))
-	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
-	for _, n := range []entity.NodeID{n1, n2} {
+	on1, on2 := entity.SessionRef{Node: 1, ID: 1}, entity.SessionRef{Node: 2, ID: 1}
+	for _, s := range []entity.SessionRef{on1, on2} {
 		rec, err := f.Record(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.AddSession(ctx, id, n, rec.Adapter, rec.Adapter); err != nil {
+		if _, err := f.AddSession(ctx, id, nodeOf(s), rec.Adapter, rec.Adapter); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := f.RemoveSession(ctx, id, n1); err != nil {
+	if err := f.Disconnect(ctx, id, on1, SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
-	if rec, err := f.Record(ctx, id); err != nil || !slices.Equal(rec.Reach.Sessions, []entity.NodeID{n2}) {
-		t.Fatalf("with n2 still listed: sessions %v, %v; want the record kept, listing n2", rec.Reach.Sessions, err)
+	if rec, err := f.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 1 || rec.Reach.Sessions[0].Node != nodeOf(on2) {
+		t.Fatalf("with node 2 still listed: sessions %v, %v; want the record kept, listing node 2", rec.Reach.Sessions, err)
 	}
-	if err := f.RemoveSession(ctx, id, n2); err != nil {
+	if err := f.Disconnect(ctx, id, on2, SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
@@ -609,7 +640,7 @@ func TestStartAndStop(t *testing.T) {
 		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
 		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
 		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
-		"Disconnect":  func() error { return g.Disconnect(ctx, id, entity.SessionRef{}) },
+		"Disconnect":  func() error { return g.Disconnect(ctx, id, entity.SessionRef{}, SessionEnd{}) },
 		"ChannelDown": func() error { return g.ChannelDown(ctx, id) },
 		"Reconnect": func() error {
 			_, err := g.Opens().Reconnect(ctx, Caller{Client: id}, 1, ReconnectMatch{}, entity.SessionRef{})

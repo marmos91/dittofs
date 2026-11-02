@@ -199,7 +199,7 @@ func kindOf(s uint8) GrantKind {
 	return k
 }
 
-func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef) error {
+func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) error {
 	t := v.t
 	sink, err := t.running()
 	if err != nil {
@@ -221,7 +221,7 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 		_ = t.step(h.file, func(e *entry) error {
 			switch o := e.opens[h.ref.Token]; {
 			case o == nil || o.Session != s || o.parked != 0:
-			case o.Durability == entity.DurabilityNone, !o.persistent() && !e.handleCached(o):
+			case end.Logoff, o.Durability == entity.DurabilityNone, !o.persistent() && !e.handleCached(o):
 				// decision: a durable open without handle caching, which it
 				// was granted with and a break may have taken, is closed at
 				// disconnect, not parked: MS-SMB2 3.3.5.9.7 refuses to
@@ -236,6 +236,38 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 	}
 	out.raise(t, sink)
 	t.serveFiles(ctx, sink, out.serve)
+	if !end.Last {
+		return nil
+	}
+	return t.leaveReach(ctx, c, nodeOf(s))
+}
+
+// leaveReach takes node, and every entry under an earlier epoch, out of c's
+// Reach.Sessions, under the client step. An SMB record left with no live
+// node and no state is released: nothing else ends it.
+func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.NodeID) error {
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	t.cmu.Lock()
+	epoch := t.epoch
+	t.cmu.Unlock()
+	rec, err := t.setReach(ctx, c, func(r *entity.Reach) {
+		r.Sessions = slices.DeleteFunc(slices.Clone(r.Sessions), func(n entity.ReachNode) bool { return n.Node == node || n.Epoch < epoch })
+	})
+	if err != nil || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
+		return err
+	}
+	// A parked open is held, so a durable open's Timeout still running
+	// keeps the record too.
+	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+		return staleIfGone(err)
+	}
+	t.cmu.Lock()
+	delete(t.leases, c)
+	delete(t.known, c)
+	t.cmu.Unlock()
+	t.unreclaim(c)
+	t.dropRevoked(c)
 	return nil
 }
 

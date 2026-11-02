@@ -42,7 +42,7 @@ func byID(o Open) OpenRef {
 
 func (f *fixture) disconnect(t *testing.T, who Caller, s entity.SessionRef) {
 	t.Helper()
-	if err := f.Disconnect(ctx, who.Client, s); err != nil {
+	if err := f.Disconnect(ctx, who.Client, s, SessionEnd{}); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 }
@@ -108,6 +108,32 @@ func TestDisconnectEndsOneSession(t *testing.T) {
 	}
 	if _, err := f.reconnect(a, od, m(od, 1), s3); err != nil {
 		t.Errorf("a reconnect of the durable open under a batch oplock: %v", err)
+	}
+}
+
+// A logoff closes every open of its session in the one call, a durable one
+// under a batch oplock and a persistent one included, and leaves another
+// session's open attached.
+func TestLogoffClosesTheSessionsOpens(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	durable, other := anyFile(), anyFile()
+	batch := OpenRequest{Access: rd | wr, Deny: wr, Want: rwh}
+	od := f.mustOpen(t, a, durable, keep(batch, entity.DurabilityDurable, s1, time.Minute, 1))
+	persistent, r := f.fileIn(t, "disk")
+	r.Access = rd | wr
+	op := f.mustOpen(t, a, persistent, keep(r, entity.DurabilityPersistent, s1, time.Minute, 2))
+	oo := f.mustOpen(t, a, other, keep(batch, entity.DurabilityDurable, s2, time.Minute, 3))
+	if err := f.Disconnect(ctx, a.Client, s1, SessionEnd{Logoff: true}); err != nil {
+		t.Fatal(err)
+	}
+	for name, o := range map[string]Open{"durable": od, "persistent": op} {
+		if _, held := f.byID[o.ID]; held {
+			t.Errorf("the %s open of the logged-off session is still held", name)
+		}
+	}
+	if _, held := f.byID[oo.ID]; !held {
+		t.Error("another session's open was closed by the logoff")
 	}
 }
 

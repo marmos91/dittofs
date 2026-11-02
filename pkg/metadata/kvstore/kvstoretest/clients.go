@@ -33,7 +33,7 @@ func testClients(t *testing.T, kvo Opener) {
 	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
 	nfs := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("host-a"), Boot: [8]byte{1},
 		Owner: alice, Protect: true, Recovery: entity.RecoverRefusal, Lease: entity.ClientLease{Node: n1},
-		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.NodeID{n1}}, Adapter: []byte{1, 2, 3}}
+		Reach: entity.Reach{Callback: n2, Down: true, Sessions: []entity.ReachNode{{Node: n1, Epoch: 1}}}, Adapter: []byte{1, 2, 3}}
 	must(t, cs.Create(ctx, nfs))
 	nfs.Shards = []entity.ShardMark{{Shard: 1, Done: 4}}
 	must(t, cs.MarkShard(ctx, nfs.ID, nfs.Shards[0]))
@@ -152,9 +152,9 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 	cs := s.Clients()
 	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("h"), Adapter: []byte("v0")}
 	must(t, cs.Create(ctx, cl))
-	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
+	n1, n2 := entity.ReachNode{Node: entity.NodeID{15: 1}, Epoch: 1}, entity.ReachNode{Node: entity.NodeID{15: 2}, Epoch: 1}
 	got, err := cs.AddSession(ctx, cl.ID, n1, []byte("v0"), []byte("first"))
-	if err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.NodeID{n1}) {
+	if err != nil || !bytes.Equal(got.Adapter, []byte("first")) || !slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
 		t.Fatalf("the first session: %+v, %v", got, err)
 	}
 
@@ -165,8 +165,13 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 		t.Errorf("a replay after a restart: %+v, %v", cur, err)
 	}
 	if got, err := cs.AddSession(ctx, cl.ID, n1, []byte("first"), []byte("third")); err != nil ||
-		!slices.Equal(got.Reach.Sessions, []entity.NodeID{n1}) {
+		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{n1}) {
 		t.Errorf("a node's second session: %+v, %v", got, err)
+	}
+	restarted := entity.ReachNode{Node: n1.Node, Epoch: 2}
+	if got, err := cs.AddSession(ctx, cl.ID, restarted, []byte("third"), []byte("third")); err != nil ||
+		!slices.Equal(got.Reach.Sessions, []entity.ReachNode{restarted}) {
+		t.Errorf("a session of the node after its restart: %+v, %v; want its entry under the new epoch", got, err)
 	}
 	if _, err := cs.AddSession(ctx, cl.ID, n2, []byte("third"), make([]byte, 4<<10+1)); !invalid(err) {
 		t.Errorf("adapter bytes over 4 KiB: %v", err)
