@@ -9,7 +9,8 @@ import (
 )
 
 // scanWindow is the bytes one refill of the scan's sliding window reads, so
-// a walk over a segment pays about one read of each byte of it and a forward
+// a walk over a segment pays about one read of each byte of it — save for
+// the record bodies, each read again by its own readFull — and a forward
 // search skips whole slots on bytes already in hand.
 const scanWindow = 1 << 20
 
@@ -156,15 +157,14 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 			// stopped there on an error, because every byte before end
 			// was read before the failing one: its kind is known, and
 			// every range closed before the failing offset stays with
-			// the Scan. A search that died before reading a single
-			// slot of its own — end == off — closes nothing.
+			// the Scan. end > off always, for the search's first
+			// telling reads from the window the walk's own examination
+			// of off filled, and cannot fail.
 			kind := RangeBad
 			if zeroRun {
 				kind = RangeZero
 			}
-			if end > off {
-				sc.Ranges = append(sc.Ranges, ScanRange{Off: off, End: end, Kind: kind})
-			}
+			sc.Ranges = append(sc.Ranges, ScanRange{Off: off, End: end, Kind: kind})
 			sc.End = end
 			if err != nil {
 				return sc.Scan, err
@@ -182,7 +182,9 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 			off = sc.End
 		}
 	}
-	sc.End = size
+	// The loop is over only at off == sc.End == size: every path through
+	// it leaves End at the offset the walk stands at, and the walk stands
+	// on nothing past the segment's own bytes.
 	return sc.Scan, nil
 }
 
@@ -284,9 +286,18 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 
 	// The body, whole: one checksum covers it all, so no part of a record
 	// that does not verify is ever read as content.
+	//
+	// ponytail: the body is read by its own readFull even when the window
+	// already holds it, so every record body costs its bytes a second read
+	// and an open's fallback scan of a newest segment pays about twice its
+	// content I/O. Copy the bytes the window holds and readFull only the
+	// remainder when an open's recovery time shows the double read.
 	bs := h.BodySize()
 	if int64(cap(sc.body)) < bs {
-		sc.body = make([]byte, max(int64(cap(sc.body))*2, bs))
+		// bs fits the segment by the overrun check above, so it is the
+		// whole size needed: no doubling growth, which could allocate up
+		// to twice the segment for one record.
+		sc.body = make([]byte, bs)
 	}
 	body := sc.body[:bs]
 	if err := readFull(sc.r, body, off+RecordHeaderSize); err != nil {
@@ -339,9 +350,12 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err error) {
 	end = sc.size
 	found = slot{outcome: slotNothing}
+	// The walk's examination of off has already put [off, off+8) in the
+	// window, so this telling is a window hit: it cannot fail, and the
+	// branch below keeps the error contract without ever being taken —
+	// end > off below depends on it.
 	slotZero, err := sc.zeroSlot(off)
 	if err != nil {
-		// Nothing past off was read, so the run opens with no zero known.
 		return off, found, false, err
 	}
 	zeroRun = slotZero
@@ -372,14 +386,11 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 }
 
 // zeroSlot tells whether the bytes one slot holds — the min(8, size-p) bytes
-// it holds past p — are all zero, reading through the same window examine
-// reads, so a slot whose bytes are already in hand costs nothing at all.
+// it holds past p, always at least one, for every caller passes p < size —
+// are all zero, reading through the same window examine reads, so a slot
+// whose bytes are already in hand costs nothing at all.
 func (sc *scanner) zeroSlot(p int64) (bool, error) {
-	n := min(int64(8), sc.size-p)
-	if n <= 0 {
-		return true, nil
-	}
-	b, err := sc.read(p, n)
+	b, err := sc.read(p, min(int64(8), sc.size-p))
 	if err != nil {
 		return false, err
 	}
@@ -411,12 +422,12 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 	if off >= sc.cur && off+n <= sc.cur+sc.have {
 		return sc.window[off-sc.cur : off-sc.cur+n], nil
 	}
-	want := n
-	if !sc.narrow {
-		want = min(int64(scanWindow), sc.size-off)
-		if n > want {
-			want = n
-		}
+	want := min(int64(scanWindow), sc.size-off)
+	if sc.narrow {
+		// Every caller asks only the bytes its own slot holds, min(96,
+		// size-off) or fewer, so a healthy refill always serves them;
+		// under narrow, the slot's own bytes are all the scan reads.
+		want = n
 	}
 	if err := readFull(sc.r, sc.window[:want], off); err != nil {
 		// The refill reached bytes the slot never asked for; only the
@@ -430,16 +441,21 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 			// wide read the rest of the scan could make. Only a read
 			// covering that byte reaches it, and that read fails
 			// however narrow it is, so serving slots one by one fails
-			// at that byte and never past it.
+			// at that byte and never past it. Only [off, off+n) was
+			// read: the window holds nothing the scan may trust past
+			// it.
 			sc.narrow = true
-		} else {
-			return nil, fmt.Errorf("format: read slot at %d: %w", off, err)
+			sc.cur, sc.have = off, n
+			return sc.window[:n], nil
 		}
-		sc.cur, sc.have = off, n
-		return sc.window[:n], nil
+		return nil, fmt.Errorf("format: read slot at %d: %w", off, err)
 	}
+	// The bytes back are always exactly the slot's own [off, off+n); a
+	// refill's wider fetch stays in the window, for the callers tell
+	// zeroes and decode headers by len(b), so no path may hand back a
+	// slice longer than the one asked for.
 	sc.cur, sc.have = off, want
-	return sc.window[:want], nil
+	return sc.window[:n], nil
 }
 
 // isStop reports whether err is an outcome the scan stops at rather than

@@ -116,9 +116,9 @@ type fuzzPlanted struct {
 	records []int64        // the planted records' slots, ascending
 	headers []RecordHeader // the planted records' headers, the records' own order
 	seal    int64          // the planted marker's slot, -1 when none was planted
-	// oldOff, oldEnd hold the old life's byte range, or -1 when the
-	// plan planted none.
-	oldOff, oldEnd int64
+	// oldOff, oldEnd hold the old life's byte range and oldSeal its
+	// marker's own slot, or -1s when the plan planted none.
+	oldOff, oldEnd, oldSeal int64
 }
 
 // fuzzPlant builds a segment from a plan's bytes, each a letter of the
@@ -136,7 +136,7 @@ func fuzzPlant(plan []byte) (fuzzPlanted, bool) {
 		return fuzzPlanted{}, false
 	}
 
-	pl := fuzzPlanted{seal: -1, oldOff: -1, oldEnd: -1}
+	pl := fuzzPlanted{seal: -1, oldOff: -1, oldEnd: -1, oldSeal: -1}
 	seg := AppendSegmentHeader(nil, testSegmentHeader)
 	droppedOld := false
 	seenMarker := false
@@ -168,9 +168,10 @@ func fuzzPlant(plan []byte) (fuzzPlanted, bool) {
 			}
 			droppedOld = true
 			off := int64(len(seg))
-			old := fuzzOldLifeBytes()
+			old := fuzzOldLifeBytes(off)
 			seg = append(seg, old...)
 			pl.oldOff, pl.oldEnd = off, off+int64(len(old))
+			pl.oldSeal = off + int64(len(old)) - SealMarkerSize
 		default:
 			// A letter the grammar does not know ends the plan.
 			goto done
@@ -246,17 +247,19 @@ func fuzzKindBody(kind Kind, off int64) (RecordHeader, RecordBody) {
 }
 
 // fuzzOldLifeBytes plants an old life's records and marker under the
-// segment id before this one, as its own segment was and without its own
-// header, so its records land at slots the new life never wrote and its
-// marker names a segment this scan is not of.
-func fuzzOldLifeBytes() []byte {
+// segment id before this one, as its own segment was. base is the slot
+// the bytes will be pasted at in the recycled segment, so every header
+// names the slot it will really sit at — as a recycled segment's own old
+// bytes do — and only the segment id tells this scan to refuse them.
+func fuzzOldLifeBytes(base int64) []byte {
 	var seg []byte
 	for range 2 {
-		h, body := fuzzKindBody(KindUnmark, int64(len(seg)))
-		h.Segment, h.Offset = testSegment-1, int64(len(seg))
+		h, body := fuzzKindBody(KindUnmark, base+int64(len(seg)))
+		h.Segment = testSegment - 1
 		seg = AppendRecord(seg, testIdentity, h, body)
 	}
-	seg = AppendSealMarker(seg, testIdentity, SealMarker{Segment: testSegment - 1, Offset: int64(len(seg))})
+	oldSeal := base + int64(len(seg))
+	seg = AppendSealMarker(seg, testIdentity, SealMarker{Segment: testSegment - 1, Offset: oldSeal})
 	return seg
 }
 
@@ -465,8 +468,11 @@ func fuzzAssertPlanted(t *testing.T, seg, before []byte, scan Scan, err error, p
 				t.Errorf("planted: an old-life record attached at %d, by its own bytes never verifiable here", rec.Header.Offset)
 			}
 		}
-		if scan.Sealed && pl.seal >= 0 && scan.End != pl.seal && pl.seal >= pl.oldOff && pl.seal < pl.oldEnd {
-			t.Errorf("planted: sealed at %d inside the old life's bytes, on its marker's own slot", scan.End)
+		// The old life's own marker, at its own real slot and naming the
+		// segment this scan is not of, never seals: it only decodes under
+		// the old segment id, which this scan does not scan as.
+		if scan.Sealed && scan.End == pl.oldSeal {
+			t.Errorf("planted: sealed at %d on the old life's marker, which names another segment and cannot verify here", scan.End)
 		}
 	}
 
@@ -502,7 +508,7 @@ func recycledSegment() []byte {
 	seg := AppendSegmentHeader(nil, testSegmentHeader)
 	h, body := fuzzKindBody(KindUnmark, int64(len(seg)))
 	seg = AppendRecord(seg, testIdentity, h, body)
-	return append(seg, fuzzOldLifeBytes()...)
+	return append(seg, fuzzOldLifeBytes(int64(len(seg)))...)
 }
 
 // sealedTestSegment builds a raw seed from the unit tests' own five-record
