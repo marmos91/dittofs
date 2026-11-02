@@ -92,7 +92,10 @@ func (fs *Filesystem) ReadDir(ctx context.Context, c vfs.Call, dir vfs.Handle, a
 	}
 	if want&(vfs.EntryHandle|vfs.EntryFile) != 0 {
 		got, err := fs.authz.Rights(ctx, a.caller, dir, nil, entity.Execute)
-		if err != nil || got&entity.Execute == 0 {
+		if err != nil {
+			return vfs.Page{}, storeErr(err)
+		}
+		if got&entity.Execute == 0 {
 			want &^= vfs.EntryHandle | vfs.EntryFile
 		}
 	}
