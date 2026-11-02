@@ -2072,11 +2072,13 @@ A `SetAttr` that changes the owner or the group first commits the file's
 pending existence, as a size or time set does
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), so that `Charged` holds every write staged before it
 rather than leaving those writes to charge the new owner at their own commit.
-It holds the file's admission lock from that commit through the reservation to
-the store's apply, so no write staged in between charges the new owner at its
-own commit, unchecked. It then reserves, before the store applies the change,
-the file's charge — its `Charged` bytes and one inode — passing the new owner
-and group as `Reserve`'s `owner`, against only the scopes the charge moves into:
+That commit joins the group commit, so it runs without the admission lock
+(§5.1). It then takes the file's admission lock, and under it reserves the
+file's charge — its `Charged` bytes plus what writes staged since that commit
+will charge, read from the engine's `Overlay`, and one inode — passing the new
+owner and group as `Reserve`'s `owner`, and holds the lock to the store's
+apply, so no write staged since the commit charges the new owner unchecked. It
+reserves against only the scopes the charge moves into:
 `QuotaUser` for a new owner, `QuotaGroup` for a new group, both when both
 change, and never `QuotaShare` or `QuotaProject`, since the charge leaves
 neither. It runs after the attribute's authorisation and the open-state check,
