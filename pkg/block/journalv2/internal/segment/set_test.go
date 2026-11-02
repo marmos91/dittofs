@@ -593,6 +593,7 @@ func TestRecycleRefusals(t *testing.T) {
 		fresh core.SegmentID
 	}{
 		{"a segment sealed early was truncated below its cap", ErrBadSize, eventaken, 1, 9},
+		{"the fresh id names no segment", ErrBadID, sealed, 1, 0},
 		{"a segment ended by a failed append is never recycled", ErrWrongState, ended, 1, 9},
 		{"a segment a stream still appends to is never recycled", ErrWrongState, active, 1, 9},
 		{"the fresh id is already a spare", ErrDuplicateID, sealedWithASpare, 1, 2},
