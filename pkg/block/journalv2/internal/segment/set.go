@@ -38,20 +38,6 @@ const (
 	Ended
 )
 
-// String returns the state's name.
-func (s State) String() string {
-	switch s {
-	case Active:
-		return "active"
-	case Sealed:
-		return "sealed"
-	case Ended:
-		return "ended"
-	default:
-		return "unknown"
-	}
-}
-
 // The ledger's errors. Every operation validates its whole argument and the
 // set's state before changing anything, so a refused call changes no counter
 // and no map — with one exception the ledger's own rule writes down: a

@@ -1014,24 +1014,25 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	}
 
 	// A share total dropped below what its entries hold: the drop is an
-	// accounting bug the retire's release is about to make plainer.
+	// accounting bug the retire's release is about to take negative. Only a
+	// total that ends a release below zero exercises the branch that keeps
+	// it; a positive leftover is kept by any implementation of the rule.
 	s.mu.Lock()
-	s.tags[tag] -= 1 // 159, one below the two segments' 160
+	s.tags[tag] -= segCap // far below both segments' bytes together
 	s.mu.Unlock()
 
-	// The retire of the bigger holder takes the leftover to 59, not the
-	// zero a settled share reaches, so the key stays for the check to see.
-	if _, err := s.Retire(one); err != nil {
-		t.Fatalf("the retire of the bigger holder: %v", err)
+	// The retire of the smaller holder takes its share of the tag negative,
+	// so the key stays — deleting the leftover as if it were the zero a
+	// settled share reaches would hide the drop from the check.
+	if _, err := s.Retire(two); err != nil {
+		t.Fatalf("the retire of the smaller holder: %v", err)
 	}
-	if n := s.ShareBytes(tag); n != 59 {
-		t.Fatalf("after the retire the share's total is %d, want the dropped 59 kept", n)
-	}
-	if _, ok := s.tags[tag]; !ok {
-		t.Fatal("the dropped share total's key was deleted by the retire's release, want it kept for the check")
+	_, kept := s.tags[tag]
+	if !kept {
+		t.Fatal("the negative share total was deleted by the retire's release, want it kept for the check")
 	}
 	if err := s.Check(); !errors.Is(err, ErrMismatch) {
-		t.Fatalf("the kept dropped total: %v, want it to wrap %v", err, ErrMismatch)
+		t.Fatalf("the kept negative total: %v, want it to wrap %v", err, ErrMismatch)
 	}
 }
 
@@ -1139,26 +1140,5 @@ func TestNewSetPanicsOnABadCap(t *testing.T) {
 			}()
 			_ = NewSet(segCap, nil)
 		}()
-	}
-}
-
-// TestStateString: the state's name is what a log line or an inspection
-// prints.
-func TestStateString(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	for _, c := range []struct {
-		s    State
-		want string
-	}{
-		{Active, "active"},
-		{Sealed, "sealed"},
-		{Ended, "ended"},
-		{State(0), "unknown"},
-		{State(200), "unknown"},
-	} {
-		if got := c.s.String(); got != c.want {
-			t.Errorf("State(%d) prints as %q, want %q", uint8(c.s), got, c.want)
-		}
 	}
 }
