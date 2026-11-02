@@ -976,6 +976,65 @@ func TestCheckReportsMismatch(t *testing.T) {
 	}
 }
 
+// TestRetireKeepsADroppedShareTotalForTheCheck: nothing in the ledger's own
+// operation can take a share's total below what its entries hold, so a
+// negative total, reachable only from an accounting bug, is kept rather than
+// deleted — deleting it as if it were the zero a settled share reaches would
+// hide the drop from the check. The retire that found it leaves the key in
+// the map, and the check reports the total the entries cannot make up.
+func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	one, two := core.SegmentID(1), core.SegmentID(2)
+	for _, id := range []core.SegmentID{one, two} {
+		if err := s.AddSpare(id); err != nil {
+			t.Fatalf("AddSpare %d: %v", id, err)
+		}
+		if err := s.Take(id); err != nil {
+			t.Fatalf("Take %d: %v", id, err)
+		}
+	}
+	tag := core.ShareTag(4)
+	if err := s.AddRecord(one, tag, 100); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if err := s.AddRecord(two, tag, 60); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if err := s.Seal(one); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := s.Seal(two); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("the consistent set: %v", err)
+	}
+
+	// A share total dropped below what its entries hold: the drop is an
+	// accounting bug the retire's release is about to make plainer.
+	s.mu.Lock()
+	s.tags[tag] -= 1 // 159, one below the two segments' 160
+	s.mu.Unlock()
+
+	// The retire of the bigger holder takes the leftover to 59, not the
+	// zero a settled share reaches, so the key stays for the check to see.
+	if _, err := s.Retire(one); err != nil {
+		t.Fatalf("the retire of the bigger holder: %v", err)
+	}
+	if n := s.ShareBytes(tag); n != 59 {
+		t.Fatalf("after the retire the share's total is %d, want the dropped 59 kept", n)
+	}
+	if _, ok := s.tags[tag]; !ok {
+		t.Fatal("the dropped share total's key was deleted by the retire's release, want it kept for the check")
+	}
+	if err := s.Check(); !errors.Is(err, ErrMismatch) {
+		t.Fatalf("the kept dropped total: %v, want it to wrap %v", err, ErrMismatch)
+	}
+}
+
 // TestRetireActiveRefused: a segment a stream still appends to is refused
 // without a count: it stayed in the set with everything it held, and the
 // refusal is a different bug from the double retire the count watches for.
