@@ -183,10 +183,8 @@ func TestTryKillReturnsTheOpensError(t *testing.T) {
 	}
 }
 
-// TestTryKillEndsTheOldProcess pins that a kill ends the process before the
-// journal opens again: a file the old process held fails from then on. A
-// kill that only opened again would leave a second journal beside a live
-// one, both writing the same directory.
+// TestTryKillEndsTheOldProcess pins that a kill closes the files the old
+// process held, so a write through one fails from then on.
 func TestTryKillEndsTheOldProcess(t *testing.T) {
 	f := bareFixture(t, nil, FixtureSegmentCap, nil)
 	file, err := f.Seam.Create("seg")
@@ -194,7 +192,7 @@ func TestTryKillEndsTheOldProcess(t *testing.T) {
 		t.Fatalf("create a file: %v", err)
 	}
 
-	_ = f.TryKill() // the open fails on an empty directory; the kill is what is checked
+	_ = f.TryKill() // the open fails for want of a format file; the kill is what is checked
 
 	if _, err := file.WriteAt([]byte("a"), 0); !errors.Is(err, fs.ErrClosed) {
 		t.Fatalf("a write through the killed process's file returned %v, want an error matching fs.ErrClosed", err)
