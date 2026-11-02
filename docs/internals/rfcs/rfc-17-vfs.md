@@ -1256,7 +1256,8 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
 refusals (`Sessioned` is set only on a `NotYours` for state created on a
-session, presented by a call with none, [§3.1](#3.1%20Operations)): `ClientInUse` (a client name another principal holds), `ClientBusy`
+session, presented by a call with none, [§3.1](#3.1%20Operations), which
+RFC 14 returns as `ErrNotYoursSessioned`): `ClientInUse` (a client name another principal holds), `ClientBusy`
 (`Destroy` with state left), `RecordChanged` (a client record's adapter bytes
 changed since the adapter read them: reread and decide again), `AdapterVersion`
 (adapter bytes of a version this node cannot read), `StaleClient` (a client
