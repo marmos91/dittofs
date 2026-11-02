@@ -488,6 +488,28 @@ func TestReadFooterReturnsReadErrorsAsThemselves(t *testing.T) {
 			t.Errorf("a short quiet read: ReadFooter returned %+v, want the zero footer", f)
 		}
 	}
+
+	// A reader one byte short of the trailer, named with its full size: a
+	// real bytes.Reader over the truncated bytes serves the whole read as
+	// short with io.EOF, as the interface has it at its end. The refused
+	// read must tell the caller the bytes fell short — io.EOF reads as a
+	// clean end of input, not a shortage, so the refusal may carry neither
+	// it nor ErrNoFooter.
+	{
+		f, err := ReadFooter(bytes.NewReader(segment[:len(segment)-1]), int64(len(segment)), testIdentity, testSegment)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("a short read at the end of input: ReadFooter = %v, want io.ErrUnexpectedEOF", err)
+		}
+		if errors.Is(err, io.EOF) {
+			t.Errorf("a short read at the end of input: ReadFooter = %v, want no bare io.EOF: a shortage is not a clean end", err)
+		}
+		if errors.Is(err, ErrNoFooter) {
+			t.Errorf("a short read at the end of input: ReadFooter = %v, want no ErrNoFooter: bytes missing is not evidence of damage", err)
+		}
+		if f.Offset != 0 || len(f.Entries) != 0 {
+			t.Errorf("a short read at the end of input: ReadFooter returned %+v, want the zero footer", f)
+		}
+	}
 }
 
 // TestAppendCatalogEntryPanics pins every condition the entry encoder refuses

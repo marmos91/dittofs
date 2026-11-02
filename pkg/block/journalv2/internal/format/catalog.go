@@ -257,14 +257,17 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 	// is detected rather than silently truncating. With no entry the
 	// records end at the first record slot.
 	//
-	// decision: this extent check is not named by the format's reading
-	// list; it is how the footer "identifies the extent of the segment it
-	// describes": the last entry's record must end at the seal marker, so
-	// a footer ending short of it describes fewer records than the
-	// segment holds, and one ending past it describes a record the marker
-	// has already cut off — both are no footer, and the scan then reads
-	// every record the segment does hold. Overturned if the format's
-	// owner rules another extent check.
+	// decision: the layout itself asks for this, beyond the reading
+	// list's "identify the extent": the footerOffset row says a footer
+	// starts "just past the seal marker", the marker "at a record slot
+	// just past the last record", and a seal holds "a footer entry for
+	// every record" — together, the last entry's record ends at
+	// footerOffset-32. A footer ending short of the marker describes
+	// fewer records than the segment holds, and one ending past it
+	// describes a record the marker has already cut off — both are no
+	// footer, and the scan then reads every record the segment does hold.
+	// Overturned if the format's owner rules the layout places the seal
+	// or the footer some other way.
 	end := int64(SegmentHeaderSize)
 	if len(entries) > 0 {
 		last := entries[len(entries)-1]
@@ -373,8 +376,10 @@ func decodeCatalogEntry(b []byte) (CatalogEntry, error) {
 }
 
 // readFull reads len(p) bytes at off, whole or not at all: a read that
-// returns fewer bytes, with an error or without one, is io.ErrUnexpectedEOF
-// when the error is nil and the error itself otherwise.
+// returns fewer bytes, quietly or reporting io.EOF — the end of the reader's
+// bytes, which a caller reading a named-out extent must be told apart from a
+// clean end — is io.ErrUnexpectedEOF, as io.ReadAtLeast reads the case, and
+// any other error is returned as itself.
 func readFull(r io.ReaderAt, p []byte, off int64) error {
 	n, err := r.ReadAt(p, off)
 	if n == len(p) {
@@ -382,7 +387,7 @@ func readFull(r io.ReaderAt, p []byte, off int64) error {
 		// of its bytes; the whole buffer reached the caller either way.
 		return nil
 	}
-	if err == nil {
+	if err == nil || err == io.EOF {
 		return io.ErrUnexpectedEOF
 	}
 	return err
