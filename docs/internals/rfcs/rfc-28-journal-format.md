@@ -1283,15 +1283,33 @@ No flip may produce a read that returns bytes other than the ones written.
 
 - *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, each of a seal's syncs, repack copy, repack unlink, each directory sync, and those of `Open` itself: the sync of an unproven tail, the truncation of a torn tail and the seal after it, a re-append, and the zeroing of a re-adopted spare's slots — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
 - *torn writes*: the last unsynced write survives only in part, cut at every byte of the final record and of the trailer;
-- *reordered writes*: any subset of the unsynced writes survives, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
+- *reordered writes*: any subset of the unsynced writes survives, other than a write, or the tail of a torn write, lost at its call, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
 
 After each, the reopened journal is compared with the reference model of
-[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes; anything
+[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes, except what a fault, not the crash, kept from durability. A fault acts on a seam call, so it excuses every record that call carried, the journal's own included — a repack copy, a re-append, a seal — and what was held only through them: a write lost at its own call and the bytes past the cut of a write torn silently, which no later sync makes durable; and a write whose covering syncs or directory syncs up to the crash were each lost or failed. Nothing else is excused. Anything
 else is held record by record, each record whole or not at all. A write split
 at a segment cap is several records ([§2.2](#2.2%20Segments)), so it can come back partly held,
 but only as a prefix of its pieces: a segment's seal marker is durable before
 its successor is taken, so a later piece is never held without every earlier
-one, and never a piece in part.
+one, and never a piece in part. Any excused fault — a lost write, sync,
+directory sync or seal sync — can break that: a later piece held without an
+earlier one, a bad record below a later record's synced-through offset, or a
+predecessor left unsealed. The check accepts these after an excused fault, and
+expects a report only where [§3.3](#3.3%20Torn%20and%20corrupt%20records) calls for one: corruption with its loss event
+([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), or damage to a dead copy where another copy verifies. It
+fails them after a crash with no fault.
+
+> decision: a fault on the journal's own seam call excuses what that call
+> carried, so a lost sync of a repack copy followed by the source's unlink
+> loses the only durable copy, and the check accepts the loss: no order the
+> journal keeps survives a device that reports a sync it did not do. The
+> ceiling is that the same excuse would hide an ordering bug — an unlink issued
+> before the copy's sync returned — whenever a fault lands on that copy. So the
+> check asserts the journal's own order at the seam, whatever the faults: a
+> source is unlinked only after the sync covering its copies returned
+> success ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), and a successor is taken only after its predecessor's seal
+> sync returned success. Overturned by a device the set must survive that loses an
+> acknowledged sync, which would need a copy kept until a second sync.
 
 **Edits from outside.** An operator, a backup tool or a stray script can change
 the directory while the journal is closed or open. Record checksums cover
