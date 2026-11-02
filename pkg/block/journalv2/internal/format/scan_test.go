@@ -944,6 +944,39 @@ func TestScanEdges(t *testing.T) {
 		_ = offs
 	})
 
+	t.Run("a residue under the telling four bytes", func(t *testing.T) {
+		// One, two and three bytes past the header: fewer than the
+		// four a slot is told by, so the slot holds neither a prefix
+		// to read nor a record, and its bytes end in the range the
+		// search reports to the size — zero bytes a zero range, a
+		// byte not zero a bad one.
+		for _, residue := range []int{1, 2, 3} {
+			for _, byte_ := range []struct {
+				name string
+				b    byte
+				kind ScanRangeKind
+			}{{"zero", 0, RangeZero}, {"junk", 0xa5, RangeBad}} {
+				seg := AppendSegmentHeader(nil, testSegmentHeader)
+				seg = append(seg, bytes.Repeat([]byte{byte_.b}, residue)...)
+
+				got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+				if err != nil {
+					t.Fatalf("residue %d: ScanSegment = %v, want no error", residue, err)
+				}
+				want := ScanRange{Off: SegmentHeaderSize, End: int64(len(seg)), Kind: byte_.kind}
+				if len(got.Ranges) != 1 || got.Ranges[0] != want {
+					t.Errorf("residue %d, %s: ranges = %+v, want the residue in one range %+v", residue, byte_.name, got.Ranges, want)
+				}
+				if got.End != int64(len(seg)) {
+					t.Errorf("residue %d, %s: end %d, want the size %d", residue, byte_.name, got.End, len(seg))
+				}
+				if len(got.Records) != 0 || got.Sealed || got.Resynced {
+					t.Errorf("residue %d, %s: records %d sealed %v resynced %v, want nothing but the range", residue, byte_.name, len(got.Records), got.Sealed, got.Resynced)
+				}
+			}
+		}
+	})
+
 	t.Run("a size not a multiple of 8", func(t *testing.T) {
 		// Four bytes past a whole record's end: the walk's last slot
 		// holds fewer bytes than the grid it walks on, so it holds
