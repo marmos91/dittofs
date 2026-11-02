@@ -546,6 +546,23 @@ func TestACallbackWithNoPathIsCounted(t *testing.T) {
 	}
 }
 
+// A callback the client fails to answer is counted.
+func TestAFailedCallbackIsCounted(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}
+	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.RecallAny(id, 0)
+	calls(t, cb, 1)
+	time.Sleep(20 * time.Millisecond)
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallAny")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallAny} is %v, want 1", n)
+	}
+}
+
 // A client that rebooted is told its old ID ended, through the path it
 // registered, and that path no longer receives the old ID's events.
 func TestARebootTellsTheEndedClientAndDropsItsPath(t *testing.T) {
@@ -807,6 +824,10 @@ func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
 	if n := len(cb.Calls()); n != 3 {
 		t.Errorf("a grant unanswered twice, then answered, was sent %d times, want 3", n)
 	}
+	lockErrs := s.callbackErrors.WithLabelValues("LockWaitOver")
+	if n := testutil.ToFloat64(lockErrs); n != 2 {
+		t.Errorf("vfs_callback_errors_total{kind=LockWaitOver} is %v after two unanswered sends, want 2", n)
+	}
 
 	silent.Store(1)
 	s.LockWaitOver(w, false)
@@ -814,6 +835,9 @@ func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := len(cb.Calls()); n != 4 {
 		t.Errorf("an ungranted wait's end was sent %d times, want once", n-3)
+	}
+	if n := testutil.ToFloat64(lockErrs); n != 3 {
+		t.Errorf("vfs_callback_errors_total{kind=LockWaitOver} is %v after an unanswered wait's end, want 3", n)
 	}
 }
 

@@ -400,13 +400,17 @@ func TestStopRefusesWhileDrainWaits(t *testing.T) {
 	}
 }
 
-// The filesystem registers its in-flight gauge with the registerer it is
-// handed.
-func TestNewRegistersTheInflightGauge(t *testing.T) {
+// The filesystem registers its in-flight gauge and its callback error
+// counter with the registerer it is handed.
+func TestNewRegistersItsMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	newFixtureOf(t, Deps{Metrics: reg})
+	f := newFixtureOf(t, Deps{Metrics: reg})
 	if n, err := testutil.GatherAndCount(reg, "dittofs_vfs_inflight_calls"); n != 1 {
 		t.Errorf("dittofs_vfs_inflight_calls registered %d times (%v), want once", n, err)
+	}
+	f.callbackErrors.WithLabelValues("RecallAny").Inc()
+	if n, err := testutil.GatherAndCount(reg, "dittofs_vfs_callback_errors_total"); n != 1 {
+		t.Errorf("dittofs_vfs_callback_errors_total registered %d times (%v), want once", n, err)
 	}
 }
 
