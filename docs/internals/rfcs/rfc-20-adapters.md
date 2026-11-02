@@ -678,7 +678,8 @@ The lower half of the drawing above:
    drain, or by a reconfigure that removes its listen address, as a namespace
    move's release does (§3.1, §3.3). Closing cancels the context of
    every request still in progress on the connection, drops the connection's
-   state, and, for the last channel of an SMB session, calls `SessionDown` and `Disconnect`.
+   state, and, for the last channel of an SMB session, calls `Disconnect`, and
+   `RemoveSession` when it was the node's last session of the client.
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
@@ -704,7 +705,7 @@ through it.
 
 | Callback | Why the service calls it | SMB on the wire | NFS on the wire |
 | --- | --- | --- | --- |
-| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on the session holding alice's open, which the service names | `CB_RECALL` on the NFSv4.1 back channel |
+| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on the session holding alice's open, which the service names; with every open disconnected, on one of this node's sessions of alice-pc signed in as an opener, which the adapter picks | `CB_RECALL` on the NFSv4.1 back channel |
 | `Notify` | Explorer watches `projects/`; build01 creates a file in it | `CHANGE_NOTIFY` response to the request alice-pc left pending | `CB_NOTIFY` (NFSv4.1, optional) |
 | `LockWaitOver` | build01 waits for a lock alice-pc holds; alice-pc unlocks | the pending `LOCK` request finally answered | `NLMPROC4_GRANTED` RPC to build01's lock manager |
 | `RecallAny` | build01 reaches 4096 delegations at one primary | nothing: SMB has no such request | `CB_RECALL_ANY` keeping 2048, on NFSv4.1 only |
@@ -712,22 +713,40 @@ through it.
 
 Each protocol implements the interface once, on a small per-client value that
 knows the client's connection or host and nothing about files. An SMB break
-goes to the session the service names, never one the adapter chooses
+goes to the session the service names; only when every open of the grant is
+disconnected does the service name none, and the adapter then picks one of its
+own sessions of the client signed in now as one of the openers, from the table
+re-authentication updates, or sends nothing
 ([RFC 22 §4.4](rfc-22-smb.md#4.4%20The%20client%20record%20is%20the%20machine)):
 
 ```go
 // smbCallbacks is what the SMB adapter registers at Connect for one client.
 type smbCallbacks struct {
-	sessions *session.Table // this node's sessions: their channels' writers, their pending requests
+	client   vfs.ClientID
+	sessions *session.Table // this node's sessions: each one's current principal, which re-authentication replaces, its channels' writers, its pending requests
 }
 
-func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, g metadata.CachingGrant, to vfs.GrantKind) error {
+func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
+	if s == (vfs.SessionRef{}) {
+		sess, ok := c.sessions.SignedInAs(c.client, openers) // every open is disconnected: a session of the client signed in now as an opener
+		if !ok {
+			return false, nil // none on this node: nothing sent, not an error
+		}
+		return c.send(ctx, sess, g, to)
+	}
 	sess, ok := c.sessions.Get(s)
 	if !ok {
-		return session.ErrGone // ended since the service picked it: an error, as no live channel is
+		return false, session.ErrGone // ended since the service picked it: an error, as no live channel is
 	}
+	return c.send(ctx, sess, g, to)
+}
+
+func (c *smbCallbacks) send(ctx context.Context, sess *session.Session, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
 	msg := wire.LeaseBreak{Key: leaseKey(g), NewState: leaseState(to)}
-	return sess.Notify(ctx, &msg) // encoded and queued on a live channel's writer (§6.2); none live is an error
+	if err := sess.Notify(ctx, &msg); err != nil { // encoded and queued on a live channel's writer (§6.2); none live is an error
+		return false, err
+	}
+	return true, nil
 }
 ```
 

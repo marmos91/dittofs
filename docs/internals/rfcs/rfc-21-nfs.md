@@ -772,7 +772,9 @@ A **lease** is how long a client's state is kept while it is silent.
   make the call succeed — and with `NFS4ERR_WRONG_CRED`,
   as Linux answers, when sent by a principal the client's `SP4_MACH_CRED` state protection
   excludes. `DESTROY_SESSION` drops only the
-  node's session.
+  node's session; the node's last one of the client calls `RemoveSession`,
+  which removes the node from `Reach.Sessions`, so the `DESTROY_CLIENTID` of a
+  clean unmount that follows is not refused for it.
 
 **No courtesy clients.** A client whose lease expires has every open, lock,
 delegation and layout released at once, in every view
@@ -2286,7 +2288,7 @@ in RFC 14's durable client record
 | `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
-| `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession`, removed at the node's last `DESTROY_SESSION` or with the node's loss | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1) |
+| `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession`, removed through `RemoveSession` at the node's last `DESTROY_SESSION` or with the node's loss | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
 | `Lease.Node` | the lease owner: the node holding the client's sessions | renewal by `SEQUENCE` and `RENEW` |
 | `Shards` and the record's per-shard `Done` | the shards it holds state in, and in each the grace instance it last finished reclaiming in; a loss awaits the client's recovery while that is below the shard's grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | §5.4 |
 
@@ -2326,6 +2328,7 @@ so a renewal — every `SEQUENCE`, every NFSv4.0 `RENEW` — writes no record.
 | --- | --- | --- | --- |
 | `Client.Pending`, `Pending.Confirm` | `SETCLIENTID` / `EXCHANGE_ID` before its confirm; the confirm verifier, the `eir_sequenceid` | the NFSv4.0 callback address, until the confirm takes it | §3.5, §4.1 |
 | `AddSession` | `CREATE_SESSION` | its sequence and last reply, which answer a replay | §3.5 |
+| `RemoveSession` | the node's last `DESTROY_SESSION` of the client | — | §5.1 |
 | `StateRef{Type, Shard, Instance, Token, Seq}` | stateid: `other` (shard, grace-instance bits, token), `seqid`; `seqid` 0 is `Seq` 0, current | — | §5.2 |
 | `OpenMode.Access` / `Deny` | `share_access` / `share_deny`: read and write each way; NFSv4 has no delete bit, so an NFS open never denies delete | — | below |
 | an open with `Via` zero: counted under no directory, no delete through a parent ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)); `Reclaim` for `CLAIM_PREVIOUS` | `OPEN` claim types `CLAIM_FH`, `CLAIM_PREVIOUS`, `CLAIM_DELEG_CUR_FH`, `CLAIM_DELEG_PREV_FH` | — | below |
@@ -2570,7 +2573,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.2 delegation stateid | Over NFSv4.1 under Kerberos, alice opens a file mode 0644 and gets a read delegation; from the same client, bob `READ`s under the delegation stateid: assert served. bob `WRITE`s under it: assert `NFS4ERR_ACCESS`. A second client quotes the stateid: assert `NFS4ERR_BAD_STATEID`. | delegation I/O refused for another principal of the holder, or served without authorising the caller |
 | §5.2 unguessable `other` | Open 10^4 files from one client; assert no two `other` values share their random bits and that no field of them increases with open order. | `other` built from a counter |
 | §3.1 cached reply size | `CREATE_SESSION` asking for a 1 MiB cached reply; assert 8 KiB granted. Send a `REMOVE` with `sa_cachethis` false, drop the reply, resend in the same slot and sequence; assert `NFS4ERR_RETRY_UNCACHED_REP` and the name removed once. | a partial reply replayed as complete, or an unbounded cache |
-| §3.3 client record | Two nodes: `EXCHANGE_ID` on P1, then the same owner string with a new verifier on P2, then from another principal on P2; assert P2 finds the record, treats the first as a reboot and refuses the second `NFS4ERR_CLID_INUSE`. Hold a session on P1 and send `DESTROY_CLIENTID` to P2; assert `NFS4ERR_CLIENTID_BUSY`. | client state kept per node |
+| §3.3 client record | Two nodes: `EXCHANGE_ID` on P1, then the same owner string with a new verifier on P2, then from another principal on P2; assert P2 finds the record, treats the first as a reboot and refuses the second `NFS4ERR_CLID_INUSE`. Hold a session on P1 and send `DESTROY_CLIENTID` to P2; assert `NFS4ERR_CLIENTID_BUSY`. Then `DESTROY_SESSION` on P1 and `DESTROY_CLIENTID` on P2: assert it succeeds. | client state kept per node |
 | §5.3 no v4.0 delegations | An NFSv4.0 client with a reachable callback address opens a file no one else uses, read-only and then for write; assert `OPEN_DELEGATE_NONE` both times and no connection to `r_addr`. | delegations offered over the v4.0 callback path |
 | §5.4 grace | (cluster) pynfs reboot/reclaim tests against a shard failover, not a whole-server restart; the single-node restart is the *(1 node)* reboot row. | grace tested only by restarting everything |
 | §5.4 reclaim per grace | A client mounts (sending `RECLAIM_COMPLETE`), opens files in two shards, then one shard fails over while its session survives. Assert `SEQ4_STATUS_RESTART_RECLAIM_NEEDED` on the next `SEQUENCE`, its reclaim in the failed shard granted without a delegation, its reclaim in the healthy shard of an open holding a delegation answered with the open and that delegation, and a second failover reclaimed the same way. | `RECLAIM_COMPLETE` counted once per client, a revocation flag as the signal, or a healthy shard dropping a delegation it holds |
@@ -2691,11 +2694,6 @@ client, owner, file or principal label.
    This RFC decides whether the service's dedup should cover a single node too,
    so a retransmitted `REMOVE` or `CREATE` is answered its first result without
    an adapter cache.
-6. **A node's `Reach.Sessions` entry at its last `DESTROY_SESSION`.** The
-   `Reach.Sessions` row says the entry is removed then, but `DESTROY_SESSION`
-   calls nothing and RFC 14's `Clients` has no call that removes a node, so
-   today it goes only with the node's loss or the record. A stale entry costs
-   one `Peers.Recall` that answers none; whether that is worth a call is open.
 
 ## Appendix A — prior art
 
@@ -2819,7 +2817,7 @@ method then calls below is
 | `CREATE_SESSION` | `Record`; the first `Connect`, naming the `Proposal`, then `AddSession` (§3.5) | a replay is answered from the record's adapter bytes and calls nothing more |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
 | `RENEW` | `Renew` | |
-| `DESTROY_SESSION` | none (adapter only) | |
+| `DESTROY_SESSION` | `RemoveSession` at the node's last session of the client; otherwise none (adapter only) | |
 | `DESTROY_CLIENTID` | `Destroy` | |
 | `BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL` | `Connect` when the back channel moves | |
 | `RECLAIM_COMPLETE` | `ReclaimComplete` | |
