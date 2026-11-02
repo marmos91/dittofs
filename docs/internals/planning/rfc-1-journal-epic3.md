@@ -285,7 +285,7 @@ The plan lists "preallocate plus zero-fill" as one platform item (`rfc-1-journal
 zeros". On Linux `Allocate` is `fallocate` followed by writing zeros over the range (RFC 28
 Appendix A: "on Linux, `fallocate` then writing zeros over the whole segment and syncing
 it"); on macOS it is `F_PREALLOCATE` then setting the size (RFC 28 Appendix A:
-"`fcntl(F_PREALLOCATE)` then setting the size on macOS"); on Windows it follows P2. There is
+"`fcntl(F_PREALLOCATE)` then setting the size on macOS"); on Windows it sets the allocation size and end of file, then writes zeros (P2). There is
 no per-OS fill-required fact. RFC 28 §4.2 crashes "after create, allocation, zero-fill,
 sync, rename" as separate steps; one call is one seam operation, so allocation and
 zero-fill are one crash point: every crash before the rename leaves a `.spare.tmp` that open
@@ -693,24 +693,25 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Owner:** A (may move to B). **Depends on:** 3.7.
 - **Deliverables:** the windows files: open with `FILE_SHARE_DELETE`, `Sync` as
   `FlushFileBuffers`, `SyncDir` by opening the directory with backup semantics and flushing
-  it, allocation (allocation size, end of file, then valid data length or zeros, per P2).
+  it, allocation (allocation size, end of file, then zeros over the whole range,
+  never `SetFileValidData`, per P2).
 - **Requirements:**
   - RFC 28 §2.2: "on platforms where an open file cannot be unlinked, segments **MUST** be
     opened with sharing that permits deletion";
   - RFC 28 Appendix A: "segments are opened with `FILE_SHARE_DELETE`" and "a create, rename
     or unlink is made durable by opening the directory with backup semantics and calling
     `FlushFileBuffers` on it";
-  - RFC 28 Appendix A: "setting the file's allocation size, then its end of file, then its
-    valid data length to the end (or writing zeros where that call is not permitted), on
-    Windows".
+  - RFC 28 Appendix A: "setting the file's allocation size, then its end of file, then
+    writing zeros over the whole segment, on Windows".
 - **Done when:**
   - on the Windows runner a file open for reading is renamed and removed;
   - the table records `FlushFileBuffers` on the file and on the directory handle opened
     with backup semantics, and the windows case of `TestSyscallTableIsReal` pins each
     production entry to its `x/sys/windows` function: `FlushFileBuffers` to
     `windows.FlushFileBuffers`, the directory open to `windows.CreateFile` (D6);
-  - once P2 is settled, the table records the allocation calls it chooses for every
-    `Allocate`, and the same case pins their entries (D6);
+  - the table records, for every `Allocate`, the size read, then the allocation size
+    and end of file when the file is shorter, then the zero writes, and no
+    `SetFileValidData`; the same case pins their entries (D6);
   - the contract test of `storage.FS` (3.7) passes on NTFS.
 - **Rules:** 2: does not apply, no parser. 9: the `FILE_SHARE_DELETE` `decision:` as in
   `journalv2test/open_windows.go`.
@@ -857,7 +858,9 @@ Each open point says what is asked, who decides it, and what it blocks.
   syncs for a full seal (records, then marker, footer and trailer together) and three
   for an early one; the seal is complete after the second, and a failed truncation sync
   does not end the segment. **Blocks:** nothing.
-- **P2. How does Windows allocate without exposing old bytes?** RFC 28 Appendix A sets "its
+- **P2. How does Windows allocate without exposing old bytes?** Resolved by option
+  (a), as #3556 implements: RFC 28 Appendix A now writes zeros over the whole
+  segment and never calls `SetFileValidData`. The question was: RFC 28 Appendix A sets "its
   valid data length to the end" on Windows. RFC 28 §2.2 says "An allocated region no record
   has reached reads as zeros.", and the zero-slot rule depends on it (RFC 28 §3.3: "**A
   zero header slot ends a scan only where no verifying header follows it.**"). Microsoft's
@@ -871,8 +874,7 @@ Each open point says what is asked, who decides it, and what it blocks.
   Options: (a) always write zeros on Windows; (b) set the valid data length and amend the
   zero-slot rule for Windows; (c) set it only where the allocation is known zeroed. Option
   (a) is the only one that keeps the zero-slot rule and does not expose old data; it is
-  also the smallest change, since it shares D4's code. **Decides:** RFC 28 owner.
-  **Blocks:** 3.10's allocation.
+  also the smallest change, since it shares D4's code. **Blocks:** nothing.
 - **P3. Which error does a platform refusal return?** RFC 28 Appendix A requires `Init` and
   `Open` to refuse ("Open **MUST** refuse a volume whose write-cache buffer flushing is
   turned off by policy"), but RFC 1 §3 names no error for it, and the public errors of
