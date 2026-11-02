@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/vfs/lockorder"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs"
 	"github.com/marmos91/dittofs/pkg/vfs/vfstest"
@@ -25,7 +26,19 @@ type names struct {
 
 func newNames(t *testing.T) *names {
 	t.Helper()
-	s := newShares(t, nil, nil)
+	return namesOver(t, newShares(t, nil, nil))
+}
+
+// newFoldNames is newNames over a share whose names fold as Windows folds
+// them.
+func newFoldNames(t *testing.T) *names {
+	t.Helper()
+	f := newFixtureOver(t, Deps{}, kvstoretest.NewFoldFS(t, memKV, entity.FoldUpcase))
+	return namesOver(t, startShares(t, f, nil))
+}
+
+func namesOver(t *testing.T, s *shares) *names {
+	t.Helper()
 	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
 	return &names{shares: s, admin: proven(s.fs.Admin.Principal, inLab)}
 }
@@ -695,4 +708,36 @@ func TestReadDirPagesHoldMaxEntries(t *testing.T) {
 	if !slices.Equal(slices.Sorted(slices.Values(got)), want) {
 		t.Errorf("the pages listed %q, want %q", got, want)
 	}
+}
+
+// On a share whose names fold, a rename changing only a name's case is the
+// entry's respelling, not a replace, so noReplace lets it through and the
+// listing answers the new spelling.
+func TestACaseOnlyRenameIsNotRefusedAsAReplace(t *testing.T) {
+	n := newFoldNames(t)
+	root := n.fs.Root
+	n.create(t, n.admin, root, "Foo", vfs.CreateRegular)
+	if _, err := n.Rename(t.Context(), n.admin, vfs.Target{H: root}, []byte("Foo"), root, []byte("foo"), true); err != nil {
+		t.Fatalf("rename Foo to foo with noReplace: %v", err)
+	}
+	if got := n.list(t, n.admin, root, 0, 0); !slices.Equal(got, []string{"foo"}) {
+		t.Errorf("the listing after the respelling: %q, want [foo]", got)
+	}
+}
+
+// A rename of a name to its own spelling changes nothing, so it recalls no
+// lease on the file.
+func TestARenameToTheSameSpellingRecallsNoLease(t *testing.T) {
+	n := newFoldNames(t)
+	ctx := t.Context()
+	root := n.fs.Root
+	a := n.create(t, n.admin, root, "a", vfs.CreateRegular)
+	cb := &vfstest.RecordingCallbacks{}
+	holder, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
+	n.must(t, err)
+	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, a.File.ID, 1)
+	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: root}, []byte("a"), root, []byte("a"), false); err != nil {
+		t.Errorf("rename a to a: %v", err)
+	}
+	none(t, "the lease holder", cb)
 }

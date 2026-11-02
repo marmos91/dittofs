@@ -297,8 +297,8 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 // between two names of one file as done without changing anything, decides
 // the add right on to, asks open state about to, the moved file and the
 // replaced one, renames, and moves the opens made through the old name to
-// the new. Every decision is made before open state is asked anything, so a
-// refused rename recalls nothing.
+// the new. Every rights decision is made before open state is asked
+// anything, so a rename refused a right recalls nothing.
 func (fs *Filesystem) Rename(ctx context.Context, c vfs.Call, from vfs.Target, fromName []byte, to vfs.Handle, toName []byte, noReplace bool) (vfs.RenameResult, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -356,7 +356,10 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if err != nil || (t == nil) != (dst == nil) || t != nil && t.ID != dst.ID {
 		return vfs.RenameResult{}, err == nil, err
 	}
-	if dst != nil && noReplace {
+	// same is one entry under two spellings its share folds together: a
+	// respelling, which replaces nothing, so noReplace does not refuse it.
+	same := fd == td && bytes.Equal(a.share.Fold.Fold(fromName), a.share.Fold.Fold(toName))
+	if dst != nil && noReplace && !same {
 		return vfs.RenameResult{}, false, vfs.ErrExist
 	}
 	srcH := entity.NewHandle(a.share.ID, src.ID)
@@ -370,10 +373,11 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		}
 	}
 	var r vfs.RenameResult
-	if dst != nil && !replaces && (fd != td || !bytes.Equal(a.share.Fold.Fold(fromName), a.share.Fold.Fold(toName))) {
-		// Two names of one file: the store changes nothing, as POSIX has it,
-		// so open state is neither asked nor told. A respelling of one entry
-		// goes on, as the store renames it.
+	if dst != nil && !replaces && (!same || bytes.Equal(fromName, toName)) {
+		// Two names of one file, or one name to itself: the store changes
+		// nothing, as POSIX has it, so open state is neither asked nor told.
+		// A respelling of one entry to another goes on, as the store renames
+		// it.
 		r.From.After, r.To.After = fs.attrs(ctx, a, from.H), fs.attrs(ctx, a, to)
 		return r, false, nil
 	}
