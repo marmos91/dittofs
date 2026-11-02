@@ -138,7 +138,7 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 		defer cancel()
 		var tried recallRoute // the route last sent through; zero: none yet
 		for first := true; ; first = false {
-			opens, err := fs.grants.Openers(ctx, openstate.Caller{Client: g.Client}, g.ID)
+			opens, err := fs.grants.Openers(ctx, g.ID)
 			if err != nil {
 				return // gone since: nothing is left to recall
 			}

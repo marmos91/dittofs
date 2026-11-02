@@ -253,7 +253,7 @@ func (fs *Filesystem) AckRecall(ctx context.Context, c vfs.Call, g vfs.GrantID, 
 	if err != nil {
 		return err
 	}
-	opens, err := fs.grants.Openers(ctx, who, g)
+	opens, err := fs.grants.Openers(ctx, g)
 	if err != nil {
 		return openErr(err)
 	}

@@ -159,6 +159,19 @@ func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holde
 	return t.resolveLocked(c, f, ref)
 }
 
+// resolveAny is resolve for whichever client holds ref, or held it when
+// revoked.
+func (t *Table) resolveAny(ref StateRef) (holder, error) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	c := t.refs[k].client
+	if r, gone := t.revoked[k]; gone {
+		c = r.client
+	}
+	return t.resolveLocked(c, entity.FileID{}, ref)
+}
+
 // resolveLocked is resolve, with idx held.
 func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
 	k := refKey{ref.Shard, ref.Token}
