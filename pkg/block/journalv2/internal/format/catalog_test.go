@@ -92,12 +92,12 @@ func noFooterCases() []noFooterCase {
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
 			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8-7+1)
 		}, "write length 9223372036854775697 leaves the record no room"},
-		{"a last write the reviewers' band admits", func(seg, tr []byte) {
-			// A write of MaxInt64-104 sits inside the band the guard
-			// used to admit — its Size() then wrapped and only the sum
-			// check caught it, with a message blaming the offset. The
-			// write band takes the padding's 7 in, so the length rule
-			// itself refuses this length.
+		{"a last write at the band's padding edge", func(seg, tr []byte) {
+			// MaxInt64-104 is the highest length the band's plain sum, 96+8
+			// plus the length, still admits — but Size() adds 7 for the
+			// padding before clearing them, and that sum wraps. The band
+			// itself takes the padding's 7 in, so this length is refused
+			// under the length rule's own message.
 			seg[testFooterOffset+72+60] = uint8(KindWrite)
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
 			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8)
@@ -121,8 +121,10 @@ func noFooterCases() []noFooterCase {
 	}
 }
 
-// maxSegmentSize stands in for any footerOffset a real cap could not hold,
-// refusing at the fit rule rather than at any bound of the format's own.
+// maxSegmentSize stands in for any footerOffset a real cap could not hold:
+// the segment is only 416 bytes, so an offset that large is past the trailer
+// (the segment's end minus its own 32 bytes), not past any bound of the
+// format's own.
 const maxSegmentSize = 1 << 40
 
 // TestReadFooterNoFooter pins that every failure the format's reading list
@@ -240,6 +242,12 @@ func TestReadFooterNoFooter(t *testing.T) {
 // assertNoFooter checks one refusal: the error wraps ErrNoFooter, the footer
 // is the zero one — no offset, no partial entry list — and the error names
 // its own rule.
+//
+// The refusal also carries none of the record decoder's classes. D2 makes the
+// error classes the only contract with recovery: a footer refusal is
+// "no footer", never damage, a wrong place or a kind or epoch of its own, so
+// a recovery matching the classes in any order still ends at the scan this
+// format asks for.
 func assertNoFooter(t *testing.T, name string, f Footer, err error, say string) {
 	t.Helper()
 
@@ -249,6 +257,11 @@ func assertNoFooter(t *testing.T, name string, f Footer, err error, say string) 
 	}
 	if !errors.Is(err, ErrNoFooter) {
 		t.Errorf("%s: ReadFooter = %v, want an error wrapping ErrNoFooter", name, err)
+	}
+	for _, class := range []error{ErrDamaged, ErrWrongPlace, ErrUnknownKind, ErrNonZeroEpoch} {
+		if errors.Is(err, class) {
+			t.Errorf("%s: ReadFooter = %v, want no %v wrapped in it: a footer refusal is never that class", name, err, class)
+		}
 	}
 	if f.Offset != 0 || len(f.Entries) != 0 {
 		t.Errorf("%s: ReadFooter returned %+v on refusal, want the zero footer", name, f)
@@ -461,8 +474,8 @@ func TestReadFooterReturnsReadErrorsAsThemselves(t *testing.T) {
 	// A reader serving too few bytes with no error breaks the interface's
 	// contract; readFull still refuses to call the short read whole,
 	// because a footer read from bytes that are not there is no footer at
-	// all, and the caller needs told the bytes fell short rather than
-	// handed a wrong verdict.
+	// all, and the caller needs to be told the bytes fell short rather
+	// than handed a wrong verdict.
 	{
 		f, err := ReadFooter(readAtShort{segment}, int64(len(segment)), testIdentity, testSegment)
 		if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -559,6 +572,10 @@ func TestAppendCatalogEntryPanics(t *testing.T) {
 
 // TestAppendTrailerPanics pins every condition the trailer encoder refuses at
 // the call, one case per rule, each matched by its own message.
+//
+// The count rule — len(footer)/72 must not top the 32-bit entryCount column —
+// has no case here: reaching it takes a footer of 2^32 entries, over 309 GB,
+// which no test builds.
 func TestAppendTrailerPanics(t *testing.T) {
 	footer := append(AppendCatalogEntry(nil, testEntryA), AppendCatalogEntry(nil, testEntryB)...)
 
@@ -586,11 +603,4 @@ func TestAppendTrailerPanics(t *testing.T) {
 			AppendTrailer(nil, c.footerOffset, c.footer)
 		}()
 	}
-
 }
-
-// The entry-count panic rule — len(footer)/72 must not top the 32-bit
-// entryCount column — needs a footer of 2^32 entries to reach, over 309 GB,
-// which no test builds. It is not pinned here for that reason; the count is
-// bounded instead by what a footer that fits a file can hold, which the fit
-// rule in ReadFooter refuses above the same column.

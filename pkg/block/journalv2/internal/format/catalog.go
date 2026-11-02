@@ -158,11 +158,11 @@ func AppendTrailer(dst []byte, footerOffset int64, footer []byte) []byte {
 // refusal's own message, so the caller's log names which rule failed.
 //
 // decision: a read that fails is returned as itself, never as "no footer".
-// An unreadable device is not evidence of damage — the error may pass while
-// a loss record does not — and unreadable never counts as empty, so a
-// segment the device cannot read must fail its reader rather than fall back
-// to a scan that reads it just as little. Overturned only if the format
-// rules a failed read is damage.
+// A failed read says nothing about the bytes it was asked for, so it is
+// neither evidence of damage nor evidence of absence — and unreadable never
+// counts as empty, so a segment the device cannot read must fail its reader
+// rather than fall back to a scan that reads it just as little. Overturned
+// only if the format rules a failed read is damage.
 func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Footer, error) {
 	if size < TrailerSize {
 		return Footer{}, noFooter("the file is %d bytes, shorter than the %d a trailer takes", size, TrailerSize)
@@ -315,9 +315,9 @@ func decodeCatalogEntry(b []byte) (CatalogEntry, error) {
 		Tag:          core.ShareTag(binary.LittleEndian.Uint32(b[64:68])),
 	}
 
-	// decision: non-zero reserved bytes are refused as no footer, the
-	// stricter reading — the table writes them as zero and says no more.
-	// Accept them if the format's owner rules that a reader ignores them.
+	// The trailer's reserved-bytes decision — recorded at its own check in
+	// ReadFooter — holds for an entry's two ranges too: non-zero bytes are
+	// refused as no footer rather than ignored.
 	if !zero(b[61:64]) || !zero(b[68:72]) {
 		return CatalogEntry{}, noFooter("reserved bytes are not zero")
 	}
