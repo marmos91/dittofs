@@ -54,13 +54,18 @@ const callbackDeadline = 35 * time.Second
 // grantRetry is how long a lock grant the client did not answer waits before
 // it is sent again, and how often a recall not yet sent, or whose send
 // failed, looks for a new path to send it through.
-//
-// ponytail: a fixed pause, a grant retried until the client answers or ends
-// or the filesystem stops, one goroutine per grant meanwhile; an SMB client
-// with no session is sent it again each pause, its adapter failing each,
-// until one signs in or the client ends. Back off, and bound the goroutines,
-// if hosts that stay down are seen holding grants.
 var grantRetry = 10 * time.Second
+
+// grantResendFor is how long after its first send an unanswered lock grant
+// is sent again: one lease period. Past it the grant stays offered, unsent,
+// until the client answers it or ends.
+//
+// ponytail: a fixed bound, one goroutine per unanswered grant for up to
+// grantResendFor, resending each grantRetry, or until the client ends or its
+// record is released; an NLM host down for longer is not told of its grant
+// until it locks again. Resend at the client's next Connect, rather than on a
+// timer, if hosts that stay down are seen missing their grants.
+var grantResendFor = 90 * time.Second
 
 // ClientEnded tells the client its state ended, then drops its path.
 //
@@ -77,11 +82,13 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 // LockWaitOver tells the waiting owner's client, and hands its answer to a
 // grant back to open state, under the file's admission lock. A grant the
 // client gives no answer to is sent again each grantRetry, through the
-// client's Callbacks as they are then, as the lock stays granted until it
-// answers or the client ends.
+// client's Callbacks as they are then, until grantResendFor has passed or the
+// client ends or is released; the lock stays granted, the grant offered,
+// until it answers or ends.
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
 	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
+		until := time.Now().Add(grantResendFor)
 		refused, err := cb.LockWaitOver(ctx, w, granted)
 		for granted && err != nil {
 			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
@@ -89,6 +96,9 @@ func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 			case <-fs.stop.Done():
 				return
 			case <-time.After(grantRetry):
+			}
+			if time.Now().After(until) {
+				return
 			}
 			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
 				return

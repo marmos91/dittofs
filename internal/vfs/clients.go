@@ -70,7 +70,8 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 // Connect makes the client current in open state and registers cb as its
 // Callbacks, replacing any this node held for it: who may connect a client
 // is open state's to refuse, by the principal its record names. An SMB
-// client is connected at its first authenticated session on the node. A
+// client is connected at its first authenticated session on the node, which
+// lists the node among its sessions until RemoveSession. A
 // null or guest call never connects an SMB client, and is ErrInvalid. So is
 // a zero info.Recovery: the kind sticks for the record's life, and a client
 // of none is never told of a lost shard, so it holds the shard's grace open
@@ -93,12 +94,33 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return 0, openErr(err)
 	}
+	if smb {
+		if err := fs.listNode(ctx, id); err != nil {
+			return 0, openErr(err)
+		}
+	}
 	var host string
 	if info.Protocol == entity.ProtocolNLM {
 		host = string(info.Name)
 	}
 	fs.reg.register(id, host, cb)
 	return id, nil
+}
+
+// listNode lists this node among client id's sessions in open state,
+// keeping the record's adapter bytes: an SMB client's first session on the
+// node keeps its record from release until RemoveSession.
+func (fs *Filesystem) listNode(ctx context.Context, id vfs.ClientID) error {
+	rec, err := fs.clients.Record(ctx, id)
+	if err != nil {
+		return err
+	}
+	for {
+		rec, err = fs.clients.AddSession(ctx, id, entity.NodeID{}, rec.Adapter, rec.Adapter)
+		if !errors.Is(err, openstate.ErrRecordChanged) {
+			return err
+		}
+	}
 }
 
 // AddSession records a session of the client here.

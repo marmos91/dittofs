@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1114,4 +1115,71 @@ func TestAFailedBreakThroughIncomparableCallbacksIsSentAgain(t *testing.T) {
 	if got := breakSessions(rec); len(got) != 2 || got[1] != (vfs.SessionRef{ID: 2}) {
 		t.Errorf("the break went to sessions %v, want 1, then 2", got)
 	}
+}
+
+// An SMB Connect lists this node among the client's sessions, so the client's
+// record is not released while it is listed: another node's RemoveSession
+// leaves it.
+func TestAnSMBConnectListsThisNode(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || !slices.Equal(rec.Reach.Sessions, []entity.NodeID{{}}) {
+		t.Fatalf("after Connect: sessions %v, %v; want this node's", rec.Reach.Sessions, err)
+	}
+	if err := s.tab.Clients().RemoveSession(ctx, id, entity.NodeID{15: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, as, id); err != nil {
+		t.Errorf("with this node listed, another's RemoveSession released the record: %v", err)
+	}
+}
+
+// A lock grant the client never answers stops being sent once
+// grantResendFor has passed, and at once when the client's record is
+// released.
+func TestALockGrantStopsBeingSentAtItsDeadlineOrRelease(t *testing.T) {
+	fastRetry(t)
+	d := grantResendFor
+	t.Cleanup(func() { grantResendFor = d })
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite).Principal
+	silent := func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }
+	stops := func(name string, cb *vfstest.RecordingCallbacks, end func()) {
+		t.Helper()
+		calls(t, cb, 3)
+		end()
+		time.Sleep(20 * time.Millisecond)
+		n := len(cb.Calls())
+		time.Sleep(50 * time.Millisecond)
+		if m := len(cb.Calls()); m != n {
+			t.Errorf("%s: the grant was sent %d times more", name, m-n)
+		}
+	}
+
+	grantResendFor = 20 * time.Millisecond
+	cb := &vfstest.RecordingCallbacks{Answer: silent}
+	id, err := s.Connect(t.Context(), signedIn(alice, 1), smb("alice-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	stops("past its deadline", cb, func() { time.Sleep(grantResendFor) })
+
+	grantResendFor = time.Hour
+	cb = &vfstest.RecordingCallbacks{Answer: silent}
+	id, err = s.Connect(t.Context(), signedIn(alice, 2), smb("bob-pc", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	stops("released", cb, func() {
+		if err := s.RemoveSession(t.Context(), signedIn(alice, 2), id); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
