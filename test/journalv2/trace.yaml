@@ -286,16 +286,26 @@ rfc28 / 4.2 / C / "trailer":
   reason: 'golden vectors of the encoders'
 
 rfc1 / 9.2 / "Extent shape":
-  pending: 2.12
+  tests: [TestEdge_ZeroLengthWrite, TestEdge_WriteNearLargestOffset, TestEdge_ThreeWaySplit,
+          TestEdge_OverwriteSpansManyExtents, TestEdge_ManyOverwritesFlatHeldBytes,
+          TestEdge_WriteCrossesSegment, TestEdge_RecordExactlyFillsSegment, TestEdge_FirstHeldByteFarFromZero]
 rfc1 / 9.2 / "Lifecycle":
-  pending: 2.12
+  tests: [TestEdge_TruncateInsideExtent, TestEdge_TruncateToZeroAndWriteAgain, TestEdge_TruncateDownAndBackUp,
+          TestEdge_DeallocateInsideAndAcross, TestEdge_FillOverHeldDirtyAndAbsent,
+          TestEdge_OffloadReportsUnofferedOrNone, TestEdge_ReleasePartlyOffloaded,
+          TestEdge_ReleaseMiddleEndsAndAll, TestEdge_FullyReleasedSegmentReclaimedWithoutRead]
 rfc1 / 9.2 / "Capacity and storage":
-  pending: 2.12
+  tests: [TestEdge_ReservationExactFitShare, TestEdge_ReservationExactFitJournal,
+          TestEdge_FilesystemENOSPCIsNotErrNoSpace, TestEdge_SyncFailsThenSucceeds,
+          TestEdge_RecordsWithoutBytesAtMaximum, TestEdge_SegmentRetiredByEvictionAndRepack]
 
 rfc28 / 4.1 / -:
-  pending: 2.12
+  tests: [TestEdge_WriteLargerThanSegmentRest, TestEdge_WriteLargerThanSegment]
 rfc28 / 4.1 / "Opening":
-  pending: 2.12
+  tests: [TestEdge_OpenEmptyDirectory, TestEdge_OpenFormatOnly]
+  owner: parked
+  reason: 'the older-format leg: format version 1 is the only one, so no older format exists to open; tested once a second version exists'
+
 
 rfc1 / 9.7 / "syncs per write":
   pending: 2.8

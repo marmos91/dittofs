@@ -1515,3 +1515,220 @@
   reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
   issue: '#3379'
   message: 'fixture:'
+- test: TestEdge_ZeroLengthWrite
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs WriteAt for an empty payload.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_WriteNearLargestOffset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs writes near the largest offset and the largest file offset.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_ThreeWaySplit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs overwrites splitting a held extent.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_OverwriteSpansManyExtents
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs overwrites spanning many extents.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_ManyOverwritesFlatHeldBytes
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs repeated overwrites and the stats.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_WriteCrossesSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a write crossing a segment boundary.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_RecordExactlyFillsSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a record sized to its segment.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_RecordExactlyFillsSegment/Exact
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a record sized to its segment.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_RecordExactlyFillsSegment/DoesNotFit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a record that does not fit its segment.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_FirstHeldByteFarFromZero
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a first held byte far from zero.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_TruncateInsideExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Truncate inside a held extent.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_TruncateToZeroAndWriteAgain
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Truncate to zero and the writes after it.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_TruncateDownAndBackUp
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Truncate down and back up.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_DeallocateInsideAndAcross
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Deallocate inside and across records.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_ReservationExactFitShare
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against a share's limit.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_ReservationExactFitJournal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against the journal's maximum.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path over a full device.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_SyncFailsThenSucceeds
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Sync failure reports and the sync recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_RecordsWithoutBytesAtMaximum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs records without bytes at the journal's maximum.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_WriteLargerThanSegmentRest
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than its segment's tail.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_WriteLargerThanSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than a segment cut into pieces.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_OpenEmptyDirectory
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open and Init over an empty directory.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_OpenFormatOnly
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Open and Init over a lone format file.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_FillOverHeldDirtyAndAbsent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill over held, dirty and absent ranges.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_OffloadReportsUnofferedOrNone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Offload reports against the offer.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_ReleasePartlyOffloaded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Release of a partly offloaded range.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_ReleaseMiddleEndsAndAll
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Release at every place in a record.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_FullyReleasedSegmentReclaimedWithoutRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the retirement of a fully released segment.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_SegmentRetiredByEvictionAndRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_SegmentRetiredByEvictionAndRepack/repack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestEdge_SegmentRetiredByEvictionAndRepack/eviction
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
+  issue: '#3379'
+  message: 'fixture:'
