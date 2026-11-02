@@ -285,6 +285,17 @@ func (s *Set) End(id core.SegmentID) error {
 // from recovery keeps the accounted size below the file, silent to every
 // check. Withdrawn if a runtime caller ever needs its own cut, which must
 // then carry a fact the ledger can gate on.
+//
+// decision: the Sealed case is served any number of times, because the
+// ledger cannot see the file. The seal writer makes one cut by contract — it
+// shrinks once, after the truncation is durable — but a caller that shrank an
+// early-sealed segment again would keep the footprint below the file with
+// Check still nil, and the ledger would not know; a cut flag cannot hold this
+// either, because a legitimate path (recovery's torn-tail cut of an ended
+// segment, later truncated past its trailer) can cut twice. Withdrawn if a
+// caller ever needs its second cut: it must carry a fact the ledger can gate
+// on, or the sequences both callers make become known and a flag can count
+// cuts.
 func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
