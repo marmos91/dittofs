@@ -4,6 +4,7 @@ title: "RFC 19 — authorization"
 component: authorization
 status: draft
 depends_on:
+  - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-7-namespace-metadata]]"
   - "[[rfc-13-configuration]]"
   - "[[rfc-14-open-state]]"
