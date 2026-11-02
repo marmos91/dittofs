@@ -1550,6 +1550,28 @@ func TestOwnKeyOnAnotherFileIsInvalid(t *testing.T) {
 	}
 }
 
+// A joiner's close forgets its principal while another opener holds the key:
+// it joins no more, and the key keeps no principal that holds none of its
+// opens.
+func TestClosedJoinerLeavesTheKey(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh})
+	o, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh, Conn: []entity.Principal{alice.Principal}})
+	if g == nil {
+		t.Fatal("bob did not join through alice's connection")
+	}
+	f.close(t, bob, o)
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh}); g != nil {
+		t.Errorf("bob's open under alice's key after his close: offered %+v, want nothing", g)
+	}
+}
+
 // Two users' first creates under one key at once each get their open, and
 // only one is offered the key's lease: the one that mints second is none of
 // the key's openers then, so it is granted its open under no key rather than

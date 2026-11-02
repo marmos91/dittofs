@@ -740,8 +740,8 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 
 // A named stream's open neither deletes on close nor sets a disposition:
 // either would make the base file delete pending and unlink the base's
-// name. One without delete access is refused a disposition as on any file. The base stays open to others, and the stream's close unlinks
-// nothing.
+// name. One without delete access is refused a disposition as on any file.
+// The base stays open to others, and the stream's close unlinks nothing.
 func TestStreamOpenDeletesNothing(t *testing.T) {
 	f := newFixture(t)
 	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
@@ -948,7 +948,7 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 }
 
 // A committed release ends a callback waiter's wait on the file, not granted:
-// nothing else would end it.
+// nothing else would end it. A polling waiter is told nothing.
 func TestReleaseEndsCallbackWaiter(t *testing.T) {
 	f := newFixture(t)
 	a := f.host(t, "nlm-a", 1)
@@ -957,6 +957,11 @@ func TestReleaseEndsCallbackWaiter(t *testing.T) {
 	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
 	if res := f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
 		t.Fatal("b is not waiting")
+	}
+	// c polls, so it is told nothing: its next request finds the file gone.
+	c := f.host(t, "nlm-c", 1)
+	if _, err := f.lock(c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); lockedBy(err) != "a" {
+		t.Fatalf("c's polling lock: %v, want locked by a", err)
 	}
 	done, err := f.Opens().Releasing(ctx, file)
 	if err != nil {
