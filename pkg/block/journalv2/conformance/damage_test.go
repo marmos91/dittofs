@@ -489,10 +489,16 @@ func idleSealParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 }
 
 // maxSealSyncs bounds the syncs of the sealed segment a seal is given to
-// show its marker or its trailer in the live bytes: the records before the
-// marker, the marker, the footer and the trailer, each synced on its own at
-// most.
-const maxSealSyncs = 4
+// show its marker or its trailer in the live bytes, or, sealed early, to
+// truncate the file past the trailer.
+//
+// decision: a full seal needs as few as two syncs and an early one three,
+// and a journal may split a step into more (RFC 28 section 2.5). The bound
+// gives each write of the second step a sync of its own: one for the
+// records, one each for the marker, the footer and the trailer, and one for
+// the truncation, five in all. A journal splitting a step further fails
+// here as a precondition; raise the bound if one does.
+const maxSealSyncs = 5
 
 // advanceUntil moves the parked sync forward, one sync of the segment file
 // name at a time, until cond holds of the live bytes, failing as a
