@@ -2017,20 +2017,28 @@ written again until it is closed and reopened, and that open's recovery
   `report` sets offloaded bits in memory only, as below half the headroom ([§6](#6.%20Capacity)),
   so nothing is evicted and a reopen offers those extents again, a redundant
   upload at worst, which the engine's reseed avoids by marking what offload
-  committed before it offers ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)).
+  committed before it offers ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery));
+- the sequence number of every record it failed is kept per journal directory
+  in the process, as the loss generation is ([§3.8](#3.8%20Loss%20events)), and the next open of
+  that directory in the process drops each such record it finds, as a loss with
+  its loss record, before it serves. A segment whose sync failed can still hold
+  them whole, and without this the reopen's recovery would hold again, and the
+  engine apply, a write or a removal whose `Sync` was told it failed.
 
 > decision: a read-only journal is the one place a window's header-only records
 > are failed, against §5.3's rule, because nothing can be appended. They are
 > undone rather than kept in memory because the engine syncs a removal before
 > its metadata transaction ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): a failed `Sync` means the removal did
 > not happen, and a removal kept in memory would hide content the metadata
-> still names. The ceiling: the records may still lie whole in the segment whose
-> sync failed, and the reopen's recovery can hold a removal again, which the
-> engine then applies, metadata included, as it applies a removal a crash cut
-> off ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3). So an error from such a `Sync` means the removal
-> did not happen yet, not that it never will; journal and metadata agree either
-> way. Overturned by a journal that keeps a second device it can still append
-> to.
+> still names; the reopen drops them for the same reason. The ceiling is a
+> restart while read-only: the list of failed records lives in the process, so
+> the next start's recovery can find a failed truncate or deallocate whole and
+> the engine applies it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 3), after its `Sync` was told it
+> failed. A failed release is safe even then, since the engine keeps the file
+> marked releasing and so admits no open the release could abort on. Overturned
+> by a journal that keeps a second device it can still append to, or if the
+> failed removals are seen to survive a restart, which would record them in the
+> metadata store.
 
 **The state ends with a reopen, not with an operator.** While read-only, the
 journal probes every 30 s, a constant of the implementation. A probe first runs
@@ -2815,7 +2823,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | Requirement | Check |
 | --- | --- |
 | [§6](#6.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
-| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only stops the drain | Write and `Sync` A, write B, then from the next sync on fail every call that writes, including write, sync, create, allocate, rename, unlink, truncate and directory sync, with `EROFS` at the seam, reads still served as on a read-only mount, and separately fail a sync and then the first sync in the spare the stream takes. Assert the journal turns read-only, takes no further spare, `WriteAt`, `Release` and B's `Sync` fail at once with `ErrJournalReadOnly`, A still reads back, an offload's `report` succeeds, and `Stats` names the state; assert the loss generation rose once, a truncate in B's window is undone and its `Sync` fails with `ErrJournalReadOnly`, an offloaded extent is not evicted, and a spare is tried every 30 s; clear the faults and assert a spare is made, `Stats` reports it, and after the reopen A is held, the offloaded extent is offered again, and the journal writes again. Separately, with the device writable, make the probe's checks fail as on a mount without cache flushes: assert the journal stays read-only, no spare file is created, and `journal_read_only` names the check. Make a check pass at the probe and fail at the open: assert the journal stays closed, writes and reads of content only it held answer retry-later, `journal_read_only` names the refusal, and the open is retried 30 s later and succeeds once the check passes. A journal that answers each `EROFS` with a new segment drains its spares. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only stops the drain | Write and `Sync` A, write B, then from the next sync on fail every call that writes, including write, sync, create, allocate, rename, unlink, truncate and directory sync, with `EROFS` at the seam, reads still served as on a read-only mount, and separately fail a sync and then the first sync in the spare the stream takes. Assert the journal turns read-only, takes no further spare, `WriteAt`, `Release` and B's `Sync` fail at once with `ErrJournalReadOnly`, A still reads back, an offload's `report` succeeds, and `Stats` names the state; assert the loss generation rose once, a truncate in B's window is undone and its `Sync` fails with `ErrJournalReadOnly`, an offloaded extent is not evicted, and a spare is tried every 30 s; clear the faults and assert a spare is made, `Stats` reports it, and after the reopen A is held, the offloaded extent is offered again, and the journal writes again. With B's write and the truncate left whole in the segment whose sync failed, assert the reopen holds neither, `Since` yields a loss for each, and a reopen in a new process, the list gone, holds them again. Separately, with the device writable, make the probe's checks fail as on a mount without cache flushes: assert the journal stays read-only, no spare file is created, and `journal_read_only` names the check. Make a check pass at the probe and fail at the open: assert the journal stays closed, writes and reads of content only it held answer retry-later, `journal_read_only` names the refusal, and the open is retried 30 s later and succeeds once the check passes. A journal that answers each `EROFS` with a new segment drains its spares. |
 | [§6](#6.%20Capacity) reserve ahead | `Reserve` n bytes, then fill the share to its limit from another writer; assert `(*Reservation).WriteAt` within n succeeds while a plain `WriteAt` is refused, a `Reserve` past the limit is refused naming it, and `(*Reservation).Close` returns the unused bytes to `ReservedBytes`. Reserve for 10^4 writes beside a writer holding the index one entry below `ExtentLimit`, and with the headroom below half; assert every reserved write succeeds while a plain one is refused naming the index. Reserve for a 1 GiB copy in 1 MiB writes while other writers append 10 GiB to the same stream, with the spare pool at its target; assert no reserved write is refused, the footer and index entries drawn stay within the reservation, and any `spare` refusal falls on an unreserved write. Restart; assert the reservation is gone. |
 | [§3](#3.%20Interface) handle close | Hold a `WriteAt` in flight through a handle and call `Close`; assert `Close` returns only after the write does, a later call through the handle is refused, and the written extent is still held and readable through a new handle for the same tag. |
 | [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum. |
