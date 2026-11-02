@@ -438,9 +438,10 @@ flowchart TD
   carried as §6 point 3, and C11 is §6 point 15's proposal. The journal plan calls this agreement its S4a. Nothing in epics 3 to 8
   starts before it.
 - **S2 🔀 Red suite in CI** (end of epic 2). `engine-conformance` compiles, runs on every pull
-  request, fails at the journal's `Open` and is listed whole in `known.yaml`. The fixture,
-  the fault-injecting store, the fake journal and the profiler are green. Epics 3, 4 and 6
-  start here.
+  request and is listed whole in `known.yaml`. The fixture, the fault-injecting store, the
+  fake journal and the profiler build and run, and every row over the fixture is red at the
+  journal's `Init` until the journal team builds `Init` and `Open`. Epics 3, 4 and 6 start
+  here.
 - **S3 🔀 Engine complete over the fake journal** (epics 3 to 8 done). Every method of §1.3
   has its behaviour, unit-tested over the fake journal, and every conformance row whose
   journal call exists is green. Epic 9 starts here.
@@ -501,7 +502,9 @@ flowchart TD
   epic 3's per-file state lands. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
-  engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. T7.1, the
+  engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. Epic 3's
+  `Write` needs no edge from epic 4: T3.2 answers a stand-in verifier, a fixed zero, which
+  T4.1 replaces. T7.1, the
   refusal mapping on `Write`'s path, fills most of it: it needs epic 3, T4.6's per-file
   report and the fake journal, its version-limit row wired to epic 6's raise once that
   lands, and its last step built against §6 point 8's sealing `Repack` and per-segment
@@ -567,7 +570,8 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 **Epic 2 estimate: 9 subtasks, 28.5 man-days.**
 
 §1.4 whole. Every row is written red against the real composition and listed in
-`known.yaml`; the fixture fails at the journal's `Open` until the journal has one. Sections
+`known.yaml`; every row over the fixture is red at the journal's `Init` until the journal
+has `Init` and `Open`. Sections
 owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition rule.
 
 - T2.1 Registration: `engine-conformance` in `test/suites.yaml` (`format: go-json`,
@@ -610,7 +614,8 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 - T3.1 Per-file state, sharded, with its bound's `ponytail:` marker.
 - T3.2 `Write`: sample the verifier's inputs, stage through `WriteAt` with the clock's time
-  unless suspended, record the pending operation, answer; admission is epic 7's.
+  unless suspended, record the pending operation, answer; admission is epic 7's. Until
+  T4.1, the verifier is a stand-in, a fixed zero.
 - T3.3 `Draw` on the file's journal, under the caller's accept lock.
 - T3.4 `Overlay` from the file's entry alone, in C1's and C2's form: the pending operations
   replayed in version order, a truncate setting `Size` and `SizeSet`, each later write raising
