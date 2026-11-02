@@ -83,8 +83,15 @@ inputs rather than guess.
   answerable for.
 - **A plan written before these conventions** may lack some of that. Fall back, and say in
   the report which fallback was used:
-  - no §7 coverage table → the owned sections are the RFC sections cited in the epic's §5
-    section and its §2 row;
+  - no §7 coverage table → the sections cited in the epic's §5 section and its §2 row are
+    only a starting point: a plan without §7 cites a section's parent and leaves out the
+    sections it names in passing. Widen the list with the sections those cite, the RFC's
+    requirement and test rows that name the epic's area, the RFC headings (`rg -n '^#'
+    <rfc>`) matching the §5 bullets, and the **Sources** header of an existing document for
+    this epic. Show the widened list to the user and have it confirmed before Step 2; it
+    is then the owned sections for every later step, the key-word cross-check included.
+    When nobody can confirm it, keep the widened list and name it in the report as an
+    assumption;
   - no `**Epic <k> estimate:**` line → report "no plan figure" instead of a comparison;
   - no Track column → the track named for the epic in §3.4 or in the §2 row (a letter
     only), else "the team".
@@ -366,9 +373,10 @@ it delivers.
 
 ## Step 6 — GitHub issues: only when asked, as pointers to the document
 
-**Do not create issues, and do not ask whether to.** They are created by hand, when the user
-asks, at the moment the team chooses to start assigning the epic's subtasks. Mention in the
-final report, in one line, that they can be created on request once the document has merged.
+**Do not create issues, and do not offer to.** The user creates them, by asking for this
+step, once the plan and the epic document are confirmed and the team chooses to start
+assigning the epic's subtasks. The final report only suggests it, in one line: create the
+issues when the plan is confirmed and the document has merged.
 
 Issues let the team assign and follow subtasks. They never copy the specification: an
 issue's body is a pointer to its section of the epic document, with a few lines of context,
@@ -382,9 +390,12 @@ epic issue.
 
 1. **Labels.** The epic issue carries `epic`, the RFC's label (`rfc-<n>-<slug>`, for example
    `rfc-1-journal`) and the epic's label (`rfc-<n>-epic-<k>`). Subtask issues carry the
-   last two, **not** `epic`. Check with `gh label list --search rfc-<n>`, and create a
-   missing epic label in the existing style:
-   `gh label create rfc-<n>-epic-<k> --color C5DEF5 --description "RFC <n> <component> v2, epic <k>: <title>"`.
+   last two, **not** `epic`. Check with `gh label list --search rfc-<n>`, and create
+   whichever of the two is missing, in the existing style:
+   ```bash
+   gh label create rfc-<n>-<slug> --color 5319E7 --description "RFC <n> <component> v2 implementation"
+   gh label create rfc-<n>-epic-<k> --color C5DEF5 --description "RFC <n> <component> v2, epic <k>: <title>"
+   ```
 2. **The epic issue.** Title `<component> v2, epic <k>: <title>` (as in
    `journal v2, epic 4: placement index and versions`). Body, and nothing more:
    ```markdown
@@ -429,11 +440,14 @@ epic issue.
    item=$(gh project item-add 3 --owner marmos91 --url <issue-url> --format json --jq .id)
    gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
    ```
-6. **When the document is revised,** bring the issues along in the same pass: a renamed
-   subtask's title, a changed estimate's field, a new subtask's issue, a withdrawn one
-   closed as not planned. Bodies need no change, because they say nothing the document can
-   contradict; a split subtask (T4.3 into T4.3a and T4.3b) gets new issues and the old one
-   is closed.
+6. **When the document is revised,** the issues follow the revision **after its pull request
+   has merged**, never in the same pass: until then `develop` still holds the old document,
+   and the issues must agree with it. Merge the revision of the epic document (or of the RFC
+   behind it) first, then sync the issues on request: a renamed subtask's title, a changed
+   estimate's field, a new subtask's issue, a withdrawn one closed as not planned. Bodies
+   need no change, because they say nothing the document can contradict; a split subtask
+   (T4.3 into T4.3a and T4.3b) gets new issues and the old one is closed. A revision's
+   final report says, in one line, that issues exist and need syncing once it merges.
 7. **Report** the epic issue's link and the subtask numbers. Check the result with
    `gh api repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[].title'`.
 
@@ -479,14 +493,15 @@ Before handing over, check:
     comm -23 - <(awk '/^### 1\.3 /{f=1; next} /^#/{f=0} f' <epic-doc> |
                  rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' | sort -u)
   ```
-- No GitHub issue was created, or offered, unless the user asked, and never before the
-  document merged. Issues that were created carry
+- No GitHub issue was created or synced unless the user asked, and never before the
+  document merged; the report's closing line suggests them and does not offer to create
+  them. Issues that were created carry
   the labels, a pointer body with no copied specification, the sub-issue link, the project
   and, on subtasks only, the `Estimate` field.
 
 Then report the output path, the requirement count, the subtask count and the man-day total
 (and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,
 the suggested pull requests, the subtasks whose
-estimate is least certain, and the open points, in a few lines. End with one line saying the
-GitHub issues can be created on request, with Step 6, once the document's pull request has
-merged.
+estimate is least certain, and the open points, in a few lines. End with one line
+suggesting that the GitHub issues be created, with Step 6, once the plan is confirmed and
+the document's pull request has merged.

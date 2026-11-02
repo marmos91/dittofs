@@ -29,7 +29,7 @@ its own.
   sequence;
 - a write that would cross a hard limit is refused before any byte is stored;
 - a soft-limit crossing is reported once per grace period;
-- `Check` costs O(1) and two principals never contend on one lock.
+- `Check` costs O(1) and takes no lock shared by every principal.
 
 ### 1.1 In scope
 
@@ -92,15 +92,16 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R8 | A check costs O(1) | bound | §6.2 | T3.1, T3.3 |
-| R9 | Checks for different principals never contend on one lock | MUST NOT | §6.2 | T3.1 |
+| R9 | Checks never serialise on a lock shared by every principal | MUST NOT | §6.2 | T3.1 |
 | R10 | At most 64 bytes per (share, principal) entry at 10⁶ entries | bound | §6.2 | T3.1 |
 
 ## 4. Decisions this epic takes
 
-- **D1, lock sharding.** RFC 90 §6.2 forbids contention between principals but does not say
-  how. The index uses 256 shards keyed by a hash of the principal. A `ponytail:` marker at
-  the shard table names the ceiling: two hot principals in one shard still contend; move
-  to per-entry locks if a profile shows it.
+- **D1, lock sharding.** RFC 90 §6.2 forbids a lock shared by every principal but does not
+  say what replaces it. The index uses 256 shards keyed by a hash of the principal, which
+  meets R9. A `ponytail:` marker at the shard table names the performance ceiling the RFC
+  allows: two hot principals in one shard still contend; move to per-entry locks if a
+  profile shows it.
 - **D2, soft-limit clock.** The grace period runs on the injected clock, so tests drive it.
   A `decision:` marker says a restart resets it, because RFC 90 does not persist it, and
   that it should be withdrawn if RFC 90 starts persisting the grace period, or if restarts
@@ -129,7 +130,7 @@ pkg/quotav2/internal/usage/
   the logger and metrics registry RFC 25 §8 provides.
 - **Acceptance criteria:**
   - `Get` and `Add` cost O(1) and allocate nothing.
-  - Readers and writers of different principals run in parallel.
+  - Readers and writers of principals in different shards run in parallel.
 - **Tests:** a test that holds one principal's shard lock through a test hook and checks
   that `Add` for a principal in another shard still returns (catches a global lock, which
   would block it); the `-race` run with writers on 64 principals (catches a data race); a
