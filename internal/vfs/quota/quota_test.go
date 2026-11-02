@@ -310,3 +310,72 @@ func TestAGroupOfOneIsHeldOnce(t *testing.T) {
 		t.Errorf("4 bytes with 6 held under a limit of 10: %v", err)
 	}
 }
+
+// A Rehome refused against the new owner moves nothing, and one admitted
+// and then reverted moves the file's write reservations back, so either
+// way they count against the old owner, not the new. One admitted and kept
+// moves them, each still returned by its write's Release.
+func TestARehomeMovesTheFilesWritesOnlyOnceAdmittedAndKept(t *testing.T) {
+	ctx := context.Background()
+	bob := entity.Principal{Kind: entity.PrincipalUser, ID: entity.PrincipalID{3}}
+	f := charge
+	f.File = entity.NewFileID()
+	to, his := f, Charge{Share: share, Owner: bob}
+	to.Owner = bob
+	inode := entity.Usage{Files: 1}
+	setup := func(bobs int64) (*store, *Quotas, *Reservation) {
+		s := newStore()
+		s.limits[Target{Principal: alice}] = hardBytes(15)
+		s.limits[Target{Principal: bob}] = hardBytes(bobs)
+		q := New(s, (&events{}).emit)
+		w, err := q.Reserve(ctx, vfs.Identity{}, f, entity.Usage{Bytes: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, q, w
+	}
+
+	_, q, _ := setup(9)
+	if _, err := q.Rehome(ctx, vfs.Identity{}, to, inode, vfs.QuotaUser); scopeOf(err) != vfs.QuotaUser {
+		t.Fatalf("a rehome of a 10-byte write to bob, at a limit of 9: %v, want QuotaUser", err)
+	}
+	if _, err := q.Reserve(ctx, vfs.Identity{}, his, entity.Usage{Bytes: 9}); err != nil {
+		t.Errorf("9 bytes for bob after a refused rehome: %v, want them admitted, nothing moved to him", err)
+	}
+	if _, err := q.Reserve(ctx, vfs.Identity{}, charge, entity.Usage{Bytes: 6}); scopeOf(err) != vfs.QuotaUser {
+		t.Errorf("6 bytes for alice, a 10-byte write held of her 15, after a refused rehome: %v, want QuotaUser", err)
+	}
+
+	_, q, w := setup(10)
+	moved, err := q.Rehome(ctx, vfs.Identity{}, to, inode, vfs.QuotaUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved.Revert()
+	if _, err := q.Reserve(ctx, vfs.Identity{}, his, entity.Usage{Bytes: 10}); err != nil {
+		t.Errorf("10 bytes for bob, at a limit of 10, after a reverted rehome: %v, want them admitted", err)
+	}
+	if _, err := q.Reserve(ctx, vfs.Identity{}, charge, entity.Usage{Bytes: 6}); scopeOf(err) != vfs.QuotaUser {
+		t.Errorf("6 bytes for alice, a 10-byte write moved back of her 15, after a reverted rehome: %v, want QuotaUser", err)
+	}
+	w.Release()
+	if _, err := q.Reserve(ctx, vfs.Identity{}, charge, entity.Usage{Bytes: 15}); err != nil {
+		t.Errorf("15 bytes for alice once the write moved back is released: %v, want them admitted", err)
+	}
+
+	_, q, w = setup(10)
+	if moved, err = q.Rehome(ctx, vfs.Identity{}, to, inode, vfs.QuotaUser); err != nil {
+		t.Fatal(err)
+	}
+	moved.Release()
+	if _, err := q.Reserve(ctx, vfs.Identity{}, his, entity.Usage{Bytes: 1}); scopeOf(err) != vfs.QuotaUser {
+		t.Errorf("a byte for bob, a moved 10-byte write held of his 10: %v, want QuotaUser", err)
+	}
+	if _, err := q.Reserve(ctx, vfs.Identity{}, charge, entity.Usage{Bytes: 15}); err != nil {
+		t.Errorf("15 bytes for alice, her write moved to bob: %v, want them admitted", err)
+	}
+	w.Release()
+	if _, err := q.Reserve(ctx, vfs.Identity{}, his, entity.Usage{Bytes: 10}); err != nil {
+		t.Errorf("10 bytes for bob once the moved write is released: %v, want them admitted", err)
+	}
+}

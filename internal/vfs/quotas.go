@@ -39,9 +39,16 @@ func (fs *Filesystem) reserve(ctx context.Context, a *admitted, c quota.Charge, 
 	return r, storeErr(err)
 }
 
-// charged is whom a change of f's content charges.
+// rehome is reserve for an owner or group change of c.File, moving the
+// file's outstanding reservations to c's owner and group.
+func (fs *Filesystem) rehome(ctx context.Context, a *admitted, c quota.Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*quota.Reservation, error) {
+	r, err := fs.quota.Rehome(ctx, a.caller.Proved, c, add, scopes...)
+	return r, storeErr(err)
+}
+
+// charged is whom a change of f's content charges, kept under f.
 func charged(f vfs.File) quota.Charge {
-	return quota.Charge{Share: f.Share, Owner: f.Owner, Group: f.Group, Project: f.Project}
+	return quota.Charge{Share: f.Share, Owner: f.Owner, Group: f.Group, Project: f.Project, File: f.ID}
 }
 
 // newOwner is whom a create of ca in d by a charges: the owner and group the

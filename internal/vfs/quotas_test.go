@@ -494,11 +494,12 @@ func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
 }
 
 // V37: a chown's existence commit holds no lock, so a write may be staged
-// while it runs; what that write will charge is still reserved against the
-// new owner from the overlay, so a chown to an owner with room for the
+// while it runs; that write's reservation, outstanding until its commit,
+// moves to the new owner, so a chown to an owner with room for the
 // committed charge alone, and not for the write, is refused.
 func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
 	s, _ := newQuotas(t)
+	s.engine.hold = true
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	bobs := s.usage(t, s.bob.Principal)
@@ -523,6 +524,40 @@ func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
 	}
 	if err := <-wrote; err != nil {
 		t.Fatalf("the write staged during the chown's commit: %v", err)
+	}
+	if got := s.record(t, h).Owner; got != s.alice.Principal {
+		t.Errorf("after the refused chown: owner %v, want alice", got)
+	}
+}
+
+// V37: a write filling a hole adds bytes no size shows, so only its own
+// reservation knows them; staged while a chown's existence commit runs, it
+// is counted against the new owner, so a chown to an owner with room for
+// the file's committed charge, nothing, and not for the hole filled, is
+// refused.
+func TestAHoleFillStagedBeforeAChownCountsAgainstTheNewOwner(t *testing.T) {
+	s, _ := newQuotas(t)
+	s.engine.hold = true
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	const hole = 10
+	if _, err := s.SetAttr(ctx, proven(s.alice.Principal, inLab), vfs.Target{H: h}, size(hole)); err != nil {
+		t.Fatal(err)
+	}
+	bobs := s.usage(t, s.bob.Principal)
+	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + hole - 1})
+	wrote := make(chan error, 1)
+	s.engine.existence = func(entity.FileID) error {
+		_, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, []byte("0123456789"), vfs.Unstable)
+		wrote <- err
+		return nil
+	}
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
+	if _, err := s.SetAttr(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, chown); quotaScope(err) != vfs.QuotaUser {
+		t.Errorf("a chown to bob, %d bytes under his limit, of a file whose %d-byte hole a staged write fills: %v, want ErrQuota (QuotaUser)", hole-1, hole, err)
+	}
+	if err := <-wrote; err != nil {
+		t.Fatalf("the hole fill staged during the chown's commit: %v", err)
 	}
 	if got := s.record(t, h).Owner; got != s.alice.Principal {
 		t.Errorf("after the refused chown: owner %v, want alice", got)

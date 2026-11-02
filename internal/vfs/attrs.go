@@ -235,27 +235,28 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	}
 	// An owner or group change moves the file's charge, its bytes and one
 	// inode, in the store's transaction. Under the admission lock the charge
-	// is reserved: Charged, which the existence commit above brought up to
-	// date, plus what the writes staged since will charge, from the engine's
-	// overlay, and one inode, charged to the owner and group the change
-	// leaves, against only the scopes it moves into. The lock is held to the
-	// store's apply, so no write staged after the reservation charges the
-	// new owner unchecked; the reservation is released once the store has
-	// answered. A privileged caller is held to the limit as any other.
+	// is rehomed: Charged, which the existence commit above brought up to
+	// date, and one inode are reserved against the owner and group the change
+	// leaves, against only the scopes it moves into, together with every
+	// write reservation the file still holds, which moves there. A write
+	// staged since the commit therefore charges the new owner checked,
+	// whatever its bytes fill. The lock is held to the store's apply, so no
+	// write is staged between; the reservation is released once the store
+	// has applied the change, and reverted, the writes moved back, when it
+	// did not. A privileged caller is held to the limit as any other.
+	applied := false
 	if mv, scopes := moved(f, ch.Attrs); len(scopes) > 0 {
-		o, pending, err := fs.engine.Overlay(ctx, f.ID)
-		if err != nil {
-			return vfs.WCC{}, storeErr(err)
-		}
-		charge := f.Charged
-		if pending {
-			charge += o.Charge
-		}
-		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: charge, Files: 1}, scopes...)
+		res, err := fs.rehome(ctx, a, mv, entity.Usage{Bytes: f.Charged, Files: 1}, scopes...)
 		if err != nil {
 			return vfs.WCC{}, err
 		}
-		defer res.Release()
+		defer func() {
+			if applied {
+				res.Release()
+			} else {
+				res.Revert()
+			}
+		}()
 	}
 	if viaOpen {
 		u := openstate.OpenUpdate{Delete: ch.DeleteOnClose, Suspend: ch.Suspend, Resume: ch.Resume}
@@ -272,6 +273,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		if _, err := fs.meta.Files().SetAttrs(ctx, id, t.H, rest); err != nil {
 			return vfs.WCC{}, storeErr(err)
 		}
+		applied = true
 	}
 	if size {
 		if err := fs.truncate(ctx, a, t.H, f, ch.Attrs); err != nil {

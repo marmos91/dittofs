@@ -100,7 +100,6 @@ type Overlay struct {
 	SizeSet      bool  // a truncate is pending, so Size is exact
 	Mtime, Ctime time.Time
 	Version      entity.JournalVersion
-	Charge       int64 // the bytes the pending writes will charge at their commit
 }
 
 // state is where the filesystem is in its life: built, serving, draining and
