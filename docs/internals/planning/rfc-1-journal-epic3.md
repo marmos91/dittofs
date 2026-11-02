@@ -639,8 +639,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - in `TestSyncCalls`, the recording table sees `fdatasync` per `Sync` and `fsync` on the
     directory per `SyncDir`, and `TestSyscallTableIsReal` pins each production entry to its
     `x/sys` function (D6);
-  - an injected sync error is returned once and the next `Sync` issues a new call, never a
-    hidden retry.
+  - an injected sync error is returned once and the next `Sync` issues a new call: a failed
+    call is never retried; only a call interrupted by a signal (EINTR) is made again, as the
+    `os` package does.
 - **Rules:** 2: does not apply, no parser. 5: `-race` with concurrent `WriteAt` on one file.
   9: the `E1-D6` marker at the package, and the `ponytail:` at `ReadAtDirect`.
   12: `internal/platform` lands here with `OS`, whose consumer is the default storage.
@@ -673,6 +674,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
   - RFC 1 §5.2: "the journal **MUST** use the call that does (a full sync)";
   - RFC 28 Appendix A: "the journal uses `fcntl(F_FULLFSYNC)` for every sync, the
     directory's included";
+  - as in 3.7, an `F_FULLFSYNC` interrupted by a signal (EINTR) is made again and any other
+    error is returned after one call (RFC 1 §5.2: "**MUST NOT** be recorded as success and
+    retried silently");
   - RFC 28 Appendix A: "`fcntl(F_PREALLOCATE)` then setting the size on macOS".
 - **Done when:**
   - where a Mac runs `go test` (P22), the darwin case of `TestSyncCalls` sees
