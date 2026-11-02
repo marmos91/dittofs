@@ -33,6 +33,11 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"close", "unix.Close", got.close, unix.Close},
 		{"fallocate", "unix.Fallocate", got.fallocate, unix.Fallocate},
 		{"pwrite", "unix.Pwrite", got.pwrite, unix.Pwrite},
+		{"fstatfs", "unix.Fstatfs", got.fstatfs, unix.Fstatfs},
+		{"fstat", "unix.Fstat", got.fstat, unix.Fstat},
+		{"statx", "unix.Statx", got.statx, unix.Statx},
+		{"ioctlGetUint32", "unix.IoctlGetUint32", got.ioctlGetUint32, unix.IoctlGetUint32},
+		{"getdents", "unix.Getdents", got.getdents, unix.Getdents},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -73,6 +78,25 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"F_PEOFPOSMODE":            true,
 		"Fstore_t":                 true,
 		"Stat_t":                   true,
+		"O_NOFOLLOW":               true,
+		"O_NONBLOCK":               true,
+		"AT_EMPTY_PATH":            true,
+		"STATX_MNT_ID":             true,
+		"FS_IOC_GETFLAGS":          true,
+		"S_IFMT":                   true,
+		"S_IFDIR":                  true,
+		"ENOTDIR":                  true,
+		"Statfs_t":                 true,
+		"Statx_t":                  true,
+		"ENOSYS":                   true,
+		"DT_REG":                   true,
+		"DT_DIR":                   true,
+		"DT_LNK":                   true,
+		"DT_FIFO":                  true,
+		"DT_SOCK":                  true,
+		"DT_CHR":                   true,
+		"DT_BLK":                   true,
+		"Dirent":                   true,
 	}
 	tables := map[string]bool{
 		"calls.go":        true,
