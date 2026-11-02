@@ -733,7 +733,9 @@ breaks no delegation for its own client's change. `via` **MUST** be an open of
 the changed file itself, a named stream's open counting as its base file's;
 one of any other file is `ErrBadState`, as a reference with another file's
 handle is (§2.11).
-A key is judged against its openers first. A caller is one of a key's openers
+A key is judged against its openers first. A key no grant names is free, so
+its first open starts the lease and its caller becomes the key's first opener.
+Otherwise a caller is one of a key's openers
 when its principal is that of an open holding the key, or when some principal in
 `OpenRequest.Conn`, the other sessions signed in on the open's connection, is;
 any other caller's open is granted with no grant at all and records no key
@@ -743,13 +745,18 @@ own, since a key travels in clear and joining makes an opener (§2.1). For one o
 the key's openers, a key already naming a grant on another file makes the open
 `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
 existing lease of the file joins it. The key is free again when its lease's last
-open closes. Refusing the grant rather than the open keeps a misjudged caller
-working, uncached, and means another user who opens first under a key can deny
-the user who chose it only caching under that key, never an open, until the
-other user's opens under it close. An oplock covers exactly the one open that
-asked for it. An NFS
+open closes. An oplock covers exactly the one open that asked for it. An NFS
 delegation is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
+
+> decision: a key is the first opener's, refusing only the grant to anyone
+> else, which keeps a misjudged caller working, uncached. Both the `ClientGuid` and the key travel in clear, so mallory needs no
+> access to alice's file: while alice's key is free she opens any file she can
+> under alice-pc's `ClientGuid` and that key, becomes its opener, and keeps
+> alice uncached on every file under the key for as long as she holds the open.
+> She gains no grant, break or byte of alice's, and alice's opens all succeed.
+> Withdraw this if a key can be bound to the principal that chose it before its
+> first open, or if being uncached ever costs a client more than speed.
 
 **The epoch orders a lease's changes.** Every change of a v2 lease's `Kind`
 sent to the holder — a break, an upgrade on a later open — **MUST** raise
