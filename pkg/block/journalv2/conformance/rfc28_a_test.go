@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -155,83 +156,223 @@ func TestRFC28A_DirectoryEntrySurvives(t *testing.T) {
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 }
 
-// TestRFC28A_AZeroSlotIsNotTheEnd checks that a write whose storage call
-// failed, leaving its slot zeros between two writes that succeeded and
-// synced, costs nothing but itself: the write after it reads back, nothing
-// is reported as damage or as a torn tail, and the segment is not cut below
-// it.
+// TestRFC28A_AZeroSlotIsNotTheEnd checks the three halves of the row on a
+// zero slot. A write whose storage call fails, between two that run past it,
+// costs nothing but itself and ends its segment: the write after it reads
+// back if its Sync returned, or is re-appended or failed as a failed window
+// if its Sync waited, the next write goes to a new segment, and nothing is
+// reported as damage or as a torn tail. A slot zeroed below a proven sync
+// point is corruption. A seal waits for an append still in flight, and when
+// that append fails, no seal marker is written and the stream goes on in a
+// segment naming no predecessor.
+//
+// decision: whether the third write's Sync returned while the middle write
+// was held is read without waiting. A Sync that returns a moment after the
+// read is taken as one that waited, and either outcome the row allows for
+// that case is accepted, so the read can let a journal pass a case it would
+// have failed only by being slower than the test, never fail a correct one.
+//
+// decision: that the seal waits is read from the segment's live bytes while
+// the append is held, so a seal that runs late is caught only if it still
+// writes its marker once the append has failed, which the row forbids too.
 func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
-	f := journalv2test.New(t)
-	h, id := f.Share(0), journalv2test.File(0)
-	other := writeSynced(t, f, 1, 1, 0, 64<<10)
 	const size = 64 << 10
 
-	// Three reservations on one file, so three slots of one stream, taken in
-	// order.
-	var rs [3]*journalv2.Reservation
-	var ps [3][]byte
-	for i := range rs {
-		r, err := h.Reserve(size, 1)
-		stub(t, "Reserve", err)
-		if err != nil {
-			t.Fatalf("reserve a write: %v", err)
-		}
-		rs[i] = r
-		ps[i] = pattern(fmtTag("z", 0, 0, int64(i)), size)
-	}
+	f := journalv2test.New(t)
+	h := f.Share(0)
+	other := writeSynced(t, f, 1, 1, 0, size)
+	a := writeSynced(t, f, 0, 0, 0, size)
+	name := segmentName(entryAt(t, f, a.id, 0).Location.Segment)
 
-	_, err := rs[0].WriteAt(t.Context(), id, 0, ps[0], 0)
-	stub(t, "WriteAt", err)
+	// The middle write parks at its storage call, and the third, made while
+	// it waits, runs past it.
+	held := f.Seam.HoldFirst(t, journalv2test.OpWrite, name)
+	middle := make(chan error, 1)
+
+	go func() {
+		_, err := tryWrite(t, h, journalv2test.File(2), 0, pattern(fmtTag("z", 0, 2, 0), size))
+		middle <- err
+	}()
+
+	<-held.Reached()
+	third := pattern(fmtTag("z", 0, 3, 0), size)
+	_, err := tryWrite(t, h, journalv2test.File(3), 0, third)
 	if err != nil {
-		t.Fatalf("the first write: %v", err)
+		stub(t, "WriteAt", err)
+		t.Fatalf("the third write, made while the middle one waits: %v", err)
 	}
-	name := segmentName(entryAt(t, f, id, 0).Location.Segment)
 
-	f.FailNext(journalv2test.OpWrite, name, 1)
-	_, err = rs[1].WriteAt(t.Context(), id, size, ps[1], 0)
-	stub(t, "WriteAt", err)
+	synced := make(chan error, 1)
+
+	go func() {
+		synced <- h.Sync(t.Context(), journalv2test.File(3))
+	}()
+
+	// A Sync that returned while the middle write is held proves the third
+	// synced above the held slot, and a fifth write follows it there.
+	var fifth *rec
+	var thirdErr error
+	returned := false
+
+	select {
+	case thirdErr = <-synced:
+		returned = true
+	default:
+	}
+
+	if returned && thirdErr == nil {
+		r := writeSynced(t, f, 0, 5, 0, size)
+		fifth = &r
+
+		if got := segmentName(entryAt(t, f, r.id, 0).Location.Segment); got != name {
+			t.Fatalf("precondition: the fifth write landed in %s, not in %s beside the held one", got, name)
+		}
+	}
+
+	if err := f.Seam.Schedule(journalv2test.Failing(journalv2test.OpWrite, name, 1, syscall.EIO)); err != nil {
+		t.Fatalf("fail the middle write: %v", err)
+	}
+	held.Release()
+
+	err = <-middle
 	if !errors.Is(err, syscall.EIO) {
-		t.Fatalf("the write whose storage call failed returned %v, want the device's error", err)
+		t.Fatalf("the middle write, whose storage call failed, returned %v, want the device's error", err)
+	}
+	f.Seam.SetFault(nil)
+
+	fourth := writeSynced(t, f, 0, 4, 0, size)
+
+	if got := segmentName(entryAt(t, f, fourth.id, 0).Location.Segment); got == name {
+		t.Fatalf("the fourth write landed in %s, which the failed append ended", name)
 	}
 
-	_, err = rs[2].WriteAt(t.Context(), id, 2*size, ps[2], 0)
-	stub(t, "WriteAt", err)
-	if err != nil {
-		t.Fatalf("the third write: %v", err)
+	if !returned {
+		thirdErr = <-synced
 	}
-	syncFiles(t, h, id)
-	first, third := entryAt(t, f, id, 0).Location, entryAt(t, f, id, 2*size).Location
-	if slot := first.Offset + raw.RecordHeaderSize + 8 + size; third.Offset < slot+raw.RecordHeaderSize+8+size {
-		t.Fatalf("precondition: the third record at %d does not lie past the slot at %d the failed write took", third.Offset, slot)
-	}
-
-	for _, r := range rs {
-		if err := r.Close(); err != nil {
-			t.Fatalf("close a reservation: %v", err)
-		}
-	}
-
 	f.Crash()
 
-	wantBytes(t, f.Share(0), id, 2*size, ps[2])
 	s := f.J.Stats()
-	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
-		t.Fatalf("the failed write's zero slot was reported as damage: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
-	}
-	if s.Counters.TornTails != 0 {
-		t.Fatalf("TornTails = %d; the zero slot is neither damage nor a torn tail", s.Counters.TornTails)
+
+	if s.DamagedSegments != 0 || s.Counters.TornTails != 0 {
+		t.Fatalf("the failed write's zero slot was reported as damage or a torn tail: DamagedSegments = %d, TornTails = %d", s.DamagedSegments, s.Counters.TornTails)
 	}
 
-	durable, err := f.Seam.Durable(name)
-	if err != nil {
-		t.Fatalf("read the segment: %v", err)
+	for _, ev := range s.Losses {
+		if ev.Reason == journalv2.LossCorrupt {
+			t.Fatalf("the failed write's zero slot was reported as corruption: %+v", ev)
+		}
 	}
 
-	if end := third.Offset + raw.RecordHeaderSize + 8 + size; int64(len(durable)) < end {
-		t.Fatalf("the segment is %d bytes after recovery, cut below the third record's end at %d", len(durable), end)
+	// Every write whose Sync returned reads back; a third whose Sync failed
+	// was failed with its window and is no longer held.
+	for _, r := range []rec{a, fourth, other} {
+		wantBytes(t, f.Share(r.share), r.id, r.extent.Off, r.p)
 	}
 
-	wantBytes(t, f.Share(1), other.id, 0, other.p)
+	if fifth != nil {
+		wantBytes(t, f.Share(0), fifth.id, 0, fifth.p)
+	}
+
+	switch {
+	case thirdErr == nil:
+		wantBytes(t, f.Share(0), journalv2test.File(3), 0, third)
+	case errors.Is(thirdErr, journalv2.ErrSyncFailed):
+		wantExtentMissing(t, f.Share(0), journalv2test.File(3), journalv2.Extent{Off: 0, Len: size})
+	default:
+		t.Fatalf("the third write's Sync returned %v, want success or a failed window", thirdErr)
+	}
+
+	// A slot zeroed below a proven sync point: B's record, synced after A's,
+	// names a synced-through offset past A's slot, so the zeros are damage.
+	// A's file and extent lived only in the zeroed header, so the segment is
+	// what is reported, as for a header flipped in a scanned segment.
+	g := journalv2test.NewUnwatched(t)
+	za := writeSynced(t, g, 0, 0, 0, size)
+	zb := writeSynced(t, g, 0, 2, 0, size)
+	loc := entryAt(t, g, za.id, 0).Location
+
+	if got := entryAt(t, g, zb.id, 0).Location.Segment; got != loc.Segment {
+		t.Fatalf("precondition: B landed in segment %d, not in A's %d", got, loc.Segment)
+	}
+
+	if err := g.Seam.Crash(); err != nil {
+		t.Fatalf("crash with the segment unsealed: %v", err)
+	}
+	overwrite(t, g, segmentName(loc.Segment), loc.Offset, make([]byte, raw.RecordHeaderSize+8+size))
+	g.Crash()
+
+	if g.J.Stats().DamagedSegments == 0 {
+		t.Fatalf("A's slot, zeroed below B's synced-through offset, was not reported as damage")
+	}
+	wantExtentMissing(t, g.Share(0), za.id, za.extent)
+	wantBytes(t, g.Share(0), zb.id, 0, zb.p)
+
+	// An append held while a write that needs the next segment rolls the
+	// stream: the seal waits for it, and once it fails there is no seal.
+	k := journalv2test.NewUnwatched(t)
+	kh := k.Share(0)
+	base := writeSynced(t, k, 0, 0, 0, size)
+	seg := entryAt(t, k, base.id, 0).Location.Segment
+	segName := segmentName(seg)
+
+	append1 := k.Seam.HoldFirst(t, journalv2test.OpWrite, segName)
+	appended := make(chan error, 1)
+
+	go func() {
+		_, err := tryWrite(t, kh, journalv2test.File(2), 0, pattern(fmtTag("x", 0, 2, 0), 4096))
+		appended <- err
+	}()
+
+	<-append1.Reached()
+
+	// The rolling write's piece in the held segment, if it has one, parks at
+	// a hold of its own, so the failure below falls on the held append.
+	piece := k.Seam.HoldFirst(t, journalv2test.OpWrite, segName)
+	rolled := make(chan error, 1)
+
+	go func() {
+		_, err := tryWrite(t, kh, journalv2test.File(3), 0, pattern(fmtTag("y", 0, 3, 0), int(journalv2test.FixtureSegmentCap)))
+		rolled <- err
+	}()
+
+	if live := liveBytes(t, k, segName); bytes.Contains(live[raw.SegmentHeaderSize:], []byte("DJS1")) {
+		t.Fatalf("segment %d carries a seal marker while an append into it is in flight", seg)
+	}
+
+	if err := k.Seam.Schedule(journalv2test.Failing(journalv2test.OpWrite, segName, 1, syscall.EIO)); err != nil {
+		t.Fatalf("fail the held append: %v", err)
+	}
+	append1.Release()
+
+	err = <-appended
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the held append, whose storage call failed, returned %v, want the device's error", err)
+	}
+	k.Seam.SetFault(nil)
+	piece.Release()
+	<-rolled
+
+	next := writeSynced(t, k, 0, 4, 0, size)
+	nseg := entryAt(t, k, next.id, 0).Location.Segment
+
+	if nseg == seg {
+		t.Fatalf("the write after the failed append landed in segment %d, which the failure ended", seg)
+	}
+
+	if live := liveBytes(t, k, segName); bytes.Contains(live[raw.SegmentHeaderSize:], []byte("DJS1")) {
+		t.Fatalf("segment %d, ended by a failed append, carries a seal marker", seg)
+	}
+
+	hdr, err := raw.ParseSegmentHeader(headerSlot(t, segmentName(nseg), durable(t, k, segmentName(nseg))))
+	if err != nil || hdr.Predecessor != 0 {
+		t.Fatalf("segment %d, which the stream went on in, names predecessor %d (%v), want none: the ended segment was not sealed", nseg, hdr.Predecessor, err)
+	}
+
+	k.Reopen()
+
+	if got := k.J.Stats().DamagedSegments; got != 0 {
+		t.Fatalf("DamagedSegments = %d after a reopen over a segment a failed append ended, want 0", got)
+	}
 }
 
 // TestRFC28A_UnmarkClears checks that an unmark outlives a restart and that a
