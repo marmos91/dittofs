@@ -378,4 +378,16 @@ func TestARehomeMovesTheFilesWritesOnlyOnceAdmittedAndKept(t *testing.T) {
 	if _, err := q.Reserve(ctx, vfs.Identity{}, his, entity.Usage{Bytes: 10}); err != nil {
 		t.Errorf("10 bytes for bob once the moved write is released: %v, want them admitted", err)
 	}
+
+	// A write released between the move and the revert stays released: the
+	// revert moves back only what is still outstanding.
+	_, q, w = setup(10)
+	if moved, err = q.Rehome(ctx, vfs.Identity{}, to, inode, vfs.QuotaUser); err != nil {
+		t.Fatal(err)
+	}
+	w.Release()
+	moved.Revert()
+	if _, err := q.Reserve(ctx, vfs.Identity{}, charge, entity.Usage{Bytes: 15}); err != nil {
+		t.Errorf("15 bytes for alice, her moved write released before the revert: %v, want them admitted", err)
+	}
 }
