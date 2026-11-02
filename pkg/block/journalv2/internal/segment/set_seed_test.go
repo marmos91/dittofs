@@ -26,7 +26,7 @@ func TestSeedReplay(t *testing.T) {
 			if len(ops) == 0 {
 				t.Fatalf("%s: the seed decodes to no ops", sd.name)
 			}
-			var retires, recycles, takes, seals int
+			var retires, recycles, takes, seals, drops int
 			for _, op := range ops {
 				want := o.apply(op)
 				var got error
@@ -66,6 +66,11 @@ func TestSeedReplay(t *testing.T) {
 					if got == nil {
 						recycles++
 					}
+				case opDropSpare:
+					_, got = s.DropSpare(op.id)
+					if got == nil {
+						drops++
+					}
 				}
 				if !sameErrClass(got, want) {
 					t.Fatalf("%s: op %d (%d): the set returned %v, the oracle %v", sd.name, op.kind, op.id, got, want)
@@ -85,6 +90,9 @@ func TestSeedReplay(t *testing.T) {
 			}
 			if seals != sd.seals {
 				t.Errorf("%s: %d seals succeeded, want %d", sd.name, seals, sd.seals)
+			}
+			if drops != sd.drops {
+				t.Errorf("%s: %d spares dropped, want %d", sd.name, drops, sd.drops)
 			}
 		})
 	}

@@ -235,11 +235,10 @@ func TestRecycleKeepsFootprint(t *testing.T) {
 }
 
 // TestFailedMakeReservationIsReturned: a spare whose making failed has its
-// reservation returned through the set. The cleanup carries the leftover in
-// with Take — the make reserved it, and no stream ever takes it as a segment —
-// and once its unlink has happened, Retire returns the cap exactly once,
-// uncounted and unlogged. A leftover whose unlink fails is carried in and
-// ended instead, and stays accounted until a later retire takes it.
+// reservation returned in one step, once its unlink has happened: DropSpare
+// takes the cap back and the spare out, in the single call a failed make
+// owes. The leftover that cannot be unlinked stays in the set, ended, until
+// a later retire takes it — a spare cannot go back to being one.
 func TestFailedMakeReservationIsReturned(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -254,15 +253,30 @@ func TestFailedMakeReservationIsReturned(t *testing.T) {
 		t.Fatalf("the reservation holds the footprint at %d with %d spares, want the cap %d and one", c.UsedBytes, c.Spares, segCap)
 	}
 
-	// The make has failed: the leftover is carried in, ended — the state a
-	// failure leaves, never sealed — and once its unlink has happened, the
-	// retire returns the reservation.
-	if err := s.Take(id); err != nil {
-		t.Fatalf("Take of the failed make's leftover: %v", err)
+	// The make has failed and its unlink has happened: the drop returns the
+	// reservation exactly once, uncounted and unlogged — Segments never held
+	// a segment no stream ever had.
+	freed, err := s.DropSpare(id)
+	if err != nil {
+		t.Fatalf("the drop of the failed make's spare: %v", err)
 	}
-	if err := s.End(id); err != nil {
-		t.Fatalf("End of the failed make's leftover: %v", err)
+	if freed != segCap {
+		t.Fatalf("the drop freed %d, want the reserved cap %d", freed, segCap)
 	}
+	c := s.Counters()
+	if c.UsedBytes != 0 || c.Spares != 0 || c.Segments != 0 {
+		t.Fatalf("after the drop the ledger holds %d bytes, %d spares and %d segments, want all three empty", c.UsedBytes, c.Spares, c.Segments)
+	}
+	if c.DoubleRetires != 0 {
+		t.Fatalf("the drop was counted as %d double retires, want none: it found its spare", c.DoubleRetires)
+	}
+	if len(logs.recs) != 0 {
+		t.Fatalf("the drop logged %d records, want none", len(logs.recs))
+	}
+
+	// A leftover whose unlink fails cannot be dropped: it is carried into
+	// the set with Take and ended — the state a failure leaves, never sealed
+	// — and stays accounted until a later retire takes it.
 	stuck := core.SegmentID(8)
 	if err := s.AddSpare(stuck); err != nil {
 		t.Fatalf("AddSpare of the leftover that cannot be unlinked: %v", err)
@@ -273,26 +287,80 @@ func TestFailedMakeReservationIsReturned(t *testing.T) {
 	if err := s.End(stuck); err != nil {
 		t.Fatalf("End of the stuck leftover: %v", err)
 	}
-
-	freed, err := s.Retire(id)
+	if _, err := s.DropSpare(stuck); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("the drop of a segment of the set: %v, want %v", err, ErrWrongState)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap || c.Segments != 1 {
+		t.Fatalf("after the refused drop the ledger holds %d bytes and %d segments, want the cap and the one stuck leftover", c.UsedBytes, c.Segments)
+	}
+	freed, err = s.Retire(stuck)
 	if err != nil {
-		t.Fatalf("the retire of the failed make's leftover: %v", err)
+		t.Fatalf("the retire of the stuck leftover: %v", err)
 	}
 	if freed != segCap {
-		t.Fatalf("the retire freed %d, want the reserved cap %d", freed, segCap)
+		t.Fatalf("the stuck leftover retired at %d, want its cap %d", freed, segCap)
 	}
-	c := s.Counters()
-	if c.UsedBytes != segCap {
-		t.Fatalf("after the cleanup the footprint is %d, want the cap the stuck leftover still holds", c.UsedBytes)
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
 	}
-	if c.Segments != 1 || c.Spares != 0 {
-		t.Fatalf("after the cleanup the ledger holds %d segments and %d spares, want one ended leftover and none", c.Segments, c.Spares)
+}
+
+// TestDropSpareRefusals: a drop that finds no spare — because the id names a
+// segment of the set, or because another drop already took the spare out
+// — leaves everything as it was. The absent id is the race the double-retire
+// count watches for, so it counts and logs at Warn exactly as Retire does;
+// the segment is a caller bug, refused uncounted for the same reason Retire
+// refuses a spare.
+func TestDropSpareRefusals(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	var logs capturing
+	s := NewSet(segCap, slog.New(&logs))
+	spare, seg, absent := core.SegmentID(1), core.SegmentID(2), core.SegmentID(3)
+	for _, id := range []core.SegmentID{spare, seg} {
+		if err := s.AddSpare(id); err != nil {
+			t.Fatalf("AddSpare %d: %v", id, err)
+		}
 	}
-	if c.DoubleRetires != 0 {
-		t.Fatalf("the cleanup was counted as %d double retires, want none: it is not the race the count watches for", c.DoubleRetires)
+	if err := s.Take(seg); err != nil {
+		t.Fatalf("Take: %v", err)
 	}
-	if len(logs.recs) != 0 {
-		t.Fatalf("the cleanup logged %d records, want none", len(logs.recs))
+	before := s.Counters()
+
+	if freed, err := s.DropSpare(seg); !errors.Is(err, ErrWrongState) || freed != 0 {
+		t.Fatalf("the drop of a set segment: freed %d, %v, want 0 and %v", freed, err, ErrWrongState)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused drop of a segment changed the counters: %v, want %v", after, before)
+	}
+
+	// The absent id: the second drop of a spare two paths both tried to
+	// unlink. It frees nothing, counts one double retire and logs at Warn.
+	freed, err := s.DropSpare(absent)
+	if !errors.Is(err, ErrNotInSet) {
+		t.Fatalf("the drop of an absent id: %v, want %v", err, ErrNotInSet)
+	}
+	if freed != 0 {
+		t.Fatalf("the drop of an absent id freed %d, want 0", freed)
+	}
+	after := s.Counters()
+	after.DoubleRetires--
+	if after != before {
+		t.Fatalf("the drop of an absent id changed more than the double-retire count: %v, want %v", after, before)
+	}
+	if len(logs.recs) != 1 {
+		t.Fatalf("the ledger logged %d records, want the one Warn", len(logs.recs))
+	}
+	rec := logs.recs[0]
+	if rec.Level != slog.LevelWarn {
+		t.Fatalf("the absent drop logged at %v, want Warn", rec.Level)
+	}
+	if got := logs.attr(rec, "segment"); got != uint64(absent) {
+		t.Fatalf("the absent drop logged the segment as %v, want %d", got, uint64(absent))
+	}
+	if got := logs.attr(rec, "op"); got != "drop" {
+		t.Fatalf("the absent drop logged the op as %v, want drop", got)
 	}
 	if err := s.Check(); err != nil {
 		t.Fatalf("%v", err)

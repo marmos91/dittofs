@@ -40,6 +40,7 @@ const (
 	opRelease
 	opRetire
 	opRecycle
+	opDropSpare
 )
 
 // decode turns the fuzz's input into a sequence of ops over ids 0..8, tags
@@ -53,7 +54,7 @@ func decode(data []byte, segCap int64) []op {
 	ops := make([]op, 0, len(data)/6)
 	for len(data) >= 6 {
 		var o op
-		o.kind = data[0] % 10
+		o.kind = data[0] % 11
 		o.id = core.SegmentID(uint64(data[1]) % 9)
 		o.fresh = core.SegmentID(uint64(data[2]) % 9)
 		o.tag = core.ShareTag(1 + uint32(data[3])%3)
@@ -285,6 +286,16 @@ func (o *oracle) apply(op op) (err error) {
 		delete(o.claimed, op.id)
 		o.spares[op.fresh] = struct{}{}
 		return nil
+	case opDropSpare:
+		if !o.inSpares(op.id) {
+			if _, seg := o.segs[op.id]; seg {
+				return ErrWrongState
+			}
+			o.doubleRetires++
+			return ErrNotInSet
+		}
+		delete(o.spares, op.id)
+		return nil
 	}
 	return nil
 }
@@ -322,14 +333,16 @@ type seed struct {
 	// ops is the six-byte-per-op input, exactly what f.Add receives.
 	ops []byte
 	// retires is the successful Retire calls the sequence must reach;
-	// recycles, takes and seals likewise. The counts are the guard: a decoder
-	// or seed change that turns a success the sequence is documented for into
-	// a refusal — every seed naming the null id where the set reads a segment,
-	// say — fails the replay on the count, not on a silent no-op.
+	// recycles, takes and seals likewise; drops counts the spares
+	// DropSpare took back. The counts are the guard: a decoder or seed change
+	// that turns a success the sequence is documented for into a refusal —
+	// every seed naming the null id where the set reads a segment, say —
+	// fails the replay on the count, not on a silent no-op.
 	retires  int
 	recycles int
 	takes    int
 	seals    int
+	drops    int
 }
 
 // corpus is the FuzzSet seed corpus, the one table both FuzzSet and the
@@ -340,12 +353,12 @@ var corpus = []seed{
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
 		op6(opRetire, 1, 0, 0, 4, 0), op6(opRelease, 1, 0, 0, 4, 0),
 		op6(opClaim, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"recycle then retire the old id", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opRecycle, 1, 2, 0, 4, 0),
 		op6(opRetire, 1, 0, 0, 4, 0), // refused: the recycle already took the segment
-	), 0, 1, 1, 1},
+	), 0, 1, 1, 1, 0},
 	{"records then a retire", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 0, 4, 9),
@@ -353,29 +366,29 @@ var corpus = []seed{
 		op6(opAddRecord, 2, 0, 1, 4, 4), op6(opAddRecord, 2, 0, 2, 4, 2),
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opSeal, 2, 0, 0, 4, 0),
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 2, 2},
+	), 1, 0, 2, 2, 0},
 	{"shrink then recycle refused", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 5, 1), op6(opShrink, 1, 0, 0, 4, 5),
 		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the sealed size is below the cap
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"recycle of a segment that never was", slices.Concat(
 		op6(opRecycle, 1, 2, 0, 4, 0), // refused: nothing under that id
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"claim between two retires", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opEnd, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
 		op6(opClaim, 1, 0, 0, 4, 0), // refused: the entry left with the retire
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 0},
+	), 1, 0, 1, 0, 0},
 	{"recycle onto a held spare", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 2, 0, 0, 4, 0),
 		op6(opTake, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0),
 		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the fresh id is a held spare
-	), 0, 0, 1, 1},
+	), 0, 0, 1, 1, 0},
 	{"refusals at three boundaries", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 1, 0, 0, 4, 0), // duplicate
 		op6(opTake, 1, 0, 0, 4, 0), op6(opAddRecord, 1, 0, 0, 4, 0),
@@ -383,25 +396,25 @@ var corpus = []seed{
 		op6(opAddRecord, 1, 0, 0, 3, 0), // negative
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 0),
 		op6(opShrink, 1, 0, 0, 4, 1),
-	), 0, 0, 1, 1},
+	), 0, 0, 1, 1, 0},
 	{"null id refusals", slices.Concat(
 		op6(opAddSpare, 0, 0, 0, 4, 0), // the null id: names no segment
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0),
 		op6(opRecycle, 1, 0, 0, 4, 0), // fresh id 0: refused
-	), 0, 0, 1, 1},
+	), 0, 0, 1, 1, 0},
 	{"shrink of an Active segment", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opShrink, 1, 0, 0, 4, 5), // refused: a stream still appends
 		op6(opEnd, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 5),
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 0},
+	), 1, 0, 1, 0, 0},
 	{"double seal", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0), // refused: already sealed
 		op6(opEnd, 1, 0, 0, 4, 0), // refused: a sealed segment is never ended
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"records within the segment's size", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 0, 4, 5),
@@ -409,7 +422,7 @@ var corpus = []seed{
 		op6(opSeal, 1, 0, 0, 4, 0),
 		op6(opShrink, 1, 0, 0, 4, 2), // refused: below the bytes the segment holds
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"an early seal is never recycled", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 2, 4, 99),
@@ -418,13 +431,24 @@ var corpus = []seed{
 		op6(opShrink, 1, 0, 0, 4, 5),  // the truncation lands
 		op6(opRecycle, 1, 2, 0, 4, 0), // still refused: an early seal is never recycled
 		op6(opRetire, 1, 0, 0, 4, 0),
-	), 1, 0, 1, 1},
+	), 1, 0, 1, 1, 0},
 	{"a full seal has no cut behind it", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opSeal, 1, 0, 0, 4, 0),   // full: the cap is the file, nothing was truncated
 		op6(opShrink, 1, 0, 0, 4, 5), // refused: no cut exists to account
 		op6(opRecycle, 1, 2, 0, 4, 0),
-	), 0, 1, 1, 1},
+	), 0, 1, 1, 1, 0},
+	{"a spare drops in one step", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0),
+		op6(opDropSpare, 1, 0, 0, 4, 0), // the failed make's reservation, back
+		op6(opDropSpare, 1, 0, 0, 4, 0), // refused: the drop already took it
+	), 0, 0, 0, 0, 1},
+	{"the drop of a segment and of nothing", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0),
+		op6(opDropSpare, 0, 0, 0, 4, 0), // absent: counted, like the retire of nothing
+		op6(opTake, 1, 0, 0, 4, 0),
+		op6(opDropSpare, 1, 0, 0, 4, 0), // refused: a segment goes out by Retire, not here
+	), 0, 0, 1, 0, 0},
 }
 
 // FuzzSet drives the segment set against its oracle: the same operation
@@ -476,6 +500,8 @@ func FuzzSet(f *testing.F) {
 				_, got = s.Retire(op.id)
 			case opRecycle:
 				got = s.Recycle(op.id, op.fresh)
+			case opDropSpare:
+				_, got = s.DropSpare(op.id)
 			}
 
 			if !sameErrClass(got, want) {

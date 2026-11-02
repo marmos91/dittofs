@@ -10,8 +10,9 @@
 // A segment's bytes leave the accounted footprint exactly once: out of it by
 // an unlink (Retire), or into the spare pool by a recycle (Recycle, which
 // moves it, not lowers it), in the step that removes the segment from the
-// set, and only in the call that found it there. A later call of either kind
-// is refused, counted as a double retire and logged at Warn.
+// set, and only in the call that found it there. A spare's leave by
+// DropSpare. A later call of any of these kinds is refused, counted as a
+// double retire and logged at Warn.
 package segment
 
 import (
@@ -181,11 +182,10 @@ func (s *Set) ownsLocked(id core.SegmentID) bool {
 // AddSpare carries the step that reserves cap for a fresh spare, raising
 // UsedBytes before the allocation it accounts for happens. It is called
 // before the spare's creation; the allocation itself is the caller's, and a
-// spare whose making fails is returned the other way round: the caller
-// carries the leftover into the set with Take — the reservation named it
-// already, and no stream ever will — and Retire returns the cap once its
-// unlink has happened, so the raise always comes first. A leftover the unlink
-// cannot remove is carried in and ended instead, and a later retire takes it.
+// spare whose making fails is returned by DropSpare once its unlink has
+// happened, so the raise always comes first. A leftover the unlink cannot
+// remove is carried into the set with Take and ended instead — a spare
+// cannot go back to being one — and a later retire takes it.
 func (s *Set) AddSpare(id core.SegmentID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -398,6 +398,37 @@ func (s *Set) Release(id core.SegmentID) {
 	}
 }
 
+// DropSpare returns a spare's cap after the spare's unlink has happened: like
+// Retire, it is the ledger's half of a reclamation, called once the storage
+// side is done, and only the call that finds the id among the spares
+// subtracts. A spare is not a segment — no stream ever appended to it — so
+// its removal touches the spare count and the footprint and nothing else.
+//
+// The id that names no spare counts itself a double retire and logs at Warn,
+// exactly as Retire's does: the pool and a failed make's cleanup can both
+// select one spare, and the second drop finds it gone. A segment of the set
+// is refused uncounted, for the same reason Retire refuses a spare: the caller
+// named live storage by the wrong door, and counting that would drown the
+// race the count exists to watch.
+func (s *Set) DropSpare(id core.SegmentID) (freed int64, err error) {
+	s.mu.Lock()
+	if _, ok := s.spares[id]; !ok {
+		if _, seg := s.segs[id]; seg {
+			s.mu.Unlock()
+			return 0, ErrWrongState
+		}
+		s.c.DoubleRetires++
+		s.mu.Unlock()
+		s.log.Warn(absentMessage, "segment", uint64(id), "op", "drop")
+		return 0, ErrNotInSet
+	}
+	delete(s.spares, id)
+	s.c.Spares--
+	s.c.UsedBytes -= s.cap
+	s.mu.Unlock()
+	return s.cap, nil
+}
+
 // Retire carries the unlink step of a retirement: it removes a segment of
 // the set — Sealed or Ended — subtracts its accounted size from the footprint
 // and releases each of its record bytes from the share it was accounted to.
@@ -409,11 +440,12 @@ func (s *Set) Release(id core.SegmentID) {
 // decision: a segment still Active, and a spare of the pool, are refused
 // rather than retired, and neither refusal is counted as a double retire.
 // A retire of one means the caller's selection named a segment a stream
-// still appends to, or one the pool still holds — a bug in the caller, not
-// the race the count watches for, and counting either would drown that
-// signal. The ledger is the only side that knows which ids are spares, so
-// the refusal belongs here rather than in a caller's pre-check. Withdrawn
-// if a caller ever needs to see either as a count.
+// still appends to, or arrived at a spare by the wrong door — a spare goes
+// out through DropSpare — and both are a bug in the caller, not the race
+// the count watches for, and counting either would drown that signal. The
+// ledger is the only side that knows which ids are spares, so the refusal
+// belongs here rather than in a caller's pre-check. Withdrawn if a caller
+// ever needs to see either as a count.
 func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 	s.mu.Lock()
 	e, ok := s.segs[id]
