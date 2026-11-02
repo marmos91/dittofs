@@ -83,6 +83,30 @@ func noFooterCases() []noFooterCase {
 		{"records end past the seal marker", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], 152)
 		}, "last record ends at 248, the seal marker is at 240"},
+		{"a last write whose length leaves its record no room", func(seg, tr []byte) {
+			seg[testFooterOffset+72+60] = uint8(KindWrite)
+			// The file offset is zeroed too: entry B's own offset plus a
+			// length at the write band's top would overflow, and the
+			// entry's own decoder checks pass before the sizes are asked
+			// for.
+			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8+1)
+		}, "length 9223372036854775704 leaves the record no room"},
+		{"a last fill whose length leaves its record no room", func(seg, tr []byte) {
+			seg[testFooterOffset+72+60] = uint8(KindFill)
+			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8+1)
+		}, "length 9223372036854775704 leaves the record no room"},
+		{"a last record whose offset leaves it no room", func(seg, tr []byte) {
+			// A fill at the highest 8-multiple the recordOffset column
+			// holds, with the length just under the shared band's top:
+			// every entry check passes and so does the length band, and
+			// only the end sum no int64 holds.
+			seg[testFooterOffset+72+60] = uint8(KindFill)
+			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
+			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], math.MaxUint32-7)
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8)
+		}, "leaves the record no room to end before MaxInt64"},
 	}
 }
 

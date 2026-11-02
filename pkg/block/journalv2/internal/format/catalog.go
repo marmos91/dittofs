@@ -259,16 +259,23 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 	end := int64(SegmentHeaderSize)
 	if len(entries) > 0 {
 		last := entries[len(entries)-1]
-		// Only a write's or a fill's body is the entry's length, so only
-		// their length can drive the record's whole size past what an
-		// int64 holds; every other kind's is a constant, already bounded
-		// by the recordOffset column and this marker's place. The check
-		// runs before the size is asked for, so the arithmetic below
-		// cannot overflow.
+
+		// Only a write's or a fill's body grows with the entry's length, so
+		// only their length can drive the record's whole size past what an
+		// int64 holds. Size() — the one account of a record's sizes — is
+		// guarded rather than duplicated: a length above its band would
+		// wrap Size()'s own padding arithmetic, so it is refused first,
+		// and every other kind's size is a constant bounded far below
+		// MaxInt64. The recordOffset column tops at MaxUint32, so what
+		// remains is the end sum alone, guarded where it is taken.
 		if (last.Kind == KindWrite || last.Kind == KindFill) && last.Extent.Len > math.MaxInt64-RecordHeaderSize-8 {
 			return Footer{}, noFooter("length %d leaves the record no room to end before MaxInt64", last.Extent.Len)
 		}
-		end = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
+		size := last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
+		if size < last.RecordOffset {
+			return Footer{}, noFooter("recordOffset %d plus the record's size leaves the record no room to end before MaxInt64", last.RecordOffset)
+		}
+		end = size
 	}
 	if end != markerOff {
 		return Footer{}, noFooter("last record ends at %d, the seal marker is at %d", end, markerOff)
