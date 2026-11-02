@@ -49,14 +49,14 @@ func FuzzFooter(f *testing.F) {
 	f.Add(make([]byte, TrailerSize), uint64(testSegment))
 
 	f.Fuzz(func(t *testing.T, in []byte, segment uint64) {
-		f, err := ReadFooter(bytes.NewReader(in), int64(len(in)), testIdentity, core.SegmentID(segment))
+		footer, err := ReadFooter(bytes.NewReader(in), int64(len(in)), testIdentity, core.SegmentID(segment))
 
 		if err != nil {
 			if !errors.Is(err, ErrNoFooter) {
 				t.Fatalf("ReadFooter = %v, want ErrNoFooter: a reader within bounds never errors", err)
 			}
-			if f.Offset != 0 || len(f.Entries) != 0 {
-				t.Fatalf("ReadFooter = %v with the footer %+v, want the zero footer on refusal", err, f)
+			if footer.Offset != 0 || len(footer.Entries) != 0 {
+				t.Fatalf("ReadFooter = %v with the footer %+v, want the zero footer on refusal", err, footer)
 			}
 			return
 		}
@@ -64,29 +64,26 @@ func FuzzFooter(f *testing.F) {
 		// What reads was written by hand from this layout: re-encoding
 		// the footer's parts reproduces the input's own bytes, and the
 		// rules the reader holds are seen to hold one more time.
-		marker := AppendSealMarker(nil, testIdentity, SealMarker{Segment: core.SegmentID(segment), Offset: f.Offset - SealMarkerSize})
-		if !slices.Equal(marker, in[f.Offset-SealMarkerSize:f.Offset]) {
-			t.Fatalf("the input's seal marker by hand =\n% x\nwant the input's own\n% x", marker, in[f.Offset-SealMarkerSize:f.Offset])
+		marker := AppendSealMarker(nil, testIdentity, SealMarker{Segment: core.SegmentID(segment), Offset: footer.Offset - SealMarkerSize})
+		if !slices.Equal(marker, in[footer.Offset-SealMarkerSize:footer.Offset]) {
+			t.Fatalf("the input's seal marker by hand =\n% x\nwant the input's own\n% x", marker, in[footer.Offset-SealMarkerSize:footer.Offset])
 		}
 
 		entries := []byte{}
-		for _, e := range f.Entries {
+		for i, e := range footer.Entries {
 			if e.RecordOffset%8 != 0 {
 				t.Fatalf("decoded a record offset %d that is not a multiple of 8", e.RecordOffset)
 			}
-			if len(entries) >= CatalogEntrySize {
-				prev := decodeForTest(t, entries[len(entries)-CatalogEntrySize:])
-				if e.RecordOffset <= prev {
-					t.Fatalf("entries do not ascend: %d after %d", e.RecordOffset, prev)
-				}
+			if i > 0 && e.RecordOffset <= footer.Entries[i-1].RecordOffset {
+				t.Fatalf("entries do not ascend: %d after %d", e.RecordOffset, footer.Entries[i-1].RecordOffset)
 			}
 			entries = AppendCatalogEntry(entries, e)
 		}
-		if !slices.Equal(entries, in[f.Offset:f.Offset+int64(len(f.Entries))*CatalogEntrySize]) {
-			t.Fatalf("re-encoded entries =\n% x\nwant the input's own\n% x", entries, in[f.Offset:f.Offset+int64(len(f.Entries))*CatalogEntrySize])
+		if !slices.Equal(entries, in[footer.Offset:footer.Offset+int64(len(footer.Entries))*CatalogEntrySize]) {
+			t.Fatalf("re-encoded entries =\n% x\nwant the input's own\n% x", entries, in[footer.Offset:footer.Offset+int64(len(footer.Entries))*CatalogEntrySize])
 		}
 
-		trailer := AppendTrailer(nil, f.Offset, entries)
+		trailer := AppendTrailer(nil, footer.Offset, entries)
 		if !slices.Equal(trailer, in[len(in)-TrailerSize:]) {
 			t.Fatalf("AppendTrailer =\n% x\nwant the input's own trailer\n% x", trailer, in[len(in)-TrailerSize:])
 		}
@@ -94,22 +91,12 @@ func FuzzFooter(f *testing.F) {
 		// The extent check the reader holds, seen to hold: the last
 		// record ends exactly at the seal marker.
 		end := int64(SegmentHeaderSize)
-		if len(f.Entries) > 0 {
-			last := f.Entries[len(f.Entries)-1]
+		if len(footer.Entries) > 0 {
+			last := footer.Entries[len(footer.Entries)-1]
 			end = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
 		}
-		if end != f.Offset-SealMarkerSize {
-			t.Fatalf("the records end at %d, want the seal marker's %d", end, f.Offset-SealMarkerSize)
+		if end != footer.Offset-SealMarkerSize {
+			t.Fatalf("the records end at %d, want the seal marker's %d", end, footer.Offset-SealMarkerSize)
 		}
 	})
-}
-
-// decodeForTest reads the record offset an encoded entry holds, for the
-// ascent check over re-encoded bytes.
-func decodeForTest(t *testing.T, b []byte) int64 {
-	t.Helper()
-	if len(b) != CatalogEntrySize {
-		t.Fatalf("entry of %d bytes, want %d", len(b), CatalogEntrySize)
-	}
-	return int64(binary.LittleEndian.Uint32(b[24:28]))
 }

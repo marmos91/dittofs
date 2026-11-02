@@ -212,7 +212,7 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 
 	entryCount := int64(binary.LittleEndian.Uint32(trailer[16:20]))
 	footerLen := entryCount * CatalogEntrySize
-	if footerLen < 0 || footerLen > size-TrailerSize-int64(footerOffset) {
+	if footerLen > size-TrailerSize-int64(footerOffset) {
 		return Footer{}, noFooter("entryCount %d does not fit between footerOffset %d and the trailer", entryCount, footerOffset)
 	}
 
@@ -235,7 +235,7 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 		return Footer{}, fmt.Errorf("format: read footer entries at %d: %w", footerOffset, err)
 	}
 	if got, want := binary.LittleEndian.Uint32(trailer[20:24]), crc32c(footer); got != want {
-		return Footer{}, noFooter("footer checksum 0x%08x, want the CRC32C of %d entry bytes: 0x%08x", got, want, len(footer))
+		return Footer{}, noFooter("footer checksum 0x%08x, want the CRC32C of %d entry bytes: 0x%08x", got, len(footer), want)
 	}
 
 	entries := make([]CatalogEntry, 0, entryCount)
@@ -256,31 +256,7 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 	// sits, so a footer describing fewer records than the segment holds
 	// is detected rather than silently truncating. With no entry the
 	// records end at the first record slot.
-	end := int64(SegmentHeaderSize)
-	if len(entries) > 0 {
-		last := entries[len(entries)-1]
-
-		// Only a write's or a fill's body grows with the entry's length, so
-		// only their length can drive the record's whole size past what an
-		// int64 holds. Size() — the one account of a record's sizes — is
-		// guarded rather than duplicated: a length above its band would
-		// wrap Size()'s own padding arithmetic, so it is refused first,
-		// and every other kind's size is a constant bounded far below
-		// MaxInt64. The recordOffset column tops at MaxUint32, so what
-		// remains is the end sum alone, guarded where it is taken.
-		if (last.Kind == KindWrite || last.Kind == KindFill) && last.Extent.Len > math.MaxInt64-RecordHeaderSize-8 {
-			return Footer{}, noFooter("length %d leaves the record no room to end before MaxInt64", last.Extent.Len)
-		}
-		size := last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
-		if size < last.RecordOffset {
-			return Footer{}, noFooter("recordOffset %d plus the record's size leaves the record no room to end before MaxInt64", last.RecordOffset)
-		}
-		end = size
-	}
-	if end != markerOff {
-		return Footer{}, noFooter("last record ends at %d, the seal marker is at %d", end, markerOff)
-	}
-
+	//
 	// decision: this extent check is not named by the format's reading
 	// list; it is how the footer "identifies the extent of the segment it
 	// describes": the last entry's record must end at the seal marker, so
@@ -289,6 +265,37 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 	// has already cut off — both are no footer, and the scan then reads
 	// every record the segment does hold. Overturned if the format's
 	// owner rules another extent check.
+	end := int64(SegmentHeaderSize)
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+
+		// Only a write's or a fill's body grows with the entry's length,
+		// so only their length can drive the record's whole size past what
+		// an int64 holds. Size() — the one account of a record's sizes — is
+		// guarded rather than duplicated: its padding step adds 7 after the
+		// constants, so each band takes the 7 in, and a length above it
+		// would wrap Size()'s own arithmetic and is refused before the
+		// call. Every other kind's body is a constant, bounded with the
+		// header far below MaxInt64, and no segmented column reaches near
+		// it either.
+		if last.Kind == KindWrite && last.Extent.Len > math.MaxInt64-RecordHeaderSize-8-7 {
+			return Footer{}, noFooter("write length %d leaves the record no room to end before MaxInt64", last.Extent.Len)
+		}
+		if last.Kind == KindFill && last.Extent.Len > math.MaxInt64-RecordHeaderSize-7 {
+			return Footer{}, noFooter("fill length %d leaves the record no room to end before MaxInt64", last.Extent.Len)
+		}
+		whole := RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
+		// The bands hold Size() itself inside an int64, but the record's
+		// own offset is added to it and the recordOffset column still tops
+		// at MaxUint32: the end sum is guarded where it is taken.
+		if whole > math.MaxInt64-last.RecordOffset {
+			return Footer{}, noFooter("recordOffset %d plus the record's size %d leaves the record no room to end before MaxInt64", last.RecordOffset, whole)
+		}
+		end = last.RecordOffset + whole
+	}
+	if end != markerOff {
+		return Footer{}, noFooter("last record ends at %d, the seal marker is at %d", end, markerOff)
+	}
 
 	return Footer{Offset: int64(footerOffset), Entries: entries}, nil
 }
@@ -325,6 +332,8 @@ func decodeCatalogEntry(b []byte) (CatalogEntry, error) {
 	// header-only summary and loses what the record's decode already
 	// holds. Overturned if the format's owner rules the footer must
 	// refuse an entry that breaks the kinds table's spellings.
+	//
+	// The kind itself must still be one this format version defines:
 	if !e.Kind.known() {
 		return CatalogEntry{}, noFooter("entry of unknown kind %d, want one of 1-14", uint8(e.Kind))
 	}

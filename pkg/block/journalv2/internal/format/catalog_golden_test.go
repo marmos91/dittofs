@@ -33,12 +33,9 @@ func rawEntry(e CatalogEntry) (out [raw.CatalogEntrySize]byte) {
 func TestTrailerGolden(t *testing.T) {
 	golden := readGolden(t, "trailer_two_entries")
 
-	entryA := testEntryA
-	entryA.RecordOffset = 48
-
 	// The encoders' concatenated bytes: the two entries, then the trailer
 	// over them.
-	built := AppendCatalogEntry(nil, entryA)
+	built := AppendCatalogEntry(nil, testEntryA)
 	built = AppendCatalogEntry(built, testEntryB)
 	footer := built
 	built = AppendTrailer(built, testFooterOffset, footer)
@@ -48,7 +45,7 @@ func TestTrailerGolden(t *testing.T) {
 
 	// raw's bytes for the same fields: raw fixes no field of a catalog
 	// entry, so all three accounts must agree byte for byte.
-	rawA := rawEntry(entryA)
+	rawA := rawEntry(testEntryA)
 	rawB := rawEntry(testEntryB)
 	rawBytes := raw.Trailer(1, uint64(testFooterOffset), rawA, rawB)
 	if !bytes.Equal(append(append(rawA[:], rawB[:]...), rawBytes...), golden) {

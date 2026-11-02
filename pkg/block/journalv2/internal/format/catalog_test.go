@@ -90,23 +90,34 @@ func noFooterCases() []noFooterCase {
 			// entry's own decoder checks pass before the sizes are asked
 			// for.
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
-			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8+1)
-		}, "length 9223372036854775704 leaves the record no room"},
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8-7+1)
+		}, "write length 9223372036854775697 leaves the record no room"},
+		{"a last write the reviewers' band admits", func(seg, tr []byte) {
+			// A write of MaxInt64-104 sits inside the band the guard
+			// used to admit — its Size() then wrapped and only the sum
+			// check caught it, with a message blaming the offset. The
+			// write band takes the padding's 7 in, so the length rule
+			// itself refuses this length.
+			seg[testFooterOffset+72+60] = uint8(KindWrite)
+			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8)
+		}, "write length 9223372036854775703 leaves the record no room"},
 		{"a last fill whose length leaves its record no room", func(seg, tr []byte) {
 			seg[testFooterOffset+72+60] = uint8(KindFill)
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
-			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8+1)
-		}, "length 9223372036854775704 leaves the record no room"},
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-7+1)
+		}, "fill length 9223372036854775705 leaves the record no room"},
 		{"a last record whose offset leaves it no room", func(seg, tr []byte) {
 			// A fill at the highest 8-multiple the recordOffset column
-			// holds, with the length just under the shared band's top:
-			// every entry check passes and so does the length band, and
-			// only the end sum no int64 holds.
+			// holds, with the length well under the fill band's top:
+			// every entry check passes and so does the fill band, and
+			// only the end sum, which even the recordOffset column's top
+			// can drive past MaxInt64, refuses it.
 			seg[testFooterOffset+72+60] = uint8(KindFill)
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], math.MaxUint32-7)
-			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8)
-		}, "leaves the record no room to end before MaxInt64"},
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-0x10000000-7)
+		}, "recordOffset 4294967288 plus the record's size"},
 	}
 }
 
@@ -183,7 +194,7 @@ func TestReadFooterNoFooter(t *testing.T) {
 		seg := slices.Clone(segment)
 		seg[testFooterOffset] ^= 0xff
 		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
-		assertNoFooter(t, "footer CRC wrong", f, err, "footer checksum")
+		assertNoFooter(t, "footer CRC wrong", f, err, "footer checksum 0x09e7d833, want the CRC32C of 144 entry bytes: 0xcadde441")
 	}
 
 	// A trailer-only file: a valid 32-byte trailer that names the footer
@@ -194,6 +205,19 @@ func TestReadFooterNoFooter(t *testing.T) {
 		seg := AppendTrailer(nil, SegmentHeaderSize+SealMarkerSize, nil)
 		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
 		assertNoFooter(t, "a file of exactly a trailer", f, err, "past the trailer at 0")
+	}
+
+	// An entry count that fits the room a full seal leaves but not the
+	// trailer's boundary: the gap ends 32 bytes above the trailer, so the
+	// three entries' 216 bytes would run into it and the fit rule must
+	// refuse them there — one byte of gap in, and the entries would read
+	// the trailer's own bytes for a checksum that then blames the footer.
+	{
+		seg := sealedSegment(t, []CatalogEntry{testEntryA, testEntryB}, 40)
+		seg[len(seg)-TrailerSize+16] = 3 // entryCount
+		rechecksumFooter(seg)
+		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		assertNoFooter(t, "an entry count that fits the seal's room but not below the trailer", f, err, "entryCount 3 does not fit")
 	}
 
 	// A short file: no trailer to read.
@@ -361,6 +385,32 @@ func (r readAtFailer) ReadAt(p []byte, off int64) (int, error) {
 	return copy(p, r.b[off:]), nil
 }
 
+// readAtEOFer is an io.ReaderAt behaving as the interface's contract allows
+// at its last bytes: a full read that reaches the end returns both the whole
+// buffer and io.EOF. bytes.Reader never operates that way, so no test feeding
+// one can reach the branch readFull holds for such a reader.
+type readAtEOFer struct{ b []byte }
+
+func (r readAtEOFer) ReadAt(p []byte, off int64) (int, error) {
+	n := copy(p, r.b[off:])
+	if off+int64(n) == int64(len(r.b)) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// readAtShort is an io.ReaderAt that breaks the interface's contract, serving
+// one byte fewer than asked for and reporting no error: readFull must not
+// mistake the short read for a whole one.
+type readAtShort struct{ b []byte }
+
+func (r readAtShort) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return copy(p, r.b[off:len(r.b)-1]), nil
+}
+
 // TestReadFooterReturnsReadErrorsAsThemselves pins that a read that fails is
 // returned as itself, never as "no footer": an unreadable device is not
 // evidence of damage and unreadable never counts as empty. The error reaches
@@ -392,6 +442,37 @@ func TestReadFooterReturnsReadErrorsAsThemselves(t *testing.T) {
 		}
 		if f.Offset != 0 || len(f.Entries) != 0 {
 			t.Errorf("%s: ReadFooter returned %+v, want the zero footer", c.name, f)
+		}
+	}
+
+	// A reader may return io.EOF with a full read at its last bytes — the
+	// io.ReaderAt contract allows it — and the footer it verifies must
+	// still read: the whole buffer reached the reader either way.
+	{
+		f, err := ReadFooter(readAtEOFer{segment}, int64(len(segment)), testIdentity, testSegment)
+		if err != nil {
+			t.Errorf("a reader returning io.EOF with a full read: ReadFooter = %v, want no error", err)
+		}
+		if f.Offset != testFooterOffset || len(f.Entries) != 2 {
+			t.Errorf("a reader returning io.EOF with a full read: ReadFooter = (%+v), want the two entries at %d", f, testFooterOffset)
+		}
+	}
+
+	// A reader serving too few bytes with no error breaks the interface's
+	// contract; readFull still refuses to call the short read whole,
+	// because a footer read from bytes that are not there is no footer at
+	// all, and the caller needs told the bytes fell short rather than
+	// handed a wrong verdict.
+	{
+		f, err := ReadFooter(readAtShort{segment}, int64(len(segment)), testIdentity, testSegment)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("a short quiet read: ReadFooter = %v, want io.ErrUnexpectedEOF", err)
+		}
+		if errors.Is(err, ErrNoFooter) {
+			t.Errorf("a short quiet read: ReadFooter = %v, want no ErrNoFooter: bytes missing is not evidence of damage", err)
+		}
+		if f.Offset != 0 || len(f.Entries) != 0 {
+			t.Errorf("a short quiet read: ReadFooter returned %+v, want the zero footer", f)
 		}
 	}
 }
