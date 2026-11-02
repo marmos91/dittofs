@@ -111,11 +111,13 @@ func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.
 		c.mu.Unlock()
 		return vfs.Verifier{}, err
 	}
+	grew := max(0, off+int64(len(p))-int64(len(c.files[f])))
 	b := grow(c.files[f], off+int64(len(p)))
 	copy(b[off:], p)
 	c.files[f] = b
 	ov := c.staged(f)
 	ov.Size = max(ov.Size, off+int64(len(p)))
+	ov.Charge += grew
 	c.overlays[f] = ov
 	if c.hold {
 		c.dones = append(c.dones, o.Done)
@@ -144,9 +146,27 @@ func (c *fakeContent) Commit(ctx context.Context, share entity.ShareID, f entity
 	return c.synced, c.loss, nil
 }
 
+// CommitExistence runs existence, and once it succeeds takes what the writes
+// staged before it charge off f's overlay, leaving the charge of any write
+// staged while it ran.
 func (c *fakeContent) CommitExistence(ctx context.Context, share entity.ShareID, f entity.FileID) error {
-	if c.existence != nil {
-		return c.existence(f)
+	if c.existence == nil {
+		return nil
+	}
+	c.mu.Lock()
+	before := c.overlays[f].Charge
+	c.mu.Unlock()
+	if err := c.existence(f); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return err
+	}
+	if o, ok := c.overlays[f]; ok {
+		o.Charge -= before
+		c.overlays[f] = o
 	}
 	return nil
 }

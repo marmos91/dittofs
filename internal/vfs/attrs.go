@@ -125,7 +125,8 @@ func later(a, b time.Time) time.Time {
 var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInvalid)
 
 // SetAttr changes t's attributes as ch names them, under t's admission and
-// accept locks: the ctime guard first, then the rights the change asks,
+// accept locks, once an owner or group change has committed the file's
+// pending existence: the ctime guard first, then the rights the change asks,
 // decided through authz, then open state, then, for an owner or group
 // change, the file's charge reserved against the new owner and group, then
 // the change, whose value the store's ownership rules decide. A size change is the engine's Truncate,
@@ -150,6 +151,21 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		return vfs.WCC{}, err
 	}
 	defer done()
+	// An owner or group change first commits the file's pending existence,
+	// so the file's Charged holds every write staged before it rather than
+	// leaving them to charge the new owner at their own commit. The commit
+	// joins the group commit, so it runs before the admission lock is taken.
+	//
+	// decision: the commit runs for any change naming the owner or group,
+	// before the change is authorised and whether or not it moves the
+	// charge, as the file is read only under the locks. It writes nothing a
+	// caller's COMMIT could not, so it grants nothing. Overturned if an
+	// existence commit is ever found to be visible to a client.
+	if ch.Mask&(entity.AttrOwner|entity.AttrGroup) != 0 {
+		if err := fs.engine.CommitExistence(ctx, fileOf(t.H)); err != nil {
+			return vfs.WCC{}, storeErr(err)
+		}
+	}
 	a, f, release, err := fs.hold(ctx, c, t)
 	if err != nil {
 		return vfs.WCC{}, err
@@ -218,22 +234,24 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	// An owner or group change moves the file's charge, its bytes and one
-	// inode, in the store's transaction. The file's pending existence is
-	// committed first, so the charge holds every write staged before the
-	// change rather than leaving them to charge the new owner at their own
-	// commit; then the new owner and group are reserved the charge, each
-	// only in its own scope and only where it changes, and the reservation
-	// released once the store has answered. A privileged caller is held to
-	// the limit as any other.
+	// inode, in the store's transaction. Under the admission lock the charge
+	// is reserved: Charged, which the existence commit above brought up to
+	// date, plus what the writes staged since will charge, from the engine's
+	// overlay, and one inode, charged to the owner and group the change
+	// leaves, against only the scopes it moves into. The lock is held to the
+	// store's apply, so no write staged after the reservation charges the
+	// new owner unchecked; the reservation is released once the store has
+	// answered. A privileged caller is held to the limit as any other.
 	if mv, scopes := moved(f, ch.Attrs); len(scopes) > 0 {
-		if err := fs.engine.CommitExistence(ctx, f.ID); err != nil {
-			return vfs.WCC{}, storeErr(err)
-		}
-		cur, err := fs.meta.Files().Get(ctx, a.caller.Identity, t.H)
+		o, pending, err := fs.engine.Overlay(ctx, f.ID)
 		if err != nil {
 			return vfs.WCC{}, storeErr(err)
 		}
-		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: cur.Charged, Files: 1}, scopes...)
+		charge := f.Charged
+		if pending {
+			charge += o.Charge
+		}
+		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: charge, Files: 1}, scopes...)
 		if err != nil {
 			return vfs.WCC{}, err
 		}
@@ -263,12 +281,12 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	return fs.wcc(ctx, c, a, t.H, f), nil
 }
 
-// moved is whom a change of f's owner or group moves its charge to, and the
-// scopes it moves into: the user scope for a new owner and the group scope
-// for a new group, each only where ch changes it; none when it changes
-// neither.
+// moved is whom a change of f's owner or group moves its charge to, the
+// owner and group it leaves, each f's own where ch does not change it, and
+// the scopes it moves into: the user scope for a new owner and the group
+// scope for a new group; none when it changes neither.
 func moved(f vfs.File, ch vfs.Attrs) (c quota.Charge, scopes []vfs.QuotaScope) {
-	c = quota.Charge{Share: f.Share, Project: f.Project}
+	c = charged(f)
 	if ch.Changes(entity.AttrOwner) && ch.Owner != f.Owner {
 		c.Owner = ch.Owner
 		scopes = append(scopes, vfs.QuotaUser)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -489,5 +490,41 @@ func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
 	}
 	if got := s.record(t, h); got.Owner != s.alice.Principal || got.Charged != int64(len(data)) {
 		t.Errorf("after the refused chown: owner %v, charged %d; want alice's, its staged bytes committed", got.Owner, got.Charged)
+	}
+}
+
+// V37: a chown's existence commit holds no lock, so a write may be staged
+// while it runs; what that write will charge is still reserved against the
+// new owner from the overlay, so a chown to an owner with room for the
+// committed charge alone, and not for the write, is refused.
+func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
+	s, _ := newQuotas(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	bobs := s.usage(t, s.bob.Principal)
+	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + 9})
+	data := []byte("0123456789")
+	wrote := make(chan error, 1)
+	s.engine.existence = func(entity.FileID) error {
+		go func() {
+			_, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, data, vfs.Unstable)
+			wrote <- err
+		}()
+		select {
+		case err := <-wrote:
+			wrote <- err
+		case <-time.After(time.Second):
+		}
+		return nil
+	}
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
+	if _, err := s.SetAttr(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, chown); quotaScope(err) != vfs.QuotaUser {
+		t.Errorf("a chown to bob, 9 bytes under his limit, of a file with %d bytes staged during its commit: %v, want ErrQuota (QuotaUser)", len(data), err)
+	}
+	if err := <-wrote; err != nil {
+		t.Fatalf("the write staged during the chown's commit: %v", err)
+	}
+	if got := s.record(t, h).Owner; got != s.alice.Principal {
+		t.Errorf("after the refused chown: owner %v, want alice", got)
 	}
 }
