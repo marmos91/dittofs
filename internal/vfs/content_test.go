@@ -3,22 +3,19 @@ package vfs
 import (
 	"context"
 	"sync"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/vfs"
 )
 
 // fakeContent is Content over bytes in memory: every write is stable at once,
-// nothing is ever lost, and a copy or clone is a copy of bytes. Nothing it
-// stages ever commits, so a file it wrote or truncated stays pending in its
-// overlay. It stands in for the engine until the engine is built, so the
-// filesystem's tests prove what the filesystem orders, never what the engine
-// keeps.
+// nothing is ever lost, and a copy or clone is a copy of bytes. It stages no
+// overlay: no test reads one yet. It stands in for the engine until the
+// engine is built, so the filesystem's tests prove what the filesystem
+// orders, never what the engine keeps.
 type fakeContent struct {
 	mu       sync.Mutex
 	files    map[entity.FileID][]byte
-	overlays map[entity.FileID]Overlay
 	versions uint64
 	verifier vfs.Verifier
 }
@@ -26,7 +23,7 @@ type fakeContent struct {
 var _ Content = (*fakeContent)(nil)
 
 func newFakeContent() *fakeContent {
-	return &fakeContent{files: map[entity.FileID][]byte{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}}
+	return &fakeContent{files: map[entity.FileID][]byte{}, verifier: vfs.Verifier{1}}
 }
 
 func (c *fakeContent) Draw(ctx context.Context, f entity.FileID) (entity.JournalVersion, error) {
@@ -41,9 +38,6 @@ func (c *fakeContent) Write(ctx context.Context, f entity.FileID, off int64, p [
 	b := grow(c.files[f], off+int64(len(p)))
 	copy(b[off:], p)
 	c.files[f] = b
-	ov := c.staged(f)
-	ov.Size = max(ov.Size, off+int64(len(p)))
-	c.overlays[f] = ov
 	c.mu.Unlock()
 	if o.Done != nil {
 		o.Done()
@@ -71,20 +65,7 @@ func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.files[f] = grow(c.files[f], size)[:size]
-	o := c.staged(f)
-	o.Size, o.SizeSet = size, true
-	c.overlays[f] = o
 	return nil
-}
-
-// staged is f's overlay with one more operation staged: a version drawn, and
-// the times now. The caller holds mu.
-func (c *fakeContent) staged(f entity.FileID) Overlay {
-	c.versions++
-	o := c.overlays[f]
-	o.Mtime, o.Ctime = time.Now(), time.Now()
-	o.Version = entity.VersionOf(c.versions)
-	return o
 }
 
 func (c *fakeContent) Deallocate(ctx context.Context, f entity.FileID, off, n int64) error {
@@ -122,10 +103,7 @@ func (c *fakeContent) Copy(ctx context.Context, src, dst entity.FileID, xs []vfs
 }
 
 func (c *fakeContent) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	o, ok := c.overlays[f]
-	return o, ok, nil
+	return Overlay{}, false, nil
 }
 
 func (c *fakeContent) Allocation(ctx context.Context, f entity.FileID, off int64) (entity.Span, error) {

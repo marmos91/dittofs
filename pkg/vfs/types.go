@@ -133,8 +133,12 @@ type Identity struct {
 //
 // An NFSv4.0 call has no session. Its Client is the client on the state its
 // stateid resolves to or, for an operation that names an open or lock owner,
-// that owner's client. NFSv4.0 is offered no delegation, so checking that
-// client against the state's opener is the whole check.
+// that owner's client, and only a client confirmed under NFSv4.0, which the
+// adapter reads from the record's Adapter bytes: a stateid of a client
+// confirmed by EXCHANGE_ID, a delegation's among them, is NotYours. The
+// address SETCLIENTID_CONFIRM recorded is where callbacks go, never a check.
+// NFSv4.0 is offered no delegation, so I/O through an open is checked against
+// the open's principal.
 type Call struct {
 	Identity Identity
 	Protocol Protocol
@@ -368,9 +372,13 @@ type ClientInfo struct {
 	Name     []byte
 	Boot     [8]byte
 	Protect  bool   // state protection: only the client's owner may act on its state
-	Adapter  []byte // the adapter's own bytes, kept with the record and never read by the service
+	Adapter  []byte // the adapter's own bytes, kept with the record, never read by the service and handed back by Record: NFSv4 keeps there the minor version that confirmed the client
 	Proposal *Proposal
+	Recovery RecoveryKind // how a loss of the client's state reaches it, the adapter's pick: status for NFSv4.1, refusal for NFSv4.0, reconnect for SMB, notice for NLM; Connect refuses a zero one ErrInvalid
 }
+
+// RecoveryKind is how a loss of a client's state reaches it.
+type RecoveryKind = entity.RecoveryKind
 
 // AuthFlavor is a flavour a share admits.
 type AuthFlavor uint8

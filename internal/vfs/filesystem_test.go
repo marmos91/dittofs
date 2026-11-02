@@ -28,8 +28,9 @@ import (
 // its Sink and Admission as its Order.
 type fixture struct {
 	*Filesystem
-	tab *openstate.Table
-	fs  *kvstoretest.FS
+	tab   *openstate.Table
+	fs    *kvstoretest.FS
+	clock *sim.TestClock
 }
 
 func memKV(tb testing.TB) kv.KV {
@@ -50,7 +51,13 @@ func newFixture(t *testing.T, events vfs.Events) *fixture {
 func newFixtureOf(t *testing.T, d Deps) *fixture {
 	t.Helper()
 	fs := kvstoretest.NewFS(t, memKV)
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Rand: rand.Reader})
+	// The administrator holds a uid, so that it signs in as itself rather
+	// than as the share's anonymous principal.
+	if err := fs.Store.ControlPlane().PutUser(t.Context(), entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}); err != nil {
+		t.Fatal(err)
+	}
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +70,7 @@ func newFixtureOf(t *testing.T, d Deps) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Filesystem: s, tab: tab, fs: fs}
+	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock}
 }
 
 // newFilesystem is a serving filesystem, drained and stopped when the test
@@ -252,7 +259,7 @@ func TestDrainJoinsEveryAdmittedCall(t *testing.T) {
 }
 
 // Before Start, from the moment Drain begins and after Stop, every call is
-// refused ErrUnavailable before its body runs.
+// refused ErrUnavailable before its body runs; while serving, none is.
 func TestACallOutsideServingIsUnavailable(t *testing.T) {
 	f := newFixture(t, nil)
 	refused := func(when string) {
@@ -270,8 +277,8 @@ func TestACallOutsideServingIsUnavailable(t *testing.T) {
 	}
 	for m, errs := range callAll(f) {
 		for _, err := range errs {
-			if !errors.Is(err, errUnbuilt) {
-				t.Errorf("serving: %s answered %v, want its body's errUnbuilt", m, err)
+			if errors.Is(err, vfs.ErrUnavailable) && !errors.Is(err, errUnbuilt) {
+				t.Errorf("serving: %s answered %v, want its body's answer", m, err)
 			}
 		}
 	}
