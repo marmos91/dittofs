@@ -447,6 +447,33 @@ func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
 	}
 }
 
+// valueCallbacks is Callbacks of a type that is not comparable, as an
+// adapter's value type holding a func or a map is.
+type valueCallbacks struct {
+	*vfstest.RecordingCallbacks
+	_ map[string]int
+}
+
+// A failed recall finds the client's next path by its registration, so
+// Callbacks that are not comparable are resent through as any others.
+func TestAFailedRecallFindsTheNextPathOfNonComparableCallbacks(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	lost := valueCallbacks{RecordingCallbacks: &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}}
+	id := laptop(t, s, lost)
+	g := delegate(t, s, id)
+	s.RecallGrant(g)
+	calls(t, lost.RecordingCallbacks, 1)
+	fresh := valueCallbacks{RecordingCallbacks: &vfstest.RecordingCallbacks{}}
+	laptop(t, s, fresh)
+	calls(t, fresh.RecordingCallbacks, 1)
+	if got := breaks(fresh.RecordingCallbacks); len(got) != 1 || got[0] != g.ID {
+		t.Errorf("the client's new path saw %v, want the recall", fresh.Calls())
+	}
+}
+
 // A callback with no path to go by is counted.
 func TestACallbackWithNoPathIsCounted(t *testing.T) {
 	s := newShares(t, nil, nil)

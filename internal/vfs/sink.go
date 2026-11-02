@@ -121,36 +121,43 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 	if g.Recall != nil {
 		to = g.Recall.To
 	}
-	path := func(ctx context.Context) vfs.Callbacks {
+	path := func(ctx context.Context) route {
 		opens, err := fs.grants.Openers(ctx, openstate.Caller{Client: g.Client}, g.ID)
+		var r route
 		switch {
 		case err != nil:
-			return nil // gone since: nothing is left to recall
+			return route{} // gone since: nothing is left to recall
 		case len(opens) == 0:
-			return fs.counted("RecallGrant", fs.reg.latest(g.Client)) // a delegation, the client's own
+			r = fs.reg.latestRoute(g.Client) // a delegation, the client's own
+		default:
+			r = fs.reg.breakPath(g.Client, opens)
 		}
-		return fs.counted("RecallGrant", fs.reg.breakPath(g.Client, opens))
+		fs.counted("RecallGrant", r.cb)
+		return r
 	}
-	fs.deliver(path, func(ctx context.Context, cb vfs.Callbacks) {
+	var sent route // deliver runs both closures on one goroutine, path first
+	fs.deliver(func(ctx context.Context) vfs.Callbacks { sent = path(ctx); return sent.cb }, func(ctx context.Context, cb vfs.Callbacks) {
 		for cb.RecallGrant(ctx, g, to) != nil {
 			fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
-			if cb = nextPath(ctx, path, cb); cb == nil {
+			if sent = nextPath(ctx, path, sent.gen); sent.cb == nil {
 				return
 			}
+			cb = sent.cb
 		}
 	})
 }
 
-// nextPath waits, grantRetry at a time, for path to answer a path other than
-// cb, and answers it; nil once path answers none or ctx ends.
-func nextPath(ctx context.Context, path func(context.Context) vfs.Callbacks, cb vfs.Callbacks) vfs.Callbacks {
+// nextPath waits, grantRetry at a time, for path to answer a path another
+// registration than gen made, and answers it; the zero route once path
+// answers none or ctx ends.
+func nextPath(ctx context.Context, path func(context.Context) route, gen uint64) route {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return route{}
 		case <-time.After(grantRetry):
 		}
-		if next := path(ctx); next != cb {
+		if next := path(ctx); next.gen != gen {
 			return next
 		}
 	}
@@ -225,22 +232,31 @@ func (fs *Filesystem) counted(kind string, cb vfs.Callbacks) vfs.Callbacks {
 // ever connected. Drop it with the client's paths if host churn shows it.
 type registry struct {
 	mu   sync.Mutex
+	gen  uint64 // the last registration's
 	byID map[entity.ClientID]latestPath
 	smb  map[entity.ClientID]map[entity.SessionRef]session
 	nlm  map[string]entity.ClientID
+}
+
+// route is a path and the registration that made it, from 1. A path is told
+// from another by its registration, never by its Callbacks: they need not be
+// comparable, and one value may be registered again.
+type route struct {
+	cb  vfs.Callbacks
+	gen uint64
 }
 
 // latestPath is the path a client's latest Connect registered, and its
 // session; zero for a client that names none.
 type latestPath struct {
 	sess entity.SessionRef
-	cb   vfs.Callbacks
+	route
 }
 
 // session is an SMB session's path.
 type session struct {
 	principal entity.Principal
-	cb        vfs.Callbacks
+	route
 }
 
 func newRegistry() *registry {
@@ -267,14 +283,16 @@ func (r *registry) register(id entity.ClientID, host string, sess entity.Session
 	if host != "" {
 		r.nlm[host] = id
 	}
-	r.byID[id] = latestPath{sess, cb}
+	r.gen++
+	rt := route{cb, r.gen}
+	r.byID[id] = latestPath{sess, rt}
 	if sess == (entity.SessionRef{}) {
 		return
 	}
 	if r.smb[id] == nil {
 		r.smb[id] = map[entity.SessionRef]session{}
 	}
-	r.smb[id][sess] = session{p, cb}
+	r.smb[id][sess] = session{p, rt}
 }
 
 // dropSession drops session sess's path of client id, and the client's
@@ -288,7 +306,7 @@ func (r *registry) dropSession(id entity.ClientID, sess entity.SessionRef) {
 	if l, ok := r.byID[id]; ok && l.sess == sess {
 		delete(r.byID, id)
 		for s, p := range r.smb[id] {
-			r.byID[id] = latestPath{s, p.cb}
+			r.byID[id] = latestPath{s, p.route}
 			break
 		}
 	}
@@ -307,29 +325,34 @@ func (r *registry) unregister(id entity.ClientID) {
 
 // latest is client id's latest path, or nil.
 func (r *registry) latest(id entity.ClientID) vfs.Callbacks {
+	return r.latestRoute(id).cb
+}
+
+// latestRoute is client id's latest path with its registration, or zero.
+func (r *registry) latestRoute(id entity.ClientID) route {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.byID[id].cb
+	return r.byID[id].route
 }
 
 // breakPath is the path a break of a grant covering opens, of client id,
 // goes by: the session holding one of them, else a session of the client
-// signed in as one of their openers, else nil.
-func (r *registry) breakPath(id entity.ClientID, opens []openstate.Open) vfs.Callbacks {
+// signed in as one of their openers, else zero.
+func (r *registry) breakPath(id entity.ClientID, opens []openstate.Open) route {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	sessions := r.smb[id]
 	for _, o := range opens {
 		if s, ok := sessions[o.Session]; ok {
-			return s.cb
+			return s.route
 		}
 	}
 	for _, o := range opens {
 		for _, s := range sessions {
 			if s.principal == o.Principal {
-				return s.cb
+				return s.route
 			}
 		}
 	}
-	return nil
+	return route{}
 }
