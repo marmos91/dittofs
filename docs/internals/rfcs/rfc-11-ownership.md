@@ -1696,6 +1696,8 @@ a claim or address mark waited out the claim hold.
 > [the index's rule for proposed targets](rfc-index.md#Test%20tiers): the first run replaces each, and a miss
 > on it is a design finding; the claims-per-file and alternating-writer targets are derived and stay.
 
+**Suites.** RFC 11 is deferred with the cluster, and no suite runs its checks yet.
+
 ## 15. Open questions
 
 1. **Follow-the-writer defaults.** The window, share and dwell in [§3.3](#3.3%20The%20primary%20follows%20the%20writer) are

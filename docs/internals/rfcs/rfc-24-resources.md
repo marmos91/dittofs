@@ -1244,6 +1244,12 @@ once cannot fill a pool.
 | R13 | Background CPU work holds at most three quarters of the runtime's parallelism at once; request-path CPU takes no token. | Offload compressible data with 128 workers on four cores while a client sends `GETATTR`: assert the tokens' high-water mark, kept in test builds, is at most three. On the reference box, the `GETATTR` p99 stays within twice its idle figure. |
 | R14 | A configured worker count or index bound that does not fit its pool is refused at start, never reduced silently. | Set `upload_workers` to 4096 under a 1 GiB *L*, and an `ExtentLimit` past the index pool: assert each start is refused, naming the pool and the figure. |
 
+**Suites.** §9's rows run in `unit` on the composed single-node harness, with a
+real journal and a remote it slows and stops; R1's memory-limited server and
+R2's hour-long overload in a 2 GiB container are `system` scenarios, R2 among
+the long ones run nightly. No suite runs yet the timing claims on the reference
+box or §8's measurements and benchmarks.
+
 ## 10. Observability
 
 Metric names are shown without the `dittofs_` prefix the exporter adds; names,
