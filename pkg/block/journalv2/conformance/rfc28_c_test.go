@@ -532,11 +532,18 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	}
 
 	// The cut keeps the header of the record at the cut and 100 bytes of
-	// its body, and takes every record after it whole.
+	// its body, and takes every record after it whole. It is made with the
+	// journal shut, as an edit the journal never sees happen: a clean close
+	// may seal, and a seal written after the cut is not the row's damage.
 	cut := len(recs) / 2
 	cutLoc := entryAt(t, f, id, recs[cut].extent.Off).Location
+	f.Shutdown()
 	truncateSegment(t, f, segmentName(s1), cutLoc.Offset+raw.RecordHeaderSize+100)
-	f.Reopen()
+
+	err = f.TryReopen()
+	if err != nil {
+		t.Fatalf("reopen after the cut: %v", err)
+	}
 
 	s := f.J.Stats()
 	if s.Counters.TornTails != 0 {
@@ -580,8 +587,13 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	}
 	seg := entryAt(t, g, id, 0).Location.Segment
 	cutLoc = entryAt(t, g, id, rs[2].extent.Off).Location
+	g.Shutdown()
 	truncateSegment(t, g, segmentName(seg), cutLoc.Offset+raw.RecordHeaderSize+100)
-	g.Reopen()
+
+	err = g.TryReopen()
+	if err != nil {
+		t.Fatalf("reopen after the cut: %v", err)
+	}
 
 	s = g.J.Stats()
 	if s.Counters.TornTails != 1 {
@@ -2377,6 +2389,10 @@ func TestRFC28C_ForeignSegment(t *testing.T) {
 
 	a := writeSynced(t, f, 0, 0, 0, size)
 	b := writeSynced(t, f, 1, 1, 0, size)
+
+	// Planted with the journal shut, so no spare it makes meanwhile can
+	// take the planted id.
+	f.Shutdown()
 	name := segmentName(newestID(t, f) + 1)
 	plant(t, f, name, foreign)
 	before := callsFor(f, name)
@@ -2410,6 +2426,10 @@ func TestRFC28C_ForeignHeaderIsForeignNotDamaged(t *testing.T) {
 	b := writeSynced(t, f, 1, 1, 0, size)
 
 	other := [16]byte{'o', 't', 'h', 'e', 'r', '-', 'j', 'o', 'u', 'r', 'n', 'a', 'l'}
+
+	// Planted with the journal shut, so no spare it makes meanwhile can
+	// take the planted id.
+	f.Shutdown()
 	id := newestID(t, f) + 1
 	extent := journalv2.Extent{Off: 0, Len: size}
 	record := raw.Record{

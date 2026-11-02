@@ -471,6 +471,10 @@ func TestRFC28A_FooterIsNotAuthoritative(t *testing.T) {
 	const kindWrite = 1
 	const size = 64 << 10
 	extent := journalv2.Extent{Off: 1 << 20, Len: size}
+
+	// Planted with the journal shut, so no spare it makes meanwhile can
+	// take the planted id.
+	g.Shutdown()
 	id := newestID(t, g) + 1
 	version := raw.Version{Epoch: x.version.Epoch, Counter: x.version.Counter + 1}
 	p := pattern(fmtTag("p", 0, 0, extent.Off), size)
