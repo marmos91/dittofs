@@ -39,7 +39,7 @@ func TestSeedReplay(t *testing.T) {
 						takes++
 					}
 				case opSeal:
-					got = s.Seal(op.id)
+					got = s.Seal(op.id, op.full)
 					if got == nil {
 						seals++
 					}

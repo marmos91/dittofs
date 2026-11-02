@@ -66,7 +66,7 @@ func TestRetireTwiceSubtractsOnce(t *testing.T) {
 	}{
 		{"AddSpare", func() error { return s.AddSpare(id) }},
 		{"Take", func() error { return s.Take(id) }},
-		{"Seal", func() error { return s.Seal(id) }},
+		{"Seal", func() error { return s.Seal(id, true) }},
 	} {
 		if err := op.fn(); err != nil {
 			t.Fatalf("%s: %v", op.name, err)
@@ -141,7 +141,7 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 	}{
 		{"AddSpare", func() error { return s.AddSpare(old) }},
 		{"Take", func() error { return s.Take(old) }},
-		{"Seal", func() error { return s.Seal(old) }},
+		{"Seal", func() error { return s.Seal(old, true) }},
 	} {
 		if err := op.fn(); err != nil {
 			t.Fatalf("%s: %v", op.name, err)
@@ -196,7 +196,7 @@ func TestRecycleKeepsFootprint(t *testing.T) {
 	if err := s.AddRecord(old, tagB, 60); err != nil {
 		t.Fatalf("AddRecord B: %v", err)
 	}
-	if err := s.Seal(old); err != nil {
+	if err := s.Seal(old, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	before := s.Counters()
@@ -403,7 +403,7 @@ func TestSealAndEndRefuseANonActiveSegment(t *testing.T) {
 		}
 		switch state {
 		case Sealed:
-			if err := s.Seal(id); err != nil {
+			if err := s.Seal(id, true); err != nil {
 				t.Fatalf("Seal: %v", err)
 			}
 		case Ended:
@@ -421,7 +421,7 @@ func TestSealAndEndRefuseANonActiveSegment(t *testing.T) {
 		{"ended", Ended},
 	} {
 		for name, op := range map[string]func(s *Set, id core.SegmentID) error{
-			"seal": func(s *Set, id core.SegmentID) error { return s.Seal(id) },
+			"seal": func(s *Set, id core.SegmentID) error { return s.Seal(id, true) },
 			"end":  func(s *Set, id core.SegmentID) error { return s.End(id) },
 		} {
 			t.Run("the "+name+" of a "+c.name+" segment", func(t *testing.T) {
@@ -565,6 +565,127 @@ func TestShrinkBelowTheRecordsItHoldsIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnEarlySealIsNeverRecycled: recycled storage is a full spare's — the
+// seal said full, so nothing was truncated out of the file. A segment sealed
+// early is never recycled, whichever of its two shapes it stands in: the
+// truncation that has not landed yet, so the file still sits at its cap, and
+// the truncation whose sync failed, which leaves the file at its cap for good
+// (RFC 28 §2.5). The second shape is the one the size cannot tell from a full
+// seal — hence the seal's own word for itself. Each refusal changes nothing.
+func TestAnEarlySealIsNeverRecycled(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id, fresh := core.SegmentID(1), core.SegmentID(2)
+	tag := core.ShareTag(2)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 100); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+
+	// The seal named early: the truncation it stands for has not landed yet,
+	// and the file still holds the whole cap.
+	if err := s.Seal(id, false); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	before := s.Counters()
+	if err := s.Recycle(id, fresh); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("the recycle of an early-sealed segment at its cap: %v, want %v", err, ErrBadSize)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused recycle changed the counters: %v, still want %v", after, before)
+	}
+	if err := s.Take(fresh); !errors.Is(err, ErrNotInSet) {
+		t.Fatalf("the refused recycle minted the fresh id anyway: Take returned %v, want %v", err, ErrNotInSet)
+	}
+
+	// The truncation lands: the file keeps its records and gives up its tail.
+	// Still not storage for a full spare, whatever the size now says.
+	if err := s.Shrink(id, 512); err != nil {
+		t.Fatalf("the truncation after the early seal: %v", err)
+	}
+	before = s.Counters()
+	if err := s.Recycle(id, fresh); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("the recycle of an early-sealed and truncated segment: %v, want %v", err, ErrBadSize)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the second refused recycle changed the counters: %v, still want %v", after, before)
+	}
+
+	// The reservation leaves by an unlink, the one road it has.
+	freed, err := s.Retire(id)
+	if err != nil {
+		t.Fatalf("the retire of the early-sealed segment: %v", err)
+	}
+	if freed != 512 {
+		t.Fatalf("the retire freed %d, want the truncated size 512", freed)
+	}
+	if n := s.ShareBytes(tag); n != 0 {
+		t.Fatalf("the retire left %d record bytes behind, want them released", n)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestAFullSealKeepsItsCap: a full seal closed the segment at its cap with
+// nothing truncated, so no cut of it exists and Shrink refuses it. The seal
+// named early is the one that serves its truncation: the cut is the
+// truncation it stands for. Both seals leave the counters whole when refused.
+func TestAFullSealKeepsItsCap(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	full, early := core.SegmentID(1), core.SegmentID(2)
+	for _, id := range []core.SegmentID{full, early} {
+		if err := s.AddSpare(id); err != nil {
+			t.Fatalf("AddSpare %d: %v", id, err)
+		}
+		if err := s.Take(id); err != nil {
+			t.Fatalf("Take %d: %v", id, err)
+		}
+	}
+	if err := s.Seal(full, true); err != nil {
+		t.Fatalf("the full seal: %v", err)
+	}
+	if err := s.Seal(early, false); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	before := s.Counters()
+
+	if err := s.Shrink(full, 512); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("a cut of a fully sealed segment: %v, want %v: its truncation never existed", err, ErrWrongState)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused cut changed the counters: %v, still want %v", after, before)
+	}
+	// The early seal's truncation is served, and its retire returns what the
+	// cut left.
+	if err := s.Shrink(early, 512); err != nil {
+		t.Fatalf("the truncation after the early seal: %v", err)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap+512 {
+		t.Fatalf("after the cut the footprint is %d, want the full seal's cap plus the truncated 512", c.UsedBytes)
+	}
+	freed, err := s.Retire(early)
+	if err != nil {
+		t.Fatalf("the retire of the truncated segment: %v", err)
+	}
+	if freed != 512 {
+		t.Fatalf("the truncated segment retired at %d, want 512", freed)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
 // not sealed at all, or the fresh id already owned — leaves every counter and
 // every map exactly as it was: every refusal is checked before anything
 // changes.
@@ -610,12 +731,12 @@ func TestRecycleRefusals(t *testing.T) {
 		}
 	}
 	eventaken := spent(func(s *Set, id core.SegmentID) error {
-		if err := s.Seal(id); err != nil {
+		if err := s.Seal(id, false); err != nil {
 			return err
 		}
 		return s.Shrink(id, half)
 	})
-	sealed := spent(func(s *Set, id core.SegmentID) error { return s.Seal(id) })
+	sealed := spent(func(s *Set, id core.SegmentID) error { return s.Seal(id, true) })
 	ended := spent(func(s *Set, _ core.SegmentID) error { return s.End(1) })
 	active := spent(func(*Set, core.SegmentID) error { return nil })
 	sealedWithASpare := func(s *Set) error {
@@ -625,7 +746,7 @@ func TestRecycleRefusals(t *testing.T) {
 		if err := s.Take(1); err != nil {
 			return err
 		}
-		if err := s.Seal(1); err != nil {
+		if err := s.Seal(1, true); err != nil {
 			return err
 		}
 		return s.AddSpare(2)
@@ -643,7 +764,7 @@ func TestRecycleRefusals(t *testing.T) {
 		if err := s.Take(2); err != nil {
 			return err
 		}
-		return s.Seal(1)
+		return s.Seal(1, true)
 	}
 
 	for _, c := range []struct {
@@ -683,7 +804,7 @@ func TestReleaseAfterRetireChangesNothing(t *testing.T) {
 	if err := s.Take(retired); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.Seal(retired); err != nil {
+	if err := s.Seal(retired, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	if !s.Claim(retired) {
@@ -718,7 +839,7 @@ func TestReleaseAfterRetireChangesNothing(t *testing.T) {
 	if s.Claim(stillActive) {
 		t.Fatal("Claim on an Active segment was held, want it refused")
 	}
-	if err := s.Seal(stillActive); err != nil {
+	if err := s.Seal(stillActive, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	if !s.Claim(stillActive) {
@@ -752,7 +873,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	if err := s.Take(sealedEarly); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.Seal(sealedEarly); err != nil {
+	if err := s.Seal(sealedEarly, false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
@@ -834,7 +955,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	if err := s.Take(growing); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.Seal(growing); err != nil {
+	if err := s.Seal(growing, false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	const kept = 256
@@ -967,10 +1088,10 @@ func TestRecordBytesLeaveWithTheirSegment(t *testing.T) {
 		}
 	}
 
-	if err := s.Seal(one); err != nil {
+	if err := s.Seal(one, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if err := s.Seal(two); err != nil {
+	if err := s.Seal(two, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	freed, err := s.Retire(one)
@@ -1000,7 +1121,7 @@ func TestRecordBytesLeaveWithTheirSegment(t *testing.T) {
 		t.Errorf("the ledger keeps %d tags, want none: every tag reached zero", len(s.tags))
 	}
 
-	if err := s.Seal(three); err != nil {
+	if err := s.Seal(three, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := s.AddRecord(three, tagA, 5); !errors.Is(err, ErrWrongState) {
@@ -1031,7 +1152,7 @@ func TestCheckReportsMismatch(t *testing.T) {
 	if err := s.AddRecord(1, 4, 100); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
-	if err := s.Seal(1); err != nil {
+	if err := s.Seal(1, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	// One spare remains beside the set, so the check must count it at the cap.
@@ -1156,10 +1277,10 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	if err := s.AddRecord(two, tag, 60); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
-	if err := s.Seal(one); err != nil {
+	if err := s.Seal(one, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if err := s.Seal(two); err != nil {
+	if err := s.Seal(two, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := s.Check(); err != nil {
@@ -1227,7 +1348,7 @@ func TestRetireActiveRefused(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	// The segment is untouched: sealing it and retiring it still works.
-	if err := s.Seal(id); err != nil {
+	if err := s.Seal(id, true); err != nil {
 		t.Fatalf("Seal after the refused retire: %v", err)
 	}
 	if _, err := s.Retire(id); err != nil {

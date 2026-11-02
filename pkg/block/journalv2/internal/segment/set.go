@@ -134,6 +134,10 @@ type entry struct {
 	state   State
 	size    int64
 	claimed bool
+	// full is what the seal named: true only for a segment closed at its cap
+	// by a full seal, never for one the seal named early — whose truncation
+	// may have failed and whose size cannot tell the two apart.
+	full bool
 	// held is the total record bytes the entries below hold for every share
 	// together — the running bound against size, not a derived sum.
 	held int64
@@ -217,8 +221,11 @@ func (s *Set) Take(id core.SegmentID) error {
 
 // Seal closes a segment to further appends, at the size it is accounted at:
 // a full seal keeps the cap, an early one is followed by Shrink to the
-// truncated size.
-func (s *Set) Seal(id core.SegmentID) error {
+// truncated size. The full flag is the seal's own word for itself, and the
+// only fact a later recycle can trust: an early seal whose truncation sync
+// failed stays Sealed and accounted at its cap (the truncation never became
+// durable), so a size at the cap does not name a full seal.
+func (s *Set) Seal(id core.SegmentID, full bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -230,6 +237,7 @@ func (s *Set) Seal(id core.SegmentID) error {
 		return ErrWrongState
 	}
 	e.state = Sealed
+	e.full = full
 	s.c.Sealed++
 	return nil
 }
@@ -277,6 +285,12 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 		return ErrNotInSet
 	}
 	if e.state == Active {
+		return ErrWrongState
+	}
+	// A full seal has no cut of the file behind it: nothing was truncated,
+	// so there is no cut to account, and only the seal the caller named early
+	// ever serves its truncation here.
+	if e.full && e.state == Sealed {
 		return ErrWrongState
 	}
 	if size <= 0 || size > e.size {
@@ -454,7 +468,11 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 		s.mu.Unlock()
 		return ErrWrongState
 	}
-	if e.size != s.cap {
+	// Only a seal that said full names a segment whose file still holds the
+	// whole cap — an early seal whose truncation sync failed stays Sealed at
+	// the cap too, and recycling either would hand a truncated file to the
+	// pool as a full spare (RFC 28 §2.5).
+	if !e.full || e.size != s.cap {
 		s.mu.Unlock()
 		return ErrBadSize
 	}

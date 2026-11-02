@@ -34,7 +34,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		if err := s.Take(id); err != nil {
 			t.Fatalf("Take: %v", err)
 		}
-		if err := s.Seal(id); err != nil {
+		if err := s.Seal(id, true); err != nil {
 			t.Fatalf("Seal: %v", err)
 		}
 
@@ -83,7 +83,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		if err := s2.Take(id); err != nil {
 			t.Fatalf("Take: %v", err)
 		}
-		if err := s2.Seal(id); err != nil {
+		if err := s2.Seal(id, true); err != nil {
 			t.Fatalf("Seal: %v", err)
 		}
 		var wg2 sync.WaitGroup

@@ -19,6 +19,9 @@ type op struct {
 	fresh core.SegmentID
 	tag   core.ShareTag
 	n     int64
+	// full is the seal's own word for itself: byte 5, which only the size
+	// shapes read elsewhere, draws it for a seal.
+	full bool
 }
 
 // errNoClaim stands for every refusal the claim's boolean answer covers; the
@@ -66,6 +69,7 @@ func decode(data []byte, segCap int64) []op {
 		default:
 			o.n = 1 + (int64(data[5]) % segCap)
 		}
+		o.full = data[5]%2 == 0
 		data = data[6:]
 		ops = append(ops, o)
 	}
@@ -81,6 +85,8 @@ type oracleSeg struct {
 	state State
 	size  int64
 	held  int64
+	// full is the seal's own word, mirrored: the one fact a recycle trusts.
+	full bool
 }
 
 // oracle predicts the ledger's counters and per-tag bytes from plain maps
@@ -168,6 +174,7 @@ func (o *oracle) apply(op op) (err error) {
 			return ErrWrongState
 		}
 		seg.state = Sealed
+		seg.full = op.full
 		o.segs[op.id] = seg
 		return nil
 	case opEnd:
@@ -187,6 +194,9 @@ func (o *oracle) apply(op op) (err error) {
 			return ErrNotInSet
 		}
 		if seg.state == Active {
+			return ErrWrongState
+		}
+		if seg.state == Sealed && seg.full {
 			return ErrWrongState
 		}
 		if op.n <= 0 || op.n > seg.size {
@@ -255,7 +265,7 @@ func (o *oracle) apply(op op) (err error) {
 		if seg.state != Sealed {
 			return ErrWrongState
 		}
-		if seg.size != o.segCap {
+		if !seg.full || seg.size != o.segCap {
 			return ErrBadSize
 		}
 		if op.fresh == 0 {
@@ -346,7 +356,7 @@ var corpus = []seed{
 	), 1, 0, 2, 2},
 	{"shrink then recycle refused", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
-		op6(opSeal, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 5),
+		op6(opSeal, 1, 0, 0, 5, 1), op6(opShrink, 1, 0, 0, 4, 5),
 		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the sealed size is below the cap
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 1},
@@ -400,6 +410,21 @@ var corpus = []seed{
 		op6(opShrink, 1, 0, 0, 4, 2), // refused: below the bytes the segment holds
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 1},
+	{"an early seal is never recycled", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 2, 4, 99),
+		op6(opSeal, 1, 0, 0, 5, 1),    // early: the truncation has not landed
+		op6(opRecycle, 1, 2, 0, 4, 0), // refused at the cap: the seal never said full
+		op6(opShrink, 1, 0, 0, 4, 5),  // the truncation lands
+		op6(opRecycle, 1, 2, 0, 4, 0), // still refused: an early seal is never recycled
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+	{"a full seal has no cut behind it", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0),   // full: the cap is the file, nothing was truncated
+		op6(opShrink, 1, 0, 0, 4, 5), // refused: no cut exists to account
+		op6(opRecycle, 1, 2, 0, 4, 0),
+	), 0, 1, 1, 1},
 }
 
 // FuzzSet drives the segment set against its oracle: the same operation
@@ -430,7 +455,7 @@ func FuzzSet(f *testing.F) {
 			case opTake:
 				got = s.Take(op.id)
 			case opSeal:
-				got = s.Seal(op.id)
+				got = s.Seal(op.id, op.full)
 			case opEnd:
 				got = s.End(op.id)
 			case opShrink:
