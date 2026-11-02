@@ -181,19 +181,18 @@ SMB each open is its own lock owner.
 // one the table decides on; protocol detail it never interprets is the
 // adapter's, in Adapter.
 type ClientRecord struct {
-	ID        ClientID     // 64 bits, unique across the installation, never reused, not random (§2.11)
-	Protocol  protocol.Kind // NFSv4, NLM or SMB: the protocol that names it
-	Name      []byte       // the client's own stable name; indexed with Protocol, so a known client is found again
-	Boot      [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
-	Owner     Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
-	Protect   bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
-	Sessioned bool         // confirmed with sessions (NFSv4.1's confirming CREATE_SESSION, SMB's NEGOTIATE): a call with no session presenting its state is refused (§2.2)
-	Recovery  RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
-	Lease     ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
-	Reach     Reach        // how a recall reaches it (§4.1)
-	Shards    []ShardMark  // where it holds state; bounded, then every shard of the share (§8)
-	Ended     bool         // (cluster) expired, kept until every shard it names has released its state (§4.3)
-	Adapter   []byte       // the adapter's durable record, written in the step of the change it belongs to; never read here
+	ID       ClientID     // 64 bits, unique across the installation, never reused, not random (§2.11)
+	Protocol protocol.Kind // NFSv4, NLM or SMB: the protocol that names it
+	Name     []byte       // the client's own stable name; indexed with Protocol, so a known client is found again
+	Boot     [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
+	Owner    Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
+	Protect  bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
+	Recovery RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
+	Lease    ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
+	Reach    Reach        // how a recall reaches it (§4.1)
+	Shards   []ShardMark  // where it holds state; bounded, then every shard of the share (§8)
+	Ended    bool         // (cluster) expired, kept until every shard it names has released its state (§4.3)
+	Adapter  []byte       // the adapter's durable record, written in the step of the change it belongs to; never read here
 }
 
 // Client is the record and what the table holds for it in memory. When its
@@ -350,6 +349,7 @@ type Open struct {
 	Seq        uint32       // its reference sequence (below)
 	Durability Durability   // none, durable, persistent (§8.1)
 	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none
+	Sessioned  bool         // the call that created it had a session (Caller.Sessioned): a call with none presenting it is refused (below)
 	Grant      GrantID      // the grant covering it: one over its client's opens under one key, or over it alone (§2.4); zero: none
 	Delete     DeleteMark   // its close makes the file delete pending, the unlink run as Delete.By (§9.4)
 	Suspended  TimeMask     // Modify, Access: times I/O through it leaves alone (below); zero: none
@@ -454,11 +454,14 @@ SMB the client its session binds, and for NLM the host's client record.
 resolves to, or for an operation that names an open or lock owner, that owner's
 client, and only a client confirmed under NFSv4.0: a stateid of any other client,
 a delegation's among them, is `ErrNotYours`.** The service enforces that
-without knowing a minor version: a call with no session (RFC 17's
-`Call.Session` zero) that presents state of a client confirmed with sessions
-(`Sessioned`, §2.1) is `ErrNotYours`, a delegation's among them. `Caller`
-carries no session, so the service checks it on the record of the call's
-client, which over such a call is the state's. An NFSv4.0 client is offered no
+without knowing a minor version: an open, a lock state and a grant record
+whether the call that created them had a session (`Sessioned`, copied from
+`Caller.Sessioned`, which RFC 17 sets when `Call.Session` is), and a call with
+no session that presents state so marked is `ErrNotYours`, whatever its
+principal, a delegation's among them. The primary checks the state it holds,
+never a client record, which in a cluster it does not hold (§11.2), and the
+refusal says so (RFC 17's `StateError{NotYours, Sessioned: true}`), so the
+adapter answers it without reading the record. An NFSv4.0 client is offered no
 delegation ([RFC 21 §5.3](rfc-21-nfs.md#5.3%20Delegations)), so beyond that the
 opener-only rule above is the whole check. The address the adapter records at
 `SETCLIENTID_CONFIRM` is where callbacks go, never a check on a stateid, so a
@@ -506,11 +509,13 @@ type Lock struct {
 
 // LockState is what a lock reference names: one owner's locks under one open
 // of one file. The locks themselves stay Lock records.
+
 type LockState struct {
-	ID    LockStateID // the StateRef token naming it (§2.11)
-	Owner LockOwner
-	Open  uint64      // the Token of the open it was taken under
-	Seq   uint32      // its reference sequence (§2.2)
+	ID        LockStateID // the StateRef token naming it (§2.11)
+	Owner     LockOwner
+	Open      uint64 // the Token of the open it was taken under
+	Seq       uint32 // its reference sequence (§2.2)
+	Sessioned bool   // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 // LockOwner is who holds a lock.
@@ -579,15 +584,16 @@ holds a lock, and `FreeState` of a lock state that does, is refused
 // holder may cache; recalled on conflict within a bounded time (§5). It covers
 // the opens its Key names, one open, or none.
 type CachingGrant struct {
-	ID      GrantID   // names its shard as a StateRef does (§2.11)
-	Client  ClientID
-	File    FileID
-	Kind    GrantKind // read, write, handle, in any combination
-	Key     LeaseKey  // the client's own 128-bit key: one grant per (client, key, file); zero: it covers one open, or none
-	Epoch   uint16    // a v2 lease's: starts at the request's, raised by every change of Kind sent to the holder, wraps through zero
-	V2      bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
-	Recall  *Recall   // a recall in flight; nil: none (§5.3)
-	Parent  LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
+	ID        GrantID // names its shard as a StateRef does (§2.11)
+	Client    ClientID
+	File      FileID
+	Kind      GrantKind // read, write, handle, in any combination
+	Key       LeaseKey  // the client's own 128-bit key: one grant per (client, key, file); zero: it covers one open, or none
+	Epoch     uint16    // a v2 lease's: starts at the request's, raised by every change of Kind sent to the holder, wraps through zero
+	V2        bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
+	Recall    *Recall   // a recall in flight; nil: none (§5.3)
+	Parent    LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
+	Sessioned bool      // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 type Recall struct {
@@ -2661,7 +2667,8 @@ func (t *Table) Checks() Checks
 principal it runs as, mapped before squashing (§2.1), and the protocol of the
 request; the primary refuses, with `ErrNotYours`, a call naming state its client
 does not hold, or through an open by a principal that is neither the opener nor,
-with `Protect`, the client's `Owner`. `Protocol` is set on every call, NFSv3's
+with `Protect`, the client's `Owner`, or state marked `Sessioned` when the call
+has no session (§2.2). `Protocol` is set on every call, NFSv3's
 included, and is what a rule that differs by protocol reads: `CheckChange`
 applies §7's deny-delete refusal to an NFS caller and §9.5's open-children
 refusal to an SMB one. It is never looked up from the client record: NFSv3 has
@@ -2683,6 +2690,7 @@ type Caller struct {
 	Client    ClientID      // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal Principal     // mapped, never squashed
 	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
+	Sessioned bool          // the call has a session (RFC 17's Call.Session set): copied onto the state it creates, and refused state so marked when false (§2.2)
 }
 
 // FileKey names the file a call acts on.
