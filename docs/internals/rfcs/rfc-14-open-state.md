@@ -187,7 +187,7 @@ type ClientRecord struct {
 	Boot      [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
 	Owner     Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
 	Protect   bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
-	Sessioned bool         // confirmed with sessions (NFSv4.1's confirming CREATE_SESSION, SMB's NEGOTIATE): a call with no session presenting its state is refused (§2.2)
+	Sessioned bool         // confirmed with sessions (NFSv4.1's confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP): a call with no session presenting its state is refused (§2.2)
 	Recovery  RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
 	Lease     ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
 	Reach     Reach        // how a recall reaches it (§4.1)
