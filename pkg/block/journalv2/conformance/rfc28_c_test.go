@@ -841,9 +841,11 @@ func TestRFC28C_UnknownVersion(t *testing.T) {
 
 // TestRFC28C_ScanResynchronises checks that a scan meeting a record whose
 // header does not verify refuses that record alone and resumes at the next
-// header that does, counting the resynchronisation once; and that a copy of
-// a segment held inside a record's payload hands the scan no record, because
-// a header verifies only in the segment it names.
+// header that does, counting the resynchronisation once; that a scan walking
+// through a copy of a segment held inside a record's payload takes no record
+// from it, because a header verifies only at the segment and the offset it
+// names; and that a verifying record copied over another is not attached
+// where it now lies, while its original still reads back.
 func TestRFC28C_ScanResynchronises(t *testing.T) {
 	f := journalv2test.New(t)
 	s := sealedSetup(t, f)
@@ -873,37 +875,84 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	wantBytes(t, f.Share(1), s.other.id, 0, s.other.p)
 
 	// The first 128 KiB of the sealed segment, its header and first records
-	// among them, as file 1's content on the other stream; the crash makes
-	// the segment holding that record one the open scans.
+	// among them, as file 1's content on the other stream, with a synced
+	// write after it. The carrier's length field is then damaged under a
+	// crash, so the scan of its segment cannot step over it and walks the
+	// copy to resynchronise: a copied header names S and an offset in S, so
+	// none verifies where it lies, and the scan resumes at the write after.
 	g := journalv2test.NewUnwatched(t)
 	s = sealedSetup(t, g)
 	copied := durable(t, g, s.name)[:128<<10]
 	const off = 1 << 20
 	write(t, g.Share(1), s.other.id, off, copied)
-	syncFiles(t, g.Share(1), s.other.id)
+	after := writeSynced(t, g, 1, 1, 2*off, 64<<10)
+	carrier := entryAt(t, g, s.other.id, off).Location
 	want := indexSnapshot(t, g)[journalv2test.File(0)]
+
+	if err := g.Seam.Crash(); err != nil {
+		t.Fatalf("crash before damaging the carrier: %v", err)
+	}
+	flipAt(t, g, segmentName(carrier.Segment), carrier.Offset+raw.RecordLengthOffset)
 	g.Crash()
 
 	got, err := g.J.Inspect().File(journalv2test.File(0))
-	stub(t, "Inspect.File", err)
 	if err != nil {
+		stub(t, "Inspect.File", err)
 		t.Fatalf("inspect file 0: %v", err)
 	}
+
 	if !slices.Equal(got, want) {
-		t.Fatalf("file 0 is indexed as\n%+v\nafter a scan over a copy of its segment, want\n%+v", got, want)
+		t.Fatalf("file 0 is indexed as\n%+v\nafter a scan through a copy of its segment, want\n%+v", got, want)
 	}
-	wantBytes(t, g.Share(1), s.other.id, off, copied)
+
+	wantExtentMissing(t, g.Share(1), s.other.id, journalv2.Extent{Off: off, Len: int64(len(copied))})
+	wantBytes(t, g.Share(1), after.id, after.extent.Off, after.p)
+	wantBytes(t, g.Share(1), s.other.id, 0, s.other.p)
 
 	st := g.J.Stats()
-	if st.Counters.ScanResyncs != 0 || len(st.Losses) != 0 || st.DamagedSegments != 0 {
-		t.Fatalf("the copied headers were taken for records: ScanResyncs = %d, losses %+v, DamagedSegments = %d", st.Counters.ScanResyncs, st.Losses, st.DamagedSegments)
+	if st.Counters.ScanResyncs != 1 || st.Counters.TornTails != 0 {
+		t.Fatalf("the scan through the copy: ScanResyncs = %d, TornTails = %d, want 1 and 0", st.Counters.ScanResyncs, st.Counters.TornTails)
+	}
+
+	// A verifying record copied over another of the same size with records
+	// after it, the catalog broken: the copy's header names the offset it
+	// was written at, so it does not verify where it now lies, and the
+	// original still serves.
+	k := journalv2test.NewUnwatched(t)
+	s = sealedSetup(t, k)
+	src, dst := s.recs[2], s.recs[5]
+	srcLoc := entryAt(t, k, src.id, src.extent.Off).Location
+	dstLoc := entryAt(t, k, dst.id, dst.extent.Off).Location
+	slot := int64(raw.RecordHeaderSize + 8 + len(src.p))
+	b := durable(t, k, s.name)
+
+	k.Shutdown()
+	flipAt(t, k, s.name, int64(len(b))-raw.TrailerSize)
+	overwrite(t, k, s.name, dstLoc.Offset, b[srcLoc.Offset:srcLoc.Offset+slot])
+
+	err = k.TryReopen()
+	if err != nil {
+		t.Fatalf("reopen after the copy: %v", err)
+	}
+
+	if got := entryAt(t, k, src.id, src.extent.Off).Location; got != srcLoc {
+		t.Fatalf("the record at %d is served from %+v, want its original %+v: the copy was attached", src.extent.Off, got, srcLoc)
+	}
+
+	wantBytes(t, k.Share(0), src.id, src.extent.Off, src.p)
+	wantExtentMissing(t, k.Share(0), dst.id, dst.extent)
+
+	if got := k.J.Stats().Counters.ScanResyncs; got != 1 || !ownedSegment(t, k, s.seg).Damaged {
+		t.Fatalf("the copied record: ScanResyncs = %d, segment %d damaged %t, want 1 and damaged", got, s.seg, ownedSegment(t, k, s.seg).Damaged)
 	}
 }
 
 // TestRFC28C_SealMarkerCopiedIntoAPayload checks that a seal marker that
 // verifies for the segment and the offset it lies at, placed there as the
-// first bytes of a write's payload, does not end a scan: a scan tells a slot
-// only where the record lengths lead it, never inside a payload.
+// first bytes of a write's payload, does not end a scan, even one that walks
+// through that payload to resynchronise after the carrier's header failed:
+// the scan resumes at the next record, takes nothing from the payload, and
+// cuts no torn tail.
 func TestRFC28C_SealMarkerCopiedIntoAPayload(t *testing.T) {
 	f := journalv2test.New(t)
 	h, id := f.Share(0), journalv2test.File(0)
@@ -924,16 +973,41 @@ func TestRFC28C_SealMarkerCopiedIntoAPayload(t *testing.T) {
 	}
 
 	b := writeSynced(t, f, 0, 0, 2*size, size)
+
+	// File 0's index without the carrier, which the damage below drops.
+	carrier := journalv2.Extent{Off: size, Len: size}
+	want := slices.DeleteFunc(indexSnapshot(t, f)[id], func(e journalv2.IndexEntry) bool {
+		return e.Extent.Off < carrier.Off+carrier.Len && carrier.Off < e.Extent.Off+e.Extent.Len
+	})
+
+	// The carrier's length field is damaged under a crash, so the scan
+	// cannot step over the carrier and walks its payload to resynchronise,
+	// meeting the planted marker on the way.
+	if err := f.Seam.Crash(); err != nil {
+		t.Fatalf("crash before damaging the carrier: %v", err)
+	}
+	flipAt(t, f, segmentName(loc.Segment), slot+raw.RecordLengthOffset)
 	f.Crash()
 
-	wantBytes(t, f.Share(0), id, 2*size, b.p)
-	wantBytes(t, f.Share(0), id, size, p)
-	wantBytes(t, f.Share(0), id, 0, x.p)
-	st := f.J.Stats()
-	if st.Counters.TornTails != 0 || len(st.Losses) != 0 {
-		t.Fatalf("the scan ended at the copied marker: TornTails = %d, losses %+v", st.Counters.TornTails, st.Losses)
+	got, err := f.J.Inspect().File(id)
+	if err != nil {
+		stub(t, "Inspect.File", err)
+		t.Fatalf("inspect file 0: %v", err)
 	}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("file 0 is indexed as\n%+v\nafter a scan through the copied marker, want\n%+v", got, want)
+	}
+
+	wantBytes(t, f.Share(0), id, 2*size, b.p)
+	wantBytes(t, f.Share(0), id, 0, x.p)
+	wantExtentMissing(t, f.Share(0), id, carrier)
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
+
+	st := f.J.Stats()
+	if st.Counters.TornTails != 0 || st.Counters.ScanResyncs != 1 {
+		t.Fatalf("the scan through the copied marker: TornTails = %d, ScanResyncs = %d, want 0 and 1", st.Counters.TornTails, st.Counters.ScanResyncs)
+	}
 }
 
 // releaseRecs marks and releases every record of recs but the last, and
