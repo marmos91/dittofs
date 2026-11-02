@@ -21,9 +21,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/sim"
 )
 
-// Settings are the engine settings the fixture applies.
+// Settings are the engine settings the fixture applies. The existence age is
+// far past the journal's sync bound, so a test that moves the clock by the
+// sync bound makes a write durable without making its group commit due.
 var Settings = enginev2.Settings{
-	ExistenceAge:        time.Second,
+	ExistenceAge:        time.Minute,
 	GroupCommitMaxFiles: 64,
 	CloneMaxLen:         1 << 30,
 }

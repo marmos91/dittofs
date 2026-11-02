@@ -47,6 +47,21 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// durable reports whether a crash now would leave p in some file of the
+// journal's directory.
+func durable(f *enginev2test.Fixture, p []byte) bool {
+	names, err := f.Seam.List()
+	if err != nil {
+		return false
+	}
+	for _, name := range names {
+		if image, err := f.Seam.Durable(name); err == nil && bytes.Contains(image, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // A write is the journal's before any stability point: Overlay, Allocation
 // and reads reflect it, and after a crash recovery re-applies its existence
 // before the file is served.
@@ -57,12 +72,8 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 	p := []byte("the journal is the authority")
 	write(t, f, id, 0, p)
 
-	reflected := func(when string) {
+	served := func(when string) {
 		t.Helper()
-		o, pending, err := f.E.Overlay(ctx, id)
-		if err != nil || !pending || o.Size != int64(len(p)) {
-			t.Errorf("%s: Overlay = %+v, pending %v, %v; want size %d pending", when, o, pending, err, len(p))
-		}
 		sp, err := f.E.Allocation(ctx, id, 0)
 		if err != nil || sp.Class == entity.Hole || sp.Offset > 0 || sp.Offset+sp.Length < int64(len(p)) {
 			t.Errorf("%s: Allocation(0) = %+v, %v; want data over [0, %d)", when, sp, err, len(p))
@@ -71,15 +82,21 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 			t.Errorf("%s: read %q, want %q", when, got, p)
 		}
 	}
-	reflected("before the crash")
+	if o, pending, err := f.E.Overlay(ctx, id); err != nil || !pending || o.Size != int64(len(p)) {
+		t.Errorf("before the crash: Overlay = %+v, pending %v, %v; want size %d pending", o, pending, err, len(p))
+	}
+	served("before the crash")
 
-	// Past the sync bound the write is durable, so the crash keeps it.
+	// The sync bound is shorter than the existence age, so the write is made
+	// durable and its existence is still uncommitted when the crash comes:
+	// only recovery can commit it.
 	f.Clock.Advance(journalv2.SyncBound)
+	eventually(t, "the write is durable within the sync bound", func() bool { return durable(f, p) })
 	f.Crash()
 	if got := f.Committed(h).Size; got != int64(len(p)) {
 		t.Errorf("served after the crash with committed size %d, want %d re-applied", got, len(p))
 	}
-	reflected("after the crash")
+	served("after the crash")
 }
 
 // Two writes in one process answer one verifier; a write after a restart
@@ -99,8 +116,7 @@ func TestRFC8A_Verifier(t *testing.T) {
 
 // A Commit over an append answers after the journal sync and before any
 // metadata transaction; a crash before the group commit leaves the size and
-// mtime to recovery, which serves them at once and commits them within the
-// existence age.
+// mtime to recovery, which commits them before the file is served.
 func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 	f := enginev2test.New(t)
 	ctx := t.Context()
@@ -120,17 +136,10 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 	// The crash drops every unsynced record: what survives was synced before
 	// Commit answered.
 	f.Crash()
-	o, pending, err := f.E.Overlay(ctx, id)
-	if err != nil || !pending || o.Size != int64(len(p)) || !o.Mtime.Equal(at) {
-		t.Errorf("after the crash: Overlay = %+v, pending %v, %v; want size %d, mtime %v", o, pending, err, len(p), at)
+	if c := f.Committed(h); c.Size != int64(len(p)) || !c.Modify.Equal(at) {
+		t.Errorf("after the crash: committed size %d, mtime %v; want size %d, mtime %v", c.Size, c.Modify, len(p), at)
 	}
 	if got := read(t, f, id, 0, len(p)); !bytes.Equal(got, p) {
 		t.Errorf("after the crash: read %q, want %q", got, p)
 	}
-
-	f.Clock.Advance(enginev2test.Settings.ExistenceAge)
-	eventually(t, "existence committed after the existence age", func() bool {
-		c := f.Committed(h)
-		return c.Size == int64(len(p)) && c.Modify.Equal(at)
-	})
 }
