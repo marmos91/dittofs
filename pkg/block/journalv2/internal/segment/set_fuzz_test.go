@@ -350,6 +350,7 @@ type seed struct {
 var corpus = []seed{
 	{"double retire", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddSpare, 1, 0, 0, 4, 0), // refused: the id names a segment of the set
 		op6(opSeal, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
 		op6(opRetire, 1, 0, 0, 4, 0), op6(opRelease, 1, 0, 0, 4, 0),
 		op6(opClaim, 1, 0, 0, 4, 0),
@@ -420,7 +421,8 @@ var corpus = []seed{
 		op6(opAddRecord, 1, 0, 0, 4, 5),
 		op6(opAddRecord, 1, 0, 0, 1, 0), // the cap itself: refused, it does not fit
 		op6(opSeal, 1, 0, 0, 4, 0),
-		op6(opShrink, 1, 0, 0, 4, 2), // refused: below the bytes the segment holds
+		op6(opAddRecord, 1, 0, 0, 4, 1), // refused: a full seal takes no records
+		op6(opShrink, 1, 0, 0, 4, 2),    // refused: below the bytes the segment holds
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 1, 0},
 	{"an early seal is never recycled", slices.Concat(
@@ -428,7 +430,7 @@ var corpus = []seed{
 		op6(opAddRecord, 1, 0, 2, 4, 99),
 		op6(opSeal, 1, 0, 0, 5, 1),    // early: the truncation has not landed
 		op6(opRecycle, 1, 2, 0, 4, 0), // refused at the cap: the seal never said full
-		op6(opShrink, 1, 0, 0, 4, 5),  // the truncation lands
+		op6(opShrink, 1, 0, 0, 4, 5),  // refused: below the records the segment holds
 		op6(opRecycle, 1, 2, 0, 4, 0), // still refused: an early seal is never recycled
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 1, 0},
@@ -449,6 +451,46 @@ var corpus = []seed{
 		op6(opTake, 1, 0, 0, 4, 0),
 		op6(opDropSpare, 1, 0, 0, 4, 0), // refused: a segment goes out by Retire, not here
 	), 0, 0, 1, 0, 0},
+	{"a record into a closed segment is refused", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opEnd, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 3, 4, 30), // refused: the segment no longer appends
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
+	{"seal and end of an ended segment", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opEnd, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0), // refused: never sealed again
+		op6(opEnd, 1, 0, 0, 4, 0), // refused: never ended twice
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
+	{"recycle of an Active and of an ended segment", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opRecycle, 1, 2, 0, 4, 0),                            // refused: a stream still appends
+		op6(opEnd, 1, 0, 0, 4, 0), op6(opRecycle, 1, 2, 0, 4, 0), // refused: only a seal recycles
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
+	{"the fresh id is the old one, or a segment the set holds", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 2, 0, 0, 4, 0),
+		op6(opTake, 1, 0, 0, 4, 0), op6(opTake, 2, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0),
+		op6(opRecycle, 1, 1, 0, 4, 0), // refused: the fresh id is the recycled segment itself
+		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the fresh id is a segment of the set
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 2, 1, 0},
+	{"an ended segment keeps the records it holds", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 1, 4, 200), // 201 bytes of one share
+		op6(opEnd, 1, 0, 0, 4, 0),
+		op6(opShrink, 1, 0, 0, 4, 100), // refused: 51 is below the 201 held
+		op6(opShrink, 1, 0, 0, 4, 200), // the floor: 201, the bytes the records hold
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
+	{"a record the size of the segment fits", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 1, 1, 0), // the cap itself: accepted, a fit lands on the size
+		op6(opAddRecord, 1, 0, 1, 4, 1), // refused: one byte past the size
+		op6(opEnd, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
 }
 
 // FuzzSet drives the segment set against its oracle: the same operation

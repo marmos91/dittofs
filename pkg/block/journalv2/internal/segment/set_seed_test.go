@@ -8,11 +8,11 @@ import (
 
 // TestSeedReplay replays the fuzz target's seed corpus, the same table
 // FuzzSet registers from, against the real Set and asserts that each seed
-// reaches the successful retires, recycles, takes and seals it is documented
-// for, with the oracle agreeing after every op. A decoder or seed change
-// that silently loses a seed's purpose — every sequence that only names the
-// null id, or a spare no take precedes, exercises nothing but refusals —
-// fails here, in plain go test, before any fuzz run does.
+// reaches the successful retires, recycles, takes, seals and drops it is
+// documented for, with the oracle agreeing after every op. A decoder or seed
+// change that silently loses a seed's purpose — every sequence that only
+// names the null id, or a spare no take precedes, exercises nothing but
+// refusals — fails here, in plain go test, before any fuzz run does.
 func TestSeedReplay(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
