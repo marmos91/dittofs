@@ -13,6 +13,7 @@ groups:              # `dt run GROUP` runs every suite in it
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke]
   journal: [journal-conformance]
+  engine: [engine-conformance]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -25,7 +26,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress,journal_conformance,journalv2_plant_split ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress,journal_conformance,journalv2_plant_split,engine_conformance ./...
       - go run ./test/spec-citations          # the MS-FSCC, MS-FSA and MS-SMB2 citations
       # The tests that pin an authorization or encryption gate, run by name: the edit that
       # reopens a gate can delete its test in the same change.
@@ -93,6 +94,13 @@ suites:
     format: go-json
     cmd: go test -race -tags=journal_conformance -timeout=30m -artifacts -outputdir={out} ./pkg/block/journalv2/conformance/...
     known: test/journalv2/known.yaml
+    tier: pr
+  # The engine's conformance checks, behind their own tag for the same reason: they run
+  # against the real journal and fail until the engine and the journal calls they need land.
+  engine-conformance:
+    format: go-json
+    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/enginev2/conformance/...
+    known: test/enginev2/known.yaml
     tier: pr
   integration:
     job: Integration Tests (1.26.x)
