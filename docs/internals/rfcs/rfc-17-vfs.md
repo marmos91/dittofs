@@ -847,11 +847,15 @@ under its delegation's stateid for any of its open-owners and principals
 principal. The service **MUST** refuse it with `NotYours` unless the delegation
 is held by the call's client on a session (`Call.Session` set); a `Delegated`
 reference on a call with no session is `NotYours`, since NFSv4.0 is offered no
-delegation. More generally, a call with no session that presents state
-created on a session is `StateError{NotYours, Sessioned: true}`, whatever its
-principal: the state carries the mark (`Sessioned`), so the file's primary
-checks it without a client record
-([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). The service **MUST** then authorise the call as for an
+delegation. More generally, a `Service` call with no session that presents
+a reference to state created on a session — an `OpenRef`, `StateRef` or
+`GrantID`, or a lock owner whose lock state was — is
+`StateError{NotYours, Sessioned: true}`, whatever its principal: the state
+carries the mark (`Sessioned`), so the file's primary checks it without a
+client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
+argument names no state and is not checked, so `DESTROY_CLIENTID` sent alone
+and a second `CREATE_SESSION` pass, and `Peers` calls, which carry no `Call`,
+are exempt. The service **MUST** then authorise the call as for an
 anonymous open: the `Identity`'s principal against the file
 and the share grant ([§4.6](#4.6%20One%20chokepoint)), and against the deny
 modes held. The delegation lends no access.

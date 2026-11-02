@@ -457,8 +457,9 @@ a delegation's among them, is `ErrNotYours`.** The service enforces that
 without knowing a minor version: an open, a lock state and a grant record
 whether the call that created them had a session (`Sessioned`, copied from
 `Caller.Sessioned`, which RFC 17 sets when `Call.Session` is), and a call with
-no session that presents state so marked is `ErrNotYours`, whatever its
-principal, a delegation's among them. The primary checks the state it holds,
+no session that presents a reference to state so marked is `ErrNotYours`,
+whatever its principal, a delegation's among them; a call naming only a client
+ID presents none, and a `Peers` call, which carries no `Call`, is exempt. The primary checks the state it holds,
 never a client record, which in a cluster it does not hold (§11.2), and the
 refusal says so (RFC 17's `StateError{NotYours, Sessioned: true}`), so the
 adapter answers it without reading the record. An NFSv4.0 client is offered no
