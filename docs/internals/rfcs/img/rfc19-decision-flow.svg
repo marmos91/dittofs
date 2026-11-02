@@ -26,7 +26,7 @@
   <text x="16" y="26" class="t">One decision in three lanes: the adapter translates, the service admits and audits, the chokepoint decides.</text>
 
   <rect x="12" y="40" width="238" height="590" rx="8" class="zone"/><text x="24" y="58" class="z">ADAPTER — WIRE ONLY</text>
-  <rect x="260" y="40" width="238" height="590" rx="8" class="zone"/><text x="272" y="58" class="z">SERVICE — vfs.Server</text>
+  <rect x="260" y="40" width="238" height="590" rx="8" class="zone"/><text x="272" y="58" class="z">SERVICE — vfs.Filesystem</text>
   <rect x="508" y="40" width="380" height="590" rx="8" class="zone"/><text x="520" y="58" class="z">CHOKEPOINT — Files.Authorize (§3.1)</text>
 
   <rect x="22" y="72" width="218" height="52" rx="5" class="pr"/>

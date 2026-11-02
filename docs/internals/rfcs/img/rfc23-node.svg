@@ -46,7 +46,7 @@
   <!-- 11 adapters -->
   <rect x="250" y="56" width="634" height="40" rx="6" class="sv"/>
   <text x="262" y="74" class="h">10 · adapters</text>
-  <text x="262" y="89" class="s">call vfs.Service only, sign-in included: the gateway in a cluster, the server on one node</text>
+  <text x="262" y="89" class="s">call vfs.Service only, sign-in included: the gateway in a cluster, the filesystem on one node</text>
 
   <!-- 10 gateway, Serve -->
   <rect x="290" y="128" width="270" height="44" rx="6" class="pr"/>
@@ -54,7 +54,7 @@
   <text x="302" y="162" class="s">forwards: Router, then local or Transport</text>
   <rect x="614" y="128" width="270" height="44" rx="6" class="pr"/>
   <text x="626" y="146" class="h">9 · vfs.Serve (cluster)</text>
-  <text x="626" y="162" class="s">fence, dedup, then the server</text>
+  <text x="626" y="162" class="s">fence, dedup, then the filesystem</text>
   <path d="M420,98 L420,124" class="ln"/>
   <path d="M562,142 L610,142" class="dl"/>
   <text x="566" y="124" class="s">Transport</text>
@@ -63,7 +63,7 @@
 
   <!-- 9 server -->
   <rect x="290" y="204" width="594" height="40" rx="6" class="sv"/>
-  <text x="302" y="222" class="h">8 · *vfs.Server, at the primary</text>
+  <text x="302" y="222" class="h">8 · *vfs.Filesystem, at the primary</text>
   <text x="302" y="237" class="s">decides: admission, identity, squash, ordering, open state, metadata, content</text>
   <path d="M750,174 L750,200" class="ln"/>
 
@@ -75,7 +75,7 @@
   <text x="425" y="302" class="h">6 · open state</text>
   <rect x="576" y="284" width="145" height="40" rx="6" class="sv"/>
   <text x="588" y="302" class="h">4 · engine</text>
-  <text x="588" y="317" class="s">called by the server only</text>
+  <text x="588" y="317" class="s">called by the filesystem only</text>
   <rect x="739" y="284" width="145" height="40" rx="6" class="sv"/>
   <text x="751" y="302" class="h">5 · GC</text>
   <text x="751" y="317" class="s">sibling, not in the engine</text>
@@ -109,6 +109,6 @@
   <path d="M800,406 L800,440" class="ln"/>
   <path d="M872,326 L872,440" class="ln"/>
 
-  <text x="16" y="516" class="s">Arrows are calls. Numbers are build order: Start runs 1 → 10, Stop 10 → 1, shards handed over before Serve stops, GC drained before the server.</text>
-  <text x="16" y="531" class="s">Blue: built in a cluster only; on one node the adapters call the server directly, unfenced. Dashed: to another node.</text>
+  <text x="16" y="516" class="s">Arrows are calls. Numbers are build order: Start runs 1 → 10, Stop 10 → 1, shards handed over before Serve stops, GC drained before the filesystem.</text>
+  <text x="16" y="531" class="s">Blue: built in a cluster only; on one node the adapters call the filesystem directly, unfenced. Dashed: to another node.</text>
 </svg>

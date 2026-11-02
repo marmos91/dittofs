@@ -57,5 +57,5 @@
 <text x="252" y="427" class="s">same result, from the dedup table — not applied twice</text>
 <text x="16" y="480" class="l">The cache may be stale: a stale entry costs one refusal and a retry, never a wrong write.</text>
 <text x="16" y="498" class="s">Node A refuses because the receiver's vfs.Serve checks the epoch; it never forwards on itself, so a call cannot loop.</text>
-<text x="16" y="516" class="s">A file that moved to another shard is refused by the primary's server, by its recorded shard.</text>
+<text x="16" y="516" class="s">A file that moved to another shard is refused by the primary's filesystem, by its recorded shard.</text>
 </svg>

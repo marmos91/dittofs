@@ -349,6 +349,7 @@ type Open struct {
 	Seq        uint32       // its reference sequence (below)
 	Durability Durability   // none, durable, persistent (§8.1)
 	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none
+	Sessioned  bool         // the call that created it had a session (Caller.Sessioned): a call with none presenting it is refused (below)
 	Grant      GrantID      // the grant covering it: one over its client's opens under one key, or over it alone (§2.4); zero: none
 	Delete     DeleteMark   // its close makes the file delete pending, the unlink run as Delete.By (§9.4)
 	Suspended  TimeMask     // Modify, Access: times I/O through it leaves alone (below); zero: none
@@ -447,12 +448,29 @@ client and is not revoked, and **MUST** then be authorised as anonymous I/O is:
 the caller's own principal against the file's current ACL and mode and the
 share grant, and against the deny modes held
 ([§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)). The call's client
-(`Caller.Client`) is the one the adapter proved for the call: the client its
-session binds or, where the protocol binds none per call, the client the
-connection established. It is never derived from the reference presented, so a
-delegation stateid sent over another client's connection is `ErrNotYours`. The
-delegation lends no access: a principal that could not read the file on its own
-does not read it through the delegation.
+(`Caller.Client`) is the one the adapter proved for the call: for NFSv4.1 and
+SMB the client its session binds, and for NLM the host's client record.
+**NFSv4.0 has no session, so its client is the one on the state its stateid
+resolves to, or for an operation that names an open or lock owner, that owner's
+client, and only a client confirmed under NFSv4.0: a stateid of any other client,
+a delegation's among them, is `ErrNotYours`.** The service enforces that
+without knowing a minor version: an open, a lock state and a grant record
+whether the call that created them had a session (`Sessioned`, copied from
+`Caller.Sessioned`, which RFC 17 sets when `Call.Session` is), and a call with
+no session that presents a reference to state so marked is `ErrNotYours`,
+whatever its principal, a delegation's among them; a call naming only a client
+ID presents none, and the NFS adapter refuses that one from the client record's
+minor version ([RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)); a `Peers` call, which carries no `Call`, is exempt. The primary checks the state it holds,
+never a client record, which in a cluster it does not hold (§11.2), and the
+refusal says so (`ErrNotYoursSessioned`, which wraps `ErrNotYours` and RFC 17
+maps to `StateError{NotYours, Sessioned: true}`), so the
+adapter answers it without reading the record. An NFSv4.0 client is offered no
+delegation ([RFC 21 §5.3](rfc-21-nfs.md#5.3%20Delegations)), so beyond that the
+opener-only rule above is the whole check. The address the adapter records at
+`SETCLIENTID_CONFIRM` is where callbacks go, never a check on a stateid, so a
+client that reconnects from a new address keeps its state. The delegation lends
+no access: a principal that could not read the file on its own does not read it
+through the delegation.
 
 **A reference's sequence is state.** The table numbers the changes to one
 open — an upgrade, a downgrade, a close — and to one lock state; a request
@@ -494,11 +512,13 @@ type Lock struct {
 
 // LockState is what a lock reference names: one owner's locks under one open
 // of one file. The locks themselves stay Lock records.
+
 type LockState struct {
-	ID    LockStateID // the StateRef token naming it (§2.11)
-	Owner LockOwner
-	Open  uint64      // the Token of the open it was taken under
-	Seq   uint32      // its reference sequence (§2.2)
+	ID        LockStateID // the StateRef token naming it (§2.11)
+	Owner     LockOwner
+	Open      uint64 // the Token of the open it was taken under
+	Seq       uint32 // its reference sequence (§2.2)
+	Sessioned bool   // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 // LockOwner is who holds a lock.
@@ -567,15 +587,16 @@ holds a lock, and `FreeState` of a lock state that does, is refused
 // holder may cache; recalled on conflict within a bounded time (§5). It covers
 // the opens its Key names, one open, or none.
 type CachingGrant struct {
-	ID      GrantID   // names its shard as a StateRef does (§2.11)
-	Client  ClientID
-	File    FileID
-	Kind    GrantKind // read, write, handle, in any combination
-	Key     LeaseKey  // the client's own 128-bit key: one grant per (client, key, file); zero: it covers one open, or none
-	Epoch   uint16    // a v2 lease's: starts at the request's, raised by every change of Kind sent to the holder, wraps through zero
-	V2      bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
-	Recall  *Recall   // a recall in flight; nil: none (§5.3)
-	Parent  LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
+	ID        GrantID // names its shard as a StateRef does (§2.11)
+	Client    ClientID
+	File      FileID
+	Kind      GrantKind // read, write, handle, in any combination
+	Key       LeaseKey  // the client's own 128-bit key: one grant per (client, key, file); zero: it covers one open, or none
+	Epoch     uint16    // a v2 lease's: starts at the request's, raised by every change of Kind sent to the holder, wraps through zero
+	V2        bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
+	Recall    *Recall   // a recall in flight; nil: none (§5.3)
+	Parent    LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
+	Sessioned bool      // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 type Recall struct {
@@ -2629,10 +2650,10 @@ the suite runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20
 
 The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which
 `node.New` builds it into, calls `Start(ctx, sink, order)` with the built
-`*vfs.Server` as the `Sink` and its admission lock as `order`, after the store
+`*vfs.Filesystem` as the `Sink` and its admission lock as `order`, after the store
 and before the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
-`Close`, before the store's. `Start` starts the timer and nothing
+`Stop`, before the store's. `Start` starts the timer and nothing
 else; the service's `Start` then calls `Recovery.ServeShard` for each shard
 this node serves, passing the shard's `GraceInstance`, which the node's start
 transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
@@ -2654,7 +2675,7 @@ and open state is
 left to the next start's grace
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the timers.
 
-![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the server as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
+![How open state is wired: node.New builds the table from its Deps, then the service, which holds the table and hands each area only the views it calls; Node.Start starts the table with the filesystem as its Sink before the service starts, and Node.Stop runs in reverse.](img/rfc14-wiring.svg)
 
 ### 11.3 Methods
 
@@ -2681,7 +2702,8 @@ func (t *Table) Checks() Checks
 principal it runs as, mapped before squashing (§2.1), and the protocol of the
 request; the primary refuses, with `ErrNotYours`, a call naming state its client
 does not hold, or through an open by a principal that is neither the opener nor,
-with `Protect`, the client's `Owner`. `Protocol` is set on every call, NFSv3's
+with `Protect`, the client's `Owner`, or state marked `Sessioned` when the call
+has no session (§2.2). `Protocol` is set on every call, NFSv3's
 included, and is what a rule that differs by protocol reads: `CheckChange`
 applies §7's deny-delete refusal to an NFS caller and §9.5's open-children
 refusal to an SMB one. It is never looked up from the client record: NFSv3 has
@@ -2700,9 +2722,10 @@ with its shard left zero is refused, never passed.
 
 ```go
 type Caller struct {
-	Client    ClientID      // as the adapter proved it for the call (§2.2); zero for NFSv3
+	Client    ClientID      // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal Principal     // mapped, never squashed
 	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
+	Sessioned bool          // the call has a session (RFC 17's Call.Session set): copied onto the state it creates, and refused state so marked when false (§2.2)
 }
 
 // FileKey names the file a call acts on.
@@ -2923,7 +2946,8 @@ const (
 
 // The filesystem service returns these to adapters as RFC 17 §4.3's errors:
 // the state refusals as ErrState kinds (ErrStaleClient as StateError
-// StaleClient, and so on), the rest under their own names. ErrLost is the
+// StaleClient, ErrNotYoursSessioned as StateError{NotYours, Sessioned:
+// true}, and so on), the rest under their own names. ErrLost is the
 // content error the engine and the service share, returned by Flushed.
 var (
 	ErrGrace           = errors.New("openstate: in grace period")
@@ -2940,6 +2964,7 @@ var (
 	ErrOldState        = errors.New("openstate: reference sequence older than the state's")
 	ErrDelay           = errors.New("openstate: retry later")
 	ErrNotYours        = errors.New("openstate: state held by another client or principal")
+	ErrNotYoursSessioned = fmt.Errorf("%w: state created on a session, presented without one", ErrNotYours) // §2.2
 	ErrDeletePending   = errors.New("openstate: file is delete pending")
 	ErrBadSeqID        = errors.New("openstate: owner sequence out of order")
 	ErrClientInUse     = errors.New("openstate: client name held by another principal")
@@ -3030,7 +3055,7 @@ Deleted numbers are not reused.
 | L60 | A client's first state in a shard is answered only after its shard list commits; a persistent open's every change commits before the answer that reveals it. | The fault KV fails the shard-list commit: the request is refused, never answered as granted. For each field of a persistent open, fail its commit: the client is refused, and a reconnect after a failover shows the state that was answered. |
 | L61 | (cluster) A client's ended record outlives the fan-out until every shard has released its state. | Partition one primary during an expiry, heal it: its state for the client is released within one renewal interval of healing, and the record is deleted only then. |
 | L62 | A request delayed by a recall is not overtaken by a new grant to the holder. | A holder that reopens right after each acknowledgement against a conflicting opener that retries: the opener is granted within two retries. |
-| L63 | A delegation reference is the client's only over its own connection. | NFSv4.0: present a delegation stateid over another client's connection: `ErrNotYours`, the delegation intact (RFC 17 V24's NFSv4.0 case). |
+| L63 | A delegation reference is the client's only on a session that client binds. | NFSv4.1: present a delegation stateid on another client's session: `ErrNotYours`, the delegation intact (RFC 17 V24). |
 | L64 | A reboot never leaves both IDs current, and a renewal of the old ID racing the confirm does not keep it. | Race the old ID's renewal against the new `Boot`'s confirm 10⁴ times: after each, exactly one ID is current and the old one's state is released. |
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
 | L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |

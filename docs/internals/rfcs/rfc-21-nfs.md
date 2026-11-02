@@ -112,7 +112,7 @@ primary, reply cache in memory.
 
 - **gateway node / primary** — the node a client's call arrives at, which
   forwards it to the primary when it is not the primary itself
-  ([RFC 17 §2](rfc-17-vfs.md#2.%20Gateway%20and%20server)) / the one node that
+  ([RFC 17 §2](rfc-17-vfs.md#2.%20Gateway%20and%20filesystem)) / the one node that
   orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
 - **File handle** — an opaque name for a file, the same on every node and after
   restart ([§7.1](#7.1%20File%20handles),
@@ -608,7 +608,11 @@ the wire:
   `SETCLIENTID` for a name confirmed by `EXCHANGE_ID`, or the reverse, is a new
   `Boot`: a reboot, confirmed as any is, which expires the old client ID and its
   state, never the same instance (RFC 8881 §2.4.1). A client's state is never
-  shared across minor versions. A confirm that finds the record but comes from another
+  shared across minor versions: over NFSv4.0 every stateid of a client
+  `EXCHANGE_ID` confirmed, an open's, a lock's or a delegation's, is refused
+  `NFS4ERR_BAD_STATEID`, since that state was created on a session and is
+  marked so (`Sessioned`), and the service refuses it to a call with no
+  session (§5.2 rule 5). A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
 - **`CREATE_SESSION` is sequenced by the adapter's record.** The NFS adapter
@@ -925,15 +929,31 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 4. **A stateid is checked against its client** wherever the request names one
    — the client ID of the session, or for NFSv4.0 the client ID in the open or
    lock owner of a sequenced operation (`OPEN`, `CLOSE`, `OPEN_DOWNGRADE`,
-   `LOCK`, `LOCKU`) — and one belonging to another client is
-   `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)).
-5. **Over NFSv4.0, I/O is checked against the open's principal.** An NFSv4.0
-   `READ`, `WRITE` or `SETATTR` carries no client ID and no session, so rule 4
-   cannot run there. Instead the request's credential **MUST** name the
-   principal that made the open the stateid names (`Open.Principal`,
+   `LOCK`, `LOCKU`), whose client is that owner's — and one belonging to
+   another client is `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)).
+5. **Over NFSv4.0, I/O's client is its state's, and I/O is checked against
+   the open's principal.** An NFSv4.0 `READ`, `WRITE` or `SETATTR` carries no
+   session and no client ID of its own, so the call's client is the one on the
+   state its stateid resolves to, as
+   [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, and rule 4 has
+   nothing to compare it with. A delegation stateid over NFSv4.0, and any
+   stateid of state created on a session (`Sessioned`), is refused by
+   the service, since the call has no session
+   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open),
+   [RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)): `NFS4ERR_BAD_STATEID`
+   (`ErrState` (`NotYours`)), whatever the principal, and it changes no state.
+   So a `WRITE` with an NFSv4.1 client's open stateid, a `LOCK` whose new lock
+   owner names its client ID, and a `CLOSE` or `LOCKU` of its state are each
+   refused, and its delegation is never bypassed. A v4.0 `OPEN`, `LOCKT`,
+   `RELEASE_LOCKOWNER` or `RENEW` that names the client ID or owner of a client
+   `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`: the adapter reads the
+   confirming minor version from that client's record (`Record`, §3.5) before
+   it calls the service. In place of rule 4's client check, the credential of
+   a v4.0 `READ`, `WRITE` or `SETATTR` **MUST** name
+   the principal that made the open the stateid names (`Open.Principal`,
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); the service refuses one
-   naming any other principal with `ErrState` (`NotYours`), which on these three
-   operations is answered `NFS4ERR_ACCESS` (§11.5), and the stateid grants it
+   naming any other principal with `ErrState` (`NotYours`), which on `READ`,
+   `WRITE` and `SETATTR` is answered `NFS4ERR_ACCESS` (§11.5), and the stateid grants it
    nothing. A lock
    stateid is checked against the principal of the open it was taken under.
    The special stateids below name no open and are checked per operation as
@@ -945,9 +965,10 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 6. **I/O under a delegation stateid belongs to the client, not to a
    principal.** RFC 8881 §9.1.3 lets a client use a delegation's stateid for
    `READ`, `WRITE` and `SETATTR` by any of its open owners, under any principal,
-   so rule 5 does not apply to it. Such a request **MUST** be refused
-   `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)) unless the delegation is held,
-   unrevoked, by the client of the session it arrives on, and **MUST** then be
+   so rule 5's opener check does not apply to it. Such a request **MUST** be
+   refused `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)) unless the delegation
+   is held, unrevoked, by the call's client — the session's, since NFSv4.0 is
+   offered no delegation (§5.3) — and **MUST** then be
    authorised afresh as anonymous I/O is — the file's ACL and mode against the
    request's credential, and every deny mode and mandatory lock
    ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). The delegation proves the
@@ -2388,7 +2409,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`StaleState`) — a stateid whose state was lost with its shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)): its record is gone and its bits name an earlier grace instance, or its shard is in grace (§5.2 rule 1) | `NFS4ERR_STALE_STATEID` (§5.4) | — |
 | `ErrPerm` — an immutable or append-only file, or a change of owner, group or flags the caller may not make ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_PERM` | `NFS3ERR_PERM` |
 | `ErrUnavailable`, `ErrCorrupt`, `ErrLost` on a read ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) | a short read of the verified bytes, then `NFS4ERR_DELAY` for `ErrUnavailable` and `NFS4ERR_IO` for the others | `NFS3ERR_JUKEBOX` for `ErrUnavailable`, `NFS3ERR_IO` for the others |
-| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR`, where only the principal is checked (§5.2); `NFS4ERR_BAD_STATEID` otherwise | — |
+| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR` under an open or lock stateid, unless the error is `Sessioned` (rule 5's principal check, §5.2); `NFS4ERR_BAD_STATEID` otherwise, a delegation stateid's and a `Sessioned` refusal included (rule 5), with no read of the client record | — |
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrState` (`BadSeqID`) | `NFS4ERR_BAD_SEQID` | — |
 | `ErrState` (`LocksHeld`) — `RELEASE_LOCKOWNER` of an owner still holding locks, `FREE_STATEID` of a lock state holding locks or of a live open or delegation; nothing changed | `NFS4ERR_LOCKS_HELD` | — |
@@ -2546,7 +2567,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §3.3 no pNFS on one node | On a single node: `EXCHANGE_ID` reply has `EXCHGID4_FLAG_USE_NON_PNFS` and neither pNFS flag; `supported_attrs` lists no `fs_layout_type`; `GETDEVICELIST`, `GETDEVICEINFO`, `LAYOUTGET`, `LAYOUTCOMMIT` and `LAYOUTRETURN` are each `NFS4ERR_NOTSUPP`. | a single node advertising itself a metadata server |
 | §5.1 no courtesy | Let a client's lease expire with no conflict; assert its lock is gone and a new client takes it. | |
 | §5.2 stateids | pynfs `TEST_STATEID`, `FREE_STATEID`, bad- and old-stateid tests; present another client's stateid and assert `NFS4ERR_BAD_STATEID`. Open, upgrade the open, then `READ` with the first stateid's `seqid` through another node; assert `NFS4ERR_OLD_STATEID`. | |
-| §5.2 v4.0 stateids | Over NFSv4.0, `LOCK` with an open stateid of another client's open owner; assert `NFS4ERR_BAD_STATEID`. Under Kerberos, open a file as alice, then send `READ`, `WRITE` and `SETATTR` quoting her open stateid with mallory's credential; assert `NFS4ERR_ACCESS` for each and the file unchanged. | v4.0 I/O authorised by the stateid alone |
+| §5.2 v4.0 stateids | Over NFSv4.0, `LOCK` with an open stateid of another client's open owner; assert `NFS4ERR_BAD_STATEID`. Under Kerberos, open a file as alice, then send `READ`, `WRITE` and `SETATTR` quoting her open stateid with mallory's credential; assert `NFS4ERR_ACCESS` for each and the file unchanged. An NFSv4.1 client gets a write delegation on a file; from another machine, over NFSv4.0, `READ` quoting that delegation stateid; assert `NFS4ERR_BAD_STATEID`, no `CB_RECALL` sent, and the delegation intact: the NFSv4.1 client's next `WRITE` under it is served. Then, as the same principal over NFSv4.0, `WRITE` with that client's open stateid, `LOCK` with a new lock owner naming its client ID, and `CLOSE` and `LOCKU` of its state; assert `NFS4ERR_BAD_STATEID` for each and its open, lock and delegation intact. | v4.0 I/O authorised by the stateid alone |
 | §5.2 delegation stateid | Over NFSv4.1 under Kerberos, alice opens a file mode 0644 and gets a read delegation; from the same client, bob `READ`s under the delegation stateid: assert served. bob `WRITE`s under it: assert `NFS4ERR_ACCESS`. A second client quotes the stateid: assert `NFS4ERR_BAD_STATEID`. | delegation I/O refused for another principal of the holder, or served without authorising the caller |
 | §5.2 unguessable `other` | Open 10^4 files from one client; assert no two `other` values share their random bits and that no field of them increases with open order. | `other` built from a counter |
 | §3.1 cached reply size | `CREATE_SESSION` asking for a 1 MiB cached reply; assert 8 KiB granted. Send a `REMOVE` with `sa_cachethis` false, drop the reply, resend in the same slot and sequence; assert `NFS4ERR_RETRY_UNCACHED_REP` and the name removed once. | a partial reply replayed as complete, or an unbounded cache |
@@ -2793,7 +2814,7 @@ method then calls below is
 | `SETCLIENTID_CONFIRM` | `Connect`, naming the `Proposal` | |
 | `CREATE_SESSION` | `Record`; the first `Connect`, naming the `Proposal`, then `AddSession` (§3.5) | a replay is answered from the record's adapter bytes and calls nothing more |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
-| `RENEW` | `Renew` | |
+| `RENEW` | `Renew` | over NFSv4.0, `Record` first: a client `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID` ([§5.2](#5.2%20Stateids)) |
 | `DESTROY_SESSION` | none (adapter only) | |
 | `DESTROY_CLIENTID` | `Destroy` | |
 | `BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL` | `Connect` when the back channel moves | |
@@ -2808,13 +2829,13 @@ method then calls below is
 | `LINK`, `REMOVE`, `RENAME` | `Link`, `Unlink`, `Rename` | `change_info4` from the `WCC` |
 | `READDIR` | `ReadDir` | |
 | `READLINK` | `GetAttr` | |
-| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `OPEN4_RESULT_CONFIRM` is `OpenResult.Confirm` |
+| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `OPEN4_RESULT_CONFIRM` is `OpenResult.Confirm`; an NFSv4.0 `OPEN` reads `Record` first, as `RENEW` does |
 | `OPEN_CONFIRM` | `ConfirmOpen` | NFSv4.0; the reply's stateid carries the seqid it returns |
 | `OPEN_DOWNGRADE` | `Downgrade` | the reply's stateid carries the seqid it returns |
 | `CLOSE` | `Close` | |
 | `READ`, `WRITE`, `COMMIT` | `Read`, `Write`, `Commit` | |
-| `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `LOCK` answers the lock stateid `Lock` returns, `LOCKU` the seqid `Unlock` returns |
-| `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | |
+| `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `LOCK` answers the lock stateid `Lock` returns, `LOCKU` the seqid `Unlock` returns; an NFSv4.0 `LOCKT` reads `Record` first, as `RENEW` does |
+| `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | `Record` first, as for `RENEW` |
 | `DELEGRETURN` | `AckRecall` to `GrantNone` | |
 | `DELEGPURGE`, `WANT_DELEGATION`, `GET_DIR_DELEGATION`, `OPENATTR`, `SET_SSV` | not supported, answered as this RFC says of each | |
 | `TEST_STATEID` | `TestState` | |
