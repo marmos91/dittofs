@@ -20,6 +20,8 @@ import (
 //   - every attached record re-decoding out of the bytes it was attached
 //     from, its body verifying — a record a scan hangs out "never yields
 //     an extent the bytes do not contain";
+//   - every handed-back refused header re-decoding at its own offset,
+//     lying inside a RangeBad range, and its body failing to verify;
 //   - every RangeZero all zeros, every RangeBad holding a byte not zero;
 //   - no two ranges adjacent;
 //   - Resynced set exactly when some RangeBad ends at an attached record's
@@ -386,6 +388,50 @@ func fuzzAssertInvariants(t *testing.T, mode string, seg []byte, scan Scan, err 
 		}
 	}
 
+	// Every handed-back refused header is a real refused record: its
+	// header re-decodes at its own offset under the scan's own identity
+	// and segment — a handed-back header never yields terms its bytes
+	// do not hold — it lies inside a bad range, the records its bytes
+	// fold into, and its body does not verify, for it is handed back
+	// exactly because it does not.
+	for i, h := range scan.Refused {
+		off := h.Offset
+		if off < SegmentHeaderSize || off >= size {
+			t.Fatalf("%s: refused header %d at %d, past the segment's size %d", mode, i, off, size)
+		}
+		if off+int64(RecordHeaderSize) > size {
+			t.Fatalf("%s: refused header %d at %d holds a header past the size %d", mode, i, off, size)
+		}
+		decoded, decErr := DecodeRecordHeader(seg[off:off+int64(RecordHeaderSize)], identity, segment, off)
+		if decErr != nil {
+			t.Fatalf("%s: refused header %d at %d does not re-decode: %v", mode, i, off, decErr)
+		}
+		if decoded != h {
+			t.Errorf("%s: refused header %d at %d = %+v, want its own decoded one %+v", mode, i, off, h, decoded)
+		}
+		if i > 0 && scan.Refused[i-1].Offset >= off {
+			t.Errorf("%s: refused headers at %d then %d, want them ascending by offset", mode, scan.Refused[i-1].Offset, off)
+		}
+		inside := false
+		for _, r := range scan.Ranges {
+			if r.Kind == RangeBad && r.Off <= off && off < r.End {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			t.Errorf("%s: refused header %d at %d lies in no bad range, want its record's bytes folded into one", mode, i, off)
+		}
+		if off+decoded.Size() > size {
+			t.Fatalf("%s: refused header %d at %d runs past the size %d", mode, i, off, size)
+		}
+		body := make([]byte, decoded.BodySize())
+		copy(body, seg[off+int64(RecordHeaderSize):off+int64(RecordHeaderSize)+decoded.BodySize()])
+		if _, verErr := VerifyRecordBody(body, identity, decoded); verErr == nil {
+			t.Errorf("%s: refused header %d at %d has a body that verifies, want it handed back exactly because it does not", mode, i, off)
+		}
+	}
+
 	// Resynced holds exactly when a bad range ends at an attached record's
 	// own slot.
 	resync := false
@@ -457,6 +503,28 @@ func fuzzAssertPlanted(t *testing.T, seg, before []byte, scan Scan, err error, p
 	for _, rec := range scan.Records {
 		if !slices.Contains(pl.records, rec.Header.Offset) {
 			t.Errorf("planted: a record attached at %d, where the plan planted nothing", rec.Header.Offset)
+		}
+	}
+
+	// An untouched planted record whose header verifies never comes back
+	// refused, and a refused header is a planted record's own at its
+	// planted slot — only a planted record's bytes decode here at all.
+	for i, at := range pl.records {
+		if at >= end {
+			break
+		}
+		h := pl.headers[i]
+		if untouched(at, h.Size()) {
+			for _, ref := range scan.Refused {
+				if ref.Offset == at {
+					t.Errorf("planted: the untouched record at %d came back refused, want its bytes whole and verified", at)
+				}
+			}
+		}
+	}
+	for _, ref := range scan.Refused {
+		if !slices.Contains(pl.records, ref.Offset) {
+			t.Errorf("planted: a refused header at %d, where the plan planted nothing", ref.Offset)
 		}
 	}
 

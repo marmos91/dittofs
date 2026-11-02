@@ -52,11 +52,24 @@ type ScannedRecord struct {
 // counts none. What a found range was torn or corrupt recovery decides; the
 // scan counts only whether it reached a record past one range of bad bytes.
 type Scan struct {
-	Records  []ScannedRecord // ascending by Header.Offset
-	Ranges   []ScanRange     // ascending; with Records they tile [SegmentHeaderSize, End)
-	Sealed   bool            // a seal marker that verifies ended the scan at End
-	End      int64           // where the scan ended: the seal marker's offset, the failing offset, or size
-	Resynced bool            // a RangeBad is followed directly by an attached record
+	Records []ScannedRecord // ascending by Header.Offset
+
+	// Refused holds the headers of the records the scan stepped over
+	// because their body did not verify — the header itself did —
+	// ascending by Offset. Their records' bytes lie inside a RangeBad
+	// range, and the scan counts them as nothing else: the range and the
+	// resync stay as they are. The headers are handed back anyway, for a
+	// loss record written for "each record dropped as corrupt" names the
+	// seq, file, extent and version its header holds, the copies that can
+	// stand in for the record are matched by that seq, and a record a
+	// later one covers is told from its header alone — a header re-decoded
+	// at the range's own start finds only the first record the range
+	// holds, so the range tells recovery nothing about the rest.
+	Refused  []RecordHeader
+	Ranges   []ScanRange // ascending; with Records they tile [SegmentHeaderSize, End)
+	Sealed   bool        // a seal marker that verifies ended the scan at End
+	End      int64       // where the scan ended: the seal marker's offset, the failing offset, or size
+	Resynced bool        // a RangeBad is followed directly by an attached record
 }
 
 // slotOutcome is what a slot holds, in the order the scan stops caring:
@@ -72,12 +85,16 @@ const (
 	slotStop                       // an error to stop the scan at this slot
 )
 
-// slot is one examination: the outcome, the record when it is one, and the
-// stop's own error, its decode's message naming the rule that made it.
+// slot is one examination: the outcome, the record when it is one, the
+// stop's own error, its decode's message naming the rule that made it, and
+// the header of a record the scan refused — a slotNothing whose header
+// verified and whose body did not, handed back for whoever writes the
+// record's loss entry.
 type slot struct {
 	outcome slotOutcome
 	record  ScannedRecord
 	err     error
+	refused *RecordHeader
 }
 
 // ScanSegment walks a segment with no usable footer record by record from
@@ -87,10 +104,14 @@ type slot struct {
 //
 // It calls nothing damage or torn. It reports the records whose header and
 // body both verify — their headers, including their synced-through offsets
-// and bodies, with the payload dropped — and the byte runs it attached
-// nothing from, with what those bytes are: all zeros, or at least one byte
-// not zero. Which of those is a torn tail and which corruption is recovery's
-// to decide, from the synced-through offsets and the seal markers it holds.
+// and bodies, with the payload dropped — the headers of the records whose
+// body does not verify — handed back in the scan's Refused, for the loss
+// record written for a corrupt record is named by the seq, file, extent and
+// version its header holds and by nothing the scan reports for its bytes —
+// and the byte runs it attached nothing from, with what those bytes are:
+// all zeros, or at least one byte not zero. Which of those is a torn tail
+// and which corruption is recovery's to decide, from the synced-through
+// offsets and the seal markers it holds.
 //
 // A scan stops and returns its error at a header this format version cannot
 // read over — one of an unknown kind, which "is never skipped by its length",
@@ -136,6 +157,13 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 			sc.End = off
 			return sc.Scan, s.err
 		case slotNothing:
+			// The header of a record refused for its body — the slot's
+			// own examination judged it — goes back with the scan now, in
+			// step with everything attached before it: every header the
+			// scan hands back is ascending by its own offset.
+			if s.refused != nil {
+				sc.Refused = append(sc.Refused, *s.refused)
+			}
 			// A zero or bad slot the walk cannot step over by any length
 			// it knows: search forward for the next slot it can use, and
 			// report the bytes passed over as one range.
@@ -176,9 +204,13 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 				sc.Records = append(sc.Records, s.record)
 				sc.End = end + s.record.Header.Size()
 			}
-			// A seal found by the search is not sealed here: the loop
-			// turns to its slot and lets the walk's own examination seal
-			// it, so the seal rule lives in exactly one place.
+			// A seal, a stop or a record found by the search is not
+			// finished here: the loop turns to its slot and lets the
+			// walk's own examination do it — attach it, seal it, or stop
+			// and hand back its error — so each of those rules lives in
+			// exactly one place, and a stop's slot, whose header the
+			// search already read, is read from the window it left in
+			// hands.
 			off = sc.End
 		}
 	}
@@ -192,15 +224,15 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 // checksums verify under, and the sliding window every slot is read
 // through, refilled at the slot being examined.
 type scanner struct {
-	r        io.ReaderAt
-	size     int64
-	identity core.JournalID
-	segment  core.SegmentID
-	window   []byte
-	cur      int64 // the window's first byte's offset in the segment
-	have     int64 // the bytes the window holds
-	narrow   bool  // a refill has failed; read each slot's own bytes alone
-	body     []byte
+	r           io.ReaderAt
+	size        int64
+	identity    core.JournalID
+	segment     core.SegmentID
+	window      []byte
+	cur         int64 // the window's first byte's offset in the segment
+	have        int64 // the bytes the window holds
+	narrowUntil int64 // below it a wide refill failed; each slot's own bytes alone
+	body        []byte
 
 	Scan
 }
@@ -310,7 +342,11 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 		}
 		// A body that does not verify is bad: "a scan that meets a record
 		// that does not verify MUST refuse that record and resynchronise".
-		return slot{outcome: slotNothing}
+		// The header goes back all the same: recovery's loss record for
+		// this refused one names the seq, file, extent and version the
+		// header holds, and a header re-decoded inside the range this
+		// record ends up in finds it for the first record there alone.
+		return slot{outcome: slotNothing, refused: &h}
 	}
 	verified.Payload = nil
 	return slot{outcome: slotRecord, record: ScannedRecord{Header: h, Body: verified}}
@@ -361,11 +397,12 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 	zeroRun = slotZero
 	for p := off + 8; p < sc.size; p += 8 {
 		s := sc.examine(p)
-		if s.outcome == slotStop {
-			// A header this format version cannot read over: the
-			// range closes at it and the stop goes to the caller
-			// with the records the walk attached before it.
-			return p, s, zeroRun, s.err
+		// Any header the search refuses — a record whose body does not
+		// verify — goes back with the scan here, in step with the walk,
+		// so every handed-back header ascends by its own offset
+		// whichever path found it.
+		if s.refused != nil {
+			sc.Refused = append(sc.Refused, *s.refused)
 		}
 		if s.outcome != slotNothing {
 			end = p
@@ -374,10 +411,11 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 		}
 		slotZero, err := sc.zeroSlot(p)
 		if err != nil {
-			// end stays size: bytes past p may not have been read, so
-			// the range's own telling stops at p — but every slot the
-			// search read before it has told its part, and those are
-			// the bytes the walk closes the range over.
+			// Defensive alone: examine(p) has just put [p, p+min(96,
+			// size-p)) in the window, so this telling cannot fail. It is
+			// kept rather than the error dropped, for the choice hides
+			// nothing: the day it can fail, the byte nobody read still
+			// tells no range its kind.
 			return p, found, zeroRun, err
 		}
 		zeroRun = zeroRun && slotZero
@@ -411,19 +449,21 @@ func (sc *scanner) zeroSlot(p int64) (bool, error) {
 // never asked for, over bytes past its marker or below its next slot, never
 // fails it.
 //
-// Once a refill has failed, the bytes ahead of that slot stay unreadable to
-// the wide read, and a scan that marched on would pay one failed refill per
-// slot it steps to. The scan then reads each slot's own bytes alone until it
-// ends — and it ends at the byte that cannot be read, for every read that
-// covers it fails, the narrow ones as surely as the wide ones. The narrow
-// mode is sticky for that reason: no slot past the unreadable byte is ever
-// served, so no wide refill past it could ever succeed.
+// Once a refill has failed, the refill's whole span [off, off+want) may hold
+// bytes no wide read can hold — the failure reached a byte the slot never
+// asked for, and a scan that marched on within that span would pay one
+// failed refill per slot it steps to. So each slot inside that span is read
+// on its own bytes alone, and a refill past the span goes wide again: a
+// transient failure narrows exactly the span it happened over, and a
+// persistent one reaches the byte every read covers — the narrow ones as
+// surely as the wide ones — so the scan ends there, never paying a wide
+// read past the byte that cannot be read.
 func (sc *scanner) read(off, n int64) ([]byte, error) {
 	if off >= sc.cur && off+n <= sc.cur+sc.have {
 		return sc.window[off-sc.cur : off-sc.cur+n], nil
 	}
 	want := min(int64(scanWindow), sc.size-off)
-	if sc.narrow {
+	if off < sc.narrowUntil {
 		// Every caller asks only the bytes its own slot holds, min(96,
 		// size-off) or fewer, so a healthy refill always serves them;
 		// under narrow, the slot's own bytes are all the scan reads.
@@ -437,14 +477,15 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 				return nil, fmt.Errorf("format: read slot at %d: %w", off, err)
 			}
 			// The refill found a byte it could not read ahead of this
-			// slot; the bytes past that one are unreadable to every
-			// wide read the rest of the scan could make. Only a read
-			// covering that byte reaches it, and that read fails
-			// however narrow it is, so serving slots one by one fails
-			// at that byte and never past it. Only [off, off+n) was
+			// slot; every read covering that byte fails again, wide or
+			// narrow. Each slot the failed refill's own span holds is
+			// read on its bytes alone from here; a refill past the span
+			// goes wide again, and if the byte stays unreadable it fails
+			// that refill exactly as it failed this one, so the scan
+			// ends at it and never reads past it. Only [off, off+n) was
 			// read: the window holds nothing the scan may trust past
 			// it.
-			sc.narrow = true
+			sc.narrowUntil = off + want
 			sc.cur, sc.have = off, n
 			return sc.window[:n], nil
 		}

@@ -455,6 +455,62 @@ func TestScanReadsOnlyTheBytesItNeeds(t *testing.T) {
 	})
 }
 
+// TestScanNarrowModeCoversOnlyTheFailedRefillsOwnSpan: a wide refill that
+// fails once — a transient failure over a newest segment's zero tail, the
+// exact shape a fallback open scans — narrows only the span that refill
+// covered, and wide reads resume past it: the scan pays one window's worth
+// of slots read on their own bytes, then a refill a window again. Narrow
+// mode held to the scan's end would pay one read per slot instead, a read
+// an 8 bytes for as long as the tail runs — past a million over this
+// segment's eight megabytes, thirty times that over a full cap.
+func TestScanNarrowModeCoversOnlyTheFailedRefillsOwnSpan(t *testing.T) {
+	// A segment of nothing but its header and eight megabytes of zeros:
+	// every slot a search must step on, the walk of an unwritten tail.
+	var seg []byte
+	seg = AppendSegmentHeader(seg, testSegmentHeader)
+	seg = append(seg, make([]byte, 8<<20)...)
+	size := int64(len(seg))
+
+	failer := &readAtFailFirstWide{b: seg, err: errors.New("format: a transient refill failure")}
+	got, err := ScanSegment(failer, size, testIdentity, testSegment)
+	if err != nil {
+		t.Fatalf("ScanSegment = %v, want no error: the retry serves the slot's own bytes", err)
+	}
+	want := ScanRange{Off: SegmentHeaderSize, End: size, Kind: RangeZero}
+	if len(got.Ranges) != 1 || got.Ranges[0] != want || len(got.Records) != 0 || got.Sealed || got.Resynced || got.End != size {
+		t.Fatalf("scan ranges %+v records %d sealed %v resynced %v end %d, want the one zero range over the whole tail and nothing else", got.Ranges, len(got.Records), got.Sealed, got.Resynced, got.End)
+	}
+
+	// One window's worth of slots read narrow — the 131,072 slots a
+	// megabyte holds — plus the wide refills the rest of the tail pays
+	// one of a window: about 131,080 reads.
+	if !failer.failed {
+		t.Fatalf("the reader never failed a wide read, want the first refill to fail alone")
+	}
+	if failer.reads > 132000 {
+		t.Errorf("reads = %d, want at most one window of narrow reads and a handful of wide refills, 132,000", failer.reads)
+	}
+}
+
+// readAtFailFirstWide serves seg but fails its first wide read alone — one
+// spanning more than a slot's own bytes, the refill a transient failure
+// would hit once — and counts every read it is asked for.
+type readAtFailFirstWide struct {
+	b      []byte
+	err    error
+	failed bool  // the one wide read has failed
+	reads  int64 // every ReadAt made
+}
+
+func (r *readAtFailFirstWide) ReadAt(p []byte, off int64) (int, error) {
+	r.reads++
+	if !r.failed && int64(len(p)) > RecordHeaderSize {
+		r.failed = true
+		return 0, r.err
+	}
+	return copy(p, r.b[off:]), nil
+}
+
 // readAtCover is an io.ReaderAt that serves seg but fails every read
 // covering one byte — as a device fails every read over a bad sector —
 // and counts the wide covering reads it served: those spanning more than

@@ -320,6 +320,124 @@ func TestScanZeroSlotJunkThenRecordIsOneBadRange(t *testing.T) {
 	}
 }
 
+// TestScanHandsBackTheRefusedHeaders covers the record whose header verifies
+// but whose body does not: the scan refuses it, steps over it as bad bytes —
+// range, resync count and all — and hands its header back, for recovery's
+// loss record names the seq, file, extent and version the header holds, and
+// a header re-decoded at the range's own start finds only the first record
+// the range holds, never the second.
+func TestScanHandsBackTheRefusedHeaders(t *testing.T) {
+	// flipPayloadBody flips one payload byte of record i's planted body
+	// without rechecksumming the header, so the header still verifies and
+	// only the body's checksum refuses the record: the one edit a
+	// header-verifying, body-refusing record is built by.
+	flipPayloadBody := func(seg []byte, recs []scanRecord, offs []int64, i int) {
+		r := recs[i]
+		body := seg[offs[i]+RecordHeaderSize : offs[i+1]]
+		body[len(r.body.Payload)/2] ^= 0x40
+	}
+
+	// refusedEquals tells whether the scan handed record i's header back:
+	// its own offset, and its payload CRC — the field a planted header
+	// does not carry, AppendRecord filled it — the returned one's own.
+	refusedEquals := func(recs []scanRecord, i int, h RecordHeader, off int64) bool {
+		want := recs[i].h
+		want.Offset = off
+		want.PayloadCRC = h.PayloadCRC
+		return want == h
+	}
+
+	t.Run("two adjacent refused records", func(t *testing.T) {
+		// Two body-refusing records side by side — the first two planted
+		// slots — whose bytes fold into one bad range. Both headers come
+		// back: the range holds both records' bytes and names neither.
+		recs := scanTestRecords()[:3]
+		seg, offs := scanSegment(t, testIdentity, recs...)
+
+		flipPayloadBody(seg, recs, offs, 0)
+		flipPayloadBody(seg, recs, offs, 1)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error: a record that does not verify is walked over, never returned", err)
+		}
+		if len(got.Records) != 1 || got.Records[0].Header.Offset != offs[2] {
+			t.Fatalf("records = %+v, want the one past the two refused slots attached at %d", got.Records, offs[2])
+		}
+		want := ScanRange{Off: offs[0], End: offs[2], Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Fatalf("ranges = %+v, want the one bad range %+v the refused records fold into", got.Ranges, want)
+		}
+		if !got.Resynced {
+			t.Errorf("want the scan to count itself resynchronised past the bad bytes")
+		}
+		if got.End != int64(len(seg)) {
+			t.Errorf("end %d, want the size %d", got.End, len(seg))
+		}
+		if len(got.Refused) != 2 {
+			t.Fatalf("refused = %+v, want both headers from inside the one bad range", got.Refused)
+		}
+		for i := range 2 {
+			if !refusedEquals(recs, i, got.Refused[i], offs[i]) {
+				t.Errorf("refused header %d = %+v, want record %d's own header at its slot %d", i, got.Refused[i], i, offs[i])
+			}
+		}
+	})
+
+	t.Run("a refused record found by the forward search", func(t *testing.T) {
+		// A record whose length runs past the segment is refused on its
+		// header alone, opening the search; the slot the search steps to
+		// holds a record whose header verifies but whose body does not,
+		// and past it a record that attaches. The search collects the
+		// refused header exactly as the walk does, and the headers the
+		// scan hands back stay ascending by their own offsets.
+		recs := scanTestRecords()[:3]
+		seg, offs := scanSegment(t, testIdentity, recs...)
+		size := int64(len(seg))
+
+		// The first record's length past the size: refused on the overrun
+		// rule, so its own header does not come back — its length is a
+		// lie, and nothing about the record can be read past it.
+		binary.LittleEndian.PutUint64(seg[offs[0]:offs[1]][40:48], uint64(size+8<<20))
+
+		flipPayloadBody(seg, recs, offs, 1)
+
+		got, err := ScanSegment(bytes.NewReader(seg), size, testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		if len(got.Records) != 1 || got.Records[0].Header.Offset != offs[2] {
+			t.Fatalf("records = %+v, want the third record alone, attached by the search at %d", got.Records, offs[2])
+		}
+		want := ScanRange{Off: offs[0], End: offs[2], Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Fatalf("ranges = %+v, want the one bad range %+v the search stepped over", got.Ranges, want)
+		}
+		if !got.Resynced {
+			t.Error("want the scan to count itself resynchronised past the bad bytes")
+		}
+		if got.End != int64(len(seg)) {
+			t.Errorf("end %d, want the size %d", got.End, len(seg))
+		}
+		if len(got.Refused) != 1 || !refusedEquals(recs, 1, got.Refused[0], offs[1]) {
+			t.Fatalf("refused = %+v, want the second record's own header at its slot %d, which only the search examined", got.Refused, offs[1])
+		}
+	})
+
+	t.Run("a clean scan refuses nothing", func(t *testing.T) {
+		recs := scanTestRecords()
+		seg, _ := scanSegment(t, testIdentity, recs...)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		if len(got.Refused) != 0 {
+			t.Errorf("refused = %+v, want none from records that verify", got.Refused)
+		}
+	})
+}
+
 // TestScanSealMarkerInPayloadDoesNotStopTheScan covers two ways a seal
 // marker's bytes can appear where no marker is: a copy of this journal's
 // own marker planted inside a write's payload — a client file holding a
