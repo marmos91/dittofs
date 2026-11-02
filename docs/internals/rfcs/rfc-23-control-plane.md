@@ -376,7 +376,7 @@ store configuration, and the last storage binding to close one releases it.
 | 1 | metadata store ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)) | the KV, the host's bootstrap | the KV | opened by `New` / 9 |
 | 2 | remote stores ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), one client per store configuration | the store configuration, its `Secret` | the remote service | 5 / 8 |
 | 3 | syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores | the remote stores | 5 / 8 |
-| 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views | the journals, the syncer, the block-metadata views | 5 / 8 |
+| 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views; open state's `Opens` view, so open state is built before it, and `Closed`, a closure over the filesystem field set before any `Start` | the journals, the syncer, the block-metadata views | 5 / 8 |
 | 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Claim` and `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | `Claim` before the engine at 5, then 5 / drains at 5, closes at 7 |
 | 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the filesystem implements | the metadata store, the `Sink` | 5 / 7 |
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
@@ -396,11 +396,12 @@ func New(cfg Config) (*Node, error) {
 	n.meta   = metadata.Open(context.Background(), cfg.KV, metadata.Options{...}) // RFC 16 §3.2; the one thing New opens; everyone takes a view of it; closed last
 	n.remote = remote.NewPool(remote.Deps{...})                         // one client per store configuration, ref-counted
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
+	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which takes its Opens view; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.engine = engine.New(engine.Deps{
 		Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
-		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(), ...})
+		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
+		Opens: n.open.Opens(), Closed: func(f FileID, r openstate.CloseResult) { n.fs.Closed(f, r) }, ...}) // n.fs is set below, before any Start
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
-	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
