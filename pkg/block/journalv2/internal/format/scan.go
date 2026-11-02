@@ -117,7 +117,7 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 		size:     size,
 		identity: identity,
 		segment:  segment,
-		window:   make([]byte, scanWindow),
+		window:   make([]byte, min(scanWindow, size)),
 	}
 	sc.End = SegmentHeaderSize
 	off := int64(SegmentHeaderSize)
@@ -138,9 +138,47 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 			// A zero or bad slot the walk cannot step over by any length
 			// it knows: search forward for the next slot it can use, and
 			// report the bytes passed over as one range.
-			if err := sc.search(off); err != nil {
+			end, s, zeroRun, err := sc.search(off)
+			// decision: the range's kind is decided by its bytes — every
+			// byte the search read zero, or at least one not — and never
+			// by the slot that started it, so a zero slot followed by
+			// junk then a header reports the junk as bad bytes, not as
+			// the zeros the first slot's four bytes promised. The bytes
+			// are told from the slots the search steps on, eight each, so
+			// no byte is read twice and a byte nobody read tells
+			// nothing. Recovery classes the range torn or corrupt from
+			// the synced-through offsets and seal markers it holds; the
+			// scan's job is the bytes. Overturned if the zero-slot rule
+			// rules a failed write's zeros apart from damage inside one
+			// range.
+			//
+			// The range is closed at end and kept even when the search
+			// stopped there on an error, because every byte before end
+			// was read before the failing one: its kind is known, and
+			// every range closed before the failing offset stays with
+			// the Scan. A search that died before reading a single
+			// slot of its own — end == off — closes nothing.
+			kind := RangeBad
+			if zeroRun {
+				kind = RangeZero
+			}
+			if end > off {
+				sc.Ranges = append(sc.Ranges, ScanRange{Off: off, End: end, Kind: kind})
+			}
+			sc.End = end
+			if err != nil {
 				return sc.Scan, err
 			}
+			if s.outcome == slotRecord {
+				if kind == RangeBad {
+					sc.Resynced = true // a range of bad bytes, a record found past it
+				}
+				sc.Records = append(sc.Records, s.record)
+				sc.End = end + s.record.Header.Size()
+			}
+			// A seal found by the search is not sealed here: the loop
+			// turns to its slot and lets the walk's own examination seal
+			// it, so the seal rule lives in exactly one place.
 			off = sc.End
 		}
 	}
@@ -159,6 +197,7 @@ type scanner struct {
 	window   []byte
 	cur      int64 // the window's first byte's offset in the segment
 	have     int64 // the bytes the window holds
+	narrow   bool  // a refill has failed; read each slot's own bytes alone
 	body     []byte
 
 	Scan
@@ -179,22 +218,18 @@ func (sc *scanner) examine(off int64) slot {
 	}
 
 	// The prefix rule's telling bytes are four, and a slot at the segment's
-	// end may hold fewer: such a slot holds neither a prefix to tell by
-	// nor a record, so whatever its bytes are, the forward search reports
-	// them in the range they end in. The grid being 8, at most four of
-	// the telling bytes can exist without the slot being whole anyway.
-
+	// end may hold fewer: no case below may slice four bytes that were not
+	// read, for the window holds stale bytes past the read's own end.
+	//
+	// A slot fewer than 4 bytes long — the segment ends inside it — holds
+	// neither a prefix to tell by nor a record: whatever its bytes, the
+	// forward search reports them in the range they end in, and the slot
+	// contributes no run of its own.
 	if n < 4 {
-		// A slot fewer than 4 bytes long — the segment ends inside it —
-		// holds neither a prefix to tell by nor a record: whatever its
-		// bytes, the forward search reports them in the range they end
-		// in, and the slot contributes no run of its own.
 		return slot{outcome: slotNothing}
 	}
 
 	switch {
-	case zero(b[:4]):
-		return slot{outcome: slotNothing} // a zero slot; its range's kind is its bytes' own
 	case string(b[:4]) == "DJR1":
 		return sc.examineRecord(b, off)
 	case string(b[:4]) == "DJS1":
@@ -211,7 +246,12 @@ func (sc *scanner) examine(off int64) slot {
 		// never ends a scan.
 		return slot{outcome: slotNothing}
 	default:
-		return slot{outcome: slotNothing} // a bad slot: unknown bytes
+		// A bad slot: unknown bytes, or a zero one — a zero slot is
+		// nothing here the same as any other untellable bytes, and only
+		// the search's zero-telling tells the range's kind, from bytes
+		// it reads for itself. Drawing a zero case apart here would
+		// change what it returns by nothing at all.
+		return slot{outcome: slotNothing}
 	}
 }
 
@@ -268,7 +308,9 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 // search runs the forward search from a zero or bad slot at off: at each
 // 8-byte boundary past it, the same rule the walk applies, until the
 // segment's end or a slot the scan can use — a record to attach, a
-// verifying seal marker to stop at, or an outcome to stop and return.
+// verifying seal marker to seal at, or an outcome to stop and return — and
+// at the same time tells whether every byte it read over is zero, from the
+// bytes it read them from.
 //
 // decision: the search stops at a verifying seal marker and reports the
 // range before it, exactly as the walk does, because "a seal marker that
@@ -284,86 +326,120 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 // bounding it by the stream's largest in-flight reservation — a later
 // record can start no further past a failed slot than the bytes reserved
 // ahead of it — when a recovery time at open shows the zero scan.
-func (sc *scanner) search(off int64) error {
-	end := sc.size
-	found := slot{outcome: slotNothing}
+//
+// The zero-telling rides the bytes the search reads anyway, so the range's
+// kind costs no second pass: each slot it steps over contributes the
+// min(8, size-p) bytes it holds — together, from the slot at off to the last
+// one before end, the whole [off, end) minus whatever residue the final
+// partial slot holds, which is bounded by the same reads. A read that fails
+// is returned as itself: a byte nobody read tells nothing, so a failed read
+// can manufacture neither a bad range — the zero it never saw cannot stand
+// as a byte not zero — nor a zero one, and no resync is counted on the back
+// of bytes nobody read.
+func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err error) {
+	end = sc.size
+	found = slot{outcome: slotNothing}
+	slotZero, err := sc.zeroSlot(off)
+	if err != nil {
+		// Nothing past off was read, so the run opens with no zero known.
+		return off, found, false, err
+	}
+	zeroRun = slotZero
 	for p := off + 8; p < sc.size; p += 8 {
-		if s := sc.examine(p); s.outcome != slotNothing {
-			found = s
+		s := sc.examine(p)
+		if s.outcome == slotStop {
+			// A header this format version cannot read over: the
+			// range closes at it and the stop goes to the caller
+			// with the records the walk attached before it.
+			return p, s, zeroRun, s.err
+		}
+		if s.outcome != slotNothing {
 			end = p
+			found = s
 			break
 		}
-	}
-
-	// decision: the range's kind is decided by its bytes — every byte zero,
-	// or at least one not — and never by the slot that started it, so a
-	// zero slot followed by junk then a header reports the junk as bad
-	// bytes, not as the zeros the first slot's four bytes promised.
-	// Recovery classes the range torn or corrupt from the synced-through
-	// offsets and seal markers it holds; the scan's job is the bytes.
-	// Overturned if the zero-slot rule rules a failed write's zeros apart
-	// from damage inside one range.
-	kind := RangeBad
-	if sc.bytesAllZero(off, end) {
-		kind = RangeZero
-	}
-	sc.Ranges = append(sc.Ranges, ScanRange{Off: off, End: end, Kind: kind})
-	sc.End = end
-	switch found.outcome {
-	case slotNothing:
-		// Nothing verifies to the segment's end: the range stands as the
-		// whole tail and the scan is over. The zero-slot rule's "only
-		// zeros with no verifying header anywhere after them" — plus the
-		// residue of any bad record — is what the caller asked for.
-		return nil
-	case slotRecord:
-		if kind == RangeBad {
-			sc.Resynced = true // a range of bad bytes, a record found past it
+		slotZero, err := sc.zeroSlot(p)
+		if err != nil {
+			// end stays size: bytes past p may not have been read, so
+			// the range's own telling stops at p — but every slot the
+			// search read before it has told its part, and those are
+			// the bytes the walk closes the range over.
+			return p, found, zeroRun, err
 		}
-		sc.Records = append(sc.Records, found.record)
-		sc.End = end + found.record.Header.Size()
-		return nil
-	case slotSeal:
-		sc.Sealed = true
-		return nil
-	case slotStop:
-		return found.err
+		zeroRun = zeroRun && slotZero
 	}
-	panic("format: scan search switch is not exhaustive")
+	return end, found, zeroRun, nil
 }
 
-// bytesAllZero reports whether every byte of [off, end) is zero, read
-// window by window so a range a segment's whole cap long costs no more
-// memory than the scan's one window.
-func (sc *scanner) bytesAllZero(off, end int64) bool {
-	const chunk = int64(scanWindow)
-	for p := off; p < end; p += chunk {
-		n := min(chunk, end-p)
-		b, err := sc.read(p, n)
-		if err != nil || !zero(b) {
-			return false
-		}
+// zeroSlot tells whether the bytes one slot holds — the min(8, size-p) bytes
+// it holds past p — are all zero, reading through the same window examine
+// reads, so a slot whose bytes are already in hand costs nothing at all.
+func (sc *scanner) zeroSlot(p int64) (bool, error) {
+	n := min(int64(8), sc.size-p)
+	if n <= 0 {
+		return true, nil
 	}
-	return true
+	b, err := sc.read(p, n)
+	if err != nil {
+		return false, err
+	}
+	return zero(b), nil
 }
 
 // read fills the scan's window so that [off, off+n) lies in it, and returns
 // it. A refill reads scanWindow bytes at off, so a slot the scan walks to
-// finds its bytes in hand unless the walk crossed the window's whole span,
-// and any read error — a short read's io.ErrUnexpectedEOF or the reader's
-// own error — is returned wrapped with the offset it was read at, as itself.
+// finds its bytes in hand unless the walk crossed the window's whole span.
+//
+// A refill reaches ahead of the bytes its slot needs, so a byte that cannot
+// be read — a bad sector in the footer past a seal marker, in a record the
+// walk has not reached — must not fail the slot that only asked for its own
+// bytes: when a refill fails, the exact [off, off+n) the slot needs is
+// retried alone, and the scan fails only if those bytes cannot be read. That
+// keeps both halves of the read-error rule: a read that fails is returned
+// as itself, wrapped with the offset it was read at — and a read the scan
+// never asked for, over bytes past its marker or below its next slot, never
+// fails it.
+//
+// Once a refill has failed, the bytes ahead of that slot stay unreadable to
+// the wide read, and a scan that marched on would pay one failed refill per
+// slot it steps to. The scan then reads each slot's own bytes alone until it
+// ends — and it ends at the byte that cannot be read, for every read that
+// covers it fails, the narrow ones as surely as the wide ones. The narrow
+// mode is sticky for that reason: no slot past the unreadable byte is ever
+// served, so no wide refill past it could ever succeed.
 func (sc *scanner) read(off, n int64) ([]byte, error) {
-	if off < sc.cur || off+n > sc.cur+sc.have {
-		want := min(int64(scanWindow), sc.size-off)
+	if off >= sc.cur && off+n <= sc.cur+sc.have {
+		return sc.window[off-sc.cur : off-sc.cur+n], nil
+	}
+	want := n
+	if !sc.narrow {
+		want = min(int64(scanWindow), sc.size-off)
 		if n > want {
 			want = n
 		}
-		if err := readFull(sc.r, sc.window[:want], off); err != nil {
+	}
+	if err := readFull(sc.r, sc.window[:want], off); err != nil {
+		// The refill reached bytes the slot never asked for; only the
+		// slot's own bytes are the scan's to need.
+		if n < want {
+			if err := readFull(sc.r, sc.window[:n], off); err != nil {
+				return nil, fmt.Errorf("format: read slot at %d: %w", off, err)
+			}
+			// The refill found a byte it could not read ahead of this
+			// slot; the bytes past that one are unreadable to every
+			// wide read the rest of the scan could make. Only a read
+			// covering that byte reaches it, and that read fails
+			// however narrow it is, so serving slots one by one fails
+			// at that byte and never past it.
+			sc.narrow = true
+		} else {
 			return nil, fmt.Errorf("format: read slot at %d: %w", off, err)
 		}
-		sc.cur, sc.have = off, want
+		sc.cur, sc.have = off, n
+		return sc.window[:n], nil
 	}
-	return sc.window[off-sc.cur : off-sc.cur+n], nil
+	sc.cur, sc.have = off, want
+	return sc.window[:want], nil
 }
 
 // isStop reports whether err is an outcome the scan stops at rather than

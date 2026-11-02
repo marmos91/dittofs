@@ -776,8 +776,9 @@ func TestScanReturnsReadErrorsAsThemselves(t *testing.T) {
 		// cannot be served from the refill the damaged write was judged
 		// under is the slot whose own header crosses that window's edge,
 		// so the reader fails exactly there. The search dies mid-way:
-		// End at the read's own offset, no range closed, for the bad
-		// slot's range closes only at a recovery the scan can read to.
+		// End at the read's own offset, the bad write's range closed
+		// at the failing read and kept, for every byte of it was read
+		// before the one that failed.
 		var seg []byte
 		seg = AppendSegmentHeader(seg, testSegmentHeader)
 		h, body := scanKindBody(KindWrite)
@@ -1091,4 +1092,171 @@ func TestScanAttachesRecordsAroundAndPastTheWindow(t *testing.T) {
 			t.Errorf("end %d ranges %d sealed %v resynced %v, want a clean walk to the size", got.End, len(got.Ranges), got.Sealed, got.Resynced)
 		}
 	})
+}
+
+// TestScanReadsOnlyTheBytesItNeeds pins the two halves of a refill's
+// honesty: the window may reach ahead a megabyte, but a byte the scan never
+// asked for must not fail it, and a byte it did ask for must fail it at the
+// slot whose own read could not be made — the records before that slot
+// attached, End at it. A device fails every read covering a bad sector, not
+// only the read starting at it, so the reader here fails every read that
+// covers one byte.
+func TestScanReadsOnlyTheBytesItNeeds(t *testing.T) {
+	injected := errors.New("format: an injected read failure")
+
+	// coverFailer serves seg but fails every read covering byte off.
+	coverFailer := func(seg []byte, off int64) readAtCover {
+		return readAtCover{b: seg, off: off, err: injected}
+	}
+
+	t.Run("an unreadable byte in the footer is never read", func(t *testing.T) {
+		// Five records, a verifying marker, then footer bytes holding
+		// one unreadable byte. The scan ends at the marker and reads
+		// no byte past it, so the footer's unreadable byte cannot
+		// fail the walk — the fallback open runs exactly when the
+		// footer is the damaged part.
+		seg, offs := scanSegment(t, testIdentity, scanTestRecords()...)
+		seal := scanSeal(t, &seg, testIdentity, testSegment)
+		seg = append(seg, make([]byte, 256)...)
+		bad := int64(len(seg)) - 100
+
+		got, err := ScanSegment(coverFailer(seg, bad), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error: the scan ends at the marker and never reads the footer", err)
+		}
+		if !got.Sealed || got.End != seal {
+			t.Errorf("sealed %v end %d, want sealed at the marker's own slot %d", got.Sealed, got.End, seal)
+		}
+		if len(got.Records) != 5 || got.Records[4].Header.Offset != offs[4] {
+			t.Errorf("records = %d at %v, want the five before the marker", len(got.Records), got.Records)
+		}
+	})
+
+	t.Run("an unreadable byte loses only its own record", func(t *testing.T) {
+		// One unreadable byte inside the third record's header. The
+		// refill the third record is examined under covers the bad
+		// byte, but the scan needs only that record's own 96 bytes:
+		// they cover the unreadable byte, so the read of them fails,
+		// the record is not attached and End is its own slot — while
+		// the two records before it, every one of their bytes
+		// readable, attach whole.
+		seg, offs := scanSegment(t, testIdentity, scanTestRecords()...)
+		bad := offs[2] + 40
+
+		got, err := ScanSegment(coverFailer(seg, bad), int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error: the record's own bytes do cover it", err)
+		}
+		if errors.Is(err, ErrDamaged) {
+			t.Error("the injected error washed into ErrDamaged, want it kept as itself")
+		}
+		if got.End != offs[2] {
+			t.Errorf("end %d, want the slot whose own bytes cannot be read %d", got.End, offs[2])
+		}
+		if len(got.Records) != 2 || got.Records[1].Header.Offset != offs[1] {
+			t.Errorf("records = %+v, want the two readable ones, every byte of them readable, attached", got.Records)
+		}
+		if len(got.Ranges) != 0 || got.Resynced {
+			t.Errorf("ranges %+v resynced %v, want no range and no resync from a read that failed", got.Ranges, got.Resynced)
+		}
+	})
+
+	t.Run("a readable record past a window refill still attaches", func(t *testing.T) {
+		// Two records per megabyte: the unreadable byte sits inside
+		// the last record's header, whose slot lies inside the first
+		// refill's own reach. Every slot the walk examines before it
+		// needs only bytes the refill serves readably, so the
+		// records before the bad byte attach — a refill that covers
+		// it must fail only when the slot it was made for needs the
+		// unreadable bytes itself.
+		seg, _ := scanSegment(t, testIdentity, scanTestRecords()[:2]...)
+		const unmarks = scanWindow/96 - 2 // readable slots wholly before the bad byte's own slot
+		for i := 0; i < unmarks; i++ {
+			h, body := scanKindBody(KindUnmark)
+			seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		}
+		last := int64(len(seg))
+		h, body := scanKindBody(KindUnmark)
+		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		bad := int64(len(seg)) - 8
+
+		got, err := ScanSegment(coverFailer(seg, bad), int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error: the last record's own bytes cover it", err)
+		}
+		if got.End != last {
+			t.Errorf("end %d, want the last record's own slot %d, whose 96 bytes cover the bad byte", got.End, last)
+		}
+		if len(got.Records) == 0 || got.Records[len(got.Records)-1].Header.Offset >= last {
+			t.Errorf("records = %d, want the ones before the unreadable byte attached", len(got.Records))
+		}
+	})
+
+	t.Run("an unreadable byte in a zero run reaches the caller as itself", func(t *testing.T) {
+		// The reviewers' own scenario: the first record's length
+		// damaged opens a search over more than a whole window of
+		// zeros — the zero tail the search must walk slot by slot to
+		// tell the range's kind — with one record past them. The
+		// zero-telling rides the same window the search reads, so a
+		// byte of the range that no read can reach — the cover failer
+		// fails the refill and its narrow retry alike — must reach
+		// the caller as itself: a byte nobody read can manufacture
+		// neither a bad range nor a zero one, and no resync is
+		// counted on the back of one. A merely transient failure the
+		// narrow retry does serve is by design absorbed, so the
+		// failing reader here is the persistent one.
+		var seg []byte
+		seg = AppendSegmentHeader(seg, testSegmentHeader)
+		h, body := scanKindBody(KindWrite)
+		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		binary.LittleEndian.PutUint64(seg[48 : 48+96][40:48], 4<<20)
+		seg = append(seg, make([]byte, scanWindow+64)...) // zeros the search walks
+		h, body = scanKindBody(KindUnmark)
+		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		size := int64(len(seg))
+
+		// The bad byte sits in the zero run past the first window's
+		// reach, so the first read to cover it is the 96-byte
+		// examination of the slot 88 bytes below it — the refill that
+		// examination asks for and its narrow retry both reach it,
+		// so both fail and the error is that slot's own. The range
+		// before the failing slot closes and is kept — every byte of
+		// it was read — as bad, for the damaged record's own bytes at
+		// its head are not zeros.
+		bad := int64(SegmentHeaderSize + scanWindow + 64)
+		failSlot := bad - 88 // the slot whose own examination first covers the bad byte
+		want := ScanRange{Off: SegmentHeaderSize, End: failSlot, Kind: RangeBad}
+
+		got, err := ScanSegment(coverFailer(seg, bad), size, testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error: bytes the range's kind is told from must be read", err)
+		}
+		if errors.Is(err, ErrDamaged) {
+			t.Error("the injected error washed into ErrDamaged, want it kept as itself")
+		}
+		if got.Resynced {
+			t.Error("a resync counted off the back of a failed read, want none")
+		}
+		if len(got.Records) != 0 {
+			t.Errorf("records = %d, want none attached past a search whose read failed", len(got.Records))
+		}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want || got.End != failSlot {
+			t.Errorf("ranges = %+v end %d, want the one closed at the failing slot %d, %+v", got.Ranges, got.End, failSlot, want)
+		}
+	})
+}
+
+// readAtCover is an io.ReaderAt that serves seg but fails every read
+// covering one byte — as a device fails every read over a bad sector.
+type readAtCover struct {
+	b   []byte
+	off int64
+	err error
+}
+
+func (r readAtCover) ReadAt(p []byte, off int64) (int, error) {
+	if r.off >= off && r.off < off+int64(len(p)) {
+		return 0, r.err
+	}
+	return copy(p, r.b[off:]), nil
 }
