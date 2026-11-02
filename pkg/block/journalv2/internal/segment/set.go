@@ -61,7 +61,7 @@ var (
 	ErrDuplicateID = errors.New("segment: id already owned")
 	// ErrBadSize is the refusal of a size that accounts no storage or more
 	// than the segment holds: a shrink that grows or empties, a record of
-	// no bytes, a recycle of a sealed size below the cap.
+	// no bytes, a recycle of a seal that never said full, whatever its size.
 	ErrBadSize = errors.New("segment: bad size")
 	// ErrBadID is the refusal of the id that names no segment: the ledger
 	// never reserves or moves storage under it, because no segment file can
@@ -74,9 +74,9 @@ var (
 
 // Counters are the ledger's counters, read without a walk: the writing side
 // places a call on its own path for every counter it needs, and none may
-// walk the set to answer. DoubleRetires counts every retire or recycle that
-// found its id already gone from the set — two reclamation paths selecting
-// one segment, the race the idempotence rule counts.
+// walk the set to answer. DoubleRetires counts every retire, recycle or spare
+// drop that found its id already gone — two reclamation paths selecting one
+// segment or one spare, the race the idempotence rule counts.
 type Counters struct {
 	// UsedBytes is the accounted footprint: every segment of the set at its
 	// accounted size, plus every spare at the segment cap. It is raised
@@ -94,9 +94,10 @@ type Counters struct {
 	// the pool is not built yet, so the classes have nothing to hand over.
 	// Withdrawn when the pool lands and reports the content class.
 	Spares int64
-	// DoubleRetires counts retires and recycles that found the segment out
-	// of the set. A retire that instead finds an Active segment is refused
-	// without a count: that is a different bug (see Retire).
+	// DoubleRetires counts retires, recycles and spare drops that found the
+	// segment or spare out of the set. A retire that instead finds an Active
+	// segment is refused without a count: that is a different bug (see
+	// Retire).
 	DoubleRetires uint64
 }
 
