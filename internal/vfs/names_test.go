@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -385,16 +386,10 @@ func TestARemovalJoinsACreateAdmittedBeforeIt(t *testing.T) {
 		_, err := n.Create(context.Background(), n.admin, n.fs.Root, []byte("held"), vfs.CreateArgs{Kind: vfs.CreateRegular})
 		created <- err
 	}()
-	// Wait, a second at most, for the create to be counted against the
-	// share; one that is not is caught by the join below.
-	for end, counted := time.Now().Add(time.Second), 0; counted == 0 && time.Now().Before(end); {
-		time.Sleep(time.Millisecond)
-		n.mu.Lock()
-		if j := n.joins[n.share]; j != nil {
-			counted = j.n
-		}
-		n.mu.Unlock()
-	}
+	// The create holds the root's admission lock only once it is admitted,
+	// and then waits at the accept lock held above: the mark below comes
+	// after its admission, whatever the scheduling.
+	n.admitted(t, root, created)
 	n.must(t, n.cp.DeleteShare(ctx, n.share, entity.SnapshotsRefuse))
 	joined := make(chan error)
 	go func() { joined <- n.JoinShare(context.Background(), n.share) }()
@@ -415,6 +410,28 @@ func TestARemovalJoinsACreateAdmittedBeforeIt(t *testing.T) {
 	}
 	if _, _, err := n.fs.Store.Namespace().Lookup(ctx, n.fs.Admin, n.fs.Root, []byte("late")); err == nil {
 		t.Error("the create refused after the mark committed its name")
+	}
+}
+
+// admitted returns once a call holds the admission lock of k, as a change
+// does once it is admitted, and fails the test if the call answers on done
+// first. It probes the lock without waiting on it.
+func (n *names) admitted(t *testing.T, k lockorder.Key, done <-chan error) {
+	t.Helper()
+	now, cancel := context.WithCancel(context.Background())
+	cancel()
+	for {
+		release, err := n.locks.Take(now, lockorder.Set{Admit: []lockorder.Key{k}})
+		if err != nil {
+			return
+		}
+		release()
+		select {
+		case err := <-done:
+			t.Fatalf("the call answered %v before it was admitted", err)
+		default:
+			runtime.Gosched()
+		}
 	}
 }
 
