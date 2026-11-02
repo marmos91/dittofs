@@ -1938,7 +1938,7 @@ for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3
 and only once repack has carried those records forward. **A failed append ends
 its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole until an
 open ends or seals it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), even if its sync
-fails at open, unless the open fails before emptying it; its emptying reads only records synced before this open, whose clean pages the failed sync did not touch. One whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
+fails at open, unless the open fails before it is unlinked; its emptying reads only records synced before this open, whose clean pages the failed sync did not touch. One whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things,
 unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)):
