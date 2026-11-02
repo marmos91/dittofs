@@ -614,3 +614,73 @@ func testShareTags(t *testing.T, kvo Opener) {
 		t.Errorf("new share's tag %d does not follow the removed one's %d", after[c.ID], before[b.ID])
 	}
 }
+
+// A project is made on an empty directory by a privileged caller alone, a
+// retry on its root answers it again, it does not nest, and the files made
+// below it are charged to it, its root included. Making it folds the root's
+// deltas, as any rewrite of a directory's record does, so its Get scans none.
+func testProjects(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files, c := f.s.Files(), f.s.Capacity()
+	alice := f.member("alice", entity.Principal{})
+	tree, _ := f.create(f.admin, f.root, "tree", directory(0o777))
+	full, _ := f.create(f.admin, f.root, "full", directory(0o777))
+	_, file := f.create(alice, full, "a", regular(0o644))
+	f.create(alice, tree, "tmp", regular(0o644))
+	_, err := f.s.Namespace().Unlink(ctx, alice, tree, []byte("tmp"))
+	must(t, err)
+
+	if _, err := files.SetProject(ctx, alice, tree); !isCode(err, merrs.ErrPrivilegeRequired) {
+		t.Errorf("an unprivileged SetProject: %v", err)
+	}
+	if _, err := files.SetProject(ctx, f.admin, full); !isCode(err, merrs.ErrNotEmpty) {
+		t.Errorf("SetProject on a directory holding a file: %v", err)
+	}
+	if _, err := files.SetProject(ctx, f.admin, entity.NewHandle(f.share.ID, file.ID)); !invalid(err) {
+		t.Errorf("SetProject on a regular file: %v", err)
+	}
+	p, err := files.SetProject(ctx, f.admin, tree)
+	must(t, err)
+	f.c.Take()
+	_, err = files.Get(ctx, f.admin, tree)
+	must(t, err)
+	if n := f.c.Take(); n.Scanned != 0 {
+		t.Errorf("a new project's root's Get scanned %d deltas", n.Scanned)
+	}
+	if again, err := files.SetProject(ctx, f.admin, tree); err != nil || again != p || p == 0 {
+		t.Errorf("SetProject on its root again: %d, %v; want %d", again, err, p)
+	}
+	sub, _ := f.create(alice, tree, "sub", directory(0o777))
+	_, made := f.create(alice, sub, "b", regular(0o644))
+	if made.Project != p {
+		t.Errorf("a file below the root is in project %d, want %d", made.Project, p)
+	}
+	if _, err := files.SetProject(ctx, f.admin, sub); !invalid(err) {
+		t.Errorf("a project nested in another: %v", err)
+	}
+	if u, err := c.ProjectUsage(ctx, f.share.ID, p); err != nil || u.Files != 3 {
+		t.Errorf("the project's usage: %+v, %v; want its root, sub and b", u, err)
+	}
+	if u, err := c.ProjectUsage(ctx, f.share.ID, p+1); err != nil || u != (entity.Usage{}) {
+		t.Errorf("another project's usage: %+v, %v", u, err)
+	}
+	// The root renames in place and moves to a directory in no project; a
+	// file below it, and the root, cannot move into another project.
+	ns := f.s.Namespace()
+	out, _ := f.create(f.admin, f.root, "out", directory(0o777))
+	other, _ := f.create(f.admin, f.root, "other", directory(0o777))
+	_, err = files.SetProject(ctx, f.admin, other)
+	must(t, err)
+	if _, err := ns.Rename(ctx, f.admin, f.root, []byte("tree"), f.root, []byte("renamed")); err != nil {
+		t.Errorf("a project's root renamed in place: %v", err)
+	}
+	if _, err := ns.Rename(ctx, f.admin, f.root, []byte("renamed"), out, []byte("tree")); err != nil {
+		t.Errorf("a project's root moved outside every project: %v", err)
+	}
+	if _, err := ns.Rename(ctx, f.admin, out, []byte("tree"), other, []byte("tree")); !errors.Is(err, entity.ErrCrossProject) {
+		t.Errorf("a project's root moved into another project: %v", err)
+	}
+	if _, err := ns.Rename(ctx, f.admin, sub, []byte("b"), out, []byte("b")); !errors.Is(err, entity.ErrCrossProject) {
+		t.Errorf("a file moved out of its project: %v", err)
+	}
+}

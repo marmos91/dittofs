@@ -331,6 +331,13 @@ func (c Capacity) PrincipalUsage(ctx context.Context, share entity.ShareID, p en
 	return d.Principals[p], err
 }
 
+// ProjectUsage is one project's usage in a share: the files charged to the
+// tree it roots, wherever they now are.
+func (c Capacity) ProjectUsage(ctx context.Context, share entity.ShareID, project uint64) (entity.Usage, error) {
+	d, err := c.s.usageOf(ctx, share)
+	return d.Projects[project], err
+}
+
 // usageOf sums every total and unfolded delta of a share.
 //
 // ponytail: a principal's read sums every principal's totals with the

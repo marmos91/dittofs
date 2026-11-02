@@ -48,6 +48,7 @@ func Run(t *testing.T, open Opener) {
 		{"GrantVersions", testGrantVersions},
 		{"Quotas", testQuotas},
 		{"QuotaSoftChange", testQuotaSoftChange},
+		{"Projects", testProjects},
 		{"ModeBitRights", testModeBitRights},
 		{"ExportPolicy", testExportPolicy},
 		{"NetgroupsAndSettings", testNetgroupsAndSettings},

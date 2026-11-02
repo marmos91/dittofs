@@ -111,7 +111,10 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 	if err := authorize(tx, id, dd, want|entity.Execute); err != nil {
 		return Orphaned{}, err
 	}
-	if child.Project != dd.Project {
+	// A file stays in its project, but a project's root, a directory in a
+	// project its parent is not in, may move to any directory in none.
+	root := child.Project != sd.Project
+	if child.Project != dd.Project && !(root && dd.Project == 0) {
 		return Orphaned{}, entity.ErrCrossProject
 	}
 	moved := child.IsDir() && sd.ID != dd.ID
