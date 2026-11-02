@@ -131,17 +131,30 @@ type DescriptorBudget struct {
 	nextID     uint64
 	order      []uint64 // registration order, which the round-robin walks
 
-	// last is the reclaimer the last successful Reclaim stopped asking after,
-	// and armed reports whether there was one. The next Reclaim resumes after
-	// it, resolved against the registry as it stands then: an index copied
-	// from an older order would shift with every unregister.
-	last  uint64
-	armed bool
+	// last is the reclaimer the last successful Reclaim stopped asking after.
+	// Ids start at 1, so last == 0 means none has succeeded and the next
+	// Reclaim starts at the head. The next Reclaim resolves last against the
+	// registry as it stands then: an index copied from an older order would
+	// shift with every unregister.
+	last uint64
 }
 
 // NewDescriptorBudget returns a budget of limit open descriptors. A limit of
-// zero means a quarter of the process's open-file limit; a negative one is
-// refused by the first journal opened with it, with ErrInvalidSetting.
+// zero means a quarter of the process's open-file limit, clamped to
+// [1, 65536]; a negative one is refused by the first journal opened with it,
+// with ErrInvalidSetting.
+//
+// decision: the default is capped at 65536 even on a host whose open-file
+// limit would give a quarter far above it, because every segment the journals
+// map each holds costs kernel memory — a page cache entry and a file — and
+// 65536 of them is already more address-space and reclaim churn than the
+// round-robin reclaimer walks well. Raise the cap when a measured reopen
+// rate under the mixed read soak shows the cap is being hit — that is the
+// cost the bound trades against, not just the process's own open-file room.
+//
+// decision: the zero value of DescriptorBudget is not usable — its limit is
+// zero, so TryTake never succeeds — and callers must build the budget here,
+// which also makes the reclaimer registry.
 func NewDescriptorBudget(limit int) *DescriptorBudget {
 	if limit == 0 {
 		limit = defaultDescriptorLimit()
@@ -149,6 +162,7 @@ func NewDescriptorBudget(limit int) *DescriptorBudget {
 	return &DescriptorBudget{
 		limit:      limit,
 		reclaimers: map[uint64]func() bool{},
+		nextID:     1,
 	}
 }
 
@@ -208,9 +222,6 @@ func (b *DescriptorBudget) Give() {
 func (b *DescriptorBudget) Register(reclaim func() bool) (unregister func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.reclaimers == nil {
-		b.reclaimers = map[uint64]func() bool{}
-	}
 	id := b.nextID
 	b.nextID++
 	b.reclaimers[id] = reclaim
@@ -223,12 +234,10 @@ func (b *DescriptorBudget) Register(reclaim func() bool) (unregister func()) {
 		b.order = slices.DeleteFunc(b.order, func(o uint64) bool { return o == id })
 		// The cursor names the reclaimer that last succeeded, not a position,
 		// so it needs no adjustment here: the next Reclaim resolves it against
-		// this order as it stands now. Unregistering that very reclaimer
-		// disarms the resume point, and the next walk starts at the head,
-		// which is where registration order would have it.
-		if b.armed && b.last == id {
-			b.armed = false
-		}
+		// this order as it stands now. Unregistering that very reclaimer loses
+		// the resume point — Reclaim's lookup finds no such id — and the next
+		// walk starts at the head, which is where registration order would
+		// have it.
 	}
 }
 
@@ -250,9 +259,9 @@ func (b *DescriptorBudget) Reclaim() bool {
 	}
 	// start is the position the walk begins at: after the reclaimer that last
 	// succeeded, wherever it now stands, or the head when there was none or
-	// it has since unregistered.
+	// it has since unregistered — last == 0 means none.
 	start := 0
-	if b.armed {
+	if b.last != 0 {
 		for i, id := range b.order {
 			if id == b.last {
 				start = (i + 1) % len(b.order)
@@ -281,7 +290,6 @@ func (b *DescriptorBudget) Reclaim() bool {
 		if reclaim() {
 			b.mu.Lock()
 			b.last = id
-			b.armed = true
 			b.mu.Unlock()
 			return true
 		}
@@ -300,13 +308,14 @@ const fallbackDescriptorLimit = 1024
 
 // defaultDescriptorLimit returns the default bound: a quarter of the
 // process's open-file limit where the platform reports one, clamped to
-// [1, 65536]; the fallback where it does not.
+// [1, 65536]; the fallback where it does not. The clamp runs on the uint64
+// the limit was read as, so the conversion to int cannot wrap on a platform
+// whose int is narrower than the limit it reports.
 func defaultDescriptorLimit() int {
 	cur, known := platformOpenFileLimit()
 	if !known {
 		return fallbackDescriptorLimit
 	}
 
-	limit := int(cur / 4)
-	return min(max(limit, 1), 1<<16)
+	return int(min(max(cur/4, 1), 1<<16))
 }

@@ -134,9 +134,10 @@ func (e cacheEnv) read(t *testing.T, id core.SegmentID) {
 // TestDescriptorsSharedBudgetBindsBothCaches checks the bound is per process,
 // not per journal: two caches over two directories draw on one budget, their
 // open descriptors together never pass it, and a read of every segment of
-// both still serves its pattern. A per-journal bound would let the two hold
-// the limit each; a cache that never yielded to the other's reclaim would
-// wedge and the reads would fail.
+// both still serves its pattern. The reads interleave the two caches, so each
+// usually holds an idle descriptor of its own to yield —
+// TestDescriptorsAIdleJournalYieldsToAnother is the check that a journal
+// holding every slot idle still yields to another journal's read.
 func TestDescriptorsSharedBudgetBindsBothCaches(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1346,27 +1347,30 @@ func TestDescriptorsCloseDuringShutdownClosesOnce(t *testing.T) {
 	}
 }
 
-// TestDescriptorsAMissingFileEntryIsForgettable checks the entry an open of a
-// missing file leaves: the acquire answers ErrSegmentGone, and the map entry
-// it created is dropped by a Forget, so the entry map stays bounded by the live
-// segments. An entry left not gone would survive every Forget, and a lookup of
-// one stale id would leak it for the cache's lifetime.
-func TestDescriptorsAMissingFileEntryIsForgettable(t *testing.T) {
+// TestDescriptorsAStaleAcquireOfAMissingFileLeavesNoTrace checks the entry an
+// open of a missing file leaves: the acquire answers ErrSegmentGone, and the
+// entry it took for the open drops from the map when the open's reference
+// releases — no Forget is needed, so the map stays bounded by the live
+// segments however many stale ids are looked up, and each later acquire fails
+// the same way without touching the map again.
+func TestDescriptorsAStaleAcquireOfAMissingFileLeavesNoTrace(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
 	defer e.c.Shutdown()
 
-	if _, err := e.c.Acquire(7); !errors.Is(err, segment.ErrSegmentGone) {
-		t.Fatalf("acquiring a segment with no file = %v, want ErrSegmentGone", err)
+	for i := 0; i < 3; i++ {
+		if _, err := e.c.Acquire(7); !errors.Is(err, segment.ErrSegmentGone) {
+			t.Fatalf("acquiring a segment with no file = %v, want ErrSegmentGone", err)
+		}
+		if got := segment.EntryCount(e.c); got != 0 {
+			t.Fatalf("the cache holds %d entries after a failed open, want 0: the entry would leak the map one stale id at a time", got)
+		}
 	}
-	if got := segment.EntryCount(e.c); got != 1 {
-		t.Fatalf("the cache holds %d entries after the failed open, want 1", got)
-	}
-	e.c.Forget(7)
+	e.c.Forget(7) // a no-op: there is nothing left to forget
 	if got := segment.EntryCount(e.c); got != 0 {
-		t.Fatalf("the cache holds %d entries after Forget of the missing segment, want 0: the entry would leak the map one stale id at a time", got)
+		t.Fatalf("the cache holds %d entries after Forget, want 0", got)
 	}
 }
 
@@ -1462,5 +1466,220 @@ func TestDescriptorsShutdownUnregistersFromTheBudget(t *testing.T) {
 	}
 	if e.budget.Reclaim() {
 		t.Fatal("Reclaim with no reclaimer returned true, want false")
+	}
+}
+
+// TestDescriptorsAIdleJournalYieldsToAnother checks the cross-journal half of
+// the bound: one journal holds every slot of the shared budget in idle
+// descriptors — nothing of its own pinned, nothing dirty — and a second
+// journal's first read still succeeds, because asking the budget reclaims an
+// idle descriptor from the first journal rather than refusing. A takeSlot
+// that only asked its own cache would answer ErrNoDescriptor and starve every
+// other journal of the process for as long as one holds its descriptors idle.
+func TestDescriptorsAIdleJournalYieldsToAnother(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seamA, err := journalv2test.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the first seam could not be made: %v", err)
+	}
+	seamB, err := journalv2test.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the second seam could not be made: %v", err)
+	}
+	budget := core.NewDescriptorBudget(4)
+	a := cacheEnv{budget: budget, c: segment.NewDescriptors(seamA.FS(), name, budget), seam: seamA, stocked: map[core.SegmentID]int{}}
+	b := cacheEnv{budget: budget, c: segment.NewDescriptors(seamB.FS(), name, budget), seam: seamB, stocked: map[core.SegmentID]int{}}
+	a.stock(t, 4)
+	b.stock(t, 4)
+	defer a.c.Shutdown()
+	defer b.c.Shutdown()
+
+	// Journal A fills the whole budget with idle descriptors: four reads of
+	// four distinct segments, each released — nothing pinned, nothing dirty.
+	for i := 1; i <= 4; i++ {
+		a.read(t, core.SegmentID(i))
+	}
+	if got := budget.Open(); got != 4 {
+		t.Fatalf("the budget holds %d descriptors after journal A's reads, want 4", got)
+	}
+	aOpen := a.c.Stats().Open
+	if aOpen != 4 {
+		t.Fatalf("journal A holds %d descriptors, want 4", aOpen)
+	}
+
+	// Journal B's first read must not be refused: it takes a slot the budget
+	// reclaims from journal A's idle descriptors, so A's held count drops.
+	b.read(t, 1)
+	if got := budget.Open(); got > 4 {
+		t.Fatalf("the budget holds %d descriptors after journal B's read, want at most 4", got)
+	}
+	after := a.c.Stats().Open
+	if after != aOpen-1 {
+		t.Fatalf("journal A holds %d descriptors after yielding one, want %d: an idle journal must give a descriptor to another journal's read", after, aOpen-1)
+	}
+
+	// The yielded descriptor is A's least recently used idle one, segment 1,
+	// and re-reading it costs a reopen rather than failing.
+	if got := a.openCount(1); got != 0 {
+		t.Fatalf("segment 1 of journal A shows %d open descriptors, want 0: it is the descriptor the reclaim took", got)
+	}
+	a.read(t, 1)
+}
+
+// TestDescriptorsAStaleAcquireAfterForgetLeavesNoTrace checks the entry a
+// retire-and-forget segment's stray acquires leave: a reader that resolved a
+// segment before its retirement re-acquires it after Close, the unlink and
+// Forget have all run — the only outcome is ErrSegmentGone, and the entry map
+// ends where it started. An entry left behind per stray reader would grow the
+// map permanently, one tombstone per read that raced a retirement, with no
+// further Forget coming to drop it.
+func TestDescriptorsAStaleAcquireAfterForgetLeavesNoTrace(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+	defer e.c.Shutdown()
+
+	e.read(t, 1)
+	if err := e.c.Close(1); err != nil {
+		t.Fatalf("Close(1) = %v, want nil", err)
+	}
+	if err := e.seam.Remove(name(1)); err != nil {
+		t.Fatalf("removing segment 1's file failed: %v", err)
+	}
+	e.c.Forget(1)
+	if got := segment.EntryCount(e.c); got != 0 {
+		t.Fatalf("the cache holds %d entries after the Forget, want 0", got)
+	}
+
+	// Stray acquires of the retired id: each answers gone, and none may
+	// leave an entry behind — retirement makes its one Forget call.
+	for i := 0; i < 3; i++ {
+		if _, err := e.c.Acquire(1); !errors.Is(err, segment.ErrSegmentGone) {
+			t.Fatalf("a stray acquire of the retired segment = %v, want ErrSegmentGone", err)
+		}
+		if got := segment.EntryCount(e.c); got != 0 {
+			t.Fatalf("the cache holds %d entries after a stray acquire, want 0: each stray reader must not grow the map", got)
+		}
+	}
+	if s := e.c.Stats(); s.Open != 0 {
+		t.Fatalf("Stats().Open = %d, want 0", s.Open)
+	}
+}
+
+// TestDescriptorsShutdownDoesNotPinItsIdleDescriptors checks that a cache
+// whose Shutdown is waiting on one slow reader does not hold the process's
+// other journals hostage: its idle descriptors remain reclaimable while it
+// waits, so another journal on the same budget still reads. Shutdown
+// takes its files only once the wait ends — a reclaim that detached one
+// first is skipped — so no descriptor is closed or given twice, however the
+// two interleave.
+func TestDescriptorsShutdownDoesNotPinItsIdleDescriptors(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seamA, err := journalv2test.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the first seam could not be made: %v", err)
+	}
+	seamB, err := journalv2test.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the second seam could not be made: %v", err)
+	}
+	budget := core.NewDescriptorBudget(4)
+	a := cacheEnv{budget: budget, c: segment.NewDescriptors(seamA.FS(), name, budget), seam: seamA, stocked: map[core.SegmentID]int{}}
+	b := cacheEnv{budget: budget, c: segment.NewDescriptors(seamB.FS(), name, budget), seam: seamB, stocked: map[core.SegmentID]int{}}
+	a.stock(t, 2)
+	b.stock(t, 4)
+
+	// Journal A fills the budget: one reference it holds, one idle.
+	held, err := a.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring journal A's segment 1 failed: %v", err)
+	}
+	a.read(t, 2)
+	if got := budget.Open(); got != 2 {
+		t.Fatalf("the budget holds %d descriptors, want 2", got)
+	}
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- a.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		_, err := a.c.Acquire(9)
+		if errors.Is(err, segment.ErrCacheClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("journal A's Shutdown never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Shutdown is waiting on the held reference. Journal B takes references
+	// until the budget is full, so its next acquire needs a slot only
+	// another journal can yield — and the one shutting down holds one idle.
+	// The acquire must succeed by reclaiming A's idle descriptor, not be
+	// refused: a journal that is shutting down pins only the descriptors its
+	// readers still hold, nothing a close of its own must wait for.
+	var heldB []segment.Ref
+	id := core.SegmentID(1)
+	for budget.Open() < 4 {
+		r, err := b.c.Acquire(id)
+		if err != nil {
+			t.Fatalf("filling the budget with journal B's references failed: %v", err)
+		}
+		heldB = append(heldB, r)
+		id++
+	}
+	if int(id) > 4 {
+		t.Fatalf("journal B took %d references before the budget filled, want 2: journal A holds the other two slots", len(heldB))
+	}
+	next, err := b.c.Acquire(id)
+	if err != nil {
+		t.Fatalf("journal B's acquire past the full budget = %v, want it to reclaim the shutting-down journal's idle descriptor", err)
+	}
+	if got := a.openCount(2); got != 0 {
+		t.Fatalf("journal A's segment 2 shows %d open descriptors, want 0: it is the idle descriptor the reclaim took", got)
+	}
+
+	select {
+	case <-shutdown:
+		t.Fatal("journal A's Shutdown returned while its reader still held its reference, want it to wait")
+	default:
+	}
+
+	// The held references end the wait; A's Shutdown closes what it still
+	// holds — its reclaimed-away idle descriptor is not one of them — and
+	// the budget's count and the seam's show every descriptor closed once.
+	next.Release()
+	for _, r := range heldB {
+		r.Release()
+	}
+	held.Release()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("journal A's Shutdown after the release = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("journal A's Shutdown did not return after the release")
+	}
+	if s := a.c.Stats(); s.Open != 0 {
+		t.Fatalf("journal A holds %d descriptors after its Shutdown, want 0", s.Open)
+	}
+
+	// Journal B still holds its three idle descriptors: its Shutdown is where
+	// they close, and settling both journals is what empties the budget — the
+	// shutting-down wait never left A's closed behind either.
+	if err := b.c.Shutdown(); err != nil {
+		t.Fatalf("journal B's Shutdown after the settle = %v, want nil", err)
+	}
+	for _, e := range []cacheEnv{a, b} {
+		if s := e.c.Stats(); s.Open != 0 {
+			t.Fatalf("a journal holds %d descriptors after both Shutdowns, want 0", s.Open)
+		}
+	}
+	if got := budget.Open(); got != 0 {
+		t.Fatalf("the budget holds %d descriptors after both journals settled, want 0", got)
 	}
 }

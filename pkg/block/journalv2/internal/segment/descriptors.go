@@ -76,13 +76,36 @@ type Descriptors struct {
 // descEntry is one segment's descriptor state: the file, nil when the
 // descriptor is closed; the references outstanding on it; and the drain that
 // makes Close(id) wait for them.
+// descEntry is one segment's descriptor state: the file, nil when the
+// descriptor is closed; the references outstanding on it; and the drain that
+// makes Close(id) wait for them.
+//
+// decision: every field but written and synced is guarded by the owning
+// cache's leaf mutex, the one the Descriptors marker names — including the
+// ones a reader of the entry reaches through its Ref, which are first
+// survivor-checked under the same mutex (refAfterOpen). written and synced
+// are lock-free atomics by design: a write and a sync through the same
+// descriptor run on different references with no lock held, and their
+// ordering carries the covered-write pin, so they are never written under
+// the mutex; their reads (dirty) happen under it, on the last release or in
+// the reclaimer's scan, where no write through the entry can still be in
+// flight to reorder against.
 type descEntry struct {
-	file     storage.File  // nil when the descriptor is closed
-	refs     int           // references held; an in-progress open counts as one
-	opening  *openCall     // non-nil while an open is in flight
-	everOpen bool          // opened by this cache before, so the next miss is a reopen
-	gone     bool          // Close(id) started: no new reference, never reopened
-	drained  chan struct{} // set by Close(id) while references remain; closed by the last Release
+	id       core.SegmentID
+	file     storage.File // nil when the descriptor is closed
+	refs     int          // references held; an in-progress open counts as one
+	opening  *openCall    // non-nil while an open is in flight
+	everOpen bool         // opened by this cache before, so the next miss is a reopen
+	gone     bool         // Close(id) started: no new reference, never reopened
+
+	// absent is set when an open failed not-exist: the file is proven gone,
+	// so the entry drops from the map once its last reference releases — a
+	// later Acquire would fail the same way, so nothing it could reach needs
+	// a tombstone. A Close tombstone is the opposite: its file exists until
+	// the caller unlinks it, so it stays for the Forget that ends the
+	// retirement.
+	absent  bool
+	drained chan struct{} // set by Close(id) while references remain; closed by the last Release
 
 	// idle is the entry's element in the cache's idle list when the
 	// descriptor is open and clean: a referenced entry stays linked, and the
@@ -98,6 +121,12 @@ type descEntry struct {
 // the outcome, written once by the opening Acquire before the channel closes.
 // It is per open, not per entry, so a failed open's waiters keep its error
 // even after a newer Acquire's miss has started its own.
+//
+// decision: err is written under the cache's mutex and published by the
+// close of done, which the waiters synchronise on; a waiter reads only its
+// own open's err, after <-done, never another's state. The mutex alone is
+// not the publish: a waiter that had not yet parked when the open finished
+// arrives at a closed done channel and still needs the err the close carries.
 type openCall struct {
 	done chan struct{} // closed once err is set
 	err  error         // the open's outcome: nil when it yields a descriptor
@@ -190,7 +219,7 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	// A miss: make the entry, if it is absent, and hold the reference the
 	// in-flight open runs under.
 	if e == nil {
-		e = &descEntry{}
+		e = &descEntry{id: id}
 		c.entries[id] = e
 	}
 	e.refs++
@@ -217,9 +246,11 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 		op.err = err
 		if notExist {
 			// The file is gone, which no retry undoes: an id is never reused,
-			// so the entry is marked gone for a following Forget to drop,
-			// keeping the map bounded by the live segments.
+			// so new acquires must be refused from here on — the entry is
+			// marked gone — and its last reference's drop deletes it, because
+			// nothing it could reach needs a tombstone.
 			e.gone = true
+			e.absent = true
 		}
 		if e.opening == op {
 			e.opening = nil
@@ -315,6 +346,12 @@ func (c *Descriptors) dropRefLocked(e *descEntry) {
 		if c.shut && c.totalRefs == 0 && c.shutDone != nil {
 			close(c.shutDone)
 		}
+		if e.absent {
+			// The file was proven gone while it was being opened, and no
+			// reference is left that parked on that open: the entry drops, so
+			// a stray acquire of a retired segment leaves no trace in the map.
+			delete(c.entries, e.id)
+		}
 	}
 }
 
@@ -400,7 +437,10 @@ func (r Ref) Release() {
 	// descriptor evictable if it is still cached, open and clean. A dirty one
 	// is unlinked, so the reclaimer cannot reach it while its writes are
 	// uncovered, and a draining entry is left unlinked: Close, which is
-	// waiting on the drain signal, closes the descriptor itself.
+	// waiting on the drain signal, closes the descriptor itself. A cache
+	// whose Shutdown has begun relinks too: its wait is not a reason to
+	// hold the descriptor out of the reclaimer's reach, and Shutdown takes
+	// only the files still attached once the wait ends.
 	draining := e.drained != nil
 	if draining {
 		close(e.drained)
@@ -409,7 +449,7 @@ func (r Ref) Release() {
 	if c.shut && c.totalRefs == 0 && c.shutDone != nil {
 		close(c.shutDone)
 	}
-	if e.file != nil && !draining && !c.shut {
+	if e.file != nil && !draining {
 		if e.dirty() {
 			c.idleRemove(e)
 		} else {
@@ -454,18 +494,14 @@ func (c *Descriptors) idleRemove(e *descEntry) {
 func (c *Descriptors) reclaimOne() bool {
 	c.mu.Lock()
 
-	// A cache whose Shutdown has begun holds its descriptors for Shutdown to
-	// close: a reclaim here would close one, give its slot back and let
-	// Shutdown give it again, driving the count below zero. The guard is
-	// deliberate redundancy rather than the only defence: Shutdown empties
-	// the idle list under this same mutex before it waits, so a scan that
-	// reached past the guard would find nothing — but the reclaimer must
-	// never win a file Shutdown is about to take, and the cheap check keeps
-	// that from depending on the state of the list.
-	if c.shut {
-		c.mu.Unlock()
-		return false
-	}
+	// decision: a cache whose Shutdown has begun still yields its idle
+	// descriptors, because a shutdown waiting on one slow reader is a
+	// journal going quiet, not one the rest of the process may starve: the
+	// descriptors its readers still hold are pinned by their references,
+	// exactly like any journal's. Shutdown takes only the files still
+	// attached after its wait, so a reclaim that detached one first is
+	// skipped and never closed or given twice — this scan need not, and must
+	// not, refuse for it.
 
 	// The least recently used idle entry: the list's back. Referenced and
 	// dirty entries are skipped — a referenced one stays linked, so the
@@ -507,6 +543,12 @@ func (c *Descriptors) reclaimOne() bool {
 //
 // A second Close of the same segment returns nil, and so does a Close of a
 // segment whose descriptor the cache does not hold.
+//
+// Close must not be called while the caller itself holds a Ref on the
+// segment: the drain waits for the last reference to drop, so such a caller
+// waits for itself, forever. The caller releases its own references before
+// it calls Close — the close path is: last use, Release, Close, then free
+// the storage.
 //
 // decision: a per-segment reference drain that rejects new readers once it
 // starts, in place of RFC 1 §8.5's shared/exclusive guard, which §8.5
@@ -597,7 +639,7 @@ func (c *Descriptors) Forget(id core.SegmentID) {
 	defer c.mu.Unlock()
 
 	e, ok := c.entries[id]
-	if !ok || e.gone && e.refs == 0 && e.file == nil {
+	if ok && e.gone && e.refs == 0 && e.file == nil {
 		delete(c.entries, id)
 	}
 }
@@ -620,11 +662,12 @@ func (c *Descriptors) Shutdown() error {
 	}
 	c.shut = true
 
-	// No entry stays in the idle list, so the reclaimer reaches none of them:
-	// the files are Shutdown's to close, not a reclaim's.
-	for _, e := range c.entries {
-		c.idleRemove(e)
-	}
+	// decision: the idle list stays as it is while the wait runs, so a
+	// reclaim the budget makes meanwhile — another journal asking this one
+	// it is shutting down — still finds this journal's idle descriptors
+	// yieldable. Pinning them for the length of the wait would refuse every
+	// other journal of the process a slot until this one's last reader
+	// returned.
 
 	// References remain: wait for them with no mutex held, signalled by the
 	// Release that brings the cache's total to zero. None is held: the wait
@@ -640,9 +683,10 @@ func (c *Descriptors) Shutdown() error {
 	// The drain is done: no reader can still be inside a call. The files are
 	// taken now — only those still attached, because a Close that drained
 	// while Shutdown waited took its own segment's file and gave its slot
-	// back — and closed outside the mutex. Whichever of the two reached a
-	// file first under the mutex owns it: taking only the attached ones is
-	// what keeps every file closed, and every slot given, exactly once.
+	// back, and so did a reclaim that evicted an idle one — and closed
+	// outside the mutex. Whichever holder reached a file first under the
+	// mutex owns it: taking only the attached ones is what keeps every file
+	// closed, and every slot given, exactly once.
 	var errs []error
 	var files []storage.File
 	for _, e := range c.entries {
