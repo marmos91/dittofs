@@ -40,20 +40,33 @@ const (
 )
 
 // decode turns the fuzz's input into a sequence of ops over ids 1..8, tags
-// 1..3 and sizes drawn from the input and clamped to the cap: a sequence of
-// the ledger's calls, with fields chosen from the input but shapes not
-// constrained by the decoder, so any interleaving of states and byte counts
-// can arise.
+// 1..3 and sizes drawn from six input bytes: byte 4 selects the size's shape —
+// zero, the full cap, one past the cap, a negative, or a plain value — so the
+// refusals at each boundary are reachable, and the record and shrink paths
+// see n of 0 and below. Ids are 1..8 except that the fresh id can also be 0,
+// the id that names no segment. Shapes are not constrained beyond that, so
+// any interleaving of states and byte counts can arise.
 func decode(data []byte, segCap int64) []op {
-	ops := make([]op, 0, len(data)/4)
-	for len(data) >= 5 {
+	ops := make([]op, 0, len(data)/6)
+	for len(data) >= 6 {
 		var o op
 		o.kind = data[0] % 10
 		o.id = core.SegmentID(1 + uint64(data[1])%8)
-		o.fresh = core.SegmentID(1 + uint64(data[2])%8)
+		o.fresh = core.SegmentID(uint64(data[2]) % 9)
 		o.tag = core.ShareTag(1 + uint32(data[3])%3)
-		o.n = 1 + (int64(data[4]) % segCap)
-		data = data[5:]
+		switch data[4] {
+		case 0:
+			o.n = 0
+		case 1:
+			o.n = segCap
+		case 2:
+			o.n = segCap + 1
+		case 3:
+			o.n = -int64(1 + data[5]%255)
+		default:
+			o.n = 1 + (int64(data[5]) % segCap)
+		}
+		data = data[6:]
 		ops = append(ops, o)
 	}
 	return ops
@@ -111,30 +124,33 @@ func (o *oracle) releaseSeg(id core.SegmentID) {
 	delete(o.segTags, id)
 }
 
-// doubleRetires counts every retire or recycle that found its own id out of
-// the set. The oracle returns its own error class, which also names the
-// state the ledger was expected to be found in, so the test can demand the
-// same refusal from both.
-func (o *oracle) apply(he op) (err error) {
-	switch he.kind {
+// apply runs one op against the oracle's plain maps and returns the error
+// class the ledger owes for it: the same refusal, or nil where both accept.
+// Every map the oracle keeps mirrors one the ledger keeps, so a divergence
+// between the two is a bug in the ledger, never in the input.
+func (o *oracle) apply(op op) (err error) {
+	switch op.kind {
 	case opAddSpare:
-		if _, ok := o.segs[he.id]; ok {
+		if _, ok := o.segs[op.id]; ok {
 			return ErrDuplicateID
 		}
-		if _, ok := o.spares[he.id]; ok {
+		if _, ok := o.spares[op.id]; ok {
 			return ErrDuplicateID
 		}
-		o.spares[he.id] = struct{}{}
+		if op.id == 0 {
+			return ErrBadID
+		}
+		o.spares[op.id] = struct{}{}
 		return nil
 	case opTake:
-		if _, ok := o.spares[he.id]; !ok {
+		if _, ok := o.spares[op.id]; !ok {
 			return ErrNotInSet
 		}
-		delete(o.spares, he.id)
-		o.segs[he.id] = oracleSeg{state: Active, size: o.segCap}
+		delete(o.spares, op.id)
+		o.segs[op.id] = oracleSeg{state: Active, size: o.segCap}
 		return nil
 	case opSeal:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
 			return ErrNotInSet
 		}
@@ -142,10 +158,10 @@ func (o *oracle) apply(he op) (err error) {
 			return ErrWrongState
 		}
 		seg.state = Sealed
-		o.segs[he.id] = seg
+		o.segs[op.id] = seg
 		return nil
 	case opEnd:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
 			return ErrNotInSet
 		}
@@ -153,61 +169,67 @@ func (o *oracle) apply(he op) (err error) {
 			return ErrWrongState
 		}
 		seg.state = Ended
-		o.segs[he.id] = seg
+		o.segs[op.id] = seg
 		return nil
 	case opShrink:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
 			return ErrNotInSet
 		}
-		if he.n <= 0 || he.n > seg.size || he.n > o.segCap {
+		if op.n <= 0 || op.n > seg.size {
 			return ErrBadSize
 		}
-		seg.size = he.n
-		o.segs[he.id] = seg
+		seg.size = op.n
+		o.segs[op.id] = seg
 		return nil
 	case opAddRecord:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
 			return ErrNotInSet
 		}
 		if seg.state != Active {
 			return ErrWrongState
 		}
-		if he.n <= 0 {
+		if op.n <= 0 {
 			return ErrBadSize
 		}
-		o.addTag(he.id, he.tag, he.n)
+		o.addTag(op.id, op.tag, op.n)
 		return nil
 	case opClaim:
-		seg, ok := o.segs[he.id]
-		if !ok || seg.state == Active || o.claimed[he.id] {
+		seg, ok := o.segs[op.id]
+		if !ok || seg.state == Active || o.claimed[op.id] {
 			return errNoClaim
 		}
-		o.claimed[he.id] = true
+		o.claimed[op.id] = true
 		return nil
 	case opRelease:
-		if _, ok := o.segs[he.id]; !ok {
+		if _, ok := o.segs[op.id]; !ok {
 			return nil // no-op: out of the set (R57), nothing to release
 		}
-		delete(o.claimed, he.id)
+		delete(o.claimed, op.id)
 		return nil
 	case opRetire:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
+			if o.inSpares(op.id) {
+				return ErrWrongState
+			}
 			o.doubleRetires++
 			return ErrNotInSet
 		}
 		if seg.state == Active {
 			return ErrWrongState
 		}
-		delete(o.segs, he.id)
-		o.releaseSeg(he.id)
-		delete(o.claimed, he.id)
+		delete(o.segs, op.id)
+		o.releaseSeg(op.id)
+		delete(o.claimed, op.id)
 		return nil
 	case opRecycle:
-		seg, ok := o.segs[he.id]
+		seg, ok := o.segs[op.id]
 		if !ok {
+			if o.inSpares(op.id) {
+				return ErrWrongState
+			}
 			o.doubleRetires++
 			return ErrNotInSet
 		}
@@ -217,19 +239,22 @@ func (o *oracle) apply(he op) (err error) {
 		if seg.size != o.segCap {
 			return ErrBadSize
 		}
-		if he.id == he.fresh {
+		if op.fresh == 0 {
+			return ErrBadID
+		}
+		if op.id == op.fresh {
 			return ErrDuplicateID
 		}
-		if _, ok := o.segs[he.fresh]; ok {
+		if _, ok := o.segs[op.fresh]; ok {
 			return ErrDuplicateID
 		}
-		if o.inSpares(he.fresh) {
+		if o.inSpares(op.fresh) {
 			return ErrDuplicateID
 		}
-		delete(o.segs, he.id)
-		o.releaseSeg(he.id)
-		delete(o.claimed, he.id)
-		o.spares[he.fresh] = struct{}{}
+		delete(o.segs, op.id)
+		o.releaseSeg(op.id)
+		delete(o.claimed, op.id)
+		o.spares[op.fresh] = struct{}{}
 		return nil
 	}
 	return nil
@@ -257,58 +282,76 @@ func sameErrClass(got, want error) bool {
 // record bytes and on the footprint check — and the footprint never dips
 // below zero.
 func FuzzSet(f *testing.F) {
-	// One op is five bytes: kind, segment id, fresh id, share tag and record
-	// bytes — the same fields the decoder reads.
+	// One op is six bytes: kind, segment id, fresh id, share tag, a shape
+	// selector for the size and the size byte itself — the fields the decoder
+	// reads. A size shape of 4 is a plain size of n+1 under the cap; 0 is
+	// zero, 1 the cap, 2 one past, 3 a negative.
 	ops := func(ops ...[]byte) []byte {
 		return slices.Concat(ops...)
 	}
-	five := func(kind byte, id, fresh byte, tag byte, n byte) []byte {
-		return []byte{kind, id, fresh, tag, n}
+	op6 := func(kind, id, fresh, tag, shape, n byte) []byte {
+		return []byte{kind, id, fresh, tag, shape, n}
 	}
 
 	f.Add(ops(
 		// A double retire: a segment that leaves the set, then is retired
 		// again, and a release that arrives too late for it.
-		five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0),
-		five(opSeal, 0, 0, 0, 0), five(opRetire, 0, 0, 0, 0),
-		five(opRetire, 0, 1, 0, 0), five(opRelease, 0, 0, 0, 0), five(opClaim, 0, 0, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
+		op6(opSeal, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
+		op6(opRetire, 0, 1, 0, 4, 0), op6(opRelease, 0, 0, 0, 4, 0), op6(opClaim, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// Recycle, then retire the old id: the footprint leaves once, and the
 		// second retire is refused and counted.
-		five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0), five(opSeal, 0, 0, 0, 0),
-		five(opRecycle, 0, 3, 0, 0), five(opRetire, 0, 0, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 0, 0, 4, 0),
+		op6(opRecycle, 0, 3, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// Records then a retire: each tag keeps only the other segment's
 		// bytes, and the tag that reaches zero leaves the ledger.
-		five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0), five(opAddRecord, 0, 1, 0, 9),
-		five(opAddSpare, 1, 0, 0, 0), five(opTake, 1, 2, 0, 0), five(opAddRecord, 1, 2, 1, 4),
-		five(opAddRecord, 1, 2, 2, 2), five(opSeal, 0, 0, 0, 0), five(opSeal, 1, 0, 0, 0),
-		five(opRetire, 0, 0, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opAddRecord, 0, 1, 0, 4, 9),
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 2, 0, 4, 0), op6(opAddRecord, 1, 2, 1, 4, 4),
+		op6(opAddRecord, 1, 2, 2, 4, 2), op6(opSeal, 0, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0),
+		op6(opRetire, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// Shrink, then recycle the shrunk segment: a sealed size below the
 		// cap cannot come back as a spare, so the retire is the only way out.
-		five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0), five(opSeal, 0, 0, 0, 0),
-		five(opShrink, 0, 0, 0, 5), five(opRecycle, 0, 3, 0, 0), five(opRetire, 0, 0, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 0, 0, 4, 0),
+		op6(opShrink, 0, 0, 0, 4, 5), op6(opRecycle, 0, 3, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// A recycle of a segment that never was, refused; then the making of a
 		// spare that takes and seals instead.
-		five(opRecycle, 0, 1, 0, 0), five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0),
-		five(opSeal, 0, 0, 0, 0), five(opRetire, 0, 0, 0, 0),
+		op6(opRecycle, 0, 1, 0, 4, 0), op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
+		op6(opSeal, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// A claim between two retires of one segment, both of which find it
 		// out of the set.
-		five(opAddSpare, 0, 0, 0, 0), five(opTake, 0, 1, 0, 0), five(opEnd, 0, 0, 0, 0),
-		five(opRetire, 0, 0, 0, 0), five(opClaim, 0, 0, 0, 0), five(opRetire, 0, 0, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opEnd, 0, 0, 0, 4, 0),
+		op6(opRetire, 0, 0, 0, 4, 0), op6(opClaim, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
 	))
 	f.Add(ops(
 		// A recycle whose fresh id names a spare the ledger already holds.
-		five(opAddSpare, 0, 0, 0, 0), five(opAddSpare, 1, 0, 0, 0), five(opTake, 0, 2, 0, 0),
-		five(opSeal, 0, 0, 0, 0), five(opRecycle, 0, 1, 0, 0),
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 0, 2, 0, 4, 0),
+		op6(opSeal, 0, 0, 0, 4, 0), op6(opRecycle, 0, 1, 0, 4, 0),
+	))
+	f.Add(ops(
+		// A duplicate AddSpare, a record of zero bytes and a shrink to the
+		// current size: refusals at three boundaries, each leaving every
+		// counter alone.
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
+		op6(opAddRecord, 0, 1, 0, 4, 0), op6(opAddRecord, 0, 1, 0, 0, 0),
+		op6(opAddRecord, 0, 1, 0, 3, 0), op6(opSeal, 0, 0, 0, 4, 0),
+		op6(opShrink, 0, 0, 0, 4, 0), op6(opShrink, 0, 0, 0, 4, 1),
+	))
+	f.Add(ops(
+		// An AddSpare and a recycle under the id that names no segment.
+		op6(opAddSpare, 7, 0, 0, 4, 0),   // names segment 8
+		op6(opAddSpare, 255, 0, 0, 4, 0), // also segment 8: a duplicate
+		op6(opTake, 7, 1, 0, 4, 0), op6(opSeal, 7, 1, 0, 4, 0),
+		op6(opRecycle, 7, 0, 0, 4, 0), // fresh id 0: refused
 	))
 
 	segCap := int64(4096)
@@ -316,70 +359,72 @@ func FuzzSet(f *testing.F) {
 		s := NewSet(segCap, nil)
 		o := newOracle(segCap)
 
-		for _, he := range decode(data, segCap) {
-			want := o.apply(he)
+		for _, op := range decode(data, segCap) {
+			want := o.apply(op)
 			var got error
-			switch he.kind {
+			switch op.kind {
 			case opAddSpare:
-				got = s.AddSpare(he.id)
+				got = s.AddSpare(op.id)
 			case opTake:
-				got = s.Take(he.id)
+				got = s.Take(op.id)
 			case opSeal:
-				got = s.Seal(he.id)
+				got = s.Seal(op.id)
 			case opEnd:
-				got = s.End(he.id)
+				got = s.End(op.id)
 			case opShrink:
-				got = s.Shrink(he.id, he.n)
+				got = s.Shrink(op.id, op.n)
 			case opAddRecord:
-				got = s.AddRecord(he.id, he.tag, he.n)
+				got = s.AddRecord(op.id, op.tag, op.n)
 			case opClaim:
-				if s.Claim(he.id) != (want == nil) {
-					t.Fatalf("Claim(%d): the oracle holds the claim %v, the set does not", he.id, want == nil)
+				// Claim answers with a boolean, which the oracle encodes
+				// as an error class; carrying the oracle's class over to
+				// the check below reads the same fact back.
+				if s.Claim(op.id) != (want == nil) {
+					t.Fatalf("Claim(%d): the oracle holds the claim %v, the set does not", op.id, want == nil)
 				}
-				continue
+				got = want
 			case opRelease:
-				s.Release(he.id)
-				continue
+				s.Release(op.id)
 			case opRetire:
-				_, got = s.Retire(he.id)
+				_, got = s.Retire(op.id)
 			case opRecycle:
-				got = s.Recycle(he.id, he.fresh)
+				got = s.Recycle(op.id, op.fresh)
 			}
 
 			if !sameErrClass(got, want) {
-				t.Fatalf("op %d (%d): the set returned %v, the oracle %v", he.kind, he.id, got, want)
+				t.Fatalf("op %d (%d): the set returned %v, the oracle %v", op.kind, op.id, got, want)
 			}
 			c := s.Counters()
 			if c.UsedBytes < 0 {
-				t.Fatalf("op %d (%d): the footprint fell to %d", he.kind, he.id, c.UsedBytes)
+				t.Fatalf("op %d (%d): the footprint fell to %d", op.kind, op.id, c.UsedBytes)
 			}
 			if err := s.Check(); err != nil {
-				t.Fatalf("op %d (%d): %v", he.kind, he.id, err)
+				t.Fatalf("op %d (%d): %v", op.kind, op.id, err)
 			}
 			if got := o.usedBytes(); got != c.UsedBytes {
-				t.Fatalf("op %d (%d): the footprint is %d, the oracle's %d", he.kind, he.id, c.UsedBytes, got)
+				t.Fatalf("op %d (%d): the footprint is %d, the oracle's %d", op.kind, op.id, c.UsedBytes, got)
 			}
 			if got := o.countSegments(); got != c.Segments {
-				t.Fatalf("op %d (%d): the set holds %d segments, the oracle %d", he.kind, he.id, c.Segments, got)
+				t.Fatalf("op %d (%d): the set holds %d segments, the oracle %d", op.kind, op.id, c.Segments, got)
 			}
 			if got := o.countSealed(); got != c.Sealed {
-				t.Fatalf("op %d (%d): the set holds %d sealed, the oracle %d", he.kind, he.id, c.Sealed, got)
+				t.Fatalf("op %d (%d): the set holds %d sealed, the oracle %d", op.kind, op.id, c.Sealed, got)
 			}
 			if got := int64(len(o.spares)); got != c.Spares {
-				t.Fatalf("op %d (%d): the set holds %d spares, the oracle %d", he.kind, he.id, c.Spares, got)
+				t.Fatalf("op %d (%d): the set holds %d spares, the oracle %d", op.kind, op.id, c.Spares, got)
 			}
 			if c.DoubleRetires != o.doubleRetires {
-				t.Fatalf("op %d (%d): the set counted %d double retires, the oracle %d", he.kind, he.id, c.DoubleRetires, o.doubleRetires)
+				t.Fatalf("op %d (%d): the set counted %d double retires, the oracle %d", op.kind, op.id, c.DoubleRetires, o.doubleRetires)
 			}
 			for tag, want := range o.tags {
 				if got := s.ShareBytes(tag); got != want {
-					t.Fatalf("op %d (%d): tag %d holds %d, the oracle %d", he.kind, he.id, tag, got, want)
+					t.Fatalf("op %d (%d): tag %d holds %d, the oracle %d", op.kind, op.id, tag, got, want)
 				}
 			}
 			for _, tag := range []core.ShareTag{1, 2, 3} {
 				if _, ok := o.tags[tag]; !ok {
 					if got := s.ShareBytes(tag); got != 0 {
-						t.Fatalf("op %d (%d): the oracle holds none of tag %d, the set %d", he.kind, he.id, tag, got)
+						t.Fatalf("op %d (%d): the oracle holds none of tag %d, the set %d", op.kind, op.id, tag, got)
 					}
 				}
 			}

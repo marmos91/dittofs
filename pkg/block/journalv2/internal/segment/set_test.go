@@ -234,6 +234,190 @@ func TestRecycleKeepsFootprint(t *testing.T) {
 	}
 }
 
+// TestFailedMakeReservationIsReturned: a spare whose making failed has its
+// reservation returned through the set. The cleanup carries the leftover in
+// with Take — the make reserved it, and no stream ever takes it as a segment —
+// and once its unlink has happened, Retire returns the cap exactly once,
+// uncounted and unlogged. A leftover whose unlink fails is carried in and
+// ended instead, and stays accounted until a later retire takes it.
+func TestFailedMakeReservationIsReturned(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	var logs capturing
+	s := NewSet(segCap, slog.New(&logs))
+	id := core.SegmentID(7)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap || c.Spares != 1 {
+		t.Fatalf("the reservation holds the footprint at %d with %d spares, want the cap %d and one", c.UsedBytes, c.Spares, segCap)
+	}
+
+	// The make has failed: the leftover is carried in, ended — the state a
+	// failure leaves, never sealed — and once its unlink has happened, the
+	// retire returns the reservation.
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take of the failed make's leftover: %v", err)
+	}
+	if err := s.End(id); err != nil {
+		t.Fatalf("End of the failed make's leftover: %v", err)
+	}
+	stuck := core.SegmentID(8)
+	if err := s.AddSpare(stuck); err != nil {
+		t.Fatalf("AddSpare of the leftover that cannot be unlinked: %v", err)
+	}
+	if err := s.Take(stuck); err != nil {
+		t.Fatalf("Take of the stuck leftover: %v", err)
+	}
+	if err := s.End(stuck); err != nil {
+		t.Fatalf("End of the stuck leftover: %v", err)
+	}
+
+	freed, err := s.Retire(id)
+	if err != nil {
+		t.Fatalf("the retire of the failed make's leftover: %v", err)
+	}
+	if freed != segCap {
+		t.Fatalf("the retire freed %d, want the reserved cap %d", freed, segCap)
+	}
+	c := s.Counters()
+	if c.UsedBytes != segCap {
+		t.Fatalf("after the cleanup the footprint is %d, want the cap the stuck leftover still holds", c.UsedBytes)
+	}
+	if c.Segments != 1 || c.Spares != 0 {
+		t.Fatalf("after the cleanup the ledger holds %d segments and %d spares, want one ended leftover and none", c.Segments, c.Spares)
+	}
+	if c.DoubleRetires != 0 {
+		t.Fatalf("the cleanup was counted as %d double retires, want none: it is not the race the count watches for", c.DoubleRetires)
+	}
+	if len(logs.recs) != 0 {
+		t.Fatalf("the cleanup logged %d records, want none", len(logs.recs))
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestAddSpareRefusals: an id the ledger already owns — in the set or among
+// the spares — or an id no file can carry reserves nothing: the footprint
+// answers with one cap per segment, never two, and never under an id that
+// names no segment.
+func TestAddSpareRefusals(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	if err := s.AddSpare(1); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	afterOne := s.Counters()
+
+	if err := s.AddSpare(1); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("a second AddSpare of the same spare: %v, want %v", err, ErrDuplicateID)
+	}
+	if c := s.Counters(); c != afterOne {
+		t.Fatalf("the refused duplicate raised the footprint: %v, still want %v", c, afterOne)
+	}
+	if err := s.Take(1); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddSpare(1); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("an AddSpare of a set segment's id: %v, want %v", err, ErrDuplicateID)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap || c.Spares != 0 || c.Segments != 1 {
+		t.Fatalf("the refused duplicate left the ledger at %v, want one cap, no spares, one segment", c)
+	}
+
+	if err := s.AddSpare(0); !errors.Is(err, ErrBadID) {
+		t.Fatalf("an AddSpare of the id that names no segment: %v, want %v", err, ErrBadID)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap || c.Spares != 0 {
+		t.Fatalf("the refused id raised the footprint to %d with %d spares, want it still one cap, none", c.UsedBytes, c.Spares)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestRetireOfASpareIsRefused: the retirement paths select segments, never
+// spares, so naming one is a caller bug the ledger refuses without counting:
+// like a retire of an Active segment, it is not the race the double-retire
+// count watches for, and the spare stays held for the pool either way.
+func TestRetireOfASpareIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	var logs capturing
+	s := NewSet(segCap, slog.New(&logs))
+	id := core.SegmentID(3)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	before := s.Counters()
+
+	for name, refuse := range map[string]func() error{
+		"retire": func() error {
+			_, err := s.Retire(id)
+			return err
+		},
+		"recycle": func() error { return s.Recycle(id, 9) },
+	} {
+		if err := refuse(); !errors.Is(err, ErrWrongState) {
+			t.Fatalf("the %s of a spare: %v, want %v", name, err, ErrWrongState)
+		}
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused retire and recycle of a spare changed the counters: %v, want %v", after, before)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("the spare did not survive: Take returned %v", err)
+	}
+	if len(logs.recs) != 0 {
+		t.Fatalf("the ledger logged %d records, want none: this is not a double retire", len(logs.recs))
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestAddRecordOfNoBytesIsRefused: a record of no bytes accounts nothing, and
+// a negative one would take bytes off a share; both leave the share's totals
+// and every counter exactly as they were.
+func TestAddRecordOfNoBytesIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id := core.SegmentID(1)
+	tag := core.ShareTag(2)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 100); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	before := s.Counters()
+
+	for _, n := range []int64{0, -1, -100} {
+		if err := s.AddRecord(id, tag, n); !errors.Is(err, ErrBadSize) {
+			t.Fatalf("AddRecord of %d bytes: %v, want %v", n, err, ErrBadSize)
+		}
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused records changed the counters: %v, still want %v", after, before)
+	}
+	if n := s.ShareBytes(tag); n != 100 {
+		t.Fatalf("the refused records moved the share's bytes to %d, want 100", n)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
 // TestRecycleRefusals: a failed recycle — the old segment sealed early or
 // not sealed at all, or the fresh id already owned — leaves every counter and
 // every map exactly as it was: every refusal is checked before anything
@@ -440,6 +624,8 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 		t.Fatalf("the retire freed %d, want the shrunk size %d", freed, tail)
 	}
 
+	// An ended segment keeps its cap until it is unlinked (R50): the
+	// failure strands the storage, not the accounting.
 	ended := core.SegmentID(2)
 	if err := s.AddSpare(ended); err != nil {
 		t.Fatalf("AddSpare: %v", err)
@@ -450,30 +636,68 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	if err := s.End(ended); err != nil {
 		t.Fatalf("End: %v", err)
 	}
-	if err := s.Shrink(ended, tail); err != nil {
-		t.Fatalf("Shrink of an ended segment: %v", err)
+	if c := s.Counters(); c.UsedBytes != segCap {
+		t.Fatalf("End moved the footprint to %d, want the cap %d kept", c.UsedBytes, segCap)
+	}
+	// A shrink to the size the segment is already accounted at is the one
+	// size above ErrBadSize's floor: it takes no tail, so it lowers nothing.
+	if err := s.Shrink(ended, segCap); err != nil {
+		t.Fatalf("a shrink to the current size: %v, want it accepted as the no-op it is", err)
+	}
+	if c := s.Counters(); c.UsedBytes != segCap {
+		t.Fatalf("the no-op shrink moved the footprint to %d, want the cap %d kept", c.UsedBytes, segCap)
 	}
 	freed, err = s.Retire(ended)
 	if err != nil {
 		t.Fatalf("the retire of the ended segment: %v", err)
 	}
-	if freed != tail {
-		t.Fatalf("the ended segment retired at %d, want its kept size %d", freed, tail)
+	if freed != segCap {
+		t.Fatalf("the ended segment retired at %d, want its kept cap %d", freed, segCap)
 	}
 
-	growing := core.SegmentID(3)
+	// A torn-tail cut of an ended segment is the one shrink that applies to
+	// it: the cut size is what the retire returns afterwards.
+	torn := core.SegmentID(3)
+	if err := s.AddSpare(torn); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(torn); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.End(torn); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	if err := s.Shrink(torn, tail); err != nil {
+		t.Fatalf("Shrink of an ended segment: %v", err)
+	}
+	freed, err = s.Retire(torn)
+	if err != nil {
+		t.Fatalf("the retire of the torn ended segment: %v", err)
+	}
+	if freed != tail {
+		t.Fatalf("the torn ended segment retired at %d, want its cut size %d", freed, tail)
+	}
+
+	growing := core.SegmentID(4)
 	if err := s.AddSpare(growing); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(growing); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.Shrink(growing, tail); err != nil {
+	const kept = 256
+	if err := s.Shrink(growing, kept); err != nil {
 		t.Fatalf("Shrink: %v", err)
 	}
 	before := s.Counters()
-	if err := s.Shrink(growing, tail+1); !errors.Is(err, ErrBadSize) {
+	if err := s.Shrink(growing, kept+1); !errors.Is(err, ErrBadSize) {
 		t.Fatalf("a growing shrink: %v, want %v", err, ErrBadSize)
+	}
+	if err := s.Shrink(growing, kept); err != nil {
+		t.Fatalf("a shrink to the current size: %v, want the no-op the plan's floor allows", err)
+	}
+	if err := s.Shrink(growing, segCap); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("a shrink to the cap: %v, want %v: it grows the accounted size", err, ErrBadSize)
 	}
 	if err := s.Shrink(growing, 0); !errors.Is(err, ErrBadSize) {
 		t.Fatalf("a shrink to nothing: %v, want %v", err, ErrBadSize)
@@ -623,6 +847,44 @@ func TestCheckReportsMismatch(t *testing.T) {
 			t.Fatalf("the mismatch %q does not name the figure %d", msg, figure)
 		}
 	}
+
+	// Each maintained count is checked against the walk too: a counter that
+	// drifted while the footprint stayed true is a broken ledger the same
+	// way, and the check names the figures it disagrees with.
+	for _, corrupt := range []func(){
+		func() { s.c.Segments++ },
+		func() { s.c.Sealed++ },
+		func() { s.c.Spares++ },
+	} {
+		s.mu.Lock()
+		s.c.UsedBytes = footprint // restore the true footprint, corrupt the count
+		corrupt()
+		s.mu.Unlock()
+		err := s.Check()
+		if err == nil {
+			t.Fatal("a drifted count was not reported")
+		}
+		if !errors.Is(err, ErrMismatch) {
+			t.Fatalf("the drifted count was reported as %v, want it to wrap %v", err, ErrMismatch)
+		}
+		if got := err.Error(); !strings.Contains(got, "vs") {
+			t.Fatalf("the drifted count %q does not name both figures", got)
+		}
+	}
+
+	// The per-tag totals are checked against the entries' own tags too: a
+	// release that dropped or doubled a share's bytes is a broken ledger the
+	// check, not only the fuzz oracle, has to see.
+	s.mu.Lock()
+	s.c.Segments, s.c.Sealed, s.c.Spares = 1, 1, 1 // the true counts, restored
+	s.c.UsedBytes = footprint
+	s.tags[4] += 1 // one byte more than any entry holds
+	s.mu.Unlock()
+	if err := s.Check(); err == nil {
+		t.Fatal("a share total that no entry makes up was not reported")
+	} else if !errors.Is(err, ErrMismatch) {
+		t.Fatalf("the share total was reported as %v, want it to wrap %v", err, ErrMismatch)
+	}
 }
 
 // TestRetireActiveRefused: a segment a stream still appends to is refused
@@ -747,8 +1009,8 @@ func TestStateString(t *testing.T) {
 		{State(0), "unknown"},
 		{State(200), "unknown"},
 	} {
-		if got := c.s.String(); !strings.HasPrefix(got, c.want) {
-			t.Errorf("State(%d) prints as %q, want it to start with %q", uint8(c.s), got, c.want)
+		if got := c.s.String(); got != c.want {
+			t.Errorf("State(%d) prints as %q, want %q", uint8(c.s), got, c.want)
 		}
 	}
 }

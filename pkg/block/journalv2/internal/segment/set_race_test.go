@@ -39,9 +39,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
-		var winners, losers sync.WaitGroup
-		winners.Add(1)
-		losers.Add(racers - 1)
+		var winners, losers, other atomic.Int32
 		for range racers {
 			wg.Add(1)
 			go func() {
@@ -49,17 +47,19 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 				_, err := s.Retire(id)
 				switch {
 				case err == nil:
-					winners.Done()
+					winners.Add(1)
 				case errors.Is(err, ErrNotInSet):
-					losers.Done()
+					losers.Add(1)
 				default:
+					other.Add(1)
 					t.Errorf("a concurrent retire returned %v, want nil or %v", err, ErrNotInSet)
-					winners.Done()
-					losers.Done()
 				}
 			}()
 		}
 		wg.Wait()
+		if w, l := winners.Load(), losers.Load(); w != 1 || l != racers-1 {
+			t.Fatalf("round %d: %d retires subtracted and %d found nothing, want 1 and %d", round, w, l, racers-1)
+		}
 
 		c := s.Counters()
 		if c.UsedBytes != 0 {

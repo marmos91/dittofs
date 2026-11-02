@@ -53,8 +53,11 @@ func (s State) String() string {
 }
 
 // The ledger's errors. Every operation validates its whole argument and the
-// set's state before changing anything, so a refused call is exactly a
-// no-op: no counter, map or log moves.
+// set's state before changing anything, so a refused call changes no counter
+// and no map — with one exception the ledger's own rule writes down: a
+// Retire or Recycle that finds its id out of the set counts a double retire
+// and logs at Warn, which is the counter and the log the refusal exists to
+// raise.
 var (
 	// ErrNotInSet is the refusal of an operation naming a segment the set
 	// does not hold (or a Take of an id that is no spare): the double retire
@@ -73,6 +76,10 @@ var (
 	// than the segment holds: a shrink that grows or empties, a record of
 	// no bytes, a recycle of a sealed size below the cap.
 	ErrBadSize = errors.New("segment: bad size")
+	// ErrBadID is the refusal of the id that names no segment: the ledger
+	// never reserves or moves storage under it, because no segment file can
+	// carry it and an id that names nothing cannot be returned by a retire.
+	ErrBadID = errors.New("segment: bad id")
 	// ErrMismatch is what Check reports once the accounted footprint and the
 	// sum the set's sizes make of it differ.
 	ErrMismatch = errors.New("segment: accounted footprint does not match the set")
@@ -175,12 +182,18 @@ func (s *Set) ownsLocked(id core.SegmentID) bool {
 // AddSpare carries the step that reserves cap for a fresh spare, raising
 // UsedBytes before the allocation it accounts for happens. It is called
 // before the spare's creation; the allocation itself is the caller's, and a
-// spare whose making fails is still unlinked by the retire that returns the
-// reservation, so the raise always comes first.
+// spare whose making fails is returned the other way round: the caller
+// carries the leftover into the set with Take — the reservation named it
+// already, and no stream ever will — and Retire returns the cap once its
+// unlink has happened, so the raise always comes first. A leftover the unlink
+// cannot remove is carried in and ended instead, and a later retire takes it.
 func (s *Set) AddSpare(id core.SegmentID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if id == 0 {
+		return ErrBadID
+	}
 	if s.ownsLocked(id) {
 		return ErrDuplicateID
 	}
@@ -341,15 +354,22 @@ func (s *Set) Release(id core.SegmentID) {
 // select one segment, and the second retire finds its bytes already gone,
 // subtracts nothing, counts itself as a double retire and logs at Warn.
 //
-// decision: a segment still Active is refused rather than retired, and the
-// refusal is not counted as a double retire. A retire of an Active segment
-// means a stream still appends to it — a bug in the caller, not the race the
-// count watches for, and counting it would drown that signal. Withdrawn if
-// a caller ever needs to see it as one.
+// decision: a segment still Active, and a spare of the pool, are refused
+// rather than retired, and neither refusal is counted as a double retire.
+// A retire of one means the caller's selection named a segment a stream
+// still appends to, or one the pool still holds — a bug in the caller, not
+// the race the count watches for, and counting either would drown that
+// signal. The ledger is the only side that knows which ids are spares, so
+// the refusal belongs here rather than in a caller's pre-check. Withdrawn
+// if a caller ever needs to see either as a count.
 func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 	s.mu.Lock()
 	e, ok := s.segs[id]
 	if !ok {
+		if _, spare := s.spares[id]; spare {
+			s.mu.Unlock()
+			return 0, ErrWrongState
+		}
 		s.c.DoubleRetires++
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(id), "op", "retire")
@@ -377,11 +397,16 @@ func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 // step, so the accounted footprint does not move and only an unlink of
 // either the segment or the spare ever lowers it, while the spare pool grows
 // by one. Overturning this only when a spare can be created smaller than a
-// cap, which the segment format today forbids.
+// cap, which the segment format today forbids. A spare of the pool is
+// refused uncounted, for the same reason as Retire's.
 func (s *Set) Recycle(old, fresh core.SegmentID) error {
 	s.mu.Lock()
 	e, ok := s.segs[old]
 	if !ok {
+		if _, spare := s.spares[old]; spare {
+			s.mu.Unlock()
+			return ErrWrongState
+		}
 		s.c.DoubleRetires++
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(old), "op", "recycle")
@@ -395,7 +420,11 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 		s.mu.Unlock()
 		return ErrBadSize
 	}
-	if old == fresh || s.ownsLocked(fresh) {
+	if fresh == 0 {
+		s.mu.Unlock()
+		return ErrBadID
+	}
+	if s.ownsLocked(fresh) { // ownsLocked(fresh) covers fresh == old: old was found in segs
 		s.mu.Unlock()
 		return ErrDuplicateID
 	}
@@ -422,9 +451,11 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	s.c.UsedBytes -= e.size
 	for tag, n := range e.tags {
 		left := s.tags[tag] - n
-		if left <= 0 {
+		if left == 0 {
 			delete(s.tags, tag)
 		} else {
+			// A negative leftover can only be a release the totals never
+			// held: left in place for Check to report rather than deleted.
 			s.tags[tag] = left
 		}
 	}
@@ -464,16 +495,41 @@ func (s *Set) Check() error {
 		sum += s.cap
 	}
 
+	// Every share's total is the sum of the bytes its segments' entries
+	// hold for it, so a release that dropped or doubled one is a broken
+	// ledger the check reports here — a zeroed share has no entry to sum,
+	// which is why the walk keeps the shares' bytes and not the entries'.
+	held := make(map[core.ShareTag]int64)
+	for _, e := range s.segs {
+		for tag, n := range e.tags {
+			held[tag] += n
+		}
+	}
+
 	spares := int64(len(s.spares))
+	tagsMatch := len(held) == len(s.tags)
+	if tagsMatch {
+		for tag, n := range held {
+			if s.tags[tag] != n {
+				tagsMatch = false
+				break
+			}
+		}
+	}
 	if s.c.UsedBytes == sum &&
 		s.c.Segments == segments &&
 		s.c.Sealed == sealed &&
-		s.c.Spares == spares {
+		s.c.Spares == spares &&
+		tagsMatch {
 		return nil
 	}
 	if s.c.UsedBytes != sum {
 		return fmt.Errorf("%w: accounted %d, the set's sizes make %d",
 			ErrMismatch, s.c.UsedBytes, sum)
+	}
+	if !tagsMatch {
+		return fmt.Errorf("%w: the shares' record bytes do not match the segments' entries: %v vs %v",
+			ErrMismatch, s.tags, held)
 	}
 	return fmt.Errorf("%w: the counts do not match the set: %d segments vs %d, %d sealed vs %d, %d spares vs %d",
 		ErrMismatch, s.c.Segments, segments, s.c.Sealed, sealed, s.c.Spares, spares)
