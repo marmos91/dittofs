@@ -301,7 +301,12 @@ durable reconnect re-attaches an open only for its opener's principal
 When every open of the grant is disconnected, the break goes only to a session
 of that client signed in as one of the openers, which the node holding it picks
 from the sessions it keeps in memory with their principals (RFC 17 §3.2); when
-there is none, it is sent nowhere and runs to its deadline (§5.3). Otherwise
+there is none, it is sent nowhere and runs to its deadline (§5.3). The nodes
+asked are `Reach.Sessions`: an SMB `Connect` adds its node, and the adapter
+calls it at each node's first authenticated session of the client, so no
+`SESSION_SETUP` makes a second mutating call. An SMB entry leaves only with its
+node's loss or its record, since a session's end writes nothing; a node asked
+that holds no session of the client picks none. Otherwise
 the service picks the session from the grant's opens as `Grants.Openers` returns them
 ([§11.3](#11.3%20Methods)) and names it to the adapter, which delivers to it and to no other.
 `AckRecall` on a lease or oplock is
@@ -2763,7 +2768,7 @@ type FileKey struct {
 
 type Clients interface {
 	Propose(ctx, c Client, from netip.Addr) (Proposal, error)               // §2.9; changes no state; ErrDelay past the node's or the source's cap
-	Connect(ctx, c Client, p *Proposal) (ClientID, error)                   // nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included
+	Connect(ctx, c Client, p *Proposal) (ClientID, error)                   // nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included; SMB: adds the calling node to Reach.Sessions (§2.1)
 	Record(ctx, c ClientID) (Client, error)                                 // the record as written, Adapter included; changes nothing
 	AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // records node's session and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
 	Renew(ctx, c ClientID) (ClientStatus, error)

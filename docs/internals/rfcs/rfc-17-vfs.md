@@ -694,7 +694,7 @@ type Service interface {
 // SessionUp and SessionDown, which stay on the node that received them.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP (never a null or guest one), an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP on each node (never a null or guest one), which adds that node to Reach.Sessions, an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
@@ -820,7 +820,7 @@ it, so `vfstest.Record` and the adapters' one-call test read it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
 but the confirm. `SessionUp` and `SessionDown` are on it because they only keep
 the node's sessions in memory to route a break, so SMB's first
-`SESSION_SETUP` makes `Connect` its one mutating call. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+`SESSION_SETUP` on a node makes `Connect` its one mutating call. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
@@ -1026,7 +1026,8 @@ no principal, and its `ClientGuid` travels in clear, so anyone can send a
 machine's and hold a session under its record
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
 registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
-and a null or guest session never joins a client, so its opens are offered no
+and each node's first such session of it calls `Connect` again, which adds the
+node to `Reach.Sessions`; a null or guest session never joins a client, so its opens are offered no
 lease or oplock. Each node keeps its own sessions with their principals, in
 memory only: the adapter tells its filesystem of each authenticated session
 through `SessionUp` and of its end through `SessionDown`, and neither writes

@@ -2691,6 +2691,11 @@ client, owner, file or principal label.
    This RFC decides whether the service's dedup should cover a single node too,
    so a retransmitted `REMOVE` or `CREATE` is answered its first result without
    an adapter cache.
+6. **A node's `Reach.Sessions` entry at its last `DESTROY_SESSION`.** The
+   `Reach.Sessions` row says the entry is removed then, but `DESTROY_SESSION`
+   calls nothing and RFC 14's `Clients` has no call that removes a node, so
+   today it goes only with the node's loss or the record. A stale entry costs
+   one `Peers.Recall` that answers none; whether that is worth a call is open.
 
 ## Appendix A — prior art
 

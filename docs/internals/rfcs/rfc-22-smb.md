@@ -2290,6 +2290,7 @@ mapping it needs is here.
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
 | `Client.Sessioned` | true, set at `Connect`, the first authenticated `SESSION_SETUP` | — | every SMB call carries a session, so no call without one may present its state ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
+| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one; removed only with the node's loss or the record | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |
@@ -2809,7 +2810,7 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid`, and `SessionUp` at each authenticated one | `SessionUp` keeps the session and its principal in the node's memory only ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, and `SessionUp` at each authenticated one | `SessionUp` keeps the session and its principal in the node's memory only ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 | `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included, then `SessionDown` | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
