@@ -89,7 +89,9 @@ func TestApplyRefusesInvalidAndKeepsLast(t *testing.T) {
 		{"existence_age", func(s *Settings) { s.ExistenceAge = 0 }},
 		{"existence_age", func(s *Settings) { s.ExistenceAge = -time.Second }},
 		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = 0 }},
+		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = -1 }},
 		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = 0 }},
+		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = -1 }},
 	} {
 		s := good
 		s.ExistenceAge, s.GroupCommitMaxFiles, s.CloneMaxLen = 2*time.Second, 128, 1<<20
