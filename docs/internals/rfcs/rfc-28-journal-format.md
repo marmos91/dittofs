@@ -1046,8 +1046,8 @@ drawing on the headroom ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and syncs
 retires refills the reserve before the next is emptied. For each segment it empties, it
 re-appends, whole and never merged, keeping their numbers, the records of the segment
 that repack would carry forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), together with the loss record of each
-record it dropped as corrupt. It writes them to a new segment, which it seals and syncs
-with the directory. If that sync fails, it re-appends them to another new segment and never fails them, and the target whose sync failed is a failed segment ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)); once no spare is ready and none can be made ([§2.2](#2.2%20Segments)), the open fails with the sync error and leaves the ended segment in place. It
+record it dropped as corrupt. It writes them to a spare, which it seals and syncs; the
+spare's entry is already durable ([§2.2](#2.2%20Segments)). If that sync fails, it re-appends them to another spare and never fails them, and the target whose sync failed is a failed segment ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)); once no spare is ready and none can be made ([§2.2](#2.2%20Segments)), the open fails with the sync error and leaves the ended segment in place. It
 skips a record whose copy with the same sequence number already verifies, payload
 included, in a segment whose header verifies, that recovery does not end and whose sync
 has not failed in this open, this step's own new segments included. It then unlinks the
