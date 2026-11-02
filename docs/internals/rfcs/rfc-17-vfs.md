@@ -2035,14 +2035,19 @@ same service call. A `SetAttr` that sets `mtime` or `atime` to a given time is
 applied through an existence commit after every write staged before it
 ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)).
 
-A `SetAttr` that changes the owner or the group reserves, before the store
-applies it, the file's charge — its `Charged` bytes and one inode — against
-the user quota of the new owner and the group quota of the new group, each only
-where it changes, the project and share-wide quotas untouched, since the charge
-leaves neither. It runs after the attribute's authorisation and the open-state
-check, as step 4 does for a write, and is refused `ErrQuota` past a hard limit,
-or a soft one whose grace has run, before anything changes; the charge moves in
-the store's transaction, which releases the reservation once it has answered.
+A `SetAttr` that changes the owner or the group first commits the file's
+pending existence, as a size or time set does
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), so that `Charged` holds every write staged before it
+rather than leaving those writes to charge the new owner at their own commit.
+It then reserves, before the store applies the change, the file's charge — its
+`Charged` bytes and one inode — against only the scopes the charge moves into:
+`QuotaUser` for a new owner, `QuotaGroup` for a new group, both when both
+change, and never `QuotaShare` or `QuotaProject`, since the charge leaves
+neither. It runs after the attribute's authorisation and the open-state check,
+as step 4 does for a write, and is refused `ErrQuota` past a hard limit, or a
+soft one whose grace has run, before anything changes; the charge moves in the
+store's transaction, and the reservation is released after that commit, or on
+failure.
 A privileged caller is held to the limit as any other: quota is not a
 permission.
 
@@ -2053,13 +2058,17 @@ engine refuses a write for quota.
 
 ```go
 // Reserve, at step 4 of a write, a create (one inode), a copy's destination,
-// or a SetAttr changing owner or group (the file's charge, to the new owner
-// and group only, §5.5).
+// or a SetAttr changing owner or group (the file's charge, §5.5).
 // owner is whom the user and group scopes charge: the file's owner, or for a
 // create the owner the new file will have — the resolved caller after
 // squashing (RFC 7 §7.4) — never the parent directory's.
-func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, bytes int64) (*Reservation, error) {
-	for _, s := range []Scope{QuotaShare, QuotaProject, QuotaUser, QuotaGroup} { // §4.3's order
+// scopes are the scopes checked and held; none means all four. A SetAttr
+// passes QuotaUser for a new owner and QuotaGroup for a new group (§5.5).
+func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
+	if len(scopes) == 0 {
+		scopes = []Scope{QuotaShare, QuotaProject, QuotaUser, QuotaGroup} // §4.3's order
+	}
+	for _, s := range scopes {
 		lim, ok := q.limit(ctx, s, owner, f) // a principal's own quota, else the share's default for its kind
 		if !ok {
 			continue
@@ -2070,7 +2079,7 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 			return nil, &QuotaError{Scope: s}
 		}
 	}
-	return q.add(owner, f, bytes), nil // released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
+	return q.add(owner, f, bytes, scopes), nil // released by the write's Done, called exactly once (RFC 8 §5.1), by a SetAttr after its commit, or on failure
 }
 ```
 

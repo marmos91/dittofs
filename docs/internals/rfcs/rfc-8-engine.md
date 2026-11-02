@@ -1203,7 +1203,7 @@ after a loss, each client resends its recent unstable writes once.
   committed by the group commit within a bounded age of the sync that made it
   recoverable (**proposal**: 1 s, the `existence_age` setting), and always before
   an offer captures the file, before a removal's first transaction, before a size
-  or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), and behind a snapshot cut's closed gate.
+  or time set ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)), before an owner or group change ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), and behind a snapshot cut's closed gate.
 - **`Done` is called exactly once for every write `Write` accepted.** The
   existence commit that commits a write also records the usage it adds
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
