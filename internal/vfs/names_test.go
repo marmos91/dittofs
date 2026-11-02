@@ -573,3 +573,36 @@ func TestOnlyTheLastNameMakesTheOpensDurable(t *testing.T) {
 		t.Errorf("the unlinks of a file's two names told open state %v, want [false true]", rec.got)
 	}
 }
+
+// A caller who may list a directory but not traverse it gets its names
+// alone from ReadDir, no handle and no File, so no entry hands them what
+// Lookup refuses, and Link has no handle to give a name the caller can
+// reach.
+func TestReadDirWithoutTraverseListsNamesAlone(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	bob := proven(n.user(t, "bob", "", n.share, entity.AccessReadWrite).Principal, inLab)
+	d, err := n.Create(ctx, n.admin, n.fs.Root, []byte("d"), vfs.CreateArgs{Kind: vfs.CreateDir, Attrs: entity.Attrs{}.WithMode(0o744)})
+	n.must(t, err)
+	n.create(t, n.admin, d.Handle, "secret", vfs.CreateRegular)
+	mine, err := n.Create(ctx, n.admin, n.fs.Root, []byte("mine"), vfs.CreateArgs{Kind: vfs.CreateDir, Attrs: entity.Attrs{}.WithMode(0o777)})
+	n.must(t, err)
+	if _, _, err := n.Lookup(ctx, bob, d.Handle, []byte("secret")); !errors.Is(err, vfs.ErrAccess) {
+		t.Fatalf("bob's Lookup in admin's 0744 directory: %v, want ErrAccess", err)
+	}
+	p, err := n.ReadDir(ctx, bob, d.Handle, 0, 0, vfs.EntryHandle|vfs.EntryFile)
+	n.must(t, err)
+	if len(p.Entries) != 1 || string(p.Entries[0].Name) != "secret" {
+		t.Fatalf("bob's ReadDir of the 0744 directory: %+v, want secret", p.Entries)
+	}
+	e := p.Entries[0]
+	if e.Handle != nil || e.File != nil {
+		t.Errorf("bob's ReadDir answered secret's handle %v and File %v without traverse", e.Handle, e.File)
+	}
+	if _, err := n.Link(ctx, bob, mine.Handle, []byte("got"), e.Handle); err == nil {
+		t.Error("bob linked the handle ReadDir answered into his directory")
+	}
+	if _, _, err := n.Lookup(ctx, bob, mine.Handle, []byte("got")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("bob reached secret through a link: %v", err)
+	}
+}

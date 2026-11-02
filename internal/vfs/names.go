@@ -72,7 +72,9 @@ func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 // is not positive, in the store's digest order. A cursor is the digest of the
 // entry it follows, so it resumes in dir whatever it was taken from: an entry
 // present throughout is listed once, before or after it. The caller needs
-// list on dir.
+// list on dir; an entry's handle and File are filled only for a caller who
+// may also traverse it, as Lookup would refuse them the same, and a caller
+// who may not gets names alone.
 func (fs *Filesystem) ReadDir(ctx context.Context, c vfs.Call, dir vfs.Handle, after vfs.Cursor, max int, want vfs.EntryFields) (vfs.Page, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -89,6 +91,12 @@ func (fs *Filesystem) ReadDir(ctx context.Context, c vfs.Call, dir vfs.Handle, a
 	defer release()
 	if err := fs.authz.Decide(ctx, a.caller, vfs.OpReadDir, dir, nil, nil, entity.ListDirectory); err != nil {
 		return vfs.Page{}, storeErr(err)
+	}
+	if want&(vfs.EntryHandle|vfs.EntryFile) != 0 {
+		got, err := fs.authz.Rights(ctx, a.caller, dir, nil, entity.Execute)
+		if err != nil || got&entity.Execute == 0 {
+			want &^= vfs.EntryHandle | vfs.EntryFile
+		}
 	}
 	ns := fs.meta.Namespace()
 	list := ns.Entries
@@ -157,6 +165,16 @@ func (fs *Filesystem) Create(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 
 // Link adds name in dir for target, a file of the same share that is not a
 // directory.
+//
+// decision: Link asks nothing of target beyond a handle to it: the add right
+// and traverse on dir are decided, and the store refuses a directory, a
+// released file, an immutable or append-only one and another project's. A
+// handle is a bearer token, as an NFS handle is, so a caller holding one may
+// name the file, as POSIX's link(2) asks nothing of the file either. That
+// holds only while every handle the filesystem answers reaches a caller who
+// may traverse to the file, as Lookup and ReadDir decide. Ask more of target,
+// such as ownership or read and write as Linux's protected_hardlinks does, if
+// a handle is found to reach a caller who could not traverse to its file.
 func (fs *Filesystem) Link(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte, target vfs.Handle) (vfs.CreateResult, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
