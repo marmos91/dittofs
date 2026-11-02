@@ -1,0 +1,27 @@
+# The engine's conformance tests that fail today, one entry per test, never a pattern, each
+# naming the epic expected to turn it green. A test that starts to pass fails the run: remove
+# its entry in the change that turned it green, a journal change included.
+- test: TestRFC8A_JournalAuthority
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync and Since.'
+  issue: '#0'
+- test: TestRFC8A_StableWriteLazyExistence
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and Since.'
+  issue: '#0'
+- test: TestRFC8A_Verifier
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: start and stop; also the verifier (epic 4). Fails at the fixture until the journal has Init, Open and WriteAt.'
+  issue: '#0'
+- test: TestRFC8C_DeclaredInterfaces
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 8: the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
+  issue: '#0'
