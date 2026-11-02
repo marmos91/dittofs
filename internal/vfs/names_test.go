@@ -556,7 +556,7 @@ func (c *committing) Durable(ctx context.Context, f openstate.FileKey) ([]entity
 }
 
 // An unlink tells open state its opens went durable only when it took the
-// file's last name.
+// file's last name, and that unlink writes the open's record to the store.
 func TestOnlyTheLastNameMakesTheOpensDurable(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -566,9 +566,14 @@ func TestOnlyTheLastNameMakesTheOpensDurable(t *testing.T) {
 	_, err := n.Link(ctx, n.admin, n.fs.Root, []byte("g"), f.Handle)
 	n.must(t, err)
 	n.open(t, n.smbClient(t, "holder", n.fs.Admin.Principal), n.fs.Root, f.Handle, "f", entity.ReadData)
-	for _, name := range []string{"f", "g"} {
+	for i, name := range []string{"f", "g"} {
 		_, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte(name))
 		n.must(t, err)
+		recs, err := n.fs.Store.Opens().Of(ctx, n.share, f.File.ID)
+		n.must(t, err)
+		if len(recs) != i {
+			t.Errorf("durable opens after unlinking %s: %v, want %d", name, recs, i)
+		}
 	}
 	if !slices.Equal(rec.got, []bool{false, true}) {
 		t.Errorf("the unlinks of a file's two names told open state %v, want [false true]", rec.got)
