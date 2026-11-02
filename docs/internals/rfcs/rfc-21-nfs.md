@@ -948,12 +948,12 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    `RELEASE_LOCKOWNER` or `RENEW` that names the client ID or owner of a client
    `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`: the adapter reads the
    confirming minor version from that client's record (`Record`, §3.5) before
-   it calls the service. The request's
-   credential **MUST** instead name
+   it calls the service. In place of rule 4's client check, the credential of
+   a v4.0 `READ`, `WRITE` or `SETATTR` **MUST** name
    the principal that made the open the stateid names (`Open.Principal`,
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); the service refuses one
-   naming any other principal with `ErrState` (`NotYours`), which on these three
-   operations is answered `NFS4ERR_ACCESS` (§11.5), and the stateid grants it
+   naming any other principal with `ErrState` (`NotYours`), which on `READ`,
+   `WRITE` and `SETATTR` is answered `NFS4ERR_ACCESS` (§11.5), and the stateid grants it
    nothing. A lock
    stateid is checked against the principal of the open it was taken under.
    The special stateids below name no open and are checked per operation as
