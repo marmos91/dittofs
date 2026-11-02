@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/enginev2"
-	"github.com/marmos91/dittofs/pkg/block/enginev2/journalwrap"
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
@@ -162,7 +161,7 @@ func (f *Fixture) start() {
 			if err != nil {
 				return nil, err
 			}
-			return journalwrap.Wrap(j), nil
+			return wrapJournal(j), nil
 		},
 		Existence: f.FS.Store.Existence(),
 		Content:   f.FS.Store.Content(),

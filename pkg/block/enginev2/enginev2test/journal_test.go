@@ -1,4 +1,4 @@
-package journalwrap
+package enginev2test
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 // A refused Share or Reserve answers a nil interface, never one holding a nil
 // pointer, which a caller's nil check would take for a handle.
 func TestRefusalAnswersNil(t *testing.T) {
-	h, err := Wrap(&journalv2.Journal{}).Share(1, 0, journalv2.Version{}, journalv2.Bounded)
+	h, err := wrapJournal(&journalv2.Journal{}).Share(1, 0, journalv2.Version{}, journalv2.Bounded)
 	if !errors.Is(err, journalv2.ErrNotImplemented) || h != nil {
 		t.Errorf("Share = %v, %v; want nil, the journal's error", h, err)
 	}

@@ -1,20 +1,20 @@
-// Package journalwrap makes the journal satisfy the engine's Journal, for the
-// composition root and the engine's test fixture alike.
-//
+package enginev2test
+
 // The journal's Share and Reserve return its concrete handle and reservation,
 // and Go does not accept a concrete result for a method whose interface
-// declares an interface result, so those two calls are wrapped. Every other
-// method is the journal's own.
-package journalwrap
+// declares an interface result, so the fixture wraps those two calls to pass
+// the journal as the engine's Journal. Every other method is the journal's
+// own.
 
 import (
 	"github.com/marmos91/dittofs/pkg/block/enginev2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 )
 
-// Wrap returns j as the engine's Journal. The handles its Share returns are
-// the engine's Handle, and their Reserve returns the engine's Reservation.
-func Wrap(j *journalv2.Journal) enginev2.Journal { return journal{j} }
+// wrapJournal returns j as the engine's Journal. The handles its Share
+// returns are the engine's Handle, and their Reserve returns the engine's
+// Reservation.
+func wrapJournal(j *journalv2.Journal) enginev2.Journal { return journal{j} }
 
 var (
 	_ enginev2.Handle      = handle{}
