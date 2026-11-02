@@ -103,7 +103,30 @@ type Identity struct {
 	// Admin marks a caller the share grant names admin: it matches
 	// Administrators, whether or not it is privileged.
 	Admin bool
+	// ReadOnly, when set, is why the caller is held to read-only beyond its
+	// share grant: every write right is refused ErrReadOnly, a read-only
+	// file system, where a read-only grant is refused as access denied.
+	ReadOnly ReadOnlyCause
+	// Access, when not none, is the share grant the caller is held to in
+	// place of what the grants naming Principal and its groups give: a
+	// proven caller's own, read for the principal it signed in as before a
+	// squash replaced it. None reads the grants.
+	Access ShareAccess
 }
+
+// ReadOnlyCause is what holds a caller to read-only, whatever its grant. A
+// read-only grant is no cause here: the store reads the grant itself.
+type ReadOnlyCause uint8
+
+const (
+	NotNarrowed      ReadOnlyCause = iota
+	NarrowedByShare                // the share's export policy is read-only
+	NarrowedByClient               // a client rule admits the caller's address read-only
+)
+
+var narrowings = []string{NotNarrowed: "none", NarrowedByShare: "share", NarrowedByClient: "client rule"}
+
+func (n ReadOnlyCause) String() string { return enumString(narrowings, n) }
 
 // InGroup reports whether the caller is in g, through its credential group
 // or its memberships.

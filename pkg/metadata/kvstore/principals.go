@@ -107,9 +107,10 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 	return out, nil
 }
 
-// Grant is p's access to share. A grant naming p itself decides, even one
-// of none; without one, the widest grant naming any of p's groups does.
-// No grant at all is none.
+// Grant is p's access to share once signed in, so authenticated: a grant
+// naming p itself decides, even one of none; without one, the widest grant
+// naming any of p's groups does; without one, a grant naming authenticated
+// users, then one naming everyone. No grant at all is none.
 func (p Principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
 	var access entity.ShareAccess
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
@@ -117,7 +118,7 @@ func (p Principals) Grant(ctx context.Context, share entity.ShareID, of entity.P
 		if err != nil {
 			return err
 		}
-		access, err = grantFor(r, share, entity.Identity{Principal: of, Groups: groups})
+		access, err = grantFor(r, share, entity.Identity{Principal: of, Groups: groups, Authenticated: true})
 		return err
 	})
 	return access, err
@@ -133,4 +134,22 @@ func grantIn(r kv.Reader, share entity.ShareID, p entity.PrincipalID) (entity.Sh
 	}
 	g, err := decodeGrant(share, p, b)
 	return g, err == nil, err
+}
+
+// User is the user record of p: what resolution reads to refuse a disabled
+// or deleted user. A deleted one is not found.
+func (p Principals) User(ctx context.Context, of entity.Principal) (entity.User, error) {
+	var u entity.User
+	err := p.s.kv.View(ctx, func(r kv.Reader) error {
+		if of.Kind != entity.PrincipalUser {
+			return merrs.NewNotFoundError(of.ID.String(), "user")
+		}
+		b, ok, err := get(r, userKey(of.ID))
+		if err != nil || !ok {
+			return notFound(err, of)
+		}
+		u, err = decodeUser(of.ID, b)
+		return err
+	})
+	return u, err
 }

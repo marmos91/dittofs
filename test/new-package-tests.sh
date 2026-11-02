@@ -26,8 +26,11 @@ fi
 # no Go files is not a package and never reaches this list. The repository root
 # is spelled "." rather than the empty string: an empty line would be eaten by
 # the command substitution below, and a root package would slip through unseen.
+# A directory under testdata is not a package either: the go tool ignores it,
+# so Go files there are fixtures a test reads, not code that needs a test.
 go_dirs() {
-	git ls-tree -r --name-only "$1" | sed -n 's![^/]*\.go$!!p' | sed 's!/$!!; s!^$!.!' | sort -u
+	git ls-tree -r --name-only "$1" | sed -n 's![^/]*\.go$!!p' | sed 's!/$!!; s!^$!.!' |
+		grep -Ev '(^|/)testdata(/|$)' | sort -u
 }
 
 # Directories holding at least one Go test file, spelled the same way.
