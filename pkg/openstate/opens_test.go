@@ -912,3 +912,24 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 		t.Errorf("a lock test on a released file: %+v, %v; want no lock held", l, err)
 	}
 }
+
+// A committed release ends a callback waiter's wait on the file, not granted:
+// nothing else would end it.
+func TestReleaseEndsCallbackWaiter(t *testing.T) {
+	f := newFixture(t)
+	a := f.host(t, "nlm-a", 1)
+	b := f.host(t, "nlm-b", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	if res := f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+		t.Fatal("b is not waiting")
+	}
+	done, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing: %v", err)
+	}
+	done(true)
+	if ws := f.sink.takeWaits(); len(ws) != 1 || ws[0].granted || string(ws[0].w.Owner.Name) != "b" {
+		t.Errorf("LockWaitOver after a committed release: %+v, want b's, not granted", ws)
+	}
+}

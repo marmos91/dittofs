@@ -1360,8 +1360,10 @@ func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
 		return nil, err
 	}
 	// A committed release drops the file from the table: a delegation or a
-	// lock state held with no open names a file that is gone.
+	// lock state held with no open names a file that is gone, and a callback
+	// waiter is told its wait ended, not granted.
 	done := func(released bool) {
+		var out outbox
 		_ = t.step(f.ID, func(e *entry) error {
 			if !e.releasing {
 				return nil
@@ -1369,6 +1371,11 @@ func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
 			e.releasing = false
 			e.states--
 			if released {
+				for _, w := range e.waiters {
+					if w.Wait == WaitCallback {
+						out.over = append(out.over, waitOver{*w, false})
+					}
+				}
 				for _, g := range e.grants {
 					t.dropGrant(e, g)
 				}
@@ -1378,6 +1385,9 @@ func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
 			}
 			return nil
 		})
+		if sink, err := t.running(); err == nil {
+			out.raise(t, sink)
+		}
 	}
 	return done, nil
 }
