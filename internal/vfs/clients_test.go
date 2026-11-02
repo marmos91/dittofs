@@ -290,6 +290,40 @@ func TestALastDisconnectAtAStaleGenAnswersTheNewer(t *testing.T) {
 	}
 }
 
+// A re-list's Connect landing after the last session's Disconnect removed
+// the node's entry lists it again at a Gen above the removed one; the
+// adapter, holding no session on that Connect's return, sends Disconnect
+// with Last and that Gen, which unlists the node.
+func TestARelistAfterTheLastDisconnectIsUnlistedByItsOwnGen(t *testing.T) {
+	s := newShares(t, nil, nil)
+	beginShard(t, s)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	ctx, as := t.Context(), signedIn(alice.Principal, 1)
+	id, first, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A durable open keeps the record once the node is unlisted, so the
+	// re-list finds it.
+	leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
+	if gen, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: first}); err != nil || gen != 0 {
+		t.Fatalf("the last Disconnect: Gen %d, %v; want zero", gen, err)
+	}
+	again, gen, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil || again != id || gen <= first {
+		t.Fatalf("the re-list: client %d Gen %d, %v; want client %d at a Gen above %d", again, gen, err, id, first)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 1 {
+		t.Fatalf("after the re-list: sessions %v, %v; want this node listed", rec.Reach.Sessions, err)
+	}
+	if left, err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil || left != 0 {
+		t.Fatalf("the Disconnect at the re-list's Gen: Gen %d, %v; want zero", left, err)
+	}
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 0 {
+		t.Errorf("after the Disconnect at the re-list's Gen: sessions %v, %v; want the node unlisted", rec.Reach.Sessions, err)
+	}
+}
+
 // A destroyed client's path is dropped: a callback raised after goes
 // nowhere.
 func TestADestroyedClientsPathIsDropped(t *testing.T) {

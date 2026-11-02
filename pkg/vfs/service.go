@@ -40,12 +40,20 @@ type Clients interface {
 	// again at each new node epoch while the node holds a session of it:
 	// that lists the node in the record's sessions and answers the entry's
 	// Gen, which the last session's Disconnect passes back; any other
-	// client's is zero.
+	// client's is zero. Each time it answers a Gen, a re-list's included,
+	// the adapter decides again under its per-client step, and if the node
+	// then holds no session of the client, its last having ended or the
+	// setup's connection having dropped while the call ran, it sends
+	// Disconnect with Last and that Gen itself.
 	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error)
 	// AddSession records this node's session, listing the node in the
 	// record's sessions with its entry's Gen raised, and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
 	// nothing and answers StateError RecordChanged with the current record.
+	// On its success the adapter reads its node's entry's Gen from the
+	// record answered and decides again, as after Connect: if the node then
+	// holds no session of the client, it sends Disconnect with Last and that
+	// Gen.
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error)
 	// Record is the record as written, its adapter bytes included.
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error)

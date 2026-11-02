@@ -84,7 +84,10 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 // node under a per-client step held only around that decision; the Gen
 // orders the calls, so a session set up while the last one ends either lists
 // the node again before the last Disconnect, which then removes nothing, or
-// after it, listing the node anew.
+// after it, listing the node anew. A re-list with no session behind it that
+// lands after the last Disconnect lists the node too, at a Gen above the
+// removed one, and the adapter, finding no session on its return, unlists
+// the node with that Gen.
 func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, uint64, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
