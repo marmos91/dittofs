@@ -79,44 +79,48 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 }
 
 // V7: a write holds its file's admission lock from open state's check to
-// the bytes staged, so a mandatory lock, taken under that lock as every lock
-// is, is ordered wholly before the write, which it then refuses, or wholly
-// after it.
+// the bytes staged, and a lock takes it too, so a mandatory lock is ordered
+// wholly before the write, which it then refuses, or wholly after it: a lock
+// asked while the write stages is granted only once the write has answered.
 func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
-	id := fileOf(h)
 	pc := s.smb(t, "pc", s.alice.Principal)
 	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	key := keyOf(s.record(t, h))
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
 	lock := func(name string) error {
-		defer s.Admission(id)()
-		_, err := s.tab.Locks().Lock(ctx, who, key, openstate.LockReq{
-			Owner: openstate.LockOwner{Client: pc.Client, Name: []byte(name), Stack: true}, Open: ref,
-			Ranges: []openstate.LockRange{{ByteRange: openstate.ByteRange{Offset: 0, Length: 10}, Exclusive: true}},
+		_, err := s.Lock(ctx, pc, ref, vfs.LockReq{
+			Owner:  vfs.LockOwner{Client: pc.Client, Name: []byte(name), Stack: true},
+			Ranges: []vfs.LockRange{{ByteRange: vfs.ByteRange{Offset: 0, Length: 10}, Exclusive: true}},
 		})
 		return err
 	}
 	bob := proven(s.bob.Principal, inLab)
 
-	// After: as the write stages its bytes it still holds the admission
-	// lock every lock is taken under, which a take that may not wait finds
-	// held; the lock is granted once the write has answered.
-	gone, cancel := context.WithCancel(ctx)
-	cancel()
+	// After: a lock asked while the write stages its bytes waits for the
+	// write to answer, and is granted then.
+	var locked chan error
+	var answered atomic.Bool
 	s.engine.writing = func(entity.FileID) {
-		if unlock, err := s.locks.Take(gone, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(id)}}); err == nil {
-			unlock()
-			t.Error("the admission lock was free between the write's check and its bytes staged")
-		}
+		locked = make(chan error, 1)
+		go func() {
+			err := lock("after")
+			if !answered.Load() {
+				err = errors.New("granted before the write answered")
+			}
+			locked <- err
+		}()
+		time.Sleep(20 * time.Millisecond)
 	}
-	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable); err != nil {
+	_, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
+	answered.Store(true)
+	if err != nil {
 		t.Fatalf("the write before the lock: %v", err)
 	}
 	s.engine.writing = nil
-	s.must(t, lock("after"))
+	if err := <-locked; err != nil {
+		t.Fatalf("the lock asked during the write: %v", err)
+	}
 
 	// Before: the lock held, the write meets it and stages nothing.
 	s.engine.writing = func(entity.FileID) { t.Error("a write under a mandatory lock was staged") }

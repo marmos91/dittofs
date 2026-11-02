@@ -240,7 +240,7 @@ func TestPendingReleasesWaitOutGrace(t *testing.T) {
 	s := &shares{fixture: f, cp: f.fs.Store.ControlPlane(), share: f.fs.Share.ID}
 	f.must(t, f.Start(t.Context()))
 	ctx := t.Context()
-	alice := s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	c := s.nfs41(t, "host", 1000, 1)
 	h, file := f.fs.Create(t, f.fs.Admin, f.fs.Root, "f", kvstore.Regular(0o666))
 	_, err := f.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData})
@@ -249,20 +249,18 @@ func TestPendingReleasesWaitOutGrace(t *testing.T) {
 	if _, err := f.Unlink(ctx, proven(f.fs.Admin.Principal, inLab), vfs.Target{H: f.fs.Root}, []byte("f")); err != nil {
 		t.Fatal(err)
 	}
-	lh, locked := f.fs.Create(t, f.fs.Admin, f.fs.Root, "l", kvstore.Regular(0o666))
+	lh, _ := f.fs.Create(t, f.fs.Admin, f.fs.Root, "l", kvstore.Regular(0o666))
 	o, err := f.Open(ctx, c, vfs.OpenRequest{H: lh, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData})
 	f.must(t, err)
 	span := []openstate.LockRange{{ByteRange: openstate.ByteRange{Offset: 0, Length: 10}, Exclusive: true}}
-	holder := openstate.Caller{Client: c.Client, Principal: alice.Principal, Protocol: entity.ProtocolNFSv4}
-	_, err = f.tab.Locks().Lock(ctx, holder, keyOf(locked), openstate.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lo")}, Open: o.Ref, Ranges: span})
+	_, err = f.Lock(ctx, c, o.Ref, vfs.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lo")}, Ranges: span})
 	f.must(t, err)
 
 	g := f.restart(t)
 	g.must(t, g.Start(t.Context()))
 	other := (&shares{fixture: g, cp: s.cp, share: s.share}).nfs41(t, "other", 1000, 2)
-	who := openstate.Caller{Client: other.Client, Principal: alice.Principal, Protocol: entity.ProtocolNFSv4}
-	conflicting := openstate.LockReq{Owner: openstate.LockOwner{Client: other.Client, Name: []byte("lo")}, Open: openstate.OpenRef{Kind: openstate.RefAnonymous}, Ranges: span}
-	if _, err := g.tab.Locks().Lock(ctx, who, keyOf(locked), conflicting); !errors.Is(err, openstate.ErrGrace) {
+	conflicting := vfs.LockReq{Owner: openstate.LockOwner{Client: other.Client, Name: []byte("lo")}, Ranges: span}
+	if _, err := g.Lock(ctx, other, vfs.Anonymous(lh), conflicting); !errors.Is(err, vfs.ErrGrace) {
 		t.Errorf("a lock conflicting with a reclaimable one in grace: %v, want ErrGrace", err)
 	}
 	for range 6 {
@@ -277,8 +275,8 @@ func TestPendingReleasesWaitOutGrace(t *testing.T) {
 	}
 	// A client connected now, as other's lease ran out with the clock.
 	late := (&shares{fixture: g, cp: s.cp, share: s.share}).nfs41(t, "late", 1000, 3)
-	who.Client, conflicting.Owner.Client = late.Client, late.Client
-	if _, err := g.tab.Locks().Lock(ctx, who, keyOf(locked), conflicting); err != nil {
+	conflicting.Owner.Client = late.Client
+	if _, err := g.Lock(ctx, late, vfs.Anonymous(lh), conflicting); err != nil {
 		t.Errorf("the conflicting lock once the grace ended: %v", err)
 	}
 }
