@@ -434,7 +434,7 @@ type Open struct {
 	File       FileID
 	Stream     FileID       // the named stream it opens; zero: the base file
 	Via        FileID       // the directory it was opened through (§9.5); zero: opened by handle or ID, counted under no directory, no delete through a parent; kept across a reconnect
-	Name       []byte       // its entry in Via, the one a delete pending removes (§9.4); a rename of that entry moves it; nil: opened by handle
+	Name       []byte       // its entry in Via, the one a delete pending removes (§9.4); a rename of that entry moves it, and an unlink or a rename over it clears it (§11.3, `Renamed`); nil: opened by handle, or its entry removed
 	Mode       OpenMode     // what it may do, and what it refuses other opens (§6)
 	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
@@ -2896,7 +2896,8 @@ type Opens interface {
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
 	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
-	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry
+	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry; a nil toName and zero toDir, after an unlink or a rename over f, clears them
+	Entry(ctx, who Caller, f FileKey, o OpenRef) (dir FileID, name []byte, err error) // the Via and Name of the open o names, a lock state's open's for a Locked one, as renames have moved them; zero and nil for one made by handle, one whose entry was removed, or a reference naming no open; changes nothing. RFC 17 §3.5 reports a change to f's attributes or data there
 	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: holds in the table the source open of no client that the clone's first phase wrote in its transaction; ErrBadState when none is stored
 	CloneClose(ctx, o OpenID) (CloseResult, error)                          // §9.2: the clone's last batch, whose transaction deleted the hold
 	Channel(ctx, who Caller, o OpenID, seq uint16, replay bool) (stale bool, done func(), err error) // §8.1: admits a request at channel sequence seq and counts it in flight; done uncounts it whenever it leaves, its open disconnected or not, never below zero

@@ -622,7 +622,7 @@ Signatures are indicative; the obligations are normative.
 
 Every type an adapter passes or receives is in `pkg/vfs`. Types the metadata
 store and open state define — `ClientID`, `OpenID`, `GrantID`, `WatchID`,
-`SessionRef`, `StateRef`, `OpenRef`, `RefKind`, `Seqs`, `ClientStatus`, `GraceRef`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
+`SessionRef`, `StateRef`, `OpenRef`, `RefKind`, `Seqs`, `ClientStatus`, `GraceRef`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `Lock`, `LockedError`, `LockSequence`, `File`, `Attrs`, `ACL`,
 `Xattr`, `Principal`, `FilesystemInfo`, `Usage`, `Quota`, `CachingGrant`,
 `LockWaiter`, `ChangeMask`, `ShareID` — are re-declared there as aliases
 (`type File = metadata.File`), so an adapter imports one package and the
@@ -747,10 +747,10 @@ type Data interface {
 
 // Locks, grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, c Call, ref OpenRef, r LockReq) (StateRef, error) // the lock state's reference, new Seq included; zero where the protocol names none
-	CancelLock(ctx context.Context, c Call, ref OpenRef, r ByteRange) (granted bool, err error)
-	TestLock(ctx context.Context, c Call, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
-	Unlock(ctx context.Context, c Call, ref OpenRef, rs []ByteRange, q Seqs) (uint32, error) // in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid
+	Lock(ctx context.Context, c Call, ref OpenRef, r LockReq) (StateRef, error) // the lock state's reference, new Seq included; zero where the protocol names none; a conflict is *LockedError, naming the holder
+	CancelLock(ctx context.Context, c Call, ref OpenRef, o LockOwner, r ByteRange) (granted bool, err error) // drops o's waiter for r, or reports its lock granted first
+	TestLock(ctx context.Context, c Call, ref OpenRef, o LockOwner, r ByteRange, exclusive bool) (*Lock, error) // the lock that would refuse o's lock of r, or nil
+	Unlock(ctx context.Context, c Call, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs, replay *LockSequence) (uint32, error) // o's rs in order; stops at the first range not held, ErrRangeNotLocked; the lock state's new seqid; replay: as LockReq.Replay
 	AckRecall(ctx context.Context, c Call, g GrantID, to GrantKind) error // to GrantNone: a return; StateError NoRecall: a lease or oplock with no recall in flight (RFC 14 §2.4)
 	Watch(ctx context.Context, c Call, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, c Call, w WatchID) error
@@ -1211,27 +1211,49 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
-| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename`; `Opens.Renamed` after a rename | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename`; `Opens.Renamed` after a rename, and after an unlink or a rename over a file to clear its opens' entry | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Capacity.Usage` for quota on an owner or group change | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Capacity.Usage` for quota on an owner or group change; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
-| `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
+| `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr`; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw` | primary |
 | `Open` | `Namespace.Lookup` or `Create`, `Files.Authorize`, `Granted`, `Opens.Open` or `Reconnect` | `Draw` when it creates | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Downgrade`, `ConfirmOpen` | `Opens.Downgrade`, `ConfirmOpen` | — | primary |
 | `Close` | `Opens.Close`; `Namespace.Unlink` for a delete on close | `Delete` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Read` | `Checks.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
-| `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
+| `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `Opens.Flushed` through an SMB open | `Commit` | primary |
-| `Deallocate`, `Seek` | `Checks.CheckIO` | `Deallocate`; `Allocation` | primary |
+| `Deallocate`, `Seek` | `Checks.CheckIO`; for `Deallocate`, `Opens.Entry` and `Watches.Changed` for the change (below) | `Deallocate`; `Allocation` | primary |
 | `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
-| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
+| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock`, each passing the call's `LockOwner`, and `Unlock` its `LockSequence`; `Files.Authorize` through `authz.LockState` for a `Lock` or `TestLock` under no open (§5.11) | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
 | `AckRecall` | `Grants.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `Watches.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
 | `Root`, `SecInfo`, `ListShares` | `ShareIndex`: share records, export policy and the name and path indexes ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); `Files.Root` | — | lease owner |
 | `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the filesystem ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local filesystem; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
+
+**A change to a file's attributes or data is reported under the entry its open
+was made through.** A watch's `Change` names an entry of the directory it is
+reported in ([RFC 14 §2.5](rfc-14-open-state.md#2.5%20Watch)), but a file's
+record names no entry. So, while a watch is set on the share, `SetAttr`,
+`SetACL`, `SetXattr`, `RemoveXattr`, `Write` and `Deallocate` through an open
+or a lock state read `Opens.Entry`, the directory and name that open was made
+through as renames have moved them, and report the change there through
+`Watches.Changed`. A change through no such entry is reported, for a
+directory other than a share's root, under its name in the parent its record
+names; for a regular file it is not reported.
+
+> decision: a regular file changed through no open — an open made by handle, a
+> delegation, an anonymous stateid, an NFSv3 `WRITE` or `SETATTR`, or an open
+> whose entry an unlink or a rename over it removed — is reported to no watch,
+> though [RFC 22 §8](rfc-22-smb.md#8.%20Change%20notification) expects a
+> change made over NFS to reach an SMB watch. The store keeps no index of a
+> file's names ([RFC 7 §13](rfc-7-namespace-metadata.md#13.%20Open%20questions)),
+> so no name a listing shows is known for it, and a stale one would name a
+> file as no listing does. Overturned by a client seen watching for those;
+> then the store keeps a file's names, at one write per create, link and
+> rename, and the change is reported under each.
 
 ## 4. Rules
 
@@ -1292,7 +1314,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrInvalid` | the arguments cannot be honoured as given: a name the store refuses, an overlapping copy or clone within one file, a clone longer than `clone_max_len`, a deny entry naming a well-known principal [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)'s table lacks | — |
 | `ErrNoSpace` | a permanent capacity refusal: no space comes without operator action ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s second row); answered at once | — |
 | `ErrQuota` | a logical quota refused; answered at once | `*QuotaError{Scope}`: `QuotaShare`, `QuotaProject`, `QuotaUser`, `QuotaGroup`, the first exceeded in that order — four, though adapters map only two classes, because the metric label and the refusal's message name the scope |
-| `ErrLocked` | a byte-range lock others hold conflicts | — |
+| `ErrLocked` | a byte-range lock others hold conflicts | `*LockedError{Holder}`, RFC 14's aliased ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)): `Holder` is the conflicting `Lock`, its range and its owner, which a protocol's denial reports. Of who holds it, it carries only the owner's `Client` and `Name`, which an NFSv4 `LOCK4denied` and an NLM `holder` return in a denial anyway; never the holder's principal |
 | `ErrRangeNotLocked` | an `Unlock` named a range the owner does not hold | — |
 | `ErrShareViolation` | a deny mode others hold conflicts, decided after handle caching is broken ([§5.3](#5.3%20Open%20and%20close)) | — |
 | `ErrDeletePending` | the file is marked delete on close ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | — |
@@ -2355,7 +2377,8 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 
 ```go
 func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) (StateRef, error) {
-	if err := s.authz.LockState(ctx, c, ref); err != nil {
+	exclusive := slices.ContainsFunc(r.Ranges, func(x LockRange) bool { return x.Exclusive })
+	if err := s.authz.LockState(ctx, c, ref, exclusive); err != nil { // below: under no open, the I/O the lock guards
 		return StateRef{}, err
 	}
 	// RFC 14 §11.3: every range in one step, all or none, and only a single range
@@ -2375,6 +2398,26 @@ func (s *Filesystem) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockRe
 
 A waiting lock holds no worker and has no deadline; it ends only as RFC 14's
 waiter does ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
+
+**`authz.LockState` decides a lock under no open as the I/O it guards.**
+`Lock` and `TestLock` call it; a `LockReq` is exclusive when any of its ranges
+is. Through an open, a lock state or a delegation it decides nothing more: open state's
+opener check, the call's principal against the open's
+([§3.1](#3.1%20Operations)), is the whole check, as the open was authorised
+for its access when it was granted. Under no open — an anonymous `OpenRef`,
+NLM's — it calls `Files.Authorize` for the caller afresh, with no parent,
+wanting read data for a shared lock or a test and write data for an exclusive
+lock, as a lock daemon opens the file to lock it. `CancelLock` and `Unlock`
+do not call it: they decide no right, as they only give up what the owner
+holds.
+
+> decision: a lock under no open is decided as the caller's own right to the
+> I/O it guards: read data for a shared range or a test, write data for an
+> exclusive one. Through an open or a lock state, open state's opener check is
+> the whole check, as the open was authorised for its access when granted; an
+> unlock or a cancel decides no right, as it only gives up what the owner
+> holds. Overturned if a client is seen locking through an open a range of
+> access the open was not granted.
 
 ## 6. Invariants, and the test of each
 
