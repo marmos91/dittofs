@@ -557,14 +557,16 @@ empty `G` arrives as an empty `want`, which `Authorize` admits: the adapter
 ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)), and `Authorize`
 refuses a named right outside `G`. An open asking backup or restore intent is
 the exception: a resolution before the call would lack the open's privilege
-(§3.5), so the maximal request reaches the open unresolved and `Authorize`
-grants and refuses it there as above.
+(§3.5), so the maximal request reaches the open unresolved, and the service
+resolves it there to `G` computed with the open's privilege, refusing it
+`ErrAccess` itself when that `G` is empty or a right asked for by name lies
+outside it.
 
 **What an open holds.** The grant stored with an open
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) is its mapped request — or `G`,
 for a maximal request — computed in the evaluation that admitted it. A
-privileged open's grant is likewise its mapped request (every entry right within
-`C`, for a maximal one): privilege lifts the check on what was asked, and never
+privileged open's grant is likewise its mapped request (`G` computed with its
+privilege, for a maximal one, §3.5): privilege lifts the check on what was asked, and never
 widens what was asked. A request through any open is refused a right outside
 that grant — a write through a handle opened for read, a DACL set through a
 backup handle opened to read — and a delete on close is decided by the delete in
