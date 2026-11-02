@@ -152,7 +152,7 @@ func TestTryRestampLeavesTheJournalShut(t *testing.T) {
 // refuses, and an open that fails after one it made, come back as errors
 // with the journal shut.
 func TestTryCrashReturnsTheRefusalOrTheOpensError(t *testing.T) {
-	f := bareFixture(t, nil, FixtureSegmentCap)
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
 	file, err := f.Seam.Create("seg")
 	if err != nil {
 		t.Fatalf("create a file: %v", err)
@@ -173,11 +173,11 @@ func TestTryCrashReturnsTheRefusalOrTheOpensError(t *testing.T) {
 	}
 }
 
-// TestTryAbandonReturnsTheOpensError pins that an open that fails after the
-// process was abandoned comes back as an error with the journal shut.
-func TestTryAbandonReturnsTheOpensError(t *testing.T) {
-	f := bareFixture(t, nil, FixtureSegmentCap)
-	if err := f.TryAbandon(); err == nil || f.J != nil {
-		t.Fatalf("opening an empty directory after an abandon: error %v, journal %v", err, f.J)
+// TestTryKillReturnsTheOpensError pins that an open that fails after the
+// process was killed comes back as an error with the journal shut.
+func TestTryKillReturnsTheOpensError(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	if err := f.TryKill(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory after a kill: error %v, journal %v", err, f.J)
 	}
 }

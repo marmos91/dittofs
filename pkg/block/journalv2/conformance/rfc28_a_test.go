@@ -284,19 +284,19 @@ func deviceSync(t *testing.T, f *journalv2test.Fixture, name string) {
 	}
 }
 
-// abandonHeld ends the process while the calls stopped at h are in flight,
-// and opens the journal again.
+// killHeld ends the process while the calls stopped at h are in flight, and
+// opens the journal again.
 //
 // decision: the seam's abandon runs first, so a held call, once released,
 // fails as a dead process's; the hold is released second, so the call
-// returns; the fixture's abandon runs last, repeating the seam's with nothing
-// left to close, and opens the journal on what the process left.
-func abandonHeld(t *testing.T, f *journalv2test.Fixture, h *journalv2test.Hold) {
+// returns; the fixture's kill runs last, repeating the seam's abandon with
+// nothing left to close, and opens the journal on what the process left.
+func killHeld(t *testing.T, f *journalv2test.Fixture, h *journalv2test.Hold) {
 	t.Helper()
 
 	f.Seam.Abandon()
 	h.Release()
-	f.Abandon()
+	f.Kill()
 }
 
 // unproven is a pair of records past the last sync the journal knows of: A
@@ -373,7 +373,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	other := writeSynced(t, f, 1, 1, 0, 64<<10)
 	u := writeUnproven(t, f)
 	f.Drop(journalv2test.OpSync, u.name)
-	f.Abandon()
+	f.Kill()
 	f.Seam.SetFault(nil)
 	wantVerifiedThenReappended(t, f, u)
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
@@ -391,7 +391,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 		syncFiles(t, g.Share(1), id)
 	}
 	g.Drop(journalv2test.OpSync, u.name)
-	g.Abandon()
+	g.Kill()
 	g.Seam.SetFault(nil)
 	wantVerifiedThenReappended(t, g, u)
 
@@ -412,7 +412,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 		stub(t, "Sync", err)
 		t.Fatalf("Sync returned (%v) without writing the window's resolution", err)
 	}
-	abandonHeld(t, k, held)
+	killHeld(t, k, held)
 	<-synced // a call the process died in; what it returned means nothing
 	wantVerifiedThenReappended(t, k, u)
 }

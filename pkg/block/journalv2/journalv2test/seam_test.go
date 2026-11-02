@@ -1119,7 +1119,7 @@ func TestUnsyncedCountsNoSyncedOrDroppedWrite(t *testing.T) {
 		t.Fatalf("Unsynced() = %d after a sync, want 0", got)
 	}
 
-	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpWrite, Key: "seg", Action: sim.FaultAction{Kind: sim.Drop}})
+	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpWrite, Key: "seg", Action: sim.FaultAction{TearAfter: sim.Lose}})
 	if err != nil {
 		t.Fatalf("make a schedule dropping the writes of seg: %v", err)
 	}

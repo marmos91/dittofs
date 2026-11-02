@@ -354,24 +354,24 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 	f.open(true)
 }
 
-// Abandon ends the process holding the journal without a storage loss, as a
+// Kill ends the process holding the journal without a storage loss, as a
 // kill does: the seam stops serving the journal's view and closes its files,
 // every byte written stays readable as the operating system's cache keeps a
 // dead process's writes, and what no sync covered is still lost by a later
 // Crash. Then the journal is opened again on what the process left, through
 // the path Reopen and Crash take.
 //
-// decision: the abandoned journal is not closed. A dead process closes, seals
+// decision: the killed journal is not closed. A dead process closes, seals
 // and syncs nothing, and a close through the dead view would still count its
 // calls on the files the seam closed. Its goroutines, once a journal has any,
 // run on until they fail on the dead view; the profiler's goroutine check at
 // the test's end shows them if they never stop, and a close outside the call
 // counts is the upgrade then.
-func (f *Fixture) Abandon() {
+func (f *Fixture) Kill() {
 	f.tb.Helper()
 
 	f.Seam.Abandon()
-	f.open()
+	f.open(true)
 }
 
 // Reopen closes the journal cleanly and opens it again.
@@ -431,17 +431,17 @@ func (f *Fixture) TryCrash(opts ...CrashOption) error {
 		return err
 	}
 	f.dropDead()
-	return f.tryOpen(f.id)
+	return f.tryOpen(f.id, true)
 }
 
-// TryAbandon is Abandon returning Open's error instead of failing the test:
-// after an error the journal is shut, J is nil, until a later open succeeds.
-func (f *Fixture) TryAbandon() error {
+// TryKill is Kill returning Open's error instead of failing the test: after
+// an error the journal is shut, J is nil, until a later open succeeds.
+func (f *Fixture) TryKill() error {
 	f.tb.Helper()
 
 	f.Seam.Abandon()
 	f.J = nil // not closed: a dead process closes nothing
-	return f.tryOpen(f.id)
+	return f.tryOpen(f.id, true)
 }
 
 // dropDead closes the handles and the journal the seam's crash left dead,

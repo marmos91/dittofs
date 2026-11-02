@@ -78,7 +78,7 @@ func sealedSetup(t *testing.T, f *journalv2test.Fixture) sealed {
 	if recovery.CatalogSegments == 0 {
 		t.Fatalf("recovery read no segment by its catalog: %+v", recovery)
 	}
-	if !segmentInfo(t, f, seg).Sealed {
+	if !ownedSegment(t, f, seg).Sealed {
 		t.Fatalf("segment %d is not sealed after its stream rolled past it", seg)
 	}
 
@@ -151,7 +151,7 @@ func TestRFC28C_NeighboursSurvive(t *testing.T) {
 		t.Fatalf("DamagedSegments = %d with one segment holding a record that does not verify, want 1", got)
 	}
 
-	if !segmentInfo(t, f, seg).Damaged {
+	if !ownedSegment(t, f, seg).Damaged {
 		t.Fatalf("segment %d holds the corrupt record and is not reported damaged", seg)
 	}
 }
@@ -220,7 +220,7 @@ func wantDamagedOnly(t *testing.T, f *journalv2test.Fixture, seg journalv2.Segme
 	if losses := f.J.Stats().Losses; len(losses) != 0 {
 		t.Fatalf("a loss was recorded while a copy of the record verifies: %+v", losses)
 	}
-	if !segmentInfo(t, f, seg).Damaged {
+	if !ownedSegment(t, f, seg).Damaged {
 		t.Fatalf("the failed segment %d holds a copy that does not verify and is not reported damaged", seg)
 	}
 }
@@ -428,7 +428,7 @@ func TestRFC28C_Rebuild(t *testing.T) {
 	}
 
 	for seg, end := range tail {
-		if !segmentInfo(t, f, seg).Sealed {
+		if !ownedSegment(t, f, seg).Sealed {
 			t.Fatalf("segment %d is not sealed after recovery cut it at its last verifying record", seg)
 		}
 		for id, entries := range f.J.Inspect().All() {
@@ -458,7 +458,7 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 	if got := f.J.Stats().Counters.TornTails; got != 1 {
 		t.Fatalf("TornTails = %d after a torn record, want 1", got)
 	}
-	if !segmentInfo(t, f, xSeg).Sealed {
+	if !ownedSegment(t, f, xSeg).Sealed {
 		t.Fatalf("the torn segment %d was not sealed", xSeg)
 	}
 	wantExtentMissing(t, f.Share(0), id, x.extent)
@@ -542,7 +542,7 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	if s.Counters.TornTails != 0 {
 		t.Fatalf("TornTails = %d; a truncated segment with a successor is corruption, not a torn tail", s.Counters.TornTails)
 	}
-	if !segmentInfo(t, f, s1).Damaged {
+	if !ownedSegment(t, f, s1).Damaged {
 		t.Fatalf("the truncated segment %d is not reported as corruption", s1)
 	}
 	for i, r := range recs {
@@ -590,7 +590,7 @@ func TestRFC28C_TruncatedSealedSegment(t *testing.T) {
 	if len(s.Losses) != 0 {
 		t.Fatalf("a cut newest segment reported losses: %+v", s.Losses)
 	}
-	if !segmentInfo(t, g, seg).Sealed {
+	if !ownedSegment(t, g, seg).Sealed {
 		t.Fatalf("the newest segment %d was not sealed after its torn tail was cut off", seg)
 	}
 	for i, r := range rs {
@@ -762,7 +762,7 @@ func wantNoFooter(t *testing.T, f *journalv2test.Fixture, s sealed) {
 	if losses := f.J.Stats().Losses; len(losses) != 0 {
 		t.Fatalf("a footer that does not verify was reported as a loss: %+v", losses)
 	}
-	if segmentInfo(t, f, s.seg).Damaged {
+	if ownedSegment(t, f, s.seg).Damaged {
 		t.Fatalf("segment %d is reported damaged; a footer that does not verify is only no footer", s.seg)
 	}
 
@@ -945,9 +945,9 @@ func releaseRecs(t *testing.T, f *journalv2test.Fixture, recs []rec) {
 	syncFiles(t, h, recs[0].id)
 }
 
-// retired is how a retirement left a segment: recycled under a new name, or
+// retiredAs is how a retirement left a segment: recycled under a new name, or
 // removed.
-type retired struct {
+type retiredAs struct {
 	recycled bool
 	name     string // the new name, when recycled
 }
@@ -956,13 +956,13 @@ type retired struct {
 // held files: recycled, under the one segment file the directory gained,
 // whose id is above every id it named before, or removed. One of the two
 // must have happened exactly once.
-func retirement(t *testing.T, f *journalv2test.Fixture, name string, files []string) retired {
+func retirement(t *testing.T, f *journalv2test.Fixture, name string, files []string) retiredAs {
 	t.Helper()
 
 	removed, renamed := f.Seam.CallsFor(journalv2test.OpRemove, name), f.Seam.CallsFor(journalv2test.OpRename, name)
 	switch {
 	case removed == 1 && renamed == 0:
-		return retired{}
+		return retiredAs{}
 	case renamed == 1 && removed == 0:
 		var added []string
 		for _, n := range segmentFiles(t, f) {
@@ -981,15 +981,15 @@ func retirement(t *testing.T, f *journalv2test.Fixture, name string, files []str
 		if idOf(t, added[0]) <= newest {
 			t.Fatalf("the recycled segment %s has an id at or below %d, an id the directory already named", added[0], newest)
 		}
-		return retired{true, added[0]}
+		return retiredAs{true, added[0]}
 	default:
 		t.Fatalf("segment %s was removed %d times and renamed %d times, want exactly one of the two", name, removed, renamed)
-		return retired{}
+		return retiredAs{}
 	}
 }
 
 // retire repacks segment seg, which must be retired by it, and returns how.
-func retire(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) retired {
+func retire(t *testing.T, f *journalv2test.Fixture, seg journalv2.SegmentID) retiredAs {
 	t.Helper()
 
 	files := segmentFiles(t, f)
@@ -1494,7 +1494,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	m := journalv2test.NewUnwatched(t)
 	a := writeSynced(t, m, 0, 0, 0, 128<<10)
 	seg = sealIdle(t, m, a)
-	if !segmentInfo(t, m, seg).Sealed {
+	if !ownedSegment(t, m, seg).Sealed {
 		t.Fatalf("segment %d holding A is not sealed after %v idle", seg, journalv2test.IdleSealAge)
 	}
 	if got := int64(len(durable(t, m, segmentName(seg)))); got >= capBytes {
@@ -1570,7 +1570,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 		t.Fatalf("sync after a failed sync: %v", err)
 	}
 
-	if !segmentInfo(t, n, seg).Failed {
+	if !ownedSegment(t, n, seg).Failed {
 		t.Fatalf("precondition: segment %d is not reported failed after its sync failed", seg)
 	}
 
@@ -1711,7 +1711,7 @@ func wantNewLifeOnly(t *testing.T, f *journalv2test.Fixture, rc recycled, recs [
 	if s.UnreclaimedBytes != unreclaimed {
 		t.Fatalf("UnreclaimedBytes = %d after the open, want %d as before: the old life's records were attached as superseded", s.UnreclaimedBytes, unreclaimed)
 	}
-	if now := segmentInfo(t, f, rc.id); now.HeldBytes != info.HeldBytes || now.RetainedBytes != info.RetainedBytes {
+	if now := ownedSegment(t, f, rc.id); now.HeldBytes != info.HeldBytes || now.RetainedBytes != info.RetainedBytes {
 		t.Fatalf("the recycled segment holds %d and retains %d bytes after the open, want %d and %d as before", now.HeldBytes, now.RetainedBytes, info.HeldBytes, info.RetainedBytes)
 	}
 	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
@@ -1752,7 +1752,7 @@ func wantLeftSegment(t *testing.T, f *journalv2test.Fixture, seg journalv2.Segme
 	if hdr.Predecessor != 0 {
 		t.Fatalf("segment %d names predecessor %d after a failed append ended the stream's segment, want none", nseg, hdr.Predecessor)
 	}
-	if !segmentInfo(t, f, seg).Failed {
+	if !ownedSegment(t, f, seg).Failed {
 		t.Fatalf("segment %d is not reported failed after a failed append", seg)
 	}
 
@@ -1791,12 +1791,12 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	for n := range 3 {
 		recs = append(recs, writeSynced(t, f, 0, 2, rc.first.extent.Off+int64(n+1)*size, size))
 	}
-	unreclaimed, info := f.J.Stats().UnreclaimedBytes, segmentInfo(t, f, rc.id)
+	unreclaimed, info := f.J.Stats().UnreclaimedBytes, ownedSegment(t, f, rc.id)
 	f.Reopen()
 	wantNewLifeOnly(t, f, rc, recs, unreclaimed, info)
 	// Left unsealed by the close, the segment carries only the old life's
 	// trailer, which no open may read as a catalog: it is read by scan.
-	if r := f.J.Stats().Recovery; !segmentInfo(t, f, rc.id).Sealed && r.CatalogSegments != 0 {
+	if r := f.J.Stats().Recovery; !ownedSegment(t, f, rc.id).Sealed && r.CatalogSegments != 0 {
 		t.Fatalf("recovery read %d segments by catalog with the recycled segment %d unsealed; its old life's trailer is no catalog", r.CatalogSegments, rc.id)
 	}
 
@@ -1806,7 +1806,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	for n := range 3 {
 		recs = append(recs, writeSynced(t, g, 0, 2, rc.first.extent.Off+int64(n+1)*size, size))
 	}
-	unreclaimed, info = g.J.Stats().UnreclaimedBytes, segmentInfo(t, g, rc.id)
+	unreclaimed, info = g.J.Stats().UnreclaimedBytes, ownedSegment(t, g, rc.id)
 	g.Crash()
 	wantNewLifeOnly(t, g, rc, recs, unreclaimed, info)
 	if got := g.J.Stats().Counters.TornTails; got != 1 {
@@ -1898,7 +1898,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	if len(s.Losses) != 0 || s.DamagedSegments != 0 {
 		t.Fatalf("the lost earlier write was reported: losses %+v, DamagedSegments = %d", s.Losses, s.DamagedSegments)
 	}
-	if segmentInfo(t, k, rc.id).Sealed {
+	if ownedSegment(t, k, rc.id).Sealed {
 		t.Fatalf("the recycled segment %d was sealed by recovery behind a slot holding the old life's bytes", rc.id)
 	}
 	b := durable(t, k, rc.name)

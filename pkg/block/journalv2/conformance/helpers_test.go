@@ -331,9 +331,9 @@ func entryAt(t *testing.T, f *journalv2test.Fixture, id journalv2.FileID, off in
 	return journalv2.IndexEntry{}
 }
 
-// segmentInfo returns the accounting of segment id, which the journal must
+// ownedSegment returns the accounting of segment id, which the journal must
 // own; a label says where a sweep stands in the failure.
-func segmentInfo(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, where ...string) journalv2.SegmentInfo {
+func ownedSegment(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, where ...string) journalv2.SegmentInfo {
 	t.Helper()
 
 	for _, s := range f.J.Inspect().Segments() {

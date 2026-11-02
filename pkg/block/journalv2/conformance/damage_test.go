@@ -318,7 +318,7 @@ func crashParked(t *testing.T, d *driven, p parked) {
 	}
 }
 
-// waitParked waits until the operation reaches its hold, failing the test
+// waitAtHold waits until the operation reaches its hold, failing the test
 // if it returns first; an operation that reached it already is not waited
 // for.
 //
@@ -332,7 +332,7 @@ func crashParked(t *testing.T, d *driven, p parked) {
 // real time tells a slow sync from one that never comes, and no check here
 // waits on it. Give the operation a done channel, or a seam call that marks
 // it giving up, if the timeout proves too coarse.
-func waitParked(t *testing.T, p parked, what string) {
+func waitAtHold(t *testing.T, p parked, what string) {
 	t.Helper()
 
 	select {
@@ -476,7 +476,7 @@ func idleSealParked(t *testing.T, d *driven) (parked, journalv2.SegmentID) {
 	held := d.f.Seam.Hold(d.tb, journalv2test.OpSync, segmentName(seg))
 	d.f.Advance(journalv2test.IdleSealAge)
 	p := parked{held: held}
-	waitParked(t, p, "the idle seal")
+	waitAtHold(t, p, "the idle seal")
 	return p, seg
 }
 
@@ -498,7 +498,7 @@ func advanceUntil(t *testing.T, d *driven, p *parked, name string, cond func() b
 		}
 
 		p.held = holdNext(d.tb, d.f, journalv2test.OpSync, name, p.held)
-		waitParked(t, *p, "the seal")
+		waitAtHold(t, *p, "the seal")
 	}
 }
 
@@ -609,11 +609,11 @@ func recycleCrashed(t *testing.T, d *driven) string {
 		done <- err
 	}()
 	p := parked{held: rename, done: done}
-	waitParked(t, p, "the repack")
+	waitAtHold(t, p, "the repack")
 
 	// The next sync of a segment file after the rename is the zeroing's.
 	p.held = holdNext(d.tb, d.f, journalv2test.OpSync, "*.seg", p.held)
-	waitParked(t, p, "the repack")
+	waitAtHold(t, p, "the repack")
 	r := retirement(t, d.f, name, files)
 	if !r.recycled {
 		t.Fatalf("precondition: the segment was unlinked with the pool empty, want it recycled")
@@ -826,14 +826,14 @@ var syncPoints = []struct {
 		// The copies may not fit the destination's active segment, so the
 		// repack can roll, and a refill's directory sync then reaches the
 		// hold before the unlink's.
-		waitParked(t, p, "the repack")
+		waitAtHold(t, p, "the repack")
 		for n := 0; d.f.Seam.CallsFor(journalv2test.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
 			p.held = holdNext(d.tb, d.f, journalv2test.OpSyncDir, "*", p.held)
-			waitParked(t, p, "the repack")
+			waitAtHold(t, p, "the repack")
 		}
 		return p
 	}},
@@ -865,7 +865,7 @@ var syncPoints = []struct {
 		name := segmentName(entryAt(t, d.f, a.id, 0).Location.Segment)
 		held := d.f.Seam.Hold(d.tb, journalv2test.OpSync, name)
 		done := make(chan error, 1)
-		go func() { done <- d.f.TryAbandon() }()
+		go func() { done <- d.f.TryKill() }()
 		return parked{held: held, done: done}
 	}},
 	{"open_torn_tail_truncation", func(t *testing.T, d *driven) parked {
@@ -895,7 +895,7 @@ var syncPoints = []struct {
 		done := make(chan error, 1)
 		go func() { done <- d.f.TryCrash(journalv2test.TornIn(name, 32<<10)) }()
 		p := parked{held: held, done: done}
-		waitParked(t, p, "the open after a torn crash")
+		waitAtHold(t, p, "the open after a torn crash")
 		// A journal that syncs the truncation and the seal together is at the
 		// seal's sync already; one that syncs them apart is at the
 		// truncation's, and the next sync of the segment is the seal's.
@@ -922,16 +922,16 @@ var syncPoints = []struct {
 		syncs := d.f.Seam.CallsFor(journalv2test.OpSync, name)
 		held := d.f.Seam.Hold(d.tb, journalv2test.OpSync, name)
 		done := make(chan error, 1)
-		go func() { done <- d.f.TryAbandon() }()
+		go func() { done <- d.f.TryKill() }()
 		p := parked{held: held, done: done}
-		waitParked(t, p, "the open after an abandon")
+		waitAtHold(t, p, "the open after a kill")
 		// The segment's own sync, which the fault drops, passes. The open
 		// verifies every newest segment's unproven tail by syncing it, file
 		// 1's included, so a sync of that segment is passed too, and the
 		// first sync of any other segment is the re-append's.
 		otherSyncs := d.f.Seam.CallsFor(journalv2test.OpSync, otherName)
 		p.held = holdNext(d.tb, d.f, journalv2test.OpSync, "*.seg", p.held)
-		waitParked(t, p, "the open after an abandon")
+		waitAtHold(t, p, "the open after a kill")
 		for n := 0; d.f.Seam.CallsFor(journalv2test.OpSync, otherName) != otherSyncs; n++ {
 			if n == maxOpenSyncs {
 				t.Fatalf("precondition: no sync of a segment other than the unproven one's and file 1's within %d syncs of the open", n)
@@ -939,7 +939,7 @@ var syncPoints = []struct {
 
 			otherSyncs = d.f.Seam.CallsFor(journalv2test.OpSync, otherName)
 			p.held = holdNext(d.tb, d.f, journalv2test.OpSync, "*.seg", p.held)
-			waitParked(t, p, "the open after an abandon")
+			waitAtHold(t, p, "the open after a kill")
 		}
 
 		p.check = func() string {
@@ -988,7 +988,7 @@ var syncPoints = []struct {
 			done <- err
 		}()
 		p := parked{held: rename, done: done, holds: []*journalv2test.Hold{spares}}
-		waitParked(t, p, "the repack")
+		waitAtHold(t, p, "the repack")
 		p.held = holdNext(d.tb, d.f, journalv2test.OpSyncDir, "*", p.held)
 		p.check = func() string {
 			if d.f.Seam.CallsFor(journalv2test.OpRename, name) != 1 {
@@ -1044,14 +1044,14 @@ var syncPoints = []struct {
 			}
 			return ""
 		}}
-		waitParked(t, p, "the open after the crash")
+		waitAtHold(t, p, "the open after the crash")
 		for n := 0; d.f.Seam.CallsFor(journalv2test.OpRemove, tmp) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the open did not unlink %s within %d directory syncs", tmp, n)
 			}
 
 			p.held = holdNext(d.tb, d.f, journalv2test.OpSyncDir, "*", p.held)
-			waitParked(t, p, "the open after the crash")
+			waitAtHold(t, p, "the open after the crash")
 		}
 		return p
 	}},
@@ -1071,7 +1071,7 @@ var syncPoints = []struct {
 			t.Fatalf("sync after a failed sync: %v", err)
 		}
 
-		if !segmentInfo(t, d.f, seg).Failed {
+		if !ownedSegment(t, d.f, seg).Failed {
 			t.Fatalf("precondition: segment %d is not reported failed after its sync failed", seg)
 		}
 
@@ -1088,14 +1088,14 @@ var syncPoints = []struct {
 			}
 			return ""
 		}}
-		waitParked(t, p, "the repack")
+		waitAtHold(t, p, "the repack")
 		for n := 0; d.f.Seam.CallsFor(journalv2test.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the failed segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
 			p.held = holdNext(d.tb, d.f, journalv2test.OpSyncDir, "*", p.held)
-			waitParked(t, p, "the repack")
+			waitAtHold(t, p, "the repack")
 		}
 		return p
 	}},
@@ -1123,7 +1123,7 @@ func TestDamage_LostWrites(t *testing.T) {
 				p.check = func() string { return "" }
 			}
 
-			waitParked(t, p, sp.name)
+			waitAtHold(t, p, sp.name)
 			crashParked(t, d, p)
 		})
 	}
@@ -1214,7 +1214,7 @@ func TestDamage_TornWrites(t *testing.T) {
 			iterate(t, func(tb testing.TB) {
 				d := newDriven(tb, t, fmt.Sprintf("the trailer cut %d bytes short", n))
 				p, name := footerParked(t, d)
-				waitParked(t, p, "the roll")
+				waitAtHold(t, p, "the roll")
 				if msg := p.check(); msg != "" {
 					t.Fatalf("precondition: the held call is not the footer's sync: %s", msg)
 				}
@@ -1817,7 +1817,7 @@ func TestDamage_BitFlip(t *testing.T) {
 				s := newFlipSite(t, large, 0, false)
 				flipStructure(t, s, s.name, 0, fd, func(where string) {
 					s.reopen(t, where)
-					if !segmentInfo(t, s.f, s.seg, where).Damaged || s.f.J.Stats().DamagedSegments == 0 {
+					if !ownedSegment(t, s.f, s.seg, where).Damaged || s.f.J.Stats().DamagedSegments == 0 {
 						t.Fatalf("%s: segment %d is not reported damaged with its header changed", where, s.seg)
 					}
 
@@ -1834,7 +1834,7 @@ func TestDamage_BitFlip(t *testing.T) {
 				s.wantSuccessor(t)
 				flipStructure(t, s, s.name, s.footer-raw.SealMarkerSize, fd, func(where string) {
 					s.reopen(t, where)
-					if !segmentInfo(t, s.f, s.seg, where).Damaged {
+					if !ownedSegment(t, s.f, s.seg, where).Damaged {
 						t.Fatalf("%s: segment %d, named by its successor, is not reported corrupt with its seal marker changed", where, s.seg)
 					}
 

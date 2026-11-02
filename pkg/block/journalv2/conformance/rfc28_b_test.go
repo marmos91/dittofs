@@ -67,7 +67,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 	creates := f.Seam.Calls(journalv2test.OpCreate)
 	seg := sealIdle(t, f, a)
 	name := segmentName(seg)
-	info := segmentInfo(t, f, seg)
+	info := ownedSegment(t, f, seg)
 	size := int64(len(durable(t, f, name)))
 	if !info.Sealed || info.Allocated != size || size >= journalv2test.FixtureSegmentCap {
 		t.Fatalf("precondition: segment %d is sealed %t, accounted at %d and %d bytes long after its idle seal, want it sealed, accounted at its size and short of its cap %d", seg, info.Sealed, info.Allocated, size, journalv2test.FixtureSegmentCap)
