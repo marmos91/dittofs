@@ -336,8 +336,9 @@ func TestAllocateShortWrites(t *testing.T) {
 
 // TestAllocateFallocateError checks a failed fallocate is returned once, as an
 // *fs.PathError of op fallocate naming the file's full path, with no zero
-// write after it and no fallback to writing zeros alone, and that the next
-// Allocate makes a new fallocate.
+// write after it, and that the next Allocate makes a new fallocate. A
+// fallocate refused with EOPNOTSUPP is the exception: the zero writes alone
+// then cover the range, which reads as zeros, and Allocate succeeds.
 func TestAllocateFallocateError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -346,7 +347,7 @@ func TestAllocateFallocateError(t *testing.T) {
 	f := openOn(t, newOS(dir, r.table()), "a")
 	path := filepath.Join(dir, "a")
 
-	for _, errno := range []syscall.Errno{syscall.EIO, syscall.ENOSPC, syscall.EOPNOTSUPP} {
+	for _, errno := range []syscall.Errno{syscall.EIO, syscall.ENOSPC} {
 		r.failNext("fallocate", errno)
 
 		err := f.Allocate(0, 4096)
@@ -368,6 +369,21 @@ func TestAllocateFallocateError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate after the failures: %v", err)
 	}
+
+	const n = 2*zeroChunk + 1
+
+	g := openOn(t, newOS(dir, r.table()), "b")
+	r.failNext("fallocate", syscall.EOPNOTSUPP)
+
+	err = g.Allocate(0, n)
+	expectAllocate(t, r.take(), filepath.Join(dir, "b"), 0, n, 1)
+
+	if err != nil {
+		t.Fatalf("Allocate with fallocate refused with EOPNOTSUPP: %v", err)
+	}
+
+	expectFileSize(t, g, n)
+	expectZeros(t, g, 0, n)
 }
 
 // TestAllocateWriteError checks a zero write that fails part way through the

@@ -18,14 +18,15 @@ var zeros [zeroChunk]byte
 
 // Allocate is fallocate in its default mode over the range, then zeros
 // written over every byte of it (RFC 28 Appendix A: "on Linux, `fallocate`
-// then writing zeros over the whole segment"). It does not sync: the caller's
-// Sync makes the allocation durable, as it does a WriteAt. Zeros are written
-// over the whole range, so bytes a write had put there read as zeros
-// afterwards. A range no file can hold fails with EINVAL, and an empty range
-// does nothing, both before any system call. The descriptor is reached
-// through the file's own reference, so a concurrent Close cannot release it
-// during the calls. On a closed file a valid, non-empty range fails with
-// fs.ErrClosed before any system call.
+// then writing zeros over the whole segment"). Where the filesystem has no
+// fallocate for the file, the zero writes alone allocate the range. It does
+// not sync: the caller's Sync makes the allocation durable, as it does a
+// WriteAt. Zeros are written over the whole range, so bytes a write had put
+// there read as zeros afterwards. A range no file can hold fails with EINVAL,
+// and an empty range does nothing, both before any system call. The
+// descriptor is reached through the file's own reference, so a concurrent
+// Close cannot release it during the calls. On a closed file a valid,
+// non-empty range fails with fs.ErrClosed before any system call.
 //
 // decision: zero-filled on Linux because fallocate alone leaves unwritten
 // extents on ext4 and XFS (RFC 28 Appendix A): the first write into each
@@ -86,7 +87,8 @@ func (f *file) Allocate(off, n int64) error {
 // that failed and its error, if one did. A call interrupted by a signal is
 // made again, as the os package does for its own writes: both calls give the
 // same result when repeated over the same range, so a repeat hides no
-// failure. Every other error is returned after one call, and no call follows
+// failure. A fallocate refused with EOPNOTSUPP is followed by the zero writes
+// alone. Every other error is returned after one call, and no call follows
 // it.
 func (f *file) allocate(fd int, off, n int64) (string, error) {
 	err := f.calls.fallocate(fd, unix.FALLOC_FL_ALLOCATE_RANGE, off, n)
@@ -94,7 +96,19 @@ func (f *file) allocate(fd int, off, n int64) (string, error) {
 		err = f.calls.fallocate(fd, unix.FALLOC_FL_ALLOCATE_RANGE, off, n)
 	}
 
-	if err != nil {
+	// decision: a filesystem with no fallocate for the file (the ext2
+	// driver, or the ext4 driver on a file without extents, as an ext3
+	// volume makes) is allocated by the zero writes alone, which RFC 28 §2.2
+	// allows ("with the platform's allocation call or by writing zeros").
+	// Both share ext4's magic, and an ext3 volume can be mounted as ext4, so
+	// the directory check cannot refuse them. The fallback is safe only
+	// because that check refuses unlisted copy-on-write filesystems, such as
+	// ZFS, where written zeros may not allocate blocks: on every filesystem
+	// it accepts, EOPNOTSUPP means ext2 or an ext3 file without extents,
+	// where the written zeros allocate every block. On XFS, fallocate is what
+	// rules out speculative allocation past the end (RFC 28 Appendix A), so
+	// withdraw this fallback if XFS is ever seen returning EOPNOTSUPP.
+	if err != nil && !errors.Is(err, unix.EOPNOTSUPP) {
 		return "fallocate", err
 	}
 

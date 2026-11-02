@@ -63,6 +63,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"O_CLOEXEC":                true,
 		"EINTR":                    true,
 		"EINVAL":                   true,
+		"EOPNOTSUPP":               true,
 		"FALLOC_FL_ALLOCATE_RANGE": true,
 	}
 	raw := map[string]bool{
