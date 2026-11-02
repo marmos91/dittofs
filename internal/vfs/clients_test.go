@@ -1183,3 +1183,27 @@ func TestALockGrantStopsBeingSentAtItsDeadlineOrRelease(t *testing.T) {
 		}
 	})
 }
+
+// An NLM host's grant is never given up for a silence: it is still sent
+// again past grantResendFor.
+func TestAnNLMLockGrantIsResentPastTheBound(t *testing.T) {
+	fastRetry(t)
+	d := grantResendFor
+	t.Cleanup(func() { grantResendFor = d })
+	grantResendFor = 20 * time.Millisecond
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }}
+	id, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	time.Sleep(grantResendFor + 20*time.Millisecond)
+	n := len(cb.Calls())
+	time.Sleep(50 * time.Millisecond)
+	if m := len(cb.Calls()); m == n {
+		t.Error("an NLM host's grant stopped being sent past grantResendFor")
+	}
+	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
+}

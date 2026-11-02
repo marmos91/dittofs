@@ -57,14 +57,17 @@ const callbackDeadline = 35 * time.Second
 var grantRetry = 10 * time.Second
 
 // grantResendFor is how long after its first send an unanswered lock grant
-// is sent again: one lease period. Past it the grant stays offered, unsent,
-// until the client answers it or ends.
+// to a client other than an NLM host is sent again: one lease period. Past it
+// the grant stays offered, unsent, until the client answers it or ends. An
+// NLM host's grant is resent until it answers or its record ends, never given
+// up for a silence.
 //
-// ponytail: a fixed bound, one goroutine per unanswered grant for up to
-// grantResendFor, resending each grantRetry, or until the client ends or its
-// record is released; an NLM host down for longer is not told of its grant
-// until it locks again. Resend at the client's next Connect, rather than on a
-// timer, if hosts that stay down are seen missing their grants.
+// ponytail: one goroutine per unanswered grant, resending each grantRetry:
+// an SMB client's for up to grantResendFor, or until it ends or its record is
+// released, after which an SMB client that signs in again is not told of its
+// grant; an NLM host's for as long as its record lives. Resend at the
+// client's next Connect, and bound the NLM goroutines, if hosts that stay
+// down are seen missing their grants or holding goroutines.
 var grantResendFor = 90 * time.Second
 
 // ClientEnded tells the client its state ended, then drops its path.
@@ -82,9 +85,9 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 // LockWaitOver tells the waiting owner's client, and hands its answer to a
 // grant back to open state, under the file's admission lock. A grant the
 // client gives no answer to is sent again each grantRetry, through the
-// client's Callbacks as they are then, until grantResendFor has passed or the
-// client ends or is released; the lock stays granted, the grant offered,
-// until it answers or ends.
+// client's Callbacks as they are then, until the client ends or is released,
+// or, but for an NLM host, grantResendFor has passed; the lock stays granted,
+// the grant offered, until it answers or ends.
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
 	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
@@ -97,7 +100,7 @@ func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 				return
 			case <-time.After(grantRetry):
 			}
-			if time.Now().After(until) {
+			if time.Now().After(until) && !fs.reg.isNLM(c) {
 				return
 			}
 			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
@@ -304,6 +307,18 @@ func (r *registry) unregister(id entity.ClientID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.cb, id)
+}
+
+// isNLM reports whether client id is the one an NLM host last connected as.
+func (r *registry) isNLM(id entity.ClientID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.nlm {
+		if c == id {
+			return true
+		}
+	}
+	return false
 }
 
 // latest is client id's Callbacks, or nil.
