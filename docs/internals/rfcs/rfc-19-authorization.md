@@ -544,12 +544,17 @@ query and an open asking for whatever it may have
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) pass every right, and so are
 answered `G` itself. A caller that passes only the rights the client named
 loses the rest, such as the `DELETE` granted through the parent.
-`Authorize(want)` **MUST** succeed exactly when `Granted(want)` is `want`.
+`Authorize(want)` **MUST** succeed exactly when `Granted(want)` is `want`, so
+an empty `want` succeeds whatever `G` is.
 
 A **maximal request** — an open asking "whatever I may have", such as SMB's
 `MAXIMUM_ALLOWED` — is granted `G`, and **MUST** be refused `ErrAccess` when `G`
 is empty or when a right it also asked for by name is outside `G`, as Windows'
-access check decides.
+access check decides. The adapter resolves it to `G` before the call, so an
+empty `G` arrives as an empty `want`, which `Authorize` admits: the adapter
+**MUST** refuse a maximal request whose resolved mask is empty itself
+([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)), and `Authorize`
+refuses a named right outside `G`.
 
 **What an open holds.** The grant stored with an open
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) is its mapped request — or `G`,
@@ -561,8 +566,9 @@ that grant — a write through a handle opened for read, a DACL set through a
 backup handle opened to read — and a delete on close is decided by the delete in
 the stored grant.
 
-An access query answers `G` with the privilege the caller holds, since the
-operation that follows is authorised with it. A maximal-access answer on an
+An access query answers the part of its `want` in `G`, computed with the
+privilege the caller holds, since the operation that follows is authorised with
+it. A maximal-access answer on an
 open, such as SMB's `MaximalAccess` and `MxAc`, is computed without that open's
 privilege (§3.5).
 
@@ -1064,7 +1070,7 @@ inherits modify from the unchanged inherit-only copy.
 | Z1 | A stored entry names its principal by ID, holds only the fourteen entry rights, and is one of four kinds. |
 | Z2 | A set either stores every entry it carried, in its order — entries naming deleted principals aside (§5.2) — or stores nothing. |
 | Z3 | The same request by the same caller of the same file is granted the same set, whatever protocol carried it. |
-| Z4 | `Authorize(want)` succeeds exactly when `Granted(want)` is `want`; `Granted(want)` is within `want` and the share ceiling. |
+| Z4 | `Authorize(want)` succeeds exactly when `Granted(want)` is `want`, an empty `want` included; `Granted(want)` is within `want` and the share ceiling; a maximal request whose resolved mask is empty is refused by the adapter. |
 | Z5 | No file ACL widens a share ceiling, and no share ceiling is written into a file's ACL, stored or shown. |
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
 | Z7 | `ACLFromMode(m, d).Mode(o) == m`; `a.WithMode(a.Mode(o), o, d)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names; and no `chmod` raises an existing allow or places a new one before any other entry. |
@@ -1118,7 +1124,7 @@ server.
 
 | § | Check |
 | --- | --- |
-| §3.3 walk and maximal access | Run each row of §3.3's table through `Authorize` and `Granted`, and the same ACLs on a reference server of each served protocol: assert every answer equals the table's and the reference servers'. For each ACL and caller, assert `Authorize(want)` succeeds exactly when `Granted(want)` is `want`. A build without implicit owner rights fails the first two rows; one that stops the maximal walk at the first allow fails the fourth. |
+| §3.3 walk and maximal access | Run each row of §3.3's table through `Authorize` and `Granted`, and the same ACLs on a reference server of each served protocol: assert every answer equals the table's and the reference servers'. For each ACL and caller, assert `Authorize(want)` succeeds exactly when `Granted(want)` is `want`. Over SMB, a `MAXIMUM_ALLOWED` open of a file whose ACL grants the caller nothing: `STATUS_ACCESS_DENIED`. A build without implicit owner rights fails the first two rows; one that stops the maximal walk at the first allow fails the fourth. |
 | §2.3 well-known matching | Store an ACL granting Administrators full and Authenticated Users read, with no other entry. As the share's `admin`, authenticated and not privileged: assert full access through the walk; as another authenticated user: read only; as that user with an asserted identity: nothing, and with a named entry for its principal added: what the entry grants. Store a deny naming an unmodelled well-known principal: assert `ErrInvalid`; a deny for NETWORK: assert it refuses every caller. A squashed caller matches `EVERYONE@` and ANONYMOUS LOGON, not Authenticated Users, and `OWNER@` only on its own file. |
 | §2.3 deny-only | An allow naming a group the caller holds deny-only grants nothing; a deny naming it refuses. |
 | §2.4 generic rights | Call `Authorize` with a mask holding a generic bit, on a file whose mode grants every right to the caller: assert refused. Set an entry whose mask holds a generic bit: assert `ErrInvalid`. The mapping itself is RFC 22's. |
