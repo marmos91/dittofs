@@ -1790,7 +1790,7 @@ mask is empty, the file granting the caller nothing, is refused
 an empty `want`. A `MAXIMUM_ALLOWED` open with `FILE_OPEN_FOR_BACKUP_INTENT` is
 not resolved through `Access`, which computes without the open's privilege
 ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)):
-the adapter passes the maximal request to the open, and the service resolves it
+the adapter passes the maximal request to the open (`OpenRequest.Maximal`), and the service resolves it
 there to `G` as
 [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)
 computes it with the privilege it marks the open with, so execute on a
