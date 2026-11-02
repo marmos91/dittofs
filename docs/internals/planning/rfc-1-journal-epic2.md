@@ -224,7 +224,8 @@ turn `unit` red.
   `owner: epic N` with a reason, or both when a row is split (D9 shows how). `owner:` names
   only an owner outside this epic (§6), or `parked`. A row whose test a subtask of this epic
   has not written yet carries `pending: 2.x` instead, and that subtask removes it when the
-  test lands, so none is left at S2 (2.15); a split row carries both `owner:` and `pending:`.
+  test lands, so none is left at S2 (2.15); a split row whose own half is not written yet
+  carries `owner:` and `pending:`.
   A row with tests that is still pending fails the check.
 - *The check:* `test/journalv2/trace_test.go`, run by `lint-repo` (and by `unit`, which runs `./test/...`). It parses the rows of the
   scope above straight from the RFC files, and the conformance package's test functions
