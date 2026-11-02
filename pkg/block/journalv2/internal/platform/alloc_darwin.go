@@ -16,8 +16,7 @@ import (
 // tested. The space is asked for from the physical end of the file, the only
 // mode that takes a length in the file rather than a position on the volume,
 // and the length asked for is the range's end, so the space reaches it
-// whatever the file already holds. A file that already holds blocks may get
-// more than it needs; the journal allocates only new, empty files.
+// whatever the file already holds.
 //
 // No zeros are written, as RFC 28 Appendix A asks on macOS: bytes past the
 // old end read as zeros once the size is set, and bytes a write had put
@@ -93,6 +92,17 @@ func (f *file) Allocate(off, n int64) error {
 func (f *file) allocate(fd int, end int64) (string, error) {
 	// The kernel refuses any offset but 0 when the space is asked for from
 	// the physical end of the file.
+	//
+	// ponytail: with F_PEOFPOSMODE the length counts from the physical end of
+	// the file, so a file that already holds k bytes of blocks is asked for
+	// k+end, up to k more than the range needs. That is exact for the new,
+	// empty files the journal allocates: a segment is allocated once, when it
+	// is created, and a recycled one keeps its blocks, so Allocate is not
+	// called on it again (RFC 28 §2.2). Under F_ALLOCATEALL the extra can fail
+	// with ENOSPC on a volume that has room for the range. If a caller ever
+	// allocates a file that holds blocks, ask only for what the range lacks,
+	// read with an fstat first, once a test shows that st_blocks counts what
+	// the kernel counts the physical end from.
 	store := unix.Fstore_t{
 		Flags:   unix.F_ALLOCATEALL,
 		Posmode: unix.F_PEOFPOSMODE,
