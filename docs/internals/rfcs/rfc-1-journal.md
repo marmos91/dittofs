@@ -529,17 +529,17 @@ store under a new installation ID, it rewrites the installation ID of the
 journal whose identity is `expect`, and only that
 ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
 
-**A directory the platform cannot keep durable is refused.** `Open`, and
-`Init` for the rules that apply before any file is created, **MUST** refuse,
-with `ErrUnsuitableStorage`, a directory where a sync would not keep synced
-data across a power loss, by the platform rules of [RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile): a mount
-without cache flushes, and on Btrfs a directory with copy on write enabled,
-a file in it without the attribute, or a directory that is not a
-subvolume's root. The error names the rule, the directory, the mount and
-the option that refused it, and what to change. An error met while checking
-(an I/O error, or a mount table that does not describe the directory) is
-returned as itself, never as `ErrUnsuitableStorage`, so a caller can tell an
-installation to fix from a fault.
+**A directory the platform profile refuses is refused.** `Init` and `Open`
+**MUST** refuse, with `ErrUnsuitableStorage`, a directory that any refusal of
+[RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile) applies to, such as a mount whose syncs
+do not reach the device, or, on a copy-on-write filesystem, a directory where a
+write into allocated space could still allocate, voiding the headroom of
+[§6](#6.%20Capacity). `Init` checks before it creates any file and before its
+`ErrNotEmpty` check. The error names the rule, the directory, and what to
+change. An error met while checking (an I/O error, or a mount table that does
+not describe the directory) is returned as itself, never as
+`ErrUnsuitableStorage`, so a caller can tell an installation to fix from a
+fault.
 
 **A share attached after open raises the counter first.** `Share`'s `floor` is
 the share's own version floor: the highest content version recorded for any file
@@ -2844,6 +2844,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |
+| [§3](#3.%20Interface) unsuitable storage refused | Make the platform checks of [RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile) see a mount without cache flushes. Assert `Init` and `Open` each refuse with `ErrUnsuitableStorage`, the error names the directory and the rule, and the directory is left as it was: `Init` creates no file, and refuses with `ErrUnsuitableStorage`, not `ErrNotEmpty`, a directory that also holds another entry. Repeat on a copy-on-write filesystem with a directory without the attribute, with a directory that has it and holds a file without it, and, on Btrfs, with a directory that is not a subvolume's root. Make the read of the mount table fail instead; assert `Init` and `Open` return that error and `errors.Is` does not match it to `ErrUnsuitableStorage`. A journal that opens on such a mount loses synced records at a power cut. |
 
 #### Group B — wedging and unbounded resource use
 

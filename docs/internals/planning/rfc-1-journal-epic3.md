@@ -160,6 +160,8 @@ or the check and the later epic acts on it.
 | Appendix A | "Open **MUST** refuse a copy-on-write filesystem mounted without cache flushes (`nobarrier` on Btrfs)" | 3.11; epic 7 |
 | Appendix A | "Open **MUST** refuse a filesystem mounted without cache flushes where the mount options say so (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS)" | 3.11; epic 7 |
 | Appendix A | "Open **MUST** refuse a volume whose write-cache buffer flushing is turned off by policy, where the platform reports it" | 3.12; epic 7 |
+| Appendix A | "The same check **MUST** refuse a directory that holds a file without the attribute" | 3.11; epic 7 |
+| Appendix A | "**Every refusal of this appendix is made at `Init` as well as at open**, and returns `ErrUnsuitableStorage`", `Init` "before it creates any file and before it checks that the directory is empty" | 3.11, 3.12 (the probe); epic 7 (`Init` and open call it, and return the error) |
 
 ---
 
@@ -317,7 +319,8 @@ func TestSyscallTableIsReal(t *testing.T) {
 **D7. Probes are a separate function, not part of `storage.FS`.**
 `platform.Check(dir string) error`: the error refuses (barrier, copy-on-write, Btrfs
 subvolume, Windows cache policy). `Init` and `Open` already take `dir`, so the probe needs
-nothing from the seam. How a refusal reaches the caller is P3.
+nothing from the seam. A refusal matches RFC 1 §3's `ErrUnsuitableStorage` with
+`errors.Is` (P3).
 
 **D8. The internal packages' tests are their consumer until epics 5 and 7.**
 As epic 4 reads rule 12 for `internal/index`: the packages are pure logic or the OS
@@ -875,14 +878,11 @@ Each open point says what is asked, who decides it, and what it blocks.
   zero-slot rule for Windows; (c) set it only where the allocation is known zeroed. Option
   (a) is the only one that keeps the zero-slot rule and does not expose old data; it is
   also the smallest change, since it shares D4's code. **Blocks:** nothing.
-- **P3. Which error does a platform refusal return?** RFC 28 Appendix A requires `Init` and
-  `Open` to refuse ("Open **MUST** refuse a volume whose write-cache buffer flushing is
-  turned off by policy"), but RFC 1 §3 names no error for it, and the public errors of
-  `errors.go` have none. Options: (a) RFC 1 §3 adds a sentinel, for example
-  `ErrUnsuitableStorage`, which epic 1's freeze log then records; (b) the refusal wraps an
-  existing sentinel, which names the wrong cause; (c) a typed error carrying the probe's
-  reason. Rule 11 forbids exporting one before the RFC names it. **Decides:** RFC 1 owner.
-  **Blocks:** D7's error, and epic 7's refusal tests.
+- **P3. Which error does a platform refusal return?** Resolved by #3545: RFC 1 §3 names
+  `ErrUnsuitableStorage`, which `Init` and `Open` return for every refusal of RFC 28
+  Appendix A, `Init` before it creates any file and before its `ErrNotEmpty` check; the
+  probe's typed refusal matches it with `errors.Is`, and an error met while checking is
+  returned as itself. **Blocks:** nothing.
 
 ### Resolved here, to confirm
 

@@ -1490,7 +1490,9 @@ descend into a nested one. An implementation **MUST** check the attribute at
 `Init` and at open and refuse a directory without it on such a filesystem, and
 **MUST** refuse, on Btrfs, a directory that is not a subvolume's root; a snapshot
 taken of that subvolume itself by an operator is not detectable, and voids the
-headroom for as long as it is kept. Open **MUST** refuse a copy-on-write
+headroom for as long as it is kept. The same check **MUST** refuse a directory
+that holds a file without the attribute, since setting it on the directory does
+not reach a file that already holds data. Open **MUST** refuse a copy-on-write
 filesystem mounted without cache flushes (`nobarrier` on Btrfs), as for Linux
 below.
 
@@ -1517,6 +1519,13 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   directory with backup semantics and calling `FlushFileBuffers` on it, which
   NTFS honours. Open **MUST** refuse a volume whose write-cache buffer flushing
   is turned off by policy, where the platform reports it, as for `nobarrier`.
+
+**Every refusal of this appendix is made at `Init` as well as at open**, and
+returns `ErrUnsuitableStorage` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). `Init` makes them before it creates
+any file and before it checks that the directory is empty, so a directory open
+would refuse never receives a `format` file, and an operator never has to empty
+it by hand after fixing the mount. A thin-provisioned device is reported, never
+refused.
 
 Reading past the page cache, for the open-time tail check ([§3.1](#3.1%20Rebuilding)): `O_DIRECT`
 on Linux, `F_NOCACHE` on macOS, `FILE_FLAG_NO_BUFFERING` on Windows.
