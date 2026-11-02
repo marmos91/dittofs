@@ -8,15 +8,21 @@ package enginev2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
 // errUnbuilt answers every call whose behaviour is not built yet.
-var errUnbuilt = errors.New("engine: not built")
+//
+// decision: an unbuilt call answers vfserr.ErrUnavailable, wrapped so a test
+// tells it from an outage, rather than an error of the engine's own: the
+// engine returns only vfserr's values, and a caller maps this one already.
+// It holds while nothing composes the engine; every call is built, and this
+// removed, before the filesystem service runs over it.
+var errUnbuilt = fmt.Errorf("engine: not built: %w", vfserr.ErrUnavailable)
 
 // Engine is the engine of one node.
 type Engine struct {
