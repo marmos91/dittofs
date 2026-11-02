@@ -1449,7 +1449,41 @@ func TestRefusedLeaseKeyOffersNoOplock(t *testing.T) {
 	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
 		t.Fatal("alice was offered no lease")
 	}
-	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g != nil {
+	// bob's connection carries another user's session, but no opener's.
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead, Conn: []entity.Principal{entity.NewUser()}}); g != nil {
 		t.Errorf("bob's open under alice's key: offered %+v, want nothing", g)
+	}
+}
+
+// Another user of the client under a key of its own takes its own lease
+// beside one it may not join.
+func TestOwnKeyBesideAnothersLease(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
+		t.Fatal("alice was offered no lease")
+	}
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{8}, Want: GrantRead}); g == nil || g.Key != (LeaseKey{8}) {
+		t.Errorf("bob's open under his own key: offered %+v, want his own lease", g)
+	}
+}
+
+// A change through no open is its client's own against the client's
+// delegation, as no NFSv4 server breaks a delegation for its own client.
+func TestOwnChangeKeepsOwnDelegation(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
+	if d == nil {
+		t.Fatal("no delegation")
+	}
+	if err := f.Checks().CheckChange(ctx, a, file, nil, ChangeAttrs); err != nil {
+		t.Errorf("the holder's own change through no open: %v", err)
+	}
+	if got := f.grantNow(t, file, d.ID); got.Recall != nil {
+		t.Errorf("the holder's delegation after its own change: %+v, want unrecalled", got)
 	}
 }

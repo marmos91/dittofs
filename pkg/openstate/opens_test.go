@@ -612,7 +612,9 @@ func TestStreamDenyModesArePerStream(t *testing.T) {
 // Across a file and its streams only delete is judged: a stream's open not
 // sharing delete refuses an open of the base asking delete, and an NFS remove
 // or rename of the base, but not an open of another stream asking delete; a
-// base open holding delete refuses a stream's open not sharing it.
+// base open holding delete refuses a stream's open not sharing it. A
+// stream's own delete is judged against neither the base's deny nor another
+// stream's.
 func TestStreamDenyDeleteRefusesTheBasesDelete(t *testing.T) {
 	f := newFixture(t)
 	s, n, q := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser())), f.caller(t, smb("bob-pc"))
@@ -639,6 +641,25 @@ func TestStreamDenyDeleteRefusesTheBasesDelete(t *testing.T) {
 	}
 	if _, err := f.open(s, held, OpenRequest{Stream: entity.NewFileID(), Access: rd | wr}); err != nil {
 		t.Errorf("a stream open sharing delete beside a base open holding delete and denying write and delete: %v", err)
+	}
+	// The base's deny is not judged against a stream's delete, in either
+	// order, nor one stream's deny against another stream's delete.
+	fourth := anyFile()
+	b := f.mustOpen(t, q, fourth, OpenRequest{Access: rd | del, Deny: del})
+	if o, err := f.open(s, fourth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del}); err != nil {
+		t.Errorf("a stream open asking delete beside a base open not sharing delete: %v", err)
+	} else {
+		f.close(t, s, o)
+	}
+	f.close(t, q, b)
+	f.mustOpen(t, s, fourth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del})
+	if _, err := f.open(q, fourth, OpenRequest{Access: rd | del, Deny: del}); err != nil {
+		t.Errorf("a base open not sharing delete beside a stream open holding delete: %v", err)
+	}
+	fifth := anyFile()
+	f.mustOpen(t, s, fifth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del, Deny: del})
+	if _, err := f.open(q, fifth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del, Deny: del}); err != nil {
+		t.Errorf("a stream open asking delete and not sharing it beside another stream's open doing the same: %v", err)
 	}
 }
 
@@ -898,7 +919,16 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Releasing with a delegation and a lock but no open: %v", err)
 	}
+	if err := f.check(); err != nil {
+		t.Errorf("while marked: %v", err)
+	}
 	done(false)
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); err != nil {
+		t.Errorf("a write under the delegation after an aborted release: %v, want it kept", err)
+	}
+	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l == nil {
+		t.Errorf("a lock test after an aborted release: %+v, %v; want a's lock held", l, err)
+	}
 	again, err := f.open(a, file, OpenRequest{Access: rd})
 	if err != nil {
 		t.Fatalf("an open after an aborted release: %v; done ends the mark", err)

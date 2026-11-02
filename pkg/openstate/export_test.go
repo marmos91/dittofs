@@ -120,7 +120,11 @@ func (t *Table) rebuild() indexes {
 		for _, w := range e.waiters {
 			x.count(w.Owner.Client, cappedWaiters, 1)
 		}
-		if n := len(e.opens) + len(e.lstates) + len(e.grants) + len(e.watches); n > 0 {
+		n := len(e.opens) + len(e.lstates) + len(e.grants) + len(e.watches)
+		if e.releasing {
+			n++ // the mark keeps the entry
+		}
+		if n > 0 {
 			x.states[e.file] = n
 		}
 	})
