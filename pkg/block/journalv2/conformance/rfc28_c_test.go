@@ -2182,13 +2182,10 @@ func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
 
 	wantUntouched(t, f, before)
 
-	// The interface names ErrNotEmpty for any entry, while Init's contract
-	// names ErrJournalExists for a segment, so both are accepted until the
-	// two agree.
 	_, err = f.TryInit()
 	stub(t, "Init", err)
-	if !errors.Is(err, journalv2.ErrNotEmpty) && !errors.Is(err, journalv2.ErrJournalExists) {
-		t.Fatalf("Init on a directory with segments and no format file returned %v, want ErrNotEmpty or ErrJournalExists", err)
+	if !errors.Is(err, journalv2.ErrNotEmpty) {
+		t.Fatalf("Init on a directory with segments and no format file returned %v, want ErrNotEmpty", err)
 	}
 
 	wantUntouched(t, f, before)

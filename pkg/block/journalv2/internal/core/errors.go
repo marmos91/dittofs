@@ -27,10 +27,6 @@ var (
 	// Forget again.
 	ErrHandleOpen = errors.New("journal: a handle of the tag is open")
 
-	// ErrJournalExists is returned by Init when the directory already holds a
-	// format file or a segment. Nothing is written.
-	ErrJournalExists = errors.New("journal: directory already holds a journal")
-
 	// ErrNotEmpty is returned by Init when the directory holds any entry but
 	// a format.tmp, which an Init that crashed before its rename leaves.
 	// Nothing is written: Init creates a journal only in an empty directory,
