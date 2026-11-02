@@ -57,8 +57,7 @@ At the end of the epic:
 - the platform layer passes its tests on a real filesystem on each OS that runs `go test`
   (P22 for macOS), and each test asserts which system call is issued;
 - every platform row of RFC 28 and of the plan names the test of this epic that covers it,
-  or is parked with its reason, in the table of §6; the rows get their `trace.yaml` entries,
-  pointing at those tests, when epic 2's 2.14 adds the file.
+  or is parked with its reason, in the table of §6, which stays their map.
 
 Until epics 5 and 7 consume them, the packages' tests are their only consumer (D8). Epic 3
 turns no conformance test green and adds none to `known.yaml`.
@@ -788,8 +787,10 @@ seal marker" (3.2, 3.3) and "`format` file" (3.1). Every other row is owned else
 | RFC 1 §9.4 Group D "accounting follows the cap", speculative leg | parked | `rfc-1-journal-epic2.md` §6: "needs a filesystem host nobody provisions (XFS)" |
 | RFC 28 §3.1 spare allocation check | epic 7 | its platform query lands with its consumer |
 
-**Platform rows and the tests that cover them.** Until 2.14 adds `trace.yaml`, this table is
-the map; each row then gets its entry, pointing at the same test.
+**Platform rows and the tests that cover them.** This table is their map. Epic 2's
+`trace.yaml` (2.14) does not carry them: Appendix A and the plan are outside its scope
+(E2-D3), and these tests are in `internal/platform`, not the conformance package. Its one
+row here, "directory flush on NTFS", it parks with the reason below.
 
 | Platform row | Test | Subtask |
 | --- | --- | --- |
@@ -989,7 +990,7 @@ Each open point says what is asked, who decides it, and what it blocks.
 
 - **NTFS directory flush with a power cut** (RFC 28 §4.2, row "directory flush on NTFS":
   "on real storage with a power cut"): no host and no `needs` entry. Parked with this
-  reason (§6); its `trace.yaml` entry comes with 2.14.
+  reason (§6).
 - **macOS `F_FULLFSYNC`:** where a Mac runs the tests, they prove the call is issued (D6),
   never survival of a power loss (P22).
 - **Btrfs, XFS and ext4 barrier refusals on real mounts:** need `linux` and `root` plus
