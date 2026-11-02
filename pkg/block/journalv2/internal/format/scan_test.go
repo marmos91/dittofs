@@ -444,7 +444,7 @@ func TestScanJournalBytesInAPayloadAttachNothing(t *testing.T) {
 		// The write's length bytes corrupted, checksums stale: the walk
 		// refuses the record and the forward search runs through the copy
 		// looking for a header that verifies at its own place.
-		binary.LittleEndian.PutUint64(seg[writeOff:writeOff+96][40:48], 4<<20)
+		binary.LittleEndian.PutUint64(seg[writeOff : writeOff+96][40:48], 4<<20)
 
 		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
 		if err != nil {
