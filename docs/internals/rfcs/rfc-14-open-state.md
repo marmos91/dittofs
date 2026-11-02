@@ -722,16 +722,22 @@ came through, as the lock and I/O paths judge it, and as an NFSv4 server
 breaks no delegation for its own client's change. `via` **MUST** be an open of
 the changed file itself, a named stream's open counting as its base file's;
 one of any other file is `ErrBadState`, as a reference with another file's
-handle is (§2.11). A key already naming a grant on another file makes
-the open `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`; the key
-is free again when its lease's last open closes. A key naming an existing
-lease of the file joins it only for a caller whose principal is one of the
-lease's openers', or when some principal in `OpenRequest.Conn`, the other sessions signed in on
-the open's connection, is one of them; any other caller's open is granted with
-no grant at all and records no key (`Open.Grant` zero), so it never joins the
-lease and a change through it finds no grant of its own, since a key travels in clear and joining
-makes an opener (§2.1). Refusing the grant rather than the open keeps a
-misjudged caller working, uncached. An oplock covers exactly the one open that asked for it. An NFS
+handle is (§2.11).
+A key is judged against its openers first. A caller is one of a key's openers
+when its principal is that of an open holding the key, or when some principal in
+`OpenRequest.Conn`, the other sessions signed in on the open's connection, is;
+any other caller's open is granted with no grant at all and records no key
+(`Open.Grant` zero), on the key's file or any other, so it neither joins the
+lease nor collides with the key, and a change through it finds no grant of its
+own, since a key travels in clear and joining makes an opener (§2.1). For one of
+the key's openers, a key already naming a grant on another file makes the open
+`ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
+existing lease of the file joins it. The key is free again when its lease's last
+open closes. Refusing the grant rather than the open keeps a misjudged caller
+working, uncached, and means another user who opens first under a key can deny
+the user who chose it only caching under that key, never an open, until the
+other user's opens under it close. An oplock covers exactly the one open that
+asked for it. An NFS
 delegation is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
 
