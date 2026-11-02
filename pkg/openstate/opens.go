@@ -302,7 +302,10 @@ type open struct {
 	// refused-key create is answered ErrNotYours. Write it as a record field,
 	// which costs a field in every store's open encoding, if a client is seen
 	// failing such a replay.
-	asked   LeaseKey
+	asked LeaseKey
+	// conn is a new open's Conn, the principals its key is joined through
+	// at its mint; nil for an installed open.
+	conn    []entity.Principal
 	durable bool // its record is in the store
 	// unlinking: an unlink's records list it, and its commit has yet to run;
 	// a close by the table meanwhile leaves late for the commit to raise.
@@ -423,7 +426,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	r.Owner.Name = slices.Clone(r.Owner.Name)
-	o := &open{share: f.Share, lease: r.Lease, asked: r.Lease, Open: Open{
+	o := &open{share: f.Share, lease: r.Lease, asked: r.Lease, conn: r.Conn, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 		Durability: r.Durability, Session: r.Session, Durable: r.Durable, Channel: Channel{Seq: r.Channel},
@@ -449,8 +452,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			return ErrDeletePending
 		}
 		if r.Lease != (LeaseKey{}) {
-			// Refused early, before breakHandles and recallOthers queue
-			// recalls; mintOpen is the rule.
+			// Judged early, before breakHandles and recallOthers queue
+			// recalls, and judged again in mintOpen, which decides.
 			//
 			// A key travels in clear, and joining makes the caller one of
 			// the lease's openers, whose breaks it may then answer: a caller
@@ -463,12 +466,13 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			// until its last opener closes, and a key travels in clear, so
 			// another user of the client who opens first under alice's key
 			// keeps her from caching under it, on that file or any other:
-			// she is granted her open uncached. It denies caching only, never
-			// an open, data or another's breaks; but a stranger's open under
-			// the key minted on another file between this check and her
-			// mintOpen still refuses hers ErrInvalid. Bind a key to the
-			// principal that chose it, as an adapter-signed key would, if a
-			// user is seen pre-empting another's keys.
+			// she is granted her open uncached. A stranger can deny caching
+			// under the key, never an open, data or another's breaks: a
+			// stranger's open minted on another file after this check makes
+			// her none of the key's openers at her mint, which then mints her
+			// open under no key. Bind a key to the principal that chose it,
+			// as an adapter-signed key would, if a user is seen pre-empting
+			// another's keys.
 			t.idx.Lock()
 			u := t.keys[clientKey{who.Client, r.Lease}]
 			joins := u.joins(who, r.Conn)
@@ -532,6 +536,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			}
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
+		} else if o.lease != r.Lease {
+			// mintOpen found the caller none of the key's openers.
+			r.Lease, r.Parent, r.Epoch, r.Want = LeaseKey{}, LeaseKey{}, nil, GrantNone
 		}
 		confirmed := t.ownerConfirmed(r)
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
@@ -810,7 +817,9 @@ func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, d
 // its step, if o's client is current here; the check and the mint share the
 // index lock, so an expiry that drops the client either sees the open or
 // refuses it. An open under a lease key holds the key on e's file, and one
-// whose key is held on another file is ErrInvalid.
+// whose key is held on another file is ErrInvalid. A new open whose caller
+// is, as the key stands at the mint, none of its openers is minted under no
+// key, so the check and the hold are one step under the index lock.
 func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 	ref, err := t.mintUnder(e, o.Client, s, StateOpen, func(ref StateRef) error {
 		if o.Clone == nil && !t.current(o.Client) {
@@ -826,6 +835,9 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		}
 		ck := clientKey{o.Client, o.lease}
 		u := t.keys[ck]
+		if o.lease != (LeaseKey{}) && o.parked == 0 && !u.joins(Caller{Principal: o.Principal}, o.conn) {
+			o.lease, ck, u = LeaseKey{}, clientKey{}, keyUse{}
+		}
 		if o.lease != (LeaseKey{}) && u.opens > 0 && u.file != e.file {
 			return ErrInvalid
 		}

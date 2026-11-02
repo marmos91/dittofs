@@ -1549,3 +1549,93 @@ func TestOwnKeyOnAnotherFileIsInvalid(t *testing.T) {
 		t.Errorf("alice's second file under her key: %v, want ErrInvalid", err)
 	}
 }
+
+// Two users' first creates under one key at once each get their open, and
+// only one is offered the key's lease: the one that mints second is none of
+// the key's openers then, so it is granted its open under no key rather than
+// refused the key on another file. The race is not steered, so it is run
+// often enough that a refusal shows.
+func TestConcurrentFirstCreatesUnderOneKey(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	var refused [2]int
+	both := 0
+	for i := range 500 {
+		k := LeaseKey{1, byte(i), byte(i >> 8)}
+		var wg sync.WaitGroup
+		var leased [2]bool
+		for j, who := range []Caller{alice, bob} {
+			wg.Go(func() {
+				res, err := f.Opens().Open(ctx, who, anyFile(), OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+				if err != nil {
+					refused[j]++
+				}
+				leased[j] = res.Grant != nil
+			})
+		}
+		wg.Wait()
+		if leased == [2]bool{true, true} {
+			both++
+		}
+	}
+	if refused != [2]int{} {
+		t.Errorf("first creates refused, alice's and bob's: %v of 500, want none", refused)
+	}
+	if both != 0 {
+		t.Errorf("both first creates offered the key's lease, on two files: %d of 500, want none", both)
+	}
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+}
+
+// Another user opening and closing a file under alice's key while she
+// creates others under it never refuses one of her creates: whenever his
+// open holds the key, she is none of its openers and is granted hers under
+// no key.
+func TestAnothersOpenCloseUnderTheKeyRefusesNoCreate(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	k := LeaseKey{7}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var bobErr error
+	bobRefused := 0
+	wg.Go(func() {
+		file := anyFile()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			o, err := f.open(bob, file, OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+			if err == nil {
+				_, err = f.Opens().Close(ctx, bob, refOf(o), Seqs{})
+			}
+			if err != nil {
+				bobErr = err
+				bobRefused++
+			}
+		}
+	})
+	refused := 0
+	for range 1000 {
+		o, err := f.open(alice, anyFile(), OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+		if err != nil {
+			refused++
+			continue
+		}
+		f.close(t, alice, o)
+	}
+	close(stop)
+	wg.Wait()
+	if refused != 0 {
+		t.Errorf("alice's creates under her key beside bob's open and close: %d of 1000 refused, want none", refused)
+	}
+	if bobErr != nil {
+		t.Errorf("bob's opens and closes under the key: %d refused, the last %v; want none", bobRefused, bobErr)
+	}
+}
