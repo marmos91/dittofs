@@ -552,17 +552,17 @@ func TestSyncDirCloseError(t *testing.T) {
 	err = o.SyncDir()
 	expectSyncDir(t, r.take(), dir, 1)
 
+	// A caller that asks whether the sync failed must find it, whatever
+	// else failed beside it.
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("got %v, want the full sync's EIO reachable with errors.Is", err)
+	}
+
 	if !hasPathError(err, syscall.EIO) || !hasPathError(err, syscall.ENOSPC) {
 		t.Fatalf(
 			"got %v, want the full sync's EIO and the close's ENOSPC, each an *fs.PathError",
 			err,
 		)
-	}
-
-	// A caller that asks whether the sync failed must find it, whatever
-	// else failed beside it.
-	if !errors.Is(err, syscall.EIO) {
-		t.Fatalf("got %v, want the full sync's EIO reachable with errors.Is", err)
 	}
 }
 

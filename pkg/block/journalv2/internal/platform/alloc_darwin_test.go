@@ -78,7 +78,7 @@ func expectAllocate(t *testing.T, log []call, path string, end int64, truncate b
 		t.Fatalf("%v: want the command F_PREALLOCATE (%d)", pre, unix.F_PREALLOCATE)
 	}
 
-	// F_ALLOCATEALL alone: all of the space or none, and no request for
+	// F_ALLOCATEALL alone: all of the space in one call, and no request for
 	// contiguous space, which RFC 28 Appendix A does not ask for.
 	if pre.store.Flags != unix.F_ALLOCATEALL {
 		t.Fatalf("%v: want the flags F_ALLOCATEALL (%#x) alone", pre, unix.F_ALLOCATEALL)
@@ -97,10 +97,11 @@ func expectAllocate(t *testing.T, log []call, path string, end int64, truncate b
 		)
 	}
 
-	// What the kernel filled in after the call. The fcntl(2) manual has
-	// F_ALLOCATEALL "Allocate all requested space or no space at all", so a
-	// success reports at least the length asked for. Checked here, on the
-	// filesystem, and never by Allocate itself.
+	// What the kernel filled in after the call: a call that succeeds must
+	// report at least the length asked for. This is the only half of
+	// F_ALLOCATEALL checked; that a call that fails has reserved nothing is
+	// not tested. Checked here, on the filesystem, and never by Allocate
+	// itself.
 	if pre.store.Bytesalloc < pre.store.Length {
 		t.Fatalf(
 			"%v: the kernel allocated %d bytes, fewer than the %d asked for",

@@ -10,8 +10,10 @@ import (
 
 // Allocate is fcntl with F_PREALLOCATE over the range, then the file's size
 // set to the range's end (RFC 28 Appendix A: "`fcntl(F_PREALLOCATE)` then
-// setting the size on macOS"). F_ALLOCATEALL asks for all of the space or
-// none. The space is asked for from the physical end of the file, the only
+// setting the size on macOS"). F_ALLOCATEALL asks for all of the space in one
+// call. The tests check only that a call that succeeds reports at least the
+// length asked for; that a call that fails has reserved nothing is not
+// tested. The space is asked for from the physical end of the file, the only
 // mode that takes a length in the file rather than a position on the volume,
 // and the length asked for is the range's end, so the space reaches it
 // whatever the file already holds. A file that already holds blocks may get
