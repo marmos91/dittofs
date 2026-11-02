@@ -1052,7 +1052,10 @@ state.
    ([§6.1](#6.1%20The%20work%20queue)). Posting never blocks.
 5. **Acknowledge**, returning the verifier. For a stable write the filesystem
    service, having released the accept lock, then calls `Commit` over the
-   written extent and answers with the verifier `Commit` returns.
+   written extent and answers with the verifier this `Write` returned. A
+   `Commit` returning a different verifier means a loss may have taken the
+   write between staging and the sync, so the service answers `ErrDelay`
+   (`DelayCommit`) and the client resends the write, never a stable success.
 
 > **Example.** File `f` is empty: size 0. A client writes 4 KiB at offset 1 MiB.
 > The journal stages it at content version 7, and the engine acknowledges. A

@@ -481,6 +481,15 @@ the client's `Owner` where `Protect` is set (§2.1). An NFSv4.0 stateid crosses
 the wire in clear and binds no session, so without the per-call check anyone
 who sees one writes with the opener's access. The same holds for a lock state.
 
+**An open is used only for the access it was granted.** `CheckIO` names the
+access the I/O wants: `ReadData` for a read, `WriteData` for a write starting
+below the file's size, and `AppendData` for one starting at or past it, the
+size being the one the filesystem read under the file's admission lock. I/O
+through an open, or through a lock state taken under it, whose `Access` lacks
+what it wants is refused `ErrAccess`. So an open holding `AppendData` without
+`WriteData` can only append: a write starting below the size is refused, and
+one at or past it is admitted.
+
 **I/O under a grant's reference is the client's, and authorised afresh.** A
 client may use a grant that covers no open for I/O by any of its owners, under
 any principal, so the opener-only rule does not apply to it. Such a call
@@ -2826,7 +2835,7 @@ type Recovery interface {
 }
 
 type Checks interface {
-	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error // f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
+	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
 	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.Protocol picks §7's or §9.5's rule
 }
 ```
@@ -3007,7 +3016,7 @@ var (
 	ErrRecordChanged   = errors.New("openstate: client record's Adapter changed since it was read")
 	ErrAdapterVersion  = errors.New("openstate: adapter record of a version this node cannot read")
 	ErrInvalid         = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes, delete on close without delete access")
-	ErrAccess          = errors.New("openstate: the open does not hold the access the change needs") // §9.4
+	ErrAccess          = errors.New("openstate: the open was not granted the access the request needs") // §2.2, §9.4
 	ErrUnavailable     = errors.New("openstate: the client's lease owner is unreachable") // §4.1
 	ErrStopped         = errors.New("openstate: table not started, or stopped")
 	ErrCreateInUse     = errors.New("openstate: create ID names another open of the client") // §8.1: an SMB create's CreateGuid, held by an open its create did not make

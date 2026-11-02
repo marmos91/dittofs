@@ -2417,6 +2417,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLMPROC4_SHARE` |
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrState` (`OldState`) — a stateid seqid older than the state's ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | `NFS4ERR_OLD_STATEID` | — |
+| `ErrPastEnd` — a `SEEK` from an offset at or past the file's end (RFC 7862 §15.11.3) | `NFS4ERR_NXIO` | — (NFSv3 has no `SEEK`) |
 
 The adapter answers the capacity error the service returns and decides none of
 them. A write refused by the journal's capacity or by the share's journal limit

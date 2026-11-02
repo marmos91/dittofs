@@ -743,7 +743,7 @@ type Data interface {
 	Write(ctx context.Context, c Call, ref OpenRef, off int64, src []byte, s Stability) (WriteResult, error)
 	Commit(ctx context.Context, c Call, ref OpenRef, off, length int64) (Verifier, error) // NFS COMMIT, SMB FLUSH
 	Deallocate(ctx context.Context, c Call, ref OpenRef, off, length int64) (WCC, error)
-	Seek(ctx context.Context, c Call, ref OpenRef, off int64, what SeekWhat) (int64, error)
+	Seek(ctx context.Context, c Call, ref OpenRef, off int64, what SeekWhat) (int64, error) // ErrPastEnd from at or past the end; otherwise the first offset found, or the size when none is before it
 	Copy(ctx context.Context, c Call, a CopyArgs) (CopyResult, error) // COPY, copychunk: bounded chunks, synchronous, may be short
 	Clone(ctx context.Context, c Call, a CopyArgs) (WCC, error)        // CLONE, duplicate-extents: atomic
 }
@@ -1290,6 +1290,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
 | `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | — |
+| `ErrPastEnd` | a `Seek` from an offset at or past the file's end | — |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
 refusals: `ClientInUse` (a client name another principal holds), `ClientBusy`
@@ -1329,7 +1330,7 @@ const (
 	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
 	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
-	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6)
+	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
 ```
@@ -1386,7 +1387,7 @@ default: // anonymous, delegated or no open: the caller afresh
 	err = meta.Files.Authorize(ctx, caller, h, parent, want) // parent: the directory h was resolved through, or zero
 }
 // the chokepoint has emitted the access event the audit policy selects (§3.3)
-err = open.CheckIO(ctx, keyOf(f), ref, r, write)  // or CheckChange: deny modes, locks, grants — RFC 14 §7
+err = open.CheckIO(ctx, keyOf(f), ref, r, want)   // or CheckChange: deny modes, locks, grants — RFC 14 §7
 ```
 
 - **The share grant is checked on every call**, not only at `Root`. The
@@ -1650,7 +1651,7 @@ and be revoked.
 | 4 | reserve the charge the write adds, if it extends the file | §5.6 |
 | 5 | `ErrPerm` for an immutable file, or an append-only one below its size, releasing step 4's reservation, before anything changes; then, for a caller not privileged — the owner included — on a setuid file, or setgid with group execute, clear those bits in a committed mode change. The same step runs for a truncate, a deallocate and a copy or clone's destination | [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint), [§9.6](rfc-7-namespace-metadata.md#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) |
 | 6 | under the file's accept lock: check step 5's flags again against the overlay's size; capture `WCC.Before`; the engine's `Write`, passing the times the open has suspended; `WCC.After`; release the lock; for a stable write, the engine's `Commit` over the extent. Every other change of a file draws its version from `Draw` under the same lock; a change refused `ErrVersionBehind` is redrawn and retried within the deadline, never surfaced, and `DelayConflict` at it | [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more), [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps), [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward), [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) |
-| 7 | reply: a stable write once the journal has synced it **and**, if it overwrites committed content, its existence commit has landed; a stable append or hole fill waits only for the sync. The group commit records existence, usage and `mtime`, and releases the reservation | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) |
+| 7 | reply: a stable write once the journal has synced it **and**, if it overwrites committed content, its existence commit has landed; a stable append or hole fill waits only for the sync. A stable write whose `Commit` answers a verifier other than its `Write`'s is `ErrDelay` (`DelayCommit`) instead (§5.8). The group commit records existence, usage and `mtime`, and releases the reservation | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 
 Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0).
 The lock never spans a sync or a group commit.
@@ -1687,7 +1688,11 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
+	want := WriteData // a write starting below the size; AppendData alone admits one at or past it (RFC 14 §2.2)
+	if off >= f.Size {
+		want = AppendData
+	}
+	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), want); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, growth(f, off, src)) // step 4: §5.6
@@ -1714,7 +1719,11 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 		return WriteResult{}, retry, err
 	}
 	if stable(ref, st) {
-		_, _, err = s.engine.Commit(ctx, f, off, int64(len(src))) // step 7: RFC 8 §5.1
+		var v Verifier
+		v, _, err = s.engine.Commit(ctx, f, off, int64(len(src))) // step 7: RFC 8 §5.1
+		if err == nil && v != wr.Verifier { // a loss between staging and the sync may have taken it (§5.8)
+			err = &Delay{Cause: DelayCommit}
+		}
 	}
 	wr.N = len(src)
 	return wr, false, err
@@ -1754,6 +1763,11 @@ allocated-range query come from the engine's `Allocation`
 ([RFC 8 §7.6](rfc-8-engine.md#7.6%20Allocation%20answers%20from%20the%20hole%20set)),
 which counts a zero ref under a newer overwrite record as data; no adapter
 derives them from reads.
+
+From an offset at or past the file's size, judged against the size read under
+the file's admission lock, `Seek` answers `ErrPastEnd`; otherwise it answers
+the first offset found, or the size when it finds none before the end, which an
+adapter reads as end of file.
 
 ### 5.3 Open and close
 
@@ -2107,6 +2121,10 @@ says; the shard passes it through unchanged. `Write` returns the verifier
 sampled before the bytes are staged, and `Commit` the one sampled once the sync
 it waits for has completed, so a loss before or during that sync makes the
 `Commit`'s verifier differ from its writes', and the client resends them.
+A stable write answers the verifier its `Write` returned, never its
+`Commit`'s. When the two differ, the write is answered `ErrDelay`
+(`DelayCommit`) rather than as stable, since a client does not consult the
+verifier of a stable reply ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 
 **SMB learns through its flush.** SMB has no verifier. A `Commit` through an SMB
 open (SMB `FLUSH`) takes the file's loss sequence from the engine's `Commit`,
@@ -2329,7 +2347,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V22 | An unprivileged caller's write, truncate, deallocate, copy or clone into a setuid or setgid file — the owner's included — clears the bits in a committed change before the bytes are staged. | bob writes alice's setuid file and `GetAttr` before any commit shows the bit clear; again with alice, unprivileged, then with a deallocate, a copy and a clone; an unprivileged append to a setuid, append-only file succeeds and clears the bit, and a write below its size is `ErrPerm` and clears nothing. |
 | V23 | A blocked lock holds no worker and has no deadline; nothing answers one other than as granted before `CancelLock` returns. | NLM and SMB locks that wait are answered `ErrBlocked` and later granted through `LockWaitOver`, with no goroutine held between; an NFSv4 one is `ErrLocked` and its next poll after the unlock is granted; a lock list with one range refused leaves none of the call's ranges held. |
 | V24 | I/O under a delegation is served only to the client holding it and authorised for the caller's own principal. | An NFSv4.1 client with a write delegation writes as a second principal that may write the file, then a third that may not: the first accepted, the second `ErrAccess`; another client presenting the stateid gets `NotYours`. |
-| V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes'; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |
+| V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes', and a stable write whose `Commit` does so answers `ErrDelay` (`DelayCommit`), and its `Write`'s verifier when the two agree; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |
 | V26 | Copy and clone refuse overlap, a clone over `clone_max_len`, a namespace or (cluster) shard crossing and an `Incomplete` source, each changing nothing; a copy across shards is the service's; a Lost source run is copied as Lost; a clone is atomic, a copy may be short. | Each refusal returns its error and leaves the destination unchanged and readable; a `COPY` whose deadline passes partway answers a short count and the destination holds exactly that many bytes; a clone of a source with a Lost run reads Lost there at the destination. |
 | V28 | A create — an `Open` that creates included —, link or rename into a directory marked delete on close is refused, over every protocol. | With a directory marked over SMB, a create, a creating `Open`, a link and a rename into it, over SMB and over NFS, are each refused. |
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
@@ -2345,6 +2363,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V39 | Admission runs before the handle is resolved. | A client outside a share's netgroup presents a live handle and the handle of a removed file: `ErrAccess` for both. |
 | V40 | A share's removal joins every call admitted before its mark. | A create is held between admission and its commit while the share is removed: step 3 waits for it; a call counted after the mark is refused `ErrStale`, its record never committed. |
 | V41 | The gateway forwards and decides nothing; `Serve` fences and dedups before the filesystem runs anything. | Gateway unit, over a fake `Router` and `Transport` and `vfstest.Record` as the local `Service`: each method reaches the local `Service` when the router says local and the transport otherwise, with its arguments, `Identity` included, and its answer unchanged; a handle the router cannot place reaches the local `Service`. Multi-node tier: a call carrying a stale shard epoch, a fenced node epoch or a hop of one is refused by `Serve` and reaches no filesystem, sent over the transport or routed to the local path by a stale cache; a duplicate send applies once. |
+| V42 | A `Seek` from at or past the size is `ErrPastEnd`, for data and for a hole; from below it, data with none after answers the size. | Into a file of data, a hole and data, and into one ending in a hole, `Seek` for data and for a hole from inside each run: the next run's offset, or the size when none is before the end; from the size and from past it, `ErrPastEnd` for both. |
 | §3.2 | A callback path moves; notifications honour traverse; a break that times out leaves its opens usable. | A recursive watch reports nothing below a directory its holder cannot traverse; an SMB lease whose break times out leaves its open usable for the holder's next write. |
 | §3.2 | A removed or moved share ends its state with `RevokedShare`. | With a waiting lock and an outstanding watch on a share, remove it, then repeat with a move naming an address: the recording `Callbacks` receive `RevokedShare` naming it, with `Addr` set for the move; the share's opens and deny modes are gone; the removal's step 3 waits for a create admitted before the mark. |
 | §4.6 | A privileged handle is privileged for every request through it. | A backup-intent handle sets owner, group and DACL on a file whose DACL excludes the caller, as `robocopy /B /SECFIX` does; without backup intent each is refused; a rename through a handle opened with `DELETE` succeeds without delete-child. |
