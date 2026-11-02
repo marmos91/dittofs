@@ -754,9 +754,10 @@ stopping the node:
 
 - **Drain.** Drain the journal's shards as a primary that loses a shard does,
    below. Every call on their files is answered retry-later from here until
-   the file is served again, and so are `Bind`, `Unbind` and `Drop` of their
-   shares; a share's addition and removal are idempotent, recorded steps
-   ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), and resume once answered. A drain past its bound abandons
+   the file is served again, and so is every `Bind`, `Unbind` and `Drop` that
+   names a share the journal serves or would serve, an addition included; its
+   caller retries it as any `ErrDelay`, and a share's removal resumes at the
+   step it recorded ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). A drain past its bound abandons
    this attempt: the shards' tenants are added back as step 6 adds them, the
    journal stays read-only, and the next probe tries again.
 - **Clear what recovery rebuilds.** For the journal's files, discard the
@@ -784,8 +785,8 @@ release, as any failed release does, for the next start's recovery
 refused for any cause but a missing or foreign journal closes what it
 opened, in reverse, leaves the journal closed and its files answered
 retry-later, and is retried ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). A missing or foreign journal is a
-lost journal device: the engine unbinds its shares as step 1 leaves a refused
-share unattached at start, keeping their open state and their pending releases
+lost journal device: the engine leaves its shares unattached, as step 1 leaves
+a refused share at start, keeping their open state and their pending releases
 in the store, and the operator gate applies as at start; content never
 offloaded resolves **Lost** once the operator acknowledges it ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)).
 **(cluster)** A shard whose journal is replicated is not covered here.
@@ -795,12 +796,12 @@ offloaded resolves **Lost** once the operator acknowledges it ([§7.1](#7.1%20Re
 > process. The incarnation names the grace instance, and the open-state table
 > ([RFC 14](rfc-14-open-state.md)) survives the reopen, so a new grace would make clients reclaim state
 > nobody lost. The verifier is not left to the incarnation: it rests on the
-> loss generation, which the failed window raised if it held an acknowledged
-> write ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), and which stays monotonic across the close and the open because
-> the process keeps it per journal directory ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). A window with no
-> acknowledged write loses nothing a client must resend, so E27 wants no change
-> there. Overturned if a reopen can lose open state, or if any entry into
-> read-only can drop an acknowledged write without raising the generation.
+> loss generation: an entry into read-only that drops an acknowledged write
+> does so by failing the open window, and a failed window always raises it ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events), [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)),
+> and which stays monotonic across the close and the open because the process
+> keeps it per journal directory. Overturned if a reopen can lose open state,
+> or if any entry into read-only can drop an acknowledged write without
+> raising the generation.
 
 **A primary that loses a shard drains it first.** Before a handover writes the
 record naming the new primary ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover), step 2), and on a lease loss or a
