@@ -298,9 +298,10 @@ reconnected on (`Session`, §2.2), that session signed in as the opener, and a
 durable reconnect re-attaches an open only for its opener's principal
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens), MS-SMB2 3.3.5.9.12).
 When every open of the grant is disconnected, the break goes only to a session
-of that client signed in as one of the openers; when there is none, it is sent
-nowhere and runs to its deadline (§5.3). The service picks that session from
-the grant's opens as `Grants.Openers` returns them
+of that client signed in as one of the openers, which the node holding it picks
+from the sessions it keeps in memory with their principals (RFC 17 §3.2); when
+there is none, it is sent nowhere and runs to its deadline (§5.3). Otherwise
+the service picks the session from the grant's opens as `Grants.Openers` returns them
 ([§11.3](#11.3%20Methods)) and names it to the adapter, which delivers to it and to no other.
 `AckRecall` on a lease or oplock is
 admitted only from a caller whose principal is one of its openers', never on
@@ -313,8 +314,9 @@ lease key, both of which travel in clear, receives none of alice's breaks,
 cannot answer them, cannot become an opener to receive the next one, and
 breaks alice's lease with any change she makes to the file that conflicts with
 the lease ([§5.2](#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)), since the lease is not hers (§2.4).
-The routing needs no principal on the record and no list in memory, so it
-holds across a restart; a `SessionRef` names the node holding the session
+The routing needs no principal on the record: a connected open names its
+session, so that case holds across a restart, and the sessions a node keeps for
+the disconnected case end with the node's process, as the sessions do; a `SessionRef` names the node holding the session
 (RFC 17 `Peers.Recall`), so it holds across nodes. NFSv4.1 keeps its back channel and
 the rule for moving it (`Reach.Callback`, §4.1); NLM's callbacks
 go to the address in the host's name, which nothing moves.

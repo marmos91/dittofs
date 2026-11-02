@@ -697,7 +697,9 @@ carries many users' sessions at once.
   only to a session of that client signed in as one of the openers; and if
   there is none, nowhere, so the break times out (§6.3). The service names the
   session, found from the lease's opens through `Grants.Openers`
-  ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)), and the adapter sends on that session's connection and nowhere
+  ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)), or, when every open is disconnected, a node picks it
+  from the sessions its adapter told it of through `SessionUp`
+  ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)), and the adapter sends on that session's connection and nowhere
   else. An acknowledgement is checked against the open's principal, not only
   the `ClientGuid`; one arriving on the connection the break was sent on is
   made as the session the break was sent to, since the sessions of one
@@ -2803,8 +2805,8 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at each one that completes for the connection's `ClientGuid`: the first registers the client, and each records its session's principal | |
-| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid`, and `SessionUp` at each authenticated one | `SessionUp` keeps the session and its principal in the node's memory only ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
+| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included, then `SessionDown` | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
 | `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |

@@ -678,7 +678,7 @@ The lower half of the drawing above:
    drain, or by a reconfigure that removes its listen address, as a namespace
    move's release does (§3.1, §3.3). Closing cancels the context of
    every request still in progress on the connection, drops the connection's
-   state, and, for the last channel of an SMB session, calls `Disconnect`.
+   state, and, for the last channel of an SMB session, calls `SessionDown` and `Disconnect`.
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since

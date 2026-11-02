@@ -410,7 +410,7 @@ type Peers interface {
 	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
 	Sequence(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: a sequenced owner's number at its home primary (RFC 14 §2.8)
 	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
-	Recall(ctx context.Context, to NodeID, s SessionRef, ev any) error      // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
+	Recall(ctx context.Context, to NodeID, s SessionRef, openers []Principal, ev any) (sent bool, err error) // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s and openers given: an SMB break whose opens are all disconnected, which that node sends on one of its sessions of the client signed in as one of openers, or on none, sent false; zero s and no openers: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
 }
 
 // Envelope is RFC 15 §4.3's route envelope; its rules are there.
@@ -690,14 +690,17 @@ type Service interface {
 
 // Clients (RFC 14). The lease owner is the filesystem of the node holding the
 // client's sessions; the gateway routes these calls to it (§2.1, §2.2), except
-// TestState and FreeState, which go to the shard their StateRef names.
+// TestState and FreeState, which go to the shard their StateRef names, and
+// SessionUp and SessionDown, which stay on the node that received them.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, each authenticated SMB SESSION_SETUP (never a null or guest one), which registers that session's principal, an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP (never a null or guest one), an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
 	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error // an SMB session's last channel ended
+	SessionUp(ctx context.Context, c Call, cl ClientID) error                 // an authenticated SMB session, c.Session, signed in as c's principal: kept by this node's filesystem in memory to route a break (§3.2); writes nothing durable
+	SessionDown(ctx context.Context, c Call, cl ClientID, s SessionRef) error // s ended, at LOGOFF or its last channel's end: this node's filesystem forgets it; writes nothing durable
 	Destroy(ctx context.Context, c Call, cl ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
 	ReclaimComplete(ctx context.Context, c Call, cl ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, c Call, cl ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
@@ -1019,19 +1022,22 @@ no principal, and its `ClientGuid` travels in clear, so anyone can send a
 machine's and hold a session under its record
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
 registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
-and each later authenticated session connects again, which records that
-session's principal and keeps the client's one `Callbacks`,
 and a null or guest session never joins a client, so its opens are offered no
-lease or oplock. The filesystem picks the session for a lease or oplock break
+lease or oplock. Each node keeps its own sessions with their principals, in
+memory only: the adapter tells its filesystem of each authenticated session
+through `SessionUp` and of its end through `SessionDown`, and neither writes
+anything durable. The filesystem picks the session for a lease or oplock break
 from the grant's opens, each with its session and opener, as RFC 14's
 `Grants.Openers` returns them
 ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)):
-one holding one of the grant's opens, each signed in as its opener; when every
-such open is disconnected, only a session of that client signed in as one of
-the openers; and when there is none, none, so the break is sent nowhere and
-runs to its deadline. It passes that session to `RecallGrant`, through
-`Peers.Recall` to the node the `SessionRef` names when it is another, and the
-adapter delivers there and nowhere else. `AckRecall` on a lease or oplock is
+one holding one of the grant's opens, each signed in as its opener. It passes
+that session to `RecallGrant`, through `Peers.Recall` to the node the
+`SessionRef` names when it is another, and the adapter delivers there and
+nowhere else. When every open of a grant is disconnected, the service asks
+each node in `Reach.Sessions`, through `Peers.Recall` with the openers'
+principals, and that node picks one of its sessions of the client signed in as
+one of them, or none; the service stops at the first node that sent it, and
+when none did, the break is sent nowhere and runs to its deadline. `AckRecall` on a lease or oplock is
 admitted only from one of its openers' principals, and an open joins an
 existing lease only for one of them or for a caller on the same connection as
 an opener's session
@@ -1179,6 +1185,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | --- | --- | --- | --- |
 | `Propose` | `openstate.Clients.Propose`, which looks the (protocol, name) up through the table, never the store's `metadata.Clients`: an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
 | `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
+| `SessionUp`, `SessionDown` | none: the node's filesystem keeps its SMB sessions and their principals in memory (§3.2) | — | the node that received it |
 | `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
 | `TestState`, `FreeState` | `Recovery.TestState`; `Recovery.FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
