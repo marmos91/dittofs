@@ -53,6 +53,9 @@ type Fixture struct {
 	Seam  *journalv2test.Seam
 	Clock *sim.TestClock
 	Share enginev2.Share // the share as the engine binds it
+	// Journal is the ID Init gave the fixture's journal, which the store's
+	// Lifecycle view answers for its directory.
+	Journal journalv2.JournalID
 
 	t      *testing.T
 	dir    string
@@ -78,7 +81,7 @@ func New(t *testing.T) *Fixture {
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{Seam: seam, Clock: clock, t: t, dir: dir, logger: slog.New(slog.NewTextHandler(t.Output(), nil))}
 
-	if _, err := journalv2.Init(t.Context(), dir, fixtureInstall, journalv2.WithClock(clock), journalv2.WithStorage(seam.FS())); err != nil {
+	if f.Journal, err = journalv2.Init(t.Context(), dir, fixtureInstall, journalv2.WithClock(clock), journalv2.WithStorage(seam.FS())); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
@@ -226,6 +229,11 @@ var errNoLifecycle = errors.New("fixture: the store's Lifecycle view is not buil
 
 // unbuiltLifecycle stands where the store's Lifecycle view goes, which the
 // store does not have yet: every call is refused.
+//
+// ponytail: refusing every call holds only while no row reaches the engine's
+// start past the journal's Init. T6.1, which builds the store's Lifecycle
+// view, replaces it in the fixture, with Fixture.Journal recorded for the
+// fixture's directory.
 type unbuiltLifecycle struct{}
 
 func (unbuiltLifecycle) JournalID(context.Context, string) ([16]byte, error) {
