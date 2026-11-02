@@ -738,7 +738,7 @@ carries many users' sessions at once.
   > to become an opener, since a join needs an opener's principal or an
   > opener's connection. It becomes an opener only of a key no grant names,
   > by opening under it first, which keeps the machine uncached under that key
-  > ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)); nor change a file without breaking the machine's
+  > ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). Nor can it change a file without breaking the machine's
   > lease on it, since a lease is a caller's own only when the caller's
   > principal is one of its openers', and a refused join records no key. Keying the record by principal would refuse every
   > user but the first on a shared host (below). The connection test trusts
