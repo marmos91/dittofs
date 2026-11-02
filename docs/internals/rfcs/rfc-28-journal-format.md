@@ -1449,10 +1449,11 @@ zeroing allocation where the kernel offers one that leaves the extents
 written —; on XFS the
 `fallocate` also rules out speculative allocation past the end of the file, since
 the file never grows. `fcntl(F_PREALLOCATE)` then setting the size on macOS;
-setting the file's allocation size, then its end of file, then its valid data
-length to the end (or writing zeros where that call is not permitted), on
-Windows, since an append past the valid data length commits filesystem metadata
-at every flush. A spare is made ahead of need and a retired segment is recycled
+setting the file's allocation size, then its end of file, then writing zeros
+over the whole segment, on Windows; the zeros also move the valid data length to
+the end, since an append past it commits filesystem metadata at every flush.
+`SetFileValidData` is never called: it skips zero-filling, so the region would
+read old disk bytes instead of zeros ([§2.2](#2.2%20Segments)). A spare is made ahead of need and a retired segment is recycled
 as one ([§2.2](#2.2%20Segments)), so the zero-fill is paid only when the pool grows, off the
 write path.
 
