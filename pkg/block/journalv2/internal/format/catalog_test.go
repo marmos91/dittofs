@@ -243,11 +243,11 @@ func TestReadFooterNoFooter(t *testing.T) {
 // is the zero one — no offset, no partial entry list — and the error names
 // its own rule.
 //
-// The refusal also carries none of the record decoder's classes. D2 makes the
-// error classes the only contract with recovery: a footer refusal is
-// "no footer", never damage, a wrong place or a kind or epoch of its own, so
-// a recovery matching the classes in any order still ends at the scan this
-// format asks for.
+// The refusal also carries none of the record decoder's classes. The
+// error classes are the only contract recovery matches on, and a footer
+// refusal is "no footer", never damage, a wrong place or a kind or epoch
+// of its own — so a recovery matching the classes in any order still ends
+// at the scan this format asks for.
 func assertNoFooter(t *testing.T, name string, f Footer, err error, say string) {
 	t.Helper()
 
