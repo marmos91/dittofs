@@ -40,11 +40,7 @@ func (Null) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.S
 	return nil
 }
 
-func (Null) SessionUp(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
-	return nil
-}
-
-func (Null) SessionDown(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef) error {
+func (Null) RemoveSession(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
 	return nil
 }
 

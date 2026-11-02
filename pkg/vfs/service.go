@@ -35,9 +35,8 @@ type Clients interface {
 	// the client's one Callbacks, the latest Connect's replacing any earlier.
 	// Again on another node it moves them there; for an NFSv4 client, refused
 	// StateError ClientInUse for any principal but the client's own. An SMB
-	// client is connected once, at its first authenticated session, whatever
-	// its principal, and never by a null or guest one; each of its sessions
-	// is told of through SessionUp.
+	// client is connected once per node, at its first authenticated session
+	// there, whatever its principal, and never by a null or guest one.
 	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
 	// AddSession records this node's session and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
@@ -48,14 +47,11 @@ type Clients interface {
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
 	// Disconnect is the end of an SMB session's last channel.
 	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error
-	// SessionUp keeps c.Session, an authenticated SMB session of client cl
-	// signed in as c's principal, in this node's memory, so a break can go
-	// to it by open; a null or guest session, or a call naming none, is
-	// refused ErrInvalid. It writes nothing durable.
-	SessionUp(ctx context.Context, c Call, cl ClientID) error
-	// SessionDown forgets session s of client cl at this node, at LOGOFF or
-	// its last channel's end. It writes nothing durable.
-	SessionDown(ctx context.Context, c Call, cl ClientID, s SessionRef) error
+	// RemoveSession is the end of this node's last session of client cl,
+	// once per node and never per session: SMB LOGOFF, a last channel's end
+	// or a teardown, or NFSv4.1's DESTROY_SESSION. It removes the node from
+	// the record's sessions, so a Destroy is no longer refused for it.
+	RemoveSession(ctx context.Context, c Call, cl ClientID) error
 	// Destroy ends a client holding no state, StateError ClientBusy
 	// otherwise; a revoked reference is not state it holds.
 	Destroy(ctx context.Context, c Call, cl ClientID) error
@@ -173,8 +169,7 @@ const (
 	OpRecord
 	OpRenew
 	OpDisconnect
-	OpSessionUp
-	OpSessionDown
+	OpRemoveSession
 	OpDestroy
 	OpReclaimComplete
 	OpFreeState
@@ -236,8 +231,8 @@ const (
 
 var opNames = [...]string{
 	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record",
-	OpRenew: "Renew", OpDisconnect: "Disconnect", OpSessionUp: "SessionUp",
-	OpSessionDown: "SessionDown", OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
+	OpRenew: "Renew", OpDisconnect: "Disconnect", OpRemoveSession: "RemoveSession",
+	OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
 	OpFreeState: "FreeState", OpTestState: "TestState", OpReleaseLockOwner: "ReleaseLockOwner",
 	OpHostRestarted: "HostRestarted",
 	OpLookup:        "Lookup", OpReadDir: "ReadDir", OpCreate: "Create", OpLink: "Link", OpUnlink: "Unlink",
@@ -266,19 +261,17 @@ func (op Op) String() string {
 // record or a lease. A handler makes at most one call for which it is true,
 // and any number of the rest.
 //
-// decision: the calls that change nothing are exactly the twenty-two in the
+// decision: the calls that change nothing are exactly the twenty in the
 // switch below, the service contract's list of calls a handler may repeat.
 // Record and Spell are on it: an NFSv4 GETATTR asking for owner and
 // owner_group spells twice, and a READDIR asking for them once per entry.
-// SessionUp and SessionDown are on it: they only keep the node's SMB sessions
-// in memory to route a break, so a first SESSION_SETUP's Connect stays its one
-// mutating call. A call added here must change nothing, as the one-call
+// A call added here must change nothing, as the one-call
 // check stops seeing it.
 func Mutates(op Op) bool {
 	switch op {
 	case OpPropose, OpTestState, OpLookup, OpReadDir, OpGetAttr, OpGetACL, OpXattrs, OpStreams,
 		OpAccess, OpRead, OpSeek, OpTestLock, OpRoot, OpSecInfo, OpListShares, OpStatFS, OpQuota,
-		OpSnapshots, OpRecord, OpSpell, OpSessionUp, OpSessionDown:
+		OpSnapshots, OpRecord, OpSpell:
 		return false
 	}
 	return true

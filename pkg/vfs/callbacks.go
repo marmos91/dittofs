@@ -9,10 +9,14 @@ import "context"
 // or times out is taken as the client not answering: a recall unanswered by
 // its deadline revokes the grant.
 type Callbacks interface {
-	// RecallGrant is an NFS CB_RECALL on the client's back channel, s zero,
-	// or an SMB lease or oplock break on session s, which the service picked:
-	// the adapter delivers it there and nowhere else.
-	RecallGrant(ctx context.Context, s SessionRef, g CachingGrant, to GrantKind) error
+	// RecallGrant is an NFS CB_RECALL on the client's back channel, s zero
+	// and openers nil, or an SMB lease or oplock break on session s, one
+	// holding an open g covers, which the service picked: the adapter
+	// delivers it there and nowhere else. With s zero and openers given,
+	// every open of g is disconnected: the adapter sends it on one of its own
+	// sessions of the client signed in now as one of openers, or on none.
+	// sent is whether it sent.
+	RecallGrant(ctx context.Context, s SessionRef, openers []Principal, g CachingGrant, to GrantKind) (sent bool, err error)
 	// Notify delivers the changes watch w matched.
 	Notify(ctx context.Context, w WatchID, changes []Change) error
 	// Revoked is state ended without the client asking: the adapter answers

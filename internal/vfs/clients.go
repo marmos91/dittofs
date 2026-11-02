@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/marmos91/dittofs/internal/vfs/admit"
@@ -69,8 +70,7 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 // Connect makes the client current in open state and registers cb as its
 // Callbacks, replacing any this node held for it: who may connect a client
 // is open state's to refuse, by the principal its record names. An SMB
-// client is connected once, at its first authenticated session, and its
-// sessions are told of through SessionUp: its breaks go to those (Sink). A
+// client is connected at its first authenticated session on the node. A
 // null or guest call never connects an SMB client, and is ErrInvalid. So is
 // a zero info.Recovery: the kind sticks for the record's life, and a client
 // of none is never told of a lost shard, so it holds the shard's grace open
@@ -97,41 +97,8 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if info.Protocol == entity.ProtocolNLM {
 		host = string(info.Name)
 	}
-	fs.reg.register(id, host, smb, cb)
+	fs.reg.register(id, host, cb)
 	return id, nil
-}
-
-// SessionUp records c.Session as a session of client cl at this node, signed
-// in as c's principal, for a break to go to (Sink). A null or guest session,
-// or a call naming no session, never joins a client, and is ErrInvalid.
-func (fs *Filesystem) SessionUp(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return err
-	}
-	defer done()
-	if c.Identity.Proof < vfs.ProofSecret || c.Session == (vfs.SessionRef{}) {
-		return vfs.ErrInvalid
-	}
-	who, err := fs.who(ctx, c, cl)
-	if err != nil {
-		return err
-	}
-	fs.reg.sessionUp(cl, c.Session, who.Principal)
-	return nil
-}
-
-// SessionDown forgets session sess of client cl here: a break of the opens it
-// held goes to another session signed in as their opener, or nowhere. The
-// client keeps its Callbacks.
-func (fs *Filesystem) SessionDown(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef) error {
-	_, done, err := fs.enter(ctx)
-	if err != nil {
-		return err
-	}
-	defer done()
-	fs.reg.dropSession(cl, sess)
-	return nil
 }
 
 // AddSession records a session of the client here.
@@ -143,6 +110,24 @@ func (fs *Filesystem) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	defer done()
 	rec, err := fs.clients.AddSession(ctx, cl, entity.NodeID{}, prev, next)
 	return rec, openErr(err)
+}
+
+// RemoveSession removes this node from the client's sessions in open state.
+// An SMB record that leaves holding nothing is released there, and its
+// Callbacks are then dropped here.
+func (fs *Filesystem) RemoveSession(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	if err := fs.clients.RemoveSession(ctx, cl, entity.NodeID{}); err != nil {
+		return openErr(err)
+	}
+	if _, err := fs.clients.Record(ctx, cl); errors.Is(err, openstate.ErrStaleClient) {
+		fs.reg.unregister(cl)
+	}
+	return nil
 }
 
 func (fs *Filesystem) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientRecord, error) {
@@ -165,8 +150,7 @@ func (fs *Filesystem) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (v
 	return st, openErr(err)
 }
 
-// Disconnect ends session sess of the client in open state; SessionDown
-// forgets it here.
+// Disconnect ends session sess of the client in open state.
 func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef) error {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
