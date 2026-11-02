@@ -275,13 +275,12 @@ type FaultAction struct { // a Schedule rule's action: the three results of At
 ```
 
 - *Why declared here:* `Fault` is the node's, not the journal's (RFC 8 §2.1): every fault
-  seam consults one, a fault-injecting store and a fake `Content` included. Its results
-  are standard-library values, so a seam that may import only the standard library
-  declares it in its own package and a `Schedule` satisfies it as is. `FaultAction` is
-  only a `Schedule` rule's data, and `pkg/sim` is its home.
-- *Reordering is the crash's, never a fault's* (RFC 8 §2.1): which unsynced writes survive
-  is 2.1's crash, and the seam's `MarkReorder` narrows its draw to the writes of the files
-  it names.
+  seam consults one, the fake store, the fault transport and the fault-injecting metadata
+  store included. Its results are standard-library values, so a seam that may import only
+  the standard library declares it in its own package and a `Schedule` satisfies it as is.
+  `FaultAction` is only a `Schedule` rule's data, and `pkg/sim` is its home.
+- *Reordering is the crash's, never a fault's* (RFC 1 §1.3): which unsynced writes survive
+  is decided by 2.1's crash, a separate seam operation.
 - *The seam's operation names:* `create`, `open`, `allocate`, `write`, `read`,
   `read_direct`, `sync`, `truncate`, `close`, `rename`, `remove`, `list`, `sync_dir`. The
   key is the file name, so a fault never sees a call's offset: a read that fails only on
@@ -293,7 +292,9 @@ type FaultAction struct { // a Schedule rule's action: the three results of At
   goes through RFC 8 §2.1.
 - *`Schedule`* implements `Fault` from a seed and a list of rules (an op, a key pattern,
   a call count or probability, an action). The same seed gives the same actions in the
-  same order of calls.
+  same order of calls. Its rules are fixed: a check arms new ones by giving the seam
+  another schedule (2.2) and clears them by giving it an empty one, and each rule counts
+  calls from when its schedule is given.
 
 **D6. A hold is test choreography in the seam, not a fault.**
 Many checks stop the journal at one call and act while it waits ("hold a `Fill` at the
@@ -444,21 +445,23 @@ Every conformance subtask also:
     directory;
   - supports the variants RFC 28 §4.4 names: *lost writes* (the default), *torn* (the
     last unsynced write kept up to byte n), and *reordered* (a seeded subset of the
-    unsynced writes survives; any subset is allowed, since outside data-journaling modes
-    a filesystem gives unsynced writes no order);
-  - counts calls per operation and per file, and exposes the durable image of a file
-    (what a crash would leave) for stale-read checks;
+    unsynced writes survives, never a write or the tail of a torn write that a fault lost
+    at its call (2.2); any subset is allowed, since outside data-journaling modes a
+    filesystem gives unsynced writes no order);
+  - counts calls per operation (`Calls`) and per file (`CallsFor`), and exposes the
+    durable image of a file (what a crash would leave) for stale-read checks;
   - can serve reads of a named file from its durable image instead of the page cache
     (`StaleReads(name)`), which the "re-append trusts no page cache" checks need;
   - can make the reads of a named file that overlap a byte range go bad, as a bad sector
-    does, until the range is cleared, while reads elsewhere in the file pass: `read`,
-    `read_direct` or both fail with `EIO`, or return the range with a bit flipped, from
-    the nth overlapping read on, so a record can verify at a scan and fail when read
-    again. Several ranges of one file can be bad at once. A fault cannot do this, since
-    `Fault.At` is given no offset (D5);
+    does, from when the test sets the range until it clears it, while reads elsewhere in
+    the file pass: `read`, `read_direct` or both fail with `EIO`, or return the range with
+    a bit flipped. Several ranges of one file can be bad at once, and the seam counts the
+    reads that overlap each one, which is how a check counts a read's attempts. A fault
+    cannot do this, since `Fault.At` is given no offset (D5);
   - `Abandon()`, a process killed with no power loss: every handle closes, unsynced
     writes stay readable through `read` as a dead process's page cache, `read_direct`
-    serves only what a sync made durable, and a later `Crash()` still drops them.
+    serves only what a sync made durable, and they stay pending: a sync through any later
+    handle makes them durable, and a `Crash()` before one drops them.
 - **Done when:**
   - its unit tests, on a real temporary directory, show each discard rule: a synced write
     survives a crash, an unsynced one does not, a renamed file's directory entry survives
@@ -466,9 +469,10 @@ Every conformance subtask also:
     later unsynced write without an earlier one, and no variant loses a synced write;
   - a read overlapping a bad range by one byte fails, one ending just before it passes,
     and both pass once the range is cleared; a range bad for `read_direct` alone leaves
-    `read` passing; a range going bad from read n returns the original bytes to the
-    reads before it;
-  - after `Abandon`, `read` returns an unsynced write and `read_direct` does not;
+    `read` passing; a range set while the file is open applies to the next read through
+    every handle, and its count rises by one for each read that overlaps it;
+  - after `Abandon`, `read` returns an unsynced write and `read_direct` does not, and a
+    sync through a new handle makes it durable;
   - each test reverts the matching rule in the seam and watches the test fail.
 - **Rules:**
   - 1, 10: the seam is fully implemented and its tests can fail.
@@ -493,11 +497,16 @@ Every conformance subtask also:
   - **The seam consults its `Fault`** before every operation and applies its results (RFC
     8 §2.1, RFC 1 §1.3): an error alone fails the call (`EIO`, `ENOSPC` or any given); a
     loss (`tearAfter` < 0) reports success, a lost write staying readable but never
-    durable and a lost sync or `sync_dir` leaving what was pending still pending; a tear
-    (`tearAfter` > 0) keeps the first n bytes; a delay waits. A tear of any op but
-    `write`, or a loss of any but `write`, `sync` and `sync_dir` or with an error, is a
-    mistake in the test: the seam panics, naming the op and the action. Which unsynced
-    writes survive is 2.1's crash, narrowed by `MarkReorder` (D5).
+    durable and a lost sync or `sync_dir` leaving what was pending still pending; a
+    failed sync or `sync_dir` takes what it would have covered out of the pending set, so
+    no later sync makes it durable, though a crash may still keep it; a silent tear
+    (`tearAfter` > 0, no error) lands the whole write, cached reads seeing all of it,
+    while only its first n bytes can become durable; a tear with an error lands only
+    those n bytes and fails the write; a delay waits. A tear of any op but `write`, or a
+    loss of any but `write`, `sync` and `sync_dir` or with an error, is a mistake in the
+    test: the seam panics, naming the op and the action. Which unsynced writes survive is
+    2.1's crash (D5). A check can give the seam another `Fault` at any point
+    (`SetFault`), and a call held at the seam (D6) consults the one given while it waited.
   - **Holds** (D6): `Hold`, `Reached`, `Waiting`, `Release`.
 - **Done when:**
   - the same seed and rules give the same actions over the same calls, and a different
@@ -506,9 +515,16 @@ Every conformance subtask also:
     fires timers due by 105 s;
   - a `Jump`, forward or back, moves `Now` by exactly its argument, leaves `Elapsed`
     where it was, and fires no timer;
-  - each result is observable through the seam on a real file, including a failed
-    `sync`, a failed `sync_dir` and a failed `read_direct`, the three RFC 1 §1.3 names;
-  - a held call blocks until `Release`, and `Waiting` counts the blocked calls.
+  - each result is observable through the seam on a real file, including the four RFC 1
+    §1.3 names: a failed `sync`, a failed `sync_dir`, a failed `read_direct` and a lost
+    `sync`;
+  - a failed `sync` followed by a successful one leaves its writes readable and out of
+    the durable image, and a crash then drops them;
+  - a silent tear reads back whole before a crash, and only its first n bytes after a
+    sync and a crash; a tear with an error returns n and the error, and the next sync
+    makes those n bytes durable;
+  - a held call blocks until `Release`, and `Waiting` counts the blocked calls; a `Fault`
+    given while a call is held applies to that call.
 - **Rules:**
   - 1, 10: each property above is a test that a plausible bug fails.
   - 9: `decision:` markers for D5 at `FaultAction` and for D6 at `Hold`.
@@ -647,7 +663,7 @@ Every conformance subtask also:
 
 - **Owner:** B. **Depends on:** 2.5a.
 - **Deliverables:** seventeen checks of RFC 1 §9.4 Group A: no zero-fill, write during
-  offload, offer stops at `through` with per-extent stamps, lost stamp is offered, fill
+  offload, "offer stops at `through`, per-extent stamps", lost stamp is offered, fill
   safety, a read's `asOf` against a change in flight, fill sets the bit, refusal,
   partial release keeps the record whole
   (by catalog and by scan), release frees nothing inside a segment, unlink under read,
@@ -705,15 +721,19 @@ Every conformance subtask also:
   repack and release finish under `-race` with no call blocked past a bound of virtual
   time), background joined, removal records dropped per extent, repack aimed at a share.
 - **Not here:** "bounds" (comparison counts per lookup, epic 4) and the lock-order recorder
-  half of "no deadlock" (epic 8). Both need internal instrumentation (§6).
+  half of "no deadlock" (epic 8). Both need internal instrumentation (§6). Nor the probe
+  legs of "read-only stops the drain", which make open's checks fail: no seam call
+  reaches them (epic 11, §6).
 - **Done when:** as 2.7. Checks at 10⁴–10⁶ extents or 1,000 segments use the 1 MiB cap
   and say so in their doc comment.
 - **Rules:**
   - 4: the descriptor bound is read from `Stats` and from the profiler's descriptor count.
   - 5: concurrency runs under `-race`.
   - 12: the seam's schedule gets a rule failing every `create`, `allocate`, `write`,
-    `truncate`, `rename`, `remove`, `sync` and `sync_dir` with `EROFS` from call n on,
-    reads passing, in the same change as "read-only stops the drain", its first user.
+    `truncate`, `rename`, `remove`, `sync` and `sync_dir` with `EROFS`, reads passing,
+    from the next `sync` until the test clears it, in the same change as "read-only stops
+    the drain", its first user. The test arms it while that `sync` is held (D6) and clears
+    it by giving the seam an empty schedule (D5).
 
 ### 2.11 RFC 1 Group C: recovery
 
@@ -783,12 +803,12 @@ Every conformance subtask also:
 
 - **Owner:** A. **Depends on:** 2.5a, 2.13a.
 - **Deliverables:**
-  - **RFC 28 §4.2 Group A**, sixteen checks: corrupt dirty, corrupt offloaded, directory
-    entry survives, footer is not authoritative, unmark clears, write carries its mtime,
-    unproven tail verified at open, a zero slot is not the end, a failed read is not
-    damage, unproven tail with a failed re-read, failed window with a failed read,
+  - **RFC 28 §4.2 Group A**, sixteen checks: "corrupt, dirty", "corrupt, offloaded",
+    directory entry survives, footer is not authoritative, unmark clears, write carries
+    its mtime, unproven tail verified at open, a zero slot is not the end, a failed read
+    is not damage, unproven tail with a failed re-read, failed window with a failed read,
     unreadable is not empty, acknowledging a range, an unread file keeps its order,
-    unread offloaded, a dead unread record. An unread record is the seam's bad range
+    "unread, offloaded", a dead unread record. An unread record is the seam's bad range
     (2.1). Four are split rows whose engine half is epic 11's (§6), and whose journal half
     is here: in "a failed read is not damage", up to the open failing and the record
     reading back with no reopen; in "acknowledging a range", `Acknowledge`,
@@ -805,9 +825,11 @@ Every conformance subtask also:
     re-adopted, a spare is whole or absent, retired segments are recycled, a recycled
     segment's old catalog is never read, interrupted `Init`, unknown version, neighbours
     survive, a scan resynchronises, torn tail cut off, a bad copy does not mask a good one,
-    an ended segment is emptied once (its two reopens follow `Abandon` and `Crash`, the
-    record failing only when read for the copy is a range flipped from its second read
-    on, and the second target's failed sync is the second refusal in a row of RFC 1 §5.4);
+    an ended segment is emptied once (its two reopens follow `Abandon` and `Crash`; the
+    record failing only when read for the copy is a range the test flips while the
+    `rename` recycling the row's dead segment is held (D6), since RFC 28 §3.3 retires that
+    segment after the scan and before any copy; the second target's failed sync is the
+    second refusal in a row of RFC 1 §5.4);
     and the refusal halves of kind values (kinds 15 and 128 fail the open), segment header
     and seal marker (a foreign header is foreign, not damaged; a seal marker copied into a
     payload does not stop a scan), and `format` file (55 or 57 bytes, a bad checksum and
@@ -876,6 +898,7 @@ Every other row in D3's scope lands as a test in this epic (§5). These do not, 
 | --- | --- | --- |
 | RFC 1 B "bounds" | epic 4 | comparison counts per lookup need the index's counters |
 | RFC 1 B "no deadlock", lock-order half | epic 8 | the lock-order recorder is internal to the data path |
+| RFC 1 B "read-only stops the drain", probe legs | epic 11 | both make open's checks fail on a writable directory, and those are `platform.Check`, outside the storage seam (epic 3, D7), which epic 3 tests alone on recorded mount tables (3.11); a check failing at the reopen leaves the journal closed, so retry-later and the open retried 30 s later are the caller's (RFC 1 §5.4, RFC 8 §11.2); the journal's half is 2.10 |
 | RFC 1 D "stats are cheap", lock and walk halves | epic 8 | the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing needs a counted hook in the journal; both are internal to the data path, and the public half is 2.5b |
 | RFC 1 C "stranded tag salvaged after serving" | epic 11 | needs the store, a recovery import, `salvage.path` and the master key |
 | RFC 1 D "accounting follows the cap", speculative-preallocation leg | parked | needs a filesystem host nobody provisions (XFS); the leg on the test host's filesystem is here |
