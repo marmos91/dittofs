@@ -1113,7 +1113,10 @@ whose ranges do not overlap are independent.
 **A waiter has one lifetime, this one.** It is dropped when it is granted; when
 its owner cancels it (`CancelLock`) or, polling, has not polled by `Deadline`;
 when it is replaced (above); when, callback, its grant is refused (above); when
-its open closes, or its open's session loses its last channel; and with
+its open closes, or its open's session loses its last channel; when a
+committed release drops its file
+([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)), a callback waiter
+reported `LockWaitOver(granted=false)`; and with
 everything else its client holds when the client's lease expires or its state
 is revoked
 ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
