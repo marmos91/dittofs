@@ -1045,7 +1045,7 @@ func TestARemovedSharesOpenStateIsDropped(t *testing.T) {
 	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
 	p, err := s.tab.Clients().Propose(ctx, c, inLab)
 	s.must(t, err)
-	id, err := s.tab.Clients().Connect(ctx, c, &p)
+	id, _, err := s.tab.Clients().Connect(ctx, c, &p)
 	s.must(t, err)
 	who := openstate.Caller{Client: id, Principal: s.fs.Admin.Principal, Protocol: entity.ProtocolNFSv4}
 	_, dir, _ := s.fs.Root.Parse()

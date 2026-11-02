@@ -107,7 +107,7 @@ func (s *shares) nfs41(t *testing.T, name string, uid uint32, sess uint64) vfs.C
 	p, err := s.Propose(t.Context(), c, info)
 	s.must(t, err)
 	info.Proposal = &p
-	id, err := s.Connect(t.Context(), c, info, &vfstest.RecordingCallbacks{})
+	id, _, err := s.Connect(t.Context(), c, info, &vfstest.RecordingCallbacks{})
 	s.must(t, err)
 	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: sess}
 	return c
@@ -293,7 +293,7 @@ func TestADenyModeUnderAHandleLeaseIsBrokenFirst(t *testing.T) {
 	alice := n.user(t, "alice", "1000", n.share, entity.AccessReadWrite)
 	alicePC := &vfstest.RecordingCallbacks{}
 	asAlice := signedIn(alice.Principal, 1)
-	id, err := n.Connect(ctx, asAlice, smb("alice-pc", 1), alicePC)
+	id, _, err := n.Connect(ctx, asAlice, smb("alice-pc", 1), alicePC)
 	n.must(t, err)
 	asAlice.Client = id
 	bob := n.smbClient(t, "build01", alice.Principal)
@@ -463,6 +463,51 @@ func TestDeleteOnCloseRunsAtTheLastClose(t *testing.T) {
 	}
 	if n.held(r.File.ID) {
 		t.Error("f's content is held once its delete on close removed its last name")
+	}
+}
+
+// A logoff closes its session's delete-on-close open as a Close would: the
+// file's name goes and its content is released, though no Close came.
+func TestALogoffRunsADeleteOnClose(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	c.Session = vfs.SessionRef{ID: 1}
+	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
+	req.DeleteOnClose = true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	n.stored(t, r.File.ID)
+	if _, err := n.Disconnect(ctx, c, c.Client, c.Session, vfs.SessionEnd{Logoff: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !n.released(r.File.ID, 0) {
+		t.Error("f's content is held after its delete-on-close open's session logged off")
+	}
+	if _, _, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("f after its delete-on-close open's session logged off: %v, want gone", err)
+	}
+}
+
+// A session's end closes its volatile open of an unlinked file as a last
+// Close would: the orphan's content is released.
+func TestADisconnectReleasesAnOrphan(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	c.Session = vfs.SessionRef{ID: 1}
+	home, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "home", kvstore.Dir(0o755))
+	r, err := n.Open(ctx, c, byName(home, "f", vfs.OpenOrCreate, entity.ReadData))
+	n.must(t, err)
+	n.stored(t, r.File.ID)
+	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: home}, []byte("f")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Disconnect(ctx, c, c.Client, c.Session, vfs.SessionEnd{}); err != nil {
+		t.Fatal(err)
+	}
+	if !n.released(r.File.ID, 0) {
+		t.Error("an unlinked file's content is held after its last open's session ended")
 	}
 }
 
@@ -1162,7 +1207,8 @@ func TestAFailedReconnectIsClosed(t *testing.T) {
 	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
 	r, err := n.Open(ctx, pc, req)
 	n.must(t, err)
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
+	_, err = n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{})
+	n.must(t, err)
 	pc.Session = vfs.SessionRef{ID: 2}
 	n.engine.overlayErr = errors.New("journal read failed")
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &r.Ref, CreateID: [16]byte{1}}); err == nil {
@@ -1214,7 +1260,8 @@ func TestAReconnectOutlivesItsCall(t *testing.T) {
 	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
 	r, err := n.Open(ctx, pc, req)
 	n.must(t, err)
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
+	_, err = n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{})
+	n.must(t, err)
 	pc.Session = vfs.SessionRef{ID: 2}
 	call, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1396,7 +1443,7 @@ func TestAnNFSOpenIsDecidedWithThePrivilege(t *testing.T) {
 	pr, err := n.Propose(ctx, c, info)
 	n.must(t, err)
 	info.Proposal = &pr
-	id, err := n.Connect(ctx, c, info, &vfstest.RecordingCallbacks{})
+	id, _, err := n.Connect(ctx, c, info, &vfstest.RecordingCallbacks{})
 	n.must(t, err)
 	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
 	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {

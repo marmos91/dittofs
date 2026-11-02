@@ -114,7 +114,8 @@ func TestADrainedReconnectKeepsItsOpen(t *testing.T) {
 	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
 	r, err := n.Open(ctx, pc, req)
 	n.must(t, err)
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
+	_, err = n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{})
+	n.must(t, err)
 	pc.Session = vfs.SessionRef{ID: 2}
 	entered, free := make(chan struct{}, 1), make(chan struct{})
 	n.Filesystem.engine = stalling{Content: n.engine, entered: entered, free: free}
@@ -287,7 +288,8 @@ func TestAFailedReconnectClosesAsCloseDoes(t *testing.T) {
 	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
 		t.Fatal(err)
 	}
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
+	_, err = n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{})
+	n.must(t, err)
 	pc.Session = vfs.SessionRef{ID: 2}
 	p := &probingClose{Opens: n.opens, locks: &n.locks}
 	n.opens = p

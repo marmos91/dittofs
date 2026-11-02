@@ -158,9 +158,9 @@ func (rec *Recorder) Propose(ctx context.Context, c vfs.Call, info vfs.ClientInf
 	return result[vfs.Proposal](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
+func (rec *Recorder) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, uint64, error) {
 	ret := rec.call(vfs.OpConnect, ctx, c, info, cb)
-	return result[vfs.ClientID](rec, ret, 0), result[error](rec, ret, 1)
+	return result[vfs.ClientID](rec, ret, 0), result[uint64](rec, ret, 1), result[error](rec, ret, 2)
 }
 
 func (rec *Recorder) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientID, prev []byte, next []byte) (vfs.ClientRecord, error) {
@@ -178,9 +178,9 @@ func (rec *Recorder) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vf
 	return result[vfs.ClientStatus](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef, end vfs.SessionEnd) error {
+func (rec *Recorder) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef, end vfs.SessionEnd) (uint64, error) {
 	ret := rec.call(vfs.OpDisconnect, ctx, c, cl, s, end)
-	return result[error](rec, ret, 0)
+	return result[uint64](rec, ret, 0), result[error](rec, ret, 1)
 }
 
 func (rec *Recorder) Destroy(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {

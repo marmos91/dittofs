@@ -36,9 +36,14 @@ type Clients interface {
 	// Again on another node it moves them there; for an NFSv4 client, refused
 	// StateError ClientInUse for any principal but the client's own. An SMB
 	// client is connected once per node, at its first authenticated session
-	// there, whatever its principal, and never by a null or guest one.
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
-	// AddSession records this node's session and writes next as the
+	// there, whatever its principal, and never by a null or guest one, and
+	// again at each new node epoch while the node holds a session of it:
+	// that lists the node in the record's sessions and answers the entry's
+	// Gen, which the last session's Disconnect passes back; any other
+	// client's is zero.
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error)
+	// AddSession records this node's session, listing the node in the
+	// record's sessions with its entry's Gen raised, and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
 	// nothing and answers StateError RecordChanged with the current record.
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error)
@@ -49,10 +54,24 @@ type Clients interface {
 	// a failed re-authentication's teardown with Logoff, closing every open
 	// of the session; the end of its last channel without, keeping its
 	// durable opens for their Timeout; NFSv4.1 DESTROY_SESSION, whose
-	// session names no open, with Last only. Last marks this node's last
-	// session of cl: it removes the node from the record's sessions in the
-	// same call, so a Destroy is no longer refused for it.
-	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) error
+	// session names no open, with Last only. Its closes run as a Close's do:
+	// locks released, waiters served, delete-on-close and orphaned content
+	// released. Last marks this node's last session of cl: once the closes
+	// have run, it removes the node from the record's sessions in the same
+	// call if the entry's Gen is still end.Gen, so a Destroy is no longer
+	// refused for it. A listing since keeps the node listed, and Disconnect
+	// answers that entry's newer Gen; it answers zero once the entry is
+	// gone, and StateError StaleClient once the record is released.
+	//
+	// The adapter decides first and last under a per-client step of its own,
+	// held only around that decision and never across this call or Connect.
+	// On a non-zero Gen it stores that Gen and decides again under its step,
+	// repeating the Disconnect with it if the node still holds no session of
+	// the client, and stopping otherwise. An error leaves the node listed:
+	// the adapter repeats the call until it succeeds, and a repeat finds the
+	// closed opens gone and closes nothing twice; StaleClient, a repeat's
+	// answer once the record is released, it counts as success.
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) (uint64, error)
 	// Destroy ends a client holding no state, StateError ClientBusy
 	// otherwise; a revoked reference is not state it holds.
 	Destroy(ctx context.Context, c Call, cl ClientID) error
