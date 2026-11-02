@@ -121,8 +121,8 @@ func TestFakeRemovalsLeaveMarkersUntilSettled(t *testing.T) {
 }
 
 // A loss stops holding the extent, is reported by Since at the version it
-// dropped, joins the loss ring and raises the generation; a loss of nothing
-// held records nothing.
+// dropped and joins the loss ring; a corrupt loss raises the generation and a
+// stale one does not; a loss of nothing held records nothing.
 func TestFakeLossRingAndGeneration(t *testing.T) {
 	j, h := fake(t, 0)
 	v := write(t, h, fileA, 0, "abcd")
@@ -142,6 +142,10 @@ func TestFakeLossRingAndGeneration(t *testing.T) {
 	if got := changes(t, h, fileA, journalv2.Version{}); len(got) != 2 || got[1].Kind != journalv2.ChangeLoss {
 		t.Errorf("Since = %+v; want the write's rest, then the loss", got)
 	}
+	j.Lose(fileA, ext(2, 1), journalv2.LossStale)
+	if s := j.Stats(); s.LossGeneration != 1 || len(s.Losses) != 2 {
+		t.Errorf("after a stale loss: generation %d, ring %+v; want generation 1, two losses", s.LossGeneration, s.Losses)
+	}
 }
 
 // Each refusal is the journal's named one.
@@ -159,6 +163,17 @@ func TestFakeRefusals(t *testing.T) {
 	}
 	if _, err := other.WriteAt(ctx, fileA, 0, []byte("x"), 0); !errors.Is(err, journalv2.ErrOtherShare) {
 		t.Errorf("write to another share's file: %v", err)
+	}
+	// A file belongs to the tag of its records: reading one with none claims
+	// nothing.
+	if _, _, _, _, err := other.ReadAt(ctx, fileB, 0, make([]byte, 1)); err != nil {
+		t.Errorf("read of a file with no records: %v", err)
+	}
+	for _, err := range other.Since(ctx, fileB, journalv2.Version{}) {
+		t.Errorf("Since of a file with no records: %v", err)
+	}
+	if _, err := h.WriteAt(ctx, fileB, 0, []byte("y"), 0); err != nil {
+		t.Errorf("write to a file another share only read: %v", err)
 	}
 	if _, err := h.Deallocate(ctx, fileA, ext(1, 0)); !errors.Is(err, journalv2.ErrZeroLength) {
 		t.Errorf("zero-length deallocate: %v", err)

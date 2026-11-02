@@ -149,8 +149,9 @@ func (j *FakeJournal) Close() error {
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
 // are no longer held, and the loss, at the newest version it dropped, is a
-// synced change Since reports, an event in the loss ring and a raise of the
-// loss generation. A loss of nothing held records nothing.
+// synced change Since reports and an event in the loss ring; a corrupt loss
+// also raises the loss generation, a stale one does not. A loss of nothing
+// held records nothing.
 func (j *FakeJournal) Lose(id journalv2.FileID, e journalv2.Extent, why journalv2.LossReason) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -163,7 +164,9 @@ func (j *FakeJournal) Lose(id journalv2.FileID, e journalv2.Extent, why journalv
 		return
 	}
 	f.changes = append(f.changes, journalv2.Change{Kind: journalv2.ChangeLoss, Extent: e, Version: v})
-	j.gen++
+	if why == journalv2.LossCorrupt {
+		j.gen++
+	}
 	j.losses = append(j.losses, journalv2.LossEvent{SeqNum: uint64(len(j.losses)) + 1, Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
 }
 
@@ -200,16 +203,20 @@ func (j *FakeJournal) cut(f *fakeFile, from, to int64) (newest journalv2.Version
 	return newest, ok
 }
 
-// file returns id's file for h's tag, claiming it for the tag when it has
-// none, or refuses a file of another tag. j.mu is held.
-func (h *FakeHandle) file(id journalv2.FileID) (*fakeFile, error) {
+// file returns id's file for h's tag, or refuses a file of another tag. A
+// file with no records belongs to no tag: claim gives it to h's tag, as a
+// write or a removal does by leaving a record; without claim it is answered
+// empty and stays unclaimed. j.mu is held.
+func (h *FakeHandle) file(id journalv2.FileID, claim bool) (*fakeFile, error) {
 	if h.closed {
 		return nil, journalv2.ErrClosed
 	}
 	f := h.j.files[id]
 	if f == nil {
 		f = &fakeFile{tag: h.tag}
-		h.j.files[id] = f
+		if claim {
+			h.j.files[id] = f
+		}
 	}
 	if f.tag != h.tag {
 		return nil, &journalv2.OtherShareError{File: id, Tag: h.tag, Owner: f.tag}
@@ -223,7 +230,7 @@ func (h *FakeHandle) WriteAt(_ context.Context, id journalv2.FileID, off int64, 
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	f, err := h.file(id)
+	f, err := h.file(id, true)
 	if err != nil {
 		return journalv2.Version{}, err
 	}
@@ -255,7 +262,7 @@ func (h *FakeHandle) ReadAt(_ context.Context, id journalv2.FileID, off int64, p
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	f, err := h.file(id)
+	f, err := h.file(id, false)
 	if err != nil {
 		return 0, nil, nil, journalv2.Version{}, err
 	}
@@ -294,7 +301,7 @@ func (h *FakeHandle) remove(id journalv2.FileID, k journalv2.ChangeKind, from, t
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	f, err := h.file(id)
+	f, err := h.file(id, true)
 	if err != nil {
 		return journalv2.Version{}, err
 	}
@@ -334,7 +341,7 @@ func (h *FakeHandle) Delete(_ context.Context, id journalv2.FileID) (journalv2.V
 func (h *FakeHandle) Since(_ context.Context, id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 	j := h.j
 	j.mu.Lock()
-	f, err := h.file(id)
+	f, err := h.file(id, false)
 	var out []journalv2.Change
 	if err == nil {
 		for _, p := range f.pieces {
