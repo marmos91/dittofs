@@ -381,6 +381,13 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		// nothing, as POSIX has it, so open state is neither asked nor told.
 		// A respelling of one entry to another goes on, as the store renames
 		// it.
+		//
+		// decision: this success also answers a noReplace rename, and one of
+		// a delete-pending file or directory, when both names are spelled
+		// alike. POSIX makes a rename onto the same link a no-op that
+		// succeeds, and a no-op cannot replace or revive anything. Refuse
+		// here first if a protocol is found that expects EEXIST or a
+		// delete-pending status for it.
 		r.From.After, r.To.After = fs.attrs(ctx, a, from.H), fs.attrs(ctx, a, to)
 		return r, false, nil
 	}
