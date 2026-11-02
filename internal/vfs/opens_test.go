@@ -295,6 +295,7 @@ func TestADenyModeUnderAHandleLeaseIsBrokenFirst(t *testing.T) {
 	asAlice := signedIn(alice.Principal, 1)
 	id, err := n.Connect(ctx, asAlice, smb("alice-pc", 1), alicePC)
 	n.must(t, err)
+	sessionUp(t, n.Filesystem, asAlice, id)
 	asAlice.Client = id
 	bob := n.smbClient(t, "build01", alice.Principal)
 	nfs := n.nfs41(t, "host", 1000, 9)
@@ -605,7 +606,7 @@ func TestAShareMarkedBeforeARestartIsDroppedAtStart(t *testing.T) {
 
 	g := n.restart(t)
 	cb := &vfstest.RecordingCallbacks{}
-	g.reg.register(pc.Client, "", entity.SessionRef{}, alice.Principal, cb)
+	g.reg.register(pc.Client, "", true, cb)
 	g.must(t, g.Start(ctx))
 	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB}
 	m := openstate.ReconnectMatch{Share: n.share, Create: [16]byte{1}}
@@ -657,7 +658,7 @@ func TestStartServesEveryShare(t *testing.T) {
 	}
 
 	g := n.restart(t)
-	g.reg.register(pc.Client, "", entity.SessionRef{}, alice.Principal, &vfstest.RecordingCallbacks{})
+	g.reg.register(pc.Client, "", true, &vfstest.RecordingCallbacks{})
 	g.must(t, g.Start(ctx))
 	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB}
 	for _, o := range opens {

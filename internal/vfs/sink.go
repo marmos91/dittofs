@@ -25,7 +25,8 @@ import (
 // to, picked by the opens it covers, never by the client: the session holding
 // one of them, else a session of the client signed in as one of their
 // openers, else none, and the break waits for one to sign in until its
-// deadline. A ClientGuid travels in clear, so anyone can connect under a
+// deadline. The sessions are those SessionUp told of and SessionDown has not
+// ended. A ClientGuid travels in clear, so anyone can connect under a
 // machine's and register its Callbacks; the session is the filesystem's to
 // pick, and the adapter only delivers on it.
 //
@@ -238,8 +239,9 @@ func (fs *Filesystem) counted(kind string, cb vfs.Callbacks) vfs.Callbacks {
 }
 
 // registry is, at this node, each client's Callbacks, which its latest
-// Connect registered; each SMB client's sessions, with the principal each
-// signed in as; and the client each NLM host last connected as.
+// Connect registered; each SMB client's sessions, which SessionUp recorded,
+// with the principal each signed in as; and the client each NLM host last
+// connected as.
 //
 // ponytail: an NLM host's entry stays once its client has ended, one per host
 // ever connected. Drop it with the client's Callbacks if host churn shows it.
@@ -261,15 +263,15 @@ func newRegistry() *registry {
 	return &registry{cb: map[entity.ClientID]registered{}, smb: map[entity.ClientID]map[entity.SessionRef]entity.Principal{}, nlm: map[string]entity.ClientID{}}
 }
 
-// register makes cb client id's Callbacks and, for a non-zero sess, records
-// that session, signed in as p. A reboot's ended ID has already gone, through
+// register makes cb client id's Callbacks, and for an SMB client keeps its
+// sessions, none at first. A reboot's ended ID has already gone, through
 // ClientEnded. For a non-empty NLM host, it drops the Callbacks of the client
 // the host connected as before when that is another: open state deletes an
 // idle host's record without raising ClientEnded, and the host's next Connect
 // makes a new client. It registers nothing for a host already connected as a
 // newer client: IDs only grow, so id is one open state has deleted, and a
 // Connect that got it registering late must not displace the live one.
-func (r *registry) register(id entity.ClientID, host string, sess entity.SessionRef, p entity.Principal, cb vfs.Callbacks) {
+func (r *registry) register(id entity.ClientID, host string, smb bool, cb vfs.Callbacks) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.nlm[host]; ok && old != id {
@@ -283,9 +285,15 @@ func (r *registry) register(id entity.ClientID, host string, sess entity.Session
 	}
 	r.gen++
 	r.cb[id] = registered{cb, r.gen}
-	if sess == (entity.SessionRef{}) {
-		return
+	if smb && r.smb[id] == nil {
+		r.smb[id] = map[entity.SessionRef]entity.Principal{}
 	}
+}
+
+// sessionUp records session sess of client id, signed in as p.
+func (r *registry) sessionUp(id entity.ClientID, sess entity.SessionRef, p entity.Principal) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.smb[id] == nil {
 		r.smb[id] = map[entity.SessionRef]entity.Principal{}
 	}
@@ -345,8 +353,10 @@ func (r *registry) recallRoute(id entity.ClientID, opens []openstate.Open) recal
 	}
 	// ponytail: an open whose session is live on another node is not
 	// followed there; the break goes to a session here signed in as an
-	// opener, or nowhere. Route it through Peers.Recall to the node its
-	// SessionRef names once the filesystem runs in a cluster.
+	// opener, or nowhere. Once the filesystem runs in a cluster, route it
+	// through Peers.Recall to the node its SessionRef names, and, with every
+	// open disconnected, through Peers.Recall with the openers' principals
+	// to each node holding a session of the client.
 	for _, o := range opens {
 		for s, p := range sessions {
 			if p == o.Principal {

@@ -35,9 +35,9 @@ type Clients interface {
 	// the client's one Callbacks, the latest Connect's replacing any earlier.
 	// Again on another node it moves them there; for an NFSv4 client, refused
 	// StateError ClientInUse for any principal but the client's own. An SMB
-	// client is connected by each authenticated session, whatever its
-	// principal, which records the session and who signed in on it: a break
-	// names the session it goes to, picked by open.
+	// client is connected once, at its first authenticated session, whatever
+	// its principal, and never by a null or guest one; each of its sessions
+	// is told of through SessionUp.
 	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)
 	// AddSession records this node's session and writes next as the
 	// record's adapter bytes if they still equal prev; otherwise it writes
@@ -48,6 +48,14 @@ type Clients interface {
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
 	// Disconnect is the end of an SMB session's last channel.
 	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error
+	// SessionUp keeps c.Session, an authenticated SMB session of client cl
+	// signed in as c's principal, in this node's memory, so a break can go
+	// to it by open; a null or guest session, or a call naming none, is
+	// refused ErrInvalid. It writes nothing durable.
+	SessionUp(ctx context.Context, c Call, cl ClientID) error
+	// SessionDown forgets session s of client cl at this node, at LOGOFF or
+	// its last channel's end. It writes nothing durable.
+	SessionDown(ctx context.Context, c Call, cl ClientID, s SessionRef) error
 	// Destroy ends a client holding no state, StateError ClientBusy
 	// otherwise; a revoked reference is not state it holds.
 	Destroy(ctx context.Context, c Call, cl ClientID) error
@@ -165,6 +173,8 @@ const (
 	OpRecord
 	OpRenew
 	OpDisconnect
+	OpSessionUp
+	OpSessionDown
 	OpDestroy
 	OpReclaimComplete
 	OpFreeState
@@ -226,7 +236,8 @@ const (
 
 var opNames = [...]string{
 	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record",
-	OpRenew: "Renew", OpDisconnect: "Disconnect", OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
+	OpRenew: "Renew", OpDisconnect: "Disconnect", OpSessionUp: "SessionUp",
+	OpSessionDown: "SessionDown", OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
 	OpFreeState: "FreeState", OpTestState: "TestState", OpReleaseLockOwner: "ReleaseLockOwner",
 	OpHostRestarted: "HostRestarted",
 	OpLookup:        "Lookup", OpReadDir: "ReadDir", OpCreate: "Create", OpLink: "Link", OpUnlink: "Unlink",

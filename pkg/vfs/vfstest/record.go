@@ -183,6 +183,16 @@ func (rec *Recorder) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID
 	return result[error](rec, ret, 0)
 }
 
+func (rec *Recorder) SessionUp(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
+	ret := rec.call(vfs.OpSessionUp, ctx, c, cl)
+	return result[error](rec, ret, 0)
+}
+
+func (rec *Recorder) SessionDown(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef) error {
+	ret := rec.call(vfs.OpSessionDown, ctx, c, cl, s)
+	return result[error](rec, ret, 0)
+}
+
 func (rec *Recorder) Destroy(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
 	ret := rec.call(vfs.OpDestroy, ctx, c, cl)
 	return result[error](rec, ret, 0)
