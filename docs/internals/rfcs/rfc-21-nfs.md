@@ -946,7 +946,9 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    owner names its client ID, and a `CLOSE` or `LOCKU` of its state are each
    refused, and its delegation is never bypassed. A v4.0 `OPEN`,
    `RELEASE_LOCKOWNER` or `RENEW` that names the client ID or owner of a client
-   `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`. The request's
+   `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`: the adapter reads the
+   confirming minor version from that client's record (`Record`, §3.5) before
+   it calls the service. The request's
    credential **MUST** instead name
    the principal that made the open the stateid names (`Open.Principal`,
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); the service refuses one
@@ -2812,7 +2814,7 @@ method then calls below is
 | `SETCLIENTID_CONFIRM` | `Connect`, naming the `Proposal` | |
 | `CREATE_SESSION` | `Record`; the first `Connect`, naming the `Proposal`, then `AddSession` (§3.5) | a replay is answered from the record's adapter bytes and calls nothing more |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
-| `RENEW` | `Renew` | |
+| `RENEW` | `Renew` | over NFSv4.0, `Record` first: a client `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID` ([§5.2](#5.2%20Stateids)) |
 | `DESTROY_SESSION` | none (adapter only) | |
 | `DESTROY_CLIENTID` | `Destroy` | |
 | `BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL` | `Connect` when the back channel moves | |
@@ -2827,13 +2829,13 @@ method then calls below is
 | `LINK`, `REMOVE`, `RENAME` | `Link`, `Unlink`, `Rename` | `change_info4` from the `WCC` |
 | `READDIR` | `ReadDir` | |
 | `READLINK` | `GetAttr` | |
-| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `OPEN4_RESULT_CONFIRM` is `OpenResult.Confirm` |
+| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `OPEN4_RESULT_CONFIRM` is `OpenResult.Confirm`; an NFSv4.0 `OPEN` of a new owner reads `Record` first, as `RENEW` does |
 | `OPEN_CONFIRM` | `ConfirmOpen` | NFSv4.0; the reply's stateid carries the seqid it returns |
 | `OPEN_DOWNGRADE` | `Downgrade` | the reply's stateid carries the seqid it returns |
 | `CLOSE` | `Close` | |
 | `READ`, `WRITE`, `COMMIT` | `Read`, `Write`, `Commit` | |
 | `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)); `LOCK` answers the lock stateid `Lock` returns, `LOCKU` the seqid `Unlock` returns |
-| `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | |
+| `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | `Record` first, as for `RENEW` |
 | `DELEGRETURN` | `AckRecall` to `GrantNone` | |
 | `DELEGPURGE`, `WANT_DELEGATION`, `GET_DIR_DELEGATION`, `OPENATTR`, `SET_SSV` | not supported, answered as this RFC says of each | |
 | `TEST_STATEID` | `TestState` | |

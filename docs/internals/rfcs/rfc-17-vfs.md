@@ -853,7 +853,9 @@ a reference to state created on a session — an `OpenRef`, `StateRef` or
 `StateError{NotYours, Sessioned: true}`, whatever its principal: the state
 carries the mark (`Sessioned`), so the file's primary checks it without a
 client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
-argument names no state and is not checked, so `DESTROY_CLIENTID` sent alone
+argument names no state and is not checked here (the NFS adapter checks a
+v4.0 one against the record's minor version,
+[RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)), so `DESTROY_CLIENTID` sent alone
 and a second `CREATE_SESSION` pass, and `Peers` calls, which carry no `Call`,
 are exempt. The service **MUST** then authorise the call as for an
 anonymous open: the `Identity`'s principal against the file
