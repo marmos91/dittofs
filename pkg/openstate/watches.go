@@ -25,6 +25,10 @@ type Change struct {
 	Name   []byte     // the entry changed, as its path from the directory Changed names
 	To     []byte     // a rename's new path; nil otherwise
 	Nested bool       // made below the directory Changed names, not in it: only a recursive watch reports it
+	// Dirs is a nested change's path by identity, as it stood when the
+	// change committed: each directory below the one Changed names, down to
+	// the one the change was made in. Nil for a change in that directory.
+	Dirs []entity.FileID
 }
 
 // Watches is the view of change notifications on directories; it runs at the
@@ -83,7 +87,7 @@ type noteOut struct {
 }
 
 // changeSize is what ch costs a watch holding it.
-func changeSize(ch Change) int { return 16 + len(ch.Name) + len(ch.To) }
+func changeSize(ch Change) int { return 16 + len(ch.Name) + len(ch.To) + 16*len(ch.Dirs) }
 
 func (v watches) Watch(ctx context.Context, who Caller, dir FileKey, recursive bool, m ChangeMask) (WatchID, error) {
 	t := v.t
@@ -153,7 +157,7 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 	if !held {
 		return
 	}
-	ch.Name, ch.To = slices.Clone(ch.Name), slices.Clone(ch.To)
+	ch.Name, ch.To, ch.Dirs = slices.Clone(ch.Name), slices.Clone(ch.To), slices.Clone(ch.Dirs)
 	var out outbox
 	_ = t.step(dir.ID, func(e *entry) error {
 		for _, w := range e.watches {
