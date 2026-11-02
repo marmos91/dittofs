@@ -1028,6 +1028,9 @@ apart; time from a gateway node's loss to clients resuming; handover and
 takeover time with a full retry window's dedup entries and request records at
 the peak mutation rate.
 
+**Suites.** On one node, §2.2's start-up refusals run in `unit`, and the no-pNFS row
+is RFC 21's. Every other check of §9 needs two nodes, and no suite runs it yet.
+
 ## 10. Observability
 
 Metric names are shown without the deployment's prefix.

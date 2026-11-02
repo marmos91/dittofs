@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -23,7 +24,7 @@ func newDocs() *cobra.Command {
 	var check bool
 	cmd := &cobra.Command{
 		Use:   "docs [--check]",
-		Short: "Write the documentation's suite tables from the registry, or check them; exit 1 when they differ",
+		Short: "Write the documentation's suite tables from the registry, or check them; check the RFCs' suites paragraphs; exit 1 on a difference",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, r, err := load()
@@ -41,19 +42,99 @@ func newDocs() *cobra.Command {
 			if !begun || !ended {
 				return fmt.Errorf("%s: no %s followed by %s", suitesDoc, suitesBegin, suitesEnd)
 			}
+			// dt can't write an RFC's suites paragraph, so a problem with one
+			// fails the write as well as the check.
+			problems, err := rfcProblems(root, r)
+			if err != nil {
+				return err
+			}
 			updated := before + suitesTable(r) + after
 			switch {
 			case updated == doc:
-				return nil
 			case check:
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: the suite table differs from %s; run test/harness/bin/dt docs and commit the result\n", suitesDoc, registry.Path)
+				problems = append(problems, fmt.Sprintf("%s: the suite table differs from %s; run test/harness/bin/dt docs and commit the result", suitesDoc, registry.Path))
+			default:
+				if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+					return err
+				}
+			}
+			for _, p := range problems {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), p)
+			}
+			if len(problems) > 0 {
 				return exitStatus(1)
 			}
-			return os.WriteFile(path, []byte(updated), 0o644)
+			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&check, "check", false, "only check the tables, and exit 1 when they differ")
+	cmd.Flags().BoolVar(&check, "check", false, "only check the tables and the RFCs' suites paragraphs, and exit 1 on a difference")
 	return cmd
+}
+
+// Each RFC under rfcDir names the suites that cover its component in one
+// paragraph that starts with rfcSuites, so whoever implements it knows which
+// suite to extend.
+const (
+	rfcDir    = "docs/internals/rfcs"
+	rfcSuites = "**Suites.**"
+)
+
+var (
+	rfcFile  = regexp.MustCompile(`^rfc-\d+-.+\.md$`)
+	codeSpan = regexp.MustCompile("`([^`]+)`")
+)
+
+// rfcProblems lists each RFC without its suites paragraph or with more than
+// one, and each code span in one that isn't a suite, a group or an option of
+// the registry, so a renamed suite can't leave an RFC naming the old one.
+func rfcProblems(root string, r *registry.Registry) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, rfcDir))
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for g := range r.Groups {
+		names[g] = true
+	}
+	for _, s := range r.Suites {
+		for _, u := range r.Units(s) {
+			names[u.Name] = true
+		}
+	}
+	var problems []string
+	for _, e := range entries {
+		if !rfcFile.MatchString(e.Name()) {
+			continue
+		}
+		path := rfcDir + "/" + e.Name()
+		data, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(string(data), "\n")
+		found := 0
+		for i, line := range lines {
+			if !strings.HasPrefix(line, rfcSuites) {
+				continue
+			}
+			found++
+			// The paragraph runs to the next blank line.
+			for j := i; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
+				for _, m := range codeSpan.FindAllStringSubmatch(lines[j], -1) {
+					if !names[m[1]] {
+						problems = append(problems, fmt.Sprintf("%s:%d: `%s` is no suite, group or option of %s", path, j+1, m[1], registry.Path))
+					}
+				}
+			}
+		}
+		switch {
+		case found == 0:
+			problems = append(problems, fmt.Sprintf("%s: no paragraph starting %s names the suites that cover it", path, rfcSuites))
+		case found > 1:
+			problems = append(problems, fmt.Sprintf("%s: %d paragraphs start %s; one names them all", path, found, rfcSuites))
+		}
+	}
+	return problems, nil
 }
 
 // suitesTable renders, markers included, a row for each suite graded against

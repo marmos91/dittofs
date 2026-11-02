@@ -1785,6 +1785,11 @@ Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)).
 | Daily copying backup of a 1 TiB share, 1% changed | bytes put; wall time | at most the blocks holding the changed chunks; at `backups.copy_rate` |
 | Restore of a 1 TiB copying backup into a new namespace | MB/s | report, against the codec's decode plus encode throughput |
 
+**Suites.** Until RFC 10's simulator is built, §6.2's scenarios and §6.3's and §6.4's checks run
+from fixed seeds on the composed single-node harness, against a real metadata backend and the
+remote-tier emulator, in `integration`. No suite runs yet §6.1's model checker and seed search, or
+§6.5's benchmarks.
+
 ## 7. Observability
 
 Metric names are shown without the deployment's prefix, which the exporter adds.
