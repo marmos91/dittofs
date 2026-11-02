@@ -57,9 +57,7 @@ At the end of the epic:
 - the platform layer passes its tests on a real filesystem on each OS that runs `go test`
   (P22 for macOS), and each test asserts which system call is issued;
 - every platform row of RFC 28 and of the plan names the test of this epic that covers it,
-  or is parked with its reason, in the table of §6, which stays their map: epic 2's
-  `trace.yaml` maps only its own scope (E2-D3), which holds none of them but "directory
-  flush on NTFS".
+  or is parked with its reason, in the table of §6, which stays their map.
 
 Until epics 5 and 7 consume them, the packages' tests are their only consumer (D8). Epic 3
 turns no conformance test green and adds none to `known.yaml`.
@@ -992,7 +990,7 @@ Each open point says what is asked, who decides it, and what it blocks.
 
 - **NTFS directory flush with a power cut** (RFC 28 §4.2, row "directory flush on NTFS":
   "on real storage with a power cut"): no host and no `needs` entry. Parked with this
-  reason (§6), and its `trace.yaml` entry parks it too.
+  reason (§6).
 - **macOS `F_FULLFSYNC`:** where a Mac runs the tests, they prove the call is issued (D6),
   never survival of a power loss (P22).
 - **Btrfs, XFS and ext4 barrier refusals on real mounts:** need `linux` and `root` plus

@@ -224,8 +224,9 @@ turn `unit` red.
   `owner: epic N` with a reason, or both when a row is split (D9 shows how). `owner:` names
   only an owner outside this epic (§6), or `parked`. A row whose test a subtask of this epic
   has not written yet carries `pending: 2.x` instead, and that subtask removes it when the
-  test lands, so none is left at S2; a row with tests that is still pending fails the check.
-- *The check:* `test/journalv2/trace_test.go`, run by `lint-repo`. It parses the rows of the
+  test lands, so none is left at S2 (2.15); a split row carries both `owner:` and `pending:`.
+  A row with tests that is still pending fails the check.
+- *The check:* `test/journalv2/trace_test.go`, run by `lint-repo` (and by `unit`, which runs `./test/...`). It parses the rows of the
   scope above straight from the RFC files, and the conformance package's test functions
   with `go/parser`. It fails when an in-scope row has no entry, when an entry names a row
   that no longer exists, when a named test does not exist, or when a test of the suite is
@@ -736,7 +737,7 @@ Every conformance subtask also:
   - **RFC 28 §4.2 Group A**, nine checks: corrupt dirty, corrupt offloaded, directory
     entry survives, footer is not authoritative, unmark clears, write carries its mtime,
     unproven tail verified at open, failed directory sync is a failed window, a zero slot
-    is not the end. (Directory flush on NTFS is epic 3's.)
+    is not the end. (Directory flush on NTFS is parked, §6.)
   - **Group B**: segment reclaimable.
   - **Group C**, the 22 rows that need no encoder, plus the refusal halves of three
     split rows (D9): rebuild, sources agree, synced damage is not a torn tail, bits
@@ -766,7 +767,8 @@ Every conformance subtask also:
 - **Deliverables:** `test/journalv2/trace.yaml` with every row of D3's scope, and
   `test/journalv2/trace_test.go` (D3).
 - **Done when:**
-  - every in-scope row maps to a test, to an owner, or to both, and every suite test,
+  - every in-scope row maps to a test, to an owner, or to both, or carries `pending:`
+    until its subtask's test lands, and every suite test,
     `TestEdge_*`, `TestModel`, `TestCounted_*`, `TestDamage_*` and `TestClock_*` included,
     maps to a row;
   - deleting a row's entry, renaming a mapped test, adding a conformance test with no
@@ -790,6 +792,7 @@ Every conformance subtask also:
   - `dt run journal` is green on `develop`'s CI, with every conformance test graded
     `known`;
   - `trace_test.go` is green in `lint-repo`, and the components' tests in `unit`;
+  - no `pending:` is left in `trace.yaml`;
   - the team has approved, and S2 is reached.
 - **Rules:**
   - 6: from S2 on, each implementation epic removes the entries it turns green.
