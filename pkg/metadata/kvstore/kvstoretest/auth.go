@@ -167,12 +167,34 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 			t.Errorf("a default grant of admin to %v: %v", d, e)
 		}
 	}
+	// No user or group takes a default's ID, so none holds its grant row
+	// under the cap's back.
+	for _, d := range []entity.Principal{entity.Everyone, entity.AuthenticatedUsers} {
+		as := entity.Principal{Kind: entity.PrincipalGroup, ID: d.ID}
+		if e := cp.PutGroup(ctx, entity.Group{Principal: as, Name: d.String()}); !isCode(e, merrs.ErrInvalidArgument) {
+			t.Errorf("a group holding %v's ID: %v", d, e)
+		}
+		if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: as, Access: entity.AccessAdmin}); e == nil {
+			t.Errorf("an admin grant to a group holding %v's ID", d)
+		}
+		if e := cp.PutUser(ctx, entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: d.ID}, Name: d.String()}); !isCode(e, merrs.ErrInvalidArgument) {
+			t.Errorf("a user holding %v's ID: %v", d, e)
+		}
+	}
 
 	// A grant of none is stored and blocks, a user's and a group's alike,
 	// where the defaults would admit.
 	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessNone}))
 	if e := files.Authorize(ctx, inStaff, pub, nil, entity.ReadData); !isDenied(e) {
 		t.Errorf("a group's grant of none gave way to the defaults: %v", e)
+	}
+	// The widest of the caller's groups' grants decides, in either order.
+	readers := f.group("readers")
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: readers, Access: entity.AccessRead}))
+	for _, gs := range [][]entity.Principal{{readers, staff}, {staff, readers}} {
+		if e := files.Authorize(ctx, entity.Identity{Principal: dave.Principal, Groups: gs}, pub, nil, entity.ReadData); e != nil {
+			t.Errorf("groups %v granted read and none: %v", gs, e)
+		}
 	}
 	erin := user("erin")
 	must(t, cp.PutUser(ctx, erin))

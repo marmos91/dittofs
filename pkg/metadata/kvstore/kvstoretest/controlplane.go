@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
@@ -268,7 +269,7 @@ func testSetShareState(t *testing.T, kvo Opener) {
 }
 
 func testGrantVersions(t *testing.T, kvo Opener) {
-	s, _ := newStore(t, kvo)
+	s, c := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
 	u, g := user("alice"), group("staff")
 	sh := share("photos", "/photos")
@@ -291,6 +292,16 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessReadWrite {
 		t.Errorf("after removing the own grant = %v", a)
 	}
+	// The grant's reverse row goes with it.
+	must(t, c.View(ctx, func(r kv.Reader) error {
+		for kvp, err := range r.Scan(keys.ID([]byte{keys.KindGR}, u.Principal.ID[:]), nil) {
+			if err != nil {
+				return err
+			}
+			t.Errorf("reverse row left after RemoveGrant: %x", kvp.Key)
+		}
+		return nil
+	}))
 	must(t, cp.RemoveGrant(ctx, sh.ID, u.Principal))
 	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: entity.NewShareID(), Principal: u.Principal, Access: entity.AccessRead}); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant on a missing share: %v", err)

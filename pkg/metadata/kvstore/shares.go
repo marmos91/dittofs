@@ -351,6 +351,10 @@ func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, f
 // names a user, a group, or the share's defaults, authenticated users or
 // everyone, and a default grants at most read-write. Share and principal must
 // exist, read so that a deletion of either conflicts; a default always exists.
+//
+// ponytail: a grant change raises only the grant's own version; the
+// share's grant-list version is not kept. Write it here and in RemoveGrant
+// when the first cache of a share's grants keys on it.
 func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 	isDefault := g.Principal == entity.AuthenticatedUsers || g.Principal == entity.Everyone
 	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup && !isDefault) {
