@@ -81,6 +81,17 @@ const (
 	ListDirectory   = ReadData
 	AddFile         = WriteData
 	AddSubdirectory = AppendData
+
+	// EntryRights is the fourteen rights above, every right an entry or the
+	// mode can grant. A generic or maximal-access bit is none of them, and is
+	// never granted, privilege included.
+	EntryRights = ReadData | WriteData | AppendData | ReadNamedAttrs | WriteNamedAttrs | Execute | DeleteChild |
+		ReadAttributes | WriteAttributes | Delete | ReadACL | WriteACL | WriteOwner | Synchronize
+
+	// SystemSecurity reads or writes the audit list. It is no entry right:
+	// it is granted to an administrator alone, never for privilege,
+	// ownership or an entry.
+	SystemSecurity AccessMask = 0x01000000
 )
 
 // The rights each mode bit implies. Write on a directory is adding and

@@ -41,9 +41,11 @@ func codecCases() []codecCase {
 		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}}
 	grant := entity.ShareGrant{Share: sid, Principal: group, Access: entity.AccessReadWrite, Version: 3}
 	policy := entity.ExportPolicy{
-		Share:       sid,
-		Flavors:     []entity.AuthFlavor{entity.FlavorKerberos, entity.FlavorSys},
-		MinKerberos: entity.Krb5i,
+		Share:         sid,
+		Flavors:       []entity.AuthFlavor{entity.FlavorKerberos, entity.FlavorSys},
+		MinProof:      entity.ProofTicket,
+		MinProtection: entity.ProtectionIntegrity,
+		ReadOnly:      true,
 		Clients: []entity.ClientRule{
 			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead},
 			{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite},
@@ -78,7 +80,7 @@ func codecCases() []codecCase {
 		{"grant", grant, encodeGrant(grant), "01" + "02" + "02" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeGrant(sid, gid, b) }},
 		{"policy", policy, encodePolicy(policy),
-			"01" + "02" + "0302" + "02" + "02" +
+			"01" + "02" + "0302" + "03" + "01" + "01" + "02" +
 				"01" + "05" + "0a00000008" + "01" +
 				"02" + "036c6162" + "02" +
 				"01" + "03" + "00000000000000000000000000000003" + "03" + "0000000000000004",
@@ -122,7 +124,7 @@ func TestCodecs(t *testing.T) {
 }
 
 func TestPolicyUnknownMatchTag(t *testing.T) {
-	b := codec.NewWriter(v1).Len(0).Uint8(0).Len(1).Uint8(9).Encode()
+	b := codec.NewWriter(v1).Len(0).Uint8(0).Uint8(0).Bool(false).Len(1).Uint8(9).Encode()
 	if _, err := decodePolicy(sid, b); !errors.Is(err, errMalformed) {
 		t.Errorf("unknown tag: %v", err)
 	}

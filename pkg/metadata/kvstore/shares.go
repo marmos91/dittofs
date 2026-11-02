@@ -346,12 +346,22 @@ func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, f
 }
 
 // SetGrant sets a principal's access to a share, raising the grant's
-// version. A grant of none removes it, with its reverse row; the principal's
-// groups then decide its access. Share and principal must exist, read so that
-// a deletion of either conflicts.
+// version. A grant of none is stored like any other and blocks the principal:
+// only RemoveGrant lets its groups, then the defaults, decide again. A grant
+// names a user, a group, or the share's defaults, authenticated users or
+// everyone, and a default grants at most read-write. Share and principal must
+// exist, read so that a deletion of either conflicts; a default always exists.
+//
+// ponytail: a grant change raises only the grant's own version; the
+// share's grant-list version is not kept. Write it here and in RemoveGrant
+// when the first cache of a share's grants keys on it.
 func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
-	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup) {
-		return merrs.NewInvalidArgumentError("a grant names a user or group and a known access")
+	isDefault := g.Principal == entity.AuthenticatedUsers || g.Principal == entity.Everyone
+	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup && !isDefault) {
+		return merrs.NewInvalidArgumentError("a grant names a user, a group, authenticated users or everyone, and a known access")
+	}
+	if isDefault && g.Access > entity.AccessReadWrite {
+		return merrs.NewInvalidArgumentError("a default grant is at most read-write")
 	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, ok, err := get(tx, shareKey(g.Share, keys.SInfo)); err != nil || !ok {
@@ -363,19 +373,13 @@ func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 		if err := liveShare(tx, g.Share); err != nil {
 			return err
 		}
-		if _, ok, err := get(tx, principalKey(g.Principal)); err != nil || !ok {
+		if _, ok, err := get(tx, principalKey(g.Principal)); !isDefault && (err != nil || !ok) {
 			return notFound(err, g.Principal)
 		}
 		key, rev := grantKey(g.Share, g.Principal.ID), grantRevKey(g.Principal.ID, g.Share)
 		old, _, err := grantIn(tx, g.Share, g.Principal.ID)
 		if err != nil {
 			return err
-		}
-		if g.Access == entity.AccessNone {
-			if err := tx.Delete(key); err != nil {
-				return err
-			}
-			return tx.Delete(rev)
 		}
 		g.Version = nextVersion(tx, old.Version)
 		if err := tx.Set(key, encodeGrant(g)); err != nil {
@@ -385,10 +389,22 @@ func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 	})
 }
 
-// ExportPolicy reads a share's export policy; a share without one has the
-// zero policy, which admits every client with no flavour named.
+// RemoveGrant removes a principal's grant on a share, with its reverse row:
+// its groups, then the defaults, decide its access again. Removing one that
+// does not exist is not an error.
+func (c ControlPlane) RemoveGrant(ctx context.Context, share entity.ShareID, p entity.Principal) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if err := tx.Delete(grantKey(share, p.ID)); err != nil {
+			return err
+		}
+		return tx.Delete(grantRevKey(p.ID, share))
+	})
+}
+
+// ExportPolicy reads a share's export policy; a share without one has
+// defaultPolicy's.
 func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (entity.ExportPolicy, error) {
-	p := entity.ExportPolicy{Share: share}
+	p := defaultPolicy(share)
 	err := c.s.kv.View(ctx, func(r kv.Reader) error {
 		b, ok, err := get(r, shareKey(share, keys.SXp))
 		if err != nil || !ok {
@@ -400,7 +416,16 @@ func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (e
 	return p, err
 }
 
-// PutExportPolicy replaces a share's export policy, raising its version.
+// defaultPolicy is the export policy of a share none is stored for: root
+// squashed to the anonymous principal, every client admitted, no flavour
+// named.
+func defaultPolicy(share entity.ShareID) entity.ExportPolicy {
+	return entity.ExportPolicy{Share: share, Squash: entity.SquashRoot, Anonymous: entity.AnonymousPrincipal}
+}
+
+// PutExportPolicy replaces a share's export policy, raising its version. A
+// policy naming no Anonymous names the anonymous principal: it is stored as
+// given and read back as naming it.
 func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy) error {
 	for _, f := range p.Flavors {
 		if f.String() == "" {
@@ -412,8 +437,11 @@ func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy
 			return merrs.NewInvalidArgumentError("a client rule names one CIDR or netgroup, and at most read-write")
 		}
 	}
-	if p.MinKerberos.String() == "" || p.Squash.String() == "" {
-		return merrs.NewInvalidArgumentError("unknown Kerberos level or squash")
+	if !p.Valid() {
+		return merrs.NewInvalidArgumentError("an export policy's protection floor needs a verified proof, and both are known values")
+	}
+	if p.Squash.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown squash")
 	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, ok, err := get(tx, shareKey(p.Share, keys.SInfo)); err != nil || !ok {

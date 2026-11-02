@@ -215,6 +215,39 @@ func TestFrontToBackInsertsFillLeaves(t *testing.T) {
 	}
 }
 
+// TestRotatedInsertsFillLeaves pins the rotation that keeps the index inside
+// the RFC's bytes-per-entry bounds, in every suite, not only the
+// 10^6-entry check that measures the whole index. Its bounds leave room for
+// the random order of the keys: measured about 72% rotated against about
+// 69% split-only, and descending keys fill nearly completely with the
+// rotation against about half without it. Deleting the rotation fails this
+// on either leg, so a change that costs the rotation shows here before it
+// shows in the memory check.
+func TestRotatedInsertsFillLeaves(t *testing.T) {
+	const n = 100_000
+
+	t.Run("random", func(t *testing.T) {
+		rng := rand.New(rand.NewPCG(3, 3))
+		var tr btree[int]
+		for tr.len() < n {
+			tr.set(rng.Uint64(), 0)
+		}
+		if fill := leafFill(&tr); fill < 0.71 {
+			t.Errorf("leaves %.1f%% full for random keys, want at least 71%%", 100*fill)
+		}
+	})
+
+	t.Run("descending", func(t *testing.T) {
+		var tr btree[int]
+		for i := range n {
+			tr.set(uint64(n-i), 0)
+		}
+		if fill := leafFill(&tr); fill < 0.9 {
+			t.Errorf("leaves %.1f%% full for descending keys, want at least 90%%", 100*fill)
+		}
+	})
+}
+
 func BenchmarkFloor(b *testing.B) {
 	for _, n := range []int{1_000, 1_000_000} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {

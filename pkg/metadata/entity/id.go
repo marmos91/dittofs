@@ -120,12 +120,17 @@ var (
 	System             = Principal{PrincipalSpecial, PrincipalID{15: 0x09}}
 	Network            = Principal{PrincipalSpecial, PrincipalID{15: 0x0A}}
 	BuiltinUsers       = Principal{PrincipalSpecial, PrincipalID{15: 0x0B}}
+	// AnonymousPrincipal is what a caller proving nothing, or one a share
+	// squashes, acts as where the share's policy names no other: matched by
+	// a caller whose principal it is, never authenticated, admin or
+	// privileged.
+	AnonymousPrincipal = Principal{PrincipalSpecial, PrincipalID{15: 0x0C}}
 )
 
 // WellKnown reports whether p is one of the well-known principals above.
 func (p Principal) WellKnown() bool {
 	var prefix [15]byte
-	return p.Kind == PrincipalSpecial && [15]byte(p.ID[:15]) == prefix && p.ID[15] >= 0x01 && p.ID[15] <= 0x0B
+	return p.Kind == PrincipalSpecial && [15]byte(p.ID[:15]) == prefix && p.ID[15] >= 0x01 && p.ID[15] <= 0x0C
 }
 
 // IsCreator reports CREATOR OWNER or CREATOR GROUP, which act only through

@@ -60,9 +60,15 @@ func byIndex(r kv.Reader, row kv.KeyValue, key func(entity.PrincipalID) []byte) 
 	return id, b, err
 }
 
+// fixedID reports whether id has the form of a well-known principal's,
+// fifteen zero bytes then any byte, the zero ID among them. No user or group
+// takes one: a grant row keys on the ID alone, so a group holding everyone's
+// ID would hold everyone's grant.
+func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{} }
+
 func (c ControlPlane) PutUser(ctx context.Context, u entity.User) error {
-	if u.Principal.Kind != entity.PrincipalUser || u.Principal.ID.IsZero() || u.Name == "" {
-		return merrs.NewInvalidArgumentError("a user needs a user principal and a name")
+	if u.Principal.Kind != entity.PrincipalUser || fixedID(u.Principal.ID) || u.Name == "" {
+		return merrs.NewInvalidArgumentError("a user needs a minted user principal and a name")
 	}
 	if !u.Primary.IsZero() && u.Primary.Kind != entity.PrincipalGroup {
 		return merrs.NewInvalidArgumentError("a user's primary group must be a group")
@@ -90,8 +96,8 @@ func (c ControlPlane) PutUser(ctx context.Context, u entity.User) error {
 }
 
 func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group) error {
-	if g.Principal.Kind != entity.PrincipalGroup || g.Principal.ID.IsZero() || g.Name == "" {
-		return merrs.NewInvalidArgumentError("a group needs a group principal and a name")
+	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) || g.Name == "" {
+		return merrs.NewInvalidArgumentError("a group needs a minted group principal and a name")
 	}
 	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID); err != nil {
 		return err

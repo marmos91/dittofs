@@ -525,3 +525,80 @@ func TestRepackCopyCoalesces(t *testing.T) {
 		Piece{Extent: ext(6, 10), Record: copied, Version: ver(3), Offloaded: true},
 	)
 }
+
+// TestUnmark: the held offloaded-bit clearer, the inverse of markOffloaded.
+// It clears the bit of the parts inside e of every piece at most newest with
+// its bit set, keeps the parts outside, counts what it cleared, and rejoins
+// neighbours that now agree, so a piece split only by its bit becomes one
+// entry again.
+func TestUnmark(t *testing.T) {
+	// Below the piece's version nothing is cleared: the unmark names content
+	// older than what it covers, and clearing a newer bit would hide a commit.
+	t.Run("window", func(t *testing.T) {
+		var s heldSet
+		a, b := rec(1, 0), rec(2, 0)
+		s.insert(write(0, 4, a, 3))
+		s.insert(write(8, 4, b, 5))
+		s.markOffloaded(ext(0, 4), ver(3), ver(3))
+		if n := s.unmark(ext(0, 16), ver(2)); n != 0 {
+			t.Fatalf("unmark below the versions cleared %d parts, want 0", n)
+		}
+		if n := s.unmark(ext(0, 16), ver(5)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want the v3 piece only", n)
+		}
+		assertPieces(t, &s,
+			Piece{Extent: ext(0, 4), Record: a, Version: ver(3)},
+			Piece{Extent: ext(8, 4), Record: b, Version: ver(5)},
+		)
+	})
+
+	// A piece split only by its bit joins again once the marked part is
+	// cleared, so it costs one entry, as before the mark. An unmark that left
+	// the two parts would cost the index a second entry forever.
+	t.Run("rejoins neighbours", func(t *testing.T) {
+		var s heldSet
+		a := rec(1, 0)
+		s.insert(write(0, 8, a, 1))
+		s.markOffloaded(ext(4, 4), ver(1), ver(1))
+		if s.len() != 2 {
+			t.Fatalf("a mark inside one record left %d entries, want 2", s.len())
+		}
+		if n := s.unmark(ext(4, 4), ver(1)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want the marked one", n)
+		}
+		assertPieces(t, &s, Piece{Extent: ext(0, 8), Record: a, Version: ver(1)})
+	})
+
+	// An already-clear bit is not counted and a gap clears nothing.
+	t.Run("idempotent and gaps", func(t *testing.T) {
+		var s heldSet
+		s.insert(write(0, 4, rec(1, 0), 1))
+		s.unmark(ext(0, 4), ver(1))
+		if n := s.unmark(ext(0, 4), ver(1)); n != 0 {
+			t.Fatalf("unmark of nothing reported %d parts", n)
+		}
+		if n := s.unmark(ext(100, 4), ver(9)); n != 0 {
+			t.Fatalf("unmark of a gap reported %d parts", n)
+		}
+		assertPieces(t, &s, Piece{Extent: ext(0, 4), Record: rec(1, 0), Version: ver(1)})
+	})
+
+	// An unmark narrower than the marked piece clears only the part it
+	// names, keeping the ends of the piece at their places in the record.
+	// An unmark that dropped the whole piece would unmark more than the
+	// record's bytes it was given, so a later offload would re-upload them.
+	t.Run("narrower than the piece", func(t *testing.T) {
+		var s heldSet
+		a := rec(1, 0)
+		s.insert(write(0, 12, a, 2))
+		s.markOffloaded(ext(0, 12), ver(2), ver(2))
+		if n := s.unmark(ext(4, 4), ver(2)); n != 1 {
+			t.Fatalf("unmark cleared %d parts, want the middle", n)
+		}
+		assertPieces(t, &s,
+			Piece{Extent: ext(0, 4), Record: a, Version: ver(2), Offloaded: true},
+			Piece{Extent: ext(4, 4), Record: a, Skip: 4, Version: ver(2)},
+			Piece{Extent: ext(8, 4), Record: a, Skip: 8, Version: ver(2), Offloaded: true},
+		)
+	})
+}
