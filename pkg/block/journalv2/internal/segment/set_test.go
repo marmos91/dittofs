@@ -1467,6 +1467,54 @@ func TestCountersAllocateNothing(t *testing.T) {
 	}
 }
 
+// TestCheckComparesTheEntriesHeldWithTheirTags: the running total of a
+// segment's record bytes is bound to the bytes its own per-tag map holds and
+// to its accounted size. A drifted total admits a record that does not fit —
+// AddRecord trusts it as the bound — so the check sums the entries' tags and
+// reports the drift rather than taking the total's word.
+func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id := core.SegmentID(1)
+	tag := core.ShareTag(2)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 4000); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+
+	// The total drifts to nothing while the entry still holds its 4000: the
+	// next record overfills the segment past its size unnoticed.
+	s.mu.Lock()
+	s.segs[id].held = 0
+	s.mu.Unlock()
+	if err := s.AddRecord(id, tag, 4000); err != nil {
+		t.Fatalf("AddRecord after the drift: %v, want it admitted: the drift is the bug, not the record", err)
+	}
+	err := s.Check()
+	if err == nil {
+		t.Fatal("a drifted held total was not reported")
+	}
+	if !errors.Is(err, ErrMismatch) {
+		t.Fatalf("the drifted total was reported as %v, want it to wrap %v", err, ErrMismatch)
+	}
+
+	// Over its size is the other half of the same clause: the total may not
+	// stand above the storage the segment is accounted at.
+	s.mu.Lock()
+	s.segs[id].held = s.segs[id].size + 1
+	s.mu.Unlock()
+	if err := s.Check(); err == nil || !errors.Is(err, ErrMismatch) {
+		t.Fatalf("a held total above the size: %v, want it to wrap %v", err, ErrMismatch)
+	}
+}
+
 // TestNewSetPanicsOnABadCap: the cap is the size every spare is accounted at
 // and the ceiling of every shrink, so a non-positive one is a caller bug the
 // ledger refuses at construction.

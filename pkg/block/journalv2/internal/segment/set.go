@@ -559,11 +559,11 @@ func (s *Set) Counters() Counters {
 
 // Check walks the set and reports whether the accounted footprint is the sum
 // of every segment's accounted size plus every spare at the segment cap,
-// whether each segment's held record bytes fit its accounted size, and
-// whether each maintained count matches what it is counted from. It is the
-// verification of last resort, called by recovery's checks and by tests, not
-// on any write path, and reports a mismatch as an error naming both figures
-// wrapped around ErrMismatch.
+// whether each segment's held record bytes match the bytes its own entries
+// name and fit its accounted size, and whether each maintained count matches
+// what it is counted from. It is the verification of last resort, called by
+// recovery's checks and by tests, not on any write path, and reports a
+// mismatch as an error naming both figures wrapped around ErrMismatch.
 func (s *Set) Check() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -574,9 +574,17 @@ func (s *Set) Check() error {
 		sealed   int64
 	)
 	for id, e := range s.segs {
-		if e.held > e.size {
-			return fmt.Errorf("%w: segment %d holds %d record bytes but is accounted at %d",
-				ErrMismatch, uint64(id), e.held, e.size)
+		// The total and its own per-tag map are two statements of one fact: a
+		// drifted total admits a record that does not fit, so the check sums
+		// the tags and takes neither statement's word. Above the size is the
+		// same break from the other side.
+		var tot int64
+		for _, n := range e.tags {
+			tot += n
+		}
+		if tot != e.held || e.held > e.size {
+			return fmt.Errorf("%w: segment %d holds %d record bytes, its entries make %d and it is accounted at %d",
+				ErrMismatch, uint64(id), e.held, tot, e.size)
 		}
 		sum += e.size
 		segments++
