@@ -35,7 +35,6 @@ var (
 	group     = regexp.MustCompile(`^#+ Group ([A-Z]) `)
 	heading   = regexp.MustCompile(`^\*\*([^*]+?)\.?\*\*([.:]|\s|$)`)
 	boldItem  = regexp.MustCompile(`^- \*\*([^*]+)\*\*`)
-	boldKind  = heading
 	tableCell = regexp.MustCompile(`^\|\s*((?:[^|\\]|\\.)+?)\s*\|`)
 )
 
@@ -100,6 +99,18 @@ func key(parts ...string) string { return strings.Join(parts, " / ") }
 
 func quote(s string) string { return `"` + s + `"` }
 
+// paragraphHead returns the bold run that names a row at lines[i]. A bold run names one only
+// where it opens a paragraph: a wrapped line of prose can start with one too, such as **MUST**.
+func paragraphHead(lines []string, i int) (string, bool) {
+	if i > 0 && strings.TrimSpace(lines[i-1]) != "" {
+		return "", false
+	}
+	if m := heading.FindStringSubmatch(lines[i]); m != nil {
+		return m[1], true
+	}
+	return "", false
+}
+
 // rfcRows parses every row of the traceability scope straight from the RFC files.
 func rfcRows(t *testing.T) []string {
 	var rows []string
@@ -116,9 +127,10 @@ func rfcRows(t *testing.T) []string {
 	// Edge cases: one row per bold heading, and one for any bullets above the first.
 	edges := func(prefix, file, title string) {
 		seen := false
-		for _, line := range section(t, file, title) {
-			if m := heading.FindStringSubmatch(line); m != nil {
-				rows = append(rows, key(prefix, quote(m[1])))
+		lines := section(t, file, title)
+		for i, line := range lines {
+			if h, ok := paragraphHead(lines, i); ok {
+				rows = append(rows, key(prefix, quote(h)))
 				seen = true
 			} else if !seen && strings.HasPrefix(line, "- ") {
 				rows = append(rows, key(prefix, "-"))
@@ -136,9 +148,9 @@ func rfcRows(t *testing.T) []string {
 	}
 
 	damage := section(t, "rfc-28-journal-format.md", "### 4.4 ")
-	for _, line := range damage {
-		if m := boldKind.FindStringSubmatch(line); m != nil {
-			rows = append(rows, key("rfc28 / 4.4", quote(m[1])))
+	for i := range damage {
+		if h, ok := paragraphHead(damage, i); ok {
+			rows = append(rows, key("rfc28 / 4.4", quote(h)))
 		}
 	}
 	for _, c := range firstCells(damage) {
@@ -253,5 +265,24 @@ func TestTrace(t *testing.T) {
 	sort.Strings(unmapped)
 	for _, name := range unmapped {
 		t.Errorf("%s checks no row: map it in trace.yaml", name)
+	}
+}
+
+// TestParagraphHead checks that a bold run wrapped onto a continuation line is not a row.
+func TestParagraphHead(t *testing.T) {
+	lines := []string{
+		"**Torn tail.** A crash mid-append leaves a partial record, and replay",
+		"**MUST** stop at it.",
+		"",
+		"**Second**: another row.",
+	}
+	var got []string
+	for i := range lines {
+		if h, ok := paragraphHead(lines, i); ok {
+			got = append(got, h)
+		}
+	}
+	if strings.Join(got, "|") != "Torn tail|Second" {
+		t.Errorf("rows %q, want [Torn tail Second]", got)
 	}
 }
