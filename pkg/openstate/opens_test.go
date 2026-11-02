@@ -719,7 +719,7 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 
 // A named stream's open neither deletes on close nor sets a disposition:
 // either would make the base file delete pending and unlink the base's
-// name. The base stays open to others, and the stream's close unlinks
+// name. One without delete access is refused a disposition as on any file. The base stays open to others, and the stream's close unlinks
 // nothing.
 func TestStreamOpenDeletesNothing(t *testing.T) {
 	f := newFixture(t)
@@ -737,6 +737,10 @@ func TestStreamOpenDeletesNothing(t *testing.T) {
 	no := false
 	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &no}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a disposition cleared through a named stream's open: %v, want ErrInvalid", err)
+	}
+	ro := f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd})
+	if err := f.Opens().Update(ctx, s, ro.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrAccess) {
+		t.Errorf("a disposition set through a named stream's open without delete access: %v, want ErrAccess", err)
 	}
 	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
 		t.Errorf("an open of the base beside the stream's open: %v", err)

@@ -1111,11 +1111,11 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 		return err
 	}
 	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
-		if u.Delete != nil && !o.Stream.IsZero() {
-			return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
-		}
 		if u.Delete != nil && o.Mode.Access&entity.Delete == 0 {
 			return ErrAccess
+		}
+		if u.Delete != nil && !o.Stream.IsZero() {
+			return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
 		}
 		was := o.Suspended
 		o.Suspended = was&^u.Resume | u.Suspend
