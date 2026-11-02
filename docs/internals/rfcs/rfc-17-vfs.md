@@ -2090,6 +2090,11 @@ file, so they are found by the file alone. Each is exact, since a hole fill or
 an overwrite reserved what it adds, which no size shows. Moved, each is still
 released by its write's `Done`, now from the new owner, so a write staged since
 the commit, or one that commits after the apply, charges the new owner checked.
+`Done` runs at the existence commit without the admission lock, so that lock
+does not order it against the move: the quota tracker's own mutex does. It
+covers reading the file's reservations, the check, the move and every `Done`,
+so a `Done` lands wholly before the move, which then does not see it, or wholly
+after, releasing the reservation from wherever it then is.
 It reserves against only the scopes the charge moves into:
 `QuotaUser` for a new owner, `QuotaGroup` for a new group, both when both
 change, and never `QuotaShare` or `QuotaProject`, since the charge leaves
@@ -2097,7 +2102,10 @@ neither. It runs after the attribute's authorisation and the open-state check,
 as step 4 does for a write, and is refused `ErrQuota` past a hard limit, or a
 soft one whose grace has run, before anything changes; the charge moves in the
 store's transaction, and the reservation is released after that commit, or on
-failure, which also moves the write reservations back.
+failure, which also moves the write reservations back: only those still
+outstanding, re-read under the tracker's mutex rather than taken from the ones
+the move saw, so a write whose `Done` released it meanwhile is not reserved
+again on the old owner.
 A privileged caller is held to the limit as any other: quota is not a
 permission.
 
@@ -2135,12 +2143,14 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 // where it does not change; scopes are QuotaUser for a new owner and
 // QuotaGroup for a new group. bytes is the file's Charged plus one inode.
 func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
+	q.mu.Lock() // the tracker's own mutex, which every Done takes too: no Done lands between the read, the check and the move
+	defer q.mu.Unlock()
 	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
 	if err := q.check(ctx, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check
 		return nil, err
 	}
-	q.move(writes, owner, scopes)              // each still released once, by its write's Done
-	return q.add(owner, f, bytes, scopes), nil // released after the store's commit; on failure, Release moves writes back
+	q.move(writes, owner, scopes)              // each still released once, by its write's Done, from wherever it then is
+	return q.add(owner, f, bytes, scopes), nil // released after the store's commit; on failure, Release takes q.mu, re-reads q.byFile[f.ID] and moves back only the writes still there
 }
 ```
 
