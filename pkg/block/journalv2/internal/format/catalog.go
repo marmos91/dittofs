@@ -307,6 +307,17 @@ func decodeCatalogEntry(b []byte) (CatalogEntry, error) {
 	if !zero(b[61:64]) || !zero(b[68:72]) {
 		return CatalogEntry{}, noFooter("reserved bytes are not zero")
 	}
+
+	// decision: the kinds table's zero-field rules — the fields a kind
+	// spells as 0, which the record decoder refuses as damage — are not
+	// applied to entries, here or at the writer. An entry is a summary a
+	// writer derives from a record's header, and the record's own decode
+	// polices its shape where the rule costs a record; nothing in the
+	// footer's reading list reaches past the entry's own columns. Any
+	// reader wanting the kinds' shapes in the entries takes back a
+	// header-only summary and loses what the record's decode already
+	// holds. Overturned if the format's owner rules the footer must
+	// refuse an entry that breaks the kinds table's spellings.
 	if !e.Kind.known() {
 		return CatalogEntry{}, noFooter("entry of unknown kind %d, want one of 1-14", uint8(e.Kind))
 	}

@@ -343,15 +343,7 @@ func sealedSegment(t testing.TB, entries []CatalogEntry, gap int) []byte {
 		if last.RecordOffset < 0 {
 			t.Fatalf("entry record offset %d is below 0", last.RecordOffset)
 		}
-		// An unknown kind's record has no size — the reader refuses the
-		// entry before it ever asks — so the segment under construction
-		// writes such an entry's record as a slot of zeros the refusal's
-		// own test pins in place.
-		if last.Kind.known() {
-			sealOff = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
-		} else {
-			sealOff = last.RecordOffset + RecordHeaderSize
-		}
+		sealOff = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
 	}
 	if sealOff%8 != 0 {
 		t.Fatalf("seal marker offset %d is not a multiple of 8", sealOff)
