@@ -260,3 +260,75 @@ func TestDescriptorBudgetReclaimSkipsUnregistered(t *testing.T) {
 		t.Fatalf("the unregistered reclaimer closed %d times, want its one before shutdown", closed)
 	}
 }
+
+// TestDescriptorBudgetReclaimersGauge checks the registry gauge Register adds
+// to and its unregister removes from: the count of reclaimers the budget will
+// ask, which is what a journal's Shutdown must drop by one.
+func TestDescriptorBudgetReclaimersGauge(t *testing.T) {
+	b := NewDescriptorBudget(1)
+	if got := b.Reclaimers(); got != 0 {
+		t.Fatalf("Reclaimers = %d with none registered, want 0", got)
+	}
+	unregister := b.Register(func() bool { return true })
+	if got := b.Reclaimers(); got != 1 {
+		t.Fatalf("Reclaimers = %d after one Register, want 1", got)
+	}
+	second := b.Register(func() bool { return true })
+	if got := b.Reclaimers(); got != 2 {
+		t.Fatalf("Reclaimers = %d after two Registers, want 2", got)
+	}
+	unregister()
+	if got := b.Reclaimers(); got != 1 {
+		t.Fatalf("Reclaimers = %d after one unregister, want 1", got)
+	}
+	second()
+	if got := b.Reclaimers(); got != 0 {
+		t.Fatalf("Reclaimers = %d after both unregisters, want 0", got)
+	}
+}
+
+// TestDescriptorBudgetReclaimResumesAfterUnregister checks that the
+// round-robin resumes after the reclaimer that succeeded, not after its
+// position in an order that a concurrent unregister has since shifted. The
+// reclaimer that succeeds is unregistered, and the next Reclaim must ask the
+// second — the one after it in the order where it stood — not the third, which
+// is what a cursor resolved against the shrunk order would ask.
+func TestDescriptorBudgetReclaimResumesAfterUnregister(t *testing.T) {
+	var mu sync.Mutex
+	var order []int
+	b := NewDescriptorBudget(1)
+	var unregisters []func()
+	for i := 0; i < 3; i++ {
+		i := i
+		unregisters = append(unregisters, b.Register(func() bool {
+			mu.Lock()
+			order = append(order, i)
+			mu.Unlock()
+			return true
+		}))
+	}
+
+	if !b.Reclaim() {
+		t.Fatal("the first Reclaim failed, want the first reclaimer to close one")
+	}
+	mu.Lock()
+	first := append([]int(nil), order...)
+	mu.Unlock()
+	if len(first) != 1 || first[0] != 0 {
+		t.Fatalf("the first Reclaim asked %v, want it to stop at the first reclaimer, which closes one", first)
+	}
+
+	// The first reclaimer is the one that shut down: unregistering it shifts
+	// the order to [1 2], and a cursor stored as an index into the old order
+	// would now point past the second straight at the third.
+	unregisters[0]()
+
+	if !b.Reclaim() {
+		t.Fatal("the second Reclaim failed, want a reclaimer to close one")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := order; len(got) != 2 || got[1] != 1 {
+		t.Fatalf("after the unregister, Reclaim asked %v, want the second reclaimer next: the round-robin resumes after the reclaimer that succeeded", got)
+	}
+}

@@ -973,3 +973,494 @@ func TestDescriptorsHitAllocatesNothing(t *testing.T) {
 		t.Fatalf("a warm hit allocated %v per round, want 0: the read path must not run through the allocator", allocs)
 	}
 }
+
+// TestDescriptorsSyncDoesNotCoverAWriteInFlight checks the pin's numbering
+// rule: a write is counted once it has landed, so a Sync that starts while
+// another reference's write is still in flight does not cover it. The
+// group-commit shape — one reference appending, another syncing the same
+// descriptor — otherwise lets the fsync finish before the write lands yet mark
+// it covered, and the descriptor is evicted carrying a writeback error nobody
+// would ever see.
+func TestDescriptorsSyncDoesNotCoverAWriteInFlight(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 2)
+	e.stock(t, 3)
+	defer e.c.Shutdown()
+
+	a, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
+	}
+	h := e.seam.HoldFirst(t, journalv2test.OpWrite, name(1))
+	written := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 16)
+		_, err := a.WriteAt(buf, 0)
+		written <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write never reached the hold")
+	}
+
+	// The write is in flight: a Sync through a second reference returns nil,
+	// but it cannot have covered a write that had not reached the file.
+	b, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
+	}
+	select {
+	case err := <-written:
+		t.Fatalf("the held write returned %v with the hold up, want it parked", err)
+	default:
+	}
+	if err := b.Sync(); err != nil {
+		t.Fatalf("the sync through the second reference = %v, want nil: nothing fails it", err)
+	}
+	h.Release()
+	if err := <-written; err != nil {
+		t.Fatalf("the released write failed: %v", err)
+	}
+	a.Release()
+	b.Release()
+
+	// The write landed after the only sync started, so no sync covers it: the
+	// descriptor is dirty and must not be evicted to make room.
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 1 {
+		t.Fatalf("segment 1's descriptor count is %d after reads past the bound, want 1: the concurrent Sync covered a write that landed after the fsync", got)
+	}
+
+	// The pin lifts only when a sync that started after the write returned.
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("reacquiring segment 1 failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 1 failed: %v", err)
+	}
+	r.Release()
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after a covering sync and reads past the bound, want it evicted", got)
+	}
+}
+
+// TestDescriptorsCloseRacingAnOpen checks the opener and the waiter of an
+// in-flight open against a Close that starts while the open runs: both acquires
+// answer ErrSegmentGone, the file the open fetched is closed rather than
+// cached, and its slot returns. A Close that ignored its own gone mark would
+// hand the opener a reference to a segment whose Close had already started, so
+// the caller would free storage under a reader.
+func TestDescriptorsCloseRacingAnOpen(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 2)
+	defer e.c.Shutdown()
+
+	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
+	opener := make(chan error, 1)
+	go func() {
+		_, err := e.c.Acquire(1)
+		opener <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open never reached the hold")
+	}
+
+	// A second acquire parks on the in-flight open's reference; its entry
+	// reference is what the poll below waits for.
+	waiter := make(chan error, 1)
+	go func() {
+		_, err := e.c.Acquire(1)
+		waiter <- err
+	}()
+	for deadline := time.Now().Add(10 * time.Second); segment.Refs(e.c, 1) != 2; {
+		if time.Now().After(deadline) {
+			t.Fatal("the second acquire never took the in-flight open's reference")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close(1) never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	h.Release()
+	for name, ch := range map[string]chan error{"the opening acquire": opener, "the waiting acquire": waiter} {
+		select {
+		case err := <-ch:
+			if !errors.Is(err, segment.ErrSegmentGone) {
+				t.Fatalf("%s = %v after a Close of its segment, want ErrSegmentGone", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not return after the open was released", name)
+		}
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close(1) racing its own open = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close(1) did not return after the open drained")
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d, want 0: the file the gone entry was opening was closed", got)
+	}
+	if got := e.budget.Open(); got != 0 {
+		t.Fatalf("the budget holds %d descriptors, want 0: the declined open returned its slot", got)
+	}
+	if got := segment.EntryCount(e.c); got != 1 {
+		t.Fatalf("the cache holds %d entries, want 1", got)
+	}
+}
+
+// TestDescriptorsShutdownRacingAnOpen checks the opener of an in-flight open
+// against a Shutdown that starts while the open runs: the acquire answers
+// ErrCacheClosed, the file the open fetched is closed rather than cached, its
+// slot returns, and Shutdown finds nothing left to close. An opener that
+// ignored the shut mark would cache a file Shutdown never closes, leaking the
+// slot past the bound forever.
+func TestDescriptorsShutdownRacingAnOpen(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 2)
+
+	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
+	opener := make(chan error, 1)
+	go func() {
+		_, err := e.c.Acquire(1)
+		opener <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open never reached the hold")
+	}
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- e.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		_, err := e.c.Acquire(9)
+		if errors.Is(err, segment.ErrCacheClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Shutdown never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	h.Release()
+	select {
+	case err := <-opener:
+		if !errors.Is(err, segment.ErrCacheClosed) {
+			t.Fatalf("the opening acquire = %v after Shutdown, want ErrCacheClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the opening acquire did not return after the open was released")
+	}
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown racing an in-flight open = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the open drained")
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d, want 0: the file the shut cache was opening was closed", got)
+	}
+	if got := e.budget.Open(); got != 0 {
+		t.Fatalf("the budget holds %d descriptors, want 0: the declined open returned its slot", got)
+	}
+	if _, err := e.c.Acquire(2); !errors.Is(err, segment.ErrCacheClosed) {
+		t.Fatalf("acquiring after Shutdown = %v, want ErrCacheClosed", err)
+	}
+}
+
+// TestDescriptorsASecondCloseWaitsForTheOpenDrain checks the drain a second
+// Close of a segment joins: while the first Close waits on an in-flight open's
+// reference, a second Close of the same segment waits on the same channel and
+// returns only when the drain ends. Returning early would let its caller free
+// storage while the descriptor was still being opened, and a fresh channel per
+// Close would strand the first waiter forever.
+func TestDescriptorsASecondCloseWaitsForTheOpenDrain(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+	defer e.c.Shutdown()
+
+	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
+	opener := make(chan error, 1)
+	go func() {
+		_, err := e.c.Acquire(1)
+		opener <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open never reached the hold")
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close(1) never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- e.c.Close(1) }()
+	time.Sleep(100 * time.Millisecond) // let the second Close arrive
+	select {
+	case err := <-second:
+		t.Fatalf("the second Close returned %v while its segment's open was still in flight, want it to wait for the drain", err)
+	default:
+	}
+
+	h.Release()
+	if err := <-opener; !errors.Is(err, segment.ErrSegmentGone) {
+		t.Fatalf("the opening acquire = %v after a Close of its segment, want ErrSegmentGone", err)
+	}
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatalf("the first Close = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first Close did not return after the drain: its channel was replaced by the second Close's")
+	}
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the second Close = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second Close did not return after the drain")
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d, want 0", got)
+	}
+}
+
+// TestDescriptorsCloseDuringShutdownClosesOnce checks a Close that drains
+// while the cache's Shutdown waits on another segment's reference: the file
+// and its budget slot are taken exactly once, by whichever of the two reaches
+// them first under the mutex. A Shutdown that closed what a finished Close had
+// already closed would give the slot twice and drive the count below zero.
+func TestDescriptorsCloseDuringShutdownClosesOnce(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 2)
+	prior := e.budget.Open()
+
+	r1, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	r2, err := e.c.Acquire(2)
+	if err != nil {
+		t.Fatalf("acquiring segment 2 failed: %v", err)
+	}
+
+	closed1 := make(chan error, 1)
+	go func() { closed1 <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close(1) never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- e.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		_, err := e.c.Acquire(9)
+		if errors.Is(err, segment.ErrCacheClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Shutdown never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	r1.Release()
+	select {
+	case err := <-closed1:
+		if err != nil {
+			t.Fatalf("Close(1) during Shutdown = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close(1) did not return after its own reference dropped")
+	}
+	r2.Release()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown under a concurrent Close = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the last reference dropped")
+	}
+
+	if closes := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+		t.Fatalf("segment 1's file was closed %d times, want once: a Close and a Shutdown that overlap must not both take it", closes)
+	}
+	if closes := e.seam.CallsFor(journalv2test.OpClose, name(2)) - e.stocked[2]; closes != 1 {
+		t.Fatalf("segment 2's file was closed %d times, want once", closes)
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d, want 0", got)
+	}
+	if got := e.openCount(2); got != 0 {
+		t.Fatalf("segment 2's descriptor count is %d, want 0", got)
+	}
+	if got := e.budget.Open(); got != prior {
+		t.Fatalf("the budget holds %d descriptors, want %d: a slot was given back twice", got, prior)
+	}
+	if s := e.c.Stats(); s.Open != 0 {
+		t.Fatalf("Stats().Open = %d after Shutdown, want 0", s.Open)
+	}
+	if err := e.c.Shutdown(); err != nil {
+		t.Fatalf("a second Shutdown = %v, want nil", err)
+	}
+}
+
+// TestDescriptorsAMissingFileEntryIsForgettable checks the entry an open of a
+// missing file leaves: the acquire answers ErrSegmentGone, and the map entry
+// it created is dropped by a Forget, so the entry map stays bounded by the live
+// segments. An entry left not gone would survive every Forget, and a lookup of
+// one stale id would leak it for the cache's lifetime.
+func TestDescriptorsAMissingFileEntryIsForgettable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+	defer e.c.Shutdown()
+
+	if _, err := e.c.Acquire(7); !errors.Is(err, segment.ErrSegmentGone) {
+		t.Fatalf("acquiring a segment with no file = %v, want ErrSegmentGone", err)
+	}
+	if got := segment.EntryCount(e.c); got != 1 {
+		t.Fatalf("the cache holds %d entries after the failed open, want 1", got)
+	}
+	e.c.Forget(7)
+	if got := segment.EntryCount(e.c); got != 0 {
+		t.Fatalf("the cache holds %d entries after Forget of the missing segment, want 0: the entry would leak the map one stale id at a time", got)
+	}
+}
+
+// TestDescriptorsEvictionFollowsRecency checks the idle list's order: a hit
+// moves its descriptor to the most recently used end, so with 1 and 2 open
+// under a bound of two, one more read of 1 and then a read of 3 closes 2's
+// descriptor, not 1's. An eviction by first release would close the hot
+// segment ahead of the cold one every time.
+func TestDescriptorsEvictionFollowsRecency(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 2)
+	e.stock(t, 3)
+	defer e.c.Shutdown()
+
+	e.read(t, 1)
+	e.read(t, 2)
+	e.read(t, 1) // the hit makes 1 the most recently used
+	e.read(t, 3)
+	if got := e.openCount(1); got != 1 {
+		t.Fatalf("segment 1's descriptor count is %d after the read of segment 3, want 1: the hit made it the most recently used, so eviction must close segment 2's descriptor", got)
+	}
+	if got := e.openCount(2); got != 0 {
+		t.Fatalf("segment 2's descriptor count is %d after the read of segment 3, want 0: it is the least recently used", got)
+	}
+}
+
+// TestDescriptorsForgetKeepsALiveEntry checks Forget's no-op contract: a
+// Forget of a segment whose descriptor the cache has merely evicted deletes
+// nothing, so the entry keeps its everOpen and the next miss counts as a
+// reopen. Deleting it would read the reopen counter as flat where the cache
+// was thrashing.
+func TestDescriptorsForgetKeepsALiveEntry(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 1)
+	e.stock(t, 2)
+	defer e.c.Shutdown()
+
+	e.read(t, 1)
+	e.read(t, 2) // evicts 1: the entry's descriptor is closed, but the entry is live
+
+	// Forget of the evicted entry is the no-op: the segment is not gone, so
+	// the entry keeps its everOpen.
+	e.c.Forget(1)
+	if got := segment.EntryCount(e.c); got != 2 {
+		t.Fatalf("the cache holds %d entries after Forget of a live segment, want 2: Forget drops only gone entries", got)
+	}
+
+	// The retained entry still knows it was opened, so the miss counts as a
+	// reopen. A Forget that deleted the live entry would lose that mark and
+	// read the reopen counter as flat where the cache was thrashing.
+	before := e.c.Stats().Reopens
+	e.read(t, 1)
+	if got := e.c.Stats().Reopens; got != before+1 {
+		t.Fatalf("Reopens = %d after re-reading the forgotten-but-live segment 1, want %d: Forget deleted the live entry and lost its everOpen", got, before+1)
+	}
+}
+
+// TestDescriptorsShutdownUnregistersFromTheBudget checks the registry gauge:
+// two caches on one budget register two reclaimers, and each Shutdown removes
+// its own, so a shut journal leaves no closure in the budget's round-robin —
+// one that would pin the whole cache and be asked on every Reclaim.
+func TestDescriptorsShutdownUnregistersFromTheBudget(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	seam2, err := journalv2test.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the second seam could not be made: %v", err)
+	}
+	e2 := cacheEnv{
+		budget:  e.budget,
+		c:       segment.NewDescriptors(seam2.FS(), name, e.budget),
+		seam:    seam2,
+		stocked: map[core.SegmentID]int{},
+	}
+
+	if got := e.budget.Reclaimers(); got != 2 {
+		t.Fatalf("the budget holds %d reclaimers with two caches, want 2", got)
+	}
+	if err := e.c.Shutdown(); err != nil {
+		t.Fatalf("Shutdown of the first cache = %v, want nil", err)
+	}
+	if got := e.budget.Reclaimers(); got != 1 {
+		t.Fatalf("the budget holds %d reclaimers after one cache shut down, want 1: Shutdown must unregister its closure", got)
+	}
+	if err := e2.c.Shutdown(); err != nil {
+		t.Fatalf("Shutdown of the second cache = %v, want nil", err)
+	}
+	if got := e.budget.Reclaimers(); got != 0 {
+		t.Fatalf("the budget holds %d reclaimers after both caches shut down, want 0", got)
+	}
+	if e.budget.Reclaim() {
+		t.Fatal("Reclaim with no reclaimer returned true, want false")
+	}
+}

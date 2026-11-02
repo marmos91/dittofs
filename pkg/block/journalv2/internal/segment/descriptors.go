@@ -15,9 +15,10 @@ import (
 // be read, so the read's caller can answer missing, refused or gone.
 var (
 	// ErrSegmentGone is returned by Acquire of a segment whose Close has
-	// started, whose file no longer exists, and by an acquire of one the cache
-	// has shut down after. It is not retried: ids are never reused, so the
-	// segment is gone for good.
+	// started or whose file no longer exists. It is not retried: ids are
+	// never reused, so the segment is gone for good. An acquire after the
+	// cache's Shutdown returns ErrCacheClosed instead, whatever the segment's
+	// own state.
 	ErrSegmentGone = errors.New("segment: segment is closed for reclamation")
 
 	// ErrNoDescriptor is returned by Acquire when every descriptor the budget
@@ -76,7 +77,6 @@ type Descriptors struct {
 // descriptor is closed; the references outstanding on it; and the drain that
 // makes Close(id) wait for them.
 type descEntry struct {
-	id       core.SegmentID
 	file     storage.File  // nil when the descriptor is closed
 	refs     int           // references held; an in-progress open counts as one
 	opening  *openCall     // non-nil while an open is in flight
@@ -101,7 +101,6 @@ type descEntry struct {
 type openCall struct {
 	done chan struct{} // closed once err is set
 	err  error         // the open's outcome: nil when it yields a descriptor
-	file storage.File  // the opened file, when err is nil and it was kept
 }
 
 // dirty reports whether a write issued through the descriptor has not been
@@ -191,7 +190,7 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	// A miss: make the entry, if it is absent, and hold the reference the
 	// in-flight open runs under.
 	if e == nil {
-		e = &descEntry{id: id}
+		e = &descEntry{}
 		c.entries[id] = e
 	}
 	e.refs++
@@ -204,17 +203,24 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	// budget's own count or another cache's reclaim must not wait on this
 	// mutex, and a fault installed for the leaf-lock check must never see it.
 	if !c.takeSlot() {
-		c.openFailed(id, e, op, ErrNoDescriptor)
+		c.openFailed(e, op, ErrNoDescriptor)
 		return Ref{}, ErrNoDescriptor
 	}
 	f, err := c.fs.Open(c.name(id))
-	if errors.Is(err, fs.ErrNotExist) {
+	notExist := errors.Is(err, fs.ErrNotExist)
+	if notExist {
 		err = ErrSegmentGone
 	}
 
 	c.mu.Lock()
 	if err != nil {
 		op.err = err
+		if notExist {
+			// The file is gone, which no retry undoes: an id is never reused,
+			// so the entry is marked gone for a following Forget to drop,
+			// keeping the map bounded by the live segments.
+			e.gone = true
+		}
 		if e.opening == op {
 			e.opening = nil
 		}
@@ -251,7 +257,6 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 		c.reopens++
 	}
 	e.everOpen = true
-	op.file = f
 	if e.opening == op {
 		e.opening = nil
 	}
@@ -339,12 +344,15 @@ func (r Ref) ReadAt(p []byte, off int64) (int, error) {
 }
 
 // WriteAt writes len(p) bytes at offset off through the reference's open
-// descriptor. The write numbers the descriptor before it lands, so an
-// unsynced write is never mistaken for a covered one and the descriptor stays
-// pinned until a sync through it has returned.
+// descriptor. The write numbers the descriptor once it has landed: a Sync
+// whose fsync starts while the write is still in flight loads a count that
+// does not include it, so the write stays uncovered and the descriptor stays
+// pinned until a later sync covers it — the safe direction, never the
+// reverse, where a sync would mark a write covered that no fsync reached.
 func (r Ref) WriteAt(p []byte, off int64) (int, error) {
+	n, err := r.e.file.WriteAt(p, off)
 	r.e.written.Add(1)
-	return r.e.file.WriteAt(p, off)
+	return n, err
 }
 
 // Sync makes the writes issued through the reference's descriptor durable,
@@ -448,7 +456,12 @@ func (c *Descriptors) reclaimOne() bool {
 
 	// A cache whose Shutdown has begun holds its descriptors for Shutdown to
 	// close: a reclaim here would close one, give its slot back and let
-	// Shutdown give it again, driving the count below zero.
+	// Shutdown give it again, driving the count below zero. The guard is
+	// deliberate redundancy rather than the only defence: Shutdown empties
+	// the idle list under this same mutex before it waits, so a scan that
+	// reached past the guard would find nothing — but the reclaimer must
+	// never win a file Shutdown is about to take, and the cheap check keeps
+	// that from depending on the state of the list.
 	if c.shut {
 		c.mu.Unlock()
 		return false
@@ -457,6 +470,11 @@ func (c *Descriptors) reclaimOne() bool {
 	// The least recently used idle entry: the list's back. Referenced and
 	// dirty entries are skipped — a referenced one stays linked, so the
 	// scan passes over it — and the reclaimer never takes one of those.
+	// Release also unlinks a dirty entry when its last reference drops, so
+	// the dirty check here is deliberate redundancy, defence in depth on
+	// the leaf-contract rule that keeps a reclaimer and a Release from
+	// disagreeing about a victim: Release may not relink what it unlinked,
+	// and this scan may not take what it skipped.
 	var victim *descEntry
 	for el := c.idle.Back(); el != nil; el = el.Prev() {
 		e := el.Value.(*descEntry)
@@ -496,7 +514,7 @@ func (c *Descriptors) reclaimOne() bool {
 // or renames only after Close returns. Segment ids are never reused, so the
 // rejection is permanent, and a read that finds the drain started reports
 // the extent missing rather than waiting for a segment whose bytes are
-// about not to be.
+// about to be freed.
 func (c *Descriptors) Close(id core.SegmentID) error {
 	c.mu.Lock()
 
@@ -505,14 +523,10 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		// The segment was never acquired, or is already forgotten: a
 		// tombstone marks it gone, so a read racing this Close cannot open
 		// its descriptor and read storage about to be freed.
-		e = &descEntry{id: id, gone: true}
+		e = &descEntry{gone: true}
 		c.entries[id] = e
 		c.mu.Unlock()
 		return nil
-	}
-	if e.gone && e.file == nil {
-		c.mu.Unlock()
-		return nil // already closed, and the drain is done
 	}
 	e.gone = true
 	c.idleRemove(e)
@@ -520,8 +534,10 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	// References remain: this Close waits for them — without holding the
 	// mutex (R69), so the readers' own acquires and releases of other
 	// segments, and the drain of another segment, still run. A second Close
-	// that arrives while the drain runs reuses its channel: a fresh one would
-	// strand the first waiter on a channel no Release will close.
+	// that arrives while the drain runs joins the same channel: a fresh one
+	// per Close would strand the first waiter on a channel no Release will
+	// close, and returning without waiting would free storage while the last
+	// reader's call, or an open still in flight, holds the descriptor.
 	if e.refs > 0 {
 		if e.drained == nil {
 			e.drained = make(chan struct{})
@@ -530,9 +546,10 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		c.mu.Unlock()
 		<-drained
 
-		// The last Release closed drained and nilled the field; another
-		// Close may already have reused e.gone's file take below, in which
-		// case its file is nil here and this Close returns nil.
+		// The last Release closed drained and nilled the field. Whatever
+		// detached the descriptor below — this Close on a later round, a
+		// concurrent Close, or the cache's Shutdown — took the file with it,
+		// so the entries the drain leaves are settled exactly once.
 		c.mu.Lock()
 	}
 
@@ -556,7 +573,7 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 // refused — releasing the reference the Acquire took and ending the in-flight
 // open with the refusal, so its waiters see it and the entry is left with no
 // file and no error state, ready for a later Acquire's retry.
-func (c *Descriptors) openFailed(id core.SegmentID, e *descEntry, op *openCall, err error) {
+func (c *Descriptors) openFailed(e *descEntry, op *openCall, err error) {
 	c.mu.Lock()
 	op.err = err
 	if e.opening == op {
@@ -605,16 +622,8 @@ func (c *Descriptors) Shutdown() error {
 
 	// No entry stays in the idle list, so the reclaimer reaches none of them:
 	// the files are Shutdown's to close, not a reclaim's.
-	type held struct {
-		e    *descEntry
-		file storage.File
-	}
-	descriptors := make([]held, 0, len(c.entries))
 	for _, e := range c.entries {
 		c.idleRemove(e)
-		if e.file != nil {
-			descriptors = append(descriptors, held{e: e, file: e.file})
-		}
 	}
 
 	// References remain: wait for them with no mutex held, signalled by the
@@ -628,12 +637,22 @@ func (c *Descriptors) Shutdown() error {
 		c.shutDone = nil
 	}
 
-	// The drain is done: no reader can still be inside a call, so the files
-	// are detached now and closed outside the mutex.
-	for _, h := range descriptors {
-		h.e.file = nil
+	// The drain is done: no reader can still be inside a call. The files are
+	// taken now — only those still attached, because a Close that drained
+	// while Shutdown waited took its own segment's file and gave its slot
+	// back — and closed outside the mutex. Whichever of the two reached a
+	// file first under the mutex owns it: taking only the attached ones is
+	// what keeps every file closed, and every slot given, exactly once.
+	var errs []error
+	var files []storage.File
+	for _, e := range c.entries {
+		if e.file == nil {
+			continue
+		}
+		files = append(files, e.file)
+		e.file = nil
+		c.open--
 	}
-	c.open = 0
 	c.mu.Unlock()
 
 	// The budget asks this cache no more.
@@ -641,9 +660,8 @@ func (c *Descriptors) Shutdown() error {
 		c.unregister()
 	}
 
-	var errs []error
-	for _, h := range descriptors {
-		if err := h.file.Close(); err != nil {
+	for _, f := range files {
+		if err := f.Close(); err != nil {
 			errs = append(errs, err)
 		}
 		c.budget.Give()

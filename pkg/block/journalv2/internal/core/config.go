@@ -130,7 +130,13 @@ type DescriptorBudget struct {
 	reclaimers map[uint64]func() bool
 	nextID     uint64
 	order      []uint64 // registration order, which the round-robin walks
-	next       int      // the reclaimer the next Reclaim starts asking after
+
+	// last is the reclaimer the last successful Reclaim stopped asking after,
+	// and armed reports whether there was one. The next Reclaim resumes after
+	// it, resolved against the registry as it stands then: an index copied
+	// from an older order would shift with every unregister.
+	last  uint64
+	armed bool
 }
 
 // NewDescriptorBudget returns a budget of limit open descriptors. A limit of
@@ -157,6 +163,16 @@ func (b *DescriptorBudget) Open() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.open
+}
+
+// Reclaimers returns how many journals are registered to be asked for an idle
+// descriptor: the gauge of the registry Shutdown removes a shut journal from.
+// A journal left registered would pin its whole cache and be asked on every
+// Reclaim forever.
+func (b *DescriptorBudget) Reclaimers() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.reclaimers)
 }
 
 // TryTake takes one open-descriptor slot, reporting whether it did. It fails
@@ -205,10 +221,13 @@ func (b *DescriptorBudget) Register(reclaim func() bool) (unregister func()) {
 		defer b.mu.Unlock()
 		delete(b.reclaimers, id)
 		b.order = slices.DeleteFunc(b.order, func(o uint64) bool { return o == id })
-		// The walk indexes the order it copies at the start, but the next one
-		// must land inside the registry as it stands now, which shrank.
-		if b.next >= len(b.order) {
-			b.next = 0
+		// The cursor names the reclaimer that last succeeded, not a position,
+		// so it needs no adjustment here: the next Reclaim resolves it against
+		// this order as it stands now. Unregistering that very reclaimer
+		// disarms the resume point, and the next walk starts at the head,
+		// which is where registration order would have it.
+		if b.armed && b.last == id {
+			b.armed = false
 		}
 	}
 }
@@ -219,20 +238,34 @@ func (b *DescriptorBudget) Register(reclaim func() bool) (unregister func()) {
 // one has been asked. It reports whether one did.
 //
 // The reclaimers are called without the budget's mutex held, so a reclaimer
-// may call TryTake, Give and Open on the budget.
+// may call TryTake, Give and Open on the budget. The resume point is the
+// reclaimer that last succeeded, resolved against the registry as it stands
+// when the walk starts, because the registry it was recorded against may
+// have shrunk or shifted since.
 func (b *DescriptorBudget) Reclaim() bool {
 	b.mu.Lock()
 	if len(b.order) == 0 {
 		b.mu.Unlock()
 		return false
 	}
+	// start is the position the walk begins at: after the reclaimer that last
+	// succeeded, wherever it now stands, or the head when there was none or
+	// it has since unregistered.
+	start := 0
+	if b.armed {
+		for i, id := range b.order {
+			if id == b.last {
+				start = (i + 1) % len(b.order)
+				break
+			}
+		}
+	}
 	order := append([]uint64(nil), b.order...)
-	start := b.next % len(order)
 	b.mu.Unlock()
 
-	// asked counts from the reclaimer after the one that last succeeded, so
-	// the walk wraps at the registration order rather than restarting at its
-	// head; this round's starting point would otherwise never advance.
+	// asked counts from that position, so the walk wraps at the registration
+	// order rather than restarting at its head; this round's starting point
+	// would otherwise never advance.
 	asked := 0
 	for asked < len(order) {
 		id := order[(start+asked)%len(order)]
@@ -247,11 +280,8 @@ func (b *DescriptorBudget) Reclaim() bool {
 
 		if reclaim() {
 			b.mu.Lock()
-			n := len(b.order)
-			if n == 0 {
-				n = 1
-			}
-			b.next = (start + asked) % n
+			b.last = id
+			b.armed = true
 			b.mu.Unlock()
 			return true
 		}
