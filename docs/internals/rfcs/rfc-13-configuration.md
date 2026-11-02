@@ -214,7 +214,7 @@ plane owes the components that read it.
 
 This document **MUST NOT** be read as specifying:
 
-- the management API, its authentication or its resources: [RFC 23](rfc-index.md);
+- the management API, its authentication or its resources: [RFC 23](rfc-23-control-plane.md);
 - what each setting means inside its component: that stays in the component's
   RFC, which this document cites;
 - how the metadata store replicates: it is a store that runs consensus

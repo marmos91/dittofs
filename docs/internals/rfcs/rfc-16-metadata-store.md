@@ -394,7 +394,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -532,7 +532,8 @@ type Installation struct {
 	// (RFC 27 §2.1): minted afresh whenever a start finds the platform's
 	// machine-generation identifier differs from Generation, so a cloned or
 	// restored image is a new instance and holds no namespace until an operator
-	// says which copy is the installation.
+	// accepts it, namespace by namespace: a claim nonce counts only when it was
+	// recorded under the current Instance (NS‖ns‖claim, §4.2).
 	Instance   [16]byte
 	Generation []byte // the platform's machine-generation identifier last seen; empty where the platform offers none, and there only the namespace claim's nonce check (RFC 27 §2.1) catches a copied image
 	// Active is the version written for each shared format other than the
@@ -549,6 +550,15 @@ type Installation struct {
 // NFSv4 pseudo-filesystem's change attribute (RFC 17 §4.9).
 type ShareList struct {
 	Version uint64
+}
+
+// ClaimGeneration is one record per installation, raised in the transaction of
+// every NS‖ns‖claim write that can change a namespace's Claim answer: a first
+// claim, an import, an accepted copy's settle, a Recheck's mismatch — never a
+// Recheck's routine rewrite. Nodes read it with the other counters and rerun
+// Claim when it moves (RFC 23 §2.2 step 5, RFC 9 §2.5).
+type ClaimGeneration struct {
+	Generation uint64
 }
 
 // Snapshot is a named, user-visible cut of a share. SnapshotCut, and the
@@ -732,6 +742,7 @@ type NodeStatus struct {
 	Settings       uint64 // CFGGEN reconciled through
 	ShareList      uint64 // SL reconciled through
 	Principals     uint64 // PGEN reconciled through
+	Claims         uint64 // CGEN reconciled through
 	Refused        []RefusedRecord // each with the generation and the error
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
@@ -964,7 +975,8 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    and this step runs it: when nothing that gate reads still names the
    namespace, it is drained. The check reads each of them with tracking and
    writes the drain mark in step 6's last transaction. The drain then runs
-   RFC 9 §7.6, steps 1–3, as written there.
+   RFC 9 §7.6 as written there: steps 1–3 for a namespace this installation
+   holds, `Forget` for any other.
 
 > decision: removal frees the name at once and the space later. A client sees the share
 > gone at the first commit. The bytes stay in the bucket until GC has deleted
@@ -1030,7 +1042,7 @@ Entity methods defined elsewhere:
 
 Two things are deliberately **not** methods. Permission evaluation — "may this
 identity do this to this file" — needs the principal's groups and the share's
-grant, so it is `Files.Authorize` behind the one chokepoint ([RFC 7](rfc-7-namespace-metadata.md) §7.1), never
+grant, so it is `Files.Authorize` behind the one chokepoint ([RFC 7 §7.1](rfc-7-namespace-metadata.md#7.1%20One%20chokepoint)), never
 `acl.Allows`. And no entity has `Save`, `Reload` or a back-pointer to the store:
 entities are values, freely copied, compared and printed.
 
@@ -1038,7 +1050,7 @@ entities are values, freely copied, compared and printed.
 
 Adapters hold one thing: `vfs.Service` ([RFC 17](rfc-17-vfs.md)). Everything below is held by
 the filesystem service or by internal consumers. Every namespace call takes a
-resolved identity and a handle and is authorised inside the layer ([RFC 7](rfc-7-namespace-metadata.md) §7.1);
+resolved identity and a handle and is authorised inside the layer ([RFC 7 §7.1](rfc-7-namespace-metadata.md#7.1%20One%20chokepoint));
 the content calls take a `FileID`, because only the namespace ever sees a name.
 
 The views are defined where their semantics are:
@@ -1567,7 +1579,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `BR‖ns‖b‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖b‖bucket‖name`, `b` the block name's first byte | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 | | `NS‖ns‖gc‖lease‖partition`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per GC partition with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
-| | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
+| | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, the last one it wrote, one an operator accepted for a copy (`AcceptCopy`), and one a `Recheck` found and did not record (`Mismatch`), all recorded under the instance part current then ([§2.3](#2.3%20Server-wide%20and%20control-plane%20entities)), and a nonce recorded under another counts as not recorded; and `claimed`, set once the namespace's first claim is recorded written. `Claim` and a `Recheck` read the claim and compare it with these. Every claim put on any path — `Recheck`, a namespace's create, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
 | | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; its value names its kind; a move's holds the step it reached, the list of its base cuts, which are the only snapshots the move deletes, and a deadline A renews; both ends delete each base cut — its use record, then the snapshot — before they delete this record, so a crash never leaves a base cut that no record names ([RFC 13](rfc-13-configuration.md)'s move pause deadline row); a recovery import's holds none of these — an interrupted import restarts from scratch, never resumes from its staging — and is never aborted by a deadline, only the operator's release ends it ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)); GC reads it before every pass and batch, and every relocation, delete or collection commit reads it with a tracked `Get` and refuses while it exists ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | | `NS‖ns‖drain` | drain mark: the namespace is being emptied after no share names it. It holds the current **check token**: the drain's key check writes a fresh one when it starts, every copy batch that adds a census entry reads the mark with tracking and writes a new one, and the key-removal transaction reads it with tracking, proceeds only if it still holds its own check's token, and rewrites it — so a census entry and a removal conflict in both commit orders. It refuses a share creation, clone or restore into it and resumes the drain after a crash ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)); deleted last |
 | | `NS‖ns‖gc‖cursor‖walk‖partition` | walk cursor per kind of walk (audit, block walk, index rebuild) and GC partition ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)), so a restarted walk resumes; derived |
@@ -1584,6 +1596,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
+| | `CGEN` | ClaimGeneration: one installation-wide counter, raised by every `NS‖ns‖claim` write that can change a namespace's `Claim` answer; every node reads it once a second with `SL` and `PGEN` and reruns `Claim` when it moves ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5) |
 | | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the restart-notice number, one per installation; raised durably before the grace of any failover that lost locks of clients that recover by notice, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
@@ -2116,7 +2129,8 @@ serial order of the committed operations.
 
 ### 6.4 Faults and crashes
 
-A fault-injecting `KV` wrapper fails, delays or reorders at every call:
+A fault-injecting `KV` wrapper fails or delays any call through the set's fault
+interface, and adds a lost commit reply as its own setting ([the index's test harness](rfc-index.md#Test%20harness), item 1); the power losses and the kill below are crashes, never a call's fault:
 
 - concurrent `Update`s on the embedded store, with power cut after some return: assert every returned `Update` survives, and that the commits shared syncs (fewer syncs than commits);
 - a conflict on the Nth `Update` attempt (retry must converge, never apply twice);
@@ -2165,9 +2179,10 @@ A fault-injecting `KV` wrapper fails, delays or reorders at every call:
   reads as it did, and deleting the last one leaves no key carrying the
   `ShareID`; with the default disposition on a share with snapshots, and with
   `delete` while a backup holds one, it is refused and changes nothing;
-- a namespace drained after its last share's removal (RFC 9 §7.6): every block
-  is deleted, then its keys destroyed, then its records gone; a share creation
-  into it while draining is refused.
+- a namespace drained after its last share's removal (RFC 9 §7.6): when held,
+  every block is deleted, then its keys destroyed, then its records gone; when
+  foreign, copy or pending, its records are gone and no remote object is
+  deleted; a share creation into it while draining is refused.
 
 ## 7. Benchmarks and profiling
 

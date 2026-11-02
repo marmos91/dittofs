@@ -1572,6 +1572,20 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
    shard. Whether batched claims make 10⁴ shards writable fast enough is unmeasured.
 4. **Repair pacing defaults** — how many joins per node and per cluster, the
    gather interval, the lag trigger — have no measured values yet.
+5. **Replica scrub.** A replica's dirty copy is read mostly at a takeover, when
+   the primary that could repair it is gone. Found while the primary lives, a
+   record that does not verify costs only a rejoin: it sets a loss point
+   ([§6](#6.%20Fencing), [§7.3](#7.3%20Joining)). A read that fails sets none ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), so a pass
+   finds an unreadable sector to any effect only if a dirty record no read
+   could read also sets one on a replica. One node does not scrub ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)). A replica
+   pass would cover only dirty records older than some age, so it reads little
+   while offload keeps up and mostly the backlog of a remote outage otherwise.
+   The exposure it removes needs a primary lost during that outage as well as
+   decay of the same record: about 2×10⁻⁹ per replica for a day's outage holding
+   100 GiB dirty on a 4 TB nearline disk, at a measured rate of unreadable
+   sectors of about 3% of disks a year and a 10⁻³ chance of losing the primary
+   that day. Whether that earns a pass, and its age and pace, is unmeasured
+   against outage lengths.
 
 Moves between shards and protocol state are [RFC 11](rfc-11-ownership.md)'s; per-file and range shards
 are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
@@ -1596,7 +1610,7 @@ set and an epoch, and every message is fenced by it.
 | GFS (SOSP 2003), HDFS lease recovery | replica-set version bumped before a new writer writes; stale replicas detected by version |
 | Ceph peering | reconcile and record before serving; recover the most degraded first |
 | PostgreSQL streaming replication, with a cluster manager (Patroni) holding the leader key under a TTL in a consensus store | the whole design in miniature, one shard per database cluster: the write-ahead log is the journal, the leader key the node lease, the timeline raised at promotion the epoch, and a strict synchronous mode that refuses writes below its standby count the floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); rewinding a returning old primary is rejoin by delta ([§7.3](#7.3%20Joining)), and quorum synchronous commit (`ANY k`) the upgrade [§4](#4.%20The%20write%20path) sketches |
-| Mirrored disk arrays (RAID 1, Linux md) | every mirror holds a write before it completes, and a degraded array keeps writing — the count and floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); a write-intent bitmap resyncs only the regions dirtied while a member was absent — the rejoin upgrade of [§7.3](#7.3%20Joining); a paced patrol read finds decay in what is never read ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)) |
+| Mirrored disk arrays (RAID 1, Linux md) | every mirror holds a write before it completes, and a degraded array keeps writing — the count and floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); a write-intent bitmap resyncs only the regions dirtied while a member was absent — the rejoin upgrade of [§7.3](#7.3%20Joining); a paced patrol read finds decay in what is never read, declined on one node ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)), open for a replica ([§16](#16.%20Open%20questions)) |
 | Frangipani (SOSP 1997) | a lease checked only by the sender is not a fence |
 | Assise (OSDI 2020) | a local log replicated before acknowledgement, published asynchronously |
 | FoundationDB (SIGMOD 2021), TigerBeetle, Antithesis | deterministic simulation; swizzle-clogging; a storage fault model; "sometimes" assertions |

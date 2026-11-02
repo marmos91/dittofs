@@ -634,13 +634,13 @@ the wire:
   address takeover, or arrives after a restart, creates a second session.
 
 > decision: the confirm verifier is random and the unconfirmed proposal lives at
-> one node, as RFC 14 §2.9 decides, rather than a digest any node recomputes. A
+> one node, as [RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation) decides, rather than a digest any node recomputes. A
 > digest would let a client confirm through another node, but it is computable
 > by anyone who holds the installation secret and binds nothing the proposal's
 > principal did not already prove; the cost of the volatile record is one
 > repeated `SETCLIENTID` or `EXCHANGE_ID` when the address moves between the two
-> calls, which clients already do on `NFS4ERR_STALE_CLIENTID`. Revisit with RFC
-> 14 §2.9's own trigger: mounts seen failing because confirms land elsewhere.
+> calls, which clients already do on `NFS4ERR_STALE_CLIENTID`. Revisit with
+> [RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)'s own trigger: mounts seen failing because confirms land elsewhere.
 
 ## 4. NFSv4.0 clients
 

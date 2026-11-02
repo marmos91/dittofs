@@ -625,7 +625,8 @@ listener clients are sent to is down.
 | in grace after a restart | yes | yes — clients must reach it to reclaim | from its conditions; grace is information |
 | self-fenced: no write transaction committed for 30 s ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | yes | yes — reads continue | unhealthy, `node_fenced` |
 | some shares refused: a journal device lost, a share's store denied | yes | yes | unhealthy for those shares |
-| started from a copied image | yes | yes — reads of offloaded content continue | unhealthy, `copied_image` |
+| started from a copied image the platform reports | yes | yes — reads of offloaded content continue | unhealthy, `copied_image`; each namespace also raises `namespace_unclaimed` (copy) until its copy is accepted |
+| a namespace's claim answered copy, foreign or pending, or could not be read ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) | yes | yes — the node's other shares serve, and a copy's serve reads | unhealthy for that namespace's shares, `namespace_unclaimed` naming it and the answer |
 | metadata store lost: no share served until a recovery import | yes | no | unhealthy, `metadata_store_lost` |
 | a listener lost (`adapter_listener_lost`) | yes | no — clients sent to it cannot connect | unhealthy |
 | an adapter refused at configured (`adapter_refused`) | yes | yes — every node refuses the same setting, and the API that fixes it must stay reachable | unhealthy |
@@ -703,11 +704,13 @@ row.
 | `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
 | `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) | journal | unhealthy: acknowledged writes lost | page at once |
 | `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | journal | unhealthy; waits for an operator | page at once |
+| `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served while the journal is open, until a spare is made, the storage checks pass and the reopen succeeds | page at once |
 | `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `node_fenced` | [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | node | unhealthy: writes answer retry-later | page at once — it already waited 30 s |
 | `metadata_store_unhealthy`, `metadata_store_degraded` | [RFC 16 §8.3](rfc-16-metadata-store.md#8.3%20Health%20and%20debugging) | node | as named | page at 5 min; ticket |
 | `metadata_store_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | installation | unhealthy; waits for an operator | page at once |
-| `copied_image` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | unhealthy; waits for an operator | page at once |
+| `copied_image` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | unhealthy; waits for an operator, and clears once no namespace answers copy | page at once |
+| `namespace_unclaimed` | [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim), [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) | namespace, naming the answer: copy, foreign, pending or unread | unhealthy: a copy's shares serve reads only and wait for an operator's `:accept-copy`; the others' shares are not attached | page at once; `pending` and `unread` only after 5 min |
 | `clock_unsynchronised` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `material_unavailable` | [RFC 5 §6](rfc-5-transforms.md#6.%20Observability) | namespace | unhealthy: behaves as an unavailable remote | page at 5 min |
 | `config_generation_behind` | [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | node | degraded, past the 5 s propagation bound | ticket at 5 min |
@@ -731,7 +734,7 @@ row.
 | `debug_logging_on` | §5.2 | node, naming the component | degraded | ticket |
 | `replication_under_floor` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | degraded | page at 5 min |
 | `shard_relinquished` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | unhealthy; waits for a replica or the operator | page at once |
-| `node_lost` **(cluster)** | [RFC 11 §9](rfc-11-ownership.md#9.%20Failure), §3.8 | installation | degraded while its shards fail over | page at 5 min |
+| `node_lost` **(cluster)** | [RFC 11 §9](rfc-11-ownership.md#9.%20Failure), [§3.8](#3.8%20Installation%20health%20%28cluster%29) | installation | degraded while its shards fail over | page at 5 min |
 | `lock_grant_unacknowledged` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the client | degraded | ticket |
 | `recall_deadline_misses` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node | degraded while recalls revoked at their deadline exceed 1 per minute for 15 min (proposed) | ticket |
 | `adapter_record_near_bound` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the protocol | degraded while any adapter record written in the last hour exceeds 3 KiB of its 4 KiB bound | ticket |

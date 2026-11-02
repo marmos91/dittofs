@@ -164,8 +164,8 @@ stale bucket content where acknowledged writes were.
    order ([§2.2](#2.2%20Segments)).
 2. One write gets a device error. Its slot stays zeros, and its `WriteAt`
    returns the error, so it is never acknowledged ([§2.2](#2.2%20Segments)).
-3. The records after it were written, synced and acknowledged
-   ([§2.2](#2.2%20Segments)).
+3. The records after it were written, and may have been synced and
+   acknowledged ([§2.2](#2.2%20Segments)).
 4. At the next open, a scan meets the zero slot. It searches forward, at each
    8-byte boundary, for a header that verifies ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 5. It finds the next record, steps over the zeros, and attaches everything
@@ -316,6 +316,12 @@ trailer is not accepted ([§2.4](#2.4%20The%20segment%20catalog)), and recovery 
 ([§3.1](#3.1%20Rebuilding)); zeroed first, a crash would leave the old name with records that
 still verify. Its blocks are already allocated and written, so it needs no
 zero-fill, and a sustained load pays one segment's write per segment, not two.
+**A recycle that fails is an unlink.** If any step fails — the rename, the
+directory sync after it, the zeroing or its sync — the segment is not a spare
+and is never taken: the journal unlinks it under whichever of its two names it
+finds, since a failed rename may or may not have happened. A crash before that
+unlink is durable leaves the old name, as a crash before any unlink's directory
+sync does, or the new name, which open re-adopts as a spare ([§3.1](#3.1%20Rebuilding)).
 Only growing the pool — at `Init`, when the journal's maximum is raised, or when
 no full-size retired segment is to hand — makes a new spare and pays the fill.
 **A fresh id exceeds every id the directory names**: the id of a new spare or
@@ -331,16 +337,15 @@ read as the new life's catalog. While it is a stream's active segment, the old
 life's bytes past its newest record are a torn tail at recovery
 ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), cut off and never reported as damage. What a fresh segment
 guarantees and a recycled one does not is that the bytes past its newest record
-are zeros. So on a recycled segment **a failed append ends the segment, as a
-failed sync does** ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)): the slot it left holds the old life's
-bytes, which the zero-slot rule of [§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over. A short write
-on a fresh segment — one that wrote part of its slot before failing — leaves
-bytes that are not zeros too, and ends its segment the same way. The stream
+are zeros. **A failed append ends its segment, as a failed sync does**
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), fresh or recycled: its slot may hold bytes the zero-slot rule of
+[§3.3](#3.3%20Torn%20and%20corrupt%20records) cannot step over, or zeros no later synced-through offset may pass, so
+nothing could prove a record appended after them synced ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). The stream
 takes no further append there and continues in a new segment naming no
 predecessor; the records written to the segment since its last successful sync
 are re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync); a stream's synced-through offset
-never advances past a slot whose write failed, so no record proves that slot
-synced and recovery finds it torn, never corrupt; and the segment is never
+never advances past a slot whose write failed or has not completed, so no record proves that slot
+synced and recovery finds it torn or steps over it, never corrupt; and the segment is never
 sealed. What becomes of it after that is [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)'s rule for a failed
 segment, not an exception to it: a repack candidate once its window is
 resolved, unlinked, never recycled, only after repack has carried forward the
@@ -458,6 +463,7 @@ unhold or stamp record the cut number it is for ([RFC 1 §3.11](rfc-1-journal.md
 - the record's kind: write, fill, release, truncate, deallocate, delete, clone
   target ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), offloaded, unmark ([§3.2](#3.2%20Offload%20state%20after%20recovery)), loss ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), hold, unhold, stamp
   ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)) or forget ([RFC 1 §3](rfc-1-journal.md#3.%20Interface))
+- the segment it was written into, and its own offset in that segment
 - the `FileID` it belongs to, and the tag of its share ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); a forget record names
   only the tag, with a zero `FileID`
 - the file offset it begins at, and its length, both 64-bit: a removal can cover
@@ -516,6 +522,7 @@ over a removal resurrects what it removed.
 | --- | --- | --- |
 | kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`) |
 | segment id | 42 | which segment the record was written into; a record found anywhere else is not this segment's |
+| record offset | 183 500 896 | where in its segment the record starts; a record read at any other offset is not this one, so a write the device put at the wrong place in the segment is caught |
 | `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
 | share tag | 7 (the `profiles` share's tag) | which share's limits the bytes count against ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) |
 | file offset | 1 073 741 824 | where in the file the bytes start |
@@ -550,7 +557,7 @@ padding; 96 bytes.
 | 72 | 4 | share tag |
 | 76 | 8 | synced-through offset |
 | 84 | 4 | payload checksum |
-| 88 | 4 | reserved, zero |
+| 88 | 4 | the record's own offset in its segment; 32 bits, as the catalog's `recordOffset` ([§2.5](#2.5%20Catalog%20layout)) |
 | 92 | 4 | header checksum, over bytes `[0, 92)` |
 
 **Record kinds.** Values are stable: a value is never reassigned, nor reused once
@@ -593,12 +600,13 @@ padding to the next multiple of 8, which no checksum covers and a reader ignores
 Both checksums are CRC32C **seeded with the journal identity**: each is the CRC32C
 of the 16-byte journal identity of [§2.1](#2.1%20Layout) followed by the bytes it covers. A
 header verifies only if its magic matches, its checksum verifies under this
-journal's identity, and its segment id is the segment it was read from. So bytes
+journal's identity, and its segment id and own offset are the segment and offset
+it was read at. So bytes
 that merely look like a record — a client file that contains a copy of a journal
 segment, held in some record's payload, or a segment of another journal — never
 verify as one of this journal's records, which is what lets a scan resume past
-damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A header slot that is all zeros is not damage, and marks the end
-of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A header slot that is all zeros is not damage unless a later verifying record's
+synced-through offset lies past it, and marks the end of what was written only where no verifying header follows it ([§2.2](#2.2%20Segments), [§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate, delete, clone target
@@ -1010,11 +1018,20 @@ resynchronises past a bad record (below), for a header that verifies, to the end
 of the segment. If one does, the zeros are the slot of a write that failed and was
 never acknowledged ([§2.2](#2.2%20Segments)): they are stepped over, reported as neither damage
 nor a torn tail, and the records after them are attached. Only zeros with no
-verifying header anywhere after them are the end of what was written. A failed
-append into a recycled segment leaves the old life's bytes, not zeros, which
-this rule cannot step over, so it ends the segment instead ([§2.2](#2.2%20Segments)).
+verifying header anywhere after them are the end of what was written. Zeros
+below the synced-through offset a later verifying record names are neither:
+the offset never passes a failed slot ([§2.2](#2.2%20Segments)), so they are synced content the
+device lost, corruption by the rule above.
 
 > [!note] ponytail
+> The synced-through offset stops at a failed or unfinished slot, so in a
+> segment a failed append ended, nothing on disk proves the records synced
+> above that slot: at the next open, one the device later loses reads as a
+> failed write and one it later damages as a torn slot or tail, a loss nobody
+> reports. Bounded by that segment's life, since repack carries those records
+> forward once its window is resolved. Upgrade to a record naming the failed
+> slot, a format change, when failed appends are seen in the field.
+>
 > The forward search reads the whole unwritten remainder of each newest segment
 > at open, up to one segment cap per stream. Upgrade to bounding it by the
 > stream's largest in-flight reservation — a later record can start no further
@@ -1060,8 +1077,7 @@ record says nothing about its neighbours.
 Where boundaries are not known independently — a scanned segment, where the next
 record is found by trusting the current one's length — a scan that meets a record
 that does not verify **MUST** refuse that record and **resynchronise**: search
-forward, at each 8-byte boundary ([§2.3](#2.3%20Records)), for the next header that verifies —
-magic, segment id and a checksum seeded with this journal's identity — and
+forward, at each 8-byte boundary, for the next header that verifies ([§2.3](#2.3%20Records)), and
 resume there. A record found so is attached on its own checksums like any other.
 Bytes from the damaged record to the next verifying header are refused; the
 records after it are not. Discarding the rest of the segment instead would turn
@@ -1189,7 +1205,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.1](#3.1%20Rebuilding) unproven tail verified at open | Write A and B and sync neither; reopen with the seam keeping them readable as a dead process's cache would, and make the device-level read of B fail to verify; then drop every write the seam never saw synced and reopen again. Assert A and B read back both times with their original sequence numbers, A was verified in place and not re-appended, and B was re-appended. Repeat with the journal at its maximum: assert the open succeeds. Repeat with A and B on a segment whose sync failed, the process dying before the failed window is resolved; no later segment names it as predecessor ([§2.2](#2.2%20Segments)), so assert the same. A recovery that trusts what verified at the first open loses them at the second. |
 | [§2.2](#2.2%20Segments) failed directory sync is a failed window | Fill a segment so the stream creates the next; fail the directory sync at the seam; write A into the new segment and `Sync`. Assert the `Sync` either fails with A dropped as a loss or returns only after A is re-appended into a segment whose directory entry synced, and that after a crash dropping unsynced directory changes A reads back or its `Sync` failed. |
 | [Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile) directory flush on NTFS | On an NTFS volume, on real storage with a power cut, never at the seam alone ([RFC 1 §9.5](rfc-1-journal.md#9.5%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)): make a spare, recycle a segment by rename, and create the `format` file by its replace, each followed by the directory flush of Appendix A; cut power once each flush has returned. Assert every renamed or created name survives under its new name. A platform that does not honour the flush on a directory opened with backup semantics fails, and the journal then needs another way to make a rename durable there. |
-| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a zero slot is not the end | Start three concurrent appends to one stream; fail the middle one's write at the seam, leaving its slot zeros, and let the third complete and sync; crash and reopen. Assert the third reads back, nothing is reported as damage, the middle write's `WriteAt` returned an error, and no truncation fell below the third record. A scan that stops at the zero slot truncates the synced third write. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a zero slot is not the end | Start three concurrent appends to one stream, each of a different file; hold the middle one's write at the seam and let the third complete. If the third's `Sync` returns while the middle is held, write a fifth file into the same segment and let its `Sync` return too. Then fail the middle write, leaving its slot zeros; write a fourth; crash and reopen. Assert the middle write's `WriteAt` returned an error, no append reserved after the failure landed in that segment and the fourth went to a new one, nothing is reported as damage, and every write whose `Sync` returned reads back with no truncation below it; a third whose `Sync` waited was re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync). A scan that stops at the zero slot truncates the synced third write, and a synced-through offset that passes the held slot reports the zeros as damage. Separately, append and `Sync` A, then B, crash with the segment unsealed, zero A's slot, and reopen; assert A is reported as corruption. |
 
 #### Group B — wedging and unbounded resource use
 
@@ -1219,12 +1235,12 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.4](#3.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and only `Init` then creates a new journal. Open the original journal with `expect` zero; assert it fails naming its journal identity and installation ID, and creates nothing. A design that opens an empty directory as new, or adopts a journal its caller has no record of, fails. |
 | [§3.1](#3.1%20Rebuilding) spares are re-adopted | Open a journal so it makes its spares; crash once with every spare untaken, and once after a stream takes one but before its first sync; reopen each. Assert every record-less segment is a spare again, the headroom and repack reserve are whole without new allocation, nothing is reported as an orphan or as damage, and a later roll takes a spare. A design that age-gates them as orphans comes back with its reserves short. |
 | [§2.2](#2.2%20Segments) a spare is whole or absent | Crash at the seam at every step of making a spare — after create, allocation, zero-fill, sync, rename — dropping unsynced allocations and directory changes; reopen. Where one seam call both allocates and zero-fills, the two are one step and one crash point: every crash before the rename leaves only a `.spare.tmp` that open unlinks, so a crash between them could show nothing new. Assert every `<id>.seg` found is at its cap and fully allocated, no `.spare.tmp` survives, and a release appended into a re-adopted spare at a full filesystem succeeds. Then hold a spare after its sync and before its rename, let another operation's directory sync make its `.spare.tmp` entry durable, and crash; assert open unlinks the `.spare.tmp` and the next spare's id is above its id. A design that names the spare before it is whole re-adopts a short one. |
-| [§2.2](#2.2%20Segments) retired segments are recycled | Run sustained writes and repack until segments retire, with the pool below its target, at it, and moving across it between seal and retirement, and with some segments sealed early when idle; assert no segment sealed full is truncated, every segment sealed early is, each full-size segment is recycled exactly when the pool is below its target at its retirement and unlinked otherwise, and every recycled `<id>.seg` is at its cap and fully allocated with an id above every id the directory named. Assert the seam sees a rename, then a zeroed header slot and trailer slot per recycle, and no zero-fill; crash between the rename and the zeroing sync, and after it; assert each reopen re-adopts the segment as a spare, reports nothing as damage and attaches no old record, and that a segment whose sync or append failed is unlinked, never recycled. Hold spare-making at the seam; assert a write needing a roll is refused at once with `ErrNoSpace` naming `spare`, `spare_refusals` counts it, and a header-only record still appends. Then fail spare-making with `ENOSPC` with no full-size retired segment to hand; assert the roll is refused with `ENOSPC`, not `spare`. |
-| [§2.2](#2.2%20Segments) a recycled segment's old catalog is never read | Fill a segment so it is sealed full, retire and recycle it, let a stream take it, append and `Sync` records that stop short of the old seal marker; stop cleanly and reopen, then crash and reopen. Assert each reopen scans the segment, reads every new record, and attaches no record of the old life; that the old trailer and footer are not read, even with the trailer slot's zeroing dropped at the seam; and that the old bytes past the new records are cut off as a torn tail and not reported as damage. Fail an append into a recycled segment at the seam while a later append completes, after records were appended and synced there before the failure; assert the stream leaves the segment, the later record is re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), and a reopen reports no damage; assert the segment is not retired until repack has carried the pre-failure records forward, is then unlinked, never recycled, and those records read back after its retirement and again after a reopen. Repeat with a short write on a fresh segment at the seam. Crash with a later append into a recycled segment persisted and an earlier one not; assert the reopen attaches the later record, writes no seal marker there, and the stream continues in a new segment naming no predecessor. A design that zeroes only the header, or accepts a trailer without its seal marker, reads the old catalog and loses the synced records. |
+| [§2.2](#2.2%20Segments) retired segments are recycled | Run sustained writes and repack until segments retire, with the pool below its target, at it, and moving across it between seal and retirement, and with some segments sealed early when idle; assert no segment sealed full is truncated, every segment sealed early is, each full-size segment is recycled exactly when the pool is below its target at its retirement and unlinked otherwise, and every recycled `<id>.seg` is at its cap and fully allocated with an id above every id the directory named. Assert the seam sees a rename, then a zeroed header slot and trailer slot per recycle, and no zero-fill; crash between the rename and the zeroing sync, and after it; assert each reopen re-adopts the segment as a spare, reports nothing as damage and attaches no old record, and that a segment whose sync or append failed is unlinked, never recycled. Fail each step of a recycle in turn — the rename, the directory sync, the zeroing sync; assert the segment is never taken and is unlinked, and that a crash before that unlink's directory sync reopens holding no record again that a durable removal covered, and the segment back under its old name, a spare under its new one, or gone. Hold spare-making at the seam; assert a write needing a roll is refused at once with `ErrNoSpace` naming `spare`, `spare_refusals` counts it, and a header-only record still appends. Then fail spare-making with `ENOSPC` with no full-size retired segment to hand; assert the roll is refused with `ENOSPC`, not `spare`. |
+| [§2.2](#2.2%20Segments) a recycled segment's old catalog is never read | Fill a segment so it is sealed full, retire and recycle it, let a stream take it, append and `Sync` records that stop short of the old seal marker; stop cleanly and reopen, then crash and reopen. Assert each reopen scans the segment, reads every new record, and attaches no record of the old life; that the old trailer and footer are not read, even with the trailer slot's zeroing dropped at the seam; and that the old bytes past the new records are cut off as a torn tail and not reported as damage. Fail an append into a recycled segment at the seam while a later append completes, after records were appended and synced there before the failure; assert the stream leaves the segment, the later record is re-appended or failed by [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), and a reopen reports no damage; assert the segment is not retired until repack has carried the pre-failure records forward, is then unlinked, never recycled, and those records read back after its retirement and again after a reopen. Repeat with a short write on a fresh segment at the seam, and with a failed write there that leaves its slot zeros. Crash with a later append into a recycled segment persisted and an earlier one not; assert the reopen attaches the later record, writes no seal marker there, and the stream continues in a new segment naming no predecessor. A design that zeroes only the header, or accepts a trailer without its seal marker, reads the old catalog and loses the synced records. |
 | [§3.4](#3.4%20Unattachable%20files) interrupted `Init` | Crash after `Init` writes `format` and before the caller records its identity; reopen with `expect` zero. Assert the open fails naming the identity and this installation's ID, and that no segment is present; record the identity and open with it; assert the journal opens empty and serves. Repeat with a segment in the directory; assert it stays refused. |
 | [§2.5](#2.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
-| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. |
+| [§3.3](#3.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. In a sealed segment without its catalog, copy a verifying record over another record of the same size that has records after it; reopen; assert the copy is not attached there, `scan_resyncs` counts one, the segment is reported as damaged, and the original still reads back. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) torn tail cut off | Tear the last record of the newest segment; reopen; write and `Sync` A; crash again and reopen. Assert A reads back, `torn_tails` counted one, and the torn segment is sealed. A design that appends after the torn bytes loses A to the second scan. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and the damage is reported against the failed segment. |
 | [§2.3](#2.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
@@ -1269,15 +1285,33 @@ No flip may produce a read that returns bytes other than the ones written.
 
 - *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, each of a seal's syncs, repack copy, repack unlink, each directory sync, and those of `Open` itself: the sync of an unproven tail, the truncation of a torn tail and the seal after it, a re-append, and the zeroing of a re-adopted spare's slots — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
 - *torn writes*: the last unsynced write survives only in part, cut at every byte of the final record and of the trailer;
-- *reordered writes*: any subset of the unsynced writes survives, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
+- *reordered writes*: any subset of the unsynced writes survives, other than a write, or the tail of a torn write, lost at its call, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
 
 After each, the reopened journal is compared with the reference model of
-[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes; anything
+[RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes, except what a fault, not the crash, kept from durability. A fault acts on a seam call, so it excuses every record that call carried, the journal's own included — a repack copy, a re-append, a seal — and what was held only through them: a write lost at its own call and the bytes past the cut of a write torn silently, which no later sync makes durable; and a write whose covering syncs or directory syncs up to the crash were each lost or failed. Nothing else is excused. Anything
 else is held record by record, each record whole or not at all. A write split
 at a segment cap is several records ([§2.2](#2.2%20Segments)), so it can come back partly held,
 but only as a prefix of its pieces: a segment's seal marker is durable before
 its successor is taken, so a later piece is never held without every earlier
-one, and never a piece in part.
+one, and never a piece in part. Any excused fault — a lost write, sync,
+directory sync or seal sync — can break that: a later piece held without an
+earlier one, a bad record below a later record's synced-through offset, or a
+predecessor left unsealed. The check accepts these after an excused fault, and
+expects a report only where [§3.3](#3.3%20Torn%20and%20corrupt%20records) calls for one: corruption with its loss event
+([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), or damage to a dead copy where another copy verifies. It
+fails them after a crash with no fault.
+
+> decision: a fault on the journal's own seam call excuses what that call
+> carried, so a lost sync of a repack copy followed by the source's unlink
+> loses the only durable copy, and the check accepts the loss: no order the
+> journal keeps survives a device that reports a sync it did not do. The
+> ceiling is that the same excuse would hide an ordering bug — an unlink issued
+> before the copy's sync returned — whenever a fault lands on that copy. So the
+> check asserts the journal's own order at the seam, whatever the faults: a
+> source is unlinked only after the sync covering its copies returned
+> success ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), and a successor is taken only after its predecessor's seal
+> sync returned success. Overturned by a device the set must survive that loses an
+> acknowledged sync, which would need a copy kept until a second sync.
 
 **Edits from outside.** An operator, a backup tool or a stray script can change
 the directory while the journal is closed or open. Record checksums cover
@@ -1302,13 +1336,21 @@ directory is trusted with its content.
 
 ## 5. Open questions
 
-1. **Scrub.** Verification on read never checks content that is never read, so
-   long-held dirty content can decay unnoticed; whether a paced background pass,
-   taking the [§3.3](#3.3%20Torn%20and%20corrupt%20records) action on a failure, earns its disk bandwidth is undecided.
-   **(cluster)** Replication raises the stakes: a replica's copy is read mostly
-   at a takeover or a rejoin, so its decay is found exactly when it is the copy
-   that counts ([RFC 10 §9.1](rfc-10-journal-replication.md#9.1%20Why%20one%20replica%20suffices)). Mirrored disk arrays answer the same problem
-   with a paced patrol read.
+1. ~~**Scrub.**~~ Declined on one node: no background pass reads the journal to
+   verify it. No dirty record reaches the remote tier unverified: an offload
+   reads and verifies it whole before any byte of it is uploaded
+   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and damage to offloaded content is refetched ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). Content
+   held longer (through a remote outage, a store refusal, a stranded tag) is
+   no better served by a pass: one node holds no second copy to repair it from,
+   so a pass would only report the same loss sooner. Nor can a pass repair a
+   header-only record: nothing in memory keeps one once it is synced
+   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and a settled removal's marker is gone ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A lost
+   release only holds offloaded content again ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)); what a lost
+   truncate, deallocate or delete would bring back is recovery's to handle, not
+   a pass's. Overturned if one node ever keeps a second local copy to repair
+   from.
+   **(cluster)** Whether a replica, which can repair by rejoining, scrubs its
+   dirty content is [RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)'s.
 2. **Segment size** ([§2.2](#2.2%20Segments)). With descriptors bounded separately ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at
