@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs"
+	"github.com/marmos91/dittofs/pkg/vfs/vfstest"
 )
 
 // names is a serving filesystem over the fixture's share with its one shard
@@ -605,4 +606,57 @@ func TestReadDirWithoutTraverseListsNamesAlone(t *testing.T) {
 	if _, _, err := n.Lookup(ctx, bob, mine.Handle, []byte("got")); !errors.Is(err, vfs.ErrNotFound) {
 		t.Errorf("bob reached secret through a link: %v", err)
 	}
+}
+
+// A rename between two names of one file changes nothing, as POSIX has it:
+// both names stay, and an open made through the source keeps its name, so a
+// delete on close marked through it removes the source's name, not the
+// target's.
+func TestARenameBetweenTwoNamesOfOneFileLeavesItsOpensAlone(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	root := n.fs.Root
+	a := n.create(t, n.admin, root, "a", vfs.CreateRegular)
+	_, err := n.Link(ctx, n.admin, root, []byte("b"), a.Handle)
+	n.must(t, err)
+	smb := n.smbClient(t, "opener", n.fs.Admin.Principal)
+	o := n.open(t, smb, root, a.Handle, "a", entity.ReadData|entity.Delete)
+	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: root}, []byte("a"), root, []byte("b"), false); err != nil {
+		t.Fatalf("rename a to b, two names of one file: %v", err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if h, _, err := n.Lookup(ctx, n.admin, root, []byte(name)); err != nil || !bytes.Equal(h, a.Handle) {
+			t.Errorf("%s after the rename: %v, %v", name, h, err)
+		}
+	}
+	who := openstate.Caller{Client: smb.Client, Principal: n.fs.Admin.Principal, Protocol: smb.Protocol}
+	yes := true
+	n.must(t, n.tab.Opens().Update(ctx, who, o.ID, openstate.OpenUpdate{Delete: &yes}))
+	r, err := n.tab.Opens().Close(ctx, who, openstate.OpenRef{Kind: openstate.RefOpened, State: o.Ref, Open: o.ID}, openstate.Seqs{})
+	n.must(t, err)
+	if r.Unlink == nil || r.Unlink.Parent != fileOf(root) || string(r.Unlink.Name) != "a" {
+		t.Errorf("the delete on close after the rename unlinks %+v, want a in the root", r.Unlink)
+	}
+}
+
+// Every right a rename needs is decided before open state is asked: a
+// rename the sticky rule refuses on the file it would replace recalls no
+// lease on the file it would move.
+func TestARefusedRenameRecallsNoLease(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	bob := proven(n.user(t, "bob", "", n.share, entity.AccessReadWrite).Principal, inLab)
+	tmp, err := n.Create(ctx, n.admin, n.fs.Root, []byte("tmp"), vfs.CreateArgs{Kind: vfs.CreateDir, Attrs: entity.Attrs{}.WithMode(0o1777)})
+	n.must(t, err)
+	src, err := n.Create(ctx, bob, tmp.Handle, []byte("src"), vfs.CreateArgs{Kind: vfs.CreateRegular, Attrs: entity.Attrs{}.WithMode(0o666)})
+	n.must(t, err)
+	n.create(t, n.admin, tmp.Handle, "target", vfs.CreateRegular)
+	cb := &vfstest.RecordingCallbacks{}
+	holder, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
+	n.must(t, err)
+	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, src.File.ID, 1)
+	if _, err := n.Rename(ctx, bob, vfs.Target{H: tmp.Handle}, []byte("src"), tmp.Handle, []byte("target"), false); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob's rename onto admin's file in a sticky directory: %v, want ErrAccess", err)
+	}
+	none(t, "the lease holder", cb)
 }

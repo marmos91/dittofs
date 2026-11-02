@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 
 	"github.com/marmos91/dittofs/internal/vfs/lockorder"
@@ -292,9 +293,12 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 // share, replacing an entry there unless noReplace. It takes the steps of
 // both directories, the moved file and any file replaced, looks both names
 // up again under them, and starts over if either moved. Then it decides
-// delete through from and the add right on to, asks open state about to, the
-// moved file and the replaced one, renames, and moves the opens made
-// through the old name to the new.
+// delete through from and through to on the file replaced, answers a rename
+// between two names of one file as done without changing anything, decides
+// the add right on to, asks open state about to, the moved file and the
+// replaced one, renames, and moves the opens made through the old name to
+// the new. Every decision is made before open state is asked anything, so a
+// refused rename recalls nothing.
 func (fs *Filesystem) Rename(ctx context.Context, c vfs.Call, from vfs.Target, fromName []byte, to vfs.Handle, toName []byte, noReplace bool) (vfs.RenameResult, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -359,18 +363,27 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 	if err := fs.authz.Decide(ctx, a.caller, vfs.OpRename, srcH, from.H, fromName, entity.Delete); err != nil {
 		return vfs.RenameResult{}, false, storeErr(err)
 	}
+	replaces := dst != nil && dst.ID != src.ID
+	if replaces {
+		if err := fs.authz.Decide(ctx, a.caller, vfs.OpRename, entity.NewHandle(a.share.ID, dst.ID), to, toName, entity.Delete); err != nil {
+			return vfs.RenameResult{}, false, storeErr(err)
+		}
+	}
 	var r vfs.RenameResult
+	if dst != nil && !replaces && (fd != td || !bytes.Equal(a.share.Fold.Fold(fromName), a.share.Fold.Fold(toName))) {
+		// Two names of one file: the store changes nothing, as POSIX has it,
+		// so open state is neither asked nor told. A respelling of one entry
+		// goes on, as the store renames it.
+		r.From.After, r.To.After = fs.attrs(ctx, a, from.H), fs.attrs(ctx, a, to)
+		return r, false, nil
+	}
 	if err := fs.addable(ctx, a, c, vfs.OpRename, to, toName, addRight(src.Type), &r.To); err != nil {
 		return vfs.RenameResult{}, false, err
 	}
 	if err := fs.checks.CheckChange(ctx, a.who(), keyOf(src), from.Open, openstate.ChangeRename); err != nil {
 		return vfs.RenameResult{}, false, openErr(err)
 	}
-	replaces := dst != nil && dst.ID != src.ID
 	if replaces {
-		if err := fs.authz.Decide(ctx, a.caller, vfs.OpRename, entity.NewHandle(a.share.ID, dst.ID), to, toName, entity.Delete); err != nil {
-			return vfs.RenameResult{}, false, storeErr(err)
-		}
 		if err := fs.checks.CheckChange(ctx, a.who(), keyOf(*dst), nil, openstate.ChangeRemove|openstate.ChangeReplace); err != nil {
 			return vfs.RenameResult{}, false, openErr(err)
 		}
