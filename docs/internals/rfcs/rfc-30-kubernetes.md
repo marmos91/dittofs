@@ -4,6 +4,7 @@ title: "RFC 30 — deployment on Kubernetes"
 component: kubernetes operator
 status: draft
 depends_on:
+  - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-10-journal-replication]]"
   - "[[rfc-11-ownership]]"
   - "[[rfc-13-configuration]]"
