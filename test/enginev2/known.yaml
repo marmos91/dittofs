@@ -6,22 +6,22 @@
   fix: planned
   category: feature
   reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync and Since.'
-  issue: '#0'
+  issue: '#3589'
 - test: TestRFC8A_StableWriteLazyExistence
   status: fail
   fix: planned
   category: feature
   reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and Since.'
-  issue: '#0'
+  issue: '#3589'
 - test: TestRFC8A_Verifier
   status: fail
   fix: planned
   category: feature
   reason: 'Epic 6: start and stop; also the verifier (epic 4). Fails at the fixture until the journal has Init, Open and WriteAt.'
-  issue: '#0'
+  issue: '#3589'
 - test: TestRFC8C_DeclaredInterfaces
   status: fail
   fix: planned
   category: feature
   reason: 'Epic 8: the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
-  issue: '#0'
+  issue: '#3591'
