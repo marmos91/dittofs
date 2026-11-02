@@ -72,7 +72,9 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 // SMB client is connected by each authenticated session, which also
 // registers cb as that session's path, signed in as its caller: its breaks
 // go by those (Sink). A null or guest session, or a call naming no session,
-// never joins an SMB client, and is ErrInvalid.
+// never joins an SMB client, and is ErrInvalid. So is a zero info.Recovery:
+// the kind sticks for the record's life, and a client of none is never told
+// of a lost shard, so it holds the shard's grace open for the whole period.
 func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -80,7 +82,7 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	}
 	defer done()
 	smb := info.Protocol == entity.ProtocolSMB
-	if cb == nil || smb && (c.Identity.Proof < vfs.ProofSecret || c.Session == (vfs.SessionRef{})) {
+	if cb == nil || info.Recovery == 0 || smb && (c.Identity.Proof < vfs.ProofSecret || c.Session == (vfs.SessionRef{})) {
 		return 0, vfs.ErrInvalid
 	}
 	who, err := fs.who(ctx, c, 0)

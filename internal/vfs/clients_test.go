@@ -19,7 +19,7 @@ import (
 
 // smb is an SMB machine's client: its ClientGuid, under one Boot.
 func smb(guid string, boot byte) vfs.ClientInfo {
-	return vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte(guid), Boot: [8]byte{boot}}
+	return vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte(guid), Boot: [8]byte{boot}, Recovery: entity.RecoverReconnect}
 }
 
 // calls waits up to a second for cb to have seen n callbacks, and answers
@@ -269,7 +269,7 @@ func TestADestroyedClientsPathIsDropped(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
 	p, err := s.Propose(ctx, claimed(1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
@@ -349,13 +349,25 @@ func TestAGuestOrNullSessionNeverJoinsAClient(t *testing.T) {
 	}
 }
 
+// A Connect naming no recovery kind is ErrInvalid: the kind sticks for the
+// record's life, and a client of none is never told of a lost shard.
+func TestAConnectWithNoRecoveryKindIsRefused(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+	info := smb("alice-pc", 1)
+	info.Recovery = 0
+	if _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), info, &vfstest.RecordingCallbacks{}); !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("a Connect with no recovery kind answered %v, want ErrInvalid", err)
+	}
+}
+
 // A delegation's recall goes by its client's path.
 func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	s := newShares(t, nil, nil)
 	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
 	p, err := s.Propose(ctx, claimed(1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +394,7 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 // its path, and answers its ID.
 func laptop(t *testing.T, s *shares, cb vfs.Callbacks) vfs.ClientID {
 	t.Helper()
-	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
 	p, err := s.Propose(t.Context(), claimed(1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +491,7 @@ func TestALeaseExpiryTellsTheClientAndDropsItsPath(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
 	p, err := s.Propose(ctx, claimed(1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +544,7 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 	alice := s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	s.user(t, "mallory", "1001", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1}, Protect: true}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1}, Protect: true, Recovery: entity.RecoverStatus}
 
 	p, err := s.Propose(ctx, claimed(1000, inLab), info)
 	if err != nil {
@@ -564,7 +576,7 @@ func TestAClientsAdapterBytesComeBackFromItsRecord(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	for _, minor := range []byte{0, 1} {
-		info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1 + minor}, Adapter: []byte{1, minor}}
+		info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1 + minor}, Adapter: []byte{1, minor}, Recovery: entity.RecoverStatus}
 		p, err := s.Propose(ctx, claimed(1000, inLab), info)
 		if err != nil {
 			t.Fatal(err)
@@ -645,7 +657,7 @@ func TestAHostRestartConnectsItWithTheNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := nlmHost("build01", 2)
-	info.Recovery = 0
+	info.Recovery = entity.RecoverStatus
 	id, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +672,7 @@ func TestNoPathWithoutAnAdmittedConnect(t *testing.T) {
 	s := newShares(t, nil, nil)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	cb := &vfstest.RecordingCallbacks{}
-	if _, err := s.Connect(t.Context(), signedIn(mallory.Principal, 1), vfs.ClientInfo{Protocol: entity.ProtocolSMB}, cb); !errors.Is(err, vfs.ErrInvalid) {
+	if _, err := s.Connect(t.Context(), signedIn(mallory.Principal, 1), vfs.ClientInfo{Protocol: entity.ProtocolSMB, Recovery: entity.RecoverReconnect}, cb); !errors.Is(err, vfs.ErrInvalid) {
 		t.Fatalf("a Connect naming no client answered %v, want ErrInvalid", err)
 	}
 	if n := len(s.reg.byID) + len(s.reg.smb); n != 0 {
