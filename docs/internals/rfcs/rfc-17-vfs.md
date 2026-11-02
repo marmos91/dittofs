@@ -638,7 +638,7 @@ holds.
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
-| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
+| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `Maximal` (a backup-intent `MAXIMUM_ALLOWED` the adapter leaves unresolved, which the service resolves to `G` with the open's privilege, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
 | `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
@@ -1310,7 +1310,8 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
 refusals (`Sessioned` is set only on a `NotYours` for state created on a
 session, presented by a call with none, [§3.1](#3.1%20Operations), which
-RFC 14 returns as `ErrNotYoursSessioned`): `ClientInUse` (a client name another principal holds), `ClientBusy`
+RFC 14 returns as `ErrNotYoursSessioned`; since it wraps `ErrNotYours`, the
+mapper tests it first, or the mark is lost): `ClientInUse` (a client name another principal holds), `ClientBusy`
 (`Destroy` with state left), `RecordChanged` (a client record's adapter bytes
 changed since the adapter read them: reread and decide again), `AdapterVersion`
 (adapter bytes of a version this node cannot read), `StaleClient` (a client
@@ -1829,6 +1830,13 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 			return OpenResult{}, false, err
 		}
 		f, dir = cr.File, &cr.Dir
+	}
+	if r.Maximal { // RFC 19 §3.4: a backup-intent MAXIMUM_ALLOWED, resolved here to G with the open's privilege, unlike MaximalAccess below
+		g, _ := s.authz.Rights(ctx, c, f.Handle, r.Parent, allRights)
+		if g == 0 {
+			return OpenResult{}, false, ErrAccess
+		}
+		r.Access |= g // Check refuses a right named beside it that lies outside G
 	}
 	if err := s.authz.Check(ctx, c, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
