@@ -1105,6 +1105,28 @@ func TestKeepingRefusesABitPastTheWrites(t *testing.T) {
 	}
 }
 
+// TestKeepingRefusesMoreWritesThanItsMaskNames pins that Keeping refuses a
+// crash with more than 64 unsynced writes, which its 64-bit mask cannot
+// name, and changes nothing. It catches a Keeping that silently loses every
+// write from the 65th on, which a check enumerating subsets could not see.
+func TestKeepingRefusesMoreWritesThanItsMaskNames(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncDir(t, s)
+
+	for i := range 65 {
+		write(t, f, "a", int64(i))
+	}
+
+	if err := s.Crash(Keeping(^uint64(0))); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("Keeping every bit with 65 unsynced writes returned %v, want the refusal", err)
+	}
+
+	if got := s.Unsynced(); got != 65 {
+		t.Fatalf("Unsynced() = %d after a refused crash, want the 65 writes still pending", got)
+	}
+}
+
 // TestUnsyncedCountsNoSyncedOrDroppedWrite pins that Unsynced counts the
 // writes a crash may keep: not one a sync covered, and not one a fault
 // dropped.

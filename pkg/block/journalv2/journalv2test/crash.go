@@ -69,7 +69,8 @@ func TornEnd(name string, n int) CrashOption {
 // of the durable directory, as Unsynced counts them, and loses the others. A
 // dropped write is never among them. The kept writes land in the order they
 // were issued. Marks set by a Reorder fault are ignored: Keeping names the
-// subset itself. A bit set past the last unsynced write refuses the crash.
+// subset itself. A bit set past the last unsynced write refuses the crash,
+// and so do more than 64 unsynced writes, which mask has no bit for.
 //
 // decision: Reordered draws a subset from a seed, which cannot name the
 // subset it drew, so a check that must visit every subset of the unsynced
@@ -134,12 +135,16 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	keep := map[*change]bool{}
 	if cfg.keeping {
 		writes := unsyncedWrites(alive)
+		if len(writes) > 64 {
+			return fmt.Errorf("%w: Keeping names writes by the 64 bits of a mask, and %d writes are unsynced", ErrCrashRefused, len(writes))
+		}
+
 		if len(writes) < 64 && cfg.mask>>uint(len(writes)) != 0 {
 			return fmt.Errorf("%w: Keeping(%#x) names a write past the %d unsynced writes", ErrCrashRefused, cfg.mask, len(writes))
 		}
 
 		for i, c := range writes {
-			keep[c] = i < 64 && cfg.mask&(1<<i) != 0
+			keep[c] = cfg.mask&(1<<i) != 0
 		}
 	}
 
