@@ -1298,7 +1298,8 @@ client's back-channel node — is the service's, through RFC 17's `Peers`
 ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)). The table
 reaches outward only through its `Sink` (§11.1). The gateway and the adapters
 hold none of it; it is the concrete `*openstate.Table` in the service's `Deps`,
-and the only lock manager
+which the engine reaches only for a clone's hold, through the node's adapter
+([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)), and the only lock manager
 ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).
 
 **The open-state step has two levels.**
@@ -2631,7 +2632,11 @@ a new grace instance only when the change lost the shard's open state (§4.4).
 ## 11. Interface
 
 Signatures are indicative; the obligations above are normative. The filesystem
-service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller, and makes
+service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller but one: the
+engine calls `CloneOpen`, `CloneClose` and `Recovery.Served` for a clone, through
+its own `CloneHold`, which the node adapts to the table
+([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)), so the engine
+imports nothing of open state. The service makes
 every mutating call and every `Checks` call on a file under that file's
 admission lock ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary),
 [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order)); a call the service
@@ -2723,9 +2728,9 @@ receiver's clock.
 
 **A close the table makes itself reaches the service.** A `Timeout` that
 passes, grace's end (§9.2), an expiry or revoke (§4.3), an app instance's
-replacement (§8.1) and a `Disconnect` — the session's volatile opens at its
-last channel's end, every open of it at a `Logoff` (§2.1) — close opens with no
-`Close` call to answer. Each such close releases the open's locks and serves
+replacement (§8.1), a `Disconnect` — the session's volatile opens at its
+last channel's end, every open of it at a `Logoff` (§2.1) — and a clone's
+`CloneClose` (§9.2) close opens with no `Close` call to answer. Each such close releases the open's locks and serves
 the file's waiters as a `Close` does. When one leaves an orphan or a pending
 unlink, the table calls `Closed` once,
 after the step commits, and the service runs it as it runs a `Close`'s
@@ -2832,9 +2837,10 @@ the suite runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20
 The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which
 `node.New` builds it into, calls `Start(ctx, sink, order)` with the built
 `*vfs.Filesystem` as the `Sink` and its admission lock as `order`, after the store
-and before the service's `Start`
+and before the engine's and the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
-`Stop`, before the store's. `Start` starts the timer and nothing
+`Stop` and the engine's `Close`, which joins the clone batches that call
+`CloneClose`, before the store's. `Start` starts the timer and nothing
 else; the service's `Start` then calls `Recovery.ServeShard` for each shard
 this node serves, passing the shard's `GraceInstance`, which the node's start
 transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
@@ -2943,7 +2949,7 @@ type Opens interface {
 	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry; a nil toName and zero toDir, after an unlink or a rename over f, clears them
 	Entry(ctx, who Caller, f FileKey, o OpenRef) (dir FileID, name []byte, err error) // the Via and Name of the open o names, a lock state's open's for a Locked one, as renames have moved them; zero and nil for one made by handle, one whose entry was removed, or a reference naming no open; changes nothing. RFC 17 §3.5 reports a change to f's attributes or data there
 	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: holds in the table the source open of no client that the clone's first phase wrote in its transaction; ErrBadState when none is stored
-	CloneClose(ctx, o OpenID) (CloseResult, error)                          // §9.2: the clone's last batch, whose transaction deleted the hold
+	CloneClose(ctx, o OpenID) error                                         // §9.2: the clone's last batch, whose transaction deleted the hold; an orphan or pending unlink it leaves reaches Sink.Closed, as a Disconnect's do
 	Channel(ctx, who Caller, o OpenID, seq uint16, replay bool) (stale bool, done func(), err error) // §8.1: admits a request at channel sequence seq and counts it in flight; done uncounts it whenever it leaves, its open disconnected or not, never below zero
 }
 
@@ -2969,6 +2975,7 @@ type Watches interface {
 
 type Recovery interface {
 	ServeShard(ctx, share ShareID, s ShardID, instance uint64) error        // begins serving s of share: installs its durable opens, then grace unless the table already holds s under instance (§4.4); arms grace's end (§9.2)
+	Served(ctx, s ShardID) error                                            // returns once ServeShard(s) has installed s's durable opens, or at ctx's end; changes nothing. A rebuilt clone's batches wait on it (RFC 8 §2.5 step 4)
 	ReleaseShard(ctx, s ShardID) error                                      // stops serving s and drops its entries
 	ReclaimComplete(ctx, who Caller, shown []GraceRef) error                // ends the client's reclaim only in the instances it was shown (§4.4)
 	TestState(ctx, who Caller, s []StateRef) []error                        // nothing changed

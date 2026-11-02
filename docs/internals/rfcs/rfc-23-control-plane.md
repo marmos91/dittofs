@@ -364,7 +364,7 @@ identity, to check a password and an account
 logic: in a cluster, the one thing `New` does differently is build `vfs.Serve`
 and the gateway.
 
-![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 the engine and 5 GC, its sibling, which is never passed into it; 6 open state and 7 identity; 8 the vfs filesystem; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the management API calls identity for sign-in only; the adapters call the vfs service alone, sign-in included; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local filesystem; the filesystem calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer and the metadata views; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
+![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 open state; 5 the engine and 6 GC, its sibling, which is never passed into it; 7 identity; 8 the vfs filesystem; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the management API calls identity for sign-in only; the adapters call the vfs service alone, sign-in included; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local filesystem; the filesystem calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer, the metadata views and, through the root's adapter, open state for a clone's hold; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
 
 **What `New` builds, in order.** Each row is built from its own `Deps`; the
 Calls column is the call graph once it is built. The node owns every row and
@@ -376,9 +376,9 @@ store configuration, and the last storage binding to close one releases it.
 | 1 | metadata store ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)) | the KV, the host's bootstrap | the KV | opened by `New` / 9 |
 | 2 | remote stores ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), one client per store configuration | the store configuration, its `Secret` | the remote service | 5 / 8 |
 | 3 | syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores | the remote stores | 5 / 8 |
-| 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views; open state's `Opens` view, so open state is built before it, and `Closed`, a closure over the filesystem field set before any `Start` | the journals, the syncer, the block-metadata views | 5 / 8 |
-| 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Claim` and `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | `Claim` before the engine at 5, then 5 / drains at 5, closes at 7 |
-| 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the filesystem implements | the metadata store, the `Sink` | 5 / 7 |
+| 4 | open state ([RFC 14](rfc-14-open-state.md)) | `Records`, the metadata store's `OpenRecords` view; at `Start`, its `Sink`, which the filesystem implements | the metadata store, the `Sink` | 5 / 8, after the engine |
+| 5 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views; `Holds`, an adapter over open state's table (RFC 8's `CloneHold`), so open state is built before it | the journals, the syncer, the block-metadata views, open state through `Holds` | 5 / 8 |
+| 6 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Claim` and `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | `Claim` before the engine at 5, then 5 / drains at 5, closes at 7 |
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
 | 8 | `*vfs.Filesystem`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
 | 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the filesystem, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the filesystem; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
@@ -396,11 +396,11 @@ func New(cfg Config) (*Node, error) {
 	n.meta   = metadata.Open(context.Background(), cfg.KV, metadata.Options{...}) // RFC 16 §3.2; the one thing New opens; everyone takes a view of it; closed last
 	n.remote = remote.NewPool(remote.Deps{...})                         // one client per store configuration, ref-counted
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
-	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which takes its Opens view; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
+	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which holds it through an adapter; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.engine = engine.New(engine.Deps{
 		Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
-		Opens: n.open.Opens(), Closed: func(f FileID, r openstate.CloseResult) { n.fs.Closed(f, r) }, ...}) // n.fs is set below, before any Start
+		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, so the engine imports no open state
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
@@ -557,11 +557,12 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    > accept or a mismatch. Key the rerun on a per-namespace change stamp when a
    > fleet's creates make those reads show in its request costs.
 
-   None of these fails the start. Then the engine, in
+   None of these fails the start. Then open state, handed the built filesystem
+   as its `Sink` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of attached shares in
-   one call; GC, with each namespace `Claim` answered held, and no other; open state for the shards
-   this node acquires, handed the built filesystem as its `Sink`
-   ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
+   one call, whose rebuilt clones wait to run until step 6 serves their
+   source's shard; GC, with each namespace `Claim` answered held, and no other;
+   identity and the event sink. Only a share
    created while the node serves is attached alone, decided by its namespace's
    answer the same way: the node runs `Claim` first unless the namespace has
    answered held since the claim generation last moved, so a share created into
@@ -606,10 +607,11 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
    and the gateway stop, then `vfs.Serve`.
 5. GC drains ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)).
 6. `*vfs.Filesystem`'s `Drain`, then its `Stop` ([RFC 17](rfc-17-vfs.md)).
-7. The event sink, identity and open state close, and then GC.
-8. The engine stops in RFC 8 §2.5's reverse order, which joins and closes every
-   storage binding, its journals and its flows; then the syncer and the remote
-   stores close.
+7. The event sink and identity close, and then GC.
+8. The engine stops in RFC 8 §2.5's reverse order, which joins its clone
+   batches and closes every storage binding, its journals and its flows; then
+   open state closes, after every `CloneClose` those batches sent; then the
+   syncer and the remote stores close.
 9. The metadata store closes last.
 
 The API outlives the adapters on purpose: an operator watching a drain reads its

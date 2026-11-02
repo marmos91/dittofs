@@ -171,7 +171,7 @@ namespace, checked against open state, charged to a quota, staged in the journal
 and later recorded as existence. Something has to put those steps in order. This
 document names that something and fixes where it stands:
 
-![The layers: NFS and SMB adapters speak wire only and call one vfs.Service, which a gateway routes to the file's primary, whose filesystem alone calls the metadata store (RFC 16), the content engine (RFC 8), open state (RFC 14) and identity (RFC 18), calls adapters back only through the Callbacks interface they implement, and emits quota and access events to a sink it never waits on](img/rfc17-layers.svg)
+![The layers: NFS and SMB adapters speak wire only and call one vfs.Service, which a gateway routes to the file's primary, whose filesystem alone calls the metadata store (RFC 16), the content engine (RFC 8), open state (RFC 14) and identity (RFC 18), the engine reaching open state only for a clone's hold, through its own CloneHold the node adapts, calls adapters back only through the Callbacks interface they implement, and emits quota and access events to a sink it never waits on](img/rfc17-layers.svg)
 
 [RFC 0 §1.3](rfc-0-data-lifecycle.md#1.3%20The%20layers) draws the same picture with the roles marked.
 
@@ -221,7 +221,7 @@ sends:
 | `vfs.Serve` | the checks every call to a primary passes, forwarded or local | fences each call (the sender's node epoch, the shard epoch, and a hop count of zero), answers a retry from the dedup table by request ID, and otherwise calls the filesystem. It receives from `Transport`, and returns the same checks as a **checked `Service`** for the gateway's local path | forwards: it holds the `*Filesystem`, so it cannot reach the gateway |
 | `vfs.Router`, `vfs.Transport`, `vfs.Peers` | interfaces declared in `vfs` and implemented outside it, so `vfs` imports no network code | the router places a handle from RFC 11's shard records ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)) and fences an arriving envelope; the transport carries a call over a node channel ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)); `Peers`, implemented by the transport, carries the filesystem's own calls to another primary (§2.3) | — |
 
-![The separation: on a single node the adapters call vfs.Service, which is the *vfs.Filesystem, and the filesystem alone calls the metadata store, the engine, open state and identity. On node A, a gateway node in a cluster, the adapters call the same vfs.Service, which is a *vfs.Gateway that routes each call through the Router; a call whose primary is node A goes to node A's own filesystem through the checked vfs.Service that Serve returns, which fences and dedups it as it does a forwarded call, and any other call goes with its route envelope over the Transport to vfs.Serve on node B, the file's primary, which fences on node epoch, shard epoch and hop 0, dedups by request ID and calls node B's filesystem, which decides the call. Node B is itself the gateway node for its own clients. The gateway holds a vfs.Service, never a *vfs.Filesystem](img/rfc17-gateway.svg)
+![The separation: on a single node the adapters call vfs.Service, which is the *vfs.Filesystem, and the filesystem alone calls the metadata store, the engine, open state and identity, but for the engine's clone hold on open state, through its own CloneHold the node adapts. On node A, a gateway node in a cluster, the adapters call the same vfs.Service, which is a *vfs.Gateway that routes each call through the Router; a call whose primary is node A goes to node A's own filesystem through the checked vfs.Service that Serve returns, which fences and dedups it as it does a forwarded call, and any other call goes with its route envelope over the Transport to vfs.Serve on node B, the file's primary, which fences on node epoch, shard epoch and hop 0, dedups by request ID and calls node B's filesystem, which decides the call. Node B is itself the gateway node for its own clients. The gateway holds a vfs.Service, never a *vfs.Filesystem](img/rfc17-gateway.svg)
 
 **Adapters sign in, the gateway forwards, the filesystem decides.** An adapter
 authenticates its client through the service's own `SignIn`, which the filesystem
@@ -519,19 +519,19 @@ reverse. No piece closes anything it was handed.
 
 | # | Piece | Built by | Calls | Start | Stop |
 | --- | --- | --- | --- | --- | --- |
-| 1 | metadata store, engine, GC, open state, identity | their RFCs, in [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s order | engine: the journal, the syncer, the block-metadata views; GC: `Blocks`, `Remote`, the syncer, `Keys` | before the filesystem | after it; GC drains before the filesystem stops |
+| 1 | metadata store, open state, engine, GC, identity | their RFCs, in [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s order | engine: the journal, the syncer, the block-metadata views, open state through the root's adapter for a clone's hold; GC: `Blocks`, `Remote`, the syncer, `Keys` | before the filesystem | after it; GC drains before the filesystem stops |
 | 2 | `*vfs.Filesystem` | `vfs.New(Deps)` | identity, open state, the metadata views, the engine, the event sink | `Start`, below | `Drain`, then `Stop` |
 | 3 | `vfs.Serve` **(cluster)** | `vfs.Serve` | `Router.Fence`, the filesystem | registers on the transport | after the node has handed over the shards it is primary of; stops receiving and joins the calls running |
 | 4 | `*vfs.Gateway` **(cluster)** | `vfs.NewGateway(GatewayDeps)` | the checked `Service`, `Router`, `Transport` | nothing to start | refuses new calls with `ErrUnavailable` and joins the forwarded ones |
 | 5 | adapters | [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) | `vfs.Service` | last: after the first reconcile has opened the shares and, in a cluster, a node epoch exists | first |
 
-So the start order is: the metadata store, the engine, GC, open state and
+So the start order is: the metadata store, open state, the engine, GC and
 identity, the filesystem, `Serve`, the gateway, the first reconcile, the adapters.
 No adapter listens before then, so no call meets a filesystem with no shares.
 The stop order is: the adapters, the gateway, **(cluster)** the handover of
 every shard this node is primary of
 ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)),
-`Serve`, the GC drain, the filesystem, open state and identity, the engine, the
+`Serve`, the GC drain, the filesystem, identity, the engine, open state, the
 metadata store. The handover runs while `Serve` still receives, so other nodes'
 calls to those shards are answered by this node until the new primary serves,
 never refused while they wait for a failover.
@@ -581,8 +581,12 @@ them, and a mutation cancelled there may still have applied, as RFC 20 §3.1
 says of an abandoned request. Draining revokes nothing: open state is left to
 the next start's grace, and a recall in flight is neither forced nor revoked.
 
-**Stop.** Stops the timers. It closes nothing it was handed: the node stops
-open state (`Table.Stop`), then closes the engine and the store, after it.
+**Stop.** Stops the timers. It closes nothing it was handed: the node closes
+the engine, then stops open state (`Table.Stop`), then closes the store, after
+it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
+`CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
+dropped: the release it would run is a pending release, written with the
+unlink, which the next start's recovery runs (§5.3).
 
 **The filesystem keeps no event queue.** It hands each event to the sink as it
 builds it, and the sink's contract is that it never blocks (§3.3): the sink
@@ -1914,7 +1918,7 @@ left with no entry and no open holds it; when open state's `Close` reports the
 last close of a file with no entry, having deleted its durable open record
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)),
 or reports through `Sink.Closed` a close the table made itself — a timeout,
-grace's end, an expiry or revoke, a `Disconnect` ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
+grace's end, an expiry or revoke, a `Disconnect`, a clone's `CloneClose` ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
 when a release commits that wrote the pending releases of its file's named
 streams ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)),
 for each of those streams; and in recovery, for every pending release, when the
@@ -2472,7 +2476,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
 | V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
-| V32 | The service imports no adapter and no network code; the gateway and `Serve` call no store, engine, open state or identity and hold the filesystem only as a `vfs.Service`; `Authorize` and `Granted` are called only from `authz`. | §8's architecture check, which must report each of its seeded violations. |
+| V32 | The service imports no adapter and no network code; the gateway and `Serve` call no store, engine, open state or identity and hold the filesystem only as a `vfs.Service`; the engine imports no open state, reaching it only through its `CloneHold`; `Authorize` and `Granted` are called only from `authz`. | §8's architecture check, which must report each of its seeded violations. |
 | V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |

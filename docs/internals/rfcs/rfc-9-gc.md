@@ -469,7 +469,7 @@ The engine is not a dependency: GC reaches neither its storage bindings nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
 
 **Start.** The node starts GC in build order: after the metadata store and
-the engine, whose syncer GC's flows need, and before open state, identity and
+the engine, whose syncer GC's flows need, and before identity and
 `*vfs.Filesystem` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)). `New`
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`

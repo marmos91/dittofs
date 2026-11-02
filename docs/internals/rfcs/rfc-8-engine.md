@@ -376,8 +376,7 @@ interface:
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
 | [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for a device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseIncarnations`, in the start transaction or at attach (step 2) |
-| [RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) | open state's `Opens` | `CloneOpen`, taking over the source record a clone's phase 1 wrote, before phase 2, and `CloneClose` once the clone is done ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) |
-| [RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring) | open state's `Sink.Closed`, as the func `Closed` | called with the orphan `CloneClose` leaves, whose release only the filesystem service can run |
+| this RFC, `CloneHold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), which the root adapts from open state ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)) | a clone's hold on its source | `Hold`, open state's `CloneOpen`, taking over the source record a clone's phase 1 wrote, before phase 2; `Release`, its `CloneClose`, once the clone is done, whose orphan open state reports through its own `Sink.Closed`; `Served`, its `Recovery.Served`, which a rebuilt clone waits on before its batches run ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
 
 A call to a method no row names is a build failure, not a review comment, and a
@@ -665,7 +664,10 @@ attached, and `Stats` names it and its device.
    source extent registration and open reference are rebuilt before either
    file is served, at the source's side from the source's clone-kind open
    record, which names the destination and the clone's version, and at the
-   destination's from the clone spec its `Removal` record carries. A clone whose
+   destination's from the clone spec its `Removal` record carries. A rebuilt
+   clone's batches run only once `Holds.Served` returns for the source's shard,
+   so its last batch's `Release` finds the hold open state's `ServeShard`
+   installed; a new primary's rebuild waits the same way. A clone whose
    phase 1 had not committed keeps the copies the journal already holds above
    *v* in its destination extent, and re-makes, and reserves for, only the
    source runs none of them covers; a reservation refused for space does not
@@ -815,12 +817,13 @@ way at its freeze: the runs holding its keys are joined, and its keys are posted
 nowhere until the batch is aborted.
 
 **Stop.** `Close(ctx)` runs these steps in one call, after `*vfs.Filesystem` has
-stopped and while the metadata store is still open, so the last group commit
-can land.
+stopped and while open state and the metadata store are still open, so the last
+group commit can land and a clone batch's `Holds.Release` finds the table
+running.
 
 1. Refuse every call with `ErrUnavailable`.
 2. Stop the work queue: the scheduler's `Stop` refuses new dispatch, cancels the
-   passes and batches in flight and joins them. Then commit every file's pending
+   passes and batches in flight, clone batches included, and joins them. Then commit every file's pending
    existence in a last group commit per journal, within the stop bound, so a
    clean stop leaves no append or hole fill for recovery to replay.
 3. Cancel the other background loops — the age tick, the rescan, eviction and
@@ -858,8 +861,7 @@ type Deps struct {
 	Content   Content   // RFC 6 §10
 	Lifecycle Lifecycle // journal identity, version limits, incarnations (§2.5 steps 1–2, §2.7)
 	Refs      Refs      // RFC 16 §3.1: Inspect.Refs, for the reseed only
-	Opens     Opens     // RFC 14 §9.2: CloneOpen and CloneClose, a clone's hold on its source (§9.1)
-	Closed    func(f FileID, r openstate.CloseResult) // open state's Sink.Closed: the orphan CloneClose leaves, whose release only the filesystem service runs
+	Holds     CloneHold // a clone's hold on its source (§9.1); the root adapts open state to it
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
 	Watchdog  *health.Watchdog // RFC 25 §3.5: each journal's scheduler takes Loop("engine.sched." + journal)
@@ -867,16 +869,37 @@ type Deps struct {
 	Tracer    trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger    *slog.Logger
 }
+
+// CloneHold is the part of open state a clone calls, in the engine's own
+// types, so the engine imports no open state (RFC 0 I6); the root adapts
+// *openstate.Table to it (RFC 23 §2.1).
+type CloneHold interface {
+	Hold(ctx context.Context, src CloneSrc) (OpenID, error) // RFC 14 CloneOpen: takes over the source open phase 1 wrote
+	Release(ctx context.Context, o OpenID) error             // RFC 14 CloneClose, after the last batch; an orphan it leaves reaches the filesystem through open state's Sink.Closed
+	Served(ctx context.Context, s ShardID) error             // RFC 14 Recovery.Served: returns once open state serves s, or at ctx's end
+}
+
+// CloneSrc names a clone's source open: RFC 14's FileKey and CloneSource.
+type CloneSrc struct {
+	Share ShareID
+	Shard ShardID
+	File  FileID
+	Dst   FileID  // the destination, whose Removal record holds the clone spec
+	AsOf  Version // the version the source was read at
+}
 ```
 
 **Build, start and stop.** `node.New` builds, in order: the metadata store; the
-remote block stores, ref-counted per configuration; the syncer; the engine with
+remote block stores, ref-counted per configuration; the syncer; open state, whose
+table the engine's `Holds` adapts; the engine with
 `New(Deps)`, which opens nothing and is handed `Deps.Open`, not a journal; GC, a sibling of the engine that is
-never passed into it; open state; identity; `*vfs.Filesystem`; in a cluster,
+never passed into it; identity; `*vfs.Filesystem`; in a cluster,
 `vfs.Serve` and the gateway; the adapters. `Node.Start`
 ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)) starts them in that order — the engine's `Start` opening the
 journals and attaching the shares the records say this node serves — and
-`Node.Stop` stops them in reverse, with GC drained before `*vfs.Filesystem` stops.
+`Node.Stop` stops them in reverse, with GC drained before `*vfs.Filesystem` stops,
+so the engine joins its clone batches, each `Release` included, before open
+state stops.
 The engine closes only the journals, handles and flows it opened.
 
 **The carver is not a component.** It holds no state ([RFC 2](rfc-2-carver.md)): the offload
@@ -890,7 +913,7 @@ primary of the file's shard.
 
 | Component | Composed of | Depends on | Calls | Injected | Built by → owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
-| engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, `Opens`, `Closed`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Apply` → `Start(shares)` → serving → `Close`, after the filesystem service and before the syncer and the store |
+| engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, `Holds`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Apply` → `Start(shares)` → serving → `Close`, after the filesystem service and before open state, the syncer and the store |
 | share table | the storage bindings, copy-on-write ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | — | — | internal | engine → engine | swapped by `Bind` and `Drop` |
 | storage binding | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `Bind` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
 | journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor and identity → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
@@ -2419,9 +2442,10 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    release stays for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The file has no name and no
    open, so nothing a client holds is refused that a successful release would
    have served. A release reads and writes no open state in the engine; the one
-   open the engine holds is a clone's, which it takes through `Deps.Opens` and
-   closes once the clone is done, handing the orphan that close leaves to
-   `Deps.Closed` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
+   open the engine holds is a clone's, which it takes through `Deps.Holds` and
+   releases once the clone is done, and open state reports the orphan that
+   release leaves to the filesystem service through its own `Sink.Closed`
+   ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 2. The journal removes the extent, and assigns the removal its version *v*
    ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A release is `Delete`, a removal of `[0, ∞)`.
 3. Phase 1: one transaction commits pending existence, the existence change and
@@ -3190,8 +3214,8 @@ type Overlay struct {
 	Version      Version
 }
 
-// FileID, ShareID, ShardID, NamespaceID, Version, Verifier, TimeMask, Span:
-// aliases of the metadata types. ShareTag, JournalID: RFC 1's.
+// FileID, ShareID, ShardID, NamespaceID, OpenID, Version, Verifier, TimeMask,
+// Span: aliases of the metadata types. ShareTag, JournalID: RFC 1's.
 // StoreID: RFC 3's. Errors: the engine declares none (below).
 ```
 
