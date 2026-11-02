@@ -499,8 +499,9 @@ instance part as it is, so `Accepted` alone never makes `Claim` answer held; run
 [§3.7](#3.7%20Trash)'s settle through `Blocks.Settle`; and ends by running `Claim`, as
 [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says. `Settle` reads the nonce record itself: its last
 transaction, only while `accepted` is still set, sets the record's instance part
-to the current one, records the accepted nonce as written, and clears `accepted`
-and the intended nonce. Each step is idempotent, so a resumed operation repeats
+to the current one, records the accepted nonce as written, clears `accepted`,
+`mismatch` and the intended nonce, and sets `claimed`, so an accepted namespace
+whose create never set it answers held, not pending. Each step is idempotent, so a resumed operation repeats
 it harmlessly, and a resumed final step that finds a `Recheck`'s newer nonce
 still answers held.
 
@@ -1741,7 +1742,11 @@ is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
 ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
 nonce this installation recorded as written or intended under its current
 instance part ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)); on a mismatch it
-writes nothing, stops writing the namespace and issues no delete. It **MUST**
+writes nothing, issues no delete, and records the mismatch through
+`RecordNonce` (`Mismatch`), which raises the installation's claim generation
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)): every node then runs the namespace's `Claim` again, which
+answers copy while `Mismatch` is set, so the node removes the namespace from GC
+and rebinds its shares `Fenced` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) step 5). It **MUST**
 then record the nonce it is about to write as *intended*, through `RecordNonce`, durably in the
 metadata store ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), before the put, and as *written* after it, so a
 crash between the two still recognises its own nonce. Without the read first, a
@@ -1896,7 +1901,21 @@ The check runs in the transaction that removes the last thing it reads:
   namespace's folder re-runs step 2 here, not at the next restart.
 
 A namespace any of them still names stays as it is until the one that removes
-the last runs the check. Then:
+the last runs the check. A namespace whose `Claim` does not answer held when the
+check passes — pending, foreign or copy — is not in GC, and its remote objects
+are not this installation's to delete: the drain deletes its `NS‖ns` and block
+records in batched transactions and issues no remote delete, then deletes the
+drain mark. An unread namespace waits until `Claim` reads it.
+
+> decision: a drain of a namespace this installation does not hold forgets it
+> rather than collecting it. A pending namespace put nothing but, at most, its
+> own claim; a foreign or copy namespace's objects belong to whichever
+> installation holds the claim, and deleting them would destroy its data. The
+> cost is objects left behind when the holder is gone for good. Overturned if an
+> operator needs to reclaim them, and then through `:accept-copy` first, which
+> makes the namespace held and its drain an ordinary one.
+
+Then, for a held namespace:
 
 1. GC runs as always: every ref is gone, so every count reaches zero, every
    block retires and the deleter deletes it after its verification
@@ -2027,7 +2046,7 @@ type ClaimState uint8
 
 const (
 	ClaimHeld    ClaimState = iota + 1 // names this installation with a nonce recorded under its current instance part
-	ClaimCopy                          // names this installation with a nonce not recorded under its current instance part
+	ClaimCopy                          // names this installation with a nonce not recorded under its current instance part, or Mismatch is set
 	ClaimForeign                       // names another installation, is released, or is missing though this installation wrote it
 	ClaimPending                       // the namespace's create has not yet recorded its first claim written
 )
@@ -2093,8 +2112,8 @@ type namespaceBlocks interface {
 	// Settle moves every retired block whose not_before is at or before store time
 	// to deleted, in K-bounded transactions through BR, without §3.5's verification
 	// (§3.7). It reads the nonce record itself: its last transaction, only while
-	// Accepted is set, records Accepted as Written under the current instance part
-	// and clears Accepted.
+	// Accepted is set, records Accepted as Written under the current instance part,
+	// clears Accepted and Mismatch, sets Claimed, and raises the claim generation.
 	Settle(ctx context.Context) error
 }
 
@@ -2122,7 +2141,13 @@ type NonceRecord struct {
 	Intended [16]byte // recorded before a claim put
 	Written  [16]byte // recorded after it; Settle sets it from Accepted, Instance to the current part, and zeroes Intended
 	Accepted [16]byte // set by AcceptCopy without touching Instance, cleared by Settle; zero when none
-	Claimed  bool     // the namespace's first claim is recorded written
+	Mismatch [16]byte // the nonce a Recheck found and did not record; Claim answers copy while set, Settle clears it
+	Claimed  bool     // the namespace's first claim is recorded written; Settle sets it
+}
+
+// A NonceRecord write that can change a Claim answer — Mismatch, Settle, the
+// first claim's Claimed, an import — raises the installation's claim generation
+// in the same transaction (RFC 16 §4.2). A Recheck's routine rewrite does not.
 }
 
 // Remote is the part of RFC 4 §4.1's Store GC calls; deletes and listing go direct (§3.1).

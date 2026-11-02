@@ -476,7 +476,7 @@ type Config struct {
 type Records interface {
 	RegisterNode(ctx context.Context, n NodeRecord) error                      // §2.2 step 3: roles and version ranges, refused in the same transaction if an active version lies outside them (RFC 13 §5.5)
 	List(ctx context.Context, kind Kind, after string) iter.Seq2[Record, error] // paged (RFC 16 §3.1)
-	Counters(ctx context.Context) (Counters, error)                            // settings, share list, principals
+	Counters(ctx context.Context) (Counters, error)                            // settings, share list, principals, claim generation
 	PutNodeStatus(ctx context.Context, s NodeStatus) error                     // §2.4
 }
 
@@ -538,13 +538,21 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
 
    Every answer but held raises the health condition `namespace_unclaimed`
    ([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)), naming the namespace and the answer. The node runs
-   `Claim` again for each such namespace when its nonce record changes — an
-   `:accept-copy`'s settle, a create's claim step and an import each write it —
-   reading those records at each once-a-second counter read (§2.3); an unread
-   namespace it retries at that read, backing off to once a minute. Once it answers
-   held, the node attaches the namespace's unattached shares, rebinds its
-   `Fenced` ones `Serving` through the engine's `Bind`
-   ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), and adds the namespace to GC.
+   `Claim` again for every namespace it serves or holds unattached when the
+   installation's **claim generation** moves — an `:accept-copy`'s settle, a
+   create's claim step, an import and a `Recheck` that found a mismatch each
+   raise it ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) — reading it with the other counters once a
+   second (§2.3); an unread namespace it retries at that read, backing off to
+   once a minute. Once it answers held, the node attaches the namespace's
+   unattached shares, rebinds its `Fenced` ones to the state their share record
+   holds, `Serving` or quiesced, through the engine's `Bind`
+   ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), and adds the namespace to GC. A namespace that answered
+   held and now answers copy is removed from GC, and its shares rebind `Fenced`.
+
+   > ponytail: a moved claim generation reruns `Claim` for every namespace the
+   > node has, one remote read each. It moves only on a create, an import, an
+   > accept or a mismatch. Key the rerun on a per-namespace change stamp when a
+   > fleet's creates make those reads show in its request costs.
 
    None of these fails the start. Then the engine, in
    [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s order, handed the whole set of attached shares in
@@ -553,8 +561,8 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)); identity and the event sink. Only a share
    created while the node serves is attached alone, decided by its namespace's
    answer the same way: the node runs `Claim` first unless the namespace has
-   answered held in this process, so a share created into a `Fenced` namespace
-   is bound `Fenced` too.
+   answered held since the claim generation last moved, so a share created into
+   a `Fenced` namespace is bound `Fenced` too.
 6. **`*vfs.Server`** (`Start`, [RFC 17](rfc-17-vfs.md)); then, **(cluster)**, `vfs.Serve`, the
    gateway, the client-address agent and the pNFS data server.
 7. The **operation runner** (§4.6), which resumes the operations this node
@@ -637,8 +645,8 @@ other row is `apply`, which hands each component — identity, `*vfs.Server`, th
 engine, GC, the adapters and the sidecars — the values it reads.
 
 The node learns of changes the way RFC 13 and RFC 18 already require — by
-reading the three counters (the settings generation, the share list version and
-the principals generation) once a second — and never from the API request that
+reading the four counters (the settings generation, the share list version,
+the principals generation and the claim generation) once a second — and never from the API request that
 made them. A record that does not
 validate when the component is built stops only what it configures
 ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), and the node reports it refused.
@@ -968,6 +976,7 @@ this table is all of them:
 | --- | --- | --- | --- | --- |
 | `quiesce`, `resume` | share | `operator` | no | [RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state) |
 | `rehome` | share | `admin` | yes | [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) |
+| `accept-copy` | namespace | `admin` | yes | [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) |
 | `rebuild-index` | namespace | `operator` | yes | [RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt) |
 | `rebuild-reverse-index` | share | `operator` | yes | [RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt) |
 | `raise-format` | installation | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
@@ -1157,7 +1166,7 @@ first durable step and answers `202 Accepted` with `Location:
 // when, and the answer.
 type Operation struct {
 	ID       OperationID
-	Kind     OpKind     // closed set (§4.1): "share.delete", "user.delete", "share.rehome", "namespace.rebuild-index", ...
+	Kind     OpKind     // closed set (§4.1): "share.delete", "user.delete", "share.rehome", "namespace.rebuild-index", "namespace.accept-copy", ...
 	Target   ResourceRef
 	Account  Principal  // who started it
 	State    OpState    // pending, running, succeeded, failed, cancelling, cancelled
@@ -1218,7 +1227,7 @@ An error is an `application/problem+json` body (RFC 9457) with these fields:
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), [RFC 12](rfc-12-snapshots.md#3.1%20Interfaces), [RFC 26](rfc-26-catalog-backups.md#4.1%20Interfaces), [RFC 27](rfc-27-namespace-migration.md#3.1%20Interfaces)) reaches the client by
 name, and the API adds only its own: `unauthenticated`, `forbidden`,
 `generation_mismatch`, `precondition_required`, `idempotency_mismatch`,
-`managed`, `operation_running`, `not_cancellable`, `last_admin`,
+`managed`, `operation_running`, `not_cancellable`, `last_admin`, `not_a_copy`,
 `password_change_required`, `starting`, `unavailable`. One table maps every
 error to a status, as [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) maps every service error to a wire
 status, and a test proves it total (§12):
@@ -1518,7 +1527,7 @@ These rules bind from the single node on, where most of them cost nothing
 - **Writes go through the metadata store**, as control-plane records. No node forwards a write to a
   "leader": there is none, and the store's transactions order concurrent writes.
 - **Application spreads by counter.** A node learns of a change only through
-  the three counters of §2.3
+  the four counters of §2.3
   ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes)), and reports what it applied (§2.4). A live change
   reaches every node within 5 s; a node behind is RFC 25's
   `config_generation_behind` condition, named in the resource's status.

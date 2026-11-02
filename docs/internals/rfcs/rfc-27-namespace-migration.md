@@ -303,7 +303,9 @@ this order, each step done before the next:
 A claim read that names this installation's identity but carries a nonce it did
 not record means another process with the same identity is writing it: the
 reader **MUST** stop writing to the namespace, and its GC **MUST** issue no
-further delete, at once, and alert. Reading before rewriting is what lets the
+further delete, at once, and alert. A running holder that finds it records the
+mismatch, and every node fences the namespace's shares as at start
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). Reading before rewriting is what lets the
 original win against a stale image: a disk image restored from yesterday records
 yesterday's nonces, finds the original's newer one at its first start, and stops
 before its own put; rewriting first would let the stale copy overwrite the
@@ -312,6 +314,13 @@ original's newer records name. Recording before the put is what lets a holder
 that crashed between the two recognise its own claim at restart. Two copies
 started at once from one image fence each other within one `Recheck` period: the
 one that reads the other's nonce stops, and only one keeps writing.
+
+**`Claim` answers in a fixed order**, the first that applies: **foreign** (the
+claim names another installation or is `released`, or is missing once `claimed`
+is set); **copy** (it names this installation's identity with a nonce not
+recorded under the current instance part, or the record's `Mismatch` is set);
+**pending** (`claimed` is not set); **held**. So a resumed create that finds
+an earlier part's nonce answers copy, and `:accept-copy` applies to it.
 
 **At start every node reads the claim, and none writes it.** GC's `Claim`
 ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)) reads it before any share of the namespace attaches, and its
@@ -345,7 +354,10 @@ nothing and fails, naming the prefix — unless the claim names this installatio
 with the nonce this step recorded as intended under the current instance part,
 which is its own put before a crash: it then records that nonce written and sets
 `claimed`. A nonce recorded under an earlier part fails the step, and the
-namespace answers copy. Until `claimed` is set `Claim` answers
+namespace answers copy. A create's step that fails because another claim holds
+the prefix undoes the create: one transaction deletes the share and namespace
+records it wrote, which no client reached because nothing attached, and raises
+`ShareList`; the operation fails naming the prefix. Until `claimed` is set `Claim` answers
 **pending**, and no share of the namespace attaches. Once `claimed` is set, a missing claim is **foreign**: something
 deleted it, and the namespace is not new.
 
