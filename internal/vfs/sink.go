@@ -113,9 +113,9 @@ func grantAgain(stop context.Context, cb vfs.Callbacks, w openstate.LockWaiter) 
 }
 
 // RecallGrant sends the recall through its path. One whose send fails is
-// sent again through the next path the grant's client registers, until the
-// callback's deadline: a client that reconnects with a new path is recalled
-// through it.
+// sent again through the next path the grant's client registers, looked for
+// every grantRetry until the callback's deadline; a look that finds no path
+// ends it, and the recall runs to its deadline unanswered.
 func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 	to := openstate.GrantNone
 	if g.Recall != nil {
