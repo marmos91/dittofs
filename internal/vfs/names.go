@@ -3,11 +3,11 @@ package vfs
 import (
 	"bytes"
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/internal/vfs/lockorder"
 	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs"
@@ -47,18 +47,14 @@ func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 		return nil, vfs.File{}, storeErr(err)
 	}
 	files := fs.meta.Files()
-	switch string(name) {
-	case ".":
-		f, err := files.Get(ctx, a.caller.Identity, dir)
-		return dir, f, storeErr(err)
-	case "..":
+	if n := string(name); n == "." || n == ".." {
 		d, err := files.Get(ctx, a.caller.Identity, dir)
 		switch {
 		case err != nil:
 			return nil, vfs.File{}, storeErr(err)
 		case !d.IsDir():
 			return nil, vfs.File{}, vfs.ErrNotDir
-		case d.IsRoot():
+		case n == "." || d.IsRoot():
 			return dir, d, nil
 		}
 		h := entity.NewHandle(a.share.ID, d.Parent)
@@ -518,12 +514,12 @@ func (fs *Filesystem) entry(ctx context.Context, a *admitted, dir vfs.Handle, na
 
 // entryIf is entry, nil where name names nothing.
 func (fs *Filesystem) entryIf(ctx context.Context, a *admitted, dir vfs.Handle, name []byte) (*vfs.File, error) {
-	_, f, err := fs.meta.Namespace().Lookup(ctx, a.caller.Identity, dir, name)
-	if merrs.IsNotFoundError(err) {
+	f, err := fs.entry(ctx, a, dir, name)
+	if errors.Is(err, vfs.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, storeErr(err)
+		return nil, err
 	}
 	return &f, nil
 }

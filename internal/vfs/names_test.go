@@ -112,6 +112,11 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	if h, _, err := n.Lookup(ctx, n.admin, d.Handle, []byte(".")); err != nil || !bytes.Equal(h, d.Handle) {
 		t.Errorf(`Lookup of "." in d: %v, %v`, h, err)
 	}
+	for _, name := range []string{".", ".."} {
+		if _, _, err := n.Lookup(ctx, n.admin, f.Handle, []byte(name)); !errors.Is(err, vfs.ErrNotDir) {
+			t.Errorf("Lookup of %q in a regular file: %v, want ErrNotDir", name, err)
+		}
+	}
 	if _, _, err := n.Lookup(ctx, n.admin, d.Handle, []byte("nope")); !errors.Is(err, vfs.ErrNotFound) {
 		t.Errorf("Lookup of no name: %v", err)
 	}
@@ -123,7 +128,7 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: d.Handle}, []byte("g"), d.Handle, []byte("h"), false); err != nil {
 		t.Errorf("Rename: %v", err)
 	}
-	if got := n.list(t, n.admin, d.Handle, 0, 1); !slices.Equal(sorted(got), []string{"f", "h"}) {
+	if got := n.list(t, n.admin, d.Handle, 0, 1); !slices.Equal(slices.Sorted(slices.Values(got)), []string{"f", "h"}) {
 		t.Errorf("listing after link and rename, a page of one at a time: %q", got)
 	}
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: d.Handle}, []byte("h"), d.Handle, []byte("f"), true); !errors.Is(err, vfs.ErrExist) {
@@ -170,11 +175,6 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	if got := n.list(t, n.admin, root, 0, 0); len(got) != 0 {
 		t.Errorf("the root after every name went: %q", got)
 	}
-}
-
-func sorted(s []string) []string {
-	slices.Sort(s)
-	return s
 }
 
 // A file whose last name goes is released at once when nothing holds it

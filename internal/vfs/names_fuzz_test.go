@@ -110,7 +110,7 @@ func FuzzNames(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if slices.Sort(got); !slices.Equal(got, sorted(want)) {
+			if slices.Sort(got); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
 				t.Fatalf("%s of %q (%v): listed %q, want %q", op, name, opErr, got, want)
 			}
 			if opErr == nil {
@@ -201,7 +201,7 @@ func FuzzCursors(f *testing.F) {
 				before = append(before, string(e.Name))
 			}
 		}
-		got := sorted(append(before, after...))
+		got := slices.Sorted(slices.Values(append(before, after...)))
 		if !slices.Equal(got, all) {
 			t.Fatalf("from %#x: the entries before it and those listed after it are %q, want each of a's once", cur, got)
 		}
