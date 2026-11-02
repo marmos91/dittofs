@@ -181,18 +181,19 @@ SMB each open is its own lock owner.
 // one the table decides on; protocol detail it never interprets is the
 // adapter's, in Adapter.
 type ClientRecord struct {
-	ID       ClientID     // 64 bits, unique across the installation, never reused, not random (§2.11)
-	Protocol protocol.Kind // NFSv4, NLM or SMB: the protocol that names it
-	Name     []byte       // the client's own stable name; indexed with Protocol, so a known client is found again
-	Boot     [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
-	Owner    Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
-	Protect  bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
-	Recovery RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
-	Lease    ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
-	Reach    Reach        // how a recall reaches it (§4.1)
-	Shards   []ShardMark  // where it holds state; bounded, then every shard of the share (§8)
-	Ended    bool         // (cluster) expired, kept until every shard it names has released its state (§4.3)
-	Adapter  []byte       // the adapter's durable record, written in the step of the change it belongs to; never read here
+	ID        ClientID     // 64 bits, unique across the installation, never reused, not random (§2.11)
+	Protocol  protocol.Kind // NFSv4, NLM or SMB: the protocol that names it
+	Name      []byte       // the client's own stable name; indexed with Protocol, so a known client is found again
+	Boot      [8]byte      // the instance under Name: a new Boot is a reboot, and the old ID expires once the new one is confirmed
+	Owner     Principal    // who may act for it: another principal naming Name is refused; zero: none (a machine, a host, or an anonymous mapping)
+	Protect   bool         // state protection: Owner may act on any of its state, and alone may Destroy or Rebind it
+	Sessioned bool         // confirmed with sessions (NFSv4.1's confirming CREATE_SESSION, SMB's NEGOTIATE): a call with no session presenting its state is refused (§2.2)
+	Recovery  RecoveryKind // how a loss of its state reaches it, and when it has finished reclaiming (§4.4)
+	Lease     ClientLease  // who renews and expires it (§4.1); not an SMB lease, which is a CachingGrant (§2.4)
+	Reach     Reach        // how a recall reaches it (§4.1)
+	Shards    []ShardMark  // where it holds state; bounded, then every shard of the share (§8)
+	Ended     bool         // (cluster) expired, kept until every shard it names has released its state (§4.3)
+	Adapter   []byte       // the adapter's durable record, written in the step of the change it belongs to; never read here
 }
 
 // Client is the record and what the table holds for it in memory. When its
@@ -488,7 +489,12 @@ SMB the client its session binds, and for NLM the host's client record.
 **NFSv4.0 has no session, so its client is the one on the state its stateid
 resolves to, or for an operation that names an open or lock owner, that owner's
 client, and only a client confirmed under NFSv4.0: a stateid of any other client,
-a delegation's among them, is `ErrNotYours`.** An NFSv4.0 client is offered no
+a delegation's among them, is `ErrNotYours`.** The service enforces that
+without knowing a minor version: a call with no session (RFC 17's
+`Call.Session` zero) that presents state of a client confirmed with sessions
+(`Sessioned`, §2.1) is `ErrNotYours`, a delegation's among them. `Caller`
+carries no session, so the service checks it on the record of the call's
+client, which over such a call is the state's. An NFSv4.0 client is offered no
 delegation ([RFC 21 §5.3](rfc-21-nfs.md#5.3%20Delegations)), so beyond that the
 opener-only rule above is the whole check. The address the adapter records at
 `SETCLIENTID_CONFIRM` is where callbacks go, never a check on a stateid, so a

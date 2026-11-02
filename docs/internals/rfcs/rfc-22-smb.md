@@ -1835,7 +1835,10 @@ the `MxAc` create context and `MaximalAccess` are answered from
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter passes
 the directory the open resolved through, as for `DELETE` at open (§6.1), and
 every right as `want`, not the client's `DesiredAccess`, so the `DELETE` granted
-through the parent is in the answer.
+through the parent is in the answer. A `MAXIMUM_ALLOWED` open whose resolved
+mask is empty, the file granting the caller nothing, is refused
+`STATUS_ACCESS_DENIED` by the adapter before the open, since `Authorize` admits
+an empty `want`.
 
 **Setting the owner or group** follows
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
@@ -2286,6 +2289,7 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
+| `Client.Sessioned` | true, set at `Connect`, the first authenticated `SESSION_SETUP` | — | every SMB call carries a session, so no call without one may present its state ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |
