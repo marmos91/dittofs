@@ -1669,7 +1669,9 @@ the `order` function the node hands the table at `Start`
 those holding no admission lock. Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
 protocol, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
-share, shard and ID, as RFC 14's `FileKey`.
+share, shard and ID, as RFC 14's `FileKey`. An open is authorised as `c.ForOpen(backup)`: `c`, but privileged only for a
+backup-intent open of a privileged caller where its protocol confines privilege to an open, as SMB
+does ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)).
 
 **A held call holds nothing.** A call the service holds behind a clone or a copy's
 chunk (§5.9) releases its accept lock, every open-state step it took and its
@@ -1854,14 +1856,15 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		}
 		f, dir = cr.File, &cr.Dir
 	}
+	cp := c.ForOpen(r.Backup) // privileged only for a backup-intent open of a privileged caller (RFC 19 §3.5)
 	if r.Maximal { // RFC 19 §3.4: a backup-intent MAXIMUM_ALLOWED, resolved here to G with the open's privilege, unlike MaximalAccess below
-		g, _ := s.authz.Rights(ctx, c, f.Handle, r.Parent, allRights)
+		g, _ := s.authz.Rights(ctx, cp, f.Handle, r.Parent, allRights)
 		if g == 0 {
 			return OpenResult{}, false, ErrAccess
 		}
 		r.Access |= g // Check refuses a right named beside it that lies outside G
 	}
-	if err := s.authz.Check(ctx, c, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
+	if err := s.authz.Check(ctx, cp, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
 	}
 	req := toOpenState(r, f)                                       // Name, Stream, Owner, Via, Seqs and the rest of RFC 14's OpenRequest
@@ -1870,7 +1873,7 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
 	}
-	max, _ := s.authz.Rights(ctx, c, f.Handle, r.Parent, allRights) // Files.Granted with allRights as want: the fourteen entry rights (RFC 19 §2.4), so the parent's DELETE is kept, and neither the maximal nor the system-security flag, so an admin's MaximalAccess holds no ACCESS_SYSTEM_SECURITY (RFC 19 §3.5); without a backup intent's privilege
+	max, _ := s.authz.Rights(ctx, c.ForOpen(false), f.Handle, r.Parent, allRights) // Files.Granted with allRights as want: the fourteen entry rights (RFC 19 §2.4), so the parent's DELETE is kept, and neither the maximal nor the system-security flag, so an admin's MaximalAccess holds no ACCESS_SYSTEM_SECURITY (RFC 19 §3.5); without a backup intent's privilege
 	return OpenResult{Ref: refOf(o.Open, f.Handle), File: f, MaximalAccess: max, Grant: o.Grant, Confirm: o.Confirm, Created: dir != nil, Dir: dir}, false, nil
 }
 ```
