@@ -112,22 +112,13 @@ func (o *OS) SyncDir() error {
 	return errors.Join(errs...)
 }
 
-// fullSync makes fcntl with F_FULLFSYNC on fd, again for as long as it
-// returns EINTR, and returns the last call's result.
-//
-// decision: a full sync interrupted by a signal is made again, as the os
-// package's own File.Sync does on macOS; the golang.org/x/sys calls are raw
-// and repeat nothing. Every other error is returned after one call, and what
-// this returns is the repeated call's own result, so a failed sync is never
-// recorded as success (RFC 1 §5.2). EINTR says a signal cut the call short,
-// not that writeback failed. Whether APFS can return it after consuming a
-// writeback error is not known: its source is not published. Withdraw this,
-// and report EINTR as a failed sync, if it is found to.
+// fullSync makes fcntl with F_FULLFSYNC on fd through retryInterrupted, so a
+// call cut short by a signal is made again, and returns the last call's
+// result.
 func (c calls) fullSync(fd int) error {
-	for {
+	return retryInterrupted(func(fd int) error {
 		_, err := c.fcntl(uintptr(fd), unix.F_FULLFSYNC, 0)
-		if !errors.Is(err, unix.EINTR) {
-			return err
-		}
-	}
+
+		return err
+	}, fd)
 }

@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"errors"
 	"io/fs"
 	"math"
 
@@ -85,10 +84,10 @@ func (f *file) Allocate(off, n int64) error {
 
 // allocate makes Allocate's calls on fd for a range ending at end, and
 // returns the name of the call that failed and its error, if one did. A call
-// interrupted by a signal is made again, as the os package does for its own
-// fstat and ftruncate: each gives the same result when repeated, so a repeat
-// hides no failure. Every other error is returned after one call, and no
-// call follows it.
+// interrupted by a signal is made again by retryInterrupted, as the os
+// package does for its own fstat and ftruncate: each gives the same result
+// when repeated, so a repeat hides no failure. Every other error is returned
+// after one call, and no call follows it.
 func (f *file) allocate(fd int, end int64) (string, error) {
 	// The kernel refuses any offset but 0 when the space is asked for from
 	// the physical end of the file.
@@ -110,22 +109,18 @@ func (f *file) allocate(fd int, end int64) (string, error) {
 		Length:  end,
 	}
 
-	err := f.calls.fcntlFstore(uintptr(fd), unix.F_PREALLOCATE, &store)
-	for errors.Is(err, unix.EINTR) {
-		err = f.calls.fcntlFstore(uintptr(fd), unix.F_PREALLOCATE, &store)
-	}
-
+	err := retryInterrupted(func(fd int) error {
+		return f.calls.fcntlFstore(uintptr(fd), unix.F_PREALLOCATE, &store)
+	}, fd)
 	if err != nil {
 		return "F_PREALLOCATE", err
 	}
 
 	var st unix.Stat_t
 
-	err = f.calls.fstat(fd, &st)
-	for errors.Is(err, unix.EINTR) {
-		err = f.calls.fstat(fd, &st)
-	}
-
+	err = retryInterrupted(func(fd int) error {
+		return f.calls.fstat(fd, &st)
+	}, fd)
 	if err != nil {
 		return "fstat", err
 	}
@@ -134,11 +129,9 @@ func (f *file) allocate(fd int, end int64) (string, error) {
 		return "", nil
 	}
 
-	err = f.calls.ftruncate(fd, end)
-	for errors.Is(err, unix.EINTR) {
-		err = f.calls.ftruncate(fd, end)
-	}
-
+	err = retryInterrupted(func(fd int) error {
+		return f.calls.ftruncate(fd, end)
+	}, fd)
 	if err != nil {
 		return "ftruncate", err
 	}
