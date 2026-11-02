@@ -166,7 +166,7 @@ func TestRecallDeadline(t *testing.T) {
 	b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
 	file := anyFile()
 	_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); err != nil {
 		t.Fatalf("the holder's write under its delegation: %v", err)
 	}
 	if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
@@ -185,7 +185,7 @@ func TestRecallDeadline(t *testing.T) {
 		t.Errorf("Revoked %+v", r)
 	}
 	var rev *RevokedError
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.As(err, &rev) || rev.Cause != RevokedGrant {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); !errors.As(err, &rev) || rev.Cause != RevokedGrant {
 		t.Errorf("a write under the revoked delegation: %v, want ErrRevoked(RevokedGrant)", err)
 	}
 	if s, _ := f.Renew(ctx, a.Client); !s.RecallableRevoked || s.AdminRevoked {
@@ -222,7 +222,7 @@ func TestRecallDeadline(t *testing.T) {
 	}
 	f.pass(t, time.Second)
 	f.mustOpen(t, other, sfile, OpenRequest{Access: rd})
-	if err := f.Checks().CheckIO(ctx, s, sfile, refOf(so), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, s, sfile, refOf(so), br(0, 1), entity.WriteData); err != nil {
 		t.Errorf("a write through the open of a lease cut to none: %v", err)
 	}
 	if r := f.sink.takeRevoked(); len(r) != 0 {
@@ -618,10 +618,10 @@ func TestStagedRecallHoldsTheFileBack(t *testing.T) {
 			file := anyFile()
 			f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rwh})
 			anon := OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}
-			if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), false); delayedFor(err) != DelayRecall {
+			if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), entity.ReadData); delayedFor(err) != DelayRecall {
 				t.Fatal(err)
 			}
-			if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), true); delayedFor(err) != DelayRecall {
+			if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), entity.WriteData); delayedFor(err) != DelayRecall {
 				t.Fatal(err)
 			}
 			r := f.sink.takeRecalls()
@@ -654,19 +654,19 @@ func TestDelegationIsItsClients(t *testing.T) {
 	b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
 	file := anyFile()
 	o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead})
-	if err := f.Checks().CheckIO(ctx, b, file, delegated(d, file), br(0, 1), false); !errors.Is(err, ErrNotYours) {
+	if err := f.Checks().CheckIO(ctx, b, file, delegated(d, file), br(0, 1), entity.ReadData); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client's I/O under the delegation: %v, want ErrNotYours", err)
 	}
 	if err := f.ack(b, d, GrantNone); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client's return: %v, want ErrNotYours", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrAccess) {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write under a read delegation: %v, want ErrAccess", err)
 	}
 	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Instance, o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
 		t.Errorf("an open's token named as a grant: %v, want ErrBadState", err)
 	}
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), false); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.ReadData); err != nil {
 		t.Errorf("the holder's read after: %v", err)
 	}
 }
@@ -730,7 +730,7 @@ func TestIORecallsGrants(t *testing.T) {
 	a := f.caller(t, smb("pc-a"))
 	file := anyFile()
 	o, _ := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{1}, Want: rwh})
-	if err := f.Checks().CheckIO(ctx, a, file, refOf(o), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, refOf(o), br(0, 1), entity.WriteData); err != nil {
 		t.Fatalf("a write through the lease's own open: %v", err)
 	}
 	if err := f.Checks().CheckChange(ctx, a, file, nil, ChangeAttrs); err != nil {
@@ -745,7 +745,7 @@ func TestIORecallsGrants(t *testing.T) {
 	file = anyFile()
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rwh})
 	anon := OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), false); delayedFor(err) != DelayRecall {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), entity.ReadData); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
 	r := f.sink.takeRecalls()
@@ -755,7 +755,7 @@ func TestIORecallsGrants(t *testing.T) {
 	if err := f.ack(a, &r[0].g, rh); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), true); delayedFor(err) != DelayRecall {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(0, 1), entity.WriteData); delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
 	if r := f.sink.takeRecalls(); len(r) != 1 || r[0].to != GrantNone {
@@ -797,7 +797,7 @@ func TestRecallAnsweredOutsideTheSink(t *testing.T) {
 	go func() {
 		unlock := f.order.order(file.ID) // the service's admission lock, held across the call
 		defer unlock()
-		done <- f.Checks().CheckIO(ctx, b, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true)
+		done <- f.Checks().CheckIO(ctx, b, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.WriteData)
 	}()
 	for _, c := range []chan error{done, acked} {
 		select {
@@ -1284,7 +1284,7 @@ func TestOplockBreaksToLevelIIOrNone(t *testing.T) {
 	if _, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: rwh}); g == nil || g.Kind != rwh || g.Key != (LeaseKey{}) {
 		t.Fatalf("a batch oplock: %+v", g)
 	}
-	err := f.Checks().CheckIO(ctx, b, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), false)
+	err := f.Checks().CheckIO(ctx, b, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.ReadData)
 	if delayedFor(err) != DelayRecall {
 		t.Fatal(err)
 	}
@@ -1303,10 +1303,10 @@ func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
 	if g == nil || g.Kind != rw {
 		t.Fatalf("a write delegation: %+v", g)
 	}
-	if err := f.Checks().CheckIO(ctx, n, file, delegated(g, file), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, n, file, delegated(g, file), br(0, 1), entity.WriteData); err != nil {
 		t.Errorf("a write through the holder's own delegation: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, n, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), true); !errors.Is(err, ErrShareViolation) {
+	if err := f.Checks().CheckIO(ctx, n, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 1), entity.WriteData); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an anonymous write by the holder: %v, want ErrShareViolation", err)
 	}
 }

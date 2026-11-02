@@ -18,7 +18,7 @@ var sentinels = []error{
 	vfs.ErrInvalid, vfs.ErrNoSpace, vfs.ErrQuota, vfs.ErrLocked, vfs.ErrRangeNotLocked,
 	vfs.ErrShareViolation, vfs.ErrDeletePending, vfs.ErrGrace, vfs.ErrDelay, vfs.ErrBlocked,
 	vfs.ErrWrongSecurity, vfs.ErrState, vfs.ErrCross, vfs.ErrIncomplete, vfs.ErrInconsistent,
-	vfs.ErrLost, vfs.ErrUnavailable, vfs.ErrCorrupt,
+	vfs.ErrLost, vfs.ErrUnavailable, vfs.ErrCorrupt, vfs.ErrPastEnd,
 }
 
 var wantErrors = append(slices.Clone(sentinels),

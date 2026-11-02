@@ -36,6 +36,8 @@ var (
 	ErrLost        = vfserr.ErrLost
 	ErrUnavailable = vfserr.ErrUnavailable
 	ErrCorrupt     = vfserr.ErrCorrupt
+
+	ErrPastEnd = vfserr.ErrPastEnd
 )
 
 // The typed errors and their kinds, and the write verifier and copy extent
@@ -107,7 +109,7 @@ func Errors() []error {
 		ErrNotFound, ErrExist, ErrNotEmpty, ErrNotDir, ErrIsDir, ErrAccess, ErrPerm, ErrStale,
 		ErrReadOnly, ErrNameTooLong, ErrInvalid, ErrNoSpace, ErrQuota, ErrLocked, ErrRangeNotLocked,
 		ErrShareViolation, ErrDeletePending, ErrGrace, ErrDelay, ErrBlocked, ErrWrongSecurity, ErrState,
-		ErrCross, ErrIncomplete, ErrInconsistent, ErrLost, ErrUnavailable, ErrCorrupt,
+		ErrCross, ErrIncomplete, ErrInconsistent, ErrLost, ErrUnavailable, ErrCorrupt, ErrPastEnd,
 	}
 	for c := AccessCause(1); c.Valid(); c++ {
 		errs = append(errs, &AccessError{Cause: c})

@@ -44,6 +44,8 @@ var (
 	ErrLost        = errors.New("vfs: acknowledged writes lost")
 	ErrUnavailable = errors.New("vfs: unavailable")
 	ErrCorrupt     = errors.New("vfs: content corrupt")
+
+	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
 )
 
 // AccessError is an ErrAccess with its cause.
@@ -112,7 +114,7 @@ const (
 	DelayConflict                        // a metadata conflict still unresolved at the call's deadline, or another numbered request of the same open-state owner in flight
 	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or the open-state shard is not yet served here
 	DelayCapacity                        // the journal's capacity, or a share's journal limit
-	DelayCommit                          // a metadata commit is not landing, a durable open's record included
+	DelayCommit                          // a metadata commit is not landing, a durable open's record included; or a stable write's sync may have lost it
 	DelayResources                       // a node memory pool or an open-state cap is spent
 
 	delayCauseEnd

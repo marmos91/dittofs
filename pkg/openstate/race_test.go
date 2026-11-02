@@ -77,7 +77,7 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 			for done := false; !done; {
 				unlock := adm.lock(scratch.ID)
 				after := opened.Load()
-				if f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), true) == nil {
+				if f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), entity.WriteData) == nil {
 					runtime.Gosched() // the write, staged under the same lock
 					if !after && opened.Load() {
 						t.Errorf("round %d: an open was granted between a write's check and its staging", round)
@@ -92,7 +92,7 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 		})
 		wg.Go(func() {
 			for range 2 {
-				_ = f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), false)
+				_ = f.Checks().CheckIO(ctx, Caller{}, scratch, anon, br(0, 1), entity.ReadData)
 			}
 		})
 		wg.Wait()
@@ -128,7 +128,7 @@ func TestCheckAndIONeverSeparated(t *testing.T) {
 	granted := make(chan struct{})
 	f.sink.onWait = func(LockWaiter) { close(granted) }
 	unlock := adm.lock(file.ID)
-	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 10), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}, br(0, 10), entity.WriteData); err != nil {
 		t.Fatalf("the write before the timer: %v", err)
 	}
 	go f.serveFiles(ctx, f.sink, []entity.FileID{file.ID})

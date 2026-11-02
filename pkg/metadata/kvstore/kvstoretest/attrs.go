@@ -123,6 +123,14 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	if _, err := files.ClearSetID(ctx, bob, h); !isDenied(err) {
 		t.Errorf("ClearSetID by a caller without write data: %v", err)
 	}
+	// An append-only file takes appends alone, so the clear asks append data
+	// of it: its owner, whose write data the flag refuses, clears the bits.
+	log, _ := f.create(alice, pub, "log", regular(0o644))
+	must(t, errOf(files.SetAttrs(ctx, alice, log, entity.Attrs{}.WithMode(0o4644))))
+	must(t, errOf(files.SetAttrs(ctx, f.admin, log, entity.Attrs{}.WithFlags(entity.FlagAppendOnly))))
+	if got, err := files.ClearSetID(ctx, alice, log); err != nil || got.Mode&0o7777 != 0o644 {
+		t.Errorf("ClearSetID of an append-only file by its owner: %o, %v", got.Mode, err)
+	}
 }
 
 // RFC 7 §2.6's "what a mode bit grants" row and §7.4's privileged execute:
