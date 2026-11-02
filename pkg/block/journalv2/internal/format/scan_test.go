@@ -3,6 +3,8 @@ package format
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"slices"
 	"testing"
 
@@ -566,6 +568,494 @@ func TestScanRecycledSegmentKeepsOnlyTheNewLife(t *testing.T) {
 		}
 		if got.End != size {
 			t.Errorf("end %d, want the size %d", got.End, size)
+		}
+	})
+}
+
+// TestScanStopsAtAKindOrEpochItCannotRead: the walk and the forward search
+// both stop at a header this format version cannot read over — an unknown
+// kind, or a non-zero version epoch — returning the records attached before
+// it, the error the decode made, and End at the slot itself, never stepping
+// the record over by any length. A clone target's AsOf epoch stops the scan
+// the same way, in VerifyRecordBody where the body's own bytes are read.
+func TestScanStopsAtAKindOrEpochItCannotRead(t *testing.T) {
+	cases := func() ([]byte, []int64) {
+		return scanSegment(t, testIdentity, scanTestRecords()...)
+	}
+
+	t.Run("unknown kind on the walk", func(t *testing.T) {
+		seg, offs := cases()
+		for _, kind := range []byte{15, 128} {
+			s := slices.Clone(seg) // a fresh copy each pass, the offsets unchanged
+			s[offs[1]+4] = kind
+			rechecksumRecord(s[offs[1]:offs[1]+96], testIdentity)
+
+			got, err := ScanSegment(bytes.NewReader(s), int64(len(s)), testIdentity, testSegment)
+			if !errors.Is(err, ErrUnknownKind) {
+				t.Fatalf("kind %d: ScanSegment = %v, want ErrUnknownKind", kind, err)
+			}
+			if len(got.Records) != 1 || got.Records[0].Header.Offset != offs[0] {
+				t.Errorf("kind %d: records = %+v, want the first alone before the stop", kind, got.Records)
+			}
+			if got.End != offs[1] {
+				t.Errorf("kind %d: end %d, want the stopping slot %d itself", kind, got.End, offs[1])
+			}
+			if got.Sealed || got.Resynced {
+				t.Errorf("kind %d: sealed %v resynced %v, want neither", kind, got.Sealed, got.Resynced)
+			}
+		}
+	})
+
+	t.Run("unknown kind reached by the forward search", func(t *testing.T) {
+		seg, offs := cases()
+		// The first record's length damaged so the search runs from it,
+		// the second made an unknown kind: the search reads the bad slot
+		// at the first record's own offset, then the unknown kind's, and
+		// stops there — with the bad range before it reported.
+		binary.LittleEndian.PutUint64(seg[offs[0] : offs[0]+96][40:48], 4<<20)
+		seg[offs[1]+4] = 15
+		rechecksumRecord(seg[offs[1]:offs[1]+96], testIdentity)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, ErrUnknownKind) {
+			t.Fatalf("ScanSegment = %v, want ErrUnknownKind", err)
+		}
+		if got.End != offs[1] {
+			t.Fatalf("end %d, want the stopping slot %d itself", got.End, offs[1])
+		}
+		want := ScanRange{Off: offs[0], End: offs[1], Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Errorf("ranges = %+v, want the one before the stop, %+v", got.Ranges, want)
+		}
+		if len(got.Records) != 0 {
+			t.Errorf("records = %+v, want none attached", got.Records)
+		}
+		if got.Resynced {
+			t.Error("resynced, want none: nothing was attached after the range")
+		}
+	})
+
+	t.Run("a non-zero version epoch in a header", func(t *testing.T) {
+		seg, offs := cases()
+		binary.LittleEndian.PutUint64(seg[offs[1] : offs[1]+96][56:64], 1)
+		rechecksumRecord(seg[offs[1]:offs[1]+96], testIdentity)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, ErrNonZeroEpoch) {
+			t.Fatalf("ScanSegment = %v, want ErrNonZeroEpoch", err)
+		}
+		if len(got.Records) != 1 || got.Records[0].Header.Offset != offs[0] {
+			t.Errorf("records = %+v, want the first alone before the stop", got.Records)
+		}
+		if got.End != offs[1] {
+			t.Errorf("end %d, want the stopping slot %d itself", got.End, offs[1])
+		}
+	})
+
+	t.Run("a non-zero AsOf epoch in a clone target's body", func(t *testing.T) {
+		// The clone target is appended with the epoch this format
+		// requires of it, zero — a record holding a non-zero one cannot
+		// be built — and its body's AsOf epoch bytes are then set, with
+		// both checksums redone: VerifyRecordBody is the only place left
+		// to refuse it, and the stop it makes is the record's own slot.
+		h, body := scanKindBody(KindCloneTarget)
+		seg, _ := scanSegment(t, testIdentity, scanTestRecords()[:2]...)
+		seg, at := scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		atBody := seg[at+96 : at+96+56]
+		binary.LittleEndian.PutUint64(atBody[40:48], 1)
+		rechecksumRecordBody(seg[at:at+96+56], testIdentity, 56)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, ErrNonZeroEpoch) {
+			t.Fatalf("ScanSegment = %v, want ErrNonZeroEpoch: the AsOf epoch is read in VerifyRecordBody", err)
+		}
+		if got.End != at {
+			t.Errorf("end %d, want the clone target's own slot %d", got.End, at)
+		}
+		for _, r := range got.Records {
+			if r.Header.Offset >= at {
+				t.Errorf("attached a record at %d, past the stop at %d", r.Header.Offset, at)
+			}
+		}
+		if len(got.Ranges) != 0 || got.Resynced {
+			t.Errorf("ranges = %+v resynced %v, want a clean walk before the stop", got.Ranges, got.Resynced)
+		}
+	})
+}
+
+// TestScanFindsASealMarkerBySearchAfterBadBytes: the forward search resumes
+// past a zero slot and past a bad one at a verifying seal marker, because the
+// marker proves everything before it synced — the range it reports ends at
+// the marker's own offset, the scan seals there, and neither recovery counts
+// a resync, for nothing was attached past the damage.
+func TestScanFindsASealMarkerBySearchAfterBadBytes(t *testing.T) {
+	for _, name := range []string{"zero", "bad"} {
+		t.Run("after a "+name+" slot", func(t *testing.T) {
+			recs := scanTestRecords()[:2]
+			seg, _ := scanSegment(t, testIdentity, recs...)
+			damaged := int64(len(seg))
+			if name == "zero" {
+				seg = append(seg, make([]byte, 16)...)
+			} else {
+				junk := make([]byte, 16)
+				for i := range junk {
+					junk[i] = 0xa5
+				}
+				seg = append(seg, junk...)
+			}
+			seal := scanSeal(t, &seg, testIdentity, testSegment)
+
+			got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+			if err != nil {
+				t.Fatalf("ScanSegment = %v, want no error", err)
+			}
+			kind := RangeZero
+			if name == "bad" {
+				kind = RangeBad
+			}
+			want := ScanRange{Off: damaged, End: seal, Kind: kind}
+			if len(got.Ranges) != 1 || got.Ranges[0] != want {
+				t.Fatalf("ranges = %+v, want one, %+v", got.Ranges, want)
+			}
+			if !got.Sealed || got.End != seal {
+				t.Errorf("sealed %v end %d, want sealed at the marker's own offset %d", got.Sealed, got.End, seal)
+			}
+			if got.Resynced {
+				t.Error("resynced, want none: nothing attached past the damage")
+			}
+			if len(got.Records) != 2 {
+				t.Errorf("records = %d, want the two before the damage", len(got.Records))
+			}
+		})
+	}
+}
+
+// TestScanReturnsReadErrorsAsThemselves pins that a read that fails is
+// returned as itself, never as damage and never as a zero slot — unreadable
+// never counts as empty — with the partial Scan it had built: everything
+// attached before the failing read, every range closed before it, End at the
+// offset the read was made at. The scan reads a record's body by its own
+// readFull call, and reads its slots through a window the first offending
+// slot refills, so an injected failure lands where the scan asks the reader
+// for the bytes: at the body's own read, or at the edge of a window the
+// walk has crossed — the header slot a later refill starts at, or the slot
+// a forward search steps to — each of which the subtests name. A bodyless
+// unmark record, 96 bytes and no more, is the cheapest way to walk a
+// segment past one whole window of a megabyte, so that is what the two
+// window-crossing subtests build.
+func TestScanReturnsReadErrorsAsThemselves(t *testing.T) {
+	injected := errors.New("format: an injected read failure")
+
+	t.Run("at a body", func(t *testing.T) {
+		// The first record is a write with a 13-byte payload, so its
+		// 21-byte body read starts at its header's own end: a reader
+		// failing there fails the record under examination, nothing
+		// attached yet and no range open, End at the record's slot.
+		seg, offs := scanSegment(t, testIdentity, scanTestRecords()...)
+		bodyAt := offs[0] + RecordHeaderSize // the write's own body read starts here
+
+		got, err := ScanSegment(readAtFailer{b: seg, off: bodyAt, err: injected}, int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error", err)
+		}
+		if errors.Is(err, ErrDamaged) {
+			t.Error("the injected error washed into ErrDamaged, want it kept as itself")
+		}
+		if len(got.Records) != 0 || got.End != offs[0] {
+			t.Errorf("records %d end %d, want none attached and end at the record's own slot %d", len(got.Records), got.End, offs[0])
+		}
+		if len(got.Ranges) != 0 || got.Sealed || got.Resynced {
+			t.Errorf("ranges %d sealed %v resynced %v, want no range open for a record still under examination", len(got.Ranges), got.Sealed, got.Resynced)
+		}
+	})
+
+	t.Run("inside the forward search", func(t *testing.T) {
+		// The write at the first slot with its length damaged opens a
+		// search, and nothing after it verifies — zeros the whole
+		// megabyte the search must cross. The first read the search
+		// cannot be served from the refill the damaged write was judged
+		// under is the slot whose own header crosses that window's edge,
+		// so the reader fails exactly there. The search dies mid-way:
+		// End at the read's own offset, no range closed, for the bad
+		// slot's range closes only at a recovery the scan can read to.
+		var seg []byte
+		seg = AppendSegmentHeader(seg, testSegmentHeader)
+		h, body := scanKindBody(KindWrite)
+		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		binary.LittleEndian.PutUint64(seg[48 : 48+96][40:48], 4<<20)
+		// the first slot whose header read crosses the window [48, 48+scanWindow)
+		failAt := int64(SegmentHeaderSize + scanWindow - RecordHeaderSize + 8)
+		seg = append(seg, make([]byte, failAt+96-int64(len(seg)))...)
+
+		got, err := ScanSegment(readAtFailer{b: seg, off: failAt, err: injected}, int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error", err)
+		}
+		if got.End != failAt {
+			t.Errorf("end %d, want the read's own offset %d", got.End, failAt)
+		}
+		if len(got.Records) != 0 || got.Resynced || got.Sealed {
+			t.Error("records, seal or resync from a search whose read failed, want nothing")
+		}
+		// The bad write's range closes at the failing read and is kept —
+		// every range closed before the failing offset is — as bad, for
+		// the damaged record's own bytes are not zeros.
+		want := ScanRange{Off: SegmentHeaderSize, End: failAt, Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Errorf("ranges = %+v, want the one closed at the failing read, %+v", got.Ranges, want)
+		}
+	})
+
+	t.Run("at the first slot of a window refill", func(t *testing.T) {
+		// The window is refilled at the slot being examined, so a
+		// reader failing at the refill's own start fails the walk at
+		// that slot with everything attached before it kept. One
+		// refill covers a whole megabyte, so the subtest walks unmark
+		// records — 96 bytes each and bodyless, the cheapest there
+		// are — one window's worth and then one more: every one the
+		// first refill holds attaches, and the record past its reach
+		// is the one the failing refill is made for.
+		var seg []byte
+		seg = AppendSegmentHeader(seg, testSegmentHeader)
+		const unmarks = scanWindow / 96 // exactly one window of records
+		for i := 0; i < unmarks+1; i++ {
+			h, body := scanKindBody(KindUnmark)
+			seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		}
+		refillAt := int64(len(seg)) - 96 // the first record past the first refill's reach
+
+		got, err := ScanSegment(readAtFailer{b: seg, off: refillAt, err: injected}, int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, injected) {
+			t.Fatalf("ScanSegment = %v, want the injected error", err)
+		}
+		if got.End != refillAt {
+			t.Errorf("end %d, want the refill's own start %d, the offset the read was made at", got.End, refillAt)
+		}
+		if len(got.Records) != unmarks {
+			t.Errorf("records %d, want the %d the first window holds, not the record examined under the failing refill", len(got.Records), unmarks)
+		}
+		if len(got.Ranges) != 0 || got.Sealed || got.Resynced {
+			t.Errorf("ranges %d sealed %v resynced %v, want a clean walk before the failure", len(got.Ranges), got.Sealed, got.Resynced)
+		}
+	})
+
+	t.Run("a reader shorter than size", func(t *testing.T) {
+		seg, _ := scanSegment(t, testIdentity, scanTestRecords()...)
+		got, err := ScanSegment(readAtShort{b: seg[:len(seg)-1]}, int64(len(seg)), testIdentity, testSegment)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("ScanSegment = %v, want io.ErrUnexpectedEOF", err)
+		}
+		if errors.Is(err, ErrDamaged) {
+			t.Error("the short read washed into ErrDamaged, want it kept as itself")
+		}
+		if got.Sealed || got.Resynced {
+			t.Errorf("sealed %v resynced %v, want neither from a short read", got.Sealed, got.Resynced)
+		}
+		if got.End < SegmentHeaderSize || got.End > int64(len(seg)) {
+			t.Errorf("end %d, want one inside the segment", got.End)
+		}
+		for _, r := range got.Records {
+			if r.Header.Offset+RecordHeaderSize > got.End {
+				t.Errorf("attached a record at %d over the end %d", r.Header.Offset, got.End)
+			}
+		}
+	})
+}
+
+// TestScanRefusesASegmentTooShortForASlot: a size below the first record
+// slot cannot hold one record, so the scan refuses it — wrapped in
+// ErrDamaged, as a segment too short for anything its rules speak of — and
+// returns an empty Scan, for nothing was read at all. At exactly the
+// header's own size the walk has nothing to walk: an empty scan ends there.
+func TestScanRefusesASegmentTooShortForASlot(t *testing.T) {
+	for _, size := range []int64{0, 1, 47} {
+		got, err := ScanSegment(bytes.NewReader(nil), size, testIdentity, testSegment)
+		if !errors.Is(err, ErrDamaged) {
+			t.Errorf("size %d: ScanSegment = %v, want ErrDamaged", size, err)
+		}
+		if len(got.Records) != 0 || len(got.Ranges) != 0 || got.Sealed || got.Resynced || got.End != 0 {
+			t.Errorf("size %d: scan = %+v, want the zero Scan: nothing was read", size, got)
+		}
+	}
+
+	seg := AppendSegmentHeader(nil, testSegmentHeader)
+	got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+	if err != nil {
+		t.Fatalf("ScanSegment = %v, want no error", err)
+	}
+	want := Scan{End: SegmentHeaderSize}
+	if len(got.Records) != 0 || len(got.Ranges) != 0 || got.Sealed || got.Resynced || got.End != want.End {
+		t.Errorf("scan = %+v, want the empty one ending at the first slot, %+v", got, want)
+	}
+}
+
+// TestScanEdges: a record slot cut short by the segment's end — a header
+// fewer than 96 bytes, a marker fewer than 32 — is bad, walked into the
+// range the forward search reports, never read as the record or the marker
+// it promised; and a size not a multiple of 8 ends the walk on a slot fewer
+// than 8 bytes long, whose bytes join the range they end in.
+func TestScanEdges(t *testing.T) {
+	t.Run("a header the segment ends short of", func(t *testing.T) {
+		// A whole unmark record then a DJR1 prefix with only 40 bytes
+		// left: the truncated header is bad, the search finds nothing
+		// after it, and the one range runs to the size — bad by its
+		// bytes, the truncated header among them.
+		recs := scanTestRecords()[:1]
+		seg, offs := scanSegment(t, testIdentity, recs...)
+		cut := int64(len(seg))
+		seg = append(seg, seg[offs[0]:offs[0]+40]...) // a header's prefix, its slice cut short
+		copy(seg[cut:cut+4], "DJR1")
+		rechecksumRecord(seg[cut:cut+40], testIdentity)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error: a short header is bad, not a stop", err)
+		}
+		want := ScanRange{Off: cut, End: int64(len(seg)), Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Errorf("ranges = %+v, want the short header reported bad to the size, %+v", got.Ranges, want)
+		}
+		if len(got.Records) != 1 || got.Records[0].Header.Offset != offs[0] {
+			t.Errorf("records = %+v, want the whole record before the cut alone", got.Records)
+		}
+	})
+
+	t.Run("a marker the segment ends short of", func(t *testing.T) {
+		// A whole record then a DJS1 prefix with 8 bytes left: the
+		// truncated marker is bad too, so the segment is not sealed and
+		// the tail range runs to the size.
+		recs := scanTestRecords()[:1]
+		seg, offs := scanSegment(t, testIdentity, recs...)
+		cut := int64(len(seg))
+		seg = append(seg, make([]byte, 8)...)
+		copy(seg[cut:cut+4], "DJS1")
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		if got.Sealed {
+			t.Error("sealed, want not: a marker cut short of its 32 bytes is not a marker")
+		}
+		want := ScanRange{Off: cut, End: int64(len(seg)), Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Errorf("ranges = %+v, want the short marker reported bad to the size, %+v", got.Ranges, want)
+		}
+		_ = offs
+	})
+
+	t.Run("a size not a multiple of 8", func(t *testing.T) {
+		// Four bytes past a whole record's end: the walk's last slot
+		// holds fewer bytes than the grid it walks on, so it holds
+		// neither a prefix nor a record; its bytes end in the range
+		// the search reports to the size.
+		recs := scanTestRecords()[:1]
+		seg, _ := scanSegment(t, testIdentity, recs...)
+		tail := int64(len(seg))
+		seg = append(seg, 0xa5, 0xa5, 0xa5, 0xa5)
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		want := ScanRange{Off: tail, End: int64(len(seg)), Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Errorf("ranges = %+v, want the residue reported bad to the size, %+v", got.Ranges, want)
+		}
+		if got.End != int64(len(seg)) {
+			t.Errorf("end %d, want the size %d", got.End, len(seg))
+		}
+	})
+}
+
+// TestScanAttachesRecordsAroundAndPastTheWindow: the walk attaches the
+// records the scan's window alone cannot serve — a body read larger than a
+// whole window, and a record whose header sits on one side of a refill and
+// whose body stretches past it — because a record's body is read by its own
+// readFull into a buffer grown for it, never through the slot window.
+func TestScanAttachesRecordsAroundAndPastTheWindow(t *testing.T) {
+	// bigWrite builds a write of n payload bytes with a header whose
+	// patterns the golden tests carry.
+	bigWrite := func(n int64) (RecordHeader, RecordBody) {
+		h := RecordHeader{
+			Kind:          KindWrite,
+			Segment:       testSegment,
+			File:          testRecordFile,
+			Seq:           testRecordSeq,
+			Version:       testRecordVersion,
+			Tag:           testRecordTag,
+			SyncedThrough: testRecordSyncedThrough,
+			Extent:        core.Extent{Off: testRecordFileOffset, Len: n},
+		}
+		return h, RecordBody{MTime: testWriteMTime, Payload: scanPayload(int(n))}
+	}
+
+	t.Run("a body larger than the window", func(t *testing.T) {
+		// A write of a window and a half of payload: both the one
+		// before it and it itself attach, its 21-byte record and its
+		// one-and-a-half-megabyte body read whole by one call that
+		// grows the scan's own body buffer past the window.
+		var seg []byte
+		seg = AppendSegmentHeader(seg, testSegmentHeader)
+		h, body := scanKindBody(KindWrite)
+		seg, first := scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		h, body = bigWrite(int64(scanWindow) + scanWindow/2)
+		seg, big := scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		if len(got.Records) != 2 {
+			t.Fatalf("records = %d, want the small write and the one past the window, both", len(got.Records))
+		}
+		for i, want := range []int64{first, big} {
+			if got.Records[i].Header.Offset != want {
+				t.Errorf("record %d at %d, want %d", i, got.Records[i].Header.Offset, want)
+			}
+		}
+		if got.Records[1].Header.Extent.Len != int64(scanWindow)+int64(scanWindow)/2 {
+			t.Errorf("the big write's length = %d, want it whole", got.Records[1].Header.Extent.Len)
+		}
+		if got.Records[1].Body.Payload != nil {
+			t.Error("the big write survived with a payload, want it dropped")
+		}
+		if got.End != int64(len(seg)) || len(got.Ranges) != 0 || got.Sealed || got.Resynced {
+			t.Errorf("end %d ranges %d sealed %v resynced %v, want a clean walk to the size", got.End, len(got.Ranges), got.Sealed, got.Resynced)
+		}
+	})
+
+	t.Run("a record straddling a window refill", func(t *testing.T) {
+		// Unmarks up to a refill's edge, then a write whose header
+		// sits at the first slot of the next window and whose body
+		// stretches two windows past it: the header asks for a refill,
+		// the body for a read the window never serves, and both hold.
+		var seg []byte
+		seg = AppendSegmentHeader(seg, testSegmentHeader)
+		const unmarks = scanWindow / 96
+		for i := 0; i < unmarks; i++ {
+			h, body := scanKindBody(KindUnmark)
+			seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+		}
+		h, body := bigWrite(int64(2*scanWindow) + 56)
+		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
+
+		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegment = %v, want no error", err)
+		}
+		if len(got.Records) != unmarks+1 {
+			t.Fatalf("records = %d, want the %d unmarks and the straddling write", len(got.Records), unmarks+1)
+		}
+		last := got.Records[len(got.Records)-1]
+		if last.Header.Kind != KindWrite || last.Header.Extent.Len != int64(2*scanWindow)+56 {
+			t.Errorf("the straddling write came back as %d, length %d", last.Header.Kind, last.Header.Extent.Len)
+		}
+		if last.Body.Payload != nil {
+			t.Error("the straddling write survived with a payload, want it dropped")
+		}
+		if got.End != int64(len(seg)) || len(got.Ranges) != 0 || got.Sealed || got.Resynced {
+			t.Errorf("end %d ranges %d sealed %v resynced %v, want a clean walk to the size", got.End, len(got.Ranges), got.Sealed, got.Resynced)
 		}
 	})
 }
