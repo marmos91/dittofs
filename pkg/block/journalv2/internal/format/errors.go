@@ -38,4 +38,10 @@ var (
 	// verifies but a content version in it carries a non-zero epoch half,
 	// which this format version forbids on every record.
 	ErrNonZeroEpoch = errors.New("format: non-zero epoch")
+
+	// ErrNoFooter is matched by a footer read whose trailer, seal marker
+	// or entries do not verify or do not fit: the segment carries no
+	// footer this binary can use, and must be scanned. It is never an
+	// error to the open: a footer is an accelerator.
+	ErrNoFooter = errors.New("format: no footer")
 )
