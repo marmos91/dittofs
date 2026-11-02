@@ -169,10 +169,9 @@ func FuzzSegmentHeader(f *testing.F) {
 
 // FuzzSeal drives the decoder with any bytes read at any segment and offset.
 // Whatever arrives, it either decodes, matches ErrWrongPlace — a marker that
-// verifies but was written somewhere else, returned filled with the segment
-// and offset its bytes hold — or matches exactly one of the outcome classes,
-// never a panic; and whatever comes back is exactly what the bytes contain,
-// so encoding it again reproduces the input.
+// verifies but was written somewhere else — or matches exactly one of the
+// outcome classes, never a panic; and whatever decodes is exactly what the
+// bytes contain, so encoding it again reproduces the input.
 func FuzzSeal(f *testing.F) {
 	golden := readGolden(f, "seal")
 
@@ -201,11 +200,15 @@ func FuzzSeal(f *testing.F) {
 	misaligned := slices.Clone(golden)
 	binary.LittleEndian.PutUint64(misaligned[16:24], 0x2827262524232221)
 	rechecksumSeal(misaligned, testIdentity)
-
 	f.Add(misaligned, uint64(testSegment), testOffset)
-
 	f.Add(misaligned, uint64(testSegment), int64(0x2827262524232221))
-	f.Add(misaligned, uint64(testSegment), testOffset)
+
+	// The least stored offset above MaxInt64, on the 8-byte grid: only
+	// the range refusal, not the alignment one, can name it.
+	oversized := slices.Clone(golden)
+	binary.LittleEndian.PutUint64(oversized[16:24], 0x8000000000000000)
+	rechecksumSeal(oversized, testIdentity)
+	f.Add(oversized, uint64(testSegment), int64(-1)<<63)
 
 	f.Fuzz(func(t *testing.T, in []byte, segment uint64, offset int64) {
 		m, err := DecodeSealMarker(in, testIdentity, core.SegmentID(segment), offset)
@@ -230,20 +233,21 @@ func FuzzSeal(f *testing.F) {
 		}
 
 		if errors.Is(err, ErrWrongPlace) {
-			// The marker is data even where it fails: re-encoding what
-			// its bytes hold reproduces the input, so it yields only
-			// what the bytes contain, and the place it names is never
-			// the one it was read at.
+			// A wrong place carries no marker: the decoder returns the
+			// zero one, and what the bytes hold is judged from the bytes
+			// directly — a verifying 32-byte marker whose stored segment
+			// or offset is not the place it was read at.
+			if m != (SealMarker{}) {
+				t.Fatalf("a marker reported at the wrong place returned %+v, want the zero marker", m)
+			}
 			if len(in) != SealMarkerSize {
 				t.Fatalf("read %d bytes, want %d", len(in), SealMarkerSize)
 			}
 			if got, want := binary.LittleEndian.Uint32(in[28:32]), wantSeededCRC(testIdentity, in[0:28]); got != want {
 				t.Fatalf("a marker reported at the wrong place with checksum 0x%08x, want the seeded CRC32C of [0,28): 0x%08x", got, want)
 			}
-			if got := AppendSealMarker(nil, testIdentity, m); !slices.Equal(got, in) {
-				t.Fatalf("a marker reported at the wrong place re-encodes as\n% x\nwant the input\n% x", got, in)
-			}
-			if m.Segment == core.SegmentID(segment) && m.Offset == offset {
+			if core.SegmentID(binary.LittleEndian.Uint64(in[8:16])) == core.SegmentID(segment) &&
+				int64(binary.LittleEndian.Uint64(in[16:24])) == offset {
 				t.Fatalf("a marker reported at the wrong place names the segment %d and offset %d it was read at", segment, offset)
 			}
 		}

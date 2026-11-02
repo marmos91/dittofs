@@ -47,10 +47,11 @@ func AppendSealMarker(dst []byte, identity core.JournalID, m SealMarker) []byte 
 // is, or off the multiple of 8 a slot starts at. An error matching
 // ErrWrongPlace means the marker verifies but names another segment or
 // another offset than the ones it was read at — it was written somewhere
-// else, so a copy inside a payload never ends a scan — and it comes with the
-// marker filled, which holds its bytes' segment and offset. A slot of zeros
-// is ErrDamaged here; the scanner tells an untaken slot from a marker before
-// decoding.
+// else, so a copy inside a payload never ends a scan. Every error comes
+// with the zero marker: the caller of a refused decode reads nothing of
+// the marker, so a result is either the marker and nil or nothing at all.
+// A slot of zeros is ErrDamaged here; the scanner tells an untaken slot
+// from a marker before decoding.
 func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID, offset int64) (SealMarker, error) {
 	if len(b) != SealMarkerSize {
 		return SealMarker{}, fmt.Errorf("%w: %d bytes, want %d", ErrDamaged, len(b), SealMarkerSize)
@@ -102,7 +103,7 @@ func DecodeSealMarker(b []byte, identity core.JournalID, segment core.SegmentID,
 		return SealMarker{}, fmt.Errorf("%w: own offset %d is not a multiple of 8", ErrDamaged, m.Offset)
 	}
 	if m.Segment != segment || m.Offset != offset {
-		return m, fmt.Errorf("%w: segment %d, offset %d, want the segment %d and offset %d it was read at", ErrWrongPlace, m.Segment, m.Offset, segment, offset)
+		return SealMarker{}, fmt.Errorf("%w: segment %d, offset %d, want the segment %d and offset %d it was read at", ErrWrongPlace, m.Segment, m.Offset, segment, offset)
 	}
 	return m, nil
 }

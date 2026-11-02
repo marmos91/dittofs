@@ -51,12 +51,13 @@ func TestAppendSealMarkerAppendsToDst(t *testing.T) {
 
 // TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten pins that a marker whose
 // checksum verifies under the reader's identity still fails when it was
-// written somewhere else — at another offset, or in another segment — and is
-// then returned filled with the segment and offset its bytes name, so a copy
-// inside a payload never ends a scan; and that a marker seeded with another
-// journal's identity fails the checksum under this one's, reported as damage
-// never as wrong place — which is what the seed is for: unlike a segment
-// header's, no marker of another journal can be told apart as foreign.
+// written somewhere else — at another offset, or in another segment — so a
+// copy inside a payload never ends a scan; and that a marker seeded with
+// another journal's identity fails the checksum under this one's, reported
+// as damage never as wrong place — which is what the seed is for: unlike a
+// segment header's, no marker of another journal can be told apart as
+// foreign. A result that is not the marker and nil is the zero marker and an
+// error, whatever the error.
 func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 	golden := readGolden(t, "seal")
 
@@ -72,8 +73,8 @@ func TestDecodeSealMarkerVerifiesOnlyWhereItWasWritten(t *testing.T) {
 		if !errors.Is(err, ErrWrongPlace) || errors.Is(err, ErrDamaged) {
 			t.Fatalf("%s: DecodeSealMarker = %v, want an error matching ErrWrongPlace and not ErrDamaged", c.name, err)
 		}
-		if m != testSealMarker {
-			t.Errorf("%s: decoded %+v, want %+v, the marker its bytes hold", c.name, m, testSealMarker)
+		if m != (SealMarker{}) {
+			t.Errorf("%s: decoded %+v on an error, want the zero marker", c.name, m)
 		}
 	}
 
@@ -168,11 +169,13 @@ func TestDecodeSealMarkerRefusesDamage(t *testing.T) {
 // is 64 bits wide while core's offsets are int64, so a marker that did hold
 // such an offset could not name a place this journal reads at.
 func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
-	// 0xffffffffffffffff at [16,24) is the least stored offset above
-	// MaxInt64. The encoder refuses to write one, so the field is set by
-	// hand and rechecksummed.
+	// 0x8000000000000000 at [16,24) is the least stored offset above
+	// MaxInt64 — the negative int64 its top bit set decodes as, which the
+	// alignment refusal does not catch: -1 << 63 is a multiple of 8. The
+	// encoder refuses to write one, so the field is set by hand and
+	// rechecksummed.
 	b := slices.Clone(readGolden(t, "seal"))
-	binary.LittleEndian.PutUint64(b[16:24], 0xffffffffffffffff)
+	binary.LittleEndian.PutUint64(b[16:24], 0x8000000000000000)
 	rechecksumSeal(b, testIdentity)
 
 	for _, c := range []struct {
@@ -180,7 +183,7 @@ func TestDecodeSealMarkerRefusesAnOwnOffsetAboveMaxInt64(t *testing.T) {
 		offset int64
 	}{
 		{"read at a real offset", testOffset},
-		{"read at the negative offset it decodes as", -1},
+		{"read at the negative offset it decodes as", -1 << 63},
 	} {
 		m, err := DecodeSealMarker(b, testIdentity, testSegment, c.offset)
 		if !errors.Is(err, ErrDamaged) || errors.Is(err, ErrWrongPlace) {
@@ -233,7 +236,7 @@ func TestAppendSealMarkerPanicsOnAnOffsetNoSlotHolds(t *testing.T) {
 		name   string
 		offset int64
 	}{
-		{"below 0", -1},
+		{"below 0", -8},
 		{"not a multiple of 8", 33},
 	} {
 		func() {
