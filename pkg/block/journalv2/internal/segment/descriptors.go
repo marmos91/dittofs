@@ -76,9 +76,6 @@ type Descriptors struct {
 // descEntry is one segment's descriptor state: the file, nil when the
 // descriptor is closed; the references outstanding on it; and the drain that
 // makes Close(id) wait for them.
-// descEntry is one segment's descriptor state: the file, nil when the
-// descriptor is closed; the references outstanding on it; and the drain that
-// makes Close(id) wait for them.
 //
 // decision: every field but written and synced is guarded by the owning
 // cache's leaf mutex, the one the Descriptors marker names — including the
@@ -649,11 +646,13 @@ func (c *Descriptors) Forget(id core.SegmentID) {
 // closed and its budget slot returned. It returns the join of the close
 // errors. A second Shutdown returns nil.
 //
-// The descriptors are taken out of the reclaimer's reach at once, but stay
-// attached until the references have drained, so a reader that holds one
-// finishes its reads while Shutdown waits. The unregister from the budget
-// happens once the references have drained, so a reclaim the budget runs
-// meanwhile asks a cache that still holds its descriptors.
+// The descriptors stay attached and yieldable while the references drain: a
+// reclaim the budget runs meanwhile — another journal asking this one that is
+// shutting down — may close one of this cache's idle descriptors, and this
+// Shutdown then skips the file the reclaim already took, so nothing is closed
+// or given back twice. The unregister from the budget happens once the
+// references have drained, so the shutdown's own close walk is the last thing
+// that needs the cache registered.
 func (c *Descriptors) Shutdown() error {
 	c.mu.Lock()
 	if c.shut {
