@@ -780,8 +780,13 @@ return or recall, not by close.
 > two files, which `ErrInvalid` refuses on one primary. The cost is the one
 > above, on the other primary's files: each holds only her own file's lease,
 > gains no grant, break or byte of the other's, and the other's later open of
-> that file under the key is granted uncached. Claim the (client, key) binding
-> at the lease owner if a client is seen relying on that refusal across files.
+> that file under the key is granted uncached. A failover or a batch move can
+> later bring both files onto one primary. That primary keeps the lease it
+> already holds under the key and installs the arriving file's opens with no
+> lease, as uncached: a holder still connected is sent a break to none, and a
+> disconnected one learns it at its reconnect, whose answer carries the lease's
+> state (`Reconnect`). So the key again names one file's lease there. Claim the (client, key) binding at the lease owner if a client
+> is seen relying on that refusal across files.
 
 **The epoch orders a lease's changes.** Every change of a v2 lease's `Kind`
 sent to the holder — a break, an upgrade on a later open — **MUST** raise
