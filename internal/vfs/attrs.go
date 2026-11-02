@@ -218,12 +218,22 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	// An owner or group change moves the file's charge, its bytes and one
-	// inode, in the store's transaction, so the new owner and group are
-	// reserved it first, each only where it changes, and the reservation
+	// inode, in the store's transaction. The file's pending existence is
+	// committed first, so the charge holds every write staged before the
+	// change rather than leaving them to charge the new owner at their own
+	// commit; then the new owner and group are reserved the charge, each
+	// only in its own scope and only where it changes, and the reservation
 	// released once the store has answered. A privileged caller is held to
 	// the limit as any other.
-	if mv, ok := moved(f, ch.Attrs); ok {
-		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: f.Charged, Files: 1})
+	if mv, scopes := moved(f, ch.Attrs); len(scopes) > 0 {
+		if err := fs.engine.CommitExistence(ctx, f.ID); err != nil {
+			return vfs.WCC{}, storeErr(err)
+		}
+		cur, err := fs.meta.Files().Get(ctx, a.caller.Identity, t.H)
+		if err != nil {
+			return vfs.WCC{}, storeErr(err)
+		}
+		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: cur.Charged, Files: 1}, scopes...)
 		if err != nil {
 			return vfs.WCC{}, err
 		}
@@ -253,18 +263,21 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	return fs.wcc(ctx, c, a, t.H, f), nil
 }
 
-// moved is whom a change of f's owner or group moves its charge to: the new
-// owner and the new group, each only where ch changes it; false when it
-// changes neither.
-func moved(f vfs.File, ch vfs.Attrs) (quota.Charge, bool) {
-	c := quota.Charge{Share: f.Share, Moved: true}
+// moved is whom a change of f's owner or group moves its charge to, and the
+// scopes it moves into: the user scope for a new owner and the group scope
+// for a new group, each only where ch changes it; none when it changes
+// neither.
+func moved(f vfs.File, ch vfs.Attrs) (c quota.Charge, scopes []vfs.QuotaScope) {
+	c = quota.Charge{Share: f.Share, Project: f.Project}
 	if ch.Changes(entity.AttrOwner) && ch.Owner != f.Owner {
 		c.Owner = ch.Owner
+		scopes = append(scopes, vfs.QuotaUser)
 	}
 	if ch.Changes(entity.AttrGroup) && ch.Group != f.Group {
 		c.Group = ch.Group
+		scopes = append(scopes, vfs.QuotaGroup)
 	}
-	return c, !c.Owner.IsZero() || !c.Group.IsZero()
+	return c, scopes
 }
 
 // truncate stages f's size change in the engine, once an unprivileged

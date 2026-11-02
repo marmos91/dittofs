@@ -462,3 +462,32 @@ func TestAChownChangingNothingReservesNothing(t *testing.T) {
 		t.Errorf("a chown and chgrp to what the file has, its owner at her limit: %v", err)
 	}
 }
+
+// V37: a chown first commits the file's pending existence, so bytes staged
+// unstable and not yet charged count against the new owner: one near his
+// byte limit is refused, though the file's committed charge alone fits.
+func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
+	s, _ := newQuotas(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	data := []byte("0123456789")
+	if _, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
+		t.Fatal(err)
+	}
+	f := s.record(t, h)
+	s.engine.existence = func(id entity.FileID) error {
+		_, err := s.fs.Store.Existence().Commit(ctx, []kvstore.PendingExistence{{Share: f.Share, File: id, Ops: []kvstore.PendingOp{
+			{Version: entity.VersionOf(f.Applied.Epoch() + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: int64(len(data))}, Time: f.Modify},
+		}}})
+		return err
+	}
+	bobs := s.usage(t, s.bob.Principal)
+	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + int64(len(data)) - 1})
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
+	if _, err := s.SetAttr(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, chown); quotaScope(err) != vfs.QuotaUser {
+		t.Errorf("a chown of %d staged bytes to bob, %d under his limit: %v, want ErrQuota (QuotaUser)", len(data), len(data)-1, err)
+	}
+	if got := s.record(t, h); got.Owner != s.alice.Principal || got.Charged != int64(len(data)) {
+		t.Errorf("after the refused chown: owner %v, charged %d; want alice's, its staged bytes committed", got.Owner, got.Charged)
+	}
+}

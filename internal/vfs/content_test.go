@@ -48,6 +48,9 @@ type fakeContent struct {
 	commits []entity.Extent
 	// committing, when set, runs as Commit is called, before it syncs.
 	committing func(entity.FileID)
+	// existence, when set, runs as CommitExistence is called, and is its
+	// answer; otherwise nothing commits.
+	existence func(entity.FileID) error
 	// readErr, when set, is answered by every Read after the bytes it read.
 	readErr error
 	// reading, when set, runs as Read is called, before it reads anything.
@@ -139,6 +142,13 @@ func (c *fakeContent) Commit(ctx context.Context, share entity.ShareID, f entity
 	}
 	c.commits = append(c.commits, entity.Extent{Offset: off, Length: n})
 	return c.synced, c.loss, nil
+}
+
+func (c *fakeContent) CommitExistence(ctx context.Context, share entity.ShareID, f entity.FileID) error {
+	if c.existence != nil {
+		return c.existence(f)
+	}
+	return nil
 }
 
 func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 {

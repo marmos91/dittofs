@@ -32,10 +32,10 @@ func (c capacity) SoftExceeded(ctx context.Context, share entity.ShareID, t quot
 	return c.Capacity.SoftExceeded(ctx, share, kvstore.QuotaTarget(t), above)
 }
 
-// reserve reserves add charged to c for the caller a admitted, the store's
-// refusals answered as the service's.
-func (fs *Filesystem) reserve(ctx context.Context, a *admitted, c quota.Charge, add entity.Usage) (*quota.Reservation, error) {
-	r, err := fs.quota.Reserve(ctx, a.caller.Proved, c, add)
+// reserve reserves add charged to c, against scopes, all four when none, for
+// the caller a admitted, the store's refusals answered as the service's.
+func (fs *Filesystem) reserve(ctx context.Context, a *admitted, c quota.Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*quota.Reservation, error) {
+	r, err := fs.quota.Reserve(ctx, a.caller.Proved, c, add, scopes...)
 	return r, storeErr(err)
 }
 

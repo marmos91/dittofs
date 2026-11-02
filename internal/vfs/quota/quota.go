@@ -9,6 +9,7 @@ package quota
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -39,10 +40,6 @@ type Charge struct {
 	Share        entity.ShareID
 	Owner, Group entity.Principal
 	Project      uint64
-	// Moved is a charge moving between principals, an owner or group
-	// change: the share's quota is not judged, as the charge leaves neither
-	// it nor the project, which a moved charge leaves zero.
-	Moved bool
 }
 
 // Quotas holds every reservation made on this node and not yet released.
@@ -109,7 +106,10 @@ type judged struct {
 }
 
 // Reserve reserves add, charged to c, for writer, judging it against every
-// quota covering c in the scopes' order: share, project, user, group. A
+// quota covering c in scopes, in the scopes' order: share, project, user,
+// group; no scopes names all four. The reservation holds only the scopes it
+// judged, so an owner or group change, whose charge leaves neither the share
+// nor the project, names the user or group scope alone. A
 // quota refuses when what is committed, plus what this node holds reserved,
 // plus add, passes its hard limit, or its soft limit once its grace has run
 // from when usage first went above it; the first refusing scope is answered
@@ -133,24 +133,24 @@ type judged struct {
 // ponytail: each reservation reads every covering quota's record and, for
 // each that limits, the share's usage, on the write path. Cache the limits
 // per share, dropped when one is set, when a write profile shows the reads.
-func (q *Quotas) Reserve(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage) (*Reservation, error) {
+func (q *Quotas) Reserve(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*Reservation, error) {
 	if add == (entity.Usage{}) {
 		return nil, nil
 	}
-	scopes := []struct {
+	covering := []struct {
 		scope vfs.QuotaScope
 		t     Target
 		ok    bool
 	}{
-		{vfs.QuotaShare, Target{}, !c.Moved},
+		{vfs.QuotaShare, Target{}, true},
 		{vfs.QuotaProject, Target{Project: c.Project}, c.Project != 0},
 		{vfs.QuotaUser, Target{Principal: c.Owner}, !c.Owner.IsZero()},
 		{vfs.QuotaGroup, Target{Principal: c.Group}, !c.Group.IsZero() && c.Group != c.Owner},
 	}
 	r := &Reservation{q: q, add: add}
 	var js []judged
-	for _, s := range scopes {
-		if !s.ok {
+	for _, s := range covering {
+		if !s.ok || len(scopes) > 0 && !slices.Contains(scopes, s.scope) {
 			continue
 		}
 		sl := slot{c.Share, s.t}

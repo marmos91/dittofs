@@ -51,7 +51,9 @@ type Deps struct {
 // ErrStale from the removal mark.
 //
 // ponytail: WriteOpts and Overlay are declared here, beside Content, as the
-// engine that should declare them is not built. Alias the engine's once it
+// engine that should declare them is not built, and so is CommitExistence,
+// the existence commit an owner or group change runs first, which the
+// engine's surface names no method for. Alias the engine's once it
 // declares them, so it satisfies Content unchanged.
 type Content interface {
 	// Draw is a version for a change stored outside the journal, drawn under
@@ -61,6 +63,9 @@ type Content interface {
 	// Commit makes the range stable, n 0 the whole file, and answers the
 	// file's loss sequence.
 	Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (v vfs.Verifier, lossSeq uint64, err error)
+	// CommitExistence commits the file's pending existence now, its size,
+	// times and charge included, calling each committed write's Done.
+	CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error
 	// LossSeq is the file's loss sequence now, with no sync; 0 for a share
 	// with no binding.
 	LossSeq(s entity.ShareID, f entity.FileID) uint64
