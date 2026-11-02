@@ -1522,3 +1522,30 @@ func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
 		t.Errorf("a delegation's openers %v, %v; want none", opens, err)
 	}
 }
+
+// A user who opens first under another's key on another file does not
+// refuse her open of her own file under it: she is none of the key's
+// openers, so she is granted it uncached, under no key.
+func TestAnothersKeyOnAnotherFileRefusesNoOpen(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	f.grantOpen(t, bob, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	res, err := f.Opens().Open(ctx, alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	if err != nil {
+		t.Fatalf("alice's open of her file under her key, held by bob on another: %v", err)
+	}
+	if res.Grant != nil {
+		t.Errorf("alice's open beside bob's hold on her key: offered %+v, want nothing", res.Grant)
+	}
+}
+
+// One of a key's openers is refused it on another file while it names one.
+func TestOwnKeyOnAnotherFileIsInvalid(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	f.grantOpen(t, alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	if _, err := f.open(alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("alice's second file under her key: %v, want ErrInvalid", err)
+	}
+}

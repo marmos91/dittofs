@@ -451,25 +451,32 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		if r.Lease != (LeaseKey{}) {
 			// Refused early, before breakHandles and recallOthers queue
 			// recalls; mintOpen is the rule.
-			t.idx.Lock()
-			u, held := t.keys[clientKey{who.Client, r.Lease}]
-			t.idx.Unlock()
-			if held && u.file != f.ID {
-				return ErrInvalid // a key names one grant, on one file
-			}
+			//
 			// A key travels in clear, and joining makes the caller one of
 			// the lease's openers, whose breaks it may then answer: a caller
 			// whose principal, and every one of Conn, is none of the key's
-			// openers' is granted the open with no grant, under no key.
+			// openers' is granted the open with no grant, under no key, on
+			// whichever file the key names. Only one of its openers is
+			// refused the key on another file.
 			//
-			// decision: the first principal to open under a key owns it, and
-			// a key travels in clear, so another user of the client who
-			// opens first under alice's key keeps her from caching that
-			// file: she is granted her open uncached. It denies caching
-			// only, never data or another's breaks. Bind a key to the
+			// decision: the first principal to open under a key owns it
+			// until its last opener closes, and a key travels in clear, so
+			// another user of the client who opens first under alice's key
+			// keeps her from caching under it, on that file or any other:
+			// she is granted her open uncached. It denies caching only, never
+			// an open, data or another's breaks; but a stranger's open under
+			// the key minted on another file between this check and her
+			// mintOpen still refuses hers ErrInvalid. Bind a key to the
 			// principal that chose it, as an adapter-signed key would, if a
 			// user is seen pre-empting another's keys.
-			if !e.joins(who, r.Lease, r.Conn) {
+			t.idx.Lock()
+			u := t.keys[clientKey{who.Client, r.Lease}]
+			joins := u.joins(who, r.Conn)
+			t.idx.Unlock()
+			if joins && u.opens > 0 && u.file != f.ID {
+				return ErrInvalid // a key names one grant, on one file
+			}
+			if !joins {
 				r.Lease, r.Parent, r.Epoch, r.Want = LeaseKey{}, LeaseKey{}, nil, GrantNone
 				o.lease = LeaseKey{}
 			}
@@ -829,7 +836,11 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 			_ = t.chargeLocked(o.Client, cappedOpens, 1, false)
 		}
 		if o.lease != (LeaseKey{}) {
+			if u.by == nil {
+				u.by = map[entity.Principal]int{}
+			}
 			u.file, u.opens = e.file, u.opens+1
+			u.by[o.Principal]++
 			t.keys[ck] = u
 		}
 		if o.ID != 0 {
@@ -870,6 +881,9 @@ func (t *Table) dropOpen(e *entry, o *open) {
 			delete(t.keys, ck)
 		} else {
 			u.opens--
+			if u.by[o.Principal]--; u.by[o.Principal] <= 0 {
+				delete(u.by, o.Principal)
+			}
 			t.keys[ck] = u
 		}
 	}
