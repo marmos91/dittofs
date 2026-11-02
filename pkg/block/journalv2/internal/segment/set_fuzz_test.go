@@ -392,12 +392,16 @@ var corpus = []seed{
 	), 0, 0, 1, 1, 0},
 	{"refusals at three boundaries", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 1, 0, 0, 4, 0), // duplicate
-		op6(opTake, 1, 0, 0, 4, 0), op6(opAddRecord, 1, 0, 0, 4, 0),
+		op6(opTake, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 0, 0, 0), // zero bytes
 		op6(opAddRecord, 1, 0, 0, 3, 0), // negative
-		op6(opSeal, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 0),
-		op6(opShrink, 1, 0, 0, 4, 1),
-	), 0, 0, 1, 1, 0},
+		// early seal, so the cuts below reach the size window rather than the
+		// full-seal refusal; the segment holds no records, so nothing but the
+		// window itself can refuse the cuts.
+		op6(opSeal, 1, 0, 0, 4, 1), op6(opShrink, 1, 0, 0, 0, 0), // zero: no size
+		op6(opShrink, 1, 0, 0, 2, 0), // one past the segment's size
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1, 0},
 	{"null id refusals", slices.Concat(
 		op6(opAddSpare, 0, 0, 0, 4, 0), // the null id: names no segment
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
