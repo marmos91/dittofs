@@ -884,6 +884,11 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	copied := durable(t, g, s.name)[:128<<10]
 	const off = 1 << 20
 	write(t, g.Share(1), s.other.id, off, copied)
+
+	// The carrier is synced before the write after it, so the damage below
+	// is corruption below a proven sync point, not a torn slot that would
+	// end the carrier's segment and move its records at open.
+	syncFiles(t, g.Share(1), s.other.id)
 	after := writeSynced(t, g, 1, 1, 2*off, 64<<10)
 	carrier := entryAt(t, g, s.other.id, off).Location
 	want := indexSnapshot(t, g)[journalv2test.File(0)]
@@ -967,6 +972,12 @@ func TestRFC28C_SealMarkerCopiedIntoAPayload(t *testing.T) {
 	marker := raw.SealMarker{Identity: journalIdentity(t, f), Segment: uint64(loc.Segment), Offset: uint64(slot + raw.WriteMTimeOffset + 8)}
 	p := append(marker.Bytes(), pattern(fmtTag("m", 0, 0, size), size-raw.SealMarkerSize)...)
 	write(t, h, id, size, p)
+
+	// The carrier is synced before B is written, so B's header names a
+	// synced-through offset past it and the damage below is corruption. An
+	// unsynced carrier would be a torn slot before a record that verifies,
+	// which ends the segment and moves X and B to a spare at open.
+	syncFiles(t, h, id)
 	if got := entryAt(t, f, id, size).Location; got != (journalv2.RecordRef{Segment: loc.Segment, Offset: slot}) {
 		t.Fatalf("the record carrying the marker landed at %+v, not at the predicted slot %d of segment %d: the marker names the wrong place and this check proves nothing", got, slot, loc.Segment)
 	}
@@ -1728,7 +1739,7 @@ func recycledSegment(t *testing.T, f *journalv2test.Fixture) recycled {
 		stub(t, "Repack", err)
 		t.Fatalf("repack returned (%v) without renaming the segment", err)
 	}
-	schedule(t, f, journalv2test.Dropping(journalv2test.OpWrite, "*.seg", 0))
+	f.Drop(journalv2test.OpWrite, "*.seg")
 	writes := f.Seam.Calls(journalv2test.OpWrite)
 	rename.Release()
 	err := <-done
