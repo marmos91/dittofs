@@ -2508,11 +2508,12 @@ tests, per change, without waiting for the nightly run.
 the translation tables and their fuzz seeds run in `unit`, and §6.10's codec and
 pipeline allocation gates nightly in `unit/nonrace`. The conformance layer is
 `pynfs`, `cthon04`, `nfstest`, `smbtorture`, `wpts` and `pjdfstest` on the
-production profile; §7.4 runs in `e2e/cross-protocol` and §7.5 in `e2e`, its
-Kerberos mounts in `e2e/kerberos`, and the NTLM pass-through row's end-to-end
-half runs in `integration/ad-dc`. No suite runs yet §8's wire tests, the
-pass-through's asserted SIDs, a wrong password's refusal to fall back to guest,
-or §6.10's end-to-end benchmark.
+production profile. §7.4 runs in-process in `unit`, on the composed node, as
+RFC 8's and RFC 18's rows on it do; §7.5 runs in `e2e`, its Kerberos mounts in
+`e2e/kerberos`, and the NTLM pass-through row's end-to-end half runs in
+`integration/ad-dc`. No suite runs yet §8's wire tests, the pass-through's
+asserted SIDs, a wrong password's refusal to fall back to guest, or §6.10's
+end-to-end benchmark.
 
 ## 9. Invariants
 
