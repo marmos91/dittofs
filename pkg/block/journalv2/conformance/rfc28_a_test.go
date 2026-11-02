@@ -510,7 +510,8 @@ func wantVerifiedThenReappended(t *testing.T, f *journalv2test.Fixture, u unprov
 // reached. The third leg drops nothing: its segment's sync failed before the
 // process died, so the open re-appends B by the failed window's rule.
 func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
-	f := journalv2test.New(t)
+	// Unwatched: a kill leaves the dead journal unclosed (see TryKill).
+	f := journalv2test.NewUnwatched(t)
 	other := writeSynced(t, f, 1, 1, 0, 64<<10)
 	u := writeUnproven(t, f)
 	f.Drop(journalv2test.OpSync, u.name)

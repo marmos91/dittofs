@@ -360,13 +360,6 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 // dead process's writes, and what no sync covered is still lost by a later
 // Crash. Then the journal is opened again on what the process left, through
 // the path Reopen and Crash take.
-//
-// decision: the killed journal is not closed. A dead process closes, seals
-// and syncs nothing, and a close through the dead view would still count its
-// calls on the files the seam closed. Its goroutines, once a journal has any,
-// run on until they fail on the dead view; the profiler's goroutine check at
-// the test's end shows them if they never stop, and a close outside the call
-// counts is the upgrade then.
 func (f *Fixture) Kill() {
 	f.tb.Helper()
 
@@ -436,6 +429,15 @@ func (f *Fixture) TryCrash(opts ...CrashOption) error {
 
 // TryKill is Kill returning Open's error instead of failing the test: after
 // an error the journal is shut, J is nil, until a later open succeeds.
+//
+// decision: the killed journal is not closed. A dead process closes, seals
+// and syncs nothing, and a close through the dead view would still count its
+// calls on the files the seam closed. So a goroutine of the old journal
+// parked on the fixture's clock or on a channel makes no seam call, never
+// fails on the dead view and can outlive it, and the profiler would report
+// it as a leak on a correct journal: the checks that kill run on NewUnwatched
+// fixtures. Close the old journal outside the seam's counts, and watch them
+// again, once the seam can tell such a close from the journal's own calls.
 func (f *Fixture) TryKill() error {
 	f.tb.Helper()
 

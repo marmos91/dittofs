@@ -37,12 +37,20 @@ type driven struct {
 }
 
 // newDriven returns a driven fixture on a new journal, watched by the
-// profiler, labelled label in its failures; the test's own t, or an
-// iteration's, is what the fixture, the watch and the holds are registered
-// on.
-func newDriven(tb testing.TB, t *testing.T, label string) *driven {
+// profiler when watch is set, labelled label in its failures; the test's own
+// t, or an iteration's, is what the fixture, the watch and the holds are
+// registered on.
+func newDriven(tb testing.TB, t *testing.T, label string, watch bool) *driven {
 	tb.Helper()
-	return &driven{t, tb, label, journalv2test.New(tb), model.New()}
+
+	var f *journalv2test.Fixture
+	if watch {
+		f = journalv2test.New(tb)
+	} else {
+		f = journalv2test.NewUnwatched(tb)
+	}
+
+	return &driven{t, tb, label, f, model.New()}
 }
 
 // wrote is what a write returned.
@@ -1129,9 +1137,16 @@ const maxOpenSyncs = 4
 // returned sync covered reads its bytes, anything else is held record by
 // record, whole or not at all.
 func TestDamage_LostWrites(t *testing.T) {
+	// The sync points reached through a kill leave the dead journal
+	// unclosed, so they run unwatched (see TryKill).
+	killed := map[string]bool{
+		"open_unproven_tail": true,
+		"open_reappend":      true,
+	}
+
 	for _, sp := range syncPoints {
 		t.Run(sp.name, func(t *testing.T) {
-			d := newDriven(t, t, sp.name)
+			d := newDriven(t, t, sp.name, !killed[sp.name])
 			p := sp.run(t, d)
 			if p.check == nil {
 				p.check = func() string { return "" }
@@ -1205,7 +1220,7 @@ func TestDamage_TornWrites(t *testing.T) {
 		const recordBytes = raw.RecordHeaderSize + 8 + size
 		for n := 0; n <= recordBytes; n++ {
 			iterate(t, func(tb testing.TB) {
-				d := newDriven(tb, t, fmt.Sprintf("the final record cut at byte %d", n))
+				d := newDriven(tb, t, fmt.Sprintf("the final record cut at byte %d", n), true)
 				d.writeSynced(1, 1, 0, 64<<10)
 				a := d.writeSynced(0, 0, 0, 64<<10)
 				name := segmentName(entryAt(t, d.f, a.id, 0, d.label).Location.Segment)
@@ -1226,7 +1241,7 @@ func TestDamage_TornWrites(t *testing.T) {
 	t.Run("trailer", func(t *testing.T) {
 		for n := 0; n <= raw.TrailerSize; n++ {
 			iterate(t, func(tb testing.TB) {
-				d := newDriven(tb, t, fmt.Sprintf("the trailer cut %d bytes short", n))
+				d := newDriven(tb, t, fmt.Sprintf("the trailer cut %d bytes short", n), true)
 				p, name := footerParked(t, d)
 				waitAtHold(t, p, "the roll")
 				if msg := p.check(); msg != "" {
@@ -1323,7 +1338,7 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 	var k int
 	for mask := uint64(0); ; mask++ {
 		iterate(t, func(tb testing.TB) {
-			d := newDriven(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask))
+			d := newDriven(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask), true)
 			spares, writes := reorderScript(t, tb, d)
 
 			n := d.f.Seam.Unsynced()
