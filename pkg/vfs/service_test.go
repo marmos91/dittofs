@@ -15,6 +15,7 @@ var readOnly = map[vfs.Op]bool{
 	vfs.OpAccess: true, vfs.OpRead: true, vfs.OpSeek: true, vfs.OpTestLock: true,
 	vfs.OpRoot: true, vfs.OpSecInfo: true, vfs.OpListShares: true, vfs.OpStatFS: true,
 	vfs.OpQuota: true, vfs.OpSnapshots: true, vfs.OpRecord: true, vfs.OpSpell: true,
+	vfs.OpSessionUp: true, vfs.OpSessionDown: true,
 }
 
 func TestMutates(t *testing.T) {

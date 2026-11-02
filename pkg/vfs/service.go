@@ -266,16 +266,19 @@ func (op Op) String() string {
 // record or a lease. A handler makes at most one call for which it is true,
 // and any number of the rest.
 //
-// decision: the calls that change nothing are exactly the twenty in the
+// decision: the calls that change nothing are exactly the twenty-two in the
 // switch below, the service contract's list of calls a handler may repeat.
 // Record and Spell are on it: an NFSv4 GETATTR asking for owner and
-// owner_group spells twice, and a READDIR asking for them once per entry. A
-// call added here must change nothing, as the one-call check stops seeing it.
+// owner_group spells twice, and a READDIR asking for them once per entry.
+// SessionUp and SessionDown are on it: they only keep the node's SMB sessions
+// in memory to route a break, so a first SESSION_SETUP's Connect stays its one
+// mutating call. A call added here must change nothing, as the one-call
+// check stops seeing it.
 func Mutates(op Op) bool {
 	switch op {
 	case OpPropose, OpTestState, OpLookup, OpReadDir, OpGetAttr, OpGetACL, OpXattrs, OpStreams,
 		OpAccess, OpRead, OpSeek, OpTestLock, OpRoot, OpSecInfo, OpListShares, OpStatFS, OpQuota,
-		OpSnapshots, OpRecord, OpSpell:
+		OpSnapshots, OpRecord, OpSpell, OpSessionUp, OpSessionDown:
 		return false
 	}
 	return true
