@@ -2593,8 +2593,11 @@ type Content interface {
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
 }
 
-// Blocks is RFC 9 §8's view, satisfied here, one per namespace: every call
-// reads and writes only that namespace's partition (§2.6). Retirement and
+// Blocks is RFC 9 §8's view of block records, satisfied here, one per namespace:
+// every call reads and writes only that namespace's partition (§2.6). RFC 9's
+// per-namespace calls on NS‖ns records (Lease, State, RecordRecheck, RecordNonce)
+// are RFC 16 §4.2's; Settle, which moves retired blocks to deleted through BR
+// (RFC 9 §3.7), is listed here. Retirement and
 // resurrection are not calls: they happen inside count changes (§7.1).
 type Blocks interface {
     Due(ctx context.Context, part Partition) iter.Seq2[BlockName, error]          // RFC 9 §3.1
@@ -2622,6 +2625,7 @@ type Blocks interface {
     RebuildIndex(ctx context.Context, check bool) iter.Seq2[Mismatch, error]   // RFC 9 §7.4
     RebuildReverse(ctx context.Context, share ShareID, check bool) iter.Seq2[Mismatch, error] // RFC 9 §7.4
     Hold(ctx context.Context, reason string, on bool) error                    // RFC 9 §6.4
+    Settle(ctx context.Context) error                                          // RFC 9 §3.7: retired → deleted up to store time, unverified; last transaction updates the nonce record
 }
 
 var (
