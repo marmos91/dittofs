@@ -937,10 +937,10 @@ func TestEdge_ReleaseMiddleEndsAndAll(t *testing.T) {
 
 // TestEdge_FullyReleasedSegmentReclaimedWithoutRead checks that a segment
 // whose every record is released is retired on its own, once its releases
-// are durable, without a repack and without one read of it: the accounted
-// storage — the listed segments plus the whole spares spareSlack nets out
-// of UsedBytes, whichever way Inspect treats them — falls by exactly the
-// segment's accounted bytes, freeing them marks them so, freed exactly once.
+// are durable, without a repack and without one read of it: the segment
+// leaves the journal's set, the accounted storage moves only by whole
+// segment caps, the freed counter never debits more than the segment's
+// account, and on the unlink path exactly it.
 func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -957,13 +957,16 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	before := f.J.Stats()
 	reads := f.Seam.CallsFor(journalv2test.OpRead, name) + f.Seam.CallsFor(journalv2test.OpReadDirect, name)
 	info, _ := segmentInfo(f, seg)
-	var beforeSum int64
+	// The accounted storage as one figure: the listed segments' accounts plus
+	// the whole-spare rest spareSlack nets out of UsedBytes, whichever way
+	// Inspect treats spares. Whether the retire unlinks or recycles, what it
+	// does to this figure is observable; the before snapshot is taken once it
+	// has settled to whole spares, so a refill racing the snapshot is waited
+	// out, not read mid-flight.
+	wantAccounted(t, f, "before the releases")
+	beforeFootprint, _ := spareSlack(f)
 	for _, s := range f.J.Inspect().Segments() {
-		beforeSum += s.Allocated
-	}
-	beforeExtra, ok := spareSlack(f)
-	if !ok {
-		t.Fatalf("UsedBytes is not the listed segments' sizes plus whole spares before the releases")
+		beforeFootprint += s.Allocated
 	}
 
 	for _, r := range recs {
@@ -979,28 +982,49 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	if _, ok := segmentInfo(f, seg); ok {
 		t.Fatalf("segment %d is still owned after every record of it was released", seg)
 	}
-	// The retirement handed back exactly the segment's accounted bytes: the
-	// accounted footprint — the listed segments plus whatever whole spares
-	// spareSlack nets out of UsedBytes, whichever way Inspect treats them —
-	// falls by the segment's account, and no other listed segment moved or
-	// was added.
-	var afterSum int64
+	// The retire is one of two paths (RFC 28 §2.2), and both are visible at
+	// the seam: the retire unlinks the segment's name — a recycle that fails
+	// lands there too, its fallback unlink — or renames it to a fresh one for
+	// the spare pool. Which path ran decides what the accounting must show: a
+	// recycle's rename is the take of a spare whose cap stays in the journal's
+	// account, an unlink hands the cap back to the filesystem. The path is
+	// therefore read, not assumed, before the exact checks below.
+	unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
+
+	// decision: the exact fall is checked per path, and modulo whole spares,
+	// because the retire's unlink-or-recycle choice is the spare pool's, made
+	// at retirement and never the test's (RFC 1 §7.3: nothing in the fixture
+	// pins the pool below its target), while spares are made and consumed off
+	// the write path (spareSlack's own marker), so an equality to the byte
+	// races a refill the journal is allowed to run. The unlink's fall is the
+	// segment's whole account give or take whole spares; the recycle's is
+	// nothing, give or take them — its cap moved into the spare pool, out of
+	// no account at all. Subtracted below bound is the retire that left the
+	// bytes twice, and a fall off the account by less than a cap is storage
+	// moved with no segment boundary to move it on. Overturned once Stats
+	// reports the spares, when the fall compares exactly.
+	wantAccounted(t, f, "after the retirement")
+	afterFootprint, _ := spareSlack(f)
 	for _, s := range f.J.Inspect().Segments() {
-		afterSum += s.Allocated
+		afterFootprint += s.Allocated
 	}
-	afterExtra, ok := spareSlack(f)
-	if !ok {
-		t.Fatalf("UsedBytes is not the listed segments' sizes plus whole spares after the retirement")
+	wantFall := map[bool]int64{true: info.Allocated, false: 0}[unlinked]
+	if fell := beforeFootprint - afterFootprint; !sameBut(beforeFootprint, afterFootprint, wantFall) || fell < 0 {
+		t.Fatalf("the accounted storage moved from %d to %d over a retire that %s, want %d leave it, give or take whole spares", beforeFootprint, afterFootprint, map[bool]string{true: "unlinked", false: "recycled"}[unlinked], wantFall)
 	}
-	if fell := (beforeSum + beforeExtra) - (afterSum + afterExtra); fell != info.Allocated {
-		t.Fatalf("the accounted storage fell by %d over the retirement, want exactly the segment's %d (listed segments %d to %d, spares %d to %d)", fell, info.Allocated, beforeSum, afterSum, beforeExtra, afterExtra)
+	// Only an unlink returns the segment's account to the filesystem, so only
+	// it debits freed — freed is the unlink's counter (stats.go: the storage
+	// actually returned by unlinking segments) — and never more than the
+	// account: the bytes leave exactly once (RFC 1 §7.3).
+	freed := after.Counters.FreedBytes - before.Counters.FreedBytes
+	if unlinked && freed != uint64(info.Allocated) {
+		t.Fatalf("an unlink of a segment accounted at %d moved freed by %d, want exactly its account", info.Allocated, freed)
 	}
-	// FreedBytes rises by the unlink alone: unlike the footprint, it is never
-	// debited for a recycle's spare, so a journal that recycled the segment
-	// fails here rather than at the check above — and one that subtracted
-	// nothing fails both (RFC 1 §7.3: the bytes leave exactly once).
-	if got := after.Counters.FreedBytes - before.Counters.FreedBytes; got != uint64(info.Allocated) {
-		t.Fatalf("FreedBytes rose by exactly %d over the retirement of a segment accounted at %d", got, info.Allocated)
+	if !unlinked && freed > 0 {
+		t.Fatalf("a recycle that kept the segment as a spare moved freed by %d, want none: freed is the unlink's counter, and the spare's cap never left the journal's account", freed)
+	}
+	if freed > uint64(info.Allocated) {
+		t.Fatalf("freed rose by %d over retiring a segment accounted at %d: its bytes leave the account exactly once", freed, info.Allocated)
 	}
 }
 
@@ -1358,8 +1382,9 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 // own retirement, once every record of it is released, and a repack aimed at
 // it both select it, the segment leaves the journal once, the accounted
 // storage — the listed segments plus whatever whole spares spareSlack nets
-// out of UsedBytes — falls by exactly the segment's accounted bytes and
-// never more, whichever of the two reaches the retire first.
+// out of UsedBytes — falling by the segment's accounted bytes on the unlink
+// path and never more on either, whichever of the two reaches the retire
+// first.
 func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	for _, firstIs := range []string{"repack", "eviction"} {
 		t.Run(firstIs, func(t *testing.T) {
@@ -1380,13 +1405,16 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			heldRemove := f.Seam.Hold(t, journalv2test.OpRemove, name)
 			heldRename := f.Seam.Hold(t, journalv2test.OpRename, name)
 			before := f.J.Stats()
-			var beforeSum int64
+			// The accounted storage as one figure, settled to whole spares
+			// before the two selectors run: a refill racing the snapshot is
+			// waited out, not read mid-flight. Whether the retire unlinks or
+			// recycles is the spare pool's call made at the retire, and both
+			// holds are armed so the moment it starts is parked whichever it
+			// takes.
+			wantAccounted(t, f, "before the two selectors ran")
+			beforeFootprint, _ := spareSlack(f)
 			for _, x := range f.J.Inspect().Segments() {
-				beforeSum += x.Allocated
-			}
-			beforeExtra, ok := spareSlack(f)
-			if !ok {
-				t.Fatalf("UsedBytes is not the listed segments' sizes plus whole spares before the two selectors ran")
+				beforeFootprint += x.Allocated
 			}
 
 			repacked := make(chan error, 1)
@@ -1475,22 +1503,32 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			if _, ok := segmentInfo(f, seg); ok {
 				t.Fatalf("segment %d is still owned after both selectors retired it", seg)
 			}
-			// The accounted storage fell by exactly the one segment, once,
-			// whichever retire landed it and whatever the other subtracted:
-			// both the unlink and the recycle leave the footprint — the listed
-			// segments plus whatever whole spares spareSlack nets out of
-			// UsedBytes — one segment below what it was, and a double retire
-			// falls below that.
-			var afterSum int64
+			// The retire that landed took one of the two paths, and both are
+			// visible at the seam: an unlink of the segment's name — which a
+			// failed recycle's fallback also is — or a rename to a fresh one
+			// for the spare pool. The path decides what the accounting below
+			// must show, so it is read, not assumed.
+			unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
+			// decision: the fall is checked per path and modulo whole spares.
+			// The unlink-or-recycle choice is the spare pool's at the retire
+			// (RFC 1 §7.3), and spares move off the write path
+			// (spareSlack's marker), so exact bytes race a refill the journal
+			// is allowed to run. The unlink's fall is the segment's whole
+			// account; the recycle's is nothing, its cap having moved into the
+			// spare pool. A double retire falls below, and UsedBytes below the
+			// listed accounts is no journal at all. Overturned once Stats
+			// reports the spares, when the fall compares exactly.
+			wantAccounted(t, f, "after both selectors ran")
+			afterFootprint, _ := spareSlack(f)
 			for _, x := range f.J.Inspect().Segments() {
-				afterSum += x.Allocated
+				afterFootprint += x.Allocated
 			}
-			afterExtra, ok := spareSlack(f)
-			if !ok {
-				t.Fatalf("UsedBytes is not the listed segments' sizes plus whole spares after both selectors ran")
+			wantFall := map[bool]int64{true: s.Allocated, false: 0}[unlinked]
+			if fell := beforeFootprint - afterFootprint; !sameBut(beforeFootprint, afterFootprint, wantFall) || fell < 0 {
+				t.Fatalf("the accounted storage moved from %d to %d over a double selection whose retire %s, want %d leave it, give or take whole spares", beforeFootprint, afterFootprint, map[bool]string{true: "unlinked", false: "recycled"}[unlinked], wantFall)
 			}
-			if fell := (beforeSum + beforeExtra) - (afterSum + afterExtra); fell != s.Allocated {
-				t.Fatalf("the accounted storage fell by %d over the double selection, want exactly the segment's %d once (listed segments %d to %d, spares %d to %d)", fell, s.Allocated, beforeSum, afterSum, beforeExtra, afterExtra)
+			if after.UsedBytes < 0 {
+				t.Fatalf("UsedBytes = %d after the retirement, want it never below zero", after.UsedBytes)
 			}
 		})
 	}
