@@ -54,7 +54,7 @@ func (f *file) Sync() error {
 		return &fs.PathError{
 			Op:   "FlushFileBuffers",
 			Path: f.f.Name(),
-			Err:  serr,
+			Err:  fullVolume(serr),
 		}
 	}
 
@@ -96,7 +96,7 @@ func (o *OS) SyncDir() error {
 		return &fs.PathError{
 			Op:   "open",
 			Path: o.dir,
-			Err:  err,
+			Err:  fullVolume(err),
 		}
 	}
 
@@ -106,7 +106,7 @@ func (o *OS) SyncDir() error {
 		errs = append(errs, &fs.PathError{
 			Op:   "FlushFileBuffers",
 			Path: o.dir,
-			Err:  err,
+			Err:  fullVolume(err),
 		})
 	}
 
@@ -116,7 +116,7 @@ func (o *OS) SyncDir() error {
 		errs = append(errs, &fs.PathError{
 			Op:   "CloseHandle",
 			Path: o.dir,
-			Err:  err,
+			Err:  fullVolume(err),
 		})
 	}
 

@@ -1,9 +1,11 @@
 package platform
 
 import (
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -96,7 +98,7 @@ func (o *OS) open(name string, disposition uint32) (*file, error) {
 		return nil, &fs.PathError{
 			Op:   "open",
 			Path: path,
-			Err:  err,
+			Err:  fullVolume(err),
 		}
 	}
 
@@ -155,12 +157,145 @@ func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
 	return f.ReadAt(p, off)
 }
 
+// maxWrite is the most one WriteFile asks for, since it counts its bytes in
+// 32 bits.
+const maxWrite = 1 << 30
+
+// WriteAt writes p at off through the table, inside Control, so a concurrent
+// Close cannot release the handle during the calls, and a closed file fails
+// with fs.ErrClosed before any call. Each write starts at the offset its
+// overlapped names. The handle is synchronous, so Windows still moves the
+// file pointer to the end of each write; nothing here reads the pointer,
+// since every read and write names its own offset. A short write continues
+// where it stopped. A failed write is returned once, with the bytes written
+// before it, and a full volume matches syscall.ENOSPC (see diskFull).
 func (f *file) WriteAt(p []byte, off int64) (int, error) {
-	return f.f.WriteAt(p, off)
+	if off < 0 {
+		return 0, &fs.PathError{
+			Op:   "WriteFile",
+			Path: f.f.Name(),
+			Err:  windows.ERROR_INVALID_PARAMETER,
+		}
+	}
+
+	rc, err := f.f.SyscallConn()
+	if err != nil {
+		return 0, &fs.PathError{
+			Op:   "WriteFile",
+			Path: f.f.Name(),
+			Err:  err,
+		}
+	}
+
+	var (
+		n    int
+		werr error
+	)
+
+	if err := rc.Control(func(fd uintptr) {
+		n, werr = f.write(windows.Handle(fd), p, off)
+	}); err != nil {
+		return 0, &fs.PathError{
+			Op:   "WriteFile",
+			Path: f.f.Name(),
+			Err:  fs.ErrClosed,
+		}
+	}
+
+	if werr != nil {
+		return n, &fs.PathError{
+			Op:   "WriteFile",
+			Path: f.f.Name(),
+			Err:  fullVolume(werr),
+		}
+	}
+
+	return n, nil
 }
 
+// write makes WriteAt's calls on h and returns the bytes written and the
+// error that stopped it, if one did.
+func (f *file) write(h windows.Handle, p []byte, off int64) (int, error) {
+	n := 0
+
+	for n < len(p) {
+		o := windows.Overlapped{
+			Offset:     uint32(off),
+			OffsetHigh: uint32(off >> 32),
+		}
+
+		var done uint32
+
+		if err := f.calls.writeFile(h, p[n:min(len(p), n+maxWrite)], &done, &o); err != nil {
+			return n, err
+		}
+
+		// A write that writes nothing and reports no error would repeat for
+		// ever. It is io.ErrUnexpectedEOF, as os.File.WriteAt reports it on
+		// Windows, where internal/poll's Pwrite returns that error for it.
+		if done == 0 {
+			return n, io.ErrUnexpectedEOF
+		}
+
+		n += int(done)
+		off += int64(done)
+	}
+
+	return n, nil
+}
+
+// Truncate sets the end of file through the table, inside Control, as
+// WriteAt writes. A full volume matches syscall.ENOSPC (see diskFull).
 func (f *file) Truncate(size int64) error {
-	return f.f.Truncate(size)
+	if size < 0 {
+		return &fs.PathError{
+			Op:   "SetFileInformationByHandle",
+			Path: f.f.Name(),
+			Err:  windows.ERROR_INVALID_PARAMETER,
+		}
+	}
+
+	rc, err := f.f.SyscallConn()
+	if err != nil {
+		return &fs.PathError{
+			Op:   "SetFileInformationByHandle",
+			Path: f.f.Name(),
+			Err:  err,
+		}
+	}
+
+	var serr error
+
+	if err := rc.Control(func(fd uintptr) {
+		serr = f.setSize(windows.Handle(fd), windows.FileEndOfFileInfo, size)
+	}); err != nil {
+		return &fs.PathError{
+			Op:   "SetFileInformationByHandle",
+			Path: f.f.Name(),
+			Err:  fs.ErrClosed,
+		}
+	}
+
+	if serr != nil {
+		return &fs.PathError{
+			Op:   "SetFileInformationByHandle",
+			Path: f.f.Name(),
+			Err:  fullVolume(serr),
+		}
+	}
+
+	return nil
+}
+
+// setSize sets the size class names, the allocation size or the end of
+// file, to size on h.
+func (f *file) setSize(h windows.Handle, class uint32, size int64) error {
+	return f.calls.setFileInformationByHandle(
+		h,
+		class,
+		(*byte)(unsafe.Pointer(&size)),
+		uint32(unsafe.Sizeof(size)),
+	)
 }
 
 // Size reads the file's size on its own handle. It does not use
@@ -197,7 +332,7 @@ func (f *file) Size() (int64, error) {
 		return 0, &fs.PathError{
 			Op:   "GetFileInformationByHandle",
 			Path: f.f.Name(),
-			Err:  serr,
+			Err:  fullVolume(serr),
 		}
 	}
 

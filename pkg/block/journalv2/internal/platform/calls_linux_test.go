@@ -97,8 +97,8 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"Dirent":                   true,
 
 		// Windows: constants, the handle, overlapped and file information
-		// types, and the conversion of a path to UTF-16, which makes no
-		// system call.
+		// types, the conversion of a path to UTF-16, which makes no system
+		// call, and the errno type and ENOSPC a full volume is matched with.
 		"GENERIC_READ":               true,
 		"GENERIC_WRITE":              true,
 		"FILE_SHARE_READ":            true,
@@ -111,10 +111,14 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"FileAllocationInfo":         true,
 		"FileEndOfFileInfo":          true,
 		"ERROR_INVALID_PARAMETER":    true,
+		"ERROR_DISK_FULL":            true,
+		"ERROR_HANDLE_DISK_FULL":     true,
 		"Handle":                     true,
 		"Overlapped":                 true,
 		"ByHandleFileInformation":    true,
 		"UTF16PtrFromString":         true,
+		"Errno":                      true,
+		"ENOSPC":                     true,
 	}
 	raw := map[string]bool{
 		"golang.org/x/sys/unix":    true,

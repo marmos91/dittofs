@@ -4,7 +4,6 @@ import (
 	"io"
 	"io/fs"
 	"math"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -34,7 +33,7 @@ var zeros [zeroChunk]byte
 // made on the handle inside Control, so a concurrent Close cannot release it
 // during the calls, and on a closed file a valid, non-empty range fails with
 // fs.ErrClosed before any call. A failed call is returned once and no call
-// follows it.
+// follows it, and a full volume matches syscall.ENOSPC (see diskFull).
 //
 // decision: zeros are always written, and the valid data length is never set
 // with SetFileValidData. That call skips zero filling, so the range would
@@ -92,7 +91,7 @@ func (f *file) Allocate(off, n int64) error {
 		return &fs.PathError{
 			Op:   op,
 			Path: f.f.Name(),
-			Err:  aerr,
+			Err:  fullVolume(aerr),
 		}
 	}
 
@@ -112,15 +111,7 @@ func (f *file) allocate(h windows.Handle, off, n int64) (string, error) {
 
 	if sizeOf(&info) < end {
 		for _, class := range [...]uint32{windows.FileAllocationInfo, windows.FileEndOfFileInfo} {
-			size := end
-
-			err := f.calls.setFileInformationByHandle(
-				h,
-				class,
-				(*byte)(unsafe.Pointer(&size)),
-				uint32(unsafe.Sizeof(size)),
-			)
-			if err != nil {
+			if err := f.setSize(h, class, end); err != nil {
 				return "SetFileInformationByHandle", err
 			}
 		}
