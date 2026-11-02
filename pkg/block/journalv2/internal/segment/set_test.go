@@ -165,8 +165,18 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 	if len(logs.recs) != 1 {
 		t.Fatalf("the ledger logged %d records, want the one Warn", len(logs.recs))
 	}
-	if rec := logs.recs[0]; logs.attr(rec, "op") != "recycle" {
-		t.Fatalf("the refused recycle logged the op as %v, want recycle", logs.attr(rec, "op"))
+	rec := logs.recs[0]
+	if rec.Level != slog.LevelWarn {
+		t.Fatalf("the refused recycle logged at %v, want Warn", rec.Level)
+	}
+	if rec.Message != absentMessage {
+		t.Fatalf("the refused recycle logged %q, want %q", rec.Message, absentMessage)
+	}
+	if got := logs.attr(rec, "segment"); got != uint64(old) {
+		t.Fatalf("the refused recycle logged the segment as %v, want the recycled id %d", got, uint64(old))
+	}
+	if got := logs.attr(rec, "op"); got != "recycle" {
+		t.Fatalf("the refused recycle logged the op as %v, want recycle", got)
 	}
 }
 
