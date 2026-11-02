@@ -26,7 +26,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 
 	for round := range rounds {
 		var logs capturing
-		s := NewSet(segCap, newLogger(&logs))
+		s := NewSet(segCap, slog.New(&logs))
 		id := core.SegmentID(1)
 		if err := s.AddSpare(id); err != nil {
 			t.Fatalf("AddSpare: %v", err)
@@ -39,25 +39,24 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
-		var winners, losers, other atomic.Int32
+		var winners, losers atomic.Int32
 		for range racers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := s.Retire(id)
+				freed, err := s.Retire(id)
 				switch {
-				case err == nil:
+				case err == nil && freed == segCap:
 					winners.Add(1)
-				case errors.Is(err, ErrNotInSet):
+				case errors.Is(err, ErrNotInSet) && freed == 0:
 					losers.Add(1)
 				default:
-					other.Add(1)
-					t.Errorf("a concurrent retire returned %v, want nil or %v", err, ErrNotInSet)
+					t.Errorf("a concurrent retire returned %d, %v, want the cap and nil, or 0 and %v", freed, err, ErrNotInSet)
 				}
 			}()
 		}
 		wg.Wait()
-		if w, l := winners.Load(), losers.Load(); w != 1 || l != racers-1 {
+		if w, l := winners.Load(), losers.Load(); w+l != racers || w != 1 || l != racers-1 {
 			t.Fatalf("round %d: %d retires subtracted and %d found nothing, want 1 and %d", round, w, l, racers-1)
 		}
 
@@ -87,11 +86,8 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		if err := s2.Seal(id); err != nil {
 			t.Fatalf("Seal: %v", err)
 		}
-		var (
-			wg2      sync.WaitGroup
-			winners2 int32
-			refused2 int32
-		)
+		var wg2 sync.WaitGroup
+		var retired, recycled, refused2 atomic.Int32
 		for i := range 2 {
 			wg2.Add(1)
 			go func() {
@@ -102,22 +98,40 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 				} else {
 					err = s2.Recycle(id, core.SegmentID(2))
 				}
-				if err == nil {
-					atomic.AddInt32(&winners2, 1)
+				if err != nil {
+					refused2.Add(1)
+					return
+				}
+				if i == 0 {
+					retired.Add(1)
 				} else {
-					atomic.AddInt32(&refused2, 1)
+					recycled.Add(1)
 				}
 			}()
 		}
 		wg2.Wait()
-		if w, r := atomic.LoadInt32(&winners2), atomic.LoadInt32(&refused2); w != 1 || r != 1 {
-			t.Fatalf("round %d: the retire and the recycle ended %d to %d, want exactly one winner", round, w, r)
+		// The loser is refused whichever side wins, so the flags name the
+		// winner by kind, not by count: one retired or one recycled, never
+		// both, never neither.
+		if w, r := retired.Load(), recycled.Load(); w+r != 1 || refused2.Load() != 1 {
+			t.Fatalf("round %d: %d retires and %d recycles won, %d refused, want one winner of one kind and one refusal", round, w, r, refused2.Load())
+		}
+		c2 := s2.Counters()
+		if c2.Segments != 0 {
+			t.Fatalf("round %d, retire against recycle: the set still holds %d segments, want the one id gone whichever call took it", round, c2.Segments)
+		}
+		switch recycleWon := recycled.Load() == 1; {
+		case !recycleWon && c2.UsedBytes != 0 || recycleWon && c2.UsedBytes != segCap:
+			t.Fatalf("round %d, retire against recycle: the recycle won %v, but the footprint is %d with %d spares", round, recycleWon, c2.UsedBytes, c2.Spares)
+		}
+		if recycled.Load() == 1 && c2.Spares != 1 {
+			t.Fatalf("round %d: the recycle won but left %d spares, want one", round, c2.Spares)
+		}
+		if retired.Load() == 1 && c2.Spares != 0 {
+			t.Fatalf("round %d: the retire won but left %d spares, want none", round, c2.Spares)
 		}
 		if err := s2.Check(); err != nil {
 			t.Fatalf("round %d, retire against recycle: %v", round, err)
 		}
 	}
 }
-
-// newLogger wraps a handler in the logger the ledger takes.
-func newLogger(h *capturing) *slog.Logger { return slog.New(h) }

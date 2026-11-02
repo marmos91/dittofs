@@ -39,19 +39,19 @@ const (
 	opRecycle
 )
 
-// decode turns the fuzz's input into a sequence of ops over ids 1..8, tags
+// decode turns the fuzz's input into a sequence of ops over ids 0..8, tags
 // 1..3 and sizes drawn from six input bytes: byte 4 selects the size's shape —
 // zero, the full cap, one past the cap, a negative, or a plain value — so the
 // refusals at each boundary are reachable, and the record and shrink paths
-// see n of 0 and below. Ids are 1..8 except that the fresh id can also be 0,
-// the id that names no segment. Shapes are not constrained beyond that, so
-// any interleaving of states and byte counts can arise.
+// see n of 0 and below. The segment id spans 0 (the id that names no segment)
+// and 1..8; the fresh id spans the same. Shapes are not constrained beyond
+// that, so any interleaving of states and byte counts can arise.
 func decode(data []byte, segCap int64) []op {
 	ops := make([]op, 0, len(data)/6)
 	for len(data) >= 6 {
 		var o op
 		o.kind = data[0] % 10
-		o.id = core.SegmentID(1 + uint64(data[1])%8)
+		o.id = core.SegmentID(uint64(data[1]) % 9)
 		o.fresh = core.SegmentID(uint64(data[2]) % 9)
 		o.tag = core.ShareTag(1 + uint32(data[3])%3)
 		switch data[4] {
@@ -73,7 +73,8 @@ func decode(data []byte, segCap int64) []op {
 }
 
 // oracleSeg is what the plain-map oracle knows about one segment: its state
-// and the size it is accounted at, and tags set only where it holds bytes.
+// and the size it is accounted at. Its record bytes live in the oracle's
+// per-segment segTags.
 type oracleSeg struct {
 	state State
 	size  int64
@@ -131,14 +132,14 @@ func (o *oracle) releaseSeg(id core.SegmentID) {
 func (o *oracle) apply(op op) (err error) {
 	switch op.kind {
 	case opAddSpare:
+		if op.id == 0 {
+			return ErrBadID
+		}
 		if _, ok := o.segs[op.id]; ok {
 			return ErrDuplicateID
 		}
 		if _, ok := o.spares[op.id]; ok {
 			return ErrDuplicateID
-		}
-		if op.id == 0 {
-			return ErrBadID
 		}
 		o.spares[op.id] = struct{}{}
 		return nil
@@ -176,6 +177,9 @@ func (o *oracle) apply(op op) (err error) {
 		if !ok {
 			return ErrNotInSet
 		}
+		if seg.state == Active {
+			return ErrWrongState
+		}
 		if op.n <= 0 || op.n > seg.size {
 			return ErrBadSize
 		}
@@ -204,7 +208,7 @@ func (o *oracle) apply(op op) (err error) {
 		return nil
 	case opRelease:
 		if _, ok := o.segs[op.id]; !ok {
-			return nil // no-op: out of the set (R57), nothing to release
+			return nil // no-op: out of the set, nothing to release
 		}
 		delete(o.claimed, op.id)
 		return nil
@@ -347,11 +351,19 @@ func FuzzSet(f *testing.F) {
 		op6(opShrink, 0, 0, 0, 4, 0), op6(opShrink, 0, 0, 0, 4, 1),
 	))
 	f.Add(ops(
-		// An AddSpare and a recycle under the id that names no segment.
-		op6(opAddSpare, 7, 0, 0, 4, 0),   // names segment 8
-		op6(opAddSpare, 255, 0, 0, 4, 0), // also segment 8: a duplicate
-		op6(opTake, 7, 1, 0, 4, 0), op6(opSeal, 7, 1, 0, 4, 0),
-		op6(opRecycle, 7, 0, 0, 4, 0), // fresh id 0: refused
+		// An AddSpare of the id that names no segment, refused before the
+		// duplicate checks, and a recycle naming the same id as its fresh one.
+		op6(opAddSpare, 8, 0, 0, 4, 0), // id 0: names no segment
+		op6(opAddSpare, 0, 0, 0, 4, 0), // id 1
+		op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 1, 0, 4, 0),
+		op6(opRecycle, 0, 8, 0, 4, 0), // fresh id 0: refused
+	))
+	f.Add(ops(
+		// A shrink of a segment a stream still appends to, refused before the
+		// size checks, then the torn-tail cut of the same segment once ended.
+		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
+		op6(opShrink, 0, 0, 0, 4, 5), op6(opEnd, 0, 0, 0, 4, 0),
+		op6(opShrink, 0, 0, 0, 4, 5), op6(opRetire, 0, 0, 0, 4, 0),
 	))
 
 	segCap := int64(4096)

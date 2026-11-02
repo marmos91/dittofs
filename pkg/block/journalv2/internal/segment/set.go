@@ -137,7 +137,9 @@ type Set struct {
 
 // entry is one segment of the set: its state, the size it is accounted at,
 // its claim flag, and the record bytes per share tag it holds. The claim
-// lives here so it leaves with the segment the day it is retired.
+// lives here so it leaves with the segment the day it is retired. Its fields
+// are guarded by the mu of the Set that holds it, and only that Set reaches
+// an entry — the capacity lock domain its owner names covers it.
 type entry struct {
 	state   State
 	size    int64
@@ -257,10 +259,22 @@ func (s *Set) End(id core.SegmentID) error {
 	return nil
 }
 
-// Shrink lowers the accounted size of a segment of the set, in any state:
-// what a seal's truncation or a torn-tail cut takes from the file comes off
-// the footprint here. The deducted difference is the caller's to name; only
-// the accounting is the ledger's.
+// Shrink lowers the accounted size of a segment of the set that no stream
+// appends to anymore: what a seal's truncation or a torn-tail cut of an
+// ended segment takes from the file comes off the footprint here. A segment a
+// stream still appends to is refused: its bytes sit at the cap from its
+// takeover to its seal or its end, and a cut before either would sit the
+// footprint below the storage the file keeps allocating, a break no check of
+// the set's own fields can see. The deducted difference is the caller's to
+// name; only the accounting is the ledger's.
+//
+// decision: Active is refused rather than served, because both cuts the
+// format knows — the seal's truncation and the torn-tail cut of an ended
+// segment — run after the stream left the segment, so a shrink naming an
+// Active one is a caller bug, and serving it would let the footprint fall
+// below the allocated storage with the ledger none the wiser. Withdrawn if a
+// cut of an appended-to segment ever exists, which a marker from the stream
+// side would have to keep above the append's bytes.
 func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -268,6 +282,9 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	e, ok := s.segs[id]
 	if !ok {
 		return ErrNotInSet
+	}
+	if e.state == Active {
+		return ErrWrongState
 	}
 	if size <= 0 || size > e.size {
 		return ErrBadSize

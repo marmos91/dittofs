@@ -624,8 +624,8 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 		t.Fatalf("the retire freed %d, want the shrunk size %d", freed, tail)
 	}
 
-	// An ended segment keeps its cap until it is unlinked (R50): the
-	// failure strands the storage, not the accounting.
+	// An ended segment keeps its cap until it is unlinked: the failure
+	// strands the storage, not the accounting.
 	ended := core.SegmentID(2)
 	if err := s.AddSpare(ended); err != nil {
 		t.Fatalf("AddSpare: %v", err)
@@ -678,12 +678,17 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 		t.Fatalf("the torn ended segment retired at %d, want its cut size %d", freed, tail)
 	}
 
+	// The size bounds, on one sealed segment: a shrink may keep the size or
+	// lower it, never grow it and never empty it.
 	growing := core.SegmentID(4)
 	if err := s.AddSpare(growing); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(growing); err != nil {
 		t.Fatalf("Take: %v", err)
+	}
+	if err := s.Seal(growing); err != nil {
+		t.Fatalf("Seal: %v", err)
 	}
 	const kept = 256
 	if err := s.Shrink(growing, kept); err != nil {
@@ -694,7 +699,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 		t.Fatalf("a growing shrink: %v, want %v", err, ErrBadSize)
 	}
 	if err := s.Shrink(growing, kept); err != nil {
-		t.Fatalf("a shrink to the current size: %v, want the no-op the plan's floor allows", err)
+		t.Fatalf("a shrink to the current size: %v, want the no-op it is", err)
 	}
 	if err := s.Shrink(growing, segCap); !errors.Is(err, ErrBadSize) {
 		t.Fatalf("a shrink to the cap: %v, want %v: it grows the accounted size", err, ErrBadSize)
@@ -709,6 +714,59 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 		t.Fatalf("the refused shrinks changed the counters: %v, want %v", after, before)
 	}
 }
+
+// TestShrinkRefusesAnActiveSegment: a segment is accounted at its cap from
+// its takeover to its seal or its end, so the two cuts that shorten it — a
+// seal's truncation and a torn-tail cut of an ended segment — both land after
+// the stream left it. A shrink while a stream still appends would sit the
+// footprint below the storage the file allocates, a ledger no size check of
+// the entries' own fields can see, so it is refused as a wrong state and the
+// segment keeps everything: its footprint, its records and its future.
+func TestShrinkRefusesAnActiveSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	id := core.SegmentID(1)
+	if err := s.AddSpare(id); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	before := s.Counters()
+
+	if err := s.Shrink(id, half(segCap)); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("a shrink of an Active segment: %v, want %v", err, ErrWrongState)
+	}
+	if err := s.Shrink(id, segCap); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("a shrink of an Active segment to the size it is accounted at: %v, want %v: no state below Sealed serves a shrink", err, ErrWrongState)
+	}
+	if after := s.Counters(); after != before {
+		t.Fatalf("the refused shrinks changed the counters: %v, want %v", after, before)
+	}
+	if n := s.ShareBytes(1); n > 0 {
+		t.Fatalf("the refused shrinks released record bytes: %d", n)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// The refusal is the state's, not the id's: once the segment is ended,
+	// the torn-tail cut the refused shrink stood in for is served.
+	if err := s.End(id); err != nil {
+		t.Fatalf("End after the refused shrinks: %v", err)
+	}
+	if err := s.Shrink(id, half(segCap)); err != nil {
+		t.Fatalf("the torn-tail cut of the ended segment: %v", err)
+	}
+	if c := s.Counters(); c.UsedBytes != half(segCap) {
+		t.Fatalf("the ended segment is accounted at %d, want the cut size %d", c.UsedBytes, half(segCap))
+	}
+}
+
+// half returns half of n, for a cap's middle.
+func half(n int64) int64 { return n / 2 }
 
 // TestRecordBytesLeaveWithTheirSegment: every record's bytes are accounted to
 // the share whose tag the record carries, and each segment releases only its
@@ -850,15 +908,17 @@ func TestCheckReportsMismatch(t *testing.T) {
 
 	// Each maintained count is checked against the walk too: a counter that
 	// drifted while the footprint stayed true is a broken ledger the same
-	// way, and the check names the figures it disagrees with.
-	for _, corrupt := range []func(){
-		func() { s.c.Segments++ },
-		func() { s.c.Sealed++ },
-		func() { s.c.Spares++ },
+	// way. Each corruption is made with every other figure true, so only
+	// its own clause can be the one that reports it.
+	for _, corrupt := range []func(c *Counters){
+		func(c *Counters) { c.Segments++ },
+		func(c *Counters) { c.Sealed++ },
+		func(c *Counters) { c.Spares++ },
 	} {
 		s.mu.Lock()
-		s.c.UsedBytes = footprint // restore the true footprint, corrupt the count
-		corrupt()
+		s.c.Segments, s.c.Sealed, s.c.Spares = 1, 1, 1 // the true counts
+		s.c.UsedBytes = footprint
+		corrupt(&s.c)
 		s.mu.Unlock()
 		err := s.Check()
 		if err == nil {
@@ -872,18 +932,47 @@ func TestCheckReportsMismatch(t *testing.T) {
 		}
 	}
 
+	// Every figure back to the truth.
+	restore := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.c.Segments, s.c.Sealed, s.c.Spares = 1, 1, 1
+		s.c.UsedBytes = footprint
+		s.tags[4] = 100
+		delete(s.tags, 9)
+	}
+
 	// The per-tag totals are checked against the entries' own tags too: a
 	// release that dropped or doubled a share's bytes is a broken ledger the
 	// check, not only the fuzz oracle, has to see.
+	restore()
 	s.mu.Lock()
-	s.c.Segments, s.c.Sealed, s.c.Spares = 1, 1, 1 // the true counts, restored
-	s.c.UsedBytes = footprint
 	s.tags[4] += 1 // one byte more than any entry holds
 	s.mu.Unlock()
 	if err := s.Check(); err == nil {
 		t.Fatal("a share total that no entry makes up was not reported")
 	} else if !errors.Is(err, ErrMismatch) {
 		t.Fatalf("the share total was reported as %v, want it to wrap %v", err, ErrMismatch)
+	}
+
+	// A key the entries do not hold at all — a negative total a release
+	// leaves behind rather than deletes — is its own mismatch: the key sets
+	// differ, whatever the values add up to.
+	restore()
+	s.mu.Lock()
+	s.tags[9] = -5 // a key no entry makes up
+	s.mu.Unlock()
+	if err := s.Check(); err == nil {
+		t.Fatal("a share total with no entry behind it was not reported")
+	} else if !errors.Is(err, ErrMismatch) {
+		t.Fatalf("the entryless share total was reported as %v, want it to wrap %v", err, ErrMismatch)
+	}
+
+	// Everything true again: a consistent set holding a spare and a record
+	// checks clean, or the corruption cases would pass their own assertions.
+	restore()
+	if err := s.Check(); err != nil {
+		t.Fatalf("the check of the consistent set after the corruptions: %v", err)
 	}
 }
 
