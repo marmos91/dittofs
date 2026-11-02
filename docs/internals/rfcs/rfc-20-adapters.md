@@ -681,7 +681,9 @@ The lower half of the drawing above:
    state, and, for the last channel of an SMB session, calls `Disconnect`, with
    `Last` and the node entry's latest `Gen` when it was the node's last session
    of the client, repeating it until it succeeds; a newer `Gen` it returns is
-   stored and the decision taken again, and `ErrStaleClient` counts as success
+   stored and the decision taken again, and `ErrStaleClient` counts as success.
+   A `Connect` still in flight when its connection closes takes the same
+   decision when it returns, and sends that `Disconnect` itself
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 
 The service learns of a client at the protocol's own moment
