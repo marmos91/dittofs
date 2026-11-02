@@ -44,7 +44,7 @@ func fillUntilRefused(t *testing.T, f *journalv2test.Fixture, shares []int, firs
 		offs[k] += size
 	}
 	t.Fatalf("%d bytes written into a journal of %d were never refused", 2*journalv2test.FixtureMaxBytes, journalv2test.FixtureMaxBytes)
-	panic("unreachable")
+	return nil
 }
 
 // atCapacity fails the test unless the journal's allocated occupancy is
@@ -163,6 +163,9 @@ func loseDirty(t *testing.T, f *journalv2test.Fixture, i int) {
 func TestRFC1D_GenerationNeverRepeats(t *testing.T) {
 	f := journalv2test.New(t)
 
+	// Every loss of content not yet offloaded raises the generation by one
+	// (RFC 1 section 3.8), and it never falls below a value this process
+	// exposed (section 3.7).
 	start := f.J.Stats().LossGeneration
 	for i := range 3 {
 		loseDirty(t, f, i)
@@ -588,6 +591,8 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	}
 	writes, losses := segWrites(), f.J.Stats().Counters.CorruptExtentsDataLoss
 
+	// Verification reports the extents the index claims that the segments do
+	// not support, and repairs nothing (RFC 1 section 4.4).
 	report, err := f.J.Inspect().Verify(t.Context())
 	stub(t, "Inspect.Verify", err)
 	if err != nil {
