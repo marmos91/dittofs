@@ -488,8 +488,16 @@ var corpus = []seed{
 	{"a record the size of the segment fits", slices.Concat(
 		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
 		op6(opAddRecord, 1, 0, 1, 1, 0), // the cap itself: accepted, a fit lands on the size
-		op6(opAddRecord, 1, 0, 1, 4, 1), // refused: one byte past the size
+		op6(opAddRecord, 1, 0, 1, 4, 0), // refused: one byte past the size
 		op6(opEnd, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0, 0},
+	{"the cut at the held bytes, both sides", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 1, 4, 199), // 200 bytes of one share
+		op6(opEnd, 1, 0, 0, 4, 0),
+		op6(opShrink, 1, 0, 0, 4, 198), // refused: 199 is below the 200 held
+		op6(opShrink, 1, 0, 0, 4, 199), // accepted: the cut lands on the bytes held
+		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 0, 0},
 }
 
