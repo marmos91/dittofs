@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1386,11 +1385,6 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 	})
 }
 
-// zero reports whether every byte of b is zero.
-func zero(b []byte) bool {
-	return bytes.IndexFunc(b, func(r rune) bool { return r != 0 }) < 0
-}
-
 // writeUntilRefused writes 64 KiB records on file 0 through share 0 from
 // offset from, straight through WriteAt so a refusal for want of a spare is
 // returned rather than retried, until one is refused, and returns the
@@ -1416,9 +1410,9 @@ func writeUntilRefused(t *testing.T, f *journalv2test.Fixture, from int64) error
 //
 // decision: a leg that crashes with the pool empty but for a recycled
 // segment, and then needs the next roll to take that segment, depends on the
-// open making no spare for a short pool, which RFC 28 section 2.2, lines
-// 313 to 315, reads as: a new spare is made at Init, when the maximum is
-// raised, or when no full-size retired segment is to hand. No design that
+// open making no spare for a short pool, which RFC 28 section 2.2 reads
+// as: a new spare is made at Init, when the maximum is raised, or when no
+// full-size retired segment is to hand. No design that
 // drives the take through the seam alone avoids that dependence, so a
 // journal that refills the pool at open fails here, named, and the rule is
 // a question for the RFC's owner.
@@ -2274,21 +2268,21 @@ func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
 		t.Fatalf("make lost+found: %v", err)
 	}
 
-	unrelated := realDirNow(t, g)
+	unrelated := dirNow(t, g)
 	err = g.TryReopen()
 	stub(t, "Open", err)
 	if !errors.Is(err, journalv2.ErrNoJournal) {
 		t.Fatalf("opening a directory holding only unrelated files returned %v, want ErrNoJournal", err)
 	}
 
-	wantRealUntouched(t, g, unrelated)
+	wantUntouched(t, g, unrelated)
 	_, err = g.TryInit()
 	stub(t, "Init", err)
 	if !errors.Is(err, journalv2.ErrNotEmpty) {
 		t.Fatalf("Init on a directory holding only unrelated files returned %v, want ErrNotEmpty", err)
 	}
 
-	wantRealUntouched(t, g, unrelated)
+	wantUntouched(t, g, unrelated)
 
 	// An empty directory.
 	k := journalv2test.NewUnwatched(t)
@@ -2317,75 +2311,6 @@ func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
 
 	if format.Installation != [16]byte(journalv2test.FixtureInstall) {
 		t.Fatalf("the new journal's format file carries installation %x, want the %x Init was given", format.Installation, journalv2test.FixtureInstall)
-	}
-}
-
-// realDirImage is a directory as the real filesystem shows it, for a
-// directory holding entries the seam did not make: each name with whether it
-// is a directory and, for a file, its bytes, and the seam's counts of the
-// calls that change a directory or a file.
-type realDirImage struct {
-	dirs  map[string]bool
-	files map[string][]byte
-	calls map[string]int
-}
-
-// realDirNow reads the directory's image from the real filesystem.
-func realDirNow(t *testing.T, f *journalv2test.Fixture) realDirImage {
-	t.Helper()
-
-	img := realDirImage{dirs: map[string]bool{}, files: map[string][]byte{}, calls: map[string]int{}}
-	entries, err := os.ReadDir(f.Dir)
-	if err != nil {
-		t.Fatalf("read the directory: %v", err)
-	}
-
-	for _, e := range entries {
-		if e.IsDir() {
-			img.dirs[e.Name()] = true
-			continue
-		}
-
-		b, err := os.ReadFile(filepath.Join(f.Dir, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		img.files[e.Name()] = b
-	}
-
-	for _, op := range changingOps {
-		img.calls[op] = f.Seam.Calls(op)
-	}
-	return img
-}
-
-// wantRealUntouched fails the test unless the real directory holds the same
-// entries with the same bytes as before, and no call that changes a
-// directory or a file was made since.
-func wantRealUntouched(t *testing.T, f *journalv2test.Fixture, before realDirImage) {
-	t.Helper()
-
-	now := realDirNow(t, f)
-	if !maps.Equal(now.dirs, before.dirs) {
-		t.Fatalf("the directories are %v, were %v; the directory was to be left alone", slices.Sorted(maps.Keys(now.dirs)), slices.Sorted(maps.Keys(before.dirs)))
-	}
-
-	for name, b := range before.files {
-		if got, ok := now.files[name]; !ok || !bytes.Equal(got, b) {
-			t.Fatalf("%s was changed or removed; the directory was to be left alone", name)
-		}
-	}
-
-	for name := range now.files {
-		if _, ok := before.files[name]; !ok {
-			t.Fatalf("%s was created; the directory was to be left alone", name)
-		}
-	}
-
-	for _, op := range changingOps {
-		if now.calls[op] != before.calls[op] {
-			t.Fatalf("%d %s calls were made; the directory was to be left alone", now.calls[op]-before.calls[op], op)
-		}
 	}
 }
 
@@ -2607,11 +2532,10 @@ func TestRFC28C_KindValuesRefused(t *testing.T) {
 //
 // decision: the golden 56 bytes of a version 1 format file are pinned by
 // the raw package's layout test; this is the row's refusal and crash halves,
-// with nothing written to the file either way (RFC 28 section 2.1, line
-// 209). It is also
-// the check of the edits table's row for the format file changed from
-// outside, noticed at open; the row's other half, the file removed, is not
-// covered yet.
+// with nothing written to the file either way (RFC 28 section 2.1). It is
+// also the check of the edits table's row for the format file changed from
+// outside, noticed at open; the row's other half, the file removed, is
+// TestRFC28C_UnidentifiedDirectory's.
 func TestRFC28C_FormatFile(t *testing.T) {
 	const size = 64 << 10
 	f := journalv2test.New(t)

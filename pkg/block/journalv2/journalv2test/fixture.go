@@ -346,12 +346,9 @@ func File(i int) journalv2.FileID {
 func (f *Fixture) Crash(opts ...CrashOption) {
 	f.tb.Helper()
 
-	if err := f.Seam.Crash(opts...); err != nil {
+	if err := f.TryCrash(opts...); err != nil {
 		f.tb.Fatalf("fixture: crash: %v", err)
 	}
-
-	f.dropDead()
-	f.open(true)
 }
 
 // Kill ends the process holding the journal without a storage loss, as a
@@ -363,8 +360,9 @@ func (f *Fixture) Crash(opts ...CrashOption) {
 func (f *Fixture) Kill() {
 	f.tb.Helper()
 
-	f.Seam.Abandon()
-	f.open(true)
+	if err := f.TryKill(); err != nil {
+		f.tb.Fatalf("fixture: kill: %v", err)
+	}
 }
 
 // Reopen closes the journal cleanly and opens it again.

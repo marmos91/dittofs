@@ -14,6 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -495,6 +498,14 @@ func headerSlot(t *testing.T, name string, b []byte) []byte {
 	return b[:raw.SegmentHeaderSize]
 }
 
+// zero reports whether every byte of b is zero, comparing bytes, never
+// decoded runes.
+func zero(b []byte) bool {
+	return !slices.ContainsFunc(b, func(c byte) bool {
+		return c != 0
+	})
+}
+
 // endsInTrailer reports whether the segment bytes b are long enough to end
 // in a trailer and their last trailer-sized slot starts with its magic. It
 // checks no checksum.
@@ -663,35 +674,65 @@ func sealIdle(t *testing.T, f *journalv2test.Fixture, r rec) journalv2.SegmentID
 // changingOps are the seam calls that change a directory or a file.
 var changingOps = []string{journalv2test.OpCreate, journalv2test.OpWrite, journalv2test.OpTruncate, journalv2test.OpRename, journalv2test.OpRemove}
 
-// dirImage is the journal's directory as it is: every name with its durable
-// bytes, and the seam's count of each call that changes a directory or a
-// file.
+// dirImage is the journal's directory as the real filesystem shows it, so
+// entries the seam did not make, such as a lost+found directory, are in it
+// too: each subdirectory, each file with its bytes, and the seam's count of
+// each call that changes a directory or a file. The seam keeps the files it
+// removes outside the directory, so the real one holds what the seam's view
+// does.
 type dirImage struct {
+	dirs  map[string]bool
 	files map[string][]byte
 	calls map[string]int
 }
 
-// dirNow reads the directory's image.
+// dirNow reads the directory's image from the real filesystem.
 func dirNow(t *testing.T, f *journalv2test.Fixture) dirImage {
 	t.Helper()
 
-	img := dirImage{files: map[string][]byte{}, calls: map[string]int{}}
-	for _, name := range list(t, f) {
-		img.files[name] = durable(t, f, name)
+	img := dirImage{
+		dirs:  map[string]bool{},
+		files: map[string][]byte{},
+		calls: map[string]int{},
 	}
+
+	entries, err := os.ReadDir(f.Dir)
+	if err != nil {
+		t.Fatalf("read the directory: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			img.dirs[e.Name()] = true
+			continue
+		}
+
+		b, err := os.ReadFile(filepath.Join(f.Dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+
+		img.files[e.Name()] = b
+	}
+
 	for _, op := range changingOps {
 		img.calls[op] = f.Seam.Calls(op)
 	}
+
 	return img
 }
 
-// wantUntouched fails the test unless the directory holds the same names
-// with the same durable bytes as before, and no call that changes a
-// directory or a file was made since.
+// wantUntouched fails the test unless the directory holds the same entries
+// with the same bytes as before, and no call that changes a directory or a
+// file was made since.
 func wantUntouched(t *testing.T, f *journalv2test.Fixture, before dirImage) {
 	t.Helper()
 
 	now := dirNow(t, f)
+	if !maps.Equal(now.dirs, before.dirs) {
+		t.Fatalf("the directories are %v, were %v; the directory was to be left alone", slices.Sorted(maps.Keys(now.dirs)), slices.Sorted(maps.Keys(before.dirs)))
+	}
+
 	for name, b := range before.files {
 		if got, ok := now.files[name]; !ok || !bytes.Equal(got, b) {
 			t.Fatalf("%s was changed or removed; the directory was to be left alone", name)

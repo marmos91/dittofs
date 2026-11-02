@@ -3,6 +3,7 @@ package raw
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"slices"
 )
 
 // Test values. Within one structure every field gets its own range of byte
@@ -142,10 +143,7 @@ func le64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
 
 // zero reports whether every byte of b is zero.
 func zero(b []byte) bool {
-	for _, c := range b {
-		if c != 0 {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(b, func(c byte) bool {
+		return c != 0
+	})
 }
