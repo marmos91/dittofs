@@ -38,10 +38,7 @@ const (
 // https://learn.microsoft.com/windows-hardware/drivers/storage/querying-for-the-write-cache-property),
 // but not which error the query returns there; these two are the ones that say
 // the request itself is not handled. Any other error fails the check, an I/O
-// error included: Microsoft's class driver sample fails this query with
-// STATUS_IO_DEVICE_ERROR when the disk cannot read its caching mode page
-// (ClasspWriteCacheProperty, storage/class/classpnp/src/utils.c in
-// Windows-driver-samples), so such a disk cannot hold a journal.
+// error included (the decision in checkCacheProbe).
 const (
 	// errorInvalidFunction is ERROR_INVALID_FUNCTION, "Incorrect function."
 	errorInvalidFunction uint32 = 1
@@ -99,14 +96,30 @@ var (
 // set (DiskShutdownFlush, storage/class/disk/src/disk.c), and the class driver
 // reports that flag in this field (ClasspWriteCacheProperty,
 // storage/class/classpnp/src/utils.c). With it set, a sync does not reach the
-// device, so the volume is refused whatever the rest of the answer says,
-// a disabled or battery-backed cache included: the RFC names no exception.
+// device, so the volume is refused whatever the rest of the answer says.
+//
+// decision: a disabled or battery-backed cache is refused too, though
+// Microsoft recommends the policy for a battery-backed controller cache:
+// RFC 28 Appendix A names no exception. Withdraw it if the RFC grows one.
 func checkCacheProbe(p cacheProbe) error {
 	switch p.queryErr {
 	case 0:
 	case errorInvalidFunction, errorNotSupported:
 		return nil
 	default:
+		// decision: any other failed query fails the check, an I/O error
+		// included, though the RFC refuses only "where the platform reports
+		// it". Microsoft's class driver sample fills UserDefinedPowerProtection,
+		// then fails the whole query with STATUS_IO_DEVICE_ERROR when two reads
+		// of the disk's caching mode page fail (ClasspWriteCacheProperty,
+		// storage/class/classpnp/src/utils.c in Windows-driver-samples), so
+		// that error says the device did not describe its cache, not that its
+		// flushes are dropped. Failing closed keeps a journal off a volume
+		// whose policy went unread, at the cost of failing the check on such a
+		// disk whose flushes work. Withdraw it if a real disk fails the query
+		// this way: IOCTL_DISK_GET_CACHE_SETTING reports the same flag as
+		// DISK_CACHE_SETTING.IsPowerProtected without device I/O
+		// (DiskIoctlGetCacheSetting, storage/class/disk/src/disk.c).
 		return fmt.Errorf("%w: volume %s: Win32 error %d", errCacheQueryFailed, p.mountPoint, p.queryErr)
 	}
 
