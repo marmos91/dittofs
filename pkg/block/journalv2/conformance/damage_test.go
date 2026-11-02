@@ -217,10 +217,12 @@ func piecesOf(t *testing.T, where string, f *journalv2test.Fixture, s int, id jo
 
 // wantWholePieces fails the test unless write w comes back after a crash as
 // a prefix of its pieces, each piece whole or not at all: a read of the
-// write reports nothing missing, or one missing extent that starts where a
-// piece starts and runs to the write's end. The model accepts any prefix of
-// an uncertain write, since it cannot see where the pieces split; this holds
-// it to whole pieces (RFC 28 section 4.4).
+// write reports nothing missing, or missing extents that, joined, are one
+// extent starting where a piece starts and running to the write's end. The
+// read may name the lost pieces one by one, since missing is exact but need
+// not be coalesced (RFC 1 section 3.2). The model accepts any prefix of an
+// uncertain write, since it cannot see where the pieces split; this holds it
+// to whole pieces (RFC 28 section 4.4).
 func wantWholePieces(t *testing.T, where string, h *journalv2.Handle, w pieced) {
 	t.Helper()
 
@@ -231,11 +233,17 @@ func wantWholePieces(t *testing.T, where string, h *journalv2.Handle, w pieced) 
 		t.Fatalf("%s: read file %v's write over [%d,%d): %v", where, w.id, first.Off, end, err)
 	}
 
+	missing = joined(missing)
 	if len(missing) == 0 {
 		return
 	}
 
-	if len(missing) == 1 && missing[0].Off+missing[0].Len == end && slices.ContainsFunc(w.pieces, func(p journalv2.Extent) bool { return p.Off == missing[0].Off }) {
+	lost := missing[0]
+	atPiece := slices.ContainsFunc(w.pieces, func(p journalv2.Extent) bool {
+		return p.Off == lost.Off
+	})
+
+	if len(missing) == 1 && lost.Off+lost.Len == end && atPiece {
 		return
 	}
 

@@ -284,14 +284,21 @@ func wantBytes(t *testing.T, h *journalv2.Handle, id journalv2.FileID, off int64
 
 // wantExtentMissing fails the test unless a read of extent e of file id returns
 // no error, reports exactly e missing and leaves every byte of its buffer
-// untouched; a label says where a sweep stands. The buffer is compared byte
-// by byte, since the sentinel is not valid UTF-8 on its own.
+// untouched; a label says where a sweep stands. The missing extents are
+// joined first, since missing is exact but need not be coalesced (RFC 1
+// section 3.2). The buffer is compared byte by byte, since the sentinel is
+// not valid UTF-8 on its own.
 func wantExtentMissing(t *testing.T, h *journalv2.Handle, id journalv2.FileID, e journalv2.Extent, where ...string) {
 	t.Helper()
 
 	p, missing, err := readAt(t, h, id, e.Off, int(e.Len))
-	if err != nil || len(missing) != 1 || missing[0] != e {
-		t.Fatalf("%sfile %v: read of %+v reports missing %+v, err %v, want exactly it and no error", at(where), id, e, missing, err)
+	if err != nil {
+		t.Fatalf("%sfile %v: read of %+v: %v, want no error", at(where), id, e, err)
+	}
+
+	missing = joined(missing)
+	if len(missing) != 1 || missing[0] != e {
+		t.Fatalf("%sfile %v: read of %+v reports missing %+v, want exactly it", at(where), id, e, missing)
 	}
 
 	if i := slices.IndexFunc(p, func(b byte) bool { return b != sentinel }); i >= 0 {
