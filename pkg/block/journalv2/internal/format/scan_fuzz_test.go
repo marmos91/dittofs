@@ -35,24 +35,30 @@ import (
 // slot.
 func FuzzScan(f *testing.F) {
 	// Raw seeds: nothing but the header's own letters, a header alone,
-	// the clean walk of the kinds this format defines, and the same
-	// walk recycling an old life's bytes in its tail.
+	// the clean walk of the kinds this format defines, the same walk
+	// recycling an old life's bytes in its tail, and the shapes the unit
+	// tests walk — the five-record segment sealed with a footer, and a
+	// write whose payload holds a whole copy of another journal's bytes.
 	f.Add([]byte{}, []byte{})
 	f.Add(make([]byte, 256), []byte{})
 	f.Add([]byte{}, scanAllKindsSegment())
 	f.Add([]byte{}, recycledSegment())
+	f.Add([]byte{}, sealedTestSegment(f))
+	f.Add([]byte{}, payloadCopySegment(f))
 
 	// Planted seeds: every kind in a row; a zero gap in the middle; a
 	// marker past the last; a gap then a marker; an old life in the
-	// tail; two gaps; a record planted past a marker.
+	// tail; two gaps; a record planted past a marker. The marker and
+	// old-life letters are the grammar's own, not record kinds — a seed
+	// spelling them with kind letters plants nothing it claims to.
 	for _, plan := range [][]byte{
 		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
 		{1, 0, 3},
-		{1, 2, 8},
-		{1, 0, 8, 2},
-		{1, 2, 9},
+		{1, 2, fuzzMarkerLetter},
+		{1, 0, fuzzMarkerLetter, 2},
+		{1, 2, fuzzOldLifeLetter},
 		{1, 0, 2, 0, 3},
-		{1, 2, 8, 1},
+		{1, fuzzMarkerLetter, 2},
 	} {
 		f.Add(plan, []byte{})
 	}
@@ -110,7 +116,6 @@ type fuzzPlanted struct {
 	records []int64        // the planted records' slots, ascending
 	headers []RecordHeader // the planted records' headers, the records' own order
 	seal    int64          // the planted marker's slot, -1 when none was planted
-	sealAt  bool           // whether the flip spared the marker's bytes
 	// oldOff, oldEnd hold the old life's byte range, or -1 when the
 	// plan planted none.
 	oldOff, oldEnd int64
@@ -498,4 +503,30 @@ func recycledSegment() []byte {
 	h, body := fuzzKindBody(KindUnmark, int64(len(seg)))
 	seg = AppendRecord(seg, testIdentity, h, body)
 	return append(seg, fuzzOldLifeBytes()...)
+}
+
+// sealedTestSegment builds a raw seed from the unit tests' own five-record
+// segment: the records, a verifying seal marker, and a zero footer tail —
+// the shape every fallback-open scan starts from.
+func sealedTestSegment(f *testing.F) []byte {
+	seg, _ := scanSegment(f, testIdentity, scanTestRecords()...)
+	seg = AppendSealMarker(seg, testIdentity, SealMarker{Segment: testSegment, Offset: int64(len(seg))})
+	return append(seg, make([]byte, 64)...)
+}
+
+// payloadCopySegment builds a raw seed from the unit tests' own copy-bearing
+// write: a write whose payload holds a whole sealed two-record segment of
+// this same journal, with records of its own around it — the shape whose
+// marker must not seal and whose records must not attach from inside the
+// payload.
+func payloadCopySegment(f *testing.F) []byte {
+	copySeg, _ := scanSegment(f, testIdentity, scanTestRecords()[:2]...)
+	copySeg = AppendSealMarker(copySeg, testIdentity, SealMarker{Segment: testSegment, Offset: int64(len(copySeg))})
+	h, body := scanKindBody(KindWrite)
+	h.Extent = core.Extent{Off: testRecordFileOffset, Len: int64(len(copySeg))}
+	body = RecordBody{MTime: testWriteMTime, Payload: copySeg}
+	seg, _ := scanSegment(f, testIdentity, scanTestRecords()[:1]...)
+	seg, _ = scanAppend(f, seg, testIdentity, scanRecord{h: h, body: body})
+	seg, _ = scanAppend(f, seg, testIdentity, scanTestRecords()[1])
+	return seg
 }
