@@ -115,7 +115,6 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 	sc := scanner{
 		r:        r,
 		size:     size,
-		seed:     identitySeed(identity),
 		identity: identity,
 		segment:  segment,
 		window:   make([]byte, scanWindow),
@@ -149,13 +148,12 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 	return sc.Scan, nil
 }
 
-// scanner is one segment's scan: the reader, its bounds, the identity's seed
-// the checksums verify under, and the sliding window every slot is read
+// scanner is one segment's scan: the reader, its bounds, the identity the
+// checksums verify under, and the sliding window every slot is read
 // through, refilled at the slot being examined.
 type scanner struct {
 	r        io.ReaderAt
 	size     int64
-	seed     uint32
 	identity core.JournalID
 	segment  core.SegmentID
 	window   []byte
@@ -309,15 +307,6 @@ func (sc *scanner) search(off int64) error {
 	if sc.bytesAllZero(off, end) {
 		kind = RangeZero
 	}
-
-	// decision: the range's kind is decided by its bytes — every byte zero
-	// or at least one not — and never by the slot that started it, so a
-	// zero slot followed by junk then a header reports the junk as bad
-	// bytes, not as the zeros the slot's first four bytes promised.
-	// Recovery classes the range from the synced-through offsets and seal
-	// markers it holds; the scan's job is the bytes. Overturned if the
-	// zero-slot rule distinguishes a failed write's zeros from damage
-	// inside one range.
 	sc.Ranges = append(sc.Ranges, ScanRange{Off: off, End: end, Kind: kind})
 	sc.End = end
 	switch found.outcome {
