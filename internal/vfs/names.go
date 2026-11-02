@@ -70,7 +70,8 @@ func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 }
 
 // ReadDir lists dir after the cursor, at most max entries, every one when max
-// is not positive, in the store's digest order. A cursor is the digest of the
+// is not positive, in the store's digest order, past max only to finish the
+// collision chain the last entry is in. A cursor is the digest of the
 // entry it follows, so it resumes in dir whatever it was taken from: an entry
 // present throughout is listed once, before or after it. The caller needs
 // list on dir; an entry's handle and File are filled only for a caller who
@@ -109,7 +110,10 @@ func (fs *Filesystem) ReadDir(ctx context.Context, c vfs.Call, dir vfs.Handle, a
 		if err != nil {
 			return vfs.Page{}, storeErr(err)
 		}
-		if max > 0 && len(page.Entries) == max {
+		// A page ends only between two digests: the next call resumes after
+		// the last one, so a page cut inside a collision chain would skip the
+		// rest of the chain.
+		if max > 0 && len(page.Entries) >= max && l.Cookie != uint64(page.Next) {
 			page.EOF = false
 			break
 		}

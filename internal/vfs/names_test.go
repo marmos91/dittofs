@@ -660,3 +660,34 @@ func TestARefusedRenameRecallsNoLease(t *testing.T) {
 	}
 	none(t, "the lease holder", cb)
 }
+
+// A ReadDir page holds max entries at most, the last page what is left, and
+// the pages list every name once.
+func TestReadDirPagesHoldMaxEntries(t *testing.T) {
+	n := newNames(t)
+	var want []string
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		n.create(t, n.admin, n.fs.Root, name, vfs.CreateRegular)
+		want = append(want, name)
+	}
+	var sizes []int
+	var got []string
+	for from := vfs.Cursor(0); ; {
+		p, err := n.ReadDir(t.Context(), n.admin, n.fs.Root, from, 2, 0)
+		n.must(t, err)
+		sizes = append(sizes, len(p.Entries))
+		for _, e := range p.Entries {
+			got = append(got, string(e.Name))
+		}
+		if p.EOF {
+			break
+		}
+		from = p.Next
+	}
+	if !slices.Equal(sizes, []int{2, 2, 1}) {
+		t.Errorf("five entries in pages of two came back in pages of %v, want [2 2 1]", sizes)
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(got)), want) {
+		t.Errorf("the pages listed %q, want %q", got, want)
+	}
+}
