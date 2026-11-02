@@ -36,6 +36,7 @@ import (
 //	0x51-0x58  length             0xa1-0xa8  version epoch
 //	0x61-0x68  sequence number    0xb1-0xb8  version counter
 //	0x71-0x78  modification time  0xc5       kind
+//	                              0xd1-0xd4  own offset in its segment
 
 var testIdentity = [16]byte{
 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -106,7 +107,7 @@ var testRecord = Record{
 	Version: Version{Epoch: 0xa8a7a6a5a4a3a2a1, Counter: 0xb8b7b6b5b4b3b2b1},
 	Tag:     0x84838281,
 
-	RecordOffset: 0x94939291,
+	RecordOffset: 0xd4d3d2d1,
 }
 
 const testMTime int64 = 0x7877767574737271

@@ -139,7 +139,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 			return fmt.Errorf("%w: Keeping names writes by the 64 bits of a mask, and %d writes are unsynced", ErrCrashRefused, len(writes))
 		}
 
-		if len(writes) < 64 && cfg.mask>>uint(len(writes)) != 0 {
+		if cfg.mask>>uint(len(writes)) != 0 {
 			return fmt.Errorf("%w: Keeping(%#x) names a write past the %d unsynced writes", ErrCrashRefused, cfg.mask, len(writes))
 		}
 
