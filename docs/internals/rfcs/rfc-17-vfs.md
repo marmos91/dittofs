@@ -814,11 +814,13 @@ So no handler follows a mutation with a `GetAttr`
 client record or lease — and a handler may make any number of them:
 `Propose`, `Record`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`,
 `Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
-`ListShares`, `StatFS`, `Quota`, `Snapshots` and `Spell`. Every other method may change
+`ListShares`, `StatFS`, `Quota`, `Snapshots`, `Spell`, `SessionUp` and `SessionDown`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so `vfstest.Record` and the adapters' one-call test read it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+but the confirm. `SessionUp` and `SessionDown` are on it because they only keep
+the node's sessions in memory to route a break, so SMB's first
+`SESSION_SETUP` makes `Connect` its one mutating call. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
