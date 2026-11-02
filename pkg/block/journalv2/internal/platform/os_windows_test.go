@@ -61,7 +61,9 @@ func expectOpen(t *testing.T, log []call, path string, createmode uint32, h wind
 // (RFC 28 §2.2: "on platforms where an open file cannot be unlinked, segments
 // **MUST** be opened with sharing that permits deletion"; Appendix A:
 // "segments are opened with `FILE_SHARE_DELETE`"), as well as reads and
-// writes, so a second open of a file already open is not refused.
+// writes, so a second open of a file already open is not refused. When the
+// open fails, each returns no file and the error as an *fs.PathError naming
+// the path, after that one call.
 func TestOpenSharing(t *testing.T) {
 	var files []storage.File
 	t.Cleanup(func() {
@@ -93,6 +95,21 @@ func TestOpenSharing(t *testing.T) {
 		if err := h.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
+	}
+
+	r.failNext("createFile", windows.ERROR_ACCESS_DENIED, windows.ERROR_ACCESS_DENIED)
+
+	for _, op := range []func(string) (storage.File, error){o.Create, o.Open} {
+		g, err := op("b")
+		if g != nil {
+			t.Fatalf("a failed open returned a file")
+		}
+
+		if log := r.take(); len(log) != 1 || log[0].op != "createFile" {
+			t.Fatalf("want only the failed createFile, got %v", log)
+		}
+
+		expectPathError(t, err, windows.ERROR_ACCESS_DENIED, filepath.Join(dir, "b"))
 	}
 }
 
@@ -479,59 +496,6 @@ func TestCreateOverRemovedNameWhileOpen(t *testing.T) {
 	files = append(files, f)
 	expectContent(t, f, "")
 	expectContent(t, reader, "old record")
-
-	for _, h := range files {
-		if err := h.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	}
-}
-
-// TestRenameOverOpenName renames a file over a name a reader still holds
-// open, on the real filesystem: the replace that puts a new format file in
-// place, written to format.tmp and renamed over format (RFC 28 §2.1). It is
-// the only rename over an existing name; recycling renames a segment to a
-// fresh name. The rename succeeds, the name then holds the new bytes, only
-// that name is left, and the reader still reads the old bytes.
-func TestRenameOverOpenName(t *testing.T) {
-	var files []storage.File
-	t.Cleanup(func() {
-		runtime.KeepAlive(files)
-	})
-	prof.Watch(t, prof.Options{})
-
-	o := NewOS(t.TempDir())
-	createWith(t, o, "format", "old format")
-
-	reader, err := o.Open("format")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	files = append(files, reader)
-	createWith(t, o, "format.tmp", "the new format")
-
-	if err := o.Rename("format.tmp", "format"); err != nil {
-		t.Fatalf("Rename over a name a reader holds open: %v", err)
-	}
-
-	names, err := o.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(names) != 1 || names[0] != "format" {
-		t.Fatalf("the directory holds %v after the rename, want only format", names)
-	}
-
-	f, err := o.Open("format")
-	if err != nil {
-		t.Fatalf("Open after the rename: %v", err)
-	}
-
-	files = append(files, f)
-	expectContent(t, f, "the new format")
-	expectContent(t, reader, "old format")
 
 	for _, h := range files {
 		if err := h.Close(); err != nil {

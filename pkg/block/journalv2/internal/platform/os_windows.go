@@ -70,6 +70,10 @@ func (o *OS) Open(name string) (storage.File, error) {
 func (o *OS) open(name string, disposition uint32) (*file, error) {
 	path := o.path(name)
 
+	// ponytail: the path reaches CreateFile as it is, without the \\?\ prefix
+	// the os package adds for Rename, Remove and List, so a path over MAX_PATH
+	// fails here and in SyncDir while those accept it. Add the prefix when a
+	// journal directory needs a longer path.
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, &fs.PathError{

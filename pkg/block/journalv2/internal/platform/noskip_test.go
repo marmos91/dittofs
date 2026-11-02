@@ -15,11 +15,12 @@ import (
 
 // TestNoSkip fails on a skip in any test of this package or of the storage
 // contract: a call of Skip, Skipf or SkipNow on any receiver, and any use of
-// testing.Short. The Windows job runs the tests with -short, and a skipped
-// test passes there while it protects nothing. It reads every test file
-// whatever its build tags, so the Windows tests are checked on any platform,
-// and finds the testing package by import path, so a renamed import is
-// caught; a dot import, whose names it could not tell apart, is refused.
+// testing.Short. A test skipped under -short passes while it protects
+// nothing. It reads every test file whatever its build tags, so the tests of
+// every platform are checked on any platform, and finds the testing package
+// by import path, so a renamed import is caught; a dot import, whose names it
+// could not tell apart, is refused. A skip inside a helper of another
+// package, such as the profiler's Watch, is not seen.
 func TestNoSkip(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 

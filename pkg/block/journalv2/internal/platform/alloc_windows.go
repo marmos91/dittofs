@@ -20,9 +20,12 @@ var zeros [zeroChunk]byte
 // reads the file's size first and, only when the file ends below the range,
 // sets the allocation size and then the end of file to the range's end (RFC
 // 28 Appendix A: "setting the file's allocation size, then its end of file"),
-// so it never shrinks a longer file. Then it writes zeros over the whole
-// range, in writes of at most 1 MiB, so bytes a write had put there read as
-// zeros afterwards.
+// so it never shrinks a file that was longer when its size was read. A write
+// past the range's end made between that read and the two sets could be cut,
+// as could the larger of two Allocate calls on one file at once; the journal
+// does neither, as it allocates each segment once, when it creates it (RFC 28
+// §2.2). Then it writes zeros over the whole range, in writes of at most 1
+// MiB, so bytes a write had put there read as zeros afterwards.
 //
 // It does not sync: the storage.File contract leaves that to the caller
 // ("Sync makes every WriteAt, Allocate and Truncate that returned before it
@@ -45,8 +48,8 @@ var zeros [zeroChunk]byte
 // is paid only when the pool of spares grows, off the write path (RFC 28
 // Appendix A). This differs from the current text of RFC 28 Appendix A,
 // which sets the valid data length and writes zeros only where that call is
-// not permitted. Revisit only if a measured fill cost on the write path
-// outweighs exposing old bytes, which no setting makes safe.
+// not permitted. Revisit only if RFC 28 §2.2 stops requiring that an allocated
+// region no record has reached reads as zeros.
 func (f *file) Allocate(off, n int64) error {
 	if off < 0 || n < 0 || off > math.MaxInt64-n {
 		return &fs.PathError{

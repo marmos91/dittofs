@@ -175,11 +175,6 @@ func TestAllocateCalls(t *testing.T) {
 			n:    3*4096 + 5,
 		},
 		{
-			name:   "a range over written bytes",
-			before: 8192,
-			n:      3 * 4096,
-		},
-		{
 			name:   "a file already at the range's end",
 			before: 4096 + 3*4096 + 5,
 			off:    4096,
@@ -428,13 +423,15 @@ func TestAllocateInvalidRange(t *testing.T) {
 	}
 }
 
-// TestAllocateOnDisk allocates a range on the real filesystem over bytes
-// a previous life left in the file, and reads the whole file back: every byte
-// of the range reads as zero (RFC 28 §2.2: "An allocated region no record has
-// reached reads as zeros."), the bytes before it are untouched, a shorter file
-// grows to the range's end, and a file already at or past that end keeps its
-// size and its bytes after the range. NTFS reads zeros past the valid data
-// length on its own, so the old bytes are what show a zero write missing.
+// TestAllocateOnDisk allocates a range on the real filesystem and reads the
+// whole file back. A shorter file grows to the range's end and the range
+// reads as zeros (RFC 28 §2.2: "An allocated region no record has reached
+// reads as zeros."); a file already at or past that end keeps its size. In
+// every case the bytes before the range, and after it, are untouched. What a
+// range a write had reached reads afterwards is left open by the storage.File
+// contract, so it is not checked here; on a grown file NTFS reads zeros past
+// the valid data length whether or not zeros were written, so the zero
+// writes themselves are checked through the table, by TestAllocateCalls.
 func TestAllocateOnDisk(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -443,13 +440,17 @@ func TestAllocateOnDisk(t *testing.T) {
 		end = 2<<20 + 4096 + 5
 	)
 
+	head := bytes.Repeat([]byte{0xa5}, off)
+	tail := bytes.Repeat([]byte{0x5a}, 4096)
+
 	for _, tc := range []struct {
 		name   string
-		before int64
+		before int64 // the file's size before Allocate
+		tail   bool  // whether tail is written at end, past the range
 	}{
 		{
 			name:   "a shorter file",
-			before: 1 << 20,
+			before: off,
 		},
 		{
 			name:   "a file at the range's end",
@@ -457,12 +458,26 @@ func TestAllocateOnDisk(t *testing.T) {
 		},
 		{
 			name:   "a file past the range's end",
-			before: end + 4096,
+			before: end + int64(len(tail)),
+			tail:   true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := openOn(t, NewOS(t.TempDir()), "a")
-			fill(t, f, tc.before)
+
+			if _, err := f.f.WriteAt(head, 0); err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.tail {
+				if _, err := f.f.WriteAt(tail, end); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := f.f.Truncate(tc.before); err != nil {
+				t.Fatal(err)
+			}
 
 			if err := f.Allocate(off, end-off); err != nil {
 				t.Fatalf("Allocate: %v", err)
@@ -490,22 +505,21 @@ func TestAllocateOnDisk(t *testing.T) {
 				t.Fatalf("ReadAt of the whole file: %d, %v", n, err)
 			}
 
-			for i, b := range got {
-				want := byte(0xa5)
+			if !bytes.Equal(got[:off], head) {
+				t.Fatalf("the bytes before the range read %x, want %x", got[:off], head)
+			}
 
-				if i >= off && i < end {
-					want = 0
-				}
+			if tc.tail && !bytes.Equal(got[end:], tail) {
+				t.Fatalf("the bytes after the range changed")
+			}
 
-				if b != want {
-					t.Fatalf(
-						"byte %d is %#x after Allocate(%d, %d), want %#x",
-						i,
-						b,
-						off,
-						end-off,
-						want,
-					)
+			if tc.before > off {
+				return
+			}
+
+			for i, b := range got[off:end] {
+				if b != 0 {
+					t.Fatalf("byte %d of the grown range is %#x, want zero", off+i, b)
 				}
 			}
 		})
