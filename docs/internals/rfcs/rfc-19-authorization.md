@@ -554,7 +554,10 @@ access check decides. The adapter resolves it to `G` before the call, so an
 empty `G` arrives as an empty `want`, which `Authorize` admits: the adapter
 **MUST** refuse a maximal request whose resolved mask is empty itself
 ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)), and `Authorize`
-refuses a named right outside `G`.
+refuses a named right outside `G`. An open asking backup or restore intent is
+the exception: a resolution before the call would lack the open's privilege
+(§3.5), so the maximal request reaches the open unresolved and `Authorize`
+grants and refuses it there as above.
 
 **What an open holds.** The grant stored with an open
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) is its mapped request — or `G`,
