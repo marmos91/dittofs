@@ -1710,7 +1710,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), want); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
-	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, charge(f, off, src)) // step 4: holes filled plus bytes past the size (§5.6)
+	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, charge(f, off, src)) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
 	if err != nil {
 		return wr, false, err
 	}
