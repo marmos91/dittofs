@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,7 +65,7 @@ func signedIn(p entity.Principal, id uint64) vfs.Call {
 // opens are kept, disconnected.
 func disconnect(t *testing.T, s *shares, id vfs.ClientID, sess uint64) {
 	t.Helper()
-	if err := s.Disconnect(t.Context(), vfs.Call{}, id, vfs.SessionRef{ID: sess}); err != nil {
+	if err := s.Disconnect(t.Context(), vfs.Call{}, id, vfs.SessionRef{ID: sess}, vfs.SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -210,10 +209,10 @@ func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 	}
 }
 
-// RemoveSession at the node's last session of an SMB client still holding a
-// disconnected durable open keeps the client and its Callbacks; one holding
-// nothing is released in open state, and its Callbacks go with it.
-func TestRemoveSessionDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
+// The Disconnect of the node's last session of an SMB client still holding
+// a disconnected durable open keeps the client and its Callbacks; one
+// holding nothing is released in open state, and its Callbacks go with it.
+func TestLastDisconnectDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
 	s := newShares(t, nil, nil)
 	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
@@ -224,27 +223,40 @@ func TestRemoveSessionDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	leased(t, s, id, alice.Principal, 1, entity.NewFileID(), 1)
-	disconnect(t, s, id, 1)
-	if err := s.RemoveSession(ctx, as, id); err != nil {
+	if err := s.Disconnect(ctx, as, id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
 	s.RecallAny(id, 0)
 	if got := calls(t, pc, 1); got[0].Method != "RecallAny" {
-		t.Errorf("a client holding a durable open saw %v after RemoveSession, want RecallAny", got)
+		t.Errorf("a client holding a durable open saw %v after its last Disconnect, want RecallAny", got)
 	}
 
 	idle, err := s.Connect(ctx, as, smb("idle-pc", 1), &vfstest.RecordingCallbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveSession(ctx, as, idle); err != nil {
+	if err := s.Disconnect(ctx, as, idle, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(ctx, as, idle); !stateKind(err, vfs.StateStaleClient) {
-		t.Errorf("an idle client after RemoveSession: %v, want StaleClient", err)
+		t.Errorf("an idle client after its last Disconnect: %v, want StaleClient", err)
 	}
 	if _, ok := s.reg.cb[idle]; ok {
 		t.Error("a released client keeps its Callbacks")
+	}
+
+	// A logoff closes the session's durable open in the same call, so the
+	// client is left holding nothing and is released.
+	off, err := s.Connect(ctx, as, smb("off-pc", 1), &vfstest.RecordingCallbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leased(t, s, off, alice.Principal, 1, entity.NewFileID(), 2)
+	if err := s.Disconnect(ctx, as, off, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Logoff: true, Last: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, as, off); !stateKind(err, vfs.StateStaleClient) {
+		t.Errorf("a client whose durable open's session logged off: %v, want it released, StaleClient", err)
 	}
 }
 
@@ -884,7 +896,7 @@ func TestEachClientCallReachesOpenState(t *testing.T) {
 	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
 	for name, err := range map[string]error{
 		"AddSession":       func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
-		"RemoveSession":    s.RemoveSession(ctx, c, gone),
+		"Disconnect":       s.Disconnect(ctx, c, gone, vfs.SessionRef{}, vfs.SessionEnd{Last: true}),
 		"Renew":            func() error { _, err := s.Renew(ctx, c, gone); return err }(),
 		"ReclaimComplete":  s.ReclaimComplete(ctx, c, gone, nil),
 		"ReleaseLockOwner": s.ReleaseLockOwner(ctx, c, gone, vfs.LockOwner{Client: gone, Name: []byte("pid 1")}),
@@ -1118,8 +1130,8 @@ func TestAFailedBreakThroughIncomparableCallbacksIsSentAgain(t *testing.T) {
 }
 
 // An SMB Connect lists this node among the client's sessions, so the client's
-// record is not released while it is listed: another node's RemoveSession
-// leaves it.
+// record is not released while it is listed, under the node's current
+// epoch: another node's last Disconnect leaves it.
 func TestAnSMBConnectListsThisNode(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
@@ -1128,14 +1140,14 @@ func TestAnSMBConnectListsThisNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec, err := s.Record(ctx, as, id); err != nil || !slices.Equal(rec.Reach.Sessions, []entity.NodeID{{}}) {
-		t.Fatalf("after Connect: sessions %v, %v; want this node's", rec.Reach.Sessions, err)
+	if rec, err := s.Record(ctx, as, id); err != nil || len(rec.Reach.Sessions) != 1 || rec.Reach.Sessions[0].Node != (entity.NodeID{}) || rec.Reach.Sessions[0].Epoch == 0 {
+		t.Fatalf("after Connect: sessions %v, %v; want this node's, under its epoch", rec.Reach.Sessions, err)
 	}
-	if err := s.tab.Clients().RemoveSession(ctx, id, entity.NodeID{15: 1}); err != nil {
+	if err := s.tab.Clients().Disconnect(ctx, id, vfs.SessionRef{Node: 1, ID: 1}, vfs.SessionEnd{Last: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(ctx, as, id); err != nil {
-		t.Errorf("with this node listed, another's RemoveSession released the record: %v", err)
+		t.Errorf("with this node listed, another's last Disconnect released the record: %v", err)
 	}
 }
 
@@ -1178,7 +1190,7 @@ func TestALockGrantStopsBeingSentAtItsDeadlineOrRelease(t *testing.T) {
 	}
 	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
 	stops("released", cb, func() {
-		if err := s.RemoveSession(t.Context(), signedIn(alice, 2), id); err != nil {
+		if err := s.Disconnect(t.Context(), signedIn(alice, 2), id, vfs.SessionRef{ID: 2}, vfs.SessionEnd{Last: true}); err != nil {
 			t.Fatal(err)
 		}
 	})

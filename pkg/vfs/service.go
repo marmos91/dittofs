@@ -45,13 +45,14 @@ type Clients interface {
 	// Record is the record as written, its adapter bytes included.
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error)
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
-	// Disconnect is the end of an SMB session's last channel.
-	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error
-	// RemoveSession is the end of this node's last session of client cl,
-	// once per node and never per session: SMB LOGOFF, a last channel's end
-	// or a teardown, or NFSv4.1's DESTROY_SESSION. It removes the node from
-	// the record's sessions, so a Destroy is no longer refused for it.
-	RemoveSession(ctx context.Context, c Call, cl ClientID) error
+	// Disconnect ends one session of client cl as end says: SMB LOGOFF or
+	// a failed re-authentication's teardown with Logoff, closing every open
+	// of the session; the end of its last channel without, keeping its
+	// durable opens for their Timeout; NFSv4.1 DESTROY_SESSION, whose
+	// session names no open, with Last only. Last marks this node's last
+	// session of cl: it removes the node from the record's sessions in the
+	// same call, so a Destroy is no longer refused for it.
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) error
 	// Destroy ends a client holding no state, StateError ClientBusy
 	// otherwise; a revoked reference is not state it holds.
 	Destroy(ctx context.Context, c Call, cl ClientID) error
@@ -169,7 +170,6 @@ const (
 	OpRecord
 	OpRenew
 	OpDisconnect
-	OpRemoveSession
 	OpDestroy
 	OpReclaimComplete
 	OpFreeState
@@ -231,7 +231,7 @@ const (
 
 var opNames = [...]string{
 	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record",
-	OpRenew: "Renew", OpDisconnect: "Disconnect", OpRemoveSession: "RemoveSession",
+	OpRenew: "Renew", OpDisconnect: "Disconnect",
 	OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
 	OpFreeState: "FreeState", OpTestState: "TestState", OpReleaseLockOwner: "ReleaseLockOwner",
 	OpHostRestarted: "HostRestarted",

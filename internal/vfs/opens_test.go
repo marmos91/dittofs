@@ -1162,7 +1162,7 @@ func TestAFailedReconnectIsClosed(t *testing.T) {
 	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
 	r, err := n.Open(ctx, pc, req)
 	n.must(t, err)
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
 	pc.Session = vfs.SessionRef{ID: 2}
 	n.engine.overlayErr = errors.New("journal read failed")
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &r.Ref, CreateID: [16]byte{1}}); err == nil {
@@ -1214,7 +1214,7 @@ func TestAReconnectOutlivesItsCall(t *testing.T) {
 	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
 	r, err := n.Open(ctx, pc, req)
 	n.must(t, err)
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}))
 	pc.Session = vfs.SessionRef{ID: 2}
 	call, cancel := context.WithCancel(ctx)
 	defer cancel()

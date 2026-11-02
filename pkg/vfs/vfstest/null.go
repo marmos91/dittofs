@@ -36,11 +36,7 @@ func (Null) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientS
 	return vfs.ClientStatus{}, nil
 }
 
-func (Null) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef) error {
-	return nil
-}
-
-func (Null) RemoveSession(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
+func (Null) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef, end vfs.SessionEnd) error {
 	return nil
 }
 

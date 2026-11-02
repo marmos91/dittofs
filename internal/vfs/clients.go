@@ -16,8 +16,10 @@ import (
 // here names no share, so its caller is mapped under no share's policy and
 // never squashed: the principal a client record's Owner names.
 //
-// decision: this node's sessions are recorded under the zero node ID, as a
-// single node has no other to tell apart, and no Connect calls Rebind, since
+// decision: this node's sessions are recorded under the zero node ID, and a
+// session ref names node zero, as a single node has no other to tell apart;
+// each entry carries the node epoch open state raised at its start. No
+// Connect calls Rebind, since
 // on one node the back channel never moves to another and nothing calls
 // ChannelDown. Give the filesystem the node's ID, and rebind at a Connect
 // that moves the path here, with the cluster.
@@ -71,11 +73,18 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 // Callbacks, replacing any this node held for it: who may connect a client
 // is open state's to refuse, by the principal its record names. An SMB
 // client is connected at its first authenticated session on the node, which
-// lists the node among its sessions until RemoveSession. A
-// null or guest call never connects an SMB client, and is ErrInvalid. So is
-// a zero info.Recovery: the kind sticks for the record's life, and a client
-// of none is never told of a lost shard, so it holds the shard's grace open
-// for the whole period.
+// lists the node among its sessions, under the node's current epoch, until
+// the Disconnect of its last session there. A null or guest call never
+// connects an SMB client, and is ErrInvalid. So is a zero info.Recovery: the
+// kind sticks for the record's life, and a client of none is never told of a
+// lost shard, so it holds the shard's grace open for the whole period.
+//
+// ponytail: the adapter decides which session is a client's first and last
+// on the node, and holds a per-client step of its own across the Connect or
+// AddSession and the last session's Disconnect, so a session set up while the
+// last one ends never leaves the node unlisted; neither the filesystem nor
+// open state holds a step across a caller's decision. Take the step here, per
+// client, if an adapter is seen to race the two.
 func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientInfo, cb vfs.Callbacks) (vfs.ClientID, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -109,7 +118,7 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 
 // listNode lists this node among client id's sessions in open state,
 // keeping the record's adapter bytes: an SMB client's first session on the
-// node keeps its record from release until RemoveSession.
+// node keeps its record from release until its last session's Disconnect.
 func (fs *Filesystem) listNode(ctx context.Context, id vfs.ClientID) error {
 	rec, err := fs.clients.Record(ctx, id)
 	if err != nil {
@@ -134,24 +143,6 @@ func (fs *Filesystem) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	return rec, openErr(err)
 }
 
-// RemoveSession removes this node from the client's sessions in open state.
-// An SMB record that leaves holding nothing is released there, and its
-// Callbacks are then dropped here.
-func (fs *Filesystem) RemoveSession(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return err
-	}
-	defer done()
-	if err := fs.clients.RemoveSession(ctx, cl, entity.NodeID{}); err != nil {
-		return openErr(err)
-	}
-	if _, err := fs.clients.Record(ctx, cl); errors.Is(err, openstate.ErrStaleClient) {
-		fs.reg.unregister(cl)
-	}
-	return nil
-}
-
 func (fs *Filesystem) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientRecord, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -172,14 +163,25 @@ func (fs *Filesystem) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (v
 	return st, openErr(err)
 }
 
-// Disconnect ends session sess of the client in open state.
-func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef) error {
+// Disconnect ends session sess of the client in open state as end says. A
+// last session's end that leaves an SMB record holding nothing releases it
+// there, and its Callbacks are then dropped here.
+func (fs *Filesystem) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, sess vfs.SessionRef, end vfs.SessionEnd) error {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
 		return err
 	}
 	defer done()
-	return openErr(fs.clients.Disconnect(ctx, cl, sess))
+	if err := fs.clients.Disconnect(ctx, cl, sess, end); err != nil {
+		return openErr(err)
+	}
+	if !end.Last {
+		return nil
+	}
+	if _, err := fs.clients.Record(ctx, cl); errors.Is(err, openstate.ErrStaleClient) {
+		fs.reg.unregister(cl)
+	}
+	return nil
 }
 
 // Destroy deletes the client in open state, then its Callbacks here.

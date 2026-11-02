@@ -178,13 +178,8 @@ func (rec *Recorder) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vf
 	return result[vfs.ClientStatus](rec, ret, 0), result[error](rec, ret, 1)
 }
 
-func (rec *Recorder) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef) error {
-	ret := rec.call(vfs.OpDisconnect, ctx, c, cl, s)
-	return result[error](rec, ret, 0)
-}
-
-func (rec *Recorder) RemoveSession(ctx context.Context, c vfs.Call, cl vfs.ClientID) error {
-	ret := rec.call(vfs.OpRemoveSession, ctx, c, cl)
+func (rec *Recorder) Disconnect(ctx context.Context, c vfs.Call, cl vfs.ClientID, s vfs.SessionRef, end vfs.SessionEnd) error {
+	ret := rec.call(vfs.OpDisconnect, ctx, c, cl, s, end)
 	return result[error](rec, ret, 0)
 }
 
