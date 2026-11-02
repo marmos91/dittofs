@@ -276,6 +276,15 @@ func (s *Set) End(id core.SegmentID) error {
 // below the allocated storage with the ledger none the wiser. Withdrawn if a
 // cut of an appended-to segment ever exists, which a marker from the stream
 // side would have to keep above the append's bytes.
+//
+// decision: the Ended case is served, and recovery's torn-tail cut (RFC 28
+// §3.3) is the only caller meant to reach it — an ended segment keeps its cap
+// until its unlink, and a runtime failed-append ended segment has no cut of
+// it coming. The ledger cannot tell the two callers apart, so the caller
+// contract holds the ceiling: a Shrink of an ended segment that never came
+// from recovery keeps the accounted size below the file, silent to every
+// check. Withdrawn if a runtime caller ever needs its own cut, which must
+// then carry a fact the ledger can gate on.
 func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
