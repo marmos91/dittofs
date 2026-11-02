@@ -2569,10 +2569,15 @@ func plantKind(t *testing.T, f *journalv2test.Fixture, kind uint8) {
 // code's to test; this is the row's refusal half.
 func TestRFC28C_KindValuesRefused(t *testing.T) {
 	for i, kind := range []uint8{15, 128} {
-		f := journalv2test.NewUnwatched(t)
+		// The first pass is watched; the profiler allows one watched
+		// fixture a test, so the second runs unwatched.
+		var f *journalv2test.Fixture
 		if i == 0 {
 			f = journalv2test.New(t)
+		} else {
+			f = journalv2test.NewUnwatched(t)
 		}
+
 		writeSynced(t, f, 0, 0, 0, 64<<10)
 		f.Shutdown()
 		plantKind(t, f, kind)
