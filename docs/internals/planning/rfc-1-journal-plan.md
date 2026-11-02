@@ -701,6 +701,7 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - headroom and repack-reserve spares kept apart;
   - an immediate `spare` refusal and `spare_refusals`.
 - **Seal and catalog:**
+  - a seal waits for every append reserved below its marker; one that fails ends the segment instead;
   - seal marker, footer and trailer, written durably and at most once;
   - an early seal truncates the free tail, a full seal keeps the cap;
   - idle seal.
