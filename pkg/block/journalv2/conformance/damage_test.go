@@ -1712,9 +1712,10 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 // header or body drops that record, reported with its offloaded bit, at open
 // where the segment is scanned and on the read where it is catalogued; a
 // catalog entry, the trailer or the seal marker turns the catalog into no
-// footer and the segment is scanned; a segment header reports the segment
-// damaged with its records still attached; a seal marker of a segment a
-// successor names reports it corrupt; the format file fails the open. After
+// footer and the segment is scanned; a segment header, proven synced by the
+// verifying seal marker after it, reports the segment damaged with its
+// records still attached; a seal marker of a segment a successor names
+// reports it damaged; the format file fails the open. After
 // every flip, every record not dropped reads its exact bytes.
 //
 // decision: the payload is flipped at its first, middle and last byte only,
@@ -1723,8 +1724,9 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 // on a record of its own, since a dropped record stays dropped by its loss
 // record once its byte is put back; the other regions run on 64 KiB records
 // and write each field's original bytes back before the next flip. A seal
-// marker of a segment no successor names is not flipped: the row gives no
-// outcome for it.
+// marker of a segment no successor names is not flipped yet: the row now
+// makes it a torn tail, which needs a site whose segment is its stream's
+// newest.
 //
 // decision: a record header flipped in a scanned segment is checked only
 // for the record reading missing and no byte of any record changing, with
@@ -1735,11 +1737,10 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 // settled.
 //
 // decision: a flipped segment header and a flipped seal marker are asserted
-// through Damaged, as the section 4.4 row asks for the segment reported as
-// damaged, while RFC 1 section 3.7 defines DamagedSegments by
-// records that do not verify, and neither the header nor the marker is a
-// record. The RFC does not yet say which field reports damage outside a
-// record; move the assertion when it does.
+// through the segment's Damaged and through DamagedSegments, which RFC 1
+// section 3.7 counts as the segments recovery reports as damaged, a header
+// that does not verify where it is proven synced and a marker a successor
+// names among them (RFC 28 sections 3.1 and 3.3).
 func TestDamage_BitFlip(t *testing.T) {
 	const small, large = 4096, 64 << 10
 	const marked = 34
@@ -1848,8 +1849,8 @@ func TestDamage_BitFlip(t *testing.T) {
 				s.wantSuccessor(t)
 				flipStructure(t, s, s.name, s.footer-raw.SealMarkerSize, fd, func(where string) {
 					s.reopen(t, where)
-					if !ownedSegment(t, s.f, s.seg, where).Damaged {
-						t.Fatalf("%s: segment %d, named by its successor, is not reported corrupt with its seal marker changed", where, s.seg)
+					if !ownedSegment(t, s.f, s.seg, where).Damaged || s.f.J.Stats().DamagedSegments == 0 {
+						t.Fatalf("%s: segment %d, named by its successor, is not reported damaged with its seal marker changed", where, s.seg)
 					}
 
 					wantScanned(t, where, s.f, s.recovery, 1)
