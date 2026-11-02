@@ -306,7 +306,6 @@ rfc28 / 4.1 / "Opening":
   owner: parked
   reason: 'the older-format leg: format version 1 is the only one, so no older format exists to open; tested once a second version exists'
 
-
 rfc1 / 9.7 / "syncs per write":
   pending: 2.8
 rfc1 / 9.7 / "mixed durability":
