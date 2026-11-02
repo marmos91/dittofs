@@ -368,13 +368,13 @@ func (s *Set) Claim(id core.SegmentID) bool {
 // decision: releasing a retired id reaches nothing and clears nothing, so the
 // claim of a retired segment cannot be erased by a late release — and the
 // same holds for the fresh id a recycle minted, because ids are never reused
-// under a live set: a segment's id starts at 1 and ascends (RFC 1 R9), and
-// every recycle mints a fresh id beyond every id the set has ever held
-// (RFC 1 R16). A reused id could make this release land on the new segment
-// that owns it, so the holder's own claim checks — which read the flag and
-// the state together — are the ceiling that holds until then. Withdrawn if
-// ids ever become reusable, in which case the claim must carry the id of the
-// retired segment rather than reaching by it.
+// under a live set: a segment's id starts at 1 and ascends, and the id of a
+// new spare or a recycle exceeds every id in the directory (RFC 28 §2.2). A
+// reused id could make this release land on the new segment that owns it, so
+// the holder's own claim checks — which read the flag and the state together —
+// are the ceiling that holds until then. Withdrawn if ids ever become
+// reusable, in which case the claim must carry the id of the retired segment
+// rather than reaching by it.
 func (s *Set) Release(id core.SegmentID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
