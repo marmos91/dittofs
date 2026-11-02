@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -491,6 +492,60 @@ func TestDestroy(t *testing.T) {
 	}
 	if _, err := f.Renew(ctx, idle); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("a destroyed client: %v, want ErrStaleClient", err)
+	}
+}
+
+// RemoveSession takes a node out of the client's Reach.Sessions, and the
+// client's Destroy, refused while the node was listed, then succeeds.
+func TestRemoveSessionLetsDestroyThrough(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	id := f.connect(t, nfs("laptop", 1, alice))
+	n1 := entity.NodeID{15: 1}
+	if _, err := f.AddSession(ctx, id, n1, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Destroy(ctx, Caller{Client: id, Principal: alice}); !errors.Is(err, ErrClientBusy) {
+		t.Fatalf("Destroy with a node listed: %v, want ErrClientBusy", err)
+	}
+	if err := f.RemoveSession(ctx, id, n1); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || len(rec.Reach.Sessions) != 0 {
+		t.Fatalf("after RemoveSession: sessions %v, %v; want none", rec.Reach.Sessions, err)
+	}
+	if err := f.Destroy(ctx, Caller{Client: id, Principal: alice}); err != nil {
+		t.Errorf("Destroy after RemoveSession: %v", err)
+	}
+}
+
+// An SMB record holding no open is not released while a node is still
+// listed in its Reach.Sessions: only the last node's RemoveSession releases
+// it.
+func TestAnSMBRecordStaysWhileANodeIsListed(t *testing.T) {
+	f := newFixture(t)
+	id := f.connect(t, smb("pc-a"))
+	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
+	for _, n := range []entity.NodeID{n1, n2} {
+		rec, err := f.Record(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.AddSession(ctx, id, n, rec.Adapter, rec.Adapter); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.RemoveSession(ctx, id, n1); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || !slices.Equal(rec.Reach.Sessions, []entity.NodeID{n2}) {
+		t.Fatalf("with n2 still listed: sessions %v, %v; want the record kept, listing n2", rec.Reach.Sessions, err)
+	}
+	if err := f.RemoveSession(ctx, id, n2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Record(ctx, id); !errors.Is(err, ErrStaleClient) {
+		t.Errorf("with no node listed and no open: %v, want the record released, ErrStaleClient", err)
 	}
 }
 

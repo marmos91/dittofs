@@ -79,7 +79,8 @@ type Grants interface {
 	AckRecall(ctx context.Context, who Caller, g GrantID, to GrantKind) error
 	// Openers is each open g covers, as the table holds it now: a lease's
 	// opens under its key, or an oplock's one open, each with the session it
-	// was made or last reconnected on and its opener. It takes no caller, as
+	// was made or last reconnected on, zero while it is disconnected, and its
+	// opener. It takes no caller, as
 	// the grant names its client. A delegation covers none. It changes
 	// nothing.
 	Openers(ctx context.Context, g GrantID) ([]Open, error)
@@ -744,7 +745,11 @@ func (v grants) Openers(ctx context.Context, id GrantID) ([]Open, error) {
 		}
 		for _, o := range e.opens {
 			if o.Grant == id {
-				opens = append(opens, o.Open)
+				oo := o.Open
+				if o.parked != 0 {
+					oo.Session = entity.SessionRef{}
+				}
+				opens = append(opens, oo)
 			}
 		}
 		return nil

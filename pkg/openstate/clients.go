@@ -100,6 +100,11 @@ type Clients interface {
 	// still equals prev; otherwise it writes nothing and returns
 	// ErrRecordChanged with the current record.
 	AddSession(ctx context.Context, c entity.ClientID, node entity.NodeID, prev, next []byte) (Client, error)
+	// RemoveSession removes node from c's Reach.Sessions at the end of the
+	// node's last session of c: once per node, never per session. An SMB
+	// record left with no node and no state is then released, as nothing
+	// else ends it; one with a node still listed never is.
+	RemoveSession(ctx context.Context, c entity.ClientID, node entity.NodeID) error
 	// Renew renews a client's lease for another period, writing nothing.
 	Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error)
 	// Expire ends the client's state at this node: its state here is
@@ -460,6 +465,33 @@ func (v clients) AddSession(ctx context.Context, c entity.ClientID, node entity.
 	return Client{ClientRecord: rec}, err
 }
 
+func (v clients) RemoveSession(ctx context.Context, c entity.ClientID, node entity.NodeID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	t.cstep.Lock()
+	defer t.cstep.Unlock()
+	rec, err := t.setReach(ctx, c, func(r *entity.Reach) {
+		r.Sessions = slices.DeleteFunc(slices.Clone(r.Sessions), func(n entity.NodeID) bool { return n == node })
+	})
+	if err != nil || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
+		return err
+	}
+	// A parked open is held, so a durable open's Timeout still running
+	// keeps the record too.
+	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+		return staleIfGone(err)
+	}
+	t.cmu.Lock()
+	delete(t.leases, c)
+	delete(t.known, c)
+	t.cmu.Unlock()
+	t.unreclaim(c)
+	t.dropRevoked(c)
+	return nil
+}
+
 func (v clients) Renew(ctx context.Context, c entity.ClientID) (ClientStatus, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -714,16 +746,18 @@ func (v clients) ChannelDown(ctx context.Context, c entity.ClientID) error {
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	return t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
+	_, err := t.setReach(ctx, c, func(r *entity.Reach) { r.Down = true })
+	return err
 }
 
 // setReach applies set to c's record's Reach, and to what the table reads of
-// it, under the client step. A racing AddSession's bytes are kept: the write
-// is retried over the record it committed.
-func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) error {
+// it, under the client step, and returns the record as written. A racing
+// AddSession's bytes are kept: the write is retried over the record it
+// committed.
+func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) (entity.ClientRecord, error) {
 	rec, err := t.d.Records.Clients().Get(ctx, c)
 	if err != nil {
-		return staleIfGone(err)
+		return entity.ClientRecord{}, staleIfGone(err)
 	}
 	for {
 		next := rec
@@ -734,7 +768,7 @@ func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entit
 			continue
 		}
 		if err != nil {
-			return staleIfGone(err)
+			return entity.ClientRecord{}, staleIfGone(err)
 		}
 		t.cmu.Lock()
 		defer t.cmu.Unlock()
@@ -742,7 +776,7 @@ func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entit
 			k.down = next.Reach.Down
 			t.known[c] = k
 		}
-		return nil
+		return next, nil
 	}
 }
 
@@ -760,7 +794,8 @@ func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) err
 	case rec.Protect && who.Principal != rec.Owner:
 		return ErrNotYours
 	}
-	return t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
+	_, err = t.setReach(ctx, who.Client, func(r *entity.Reach) { r.Callback, r.Down = node, false })
+	return err
 }
 
 func (v clients) Destroy(ctx context.Context, who Caller) error {
