@@ -754,7 +754,9 @@ Sections owned: RFC 8 §1.1 (the share table's `decision:`), §2.3, §2.4, §2.5
 and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused share.
 
 - T6.1 The store's `Lifecycle` view: the `J‖journal` read, the batched version-limit calls,
-  `RaiseIncarnations`; `kvstoretest` cases.
+  `RaiseIncarnations`; `kvstoretest` cases. It replaces the stub `Lifecycle` T2.2's fixture
+  passes, which refuses every call, and reads the identity from `Fixture.Journal`, the
+  `JournalID` the fixture kept from `Init`.
 - T6.2 The copy-on-write share table and the bindings' states; `Bind` attaching above the
   floor, writing the share's limit as a tracked max-write, raising the shard's incarnation.
 - T6.3 Start step 1: floors and identity read, each journal opened through `Deps.Open`, a
