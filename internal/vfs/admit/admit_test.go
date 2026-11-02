@@ -128,3 +128,14 @@ func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// A claimed uid 0 no user holds, on a share that does not squash it, is
+// privileged as the zero principal rather than anonymous.
+func TestAnUnmappedClaimedRootIsPrivileged(t *testing.T) {
+	root := vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: 0}}
+	p := entity.ExportPolicy{Squash: entity.SquashNone, Anonymous: entity.AnonymousPrincipal}
+	got, _, err := Resolve(context.Background(), nobodyHome{}, root, entity.NewShareID(), p, entity.NotNarrowed)
+	if err != nil || !got.Principal.IsZero() || !got.Privileged {
+		t.Errorf("acts as %v, privileged %v, %v; want the zero principal, privileged", got.Principal, got.Privileged, err)
+	}
+}
