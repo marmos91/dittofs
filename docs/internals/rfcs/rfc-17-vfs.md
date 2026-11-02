@@ -693,11 +693,11 @@ type Service interface {
 // TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP on each node (never a null or guest one), which adds that node to Reach.Sessions, an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error) // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP on each node (never a null or guest one), which lists that node in Reach.Sessions and returns its entry's Gen, again at each new node epoch, an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
-	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) error // ends one session: SMB LOGOFF, a failed re-authentication's teardown or the last channel's end; NFSv4.1 DESTROY_SESSION, whose session names no open, with Last only. Last removes this node's Reach.Sessions entry in the same step (RFC 14 §2.1)
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) error // ends one session: SMB LOGOFF, a failed re-authentication's teardown or the last channel's end; NFSv4.1 DESTROY_SESSION, whose session names no open, with Last only. Last removes this node's Reach.Sessions entry in the same step, only at end.Gen; its closes reach Sink.Closed (RFC 14 §2.1, §11.1)
 	Destroy(ctx context.Context, c Call, cl ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
 	ReclaimComplete(ctx context.Context, c Call, cl ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, c Call, cl ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
@@ -1030,8 +1030,8 @@ no principal, and its `ClientGuid` travels in clear, so anyone can send a
 machine's and hold a session under its record
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). An SMB client is
 registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
-and each node's first such session of it calls `Connect` again, which adds the
-node to `Reach.Sessions`; a null or guest session never joins a client, so its opens are offered no
+and each node's first such session of it calls `Connect` again, which lists the
+node in `Reach.Sessions`, as does each new node epoch of a node holding one; a null or guest session never joins a client, so its opens are offered no
 lease or oplock. The node leaves the list when its last session of the client
 ends, through the `Disconnect` that ends it
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the client's next
@@ -1206,7 +1206,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | --- | --- | --- | --- |
 | `Propose` | `openstate.Clients.Propose`, which looks the (protocol, name) up through the table, never the store's `metadata.Clients`: an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
 | `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
-| `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
+| `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState`; a `Disconnect` reaches each primary first and runs the lease owner's step, which unlists the node, only once every one has acknowledged ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | `TestState`, `FreeState` | `Recovery.TestState`; `Recovery.FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
@@ -1880,7 +1880,7 @@ left with no entry and no open holds it; when open state's `Close` reports the
 last close of a file with no entry, having deleted its durable open record
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)),
 or reports through `Sink.Closed` a close the table made itself — a timeout,
-grace's end, an expiry or revoke ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
+grace's end, an expiry or revoke, a `Disconnect` ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
 when a release commits that wrote the pending releases of its file's named
 streams ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)),
 for each of those streams; and in recovery, for every pending release, when the

@@ -679,7 +679,8 @@ The lower half of the drawing above:
    move's release does (§3.1, §3.3). Closing cancels the context of
    every request still in progress on the connection, drops the connection's
    state, and, for the last channel of an SMB session, calls `Disconnect`, with
-   `Last` when it was the node's last session of the client
+   `Last` and the node entry's `Gen` when it was the node's last session of the
+   client, repeating it until it succeeds
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 
 The service learns of a client at the protocol's own moment

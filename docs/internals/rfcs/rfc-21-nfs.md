@@ -2291,7 +2291,7 @@ in RFC 14's durable client record
 | `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
-| `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession`, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
+| `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession` and again through it at each new node epoch, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
 | `Lease.Node` | the lease owner: the node holding the client's sessions | renewal by `SEQUENCE` and `RENEW` |
 | `Shards` and the record's per-shard `Done` | the shards it holds state in, and in each the grace instance it last finished reclaiming in; a loss awaits the client's recovery while that is below the shard's grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | §5.4 |
 
@@ -2331,7 +2331,7 @@ so a renewal — every `SEQUENCE`, every NFSv4.0 `RENEW` — writes no record.
 | --- | --- | --- | --- |
 | `Client.Pending`, `Pending.Confirm` | `SETCLIENTID` / `EXCHANGE_ID` before its confirm; the confirm verifier, the `eir_sequenceid` | the NFSv4.0 callback address, until the confirm takes it | §3.5, §4.1 |
 | `AddSession` | `CREATE_SESSION` | its sequence and last reply, which answer a replay | §3.5 |
-| `SessionEnd.Last` | the node's last `DESTROY_SESSION` of the client | — | §5.1 |
+| `SessionEnd.Last`, `Gen` | the node's last `DESTROY_SESSION` of the client, with the node entry's `Gen` its latest `AddSession` returned | — | §5.1 |
 | `StateRef{Type, Shard, Instance, Token, Seq}` | stateid: `other` (shard, grace-instance bits, token), `seqid`; `seqid` 0 is `Seq` 0, current | — | §5.2 |
 | `OpenMode.Access` / `Deny` | `share_access` / `share_deny`: read and write each way; NFSv4 has no delete bit, so an NFS open never denies delete | — | below |
 | an open with `Via` zero: counted under no directory, no delete through a parent ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)); `Reclaim` for `CLAIM_PREVIOUS` | `OPEN` claim types `CLAIM_FH`, `CLAIM_PREVIOUS`, `CLAIM_DELEG_CUR_FH`, `CLAIM_DELEG_PREV_FH` | — | below |
