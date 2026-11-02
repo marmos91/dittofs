@@ -849,7 +849,6 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	s := sealedSetup(t, f)
 	mid := s.recs[len(s.recs)/2]
 	loc := entryAt(t, f, mid.id, mid.extent.Off).Location
-	before := f.J.Stats()
 
 	// The trailer first, so the segment has no catalog; then the length
 	// field of a record in the middle, so the scan cannot step over it.
@@ -857,11 +856,11 @@ func TestRFC28C_ScanResynchronises(t *testing.T) {
 	flipAt(t, f, s.name, loc.Offset+raw.RecordLengthOffset)
 	f.Reopen()
 
+	// No loss event is asserted: with no catalog, the record's file and
+	// extent live only in the header that failed its checksum. This follows
+	// the decision on a header flipped in a scanned segment in
+	// TestDamage_BitFlip; change the two together once the RFC settles it.
 	wantScanned(t, "", f, s.recovery, 1)
-	ev := lastLoss(t, f, before)
-	if ev.File != mid.id || ev.Extent != mid.extent || ev.Reason != journalv2.LossCorrupt {
-		t.Fatalf("loss event %+v, want file %v, extent %+v, dropped as corrupt", ev, mid.id, mid.extent)
-	}
 	wantExtentMissing(t, f.Share(0), mid.id, mid.extent)
 	for _, r := range s.recs {
 		if r.extent != mid.extent {
