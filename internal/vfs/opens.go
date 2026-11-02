@@ -269,6 +269,9 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 		// them.
 		return vfs.OpenResult{}, func() { fs.closed(ctx, f.Share, f.ID, cr) }, err
 	}
+	if overwrite && via != nil {
+		fs.changedIn(ctx, via, openstate.Change{What: openstate.ChangeSize | openstate.ChangeTimes, Name: req.Name})
+	}
 	return vfs.OpenResult{Ref: ref, File: file, MaximalAccess: maximal, Grant: o.Grant, Confirm: o.Confirm}, nil, nil
 }
 
