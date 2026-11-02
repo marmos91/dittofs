@@ -423,7 +423,7 @@ thin with four rules:
    a handler is one function that makes one service call (§4.3). Neither holds
    a connection.
 4. **An interface only where there are two implementations.** `vfs.Service`
-   (the server, the gateway, the recording fake, the null service), the authenticator (the
+   (the filesystem, the gateway, the recording fake, the null service), the authenticator (the
    local store, a domain, a fake), a protocol and its stages (NFS's RPC
    protocol, SMB), a sidecar (§3.5). Everything else is a concrete type.
 
@@ -817,7 +817,7 @@ package core // internal/adapter/core
 // A field is an interface where it has two implementations, a concrete type
 // where it has one.
 type Deps struct {
-	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the server or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Pools   *resources.Pools  // RFC 24 §2.3: receive, reply, connection state
 	Metrics *metrics.Registry // RFC 25 §2
 	Logger  *slog.Logger
@@ -1106,7 +1106,7 @@ A handler is the function for one wire operation:
 ```go
 // Handler is indicative; the obligations around it are normative. Handlers are
 // methods on their version's handler set, which holds the service (§4.7); r
-// carries what is per request: the Identity, the version, the session's ID
+// carries what is per request: the Call (§4.4), the version, the session's ID
 // tables and the compound state.
 type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) (*Rep, error)
 ```
@@ -1138,7 +1138,7 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
 ```go
 func (h *Handlers) Write(ctx context.Context, r *core.Request, a *WRITE3args) (*WRITE3res, error) {
 	o := vfs.Anonymous(a.File) // NFSv3 has no opens (RFC 17 §4.1)
-	w, err := h.svc.Write(ctx, r.Identity, o, int64(a.Offset), a.Data, stability(a.Stable))
+	w, err := h.svc.Write(ctx, r.Call, o, int64(a.Offset), a.Data, stability(a.Stable))
 	if err != nil {
 		return nil, err // mapped once, by the table (§4.5)
 	}
@@ -1194,8 +1194,8 @@ reach no service call.
 
 The adapter runs the protocol's security handshake — AUTH_SYS credential
 decoding, the RPCSEC_GSS context exchange, SMB's NTLM or Kerberos session setup
-— and hands the service an `Identity` holding what the handshake proved, and
-nothing more, in neutral terms
+— and builds an `Identity` holding what the handshake proved, and nothing
+more, which reaches the service inside the request's `Call` (below), in neutral terms
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `Proof`, how it was proved (`None` < `Claimed` < `Secret` < `Ticket`);
 `Protection`, how its messages are protected (`None` < `Integrity` <
 `Privacy`); the numeric IDs a client asserted, as `Claims`; the client's
@@ -1210,7 +1210,7 @@ squashing, or decide that a principal is privileged. Those are the service's,
 per share, by [RFC 18 §6](rfc-18-identity.md#6.%20Resolution%20per%20share)'s
 resolution. Where the handshake itself needs a directory — verifying an NTLM
 response, a Kerberos ticket against a keytab — the adapter calls the service's
-`SignIn`, which the server delegates to the authentication interface RFC 18
+`SignIn`, which the filesystem delegates to the authentication interface RFC 18
 defines ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations),
 [RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), and
 holds only the result in its security context. A handshake that fails is
@@ -1304,7 +1304,23 @@ every request is:
 3. the `Security` stage verifies and wraps through the context's
    per-message operations (§5.5).
 
-None is in a handler: a handler reads `r.Identity` and nothing else.
+None is in a handler: a handler reads `r.Call` and nothing else.
+
+**The `Call` is built beside the `Identity`, never inside it.** Every service
+method takes a `vfs.Call`
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the same `Router`
+stage builds it, as `r.Call`, once per request: the `Identity` above, the
+request's `Protocol`, and what the request's session gives — `Session` and
+`Client`, the SMB session's or the NFSv4.1 session a `SEQUENCE` names, and
+`Channel`, an SMB request's `ChannelSequence` and replay flag. Where no session
+names the client, the handler sets `Client` on a copy of `r.Call` for its one
+operation, from what it decodes: over NFSv4.0 the client on the state its
+stateid resolves to, or for an operation that names an open or lock owner, that
+owner's client, and only one confirmed under NFSv4.0 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open),
+[RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)), and for NLM the `ClientID`
+of the host's client record, keyed by `caller_name` and source address
+([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)). An NFSv3 call names no client and
+leaves it zero.
 
 **Tested without a domain.** The package carries the initiator side of each
 mechanism, used only by tests, so every exchange runs in-process:
@@ -1708,7 +1724,7 @@ adapter each entry point is one handler and one call:
 **Finding it in the code.** Each entry is a file named after its wire
 operation, and the entry methods — `Root`, `SecInfo`, `ListShares` — are called
 from those files and nowhere else in an adapter. So "what runs when a client mounts" is one search for the method,
-which lands on one handler, whose one call leads into the service's server ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
+which lands on one handler, whose one call leads into the service's filesystem ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
 where resolution, admission and the pseudo-filesystem are. The import test
 (§7.1) keeps it so: it lists every call of an entry method from adapter code
 and fails on one outside the files above, so a second path to a share — how

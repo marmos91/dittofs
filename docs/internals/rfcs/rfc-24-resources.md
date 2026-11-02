@@ -491,7 +491,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
 | `Pools`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
-| `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Server` | entries dropped at zero |
+| `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
 | sizes: metadata store, index, transfers | the root, from `Split` | the store, each journal, the syncer | handed at construction; the owner sizes itself |
 
@@ -773,7 +773,7 @@ reservation: waiting would keep it, and the memory is what the cap protects.
 **How the service learns a call's bytes.** `core` attaches the call's receive
 and reply charge to the call's context once, before the service is called, as
 it already passes a call's hold bound (`vfs.WithHold`,
-[RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). The server's admission reads it
+[RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). The filesystem's admission reads it
 and adds each half to the share's count for its pool in the same step that
 checks the cap:
 
@@ -781,7 +781,7 @@ checks the cap:
 func WithCharge(ctx context.Context, receive, reply int64) context.Context
 func ChargeOf(ctx context.Context) (receive, reply int64) // 0, 0 for an internal caller no adapter reserved for
 
-// ShareCap is the server's per-share count (§4.2): one per service, built over the
+// ShareCap is the filesystem's per-share count (§4.2): one per service, built over the
 // receive and reply budgets, whose fill it reads. A map entry exists only while a share
 // has a call in flight, so a removed share leaves nothing behind.
 type ShareCap struct{ /* mu; per share: receive bytes, reply bytes */ }

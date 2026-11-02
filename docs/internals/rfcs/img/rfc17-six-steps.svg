@@ -39,7 +39,7 @@
   <path d="M174,150 L174,164" class="ln"/><path d="M726,150 L726,164" class="ln"/>
 
   <rect x="16" y="166" width="868" height="214" rx="8" class="zone"/>
-  <text x="340" y="182" class="s">filesystem service — one path for both protocols; steps 2–6 in the server</text>
+  <text x="340" y="182" class="s">filesystem service — one path for both protocols; steps 2–6 in the filesystem</text>
 
   <rect x="24" y="190" width="130" height="86" rx="5" class="sv"/>
   <text x="34" y="208" class="h">1 route</text><text x="34" y="226" class="s">the gateway sends it</text><text x="34" y="241" class="s">to the file's primary;</text><text x="34" y="256" class="s">none on one node</text>

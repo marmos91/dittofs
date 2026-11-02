@@ -19,7 +19,7 @@
     </style>
   </defs>
   <rect width="900" height="450" fill="#ffffff"/>
-  <text x="16" y="26" class="t">Adapters sign in, the gateway forwards, the server decides.</text>
+  <text x="16" y="26" class="t">Adapters sign in, the gateway forwards, the filesystem decides.</text>
 
   <!-- a single node -->
   <rect x="16" y="40" width="226" height="370" rx="8" class="zone"/>
@@ -29,17 +29,17 @@
   <path d="M129,120 L129,170" class="ln"/>
   <text x="137" y="150" class="m">vfs.Service</text>
   <rect x="28" y="172" width="202" height="76" rx="5" class="sv"/>
-  <text x="40" y="191" class="m">*vfs.Server</text>
+  <text x="40" y="191" class="m">*vfs.Filesystem</text>
   <text x="40" y="208" class="s">admission, identity, squash,</text>
   <text x="40" y="223" class="s">ordering, open state,</text>
   <text x="40" y="238" class="s">metadata and content</text>
   <path d="M129,250 L129,300" class="ln"/>
   <rect x="28" y="302" width="202" height="58" rx="5" class="st"/>
-  <text x="40" y="321" class="h">below the server</text>
+  <text x="40" y="321" class="h">below the filesystem</text>
   <text x="40" y="338" class="s">metadata store, engine,</text>
   <text x="40" y="352" class="s">open state, identity</text>
   <text x="28" y="388" class="s">no gateway, no Serve:</text>
-  <text x="28" y="402" class="s">the adapters call the server</text>
+  <text x="28" y="402" class="s">the adapters call the filesystem</text>
 
   <!-- node A: the gateway node -->
   <rect x="258" y="40" width="300" height="370" rx="8" class="zone"/>
@@ -60,7 +60,7 @@
   <path d="M270,203 L264,203 L264,350 L268,350" class="gl"/>
   <text x="284" y="309" class="s">local: the checked Service (fence, dedup)</text>
   <rect x="270" y="320" width="276" height="62" rx="5" class="sv"/>
-  <text x="282" y="339" class="m">*vfs.Server</text>
+  <text x="282" y="339" class="m">*vfs.Filesystem</text>
   <text x="282" y="356" class="s">this node's shards; and the leases of</text>
   <text x="282" y="371" class="s">the clients connected here</text>
 
@@ -76,15 +76,15 @@
   <path d="M736,236 L736,250" class="ln"/>
   <text x="744" y="248" class="m">vfs.Service</text>
   <rect x="600" y="252" width="272" height="62" rx="5" class="sv"/>
-  <text x="612" y="271" class="m">*vfs.Server</text>
+  <text x="612" y="271" class="m">*vfs.Filesystem</text>
   <text x="612" y="288" class="s">decides the call: admission, identity,</text>
   <text x="612" y="303" class="s">open state, quota, the engine's write</text>
   <path d="M736,316 L736,332" class="ln"/>
   <rect x="600" y="334" width="272" height="48" rx="5" class="st"/>
-  <text x="612" y="353" class="h">below the server</text>
+  <text x="612" y="353" class="h">below the filesystem</text>
   <text x="612" y="370" class="s">metadata store, engine, open state</text>
   <rect x="600" y="70" width="272" height="48" rx="5" class="pr"/>
   <text x="612" y="89" class="h">adapters, a gateway</text><text x="612" y="106" class="s">node B is a gateway node for its own clients</text>
 
-  <text x="16" y="432" class="s">Every node builds the server; a cluster node also builds Serve and the gateway, which holds Serve's checked vfs.Service, never a *vfs.Server.</text>
+  <text x="16" y="432" class="s">Every node builds the filesystem; a cluster node also builds Serve and the gateway, which holds Serve's checked vfs.Service, never a *vfs.Filesystem.</text>
 </svg>
