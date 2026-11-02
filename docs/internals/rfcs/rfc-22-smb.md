@@ -2235,6 +2235,7 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
+| `Client.Sessioned` | true, set at `NEGOTIATE` | — | every SMB call carries a session, so no call without one may present its state ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, by `NEGOTIATE` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |

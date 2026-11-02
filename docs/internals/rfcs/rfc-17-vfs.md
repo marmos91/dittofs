@@ -641,7 +641,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
+| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, whether it is confirmed with sessions (`Sessioned`: NFSv4.1's confirming `CREATE_SESSION`, SMB's `NEGOTIATE`), the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
 The rest carry no meaning beyond their shape:
 
@@ -847,7 +847,9 @@ under its delegation's stateid for any of its open-owners and principals
 principal. The service **MUST** refuse it with `NotYours` unless the delegation
 is held by the call's client on a session (`Call.Session` set); a `Delegated`
 reference on a call with no session is `NotYours`, since NFSv4.0 is offered no
-delegation. The service **MUST** then authorise the call as for an
+delegation. More generally, a call with no session that presents state of a
+client confirmed with sessions (`Sessioned`) is `NotYours`, whatever its
+principal ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). The service **MUST** then authorise the call as for an
 anonymous open: the `Identity`'s principal against the file
 and the share grant ([§4.6](#4.6%20One%20chokepoint)), and against the deny
 modes held. The delegation lends no access.
