@@ -12,10 +12,10 @@ write records; [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` an
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/enginev2` surface
 (`Engine`, `Deps`, the `Journal` and `Handle` interfaces, `WriteOpts`, `Overlay`) and E2's
-fake journal (`enginev2test.FakeJournal`), profiler wiring and red rows. Epic 4's T4.1, the
-verifier, which `Write` returns (T3.2).
+fake journal (`enginev2test.FakeJournal`), profiler wiring and red rows. Nothing of epic 4:
+`Write` answers a stand-in verifier until epic 4's T4.1 replaces it (D12).
 **Blocks:** epic 4, whose group commit captures the pending operations T3.1 and T3.2
-record per file; epic 5, which records its truncates and deallocates as pending operations
+record per file, and whose T4.1 replaces T3.2's stand-in verifier; epic 5, which records its truncates and deallocates as pending operations
 and is answered by T3.4 to T3.6's replay; epic 6, which rebuilds the per-file entries from
 the journal at start; epic 7, whose refusal mapping (T7.1) replaces T3.2's interim answer
 to a capacity refusal; epic 8, whose clone copies through `Write`'s path and resolves its
@@ -51,8 +51,8 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 
 ### 1.2 Out of scope
 
-- The verifier's inputs and their derivation (RFC 8 §4.1): epic 4, T4.1. T3.2 only samples
-  it before staging.
+- The verifier's inputs and their derivation (RFC 8 §4.1): epic 4, T4.1. T3.2 samples a stand-in
+  verifier before staging (D12), which T4.1 replaces.
 - `Commit`, the group commit, the entry's drop once its operations commit, and `Done`'s
   calls: epic 4.
 - `Truncate`, `Deallocate`, `Delete` and the per-file guard: epic 5. Epic 3 only replays the
@@ -289,13 +289,19 @@ subtasks and tests can cite them.
   hole; the engine's `Allocation` answers an `entity.Span`. It answers `Hole` for a hole and
   `Uncarved` for data, with no ref, since a caller reads only hole against data. A
   `decision:` marker names it.
+- **D12, the verifier before epic 4.** `Write` returns RFC 8 §4.1's verifier, whose inputs
+  T4.1 derives, and nothing in this epic may wait for epic 4. T3.2 samples the verifier
+  through one function, `sampleVerifier`, that answers a fixed zero verifier, with a
+  `ponytail:` marker: a write's verifier, a stable one's included, means nothing until T4.1
+  replaces that function's body with the derived one, so a client comparing verifiers sees
+  no restart or loss until then; T4.1 replaces it, and nothing else does.
 
 ## 5. Target tree
 
 ```text
 pkg/block/enginev2/
   file.go           T3.1  per-file entries, sharded by file; pending operations; bindingOf (D1)
-  export_test.go    T3.1  the binding hook and counter accessors (D2, D9)
+  export_test.go    T3.1  the binding hook, counter accessors and the verifier swap (D2, D9, D12)
   unit_test.go      T3.1  the unit composition over the fake journal and the real kvstore
   imports_test.go   T3.1  allowlist entries for the composition's imports
   write.go          T3.2  Write, the identifier and version conversions, the error mapping (D4)
@@ -344,10 +350,10 @@ test/enginev2/known.yaml  T3.2  its entry
 
 **Subtask T3.2 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** T3.1, T4.1.
+- **Track:** A. **Depends on:** T3.1.
 - **Covers:** R1, R4, R5, R6, R7, R8, R9, R10, R12, R28.
 - **Deliverables:** `write.go`: `Write` as RFC 8 §4.1's steps without admission and the post:
-  validate (`off` negative is `ErrInvalid`), sample the verifier, stage through `WriteAt`
+  validate (`off` negative is `ErrInvalid`), sample the stand-in verifier (D12), stage through `WriteAt`
   with the time of R7, insert the pending operation by version (D3), answer. The `FileID`
   and version conversions to `journalv2`'s types, one line each over its converters, at
   their first caller. The journal-error mapping of D4. `conformance/rfc8_write_test.go`
@@ -361,8 +367,9 @@ test/enginev2/known.yaml  T3.2  its entry
   which still returns (catches a store call on the write path, R6); the change `Since`
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
   behind the tag, over the real one where the journal reads it back (catches a wrong unit or
-  an ignored `Suspend`); a journal wrapper that raises the loss generation inside `WriteAt`:
-  the write's verifier equals the one before it (catches sampling after staging, R8); a
+  an ignored `Suspend`); a journal wrapper that counts `WriteAt` calls, with
+  `sampleVerifier` swapped through `export_test.go` for one that records that count: it reads
+  0 (catches sampling after staging, R8, which the zero stand-in alone cannot show); a
   write refused `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
   (catches a leaked `journalv2` error or an early `Done`); `OtherShareError` answered
   `ErrCorrupt`; a zero-length write calls `Done` once and stages nothing; 32 concurrent
@@ -461,7 +468,6 @@ test/enginev2/known.yaml  T3.2  its entry
 ```mermaid
 flowchart TD
   S2(["S2 red suite in CI"]):::sync --> T3_1["T3.1 Per-file entries"]
-  T4_1["T4.1 The verifier (epic 4)"] --> T3_2
   T3_1 --> T3_2["T3.2 Write"]
   T3_2 --> C1(["after T3.2: pending operations recorded, epic 4's capture can start"]):::sync
   T3_2 --> T3_3["T3.3 Draw"] & T3_4["T3.4 Overlay"] & T3_5["T3.5 Read"] & T3_6["T3.6 Allocation"]
@@ -491,9 +497,11 @@ A suggestion only: one pull request per subtask works as well.
    the engine learns a file's share from a store lookup; D1 serves one bound share until
    then. It must be settled before epic 6 binds a second share, and the change touches
    the surface frozen at S1.
-2. **The verifier's edge.** T3.2 returns the verifier T4.1 builds, an edge from epic 4 into
-   epic 3 that the dependency graph between epics does not draw. T4.1 needs nothing of
-   epic 3 and comes first on track B.
+2. **The verifier's edge.** T3.2 returns the verifier T4.1 derives, an edge from epic 4 into
+   epic 3 that the dependency graph between epics does not draw. This document breaks it
+   with a stand-in (D12) so epic 3 waits for nothing of epic 4; the graph between epics
+   should either add an edge from epic 4 to epic 3, which T4.1 allows since it needs nothing of epic 3
+   and comes first on track B, or note the stand-in and T4.1's replacing it.
 3. **No row over the real journal turns green in this epic.** E2's fixture composes the
    engine through `Start`, epic 6's, and the journal's `WriteAt` and `ReadAt` are not built
    yet. The rows R5 and R26 to R29 name leave `known.yaml` once both exist.
