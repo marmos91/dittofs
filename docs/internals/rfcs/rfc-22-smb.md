@@ -931,8 +931,10 @@ file open locally, until the server takes the promise back.
 - The lease key, parent lease key and lease epoch are carried on the grant
   (`Key`, `Parent` and `Epoch`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
-  every open of a file by one client under one key; a key already naming a
-  grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
+  every open of a file by one client under one key; for one of the key's
+  openers, a key already naming a grant on another file is refused with
+  `STATUS_INVALID_PARAMETER`, and anyone else's open under it is granted
+  uncached ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). The
   v2 create context's epoch travels as `OpenRequest.Epoch`, which a new lease
   starts from; the grant's `V2` fixes the version at creation, and a v2
   lease's `Epoch` rises with every change of its caching sent to the client,
