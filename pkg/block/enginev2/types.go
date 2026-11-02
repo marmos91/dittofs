@@ -35,3 +35,23 @@ const (
 
 // Stats is the engine's counters and conditions, per share and journal.
 type Stats struct{}
+
+// WriteOpts is what a write carries besides its bytes.
+type WriteOpts struct {
+	Suspend entity.TimeMask // the times this write leaves alone
+	// Done is called exactly once for every write Write accepted: by the
+	// existence commit that records its usage or the commit recording its
+	// loss, or by the engine, charging nothing, when it drops the write
+	// uncommitted. It is never called if Write fails.
+	Done func()
+}
+
+// Overlay is a file's size, times and version as its uncommitted operations
+// leave them, replayed in version order: a truncate sets Size and SizeSet, and
+// each later write raises Size to its end.
+type Overlay struct {
+	Size         int64 // SizeSet: the size; else the end of the pending writes
+	SizeSet      bool  // a truncate is pending, so Size is exact
+	Mtime, Ctime time.Time
+	Version      entity.JournalVersion
+}
