@@ -2077,18 +2077,23 @@ pending existence, as a size or time set does
 rather than leaving those writes to charge the new owner at their own commit.
 That commit joins the group commit, so it runs without the admission lock
 (§5.1). It then takes the file's admission lock, and under it reserves the
-file's charge — its `Charged` bytes plus what writes staged since that commit
-will charge, read from the engine's `Overlay`, and one inode — passing the new
-owner and group as `Reserve`'s `owner`, and holds the lock to the store's
-apply, so no write staged since the commit charges the new owner unchecked. It
-reserves against only the scopes the charge moves into:
+file's charge — its `Charged` bytes plus the file's outstanding write
+reservations, which move to the new owner, and one inode — passing the new
+owner and group as `Rehome`'s `owner`, and holds the lock to the store's
+apply. A file's outstanding write reservations are those step 4 made for its
+writes not yet `Done`; the quota tracker keeps every reservation under its
+file, so they are found by the file alone. Each is exact, since a hole fill or
+an overwrite reserved what it adds, which no size shows. Moved, each is still
+released by its write's `Done`, now from the new owner, so a write staged since
+the commit, or one that commits after the apply, charges the new owner checked.
+It reserves against only the scopes the charge moves into:
 `QuotaUser` for a new owner, `QuotaGroup` for a new group, both when both
 change, and never `QuotaShare` or `QuotaProject`, since the charge leaves
 neither. It runs after the attribute's authorisation and the open-state check,
 as step 4 does for a write, and is refused `ErrQuota` past a hard limit, or a
 soft one whose grace has run, before anything changes; the charge moves in the
 store's transaction, and the reservation is released after that commit, or on
-failure.
+failure, which also moves the write reservations back.
 A privileged caller is held to the limit as any other: quota is not a
 permission.
 
@@ -2098,14 +2103,11 @@ The service is the one enforcer of quotas. Neither the metadata store nor the
 engine refuses a write for quota.
 
 ```go
-// Reserve, at step 4 of a write, a create (one inode), a copy's destination,
-// or a SetAttr changing owner or group (the file's charge, §5.5).
+// Reserve, at step 4 of a write, a create (one inode) or a copy's destination.
 // owner is whom the user and group scopes charge: the file's owner, or for a
 // create the owner the new file will have — the resolved caller after
-// squashing (RFC 7 §7.4) — never the parent directory's; for a SetAttr, the
-// new owner and group, each the current one where it does not change.
-// scopes are the scopes checked and held; none means all four. A SetAttr
-// passes QuotaUser for a new owner and QuotaGroup for a new group (§5.5).
+// squashing (RFC 7 §7.4) — never the parent directory's.
+// scopes are the scopes checked and held; none means all four.
 func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
 	if len(scopes) == 0 {
 		scopes = []Scope{QuotaShare, QuotaProject, QuotaUser, QuotaGroup} // §4.3's order
@@ -2121,7 +2123,20 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 			return nil, &QuotaError{Scope: s}
 		}
 	}
-	return q.add(owner, f, bytes, scopes), nil // released by the write's Done, called exactly once (RFC 8 §5.1), by a SetAttr after its commit, or on failure
+	return q.add(owner, f, bytes, scopes), nil // kept under f; released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
+}
+
+// Rehome, for a SetAttr changing owner or group (§5.5), under the file's
+// admission lock. owner is the new owner and group, each the current one
+// where it does not change; scopes are QuotaUser for a new owner and
+// QuotaGroup for a new group. bytes is the file's Charged plus one inode.
+func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
+	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
+	if err := q.check(ctx, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check
+		return nil, err
+	}
+	q.move(writes, owner, scopes)              // each still released once, by its write's Done
+	return q.add(owner, f, bytes, scopes), nil // released after the store's commit; on failure, Release moves writes back
 }
 ```
 

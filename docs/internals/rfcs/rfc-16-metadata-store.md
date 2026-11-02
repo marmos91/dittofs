@@ -1938,7 +1938,8 @@ commit, but a write is admitted long before, so a check against committed
 totals alone lets every staged, uncommitted byte in the journal through. Each
 primary therefore holds an in-memory **reservation** per principal, per
 project and per share: a write reserves the bytes it may add before it is acknowledged,
-and a `chown` or `chgrp` the charge it moves before the store applies it
+and a `chown` or `chgrp` the charge it moves, with the file's outstanding write
+reservations, before the store applies it
 ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), the
 check is totals + unfolded deltas + this primary's reservations against the
 limit — the principal's own quota or else the share's default for its kind, the project's, and the share-wide quota's
