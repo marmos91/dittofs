@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/internal/vfs/quota"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -132,6 +133,7 @@ type Filesystem struct {
 	log    *slog.Logger
 	authz  authz.Authz
 	events vfs.Events
+	quota  *quota.Quotas
 	locks  lockorder.Locks
 	pseudo atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
 	build  chan struct{}                 // holds a token while one call rebuilds pseudo
@@ -209,6 +211,7 @@ func New(d Deps) (*Filesystem, error) {
 	if fs.log == nil {
 		fs.log = slog.Default()
 	}
+	fs.quota = quota.New(capacity{d.Meta.Capacity()}, fs.events.Quota)
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
 		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals} {

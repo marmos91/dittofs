@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
@@ -193,12 +194,11 @@ func (fs *Filesystem) SecInfo(ctx context.Context, c vfs.Call, dir vfs.Handle, n
 	return out, nil
 }
 
-// StatFS is the share's usage, its share-wide quota and what its files can
-// carry; a pseudo directory holds nothing and answers the zero info.
-//
-// ponytail: answers the share's usage and quota alone, never the tighter of
-// it and h's project's, as the store has no read of a project's usage. Read
-// the project's with that view, comparing their remaining room.
+// StatFS is the share's usage and share-wide quota, and what its files can
+// carry; inside a project, for bytes and for files each, the project's usage
+// and quota where they leave less room under the hard limit than the share's.
+// A quota with no hard limit leaves unbounded room and is never the tighter.
+// A pseudo directory holds nothing and answers the zero info.
 func (fs *Filesystem) StatFS(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.FilesystemInfo, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -222,6 +222,26 @@ func (fs *Filesystem) StatFS(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs
 	if err != nil {
 		return vfs.FilesystemInfo{}, storeErr(err)
 	}
+	f, err := fs.meta.Files().Get(ctx, a.caller.Identity, h)
+	if err != nil {
+		return vfs.FilesystemInfo{}, storeErr(err)
+	}
+	if f.Project != 0 {
+		pq, _, err := capacity.Quota(ctx, a.share.ID, kvstore.QuotaTarget{Project: f.Project})
+		if err != nil {
+			return vfs.FilesystemInfo{}, storeErr(err)
+		}
+		pu, err := capacity.ProjectUsage(ctx, a.share.ID, f.Project)
+		if err != nil {
+			return vfs.FilesystemInfo{}, storeErr(err)
+		}
+		if room(pq.Hard.Bytes, pu.Bytes) < room(q.Hard.Bytes, u.Bytes) {
+			u.Bytes, q.Hard.Bytes, q.Soft.Bytes, q.Advisory.Bytes = pu.Bytes, pq.Hard.Bytes, pq.Soft.Bytes, pq.Advisory.Bytes
+		}
+		if room(pq.Hard.Files, pu.Files) < room(q.Hard.Files, u.Files) {
+			u.Files, q.Hard.Files, q.Soft.Files, q.Advisory.Files = pu.Files, pq.Hard.Files, pq.Soft.Files, pq.Advisory.Files
+		}
+	}
 	return vfs.FilesystemInfo{
 		Share: a.share.ID,
 		Capabilities: vfs.Capabilities{
@@ -231,6 +251,14 @@ func (fs *Filesystem) StatFS(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs
 		Usage: u,
 		Quota: q,
 	}, nil
+}
+
+// room is what a hard limit leaves above used; a zero limit leaves all.
+func room(limit, used int64) int64 {
+	if limit == 0 {
+		return math.MaxInt64
+	}
+	return limit - used
 }
 
 // Quota is p's usage and quota in h's share, the zero quota when p has none;

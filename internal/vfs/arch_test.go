@@ -19,7 +19,7 @@ const module = "github.com/cubbit/dittofs/"
 // client rules compare, is not network code.
 var network = []string{"net", "crypto/tls", "golang.org/x/net", "google.golang.org/grpc"}
 
-// below is what admit, pseudofs and lockorder never import: each reaches the
+// below is what admit, pseudofs, lockorder and quota never import: each reaches the
 // store only through the narrow reads it declares beside its own code. The
 // store's value types, entity, are no read, and they may name them.
 var below = []string{module + "pkg/metadata", module + "pkg/block", module + "pkg/openstate"}
@@ -67,7 +67,7 @@ func violations(t *testing.T, root string) []string {
 				found = append(found, rel+": imports network code "+p)
 			case under(p, adapters):
 				found = append(found, rel+": imports an adapter, "+p)
-			case (pkg == "admit" || pkg == "pseudofs" || pkg == "lockorder") && under(p, below) && p != values:
+			case (pkg == "admit" || pkg == "pseudofs" || pkg == "lockorder" || pkg == "quota") && under(p, below) && p != values:
 				found = append(found, rel+": imports "+p+" below its declared reads")
 			}
 		}
@@ -101,8 +101,8 @@ func violations(t *testing.T, root string) []string {
 	return found
 }
 
-// The filesystem imports no adapter and no network code, admit, pseudofs and
-// lockorder import nothing below their declared reads, only authz calls
+// The filesystem imports no adapter and no network code, admit, pseudofs,
+// lockorder and quota import nothing below their declared reads, only authz calls
 // Authorize or Granted, and nothing calls the store's ControlPlane.
 func TestArchitecture(t *testing.T) {
 	for _, v := range violations(t, ".") {
@@ -126,6 +126,7 @@ func TestArchitectureCheckReportsEachSeededViolation(t *testing.T) {
 		"network.go: imports network code net",
 		"pkgadapter.go: imports an adapter, " + module + "pkg/adapter/nfs",
 		"pseudofs/engine.go: imports " + module + "pkg/block/engine below its declared reads",
+		"quota/store.go: imports " + module + "pkg/metadata below its declared reads",
 		"tls.go: imports network code crypto/tls",
 		"xnet.go: imports network code golang.org/x/net/http2",
 	}

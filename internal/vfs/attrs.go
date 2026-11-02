@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/internal/vfs/quota"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -125,8 +126,9 @@ var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInv
 
 // SetAttr changes t's attributes as ch names them, under t's admission and
 // accept locks: the ctime guard first, then the rights the change asks,
-// decided through authz, then open state, then the change, whose value the
-// store's ownership rules decide. A size change is the engine's Truncate,
+// decided through authz, then open state, then, for an owner or group
+// change, the file's charge reserved against the new owner and group, then
+// the change, whose value the store's ownership rules decide. A size change is the engine's Truncate,
 // after an unprivileged caller's change has cleared setuid and setgid, in a
 // change committed before the truncate is staged. DeleteOnClose, Suspend and
 // Resume go to the open t names, and nowhere else.
@@ -215,6 +217,18 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 			return vfs.WCC{}, openErr(err)
 		}
 	}
+	// An owner or group change moves the file's charge, its bytes and one
+	// inode, in the store's transaction, so the new owner and group are
+	// reserved it first, each only where it changes, and the reservation
+	// released once the store has answered. A privileged caller is held to
+	// the limit as any other.
+	if mv, ok := moved(f, ch.Attrs); ok {
+		res, err := fs.reserve(ctx, a, mv, entity.Usage{Bytes: f.Charged, Files: 1})
+		if err != nil {
+			return vfs.WCC{}, err
+		}
+		defer res.Release()
+	}
 	if viaOpen {
 		u := openstate.OpenUpdate{Delete: ch.DeleteOnClose, Suspend: ch.Suspend, Resume: ch.Resume}
 		if err := fs.opens.Update(ctx, who, t.Open.Open, u); err != nil {
@@ -237,6 +251,20 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	return fs.wcc(ctx, c, a, t.H, f), nil
+}
+
+// moved is whom a change of f's owner or group moves its charge to: the new
+// owner and the new group, each only where ch changes it; false when it
+// changes neither.
+func moved(f vfs.File, ch vfs.Attrs) (quota.Charge, bool) {
+	c := quota.Charge{Share: f.Share, Moved: true}
+	if ch.Changes(entity.AttrOwner) && ch.Owner != f.Owner {
+		c.Owner = ch.Owner
+	}
+	if ch.Changes(entity.AttrGroup) && ch.Group != f.Group {
+		c.Group = ch.Group
+	}
+	return c, !c.Owner.IsZero() || !c.Group.IsZero()
 }
 
 // truncate stages f's size change in the engine, once an unprivileged

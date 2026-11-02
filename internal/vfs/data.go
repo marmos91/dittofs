@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/internal/vfs/quota"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -40,7 +41,11 @@ func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 }
 
 // Write stages src at off in the file ref names, and answers the engine's
-// verifier, sampled before the bytes were staged, with the file's WCC. A
+// verifier, sampled before the bytes were staged, with the file's WCC. What
+// its commit will charge, the bytes it lands in holes and past the size its
+// staged writes leave, is reserved against the quotas charging the file's
+// owner, group and project before anything changes, and refused ErrQuota at
+// once past them. A
 // stable write is answered once the engine's Commit over its extent has,
 // which runs after the file's admission lock is released. A Commit answering
 // another verifier means a loss may have taken the write between staging and
@@ -58,15 +63,26 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		return vfs.WriteResult{}, err
 	}
 	defer release()
+	var res *quota.Reservation
+	add, err := fs.charges(ctx, f, off, int64(len(src)))
+	if err == nil {
+		res, err = fs.reserve(ctx, a, charged(f), entity.Usage{Bytes: add})
+	}
+	if err != nil {
+		unlock()
+		return vfs.WriteResult{}, err
+	}
 	var wr vfs.WriteResult
 	// decision: a write passes no suspended times: open state keeps the
 	// times an open suspends but answers them to no caller, so a write
 	// through such an open still moves mtime and ctime. Pass them once
 	// CheckIO answers the open's.
 	opts := WriteOpts{
-		// ponytail: Done releases nothing, as no quota is reserved yet; once writes
-		// reserve quota, Done releases the reservation here.
-		Done: func() {},
+		// The reservation travels with the staged bytes: the engine's Done,
+		// on the commit that charges them or on their drop, releases it,
+		// never this call's return. A write the engine refused it never
+		// calls, so that one is released here.
+		Done: res.Release,
 	}
 	wr.WCC, err = fs.stage(ctx, c, a, ref.Handle, f, off, true, func() (err error) {
 		wr.Verifier, err = fs.engine.Write(ctx, f.Share, f.ID, off, src, opts)
@@ -74,6 +90,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 	})
 	unlock()
 	if err != nil {
+		res.Release()
 		return vfs.WriteResult{}, err
 	}
 	if stable(a, ref, st) {
@@ -84,6 +101,35 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 	}
 	wr.N = len(src)
 	return wr, storeErr(err)
+}
+
+// charges is what a write of n bytes at off to f charges once committed:
+// the bytes it lands in holes below f's size, as the engine's allocation
+// answers them, and those past it; a gap it leaves past the size is a hole
+// and charges nothing. A range the allocation answers no progress over is
+// counted as holes.
+//
+// ponytail: a write below the size reads the allocation over its range on
+// every write, whether or not any quota limits it. Skip the read for a
+// charge no quota limits once it shows in a write profile.
+func (fs *Filesystem) charges(ctx context.Context, f vfs.File, off, n int64) (int64, error) {
+	end := min(off+n, f.Size)
+	add := max(0, off+n-max(off, f.Size))
+	for at := off; at < end; {
+		sp, err := fs.engine.Allocation(ctx, f.ID, at)
+		if err != nil {
+			return 0, storeErr(err)
+		}
+		next := min(sp.Offset+sp.Length, end)
+		if next <= at {
+			return add + end - at, nil
+		}
+		if sp.Class == entity.Hole {
+			add += next - at
+		}
+		at = next
+	}
+	return add, nil
 }
 
 // stable reports whether a write asked st through ref must be stable before
