@@ -645,7 +645,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, whether it is confirmed with sessions (`Sessioned`: NFSv4.1's confirming `CREATE_SESSION`, SMB's first authenticated `SESSION_SETUP`), the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
+| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
 The rest carry no meaning beyond their shape:
 
@@ -856,9 +856,15 @@ under its delegation's stateid for any of its open-owners and principals
 principal. The service **MUST** refuse it with `NotYours` unless the delegation
 is held by the call's client on a session (`Call.Session` set); a `Delegated`
 reference on a call with no session is `NotYours`, since NFSv4.0 is offered no
-delegation. More generally, a call with no session that presents state of a
-client confirmed with sessions (`Sessioned`) is `NotYours`, whatever its
-principal ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). The service **MUST** then authorise the call as for an
+delegation. More generally, a `Service` call with no session that presents
+a reference to state created on a session — an `OpenRef`, `StateRef` or
+`GrantID`, or a lock owner whose lock state was — is
+`StateError{NotYours, Sessioned: true}`, whatever its principal: the state
+carries the mark (`Sessioned`), so the file's primary checks it without a
+client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
+argument names no state and is not checked, so `DESTROY_CLIENTID` sent alone
+and a second `CREATE_SESSION` pass, and `Peers` calls, which carry no `Call`,
+are exempt. The service **MUST** then authorise the call as for an
 anonymous open: the `Identity`'s principal against the file
 and the share grant ([§4.6](#4.6%20One%20chokepoint)), and against the deny
 modes held. The delegation lends no access.
@@ -1285,7 +1291,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
-| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind}`, below |
+| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Sessioned}`, below |
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
@@ -1293,7 +1299,8 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrPastEnd` | a `Seek` from an offset at or past the file's end | — |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
-refusals: `ClientInUse` (a client name another principal holds), `ClientBusy`
+refusals (`Sessioned` is set only on a `NotYours` for state created on a
+session, presented by a call with none, [§3.1](#3.1%20Operations)): `ClientInUse` (a client name another principal holds), `ClientBusy`
 (`Destroy` with state left), `RecordChanged` (a client record's adapter bytes
 changed since the adapter read them: reread and decide again), `AdapterVersion`
 (adapter bytes of a version this node cannot read), `StaleClient` (a client
@@ -1627,7 +1634,7 @@ the `order` function the node hands the table at `Start`
 ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the service calls
 those holding no admission lock. Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
-protocol and the mapped principal, as RFC 14's `Caller`, and names a file by `keyOf`: its
+protocol, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`.
 
 **A held call holds nothing.** A call the service holds behind a clone or a copy's

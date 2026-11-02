@@ -1838,7 +1838,14 @@ every right as `want`, not the client's `DesiredAccess`, so the `DELETE` granted
 through the parent is in the answer. A `MAXIMUM_ALLOWED` open whose resolved
 mask is empty, the file granting the caller nothing, is refused
 `STATUS_ACCESS_DENIED` by the adapter before the open, since `Authorize` admits
-an empty `want`.
+an empty `want`. A `MAXIMUM_ALLOWED` open with `FILE_OPEN_FOR_BACKUP_INTENT` is
+not resolved through `Access`, which computes without the open's privilege
+([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)):
+the adapter passes the maximal request to the open, and the service resolves it
+there with the privilege it marks the open with, every entry right within the
+ceiling for a privileged caller
+([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)),
+refusing it `ErrAccess` when that is empty.
 
 **Setting the owner or group** follows
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
@@ -2289,12 +2296,12 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
-| `Client.Sessioned` | true, set at `Connect`, the first authenticated `SESSION_SETUP` | — | every SMB call carries a session, so no call without one may present its state ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one; removed only with the node's loss or the record | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
-| `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |
+| `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call, except with backup intent (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
+| `Open.Sessioned`, `LockState.Sessioned`, `CachingGrant.Sessioned` | true, from the creating call's session | — | every SMB call carries a session, so the mark never refuses an SMB call ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28) |
 | `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | — | §6.4 |
 | `Durable.Timeout` | the durable timeout the create negotiated | — | MS-SMB2 3.3.5.9.10 bounds |
@@ -2604,7 +2611,7 @@ name, a SID, a principal or a client address
 | §16.5 delay causes | Hold one write by a freeze, one by a clone, one by a full journal, one by a store stall, each past its hold: assert `STATUS_FILE_NOT_AVAILABLE`, `STATUS_FILE_LOCK_CONFLICT`, `STATUS_DISK_FULL` and `STATUS_UNEXPECTED_IO_ERROR`, never `STATUS_DISK_FULL` for the freeze. Hold a write behind a clone whose own batches meet a store stall: assert it held past `smb_pending_deadline` and ended `STATUS_UNEXPECTED_IO_ERROR` at `smb_pending_cap`, never `STATUS_FILE_LOCK_CONFLICT`. Crash during a clone on a share at its journal limit with the remote down, restart, and write into the source extent: assert it held as capacity, never `STATUS_FILE_LOCK_CONFLICT`. Copychunk from a file a restored snapshot lists as incomplete into an existing file: assert `STATUS_UNEXPECTED_IO_ERROR` at once and the destination readable and unchanged. | a hold chosen by operation rather than cause, or a clone of an incomplete source that poisons its destination |
 | §16.5 remote outage on reads | Evict a file's blocks, make the store unreachable for 90 s, read through SMB: assert `STATUS_PENDING` and success once the store returns; past `smb_pending_cap`, `STATUS_UNEXPECTED_IO_ERROR`. Evict only the second half of a file and read all of it with `MinimumCount` equal to its length: assert `STATUS_PENDING`, not a short read or an error; with `MinimumCount` 0, assert the first half answered at once. | a transient outage answered as data loss |
 | §16.5 share removal | Remove a share while an SMB client has a tree, a pending `CHANGE_NOTIFY`, a waiting lock and a held write on it: assert `STATUS_NOTIFY_CLEANUP`, `STATUS_NETWORK_NAME_DELETED` for the others, and a tree on another share of the connection unaffected. | `DropShare` never reaching the SMB answer |
-| §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
+| §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, open with the intent and `MAXIMUM_ALLOWED` a file whose DACL grants it nothing: assert granted, and a read and a write through the handle served. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
 | §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a gateway node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
 | §4.1 re-authentication | alice holds a Kerberos session with a tree and an open. Re-authenticate with alice's wrong password: the session, its tree and open gone, pending notifies completed `STATUS_NOTIFY_CLEANUP`. Re-authenticate as alice with a new ticket: the tree and open still work and the new expiry is in force. Re-authenticate as bob: a new open is decided for bob, and alice's open keeps the access it was granted. smbtorture `smb2.session.reauth1`–`reauth6` pass as they do against the reference servers. |
