@@ -512,8 +512,10 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 	// Only a seal that said full names a segment whose file still holds the
 	// whole cap — an early seal whose truncation sync failed stays Sealed at
 	// the cap too, and recycling either would hand a truncated file to the
-	// pool as a full spare (RFC 28 §2.5).
-	if !e.full || e.size != s.cap {
+	// pool as a full spare (RFC 28 §2.5). A full seal is also the only seal
+	// Shrink leaves at the cap: it refuses a full-sealed segment outright, so
+	// the seal's own word is the whole test and the size is read nowhere.
+	if !e.full {
 		s.mu.Unlock()
 		return ErrBadSize
 	}

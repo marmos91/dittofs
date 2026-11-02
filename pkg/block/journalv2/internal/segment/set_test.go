@@ -877,11 +877,20 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	}
 
 	// Over its size is the other half of the same clause: the total may not
-	// stand above the storage the segment is accounted at.
+	// stand above the storage the segment is accounted at. The entry's own
+	// tags make exactly the same figure, and the share's total follows, so the
+	// tags half of the clause — and the global share comparison — have
+	// nothing to disagree with and only the size half can report.
 	s.mu.Lock()
-	s.segs[id].held = s.segs[id].size + 1
+	e := s.segs[id]
+	e.held = e.size + 1
+	e.tags[tag] = e.size + 1
+	s.segs[id] = e
+	s.tags[tag] = e.size + 1
 	s.mu.Unlock()
-	if err := s.Check(); err == nil || !errors.Is(err, ErrMismatch) {
+	if err := s.Check(); err == nil {
+		t.Fatal("a held total above the size was not reported")
+	} else if !errors.Is(err, ErrMismatch) {
 		t.Fatalf("a held total above the size: %v, want it to wrap %v", err, ErrMismatch)
 	}
 }

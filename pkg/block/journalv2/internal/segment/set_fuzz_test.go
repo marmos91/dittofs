@@ -266,7 +266,7 @@ func (o *oracle) apply(op op) (err error) {
 		if seg.state != Sealed {
 			return ErrWrongState
 		}
-		if !seg.full || seg.size != o.segCap {
+		if !seg.full {
 			return ErrBadSize
 		}
 		if op.fresh == 0 {
