@@ -109,7 +109,7 @@ type fuzzPlanted struct {
 	seg     []byte
 	records []int64        // the planted records' slots, ascending
 	headers []RecordHeader // the planted records' headers, the records' own order
-	seal    int64           // the planted marker's slot, -1 when none was planted
+	seal    int64          // the planted marker's slot, -1 when none was planted
 	sealAt  bool           // whether the flip spared the marker's bytes
 	// oldOff, oldEnd hold the old life's byte range, or -1 when the
 	// plan planted none.
