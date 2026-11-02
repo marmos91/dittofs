@@ -529,12 +529,3 @@ func childOf(here []mountEntry, parent uint64) (mountEntry, bool, error) {
 	}
 	return mountEntry{}, false, fmt.Errorf("%w: %d mounts at %s on mount %d", errMountUnresolved, len(found), found[0].point, parent)
 }
-
-// statfsType returns statfs's filesystem type as the 32 bits linuxProbe's
-// fsType holds. golang.org/x/sys declares Statfs_t.Type as an int32 on 386,
-// arm, mips, mipsle and ppc, an int64 on the other 64-bit architectures but
-// s390x, and a uint32 on s390x. Converting any of them keeps the low 32 bits,
-// where every magic lies, whatever the sign the field carries.
-func statfsType[T int32 | int64 | uint32](t T) uint32 {
-	return uint32(t)
-}

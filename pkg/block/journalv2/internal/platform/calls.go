@@ -11,6 +11,7 @@ import "golang.org/x/sys/unix"
 // would.
 type calls struct {
 	open           func(path string, mode int, perm uint32) (fd int, err error)
+	openat         func(dirfd int, path string, mode int, perm uint32) (fd int, err error)
 	fsync          func(fd int) error
 	fdatasync      func(fd int) error
 	close          func(fd int) error
@@ -26,6 +27,7 @@ type calls struct {
 // realTable is the table NewOS gives every OS.
 var realTable = calls{
 	open:           unix.Open,
+	openat:         unix.Openat,
 	fsync:          unix.Fsync,
 	fdatasync:      unix.Fdatasync,
 	close:          unix.Close,

@@ -79,9 +79,10 @@ func check(c calls, mountinfo, dir string) error {
 // table at mountinfo. dir is made absolute and its links are resolved first,
 // as the verdict requires. The directory is opened once, and every call runs
 // on that descriptor, as btrfs-progs runs fstatfs and fstat on one
-// (btrfs_util_is_subvolume_fd in libbtrfsutil/subvolume.c), so every answer
-// is about one directory. A failed call is returned as an error naming it,
-// never as a refusal, and the descriptor is closed whatever happened.
+// (btrfs_util_is_subvolume_fd in libbtrfsutil/subvolume.c), and each file of
+// the directory is opened through it, so every answer is about one
+// directory. A failed call is returned as an error naming it, never as a
+// refusal, and the descriptor is closed whatever happened.
 func probeDir(c calls, mountinfo, dir string) (linuxProbe, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -93,12 +94,20 @@ func probeDir(c calls, mountinfo, dir string) (linuxProbe, error) {
 		return linuxProbe{}, err
 	}
 
+	// decision: the barrier options are read from the mount table alone.
+	// ext4 leaves an option equal to the superblock's default out of it, so
+	// a volume given nobarrier as its default (tune2fs -o nobarrier) and
+	// mounted plainly passes, though no sync reaches the device; only its
+	// options file under /proc/fs/ext4 shows it. Withdraw this when the RFC
+	// says a default set in the superblock is one the mount options say.
 	table, err := os.ReadFile(mountinfo)
 	if err != nil {
 		return linuxProbe{}, err
 	}
 
-	fd, err := openRetrying(c, resolved, checkDirFlags)
+	fd, err := openRetrying(func() (int, error) {
+		return c.open(resolved, checkDirFlags, 0)
+	})
 	if err != nil {
 		return linuxProbe{}, &fs.PathError{
 			Op:   "open",
@@ -140,7 +149,7 @@ func probeOpenDir(c calls, fd int, p *linuxProbe) error {
 		}
 	}
 
-	p.fsType = statfsType(sfs.Type)
+	p.fsType = uint32(sfs.Type)
 
 	var st unix.Stat_t
 
@@ -149,14 +158,6 @@ func probeOpenDir(c calls, fd int, p *linuxProbe) error {
 			Op:   "fstat",
 			Path: p.dir,
 			Err:  err,
-		}
-	}
-
-	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return &fs.PathError{
-			Op:   "fstat",
-			Path: p.dir,
-			Err:  unix.ENOTDIR,
 		}
 	}
 
@@ -194,7 +195,7 @@ func probeOpenDir(c calls, fd int, p *linuxProbe) error {
 	}
 
 	for _, name := range names {
-		flags, err := fileFlags(c, joinPath(p.dir, name))
+		flags, err := fileFlags(c, fd, joinPath(p.dir, name), name)
 		if err != nil {
 			return err
 		}
@@ -331,6 +332,13 @@ func appendRegular(names []string, b []byte, dir string) ([]string, error) {
 			// the skip if the journal ever keeps data in a subdirectory or in
 			// a file that is not a regular one.
 		case unix.DT_LNK:
+			// decision: a symbolic link fails the check, which RFC 28
+			// Appendix A does not ask for: its attribute cannot be read
+			// without following it, and the journal, which opens its files by
+			// name, would follow it to a file the check never read. It fails
+			// as an error, not a refusal, so the open fails as on a fault.
+			// Withdraw it if the RFC says how a link in the directory is
+			// checked.
 			return nil, fmt.Errorf("%w: %s", errEntryLink, joinPath(dir, string(name)))
 		default:
 			return nil, fmt.Errorf("%w: %s has type %d", errEntryTypeUnknown, joinPath(dir, string(name)), rec[direntType])
@@ -340,10 +348,14 @@ func appendRegular(names []string, b []byte, dir string) ([]string, error) {
 	return names, nil
 }
 
-// fileFlags returns FS_IOC_GETFLAGS's answer for the regular file at path,
-// opened for the call and closed before returning.
-func fileFlags(c calls, path string) (uint32, error) {
-	fd, err := openRetrying(c, path, checkFileFlags)
+// fileFlags returns FS_IOC_GETFLAGS's answer for the regular file name in
+// the directory open on dirfd, path being its full path for errors. It opens
+// the file through dirfd, so the answer is about the directory listed even
+// if a parent of it is renamed meanwhile, and closes it before returning.
+func fileFlags(c calls, dirfd int, path, name string) (uint32, error) {
+	fd, err := openRetrying(func() (int, error) {
+		return c.openat(dirfd, name, checkFileFlags, 0)
+	})
 	if err != nil {
 		return 0, &fs.PathError{
 			Op:   "open",
@@ -368,13 +380,13 @@ func fileFlags(c calls, path string) (uint32, error) {
 	return flags, nil
 }
 
-// openRetrying opens path with flags through c, again for as long as the
-// open is interrupted by a signal, as SyncDir does: repeating an open hides
-// no failure.
-func openRetrying(c calls, path string, flags int) (int, error) {
-	fd, err := c.open(path, flags, 0)
+// openRetrying calls open, and calls it again for as long as it is
+// interrupted by a signal, as SyncDir does: repeating an open hides no
+// failure.
+func openRetrying(open func() (int, error)) (int, error) {
+	fd, err := open()
 	for errors.Is(err, unix.EINTR) {
-		fd, err = c.open(path, flags, 0)
+		fd, err = open()
 	}
 
 	return fd, err

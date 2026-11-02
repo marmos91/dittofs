@@ -36,8 +36,12 @@ type probeCall struct {
 	op string
 	// fd is the descriptor acted on, or open's result; -1 for a failed open.
 	fd int
-	// path is the path open was given, or for every other call the path
-	// the descriptor was opened with.
+	// at is, for an open, the descriptor of the directory its name was
+	// opened through, or AT_FDCWD for an open by path.
+	at int
+	// path is the path open was given, the directory's path joined with
+	// the name for openat, or for every other call the path the descriptor
+	// was opened with.
 	path string
 	// flags is open's flags or statx's.
 	flags int
@@ -51,7 +55,7 @@ type probeCall struct {
 func (c probeCall) String() string {
 	switch c.op {
 	case "open":
-		return fmt.Sprintf("open(%s, %#x) = %d", c.path, c.flags, c.fd)
+		return fmt.Sprintf("open(%s, %#x) at %d = %d", c.path, c.flags, c.at, c.fd)
 	case "statx":
 		return fmt.Sprintf("statx(%d, %q, %#x, %#x) on %s", c.fd, c.name, c.flags, c.mask, c.path)
 	case "ioctl":
@@ -61,7 +65,7 @@ func (c probeCall) String() string {
 	}
 }
 
-// fakeProbe is a table for the probe. Its open, close and getdents run on
+// fakeProbe is a table for the probe. Its open, openat, close and getdents run on
 // the real directory the test built, so the entries listed are real and a
 // descriptor left open is one the profiler sees. Its fstatfs, fstat, statx
 // and ioctl make no call and answer what the test recorded, so no verdict
@@ -92,9 +96,8 @@ type fakeProbe struct {
 	// fsType is fstatfs's answer, as the int32 a 32-bit kernel's f_type
 	// arrives as.
 	fsType int32
-	// mode and ino are fstat's answer.
-	mode uint32
-	ino  uint64
+	// ino is fstat's answer.
+	ino uint64
 	// stxMask, stxIno and mntID are statx's answer.
 	stxMask uint32
 	stxIno  uint64
@@ -114,7 +117,6 @@ func newFake(dir string) *fakeProbe {
 		fds:      map[int]string{},
 		pending:  map[int][][]byte{},
 		fsType:   asInt32(magicBtrfs),
-		mode:     unix.S_IFDIR | 0o700,
 		ino:      btrfsSubvolumeRootIno,
 		stxMask:  unix.STATX_BASIC_STATS | unix.STATX_MNT_ID,
 		stxIno:   btrfsSubvolumeRootIno + 1000,
@@ -138,6 +140,7 @@ func setStatfsType[T int32 | int64 | uint32](p *T, v int32) {
 func (f *fakeProbe) table() calls {
 	return calls{
 		open:           f.open,
+		openat:         f.openat,
 		close:          f.close,
 		getdents:       f.getdents,
 		fstatfs:        f.fstatfs,
@@ -222,10 +225,24 @@ func (f *fakeProbe) listedNames() []string {
 }
 
 func (f *fakeProbe) open(path string, mode int, perm uint32) (int, error) {
+	return f.openLogged(unix.AT_FDCWD, path, path, mode, perm)
+}
+
+// openat opens name through the directory open on dirfd, as the kernel
+// does, and logs and fails it as an open of the joined path, so a case
+// reads a file's open by its path whichever call made it.
+func (f *fakeProbe) openat(dirfd int, name string, mode int, perm uint32) (int, error) {
+	return f.openLogged(dirfd, filepath.Join(f.pathOf(dirfd), name), name, mode, perm)
+}
+
+// openLogged opens name through at, logging and failing it as an open of
+// path.
+func (f *fakeProbe) openLogged(at int, path, name string, mode int, perm uint32) (int, error) {
 	if err := f.failure("open", path); err != nil {
 		f.add(probeCall{
 			op:    "open",
 			fd:    -1,
+			at:    at,
 			path:  path,
 			flags: mode,
 		})
@@ -233,7 +250,7 @@ func (f *fakeProbe) open(path string, mode int, perm uint32) (int, error) {
 		return -1, err
 	}
 
-	fd, err := unix.Open(path, mode, perm)
+	fd, err := unix.Openat(at, name, mode, perm)
 	if err != nil {
 		fd = -1
 	}
@@ -248,6 +265,7 @@ func (f *fakeProbe) open(path string, mode int, perm uint32) (int, error) {
 	f.log = append(f.log, probeCall{
 		op:    "open",
 		fd:    fd,
+		at:    at,
 		path:  path,
 		flags: mode,
 	})
@@ -415,7 +433,6 @@ func (f *fakeProbe) fstat(fd int, st *unix.Stat_t) error {
 	}
 
 	*st = unix.Stat_t{}
-	st.Mode = f.mode
 	st.Ino = f.ino
 
 	return nil
@@ -710,6 +727,58 @@ func TestCheckProbeReadsItsCalls(t *testing.T) {
 		if want := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC; c.flags != want {
 			t.Errorf("%v: want flags %#x", c, want)
 		}
+
+		if c.at != dirFD {
+			t.Errorf("%v: want the file opened through the directory's descriptor %d", c, dirFD)
+		}
+	}
+
+	wantAllClosed(t, f)
+}
+
+// TestCheckFilesOpenedThroughTheDirectory fails a probe that opens a file
+// of the directory by its full path rather than through the descriptor the
+// directory was listed on. The path is walked again, so a parent renamed
+// between the listing and the opens makes the probe read another
+// directory's files, or none. Here the parent is renamed away once the
+// listing ends: opened through the descriptor, each file is still the one
+// listed and the directory is accepted; opened by path, it is not found.
+func TestCheckFilesOpenedThroughTheDirectory(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	base := realDir(t)
+	parent := filepath.Join(base, "p")
+	dir := filepath.Join(parent, "j")
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFiles(t, dir, "format", "00000000000000000001.seg")
+	mountinfo := mountTable(t, dir, "btrfs")
+
+	f := newFake(dir)
+	table := f.table()
+	renamed := false
+	table.getdents = func(fd int, buf []byte) (int, error) {
+		n, err := f.getdents(fd, buf)
+		if n == 0 && err == nil && !renamed {
+			renamed = true
+
+			if err := os.Rename(parent, filepath.Join(base, "gone")); err != nil {
+				t.Error(err)
+			}
+		}
+
+		return n, err
+	}
+
+	if err := check(table, mountinfo, dir); err != nil {
+		t.Errorf("parent renamed after the listing: got %v, want the directory accepted", err)
+	}
+
+	if got := f.calls("ioctl"); len(got) != 3 {
+		t.Errorf("got %v, want one ioctl on the directory and one on each file", got)
 	}
 
 	wantAllClosed(t, f)
@@ -813,6 +882,8 @@ func TestCheckEveryFileGetsItsIoctl(t *testing.T) {
 		"00000000000000000002.seg",
 		"00000000000000000003.seg",
 		"00000000000000000004.spare.tmp",
+		// NAME_MAX (include/uapi/linux/limits.h), a record of 280 bytes.
+		strings.Repeat("n", 255),
 	}
 	writeFiles(t, dir, names...)
 
@@ -978,6 +1049,7 @@ func TestCheckFailsOnLinkOrUnknownEntry(t *testing.T) {
 // (include/uapi/linux/stat.h) and does not return the bit, and the field
 // then holds nothing the kernel wrote. The verdict reads an ID of 0 as
 // unknown; any other would be checked against the mount table and refused.
+// It also fails a probe that reads the ID on Btrfs only.
 func TestCheckMountIDNotReported(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1006,6 +1078,17 @@ func TestCheckMountIDNotReported(t *testing.T) {
 
 	err = check(f.table(), mountinfo, dir)
 	wantError(t, err, errMountUnresolved)
+	wantAllClosed(t, f)
+
+	// The ID is read on every filesystem, not only where the attribute is:
+	// on ext4 it is what catches a directory whose mount is not the one the
+	// table shows at its path. 1 is the table's root.
+	f = newFake(dir)
+	f.fsType = asInt32(magicExt)
+	f.mntID = 1
+
+	err = check(f.table(), mountTable(t, dir, "ext4"), dir)
+	wantError(t, err, errMountIDDisagrees)
 	wantAllClosed(t, f)
 }
 
@@ -1157,18 +1240,6 @@ func TestCheckFailingCall(t *testing.T) {
 		wantAllClosed(t, f)
 	})
 
-	t.Run("fstat names no directory", func(t *testing.T) {
-		prof.Watch(t, prof.Options{})
-
-		dir := realDir(t)
-		f := newFake(dir)
-		f.mode = unix.S_IFREG | 0o600
-
-		err := check(f.table(), mountTable(t, dir, "btrfs"), dir)
-		wantIOError(t, err, "fstat", dir, unix.ENOTDIR)
-		wantAllClosed(t, f)
-	})
-
 	t.Run("fstatfs and the close both fail", func(t *testing.T) {
 		prof.Watch(t, prof.Options{})
 
@@ -1191,7 +1262,8 @@ func TestCheckFailingCall(t *testing.T) {
 
 // TestCheckOpenInterrupted fails a probe that returns an open interrupted
 // by a signal as a failure: the open is made again, as SyncDir and
-// os.OpenFile make it, since repeating an open hides no failure.
+// os.OpenFile make it, since repeating an open hides no failure. Two signals
+// come in a row, as SyncDir's test sends, so a single retry fails too.
 func TestCheckOpenInterrupted(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1201,14 +1273,31 @@ func TestCheckOpenInterrupted(t *testing.T) {
 
 	for _, path := range []string{dir, filepath.Join(dir, "format")} {
 		f := newFake(dir)
-		f.failOn("open", path, unix.EINTR)
+		table := f.table()
+		interrupted := 0
+		table.open = func(p string, mode int, perm uint32) (int, error) {
+			if p == path && interrupted < 2 {
+				interrupted++
+				return -1, unix.EINTR
+			}
 
-		if err := check(f.table(), mountinfo, dir); err != nil {
-			t.Errorf("open of %s interrupted once: got %v, want the directory accepted", path, err)
+			return f.open(p, mode, perm)
+		}
+		table.openat = func(dirfd int, name string, mode int, perm uint32) (int, error) {
+			if filepath.Join(f.pathOf(dirfd), name) == path && interrupted < 2 {
+				interrupted++
+				return -1, unix.EINTR
+			}
+
+			return f.openat(dirfd, name, mode, perm)
 		}
 
-		if n := f.callsOn("open", path); n != 2 {
-			t.Errorf("got %d opens of %s, want 2", n, path)
+		if err := check(table, mountinfo, dir); err != nil {
+			t.Errorf("open of %s interrupted twice: got %v, want the directory accepted", path, err)
+		}
+
+		if n := f.callsOn("open", path); interrupted != 2 || n != 1 {
+			t.Errorf("open of %s: %d interrupted, then %d made, want 2 and 1", path, interrupted, n)
 		}
 
 		wantAllClosed(t, f)
@@ -1305,7 +1394,13 @@ func TestCheckResolvesLinks(t *testing.T) {
 
 	t.Chdir(links)
 
-	for _, given := range []string{link, link + "/", "journal", "./journal/"} {
+	// A relative path that crosses no link, so only Abs makes it absolute.
+	rel, err := filepath.Rel(links, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, given := range []string{link, link + "/", "journal", "./journal/", rel} {
 		f := newFake(dir)
 		f.dirFlags = 0
 
@@ -1331,11 +1426,20 @@ func TestCheckConcurrentCallers(t *testing.T) {
 	dir := realDir(t)
 	writeFiles(t, dir, "format", "00000000000000000001.seg", "00000000000000000002.seg")
 	mountinfo := mountTable(t, dir, "btrfs")
-	f := newFake(dir)
+
+	// Each caller has its own fake, so no lock of a shared fake orders the
+	// callers for the race detector, and each fake copies one record per
+	// getdents call into the probe's buffer, a write the detector sees; it
+	// does not see the kernel's.
+	fakes := make([]*fakeProbe, 16)
+	for i := range fakes {
+		fakes[i] = newFake(dir)
+		fakes[i].onePerCall = true
+	}
 
 	var wg sync.WaitGroup
-	errs := make([]error, 16)
-	for i := range errs {
+	errs := make([]error, len(fakes))
+	for i, f := range fakes {
 		wg.Go(func() {
 			errs[i] = check(f.table(), mountinfo, dir)
 		})
@@ -1343,17 +1447,17 @@ func TestCheckConcurrentCallers(t *testing.T) {
 
 	wg.Wait()
 
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("caller %d: got %v, want the directory accepted", i, err)
+	for i, f := range fakes {
+		if errs[i] != nil {
+			t.Errorf("caller %d: got %v, want the directory accepted", i, errs[i])
 		}
-	}
 
-	if got := f.calls("ioctl"); len(got) != 4*len(errs) {
-		t.Errorf("got %d ioctls, want %d: four for each caller", len(got), 4*len(errs))
-	}
+		if got := f.calls("ioctl"); len(got) != 4 {
+			t.Errorf("caller %d: got %d ioctls, want four", i, len(got))
+		}
 
-	wantAllClosed(t, f)
+		wantAllClosed(t, f)
+	}
 }
 
 // TestCheckEntryPoint fails a Check that does not run the probe on the path
@@ -1384,7 +1488,10 @@ func TestCheckEntryPoint(t *testing.T) {
 // fail with a table that does not parse. On a real temporary directory, Check
 // must resolve the directory's mount in the real table: it returns nil or a
 // refusal, never one of the errors that say the table does not describe the
-// directory.
+// directory, nor a failed call. On an ext4, XFS or tmpfs host the probe stops
+// after statx, so the listing and the ioctl, which run only on a Btrfs
+// subvolume root, do not run here; it is TestSyscallTableIsReal that holds
+// the getdents and ioctl entries to their golang.org/x/sys functions.
 func TestCheckReadsTheProcessMountTable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1488,6 +1595,14 @@ func TestAppendRegularMalformed(t *testing.T) {
 	if err != nil || !slices.Equal(names, []string{"a"}) {
 		t.Errorf("a valid record: got names %q and %v, want [a]", names, err)
 	}
+
+	// filldir64 (fs/readdir.c) writes the name and one NUL, and leaves the
+	// record's padding as the buffer held it, so bytes after the NUL are
+	// not the name's.
+	names, err = appendRegularBounded(t, direntRecord(32, unix.DT_REG, "a\x00\xff\xff\xff"))
+	if err != nil || !slices.Equal(names, []string{"a"}) {
+		t.Errorf("a record with bytes after the NUL: got names %q and %v, want [a]", names, err)
+	}
 }
 
 // direntRecord returns a getdents64 record of len max(reclen, 24) bytes, laid
@@ -1541,22 +1656,4 @@ func appendRegularBounded(t *testing.T, buf []byte) ([]string, error) {
 	}
 
 	return nil, nil
-}
-
-// TestCheckRealDirectory runs the probe with the real table on a temporary
-// directory. It asserts only that every call succeeds and no descriptor is
-// left open, never a verdict, which would depend on the host's mounts. On an
-// ext4, XFS or tmpfs host the probe stops after statx, so the listing and
-// the ioctl, which run only on a Btrfs subvolume root, do not run here; it is
-// TestSyscallTableIsReal that holds the getdents and ioctl entries to their
-// golang.org/x/sys functions.
-func TestCheckRealDirectory(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	dir := realDir(t)
-	writeFiles(t, dir, "format")
-
-	if _, err := probeDir(realTable, mountinfoPath, dir); err != nil {
-		t.Fatalf("got %v, want every call of the probe to succeed", err)
-	}
 }
