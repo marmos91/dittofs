@@ -104,6 +104,8 @@ var testRecord = Record{
 	Seq:     0x6867666564636261,
 	Version: Version{Epoch: 0xa8a7a6a5a4a3a2a1, Counter: 0xb8b7b6b5b4b3b2b1},
 	Tag:     0x84838281,
+
+	RecordOffset: 0x94939291,
 }
 
 const testMTime int64 = 0x7877767574737271

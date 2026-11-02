@@ -2467,8 +2467,14 @@ func plantKind(t *testing.T, f *journalv2test.Fixture, kind uint8) {
 	id := newestID(t, f) + 1
 	identity := journalIdentity(t, f)
 	r := raw.Record{
-		Identity: identity, Kind: kind, Segment: uint64(id), FileID: journalv2test.File(0).Bytes(),
-		Seq: 1 << 40, Version: raw.Version{Counter: 1 << 40}, Tag: uint32(journalv2test.Tag(0)),
+		Identity:     identity,
+		Kind:         kind,
+		Segment:      uint64(id),
+		FileID:       journalv2test.File(0).Bytes(),
+		Seq:          1 << 40,
+		Version:      raw.Version{Counter: 1 << 40},
+		Tag:          uint32(journalv2test.Tag(0)),
+		RecordOffset: raw.SegmentHeaderSize,
 	}
 	if kind == kindWrite {
 		r.Offset, r.Length = 1<<20, 4096

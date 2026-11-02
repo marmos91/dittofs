@@ -906,7 +906,7 @@
   reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
   message: 'fixture:'
-- test: TestDamage_BitFlip/record_header/reserved_88
+- test: TestDamage_BitFlip/record_header/own_offset
   status: fail
   fix: planned
   category: feature
@@ -1039,7 +1039,7 @@
   reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
   message: 'fixture:'
-- test: TestDamage_BitFlip/record_header_scanned/reserved_88
+- test: TestDamage_BitFlip/record_header_scanned/own_offset
   status: fail
   fix: planned
   category: feature

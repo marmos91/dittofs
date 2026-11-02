@@ -64,8 +64,8 @@ func TestRecordHeaderLayout(t *testing.T) {
 		t.Errorf("synced-through offset at [76,84) is %#x, want 0", got)
 	}
 
-	if !zero(b[88:92]) {
-		t.Errorf("reserved [88,92) is % x, want zeros", b[88:92])
+	if got := le32(b[88:92]); got != testRecord.RecordOffset {
+		t.Errorf("own offset at [88,92) is 0x%08x, want 0x%08x", got, testRecord.RecordOffset)
 	}
 }
 

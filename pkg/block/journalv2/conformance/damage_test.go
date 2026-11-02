@@ -1366,7 +1366,7 @@ var (
 		{"magic", 0, 4}, {"kind", 4, 1}, {"reserved_5", 5, 3}, {"segment_id", 8, 8}, {"file_id", 16, 16},
 		{"file_offset", 32, 8}, {"length", 40, 8}, {"sequence_number", 48, 8}, {"version_epoch", 56, 8},
 		{"version_counter", 64, 8}, {"share_tag", 72, 4}, {"synced_through", 76, 8}, {"payload_checksum", 84, 4},
-		{"reserved_88", 88, 4}, {"header_checksum", 92, 4},
+		{"own_offset", 88, 4}, {"header_checksum", 92, 4},
 	}
 
 	catalogEntryFields = []field{

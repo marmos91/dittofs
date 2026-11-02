@@ -420,11 +420,12 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 // sealedSegmentBytes returns the bytes of a segment of this journal sealed
 // early: its header, records from the first slot on, each under identity and
 // the segment's id, a seal marker at the slot after the last, the entries as
-// its footer, and the trailer, with nothing past it.
+// its footer, and the trailer, with nothing past it. Each record carries the
+// offset it is placed at, so its header verifies there.
 func sealedSegmentBytes(identity [16]byte, id journalv2.SegmentID, records []raw.Record, entries []raw.Entry) []byte {
 	b := raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes()
 	for _, r := range records {
-		r.Identity, r.Segment = identity, uint64(id)
+		r.Identity, r.Segment, r.RecordOffset = identity, uint64(id), uint32(len(b))
 		b = append(b, r.Bytes()...)
 	}
 	b = append(b, raw.SealMarker{Identity: identity, Segment: uint64(id), Offset: uint64(len(b))}.Bytes()...)

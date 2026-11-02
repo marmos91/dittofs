@@ -31,7 +31,13 @@ type Record struct {
 	Seq      uint64 // sequence number
 	Version  Version
 	Tag      uint32 // share tag
-	Write    *WriteBody
+
+	// RecordOffset is the record's own offset in its segment. A header
+	// verifies only at the segment and the offset it names, so a copy of it
+	// anywhere else is not a record.
+	RecordOffset uint32
+
+	Write *WriteBody
 }
 
 // WriteBody is a write record's body: the modification time, then the
@@ -64,6 +70,7 @@ func (r Record) Bytes() []byte {
 	binary.LittleEndian.PutUint64(b[64:72], r.Version.Counter)
 	binary.LittleEndian.PutUint32(b[72:76], r.Tag)
 	binary.LittleEndian.PutUint32(b[84:88], seededCRC32C(r.Identity, body))
+	binary.LittleEndian.PutUint32(b[88:92], r.RecordOffset)
 	binary.LittleEndian.PutUint32(b[92:96], seededCRC32C(r.Identity, b[0:92]))
 
 	b = append(b, body...)
