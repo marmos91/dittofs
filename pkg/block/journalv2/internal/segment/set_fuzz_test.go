@@ -280,6 +280,105 @@ func sameErrClass(got, want error) bool {
 	}
 }
 
+// op6 spells one six-byte op of the fuzz's input: kind, segment id, fresh
+// id, share tag, a size shape selector and the size byte — the fields the
+// decoder reads.
+func op6(kind, id, fresh, tag, shape, n byte) []byte {
+	return []byte{kind, id, fresh, tag, shape, n}
+}
+
+// seed is one entry of the corpus FuzzSet is seeded with. The bytes and the
+// counts the sequence is expected to reach are one table, because a seed
+// that stops exercising what its comment names is a silent loss: the corpus
+// that runs in plain go test is the only one most checks ever run.
+type seed struct {
+	// name names the sequence, as its comment does.
+	name string
+	// ops is the six-byte-per-op input, exactly what f.Add receives.
+	ops []byte
+	// retires is the successful Retire calls the sequence must reach;
+	// recycles, takes and seals likewise. The counts are the guard: a decoder
+	// or seed change that turns a success the sequence is documented for into
+	// a refusal — every seed naming the null id where the set reads a segment,
+	// say — fails the replay on the count, not on a silent no-op.
+	retires  int
+	recycles int
+	takes    int
+	seals    int
+}
+
+// corpus is the FuzzSet seed corpus, the one table both FuzzSet and the
+// replay test read.
+var corpus = []seed{
+	{"double retire", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
+		op6(opRetire, 1, 0, 0, 4, 0), op6(opRelease, 1, 0, 0, 4, 0),
+		op6(opClaim, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+	{"recycle then retire the old id", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opRecycle, 1, 2, 0, 4, 0),
+		op6(opRetire, 1, 0, 0, 4, 0), // refused: the recycle already took the segment
+	), 0, 1, 1, 1},
+	{"records then a retire", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 0, 4, 9),
+		op6(opAddSpare, 2, 0, 0, 4, 0), op6(opTake, 2, 0, 0, 4, 0),
+		op6(opAddRecord, 2, 0, 1, 4, 4), op6(opAddRecord, 2, 0, 2, 4, 2),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opSeal, 2, 0, 0, 4, 0),
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 2, 2},
+	{"shrink then recycle refused", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 5),
+		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the sealed size is below the cap
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+	{"recycle of a segment that never was", slices.Concat(
+		op6(opRecycle, 1, 2, 0, 4, 0), // refused: nothing under that id
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+	{"claim between two retires", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opEnd, 1, 0, 0, 4, 0), op6(opRetire, 1, 0, 0, 4, 0),
+		op6(opClaim, 1, 0, 0, 4, 0), // refused: the entry left with the retire
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0},
+	{"recycle onto a held spare", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 2, 0, 0, 4, 0),
+		op6(opTake, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0),
+		op6(opRecycle, 1, 2, 0, 4, 0), // refused: the fresh id is a held spare
+	), 0, 0, 1, 1},
+	{"refusals at three boundaries", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opAddSpare, 1, 0, 0, 4, 0), // duplicate
+		op6(opTake, 1, 0, 0, 4, 0), op6(opAddRecord, 1, 0, 0, 4, 0),
+		op6(opAddRecord, 1, 0, 0, 0, 0), // zero bytes
+		op6(opAddRecord, 1, 0, 0, 3, 0), // negative
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 0),
+		op6(opShrink, 1, 0, 0, 4, 1),
+	), 0, 0, 1, 1},
+	{"null id refusals", slices.Concat(
+		op6(opAddSpare, 0, 0, 0, 4, 0), // the null id: names no segment
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0),
+		op6(opRecycle, 1, 0, 0, 4, 0), // fresh id 0: refused
+	), 0, 0, 1, 1},
+	{"shrink of an Active segment", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opShrink, 1, 0, 0, 4, 5), // refused: a stream still appends
+		op6(opEnd, 1, 0, 0, 4, 0), op6(opShrink, 1, 0, 0, 4, 5),
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 0},
+	{"double seal", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 0, 0, 4, 0),
+		op6(opSeal, 1, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0), // refused: already sealed
+		op6(opEnd, 1, 0, 0, 4, 0), // refused: a sealed segment is never ended
+		op6(opRetire, 1, 0, 0, 4, 0),
+	), 1, 0, 1, 1},
+}
+
 // FuzzSet drives the segment set against its oracle: the same operation
 // sequence goes to both, and after every single one the ledger must agree
 // with the oracle on the error class, on every counter, on every share's
@@ -290,81 +389,9 @@ func FuzzSet(f *testing.F) {
 	// selector for the size and the size byte itself — the fields the decoder
 	// reads. A size shape of 4 is a plain size of n+1 under the cap; 0 is
 	// zero, 1 the cap, 2 one past, 3 a negative.
-	ops := func(ops ...[]byte) []byte {
-		return slices.Concat(ops...)
+	for _, s := range corpus {
+		f.Add(s.ops)
 	}
-	op6 := func(kind, id, fresh, tag, shape, n byte) []byte {
-		return []byte{kind, id, fresh, tag, shape, n}
-	}
-
-	f.Add(ops(
-		// A double retire: a segment that leaves the set, then is retired
-		// again, and a release that arrives too late for it.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
-		op6(opSeal, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
-		op6(opRetire, 0, 1, 0, 4, 0), op6(opRelease, 0, 0, 0, 4, 0), op6(opClaim, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// Recycle, then retire the old id: the footprint leaves once, and the
-		// second retire is refused and counted.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 0, 0, 4, 0),
-		op6(opRecycle, 0, 3, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// Records then a retire: each tag keeps only the other segment's
-		// bytes, and the tag that reaches zero leaves the ledger.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opAddRecord, 0, 1, 0, 4, 9),
-		op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 1, 2, 0, 4, 0), op6(opAddRecord, 1, 2, 1, 4, 4),
-		op6(opAddRecord, 1, 2, 2, 4, 2), op6(opSeal, 0, 0, 0, 4, 0), op6(opSeal, 1, 0, 0, 4, 0),
-		op6(opRetire, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// Shrink, then recycle the shrunk segment: a sealed size below the
-		// cap cannot come back as a spare, so the retire is the only way out.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 0, 0, 4, 0),
-		op6(opShrink, 0, 0, 0, 4, 5), op6(opRecycle, 0, 3, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// A recycle of a segment that never was, refused; then the making of a
-		// spare that takes and seals instead.
-		op6(opRecycle, 0, 1, 0, 4, 0), op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
-		op6(opSeal, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// A claim between two retires of one segment, both of which find it
-		// out of the set.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0), op6(opEnd, 0, 0, 0, 4, 0),
-		op6(opRetire, 0, 0, 0, 4, 0), op6(opClaim, 0, 0, 0, 4, 0), op6(opRetire, 0, 0, 0, 4, 0),
-	))
-	f.Add(ops(
-		// A recycle whose fresh id names a spare the ledger already holds.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opAddSpare, 1, 0, 0, 4, 0), op6(opTake, 0, 2, 0, 4, 0),
-		op6(opSeal, 0, 0, 0, 4, 0), op6(opRecycle, 0, 1, 0, 4, 0),
-	))
-	f.Add(ops(
-		// A duplicate AddSpare, a record of zero bytes and a shrink to the
-		// current size: refusals at three boundaries, each leaving every
-		// counter alone.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
-		op6(opAddRecord, 0, 1, 0, 4, 0), op6(opAddRecord, 0, 1, 0, 0, 0),
-		op6(opAddRecord, 0, 1, 0, 3, 0), op6(opSeal, 0, 0, 0, 4, 0),
-		op6(opShrink, 0, 0, 0, 4, 0), op6(opShrink, 0, 0, 0, 4, 1),
-	))
-	f.Add(ops(
-		// An AddSpare of the id that names no segment, refused before the
-		// duplicate checks, and a recycle naming the same id as its fresh one.
-		op6(opAddSpare, 8, 0, 0, 4, 0), // id 0: names no segment
-		op6(opAddSpare, 0, 0, 0, 4, 0), // id 1
-		op6(opTake, 0, 1, 0, 4, 0), op6(opSeal, 0, 1, 0, 4, 0),
-		op6(opRecycle, 0, 8, 0, 4, 0), // fresh id 0: refused
-	))
-	f.Add(ops(
-		// A shrink of a segment a stream still appends to, refused before the
-		// size checks, then the torn-tail cut of the same segment once ended.
-		op6(opAddSpare, 0, 0, 0, 4, 0), op6(opTake, 0, 1, 0, 4, 0),
-		op6(opShrink, 0, 0, 0, 4, 5), op6(opEnd, 0, 0, 0, 4, 0),
-		op6(opShrink, 0, 0, 0, 4, 5), op6(opRetire, 0, 0, 0, 4, 0),
-	))
 
 	segCap := int64(4096)
 	f.Fuzz(func(t *testing.T, data []byte) {
