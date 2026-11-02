@@ -967,3 +967,25 @@ func TestReleaseEndsCallbackWaiter(t *testing.T) {
 		t.Errorf("LockWaitOver after a committed release: %+v, want b's, not granted", ws)
 	}
 }
+
+// A release's done ends its own mark only: called again after a later
+// Releasing, it leaves that mark held.
+func TestReleasingDoneEndsOnlyItsMark(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	first, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing: %v", err)
+	}
+	first(false)
+	second, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing again: %v", err)
+	}
+	first(false)
+	if _, err := f.open(a, file, OpenRequest{Access: rd}); !errors.Is(err, ErrReleasing) {
+		t.Errorf("an open after the first done's second call: %v, want ErrReleasing", err)
+	}
+	second(false)
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -1361,8 +1362,9 @@ func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
 	}
 	// A committed release drops the file from the table: a delegation or a
 	// lock state held with no open names a file that is gone, and a callback
-	// waiter is told its wait ended, not granted.
-	done := func(released bool) {
+	// waiter is told its wait ended, not granted. done ends its own mark
+	// once: a second call never ends a later Releasing's.
+	end := func(released bool) {
 		var out outbox
 		_ = t.step(f.ID, func(e *entry) error {
 			if !e.releasing {
@@ -1389,7 +1391,8 @@ func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
 			out.raise(t, sink)
 		}
 	}
-	return done, nil
+	var once sync.Once
+	return func(released bool) { once.Do(func() { end(released) }) }, nil
 }
 
 // nameByID indexes o by the ID it took for its record, so the record is
