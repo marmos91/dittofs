@@ -50,7 +50,7 @@
   <rect x="456" y="190" width="130" height="86" rx="5" class="sv"/>
   <text x="466" y="208" class="h">4 open state</text><text x="466" y="226" class="s">locks, deny modes,</text><text x="466" y="241" class="s">caching grants,</text><text x="466" y="256" class="s">grace</text>
   <rect x="600" y="190" width="130" height="86" rx="5" class="sv"/>
-  <text x="610" y="208" class="h">5 quota</text><text x="610" y="226" class="s">reserve it if the</text><text x="610" y="241" class="s">file grows</text>
+  <text x="610" y="208" class="h">5 quota</text><text x="610" y="226" class="s">reserve what its</text><text x="610" y="241" class="s">commit will charge</text>
   <rect x="744" y="190" width="130" height="86" rx="5" class="sv"/>
   <text x="754" y="208" class="h">6 engine</text><text x="754" y="226" class="s">stage the bytes in</text><text x="754" y="241" class="s">the journal, return</text><text x="754" y="256" class="s">the write verifier</text>
   <path d="M155,233 L166,233" class="ln"/><path d="M299,233 L310,233" class="ln"/><path d="M443,233 L454,233" class="ln"/>
