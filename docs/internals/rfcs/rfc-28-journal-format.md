@@ -1293,9 +1293,10 @@ its successor is taken, so a later piece is never held without every earlier
 one, and never a piece in part. Any excused fault — a lost write, sync,
 directory sync or seal sync — can break that: a later piece held without an
 earlier one, a bad record below a later record's synced-through offset, or a
-predecessor left unsealed. The check accepts these after an excused fault, each
-bad record reported as corruption with its loss event ([§3.3](#3.3%20Torn%20and%20corrupt%20records), [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)),
-and fails them after a crash with no fault.
+predecessor left unsealed. The check accepts these after an excused fault, and
+expects a report only where [§3.3](#3.3%20Torn%20and%20corrupt%20records) calls for one: corruption with its loss event
+([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), or damage to a dead copy where another copy verifies. It
+fails them after a crash with no fault.
 
 > decision: a fault on the journal's own seam call excuses what that call
 > carried, so a lost sync of a repack copy followed by the source's unlink
@@ -1305,8 +1306,8 @@ and fails them after a crash with no fault.
 > before the copy's sync returned — whenever a fault lands on that copy. So the
 > check asserts the journal's own order at the seam, whatever the faults: a
 > source is unlinked only after the sync covering its copies returned
-> ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), and a successor is taken only after its predecessor's seal
-> sync returned. Overturned by a device the set must survive that loses an
+> success ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), and a successor is taken only after its predecessor's seal
+> sync returned success. Overturned by a device the set must survive that loses an
 > acknowledged sync, which would need a copy kept until a second sync.
 
 **Edits from outside.** An operator, a backup tool or a stray script can change
