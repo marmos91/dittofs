@@ -52,6 +52,10 @@ type fakeContent struct {
 	readErr error
 	// reading, when set, runs as Read is called, before it reads anything.
 	reading func(entity.FileID)
+	// hold, when set, keeps each accepted write's Done in dones, uncalled,
+	// as for a write whose commit has not landed; otherwise Write calls it.
+	hold  bool
+	dones []func()
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -110,6 +114,10 @@ func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.
 	ov := c.staged(f)
 	ov.Size = max(ov.Size, off+int64(len(p)))
 	c.overlays[f] = ov
+	if c.hold {
+		c.dones = append(c.dones, o.Done)
+		o.Done = nil
+	}
 	c.mu.Unlock()
 	if o.Done != nil {
 		o.Done()
