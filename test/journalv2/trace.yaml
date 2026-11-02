@@ -185,7 +185,7 @@ rfc1 / 9.4 / D / "generation never repeats":
 rfc1 / 9.4 / D / "stats are cheap":
   tests: [TestRFC1D_StatsTakeNoWriteLock, TestRFC1D_StatsCostIsFlat]
   owner: epic 8
-  reason: 'the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing a counted hook in the journal: both are internal to the data path; the public half is the tests'
+  reason: 'the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing needs a counted hook in the journal: both are internal to the data path; the public half is the tests'
 rfc1 / 9.4 / D / "named inequalities hold":
   tests: [TestRFC1D_NamedInequalitiesHold]
 rfc1 / 9.4 / D / "backlog age":
