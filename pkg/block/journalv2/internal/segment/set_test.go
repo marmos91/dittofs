@@ -381,6 +381,67 @@ func TestRetireOfASpareIsRefused(t *testing.T) {
 	}
 }
 
+// TestSealAndEndRefuseANonActiveSegment: both closes run on a segment a
+// stream left, never on one already closed. A seal of a sealed or ended
+// segment would count it sealed twice; an end of one would move a sealed
+// segment to ended and strand its sealed count — an ended segment is never
+// sealed. Each refusal changes nothing.
+func TestSealAndEndRefuseANonActiveSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	// oneClosedSegment returns a set holding one segment in the named state.
+	oneClosedSegment := func(t *testing.T, state State) (*Set, core.SegmentID) {
+		t.Helper()
+		s := NewSet(segCap, nil)
+		const id = core.SegmentID(1)
+		if err := s.AddSpare(id); err != nil {
+			t.Fatalf("AddSpare: %v", err)
+		}
+		if err := s.Take(id); err != nil {
+			t.Fatalf("Take: %v", err)
+		}
+		switch state {
+		case Sealed:
+			if err := s.Seal(id); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+		case Ended:
+			if err := s.End(id); err != nil {
+				t.Fatalf("End: %v", err)
+			}
+		}
+		return s, id
+	}
+	for _, c := range []struct {
+		name  string
+		state State
+	}{
+		{"sealed", Sealed},
+		{"ended", Ended},
+	} {
+		for name, op := range map[string]func(s *Set, id core.SegmentID) error{
+			"seal": func(s *Set, id core.SegmentID) error { return s.Seal(id) },
+			"end":  func(s *Set, id core.SegmentID) error { return s.End(id) },
+		} {
+			t.Run("the "+name+" of a "+c.name+" segment", func(t *testing.T) {
+				s, id := oneClosedSegment(t, c.state)
+				before := s.Counters()
+
+				if err := op(s, id); !errors.Is(err, ErrWrongState) {
+					t.Fatalf("the %s of a %s segment: %v, want %v", name, c.name, err, ErrWrongState)
+				}
+				if after := s.Counters(); after != before {
+					t.Fatalf("the refused %s changed the counters: %v, still want %v", name, after, before)
+				}
+				if err := s.Check(); err != nil {
+					t.Fatalf("%v", err)
+				}
+			})
+		}
+	}
+}
+
 // TestAddRecordOfNoBytesIsRefused: a record of no bytes accounts nothing, and
 // a negative one would take bytes off a share; both leave the share's totals
 // and every counter exactly as they were.
