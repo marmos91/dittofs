@@ -555,8 +555,8 @@ one gateway node's memory; a client that loses the node signs in again.
   handle keeps the access granted at its open. Any failed re-authentication
   tears the session down as
   MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
-  complete `STATUS_NOTIFY_CLEANUP`, its trees are removed, and, as at
-  `LOGOFF`, the node's last session of the client calls `RemoveSession`.
+  complete `STATUS_NOTIFY_CLEANUP`, its trees are removed, and the session
+  ends through one `Disconnect`, as at `LOGOFF`.
 
 > decision: a successful re-authentication replaces the session's identity in
 > place, and open handles keep the access granted at open. MS-SMB2 3.3.5.5 and
@@ -701,9 +701,8 @@ carries many users' sessions at once.
   ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)), and the adapter sends on that session's connection and nowhere
   else. When every open is disconnected, the service names none: it asks the
   adapter on each node in `Reach.Sessions` in parallel, giving it the openers,
-  and each picks from its own session table, which re-authentication updates,
-  a session of the client signed in now as an opener, or none, and answers
-  whether it sent ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A session
+  and each picks a session of the client signed in now as an opener, or none,
+  and answers whether it sent ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A session
   re-authenticated as another principal, null or guest is therefore never
   picked for the opener's break. An acknowledgement is checked against the open's principal, not only
   the `ClientGuid`; one arriving on the connection the break was sent on is
@@ -2301,7 +2300,7 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
-| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one; removed by `RemoveSession` when the node's last one ends, or with the node's loss | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4); the record is not released while any remains (RFC 14 §2.1) |
+| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4); the record is not released while any remains (RFC 14 §2.1) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call, except with backup intent (§11) |
@@ -2823,8 +2822,8 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, again after a `RemoveSession` | the adapter's session table keeps each session and its current principal, and a break with every open disconnected is sent from it ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); a failed re-authentication's teardown ends the session as `LOGOFF` does |
-| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included, then `RemoveSession` when it was the node's last session of the `ClientGuid` | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, again after the node's entry was removed ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | a break with every open disconnected is sent from the adapter's session table ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); a failed re-authentication's teardown ends the session as `LOGOFF` does |
+| `LOGOFF` | `Disconnect` with `Logoff`, which closes every open of the session, durable and persistent ones included, and `Last` when it was the node's last session of the `ClientGuid` | MS-SMB2 3.3.5.6 closes every open of the session; a lost connection's `Disconnect`, without `Logoff`, keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
 | `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |

@@ -678,8 +678,9 @@ The lower half of the drawing above:
    drain, or by a reconfigure that removes its listen address, as a namespace
    move's release does (§3.1, §3.3). Closing cancels the context of
    every request still in progress on the connection, drops the connection's
-   state, and, for the last channel of an SMB session, calls `Disconnect`, and
-   `RemoveSession` when it was the node's last session of the client.
+   state, and, for the last channel of an SMB session, calls `Disconnect`, with
+   `Last` when it was the node's last session of the client
+   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
@@ -715,9 +716,8 @@ Each protocol implements the interface once, on a small per-client value that
 knows the client's connection or host and nothing about files. An SMB break
 goes to the session the service names; only when every open of the grant is
 disconnected does the service name none, and the adapter then picks one of its
-own sessions of the client signed in now as one of the openers, from the table
-re-authentication updates, or sends nothing
-([RFC 22 §4.4](rfc-22-smb.md#4.4%20The%20client%20record%20is%20the%20machine)):
+own sessions of the client signed in now as one of the openers, or sends
+nothing ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)):
 
 ```go
 // smbCallbacks is what the SMB adapter registers at Connect for one client.

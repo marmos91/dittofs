@@ -697,8 +697,7 @@ type Clients interface {
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
-	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef) error // an SMB session's last channel ended
-	RemoveSession(ctx context.Context, c Call, cl ClientID) error             // this node's last session of the client ended (SMB LOGOFF, last channel's end or teardown; NFSv4.1 DESTROY_SESSION): removes the node from Reach.Sessions, once per node, never per session (RFC 14 §2.1)
+	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) error // ends one session: SMB LOGOFF, a failed re-authentication's teardown or the last channel's end; NFSv4.1 DESTROY_SESSION, whose session names no open, with Last only. Last removes this node's Reach.Sessions entry in the same step (RFC 14 §2.1)
 	Destroy(ctx context.Context, c Call, cl ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
 	ReclaimComplete(ctx context.Context, c Call, cl ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
 	FreeState(ctx context.Context, c Call, cl ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
@@ -1032,9 +1031,9 @@ registered at its first authenticated `SESSION_SETUP`, never at `NEGOTIATE`,
 and each node's first such session of it calls `Connect` again, which adds the
 node to `Reach.Sessions`; a null or guest session never joins a client, so its opens are offered no
 lease or oplock. The node leaves the list when its last session of the client
-ends, at `LOGOFF`, its last channel's end or a teardown: the adapter calls
-`RemoveSession` then, once per node and never per session, and the client's
-next session on that node calls `Connect` again. The filesystem picks the session for a lease or oplock break
+ends, through the `Disconnect` that ends it
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the client's next
+session on that node calls `Connect` again. The filesystem picks the session for a lease or oplock break
 from the grant's opens, each with its session and opener, as RFC 14's
 `Grants.Openers` returns them
 ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)):
@@ -1204,7 +1203,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | Method | Metadata calls (RFC 7, RFC 6, RFC 14, RFC 16, RFC 12) | Engine calls (RFC 8) | Runs at |
 | --- | --- | --- | --- |
 | `Propose` | `openstate.Clients.Propose`, which looks the (protocol, name) up through the table, never the store's `metadata.Clients`: an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
-| `Connect`, `AddSession`, `RemoveSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `RemoveSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
+| `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
 | `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
 | `TestState`, `FreeState` | `Recovery.TestState`; `Recovery.FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
