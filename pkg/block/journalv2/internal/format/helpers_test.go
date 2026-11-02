@@ -327,6 +327,66 @@ func rechecksumFooter(seg []byte) {
 	rechecksumTrailer(trailer)
 }
 
+// scanPayload fills n bytes with the fixed non-zero pattern the scan tests'
+// payloads use, so an accidental zero never passes for content and a payload
+// never reads as zeros. The pattern stays under 'A'..'M', so no four of its
+// bytes ever spell a magic.
+func scanPayload(n int) []byte {
+	p := make([]byte, n)
+	for i := range p {
+		p[i] = byte('A' + i%13)
+	}
+	return p
+}
+
+// scanRecord is one record planted in a scanned segment: its header fields
+// and the body its kind gives it.
+type scanRecord struct {
+	h    RecordHeader
+	body RecordBody
+}
+
+// scanSegment builds a scanned segment's bytes: this test journal's own
+// segment header, then the records planted at consecutive slots, and returns
+// the segment and each record's offset. A caller extends the segment with
+// anything else, by appending to the returned slice or through scanAppend.
+func scanSegment(t testing.TB, identity core.JournalID, recs ...scanRecord) ([]byte, []int64) {
+	t.Helper()
+
+	seg := AppendSegmentHeader(nil, testSegmentHeader)
+	offsets := make([]int64, len(recs))
+	for i, r := range recs {
+		var off int64
+		seg, off = scanAppend(t, seg, identity, r)
+		offsets[i] = off
+	}
+	return seg, offsets
+}
+
+// scanAppend appends one record at the segment's next record slot and returns
+// the extended segment with the record's planted offset.
+func scanAppend(t testing.TB, seg []byte, identity core.JournalID, r scanRecord) ([]byte, int64) {
+	t.Helper()
+
+	off := int64(len(seg))
+	if off%8 != 0 {
+		t.Fatalf("scan: a record would land at %d, not a slot's multiple of 8", off)
+	}
+	h := r.h
+	h.Offset = off
+	return AppendRecord(seg, identity, h, r.body), off
+}
+
+// scanSeal appends a verifying seal marker at the segment's next record slot
+// and returns its offset.
+func scanSeal(t testing.TB, seg *[]byte, identity core.JournalID, segment core.SegmentID) int64 {
+	t.Helper()
+
+	off := int64(len(*seg))
+	*seg = AppendSealMarker(*seg, identity, SealMarker{Segment: segment, Offset: off})
+	return off
+}
+
 // sealedSegment builds a whole segment's bytes for a footer of entries: zeros
 // up to where the seal marker sits — the first record slot, 48, when there is
 // no entry, else just past the last entry's record — then the marker, the
