@@ -93,6 +93,7 @@ func (s *Service) AddShare(
 		}
 		share.localStoreDir = dir
 		share.gcStateRoot = filepath.Join(dir, "gc-state")
+		warnV1Journal(config.Name, dir)
 	}
 	share.writeback = config.RelaxedMetadataCommit
 
@@ -451,4 +452,27 @@ func (s *Service) CloseBlockStores(_ context.Context) {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+}
+
+// v1JournalDir is where the previous engine kept a share's journal inside the
+// share's state directory: its segments (*.seg) and its format stamp.
+const v1JournalDir = "journal"
+
+// warnV1Journal logs a WARN when the share's state directory still holds the
+// previous engine's journal. This build reads none of it, so content written
+// only to that journal is not served; the directory is left untouched. It runs
+// once per share start.
+func warnV1Journal(shareName, stateDir string) {
+	dir := filepath.Join(stateDir, v1JournalDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Name() == "format" || strings.HasSuffix(e.Name(), ".seg") {
+			logger.Warn("share state directory holds a journal from the previous engine; this build cannot read its content",
+				"share", shareName, "dir", dir)
+			return
+		}
+	}
 }
