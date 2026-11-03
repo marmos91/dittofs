@@ -325,6 +325,132 @@
   reason: 'No journal yet: the fixture fails at Init. Needs failed syncs reported and counted, the sync timer and recovery.'
   issue: '#3378'
   message: 'fixture:'
+- test: TestRFC1C_AttachedShareRaisesCounter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the version counter and a share attachment raising it above the share floor.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1C_CloneTargetSurvivesCrash
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs clone targets, their markers carried by Since with their spec, and recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1C_EpochHalfIsZero
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the open refusing a planted record whose version has a non-zero epoch half, as it refuses one of an unknown kind.'
+  issue: '#3596'
+  message: 'fixture:'
+- test: TestRFC1C_FileIsItsSharesShare
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs files owned by the share whose records built them, the cross-share refusals, tag-conflict recovery and forget.'
+  issue: '#3596'
+  message: 'fixture:'
+- test: TestRFC1C_FillBeatsOlderWrite
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path keeping a filled extent over the released offloaded content it covers, across recovery.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1C_ForgetLeavesNothingToSettle
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_HeaderOnlyRecordsReappended
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the failed-sync re-append of records without payload bytes, and the failed segment never sealed.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1C_IncrementalReport
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the offload report marking the extents it is given while the callback still runs.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_LossSurvivesRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs loss records read back at open, the dropped record staying dropped, and the loss generation.'
+  issue: '#3596'
+  message: 'fixture:'
+- test: TestRFC1C_Monotonicity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs version and sequence watermarks rebuilt above every one on disk, and recovery run in a shuffled listing order.'
+  issue: '#3596'
+  message: 'fixture:'
+- test: TestRFC1C_ReleaseRecordLost
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs release records holding a segment from being unlinked until they sync, and the released extent staying held after the crash.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_ReleaseSurvivesRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the placement index rebuilt without a released extent, with no resurrection of the older offloaded content.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_ReseedAfterRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the offloaded bits and release permissions reseeded from the index after a repack moved the record.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_RestampAfterLostStore
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the restamp of the format file, durable across a reopen, and its identity refusal.'
+  issue: '#3596'
+  message: 'fixture:'
+- test: TestRFC1C_StaleFill
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs Fill refusing an asOf older than the content the journal already holds, writing nothing.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestRFC1C_UnclaimedTagReported
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the per-share statistics rebuilt at open for a tag no share attached.'
+  issue: '#3379'
+  message: 'fixture:'
+- test: TestRFC1C_UnclaimedTagsAreTheCallersToName
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs unattached tags kept and reported, served once their share attaches, and forgotten only when the caller names them.'
+  issue: '#3379'
+  message: 'fixture:'
 - test: TestRFC1D_AccountingFollowsCap
   status: fail
   fix: planned

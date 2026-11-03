@@ -136,44 +136,44 @@ rfc1 / 9.4 / B / "segment and record accounting":
 rfc1 / 9.4 / B / "pins bounded across offers":
   tests: [TestRFC1B_PinsBoundedAcrossOffers]
 rfc1 / 9.4 / C / "reseed after repack":
-  pending: 2.11
+  tests: [TestRFC1C_ReseedAfterRepack]
 rfc1 / 9.4 / C / "release survives restart":
-  pending: 2.11
+  tests: [TestRFC1C_ReleaseSurvivesRestart]
 rfc1 / 9.4 / C / "release record lost":
-  pending: 2.11
+  tests: [TestRFC1C_ReleaseRecordLost]
 rfc1 / 9.4 / C / "fill beats an older write":
-  pending: 2.11
+  tests: [TestRFC1C_FillBeatsOlderWrite]
 rfc1 / 9.4 / C / "stale Fill":
-  pending: 2.11
+  tests: [TestRFC1C_StaleFill]
 rfc1 / 9.4 / C / "incremental report":
-  pending: 2.11
+  tests: [TestRFC1C_IncrementalReport]
 rfc1 / 9.4 / C / "epoch half is zero":
-  pending: 2.11
+  tests: [TestRFC1C_EpochHalfIsZero]
 rfc1 / 9.4 / C / "monotonicity":
-  pending: 2.11
+  tests: [TestRFC1C_Monotonicity]
 rfc1 / 9.4 / C / "attached share raises the counter":
-  pending: 2.11
+  tests: [TestRFC1C_AttachedShareRaisesCounter]
 rfc1 / 9.4 / C / "unclaimed tags are the caller's to name":
-  pending: 2.11
+  tests: [TestRFC1C_UnclaimedTagsAreTheCallersToName]
 rfc1 / 9.4 / C / "a cancelled call changes nothing or completes":
-  pending: 2.11
+  tests: [TestRFC1C_CancelledCallChangesNothingOrCompletes]
 rfc1 / 9.4 / C / "restamp after a lost store":
-  pending: 2.11
+  tests: [TestRFC1C_RestampAfterLostStore]
 rfc1 / 9.4 / C / "forget leaves nothing to settle":
-  pending: 2.11
+  tests: [TestRFC1C_ForgetLeavesNothingToSettle]
 rfc1 / 9.4 / C / "unclaimed tag reported":
-  pending: 2.11
+  tests: [TestRFC1C_UnclaimedTagReported]
 rfc1 / 9.4 / C / "a file is its share's":
-  pending: 2.11
+  tests: [TestRFC1C_FileIsItsSharesShare]
 rfc1 / 9.4 / C / "stranded tag salvaged after serving":
   owner: epic 11
   reason: 'needs the store, a recovery import, salvage.path and the master key'
 rfc1 / 9.4 / C / "clone target survives a crash":
-  pending: 2.11
+  tests: [TestRFC1C_CloneTargetSurvivesCrash]
 rfc1 / 9.4 / C / "header-only records are re-appended outside a read-only journal":
-  pending: 2.11
+  tests: [TestRFC1C_HeaderOnlyRecordsReappended]
 rfc1 / 9.4 / C / "a loss survives restart":
-  pending: 2.11
+  tests: [TestRFC1C_LossSurvivesRestart]
 rfc1 / 9.4 / D / "wedge is visible":
   tests: [TestRFC1D_WedgeIsVisibleDirty, TestRFC1D_WedgeIsVisibleUnreclaimed]
 rfc1 / 9.4 / D / "accounting follows the cap":
