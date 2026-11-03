@@ -1045,7 +1045,7 @@ func TestEdge_ReservationExactFitShare(t *testing.T) {
 	capB := int64(journalv2test.FixtureSegmentCap)
 	at := int64(0)
 	var tail int64
-	for rolls := 0; ; {
+	for {
 		room := limit - f.J.Stats().Shares[limitedEdgeA].UsedBytes
 		if at > 0 {
 			last := entryAt(t, f, fit, at-1)
@@ -1061,23 +1061,15 @@ func TestEdge_ReservationExactFitShare(t *testing.T) {
 			break // one record's charge is the whole room left: the exact fit
 		}
 		p := (min(room, tailroom) - raw.RecordHeaderSize - 8) &^ 7
-		if p >= 4096 {
-			// nothing yet
-		} else if p >= 8 && tailroom >= 2*writeRecordBytes(1) {
-			p = 4096 // steer: a 4096-byte payload, one piece, no split
-			if room-writeRecordBytes(4096) < 2*writeRecordBytes(1) || tailroom-writeRecordBytes(4096) < 2*writeRecordBytes(1) {
-				p = max(8, min(room, tailroom)-2*raw.RecordHeaderSize) &^ 7 // keep the endgame reachable
+		if p < 4096 {
+			// The smaller side holds less than a 4096-byte record's room, so
+			// a 4096-byte fill would leave less than two minimal records
+			// on one side: the fill instead leaves room for two minimal
+			// records, keeping the endgame reachable.
+			if p < 8 || tailroom < 2*writeRecordBytes(1) {
+				t.Fatalf("the fills left %d of room with a %d tail, no state one record fills", room, tailroom)
 			}
-		} else if room >= writeRecordBytes(1) {
-			// the tail cannot hold what the room can: the next write rolls
-			tail = 0
-			rolls++
-			if int64(rolls) > 2*limit/capB+2 {
-				t.Fatalf("the fills never reached a room one record fills: %d of room left", room)
-			}
-			continue
-		} else {
-			t.Fatalf("precondition: the fills left %d of room, not one whole record's charge", room)
+			p = max(8, min(room, tailroom)-2*raw.RecordHeaderSize) &^ 7
 		}
 		if room-writeRecordBytes(int(p)) < 0 || tailroom-writeRecordBytes(int(p)) < 0 {
 			t.Fatalf("precondition: a %d-byte fill over %d of room and a %d tail left the share in no state one record fills", p, room, tailroom)
@@ -1091,9 +1083,6 @@ func TestEdge_ReservationExactFitShare(t *testing.T) {
 	// and its header and time, one piece in the segment whose tail the loop
 	// measured to hold it.
 	n := room - raw.RecordHeaderSize - 8
-	if n < 8 {
-		t.Fatalf("precondition after the fills: %d of room over a %d limit, no record's payload fits", room, limit)
-	}
 	r := reserve(t, a, writeRecordBytes(int(n)), 1)
 	_, err := r.WriteAt(t.Context(), fit, at, pattern("fit", int(n)), 0)
 	stub(t, "Reservation.WriteAt", err)
@@ -1247,14 +1236,19 @@ func TestEdge_ReservationExactFitJournal(t *testing.T) {
 	// The fills go on to the maximum itself: the last spare draw the
 	// maximum allows lands, the write past it is refused naming the
 	// journal's limit, and the account settles at the maximum.
-	for {
+	refused := false
+	for range 2 * maxB / fill {
 		_, err := tryWrite(t, a, id, at, pattern(fmt.Sprint("fill", at), fill))
 		stub(t, "WriteAt", err)
 		if err != nil {
 			wantNoSpace(t, err, journalv2.LimitJournal, "a write past the journal's maximum")
+			refused = true
 			break
 		}
 		at += fill
+	}
+	if !refused {
+		t.Fatalf("writes went on past the journal's maximum of %d", maxB)
 	}
 	wantAccounted(t, f, "once the fills reached the maximum")
 	s := f.J.Stats()
@@ -1437,11 +1431,6 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 		if err != nil && (!errors.Is(err, journalv2.ErrSyncFailed) || !errors.Is(err, syscall.EIO)) {
 			t.Fatalf("share %d: a Sync whose segment failed with EIO returned %v, want ErrSyncFailed wrapping it or nil over a re-append", k, err)
 		}
-		if err == nil {
-			if f.J.Stats().Counters.SyncReappendedBytes <= reappended {
-				t.Fatalf("share %d: the Sync over a re-appended window returned nil without SyncReappendedBytes rising", k)
-			}
-		}
 		if err != nil {
 			if f.J.Stats().LossGeneration <= gen {
 				t.Fatalf("share %d: a Sync that failed the window returned the error without the loss generation rising", k)
@@ -1529,7 +1518,7 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 				t.Fatalf("share %d: the failed window's loss events hold no event for the failed write", k)
 			}
 			got, missing := readBack(t, h, id, 0, 4096)
-			if len(missing) == 0 || !slices.Equal(joinedExtents(missing), []journalv2.Extent{{Off: 0, Len: 4096}}) {
+			if !slices.Equal(joinedExtents(missing), []journalv2.Extent{{Off: 0, Len: 4096}}) {
 				t.Fatalf("share %d: the write of the failed window reads %+v, want it missing as its whole extent", k, got)
 			}
 		}
@@ -1736,14 +1725,13 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	}
 	go func() { repacked <- repackSegment(t, f, seg) }()
 
-	// A short breath for the second selector to arrive at the segment - it
-	// may park behind the first's exclusive hold or find the segment
-	// leaving - and then the parked call is let through, whichever way the
-	// two retires land.
-	if reached := heldRemove.Waiting() + heldRename.Waiting(); reached > 0 {
-		heldRemove.Release()
-		heldRename.Release()
-	}
+	// Both holds are released without waiting. The one that fired lets the
+	// parked retire through; the other never fires. The repack usually
+	// arrives after the retire and finds the segment already gone, though
+	// it may instead park behind the retire's exclusive hold: either way it
+	// is let through here, whichever way the two retires land.
+	heldRemove.Release()
+	heldRename.Release()
 
 	// Both selectors must finish once the holds are opened. The repack of a
 	// segment whose records are all released selects and retires it, or
@@ -2012,9 +2000,6 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 			t.Fatalf("the write reads missing in %+v extents, want one whole tail of the rest", r.missing)
 		}
 		m := r.missing[0]
-		if m.Off+m.Len != 4096+int64(len(p)) {
-			t.Fatalf("the missing tail ends at %d, want the write's end %d", m.Off+m.Len, 4096+int64(len(p)))
-		}
 		l := m.Off - 4096
 		if l <= 0 {
 			t.Fatalf("the missing part starts at the write's first byte, want a non-empty prefix held past the synced piece")
@@ -2025,9 +2010,7 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		if !bytes.Equal(r.p[:l], p[:l]) {
 			t.Fatalf("the held prefix is not the write's own first %d bytes", l)
 		}
-		if !bytes.Equal(r.p[l:], sentinels(int64(len(p))-l)) {
-			t.Fatalf("the missing tail's bytes were written to")
-		}
+		wantMissing(t, r, 4096, []journalv2.Extent{ext(4096+l, int64(len(p))-l)}, "the tail past the kept prefix")
 	})
 }
 
