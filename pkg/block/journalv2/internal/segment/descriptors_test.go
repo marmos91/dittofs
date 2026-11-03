@@ -2039,7 +2039,7 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	stocked(t, e, 3)
 	e.read(t, 1)
 	if s := e.c.Stats(); s.Open != 1 {
-		t.Fatalf("the cache holds %d descriptors after the retry, want 1", s)
+		t.Fatalf("the cache holds %d descriptors after the retry, want 1", s.Open)
 	}
 	close(letWaiterThrough)
 
