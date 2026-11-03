@@ -61,13 +61,6 @@ func signedIn(p entity.Principal, id uint64) vfs.Call {
 	return c
 }
 
-// beginShard begins shard 0 of the share in open state, where the tests' opens
-// are held.
-func beginShard(t *testing.T, s *shares) {
-	t.Helper()
-	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
-}
-
 // leased opens file for p on session sess of client cl, under lease key k
 // with read and handle caching, durable so a disconnect keeps it, and
 // answers the lease.
@@ -112,7 +105,6 @@ func notYours(err error) bool {
 // taken.
 func TestAnSMBBreakGoesToTheSessionHoldingTheLeasesOpen(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
@@ -158,7 +150,6 @@ func TestAnSMBBreakGoesToTheSessionHoldingTheLeasesOpen(t *testing.T) {
 // session of the client signed in as its opener: every one of ten does.
 func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	holding, other := &vfstest.RecordingCallbacks{}, &vfstest.RecordingCallbacks{}
@@ -292,7 +283,6 @@ func TestADestroyedClientsPathIsDropped(t *testing.T) {
 // not to the client's latest session.
 func TestAnSMBBreakOfDisconnectedOpensGoesOnlyToAnOpenersSession(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	mallory := s.user(t, "mallory", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
@@ -364,7 +354,6 @@ func TestAConnectWithNoRecoveryKindIsRefused(t *testing.T) {
 // A delegation's recall goes by its client's path.
 func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
@@ -424,7 +413,6 @@ func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
 func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
 	fastRetry(t)
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	lost := &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}
 	id := laptop(t, s, lost)
@@ -459,7 +447,6 @@ type valueCallbacks struct {
 func TestAFailedRecallFindsTheNextPathOfNonComparableCallbacks(t *testing.T) {
 	fastRetry(t)
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	lost := valueCallbacks{RecordingCallbacks: &vfstest.RecordingCallbacks{Answer: func(context.Context, vfstest.Callback) error { return errors.New("connection reset") }}}
 	id := laptop(t, s, lost)
@@ -652,7 +639,6 @@ func lockAndUnlock(t *testing.T, s *shares, cl vfs.ClientID) {
 // and the old one's path is dropped.
 func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	old := &vfstest.RecordingCallbacks{}
@@ -860,7 +846,6 @@ func stateKind(err error, k vfs.StateKind) bool {
 // answers its refusal.
 func TestEachClientCallReachesOpenState(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
 	for name, err := range map[string]error{
@@ -938,7 +923,6 @@ func TestTheLatestConnectsPathTakesTheClientsCallbacks(t *testing.T) {
 // delegation's recall, which has no opener to check, is taken.
 func TestADelegationsRecall(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	cb := &vfstest.RecordingCallbacks{}
@@ -976,7 +960,6 @@ func TestADelegationsRecall(t *testing.T) {
 // releases the lock: another host then takes the range.
 func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	host := func(name string, cb *vfstest.RecordingCallbacks) openstate.Caller {

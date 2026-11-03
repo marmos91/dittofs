@@ -40,7 +40,6 @@ func newFoldNames(t *testing.T) *names {
 
 func namesOver(t *testing.T, s *shares) *names {
 	t.Helper()
-	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
 	return &names{shares: s, admin: proven(s.fs.Admin.Principal, inLab)}
 }
 

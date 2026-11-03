@@ -27,7 +27,6 @@ type attrs struct {
 func newAttrs(t *testing.T) *attrs {
 	t.Helper()
 	s := newShares(t, nil, nil)
-	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
 	return &attrs{
 		shares: s,
 		alice:  s.user(t, "alice", "", s.share, entity.AccessReadWrite),
@@ -357,7 +356,6 @@ func auditedAttrs(t *testing.T) (*attrs, *recorder) {
 	t.Helper()
 	rec := &recorder{}
 	s := newShares(t, rec, func(vfs.ShareID) authz.Policy { return authz.AuditDenials })
-	s.must(t, s.tab.Recovery().ServeShard(t.Context(), s.share, 0, 1))
 	return &attrs{shares: s,
 		alice: s.user(t, "alice", "", s.share, entity.AccessReadWrite),
 		bob:   s.user(t, "bob", "", s.share, entity.AccessReadWrite)}, rec
@@ -584,5 +582,53 @@ func TestChangeOfNamesWhatOpenStateJudges(t *testing.T) {
 		if got := changeOf(c.a); got != c.want {
 			t.Errorf("%s: %b, want %b", c.name, got, c.want)
 		}
+	}
+}
+
+// A time set through an open asks write attributes in the open's grant,
+// write data being none of it; a mode set beside it keeps the store's owner
+// rule, so a write-ACL holder sets no setuid on another's file; and a
+// privileged caller sets times through a read-only open on its own rights.
+func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: s.bob.Principal}))
+	g := s.file(t, "g", s.alice.Principal, 0o664)
+	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, g, entity.Attrs{}.WithGroup(staff.Principal))
+	s.must(t, err)
+	at := time.Unix(1_900_000_000, 0)
+	id, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
+	s.must(t, err)
+	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask) *openstate.OpenRef {
+		t.Helper()
+		res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Principal: p, Protocol: entity.ProtocolSMB}, keyOf(s.record(t, h)), openstate.OpenRequest{Access: access})
+		s.must(t, err)
+		return &openstate.OpenRef{Kind: openstate.RefOpened, State: res.Open.Ref, Open: res.Open.ID, Handle: h}
+	}
+	bob := proven(s.bob.Principal, inLab)
+	bob.Protocol, bob.Client = entity.ProtocolSMB, id
+	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: g, Open: open(g, s.bob.Principal, entity.ReadData|entity.WriteData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a group writer's time set through an open holding write data alone: %v, want ErrAccess", err)
+	}
+	adminCall := proven(s.fs.Admin.Principal, inLab)
+	k := s.file(t, "k", s.alice.Principal, 0o644)
+	_, err = s.SetACL(ctx, adminCall, vfs.Target{H: k}, entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.ReadAttributes | entity.WriteAttributes | entity.ReadACL | entity.WriteACL, Who: s.bob.Principal},
+		{Type: entity.ACEAllow, Mask: entity.EntryRights, Who: entity.Owner},
+	}})
+	s.must(t, err)
+	wa := open(k, s.bob.Principal, entity.ReadData|entity.WriteData|entity.WriteAttributes)
+	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: k, Open: wa}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o4755).WithModify(at)}); err != nil {
+		t.Errorf("a write-ACL holder's chmod beside a time through its open: %v", err)
+	}
+	if got := s.record(t, k).Mode & 0o7777; got != 0o755 {
+		t.Errorf("the mode after a write-ACL holder's chmod 4755 beside a time: %o, want 755 with setuid dropped", got)
+	}
+	admin := adminCall
+	admin.Protocol, admin.Client = entity.ProtocolSMB, id
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: g, Open: open(g, s.fs.Admin.Principal, entity.ReadData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); err != nil {
+		t.Errorf("an admin's time set through its read-only open: %v, want it set on the admin's own rights", err)
 	}
 }

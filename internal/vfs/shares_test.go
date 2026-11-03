@@ -1042,7 +1042,6 @@ func TestARemovedSharesOpenStateIsDropped(t *testing.T) {
 	other := s.addShare(t, "other", "/other")
 	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}))
 	_, file := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
-	s.must(t, s.tab.Recovery().ServeShard(ctx, s.share, openstate.ShardID(file.Shard), 1))
 	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
 	p, err := s.tab.Clients().Propose(ctx, c, inLab)
 	s.must(t, err)

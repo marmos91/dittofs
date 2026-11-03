@@ -52,7 +52,7 @@ func fuzzShare(f *testing.F) (*Filesystem, vfs.Call, vfs.Handle) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, err := range []error{tab.Start(ctx, s, s.Admission), s.Start(ctx), tab.Recovery().ServeShard(ctx, sh.ID, 0, 1)} {
+	for _, err := range []error{tab.Start(ctx, s, s.Admission), s.Start(ctx)} {
 		if err != nil {
 			f.Fatal(err)
 		}
