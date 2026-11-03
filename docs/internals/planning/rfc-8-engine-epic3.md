@@ -215,7 +215,7 @@ subtasks and tests can cite them.
 | R19 | A read returns zeros only for a hole or a zero ref, and fills them itself: `ReadAt` leaves a missing extent's bytes of `dst` untouched | MUST NOT | §7.1, E9, RFC 1 §3.2 | T3.5 |
 | R20 | An uncarved run whose file's `applied` and whose own overwrite version are both at or below `asOf` fails the read `ErrLost`, reporting data loss naming the file and extent, and nothing is fetched for it | MUST NOT | §7.1 | T3.5 |
 | R21 | An uncarved run whose file's `applied`, or whose own overwrite version, is above `asOf` is asked of the journal again and resolved again, within the read's deadline | MUST | §7.1, E32 | T3.5 |
-| R22 | "Uncarved" and "past end of file" are judged with the pending operations applied: a part past the committed size but below a later pending write's end is a hole, unless a pending write covers it, which then reads **Lost**; past the replayed size is a short read | invariant | §7.1 | T3.5 |
+| R22 | "Uncarved", "hole" and "past end of file" are judged with every pending operation at or below `asOf` applied in version order, writes, truncates and deallocates alike. The journal stops holding a truncated or deallocated extent at once (RFC 1 §3.6), while committed existence still answers it uncarved, so a part under a pending deallocate, or past a pending truncate's size and not written after it, is a hole, never **Lost**; a part past the committed size but below a later pending write's end is a hole, unless a pending write covers it, which then reads **Lost**; past the replayed size is a short read. An operation staged after `ReadAt` answered is above `asOf` and is not applied: it is the re-ask's (R21) | invariant | §7.1, RFC 1 §3.6 | T3.5 |
 | R23 | A carved run fails the read `ErrUnavailable`: transient, distinguishable from `ErrLost`, never zeros | MUST | §7.5, E9 | T3.5 |
 | R24 | A read that fails part-way returns `n`, the bytes filled in file order before the first failing part, and the error | invariant | §7.2 | T3.5 |
 | R25 | A **Lost** or corrupt read logs the file and extent at `Error`, once per extent | invariant | §14 | T3.5 |
@@ -415,8 +415,8 @@ test/enginev2/known.yaml  T3.2  its entry
 - **Track:** A. **Depends on:** T3.2.
 - **Covers:** R1, R9, R12, R17, R18, R19, R20, R21, R22, R23, R24, R25, R26, R27, R28, R29.
 - **Deliverables:** `read.go`: `Read` as RFC 8 §7.1's steps: `ReadAt`; for each missing
-  extent, one `Covering` call; the table resolved with the pending operations applied
-  (R22); zeros written into `dst` for holes and zero refs; the re-ask loop of R21 with D6
+  extent, one `Covering` call; the table resolved with every pending write, truncate and deallocate at or below
+  `asOf` applied (R22); zeros written into `dst` for holes and zero refs; the re-ask loop of R21 with D6
   at its end; `ErrLost` with D7's log line; the carved case of D5; `n` as R24 counts it;
   `engine_reads_total{class}` by D8 and `engine_read_seconds`; RFC 8 §15's `ponytail:`
   marker at the table.
@@ -437,8 +437,17 @@ test/enginev2/known.yaml  T3.2  its entry
   last two (R21, R27); the same with `ctx` ended mid-loop answers `ErrDelay`; a lost extent
   read, a hole committed over it, then read again reads zeros (catches a kept resolution,
   R18); a pending write the fake journal loses reads `ErrLost`, a gap below a pending
-  write past the committed size reads zeros (R22); a read with a hole, then a lost part,
-  then held bytes returns the hole's count and `ErrLost` (R24); the same lost extent read
+  write past the committed size reads zeros; a pending deallocate inside committed data
+  reads zeros, class not `lost`; a pending truncate to 4 KiB, then a pending write at 50
+  KiB: [4 KiB, 50 KiB) reads zeros (a build applying only writes fails both **Lost**); a
+  write staged into a missing extent after `ReadAt` answered, through the `Content`
+  wrapper's hook, is not applied and never reads **Lost** (catches applying operations
+  above `asOf`) (R22); a read with a hole, then a lost part,
+  then held bytes returns the hole's count and `ErrLost`; a re-asked part that comes back
+  short, truncated meanwhile, returns the bytes up to the new end and no error, and one
+  that comes back failed returns the bytes before it and its error; a second `Covering`
+  call failing returns the first extent's zeros counted and that error (catches `n`
+  counted from the first pass, or past the failing part) (R24); the same lost extent read
   twice logs one `Error` line (R25); a read of one file while another file's entry is held
   returns (R1).
 

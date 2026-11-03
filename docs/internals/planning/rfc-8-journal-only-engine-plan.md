@@ -623,7 +623,8 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
   fails: a write of 0 to 8 KiB at v3, then a truncate to 4 KiB at v5 (`SizeSet`, `Size` 4 KiB);
   then a write ending at 12 KiB at v6 (`Size` 12 KiB, `SizeSet` still true); then a write
   ending at 2 KiB at v7 (`Size` 12 KiB, `SizeSet` still true).
-- T3.5 `Read`: `ReadAt`, `Covering` per missing extent, §7.1's table, the re-ask on `applied` or
+- T3.5 `Read`: `ReadAt`, `Covering` per missing extent, §7.1's table with every pending
+  write, truncate and deallocate at or below `asOf` applied, the re-ask on `applied` or
   an overwrite version above `asOf` within the deadline, **Lost** reported once per extent,
   the carved case.
 - T3.6 `Allocation`: `Existence.Allocation` with the pending operations applied, a zero ref
