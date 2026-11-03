@@ -39,20 +39,18 @@ func newFakeContent() *fakeContent {
 	return &fakeContent{files: map[entity.FileID][]byte{}, shares: map[entity.FileID]entity.ShareID{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}}
 }
 
-// placed answers ErrStale, as the engine does for a share with no binding,
-// for a call naming no share or a share other than the one the file was
-// first named with, so a caller passing the wrong share fails its test. The
-// caller holds mu.
-func (c *fakeContent) placed(share entity.ShareID, fs ...entity.FileID) error {
+// placed answers a Delay with DelayFrozen, as the engine does for a share
+// with no binding, for a call naming no share or a share other than the one
+// f was first named with, so a caller passing the wrong share fails its test.
+// The caller holds mu.
+func (c *fakeContent) placed(share entity.ShareID, f entity.FileID) error {
 	if share == (entity.ShareID{}) {
-		return vfs.ErrStale
+		return &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
-	for _, f := range fs {
-		if was, ok := c.shares[f]; ok && was != share {
-			return vfs.ErrStale
-		}
-		c.shares[f] = share
+	if was, ok := c.shares[f]; ok && was != share {
+		return &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
+	c.shares[f] = share
 	return nil
 }
 
@@ -162,15 +160,18 @@ func (c *fakeContent) Delete(ctx context.Context, share entity.ShareID, f entity
 	return nil
 }
 
-func (c *fakeContent) Clone(ctx context.Context, share entity.ShareID, src, dst entity.FileID, x vfs.Extent) error {
-	_, err := c.Copy(ctx, share, src, dst, []vfs.Extent{x})
+func (c *fakeContent) Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error {
+	_, err := c.Copy(ctx, srcShare, src, dstShare, dst, []vfs.Extent{x})
 	return err
 }
 
-func (c *fakeContent) Copy(ctx context.Context, share entity.ShareID, src, dst entity.FileID, xs []vfs.Extent) (int64, error) {
+func (c *fakeContent) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.placed(share, src, dst); err != nil {
+	if err := c.placed(srcShare, src); err != nil {
+		return 0, err
+	}
+	if err := c.placed(dstShare, dst); err != nil {
 		return 0, err
 	}
 	var n int64
