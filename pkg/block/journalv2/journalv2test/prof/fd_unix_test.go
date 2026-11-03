@@ -130,7 +130,7 @@ func TestWatchReportsEveryLeak(t *testing.T) {
 	rec.finish()
 
 	want := []string{"2 goroutine(s) leaked", "1 descriptor(s) leaked"}
-	if !raceEnabled {
+	if !RaceEnabled {
 		want = append(want, "live heap grew")
 	}
 	for _, w := range want {
