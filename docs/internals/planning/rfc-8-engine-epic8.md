@@ -180,7 +180,7 @@ a clone rebuilt at start; `Unbind`'s and `Close`'s join of clones; the fake jour
 | --- | --- | --- |
 | 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with a recording `CloneHold` stub where open state is not the subject; T8.2 extends the fake with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
-| 3 Observability | T8.2, T8.3, T8.6 | no new counter, and one new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_batches_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (D3). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and raises one condition, `clone_waiting_served`, for a rebuilt clone whose source's shard is not served after five backoffs (D11) |
+| 3 Observability | T8.2, T8.3, T8.6 | no new counter, and one new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_batches_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (D3). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
 | 5 Public and internal | all | internal tests of admission (T8.1), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
 | 6 Known failures | T8.2, T8.3, T8.4, T8.6 | the rows of R33 to R40 are E2's, red in `known.yaml`; a row this epic turns green over the real journal leaves it in that change. T8.3's tests over the open-state table enter `known.yaml` naming this epic's issue until `Releasing` and the journal's `CloneTarget` and `Reserve` exist |
@@ -317,7 +317,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 - **D4, the registrations.** A registration is an extent and a running clone, kept in each
   file's entry, which it keeps alive (epic 3's bound: an entry exists while it holds
   something). The source's is installed under the source's entry lock once a removal of the
-  source extent in flight, which the entry records (epic 3), has ended: the clone waits it
+  source extent in flight, which T5.1 marks in the entry, has ended (T5.1's registration
+  check and its mark sit in one entry-lock section, and the mark lasts until phase 1 ends): the clone waits it
   out without taking the source's guard (RFC 8 §6.4, §9.1, E6), and a removal admitted after
   sees the registration under the entry lock. Then the clone waits until the writes admitted
   before it have staged. `Write`
@@ -367,7 +368,11 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   `applied` above *v* meanwhile, which would leave the destination reading **Lost** (T8.2's
   test of R14). A refusal that never clears therefore pins the guard, holding the file's
   removals and group commits, and raises `removal_stalled` for the destination after five
-  retries, as T5.4's retry does. A `decision:` marker names it, and is withdrawn if the
+  retries, as T5.4's retry does. A group commit's capture skips a file whose guard is held
+  and takes it in a later batch (RFC 8 E17), so it never blocks on a pinned guard: the
+  journal's other files commit, and the phase-2 batches `Unbind`'s join waits on (R28) run.
+  That join then waits on the clone's own retries only, which `removal_stalled` makes
+  visible, and `Close` cancels them (D6). A `decision:` marker names it, and is withdrawn if the
   store's check moves to an admission read (§9, point 3).
 - **D9, the version on the source's open.** `kvstore`'s phase 1 records the source's open
   with the clone's version *v*, and `CloneOpen` matches on it, while `CloneSrc.AsOf` and
@@ -385,10 +390,10 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 - **D11, waiting for the source's shard.** A rebuilt clone waits on `Holds.Served` for its
   source's shard on its own goroutine (D6), in rounds of the loop's backoff, and posts to the
   removal loop only once it returns, so the loop never holds a wait. After five rounds it
-  raises `clone_waiting_served` for the destination, unhealthy as `removal_stalled` is,
-  cleared when `Served` returns. `Unbind`'s join of the clone (R28) and `Close` cancel the
-  wait, the clone `Removal` left for the next start's step 4, so neither hangs on a shard that
-  never serves.
+  reports `removal_stalled` for the clone `Removal`, cleared when `Served` returns.
+  `Unbind` joins the clone as R28 and RFC 8 §2.3 say, waiting out the `Served` wait, which the
+  condition makes visible; only `Close` cancels it, the clone `Removal` left for the next
+  start's step 4 (D6).
 - **D12, `Copy`'s edges.** The chunk is the smaller of 64 MiB and `clone_max_len`, so no chunk
   is refused by the length rule. At the deadline `Copy` answers the bytes of the chunks done
   and leaves the running chunk to finish, which the client's continuation joins (D6) or finds
@@ -536,7 +541,8 @@ pkg/block/enginev2/
   completes on the next attempt (catches a clone failed after its journal step, D8, R26);
   answering it six times: `removal_stalled` names the destination, and a group commit
   triggered between two attempts captures none of its operations (catches the guard
-  released across the retry, D8).
+  released across the retry, D8), while a write to another file on the same journal commits
+  in that batch (catches a capture blocking on the pinned guard, D8).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -672,13 +678,13 @@ pkg/block/enginev2/
   written since; R31, R35); the files in two shares, stopped between two batches: after
   the restart a write into the source extent answers `ErrDelay` before any other call
   (R37); a power cut right after the clone's answer: the destination reads the source (catches
-  an answer before the destination's copies are synced and phase 1 committed, R38); a crash after the copies synced on a share at its journal limit: the restart's
+  an answer before the copies are synced, R38); a crash after the copies synced on a share at its journal limit: the restart's
   reservation asks for nothing, every other file is served, and the clone finishes (catches
   a restart re-making the copies, which the full limit refuses, R40); a `Served` stub that
-  returns only when released: no `Resume` before it, `clone_waiting_served` names the
-  destination after five backoffs and clears once it returns (catches a silent wait, D11),
-  and an `Unbind` of the source's share before then returns, leaving the clone `Removal`
-  (catches a join hung on the wait, R28).
+  returns only when released: no `Resume` before it, `removal_stalled` names the clone
+  `Removal` after five backoffs and clears once it returns (catches a silent wait, D11), and
+  an `Unbind` of the source's share before then returns only after the stub is released and
+  the clone done (catches a join that abandons the clone, R28).
 
 ## 7. Order of work
 

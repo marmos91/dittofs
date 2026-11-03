@@ -731,7 +731,9 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   `Covering` would answer it uncarved at or below `asOf` and the read **Lost** (epic 3's
   R22). A `decision:` marker at the lock names it: reads of the file wait out one journal
   removal, and it is withdrawn if the journal can hand back the removal's version before
-  it stops holding the extent.
+  it stops holding the extent. The same entry-lock section checks for a clone's registration
+  of the extent and marks the removal in flight in the entry, and the mark lasts until phase 1
+  ends, so a clone admitted meanwhile waits it out (epic 8's D4).
 - T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged. The entry lock is held
   across the journal's `Deallocate` and the insert, under T5.1's marker.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
@@ -782,9 +784,10 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
   crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
   journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
-  the removed extent on another goroutine, and a second hook parks that read between the
-  journal's answer and its entry read until the removal returns: the read then finds the
-  pending removal, never **Lost** (catches T5.1's lock released before the insert, every run).
+  the removed extent on another goroutine, and waits until that read has either returned or
+  is blocked on the file's entry lock (a lock-wait hook) before letting the removal go on:
+  the read then finds the pending removal, never **Lost** (a build that releases the lock
+  before the insert lets the read return inside the hook, reading **Lost**, every run).
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
@@ -1047,8 +1050,7 @@ follows the journal's, not this part's (§6 point 7).
    Owed beside them, though #3543 did not settle it: RFC 6 §10.1 puts `Clone` on `Content`,
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
    §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
-   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); §8.1's "the engine reads and writes no open state" narrows to a
-   release; and §9.1's clone open "entered in the source's open table at its primary at
+   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); and §9.1's clone open "entered in the source's open table at its primary at
    admission" becomes the engine's, taken before phase 2, with the registration holding the
    source until the clone is done and a release it delayed run again when it drops (point
    13).
