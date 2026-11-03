@@ -178,7 +178,8 @@ type Counters struct {
 	OfferedBytes, MarkedBytes uint64
 
 	// ReleasedBytes is the bytes released, and FreedBytes the storage actually
-	// returned by unlinking segments.
+	// returned by retiring segments: to the filesystem by an unlink, or to the
+	// spare pool by a recycle.
 	ReleasedBytes, FreedBytes uint64
 
 	// RepackedBytes is the bytes moved by repack.
