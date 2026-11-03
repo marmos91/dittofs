@@ -151,14 +151,6 @@ var (
 	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
 )
 
-// wantWriteBody is the write body the write golden holds: the bytes its
-// checksum covers, the modification time then the payload. The other bodies'
-// byte strings live with the tests that build them.
-func wantWriteBody() []byte {
-	b := binary.LittleEndian.AppendUint64(nil, uint64(testWriteMTime))
-	return append(b, testWritePayload...)
-}
-
 // rechecksumRecord stores the seeded CRC32C of identity then [92,96)'s
 // covered bytes at [92,96) of a record header, so an edit fails a decode only
 // for the edit, not for its stale checksum.
