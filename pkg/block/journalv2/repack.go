@@ -13,7 +13,9 @@ type RepackScope struct {
 // scope into another segment, repoints the placement index and retires the
 // originals, copying at most budget bytes. It returns freed, the storage its
 // retirements returned to the filesystem or to the spare pool, once they are
-// durable; the journal's used bytes fall at the same moment, never earlier.
+// durable. The storage in use, UsedBytes less the spares at the segment cap,
+// falls at the same moment, never earlier: an unlink lowers UsedBytes itself,
+// while a recycle leaves it where it was and adds a spare.
 //
 // Repack preserves every held and retained extent, the bytes they produce and
 // their offloaded bits, and discards nothing. It decides which segments to
