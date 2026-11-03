@@ -391,3 +391,53 @@ func TestARehomeMovesTheFilesWritesOnlyOnceAdmittedAndKept(t *testing.T) {
 		t.Errorf("15 bytes for alice, her moved write released before the revert: %v, want them admitted", err)
 	}
 }
+
+// releasing is a store whose Usage read of target waits until done has run
+// to its end, as a store read waits on a commit whose Done runs meanwhile.
+type releasing struct {
+	*store
+	target Target
+	done   func()
+}
+
+func (r releasing) Usage(ctx context.Context, share entity.ShareID, t Target) (entity.Usage, error) {
+	if t == r.target {
+		over := make(chan struct{})
+		go func() { r.done(); close(over) }()
+		<-over
+	}
+	return r.store.Usage(ctx, share, t)
+}
+
+// A Rehome reads the store before the tracker's mutex, so a Release of
+// another file's reservation, which takes that mutex, runs to its end while
+// the Rehome's store read waits on it.
+func TestARehomeHoldsNoMutexAcrossItsStoreRead(t *testing.T) {
+	ctx := context.Background()
+	bob := entity.Principal{Kind: entity.PrincipalUser, ID: entity.PrincipalID{3}}
+	s := newStore()
+	s.limits[Target{Principal: bob}] = hardBytes(10)
+	var other *Reservation
+	q := New(releasing{s, Target{Principal: bob}, func() { other.Release() }}, (&events{}).emit)
+	elsewhere := charge
+	elsewhere.File = entity.NewFileID()
+	var err error
+	if other, err = q.Reserve(ctx, vfs.Identity{}, elsewhere, entity.Usage{Bytes: 5}); err != nil {
+		t.Fatal(err)
+	}
+	to := charge
+	to.Owner, to.File = bob, entity.NewFileID()
+	rehomed := make(chan error, 1)
+	go func() {
+		_, err := q.Rehome(ctx, vfs.Identity{}, to, entity.Usage{Files: 1}, vfs.QuotaUser)
+		rehomed <- err
+	}()
+	select {
+	case err := <-rehomed:
+		if err != nil {
+			t.Errorf("a rehome to bob: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a rehome whose store read waits on another reservation's Release did not return within 1s")
+	}
+}

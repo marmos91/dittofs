@@ -217,6 +217,12 @@ func (q *Quotas) Reserve(ctx context.Context, writer vfs.Identity, c Charge, add
 // whose charge no size shows included, counts against them. Refused, it
 // moves nothing. Admitted, its Release keeps the moves once the change has
 // applied, and its Revert moves them back when it did not.
+//
+// It reads the quotas' committed usage, unfolded changes included, from the
+// store before taking the tracker's mutex, which every Release takes too, so
+// no Release waits on a store read. Under the mutex it only reads what is
+// kept under the file, judges in memory and moves, so no Release lands
+// between that read, the judgement and the move.
 func (q *Quotas) Rehome(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, scopes ...vfs.QuotaScope) (*Reservation, error) {
 	return q.reserve(ctx, writer, c, add, true, scopes)
 }
