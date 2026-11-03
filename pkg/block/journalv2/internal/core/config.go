@@ -170,16 +170,6 @@ func (b *DescriptorBudget) Open() int {
 	return b.open
 }
 
-// Reclaimers returns how many journals are registered to be asked for an idle
-// descriptor: the gauge of the registry Shutdown removes a shut journal from.
-// A journal left registered would pin its whole cache and be asked on every
-// Reclaim forever.
-func (b *DescriptorBudget) Reclaimers() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.reclaimers)
-}
-
 // TryTake takes one open-descriptor slot, reporting whether it did. It fails
 // when the budget is at its limit, and always when the limit is negative.
 func (b *DescriptorBudget) TryTake() bool {

@@ -262,23 +262,23 @@ func TestDescriptorBudgetReclaimSkipsUnregistered(t *testing.T) {
 // ask, which is what a journal's Shutdown must drop by one.
 func TestDescriptorBudgetReclaimersGauge(t *testing.T) {
 	b := NewDescriptorBudget(1)
-	if got := b.Reclaimers(); got != 0 {
+	if got := Reclaimers(b); got != 0 {
 		t.Fatalf("Reclaimers = %d with none registered, want 0", got)
 	}
 	unregister := b.Register(func() bool { return true })
-	if got := b.Reclaimers(); got != 1 {
+	if got := Reclaimers(b); got != 1 {
 		t.Fatalf("Reclaimers = %d after one Register, want 1", got)
 	}
 	second := b.Register(func() bool { return true })
-	if got := b.Reclaimers(); got != 2 {
+	if got := Reclaimers(b); got != 2 {
 		t.Fatalf("Reclaimers = %d after two Registers, want 2", got)
 	}
 	unregister()
-	if got := b.Reclaimers(); got != 1 {
+	if got := Reclaimers(b); got != 1 {
 		t.Fatalf("Reclaimers = %d after one unregister, want 1", got)
 	}
 	second()
-	if got := b.Reclaimers(); got != 0 {
+	if got := Reclaimers(b); got != 0 {
 		t.Fatalf("Reclaimers = %d after both unregisters, want 0", got)
 	}
 }

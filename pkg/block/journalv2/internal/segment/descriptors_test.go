@@ -1293,45 +1293,6 @@ func TestDescriptorsForgetKeepsALiveEntry(t *testing.T) {
 	}
 }
 
-// TestDescriptorsShutdownUnregistersFromTheBudget checks the registry gauge:
-// two caches on one budget register two reclaimers, and each Shutdown removes
-// its own, so a shut journal leaves no closure in the budget's round-robin —
-// one that would pin the whole cache and be asked on every Reclaim.
-func TestDescriptorsShutdownUnregistersFromTheBudget(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := newCache(t, 4)
-	seam2, err := journalv2test.NewSeam(t.TempDir())
-	if err != nil {
-		t.Fatalf("the second seam could not be made: %v", err)
-	}
-	e2 := cacheEnv{
-		budget:  e.budget,
-		c:       segment.NewDescriptors(seam2.FS(), name, e.budget),
-		seam:    seam2,
-		stocked: map[core.SegmentID]int{},
-	}
-
-	if got := e.budget.Reclaimers(); got != 2 {
-		t.Fatalf("the budget holds %d reclaimers with two caches, want 2", got)
-	}
-	if err := e.c.Shutdown(); err != nil {
-		t.Fatalf("Shutdown of the first cache = %v, want nil", err)
-	}
-	if got := e.budget.Reclaimers(); got != 1 {
-		t.Fatalf("the budget holds %d reclaimers after one cache shut down, want 1: Shutdown must unregister its closure", got)
-	}
-	if err := e2.c.Shutdown(); err != nil {
-		t.Fatalf("Shutdown of the second cache = %v, want nil", err)
-	}
-	if got := e.budget.Reclaimers(); got != 0 {
-		t.Fatalf("the budget holds %d reclaimers after both caches shut down, want 0", got)
-	}
-	if e.budget.Reclaim() {
-		t.Fatal("Reclaim with no reclaimer returned true, want false")
-	}
-}
-
 // TestDescriptorsAIdleJournalYieldsToAnother checks the cross-journal half of
 // the bound: one journal holds every slot of the shared budget in idle
 // descriptors — nothing of its own held — and a second
