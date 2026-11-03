@@ -120,7 +120,7 @@ with stage 2:
   `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
-  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is
+  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is a
   RFC 8 §2.6's `CloneHold`, open state's three clone calls in the engine's own types:
   `Hold`, RFC 14 §9.2's `CloneOpen`, which takes over the source record the clone's phase 1
   writes and so runs after it, taken before `Content.Resume` runs phase 2; `Release`, its
@@ -170,7 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
-| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`. `vfserr.Delay` gains nothing (§6 point 15) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, `vfserr.ErrFileOpen` for an abort (which T5.4 adds, and `vfs.Errors()` omits, as RFC 17 §4.3 is owed), or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to the next start's recovery; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -603,8 +603,8 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
 
 A file's bytes in and out. The per-file entry (guard, pending existence, overlay) is one
-map entry sharded by file, kept while the file has pending existence, a removal in flight or
-a loss entry above the floor (RFC 8 §2.3's ponytail); the guard orders a removal against a
+map entry sharded by file, kept while the file has pending existence, a removal in flight,
+a loss entry above the floor (RFC 8 §2.3's ponytail), or a clone's registration or done spec (epic 8); the guard orders a removal against a
 capture, and correctness never rests on it (E17). A **carved** run cannot arise, since no
 code of this part writes a ref; met anyway it means a store written by something else, and
 it fails `ErrUnavailable`, transient and distinguishable from **Lost**, never zeros (E9).
@@ -724,22 +724,32 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 - T5.1 The three removals through phase 1, `Settle` and the post. Phase 1 commits the
   file's pending existence, the file synced first (§5.1), so it calls `Done` for every write
   it records, one of C9's
-  commit paths, tested with T4.7's reservation counter.
-- T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged.
+  commit paths, tested with T4.7's reservation counter. Unlike a write (epic 3's D3), a
+  truncate holds the file's entry lock across the journal's `Truncate` and the insert of its
+  pending operation: the journal stops holding the extent at once, and a `ReadAt` landing
+  between the two would find it missing with no pending truncate in the entry yet, so
+  `Covering` would answer it uncarved at or below `asOf` and the read **Lost** (epic 3's
+  R22). A `decision:` marker at the lock names it: reads of the file wait out one journal
+  removal, and it is withdrawn if the journal can hand back the removal's version before
+  it stops holding the extent. The same entry-lock section checks for a clone's registration
+  of the extent and marks the removal in flight in the entry, and the mark lasts until phase 1
+  ends, so a clone admitted meanwhile waits it out (epic 8's D4).
+- T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged. The entry lock is held
+  across the journal's `Deallocate` and the insert, under T5.1's marker.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
   fixed backoff, `removal_stalled` after five failed batches. A clone's `Holds.Hold` answered
   `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
   the five (T8.3).
 - T5.4 A release's contract with the service: `Delete` answers one of four outcomes,
   through C11's `(retry <-chan error, err error)`. Phase
-  1 committed: the service answers `done(true)`. Aborted by a holder: `done(false)` clears
+  1 committed: the service answers `done(true)`. Aborted by a holder, answered `vfserr.ErrFileOpen`: `done(false)` clears
   the mark, and the engine settles the abort, without its removal, and reports it as data
   loss (RFC 8 §2.5 step 3); the pending writes the aborted release dropped get `Done` with
   nothing charged. Not committed yet, as on a store stall at the deadline, after the
   journal's `Delete` has dropped the bytes: the service keeps the mark, and the engine hands
   the retry of phase 1 to T5.3's loop, with no goroutine of its own, and returns as `retry`
   a channel buffered by one that yields the retry's outcome once: nil once committed, the
-  abort's error, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
+  abort's `ErrFileOpen`, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
   it. Into an extent a clone registered (T8.1): pending too, answered before the journal's
@@ -749,7 +759,8 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   pending release then running at the next start; the service answers `done(false)` and runs
   the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
   the unlink answers success, and the service waits on `retry` in the background, never
-  inside `Sink.Closed`, and finishes the release with its outcome. That branch reads T8.1's registration, so it is built and
+  inside `Sink.Closed`, and finishes the release with its outcome, or stops waiting at the
+  server's stop with no `done(...)` (C11). That branch reads T8.1's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
@@ -757,10 +768,26 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   loss reported and T4.7's reservation counter at zero; a stall at the deadline keeps the
   file marked until phase 1 commits, then the channel yields committed; a stall that
   outlasts five retries raises `removal_stalled`, and the abort that ends it clears it. The
-  stopped outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
-  The channel is `Delete`'s first result (C11, §6 point 15).
+  `ErrUnavailable` outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
+  `vfserr` has no value for a release a holder aborted, so T5.4 adds `ErrFileOpen`, the engine's
+  own value for open state's `ErrFileOpen`, which it cannot import (RFC 0 I6): the
+  service tells it apart from `ErrUnavailable`, clearing the mark for one and keeping it for
+  the other, and D4's catch-all would turn an unnamed error into the latter. Tested: a stall
+  ended by an abort yields `ErrFileOpen` on `retry`, not `ErrUnavailable`, and the
+  `done(false)` it leads to clears the mark. The channel is `Delete`'s first result (C11, §6 point 15).
+  `ErrFileOpen` passes only between the engine and the service and never reaches an adapter,
+  so RFC 17 §4.3's table, which every adapter's table covers (RFC 20 §7.3), gains no row for
+  it: `vfserr` declares it beside that table's values, marked as the service's alone, and
+  `vfs.Errors()`, which RFC 20 §7.3 checks each adapter's table against, omits it. RFC 17
+  §4.3 says `Errors()` returns every sentinel and so gains the sentence that it omits a value
+  only the service and the engine exchange, in the RFC pull request after #3608 (§6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
-  crash over T2.2's fixture and the journal's crash seam (rule 8).
+  crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
+  journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
+  the removed extent on another goroutine, and waits until that read has either returned or
+  is blocked on the file's entry lock (a lock-wait hook) before letting the removal go on:
+  the read then finds the pending removal, never **Lost** (a build that releases the lock
+  before the insert lets the read return inside the hook, reading **Lost**, every run).
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
@@ -790,14 +817,14 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   marker whose phase 1 a holder aborted settled without its removal and reported as data
   loss by T5.4's routine, so no restart re-applies it, `Settle` with the store's `Applied`; no file served
   before. Tested by asserting the report, and that a second restart reports nothing; and,
-  for T5.4's stopped outcome, a release marker a `Close` left mid-retry settled by the
+  for T5.4's `ErrUnavailable` outcome, a release marker a `Close` left mid-retry settled by the
   restart.
 - T6.6 Start steps 4 and 5: unfinished removals posted to the removal loop; unclaimed tags
   stranded.
 - T6.7 The version limit while serving: the trigger on every version issued, the raise in
   `K`-bounded transactions, `SetVersionLimit` after, the two markers.
 - T6.8 `Close`: refuse, the last group commit, joins within their bounds, close in reverse,
-  nothing closed under a live loop. Tested with T5.4's stopped outcome: a `Close` while the
+  nothing closed under a live loop. Tested with T5.4's `ErrUnavailable` outcome: a `Close` while the
   removal loop retries a release's phase 1 yields `ErrUnavailable` on its channel, with no
   `done(...)`, and leaves the marker for T6.5.
 - T6.9 `Unbind` and `Drop`: admit nothing new, join, `keepHolds` refused; `Close` the handle,
@@ -805,7 +832,12 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   joins the share's in-flight batch before `Forget`, so no later batch captures one of them,
   then calls `Done` with nothing charged for every write `Forget` dropped, C9's `Forget` leg;
   tested with T4.7's reservation counter, back to zero after a `Drop` under writes, and one
-  `Done` per write with a batch due as `Drop` joins.
+  `Done` per write with a batch due as `Drop` joins. The share's removed and retired states
+  land here with epic 3's D1: a content call naming a share being removed or retired
+  answers `ErrStale`, not `DelayFrozen`, tested by one call per content method. `Drop` ends
+  the removal loop's retry of the share's pending releases as `Close` does: each one's
+  `retry` yields `ErrUnavailable`, with no `done(...)`, the marker left for the next start,
+  tested with T5.4's stall.
 
 ### Epic 7 — Capacity, self-fence and health
 
@@ -893,9 +925,9 @@ source run uncarved and not held is carried as uncarved and reads **Lost**. Sect
 RFC 8 §9.1 (all but adoption and the snapshot cases), §5.1's clone in a pre-cut commit
 excluded. Spans: a clone's batches as root spans.
 
-- T8.1 Admission: overlap, `clone_max_len`, namespace, an incomplete source; the source
-  extent's registration, waiting for writes already admitted, and `ErrDelay` for writes and
-  removals into it.
+- T8.1 Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
+  service's, RFC 17 §5.9); the source extent's registration, waiting for writes already
+  admitted and a removal in flight, and `ErrDelay` for writes and removals into it.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
   record; the uncarved carry. Until the clone is done, T8.1's registration holds the
@@ -940,11 +972,12 @@ excluded. Spans: a clone's batches as root spans.
 - T8.4 The destination held until done; removals of it held; a retry joining a running
   clone; `ErrDelay` at the deadline, success once done.
 - T8.5 `Copy` as 64 MiB bounded clones with a short count, the chunk's `decision:` marker.
-- T8.6 Rebuild at start: the registration from the source's clone-kind open record when
-  phase 1 wrote it, otherwise from the journal's clone marker, holding the source until the
+- T8.6 Rebuild at start: the registration from the destination's clone `Removal` record
+  when phase 1 wrote it, whose spec holds what the source's clone-kind open record does,
+  otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
-  `Hold`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
-  13). A source unlinked before the restart is reported by neither of T8.3's paths: the
+  `Hold`. The "source registration rebuilt" row of §1.4 holds in substance, its
+  wording ("from its clone-kind open record") in a cluster (epic 8's open point 6). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
   it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
@@ -1017,11 +1050,7 @@ follows the journal's, not this part's (§6 point 7).
    Owed beside them, though #3543 did not settle it: RFC 6 §10.1 puts `Clone` on `Content`,
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
    §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
-   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); RFC 8 §2.6 gains
-   `Holds`, a `CloneHold` with `Hold`, `Release` and `Served` over open state's `CloneOpen`,
-   `CloneClose` and `Recovery.Served`, the orphan `Release` leaves reported by open state's
-   own `Sink.Closed`; §8.1's "the engine reads and writes no open state" narrows to a
-   release; and §9.1's clone open "entered in the source's open table at its primary at
+   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); and §9.1's clone open "entered in the source's open table at its primary at
    admission" becomes the engine's, taken before phase 2, with the registration holding the
    source until the clone is done and a release it delayed run again when it drops (point
    13).
@@ -1082,8 +1111,8 @@ follows the journal's, not this part's (§6 point 7).
     service its orphan through its own `Sink.Closed`.
     Until the clone is done, the source is held by the registration, not the open, and a
     release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
-    takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
-    view of it" narrows to releases, and §2.6 gains the member (§6 point 2).
+    takes no open. RFC 8 §8.1 already says a release reads and writes no open state, and that
+    the one open the engine holds is a clone's, through `Deps.Holds`.
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
     someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
     adapts it.
@@ -1097,11 +1126,30 @@ follows the journal's, not this part's (§6 point 7).
     Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // retry non-nil only when the release is pending; yields its outcome once, or ErrUnavailable at Close/Drop
     ```
 
-    `retry` is T5.4's channel: nil once phase 1 committed, the abort's error, `ErrDelay`
+    `retry` is T5.4's channel: nil once phase 1 committed, `vfserr.ErrFileOpen` for an
+    abort, which T5.4 adds to `vfserr`, `ErrDelay`
     with `DelayClone` once a clone's registration drops, or `ErrUnavailable`, the marker left
     for start. While it is pending the unlink answers success, and the service waits on it
-    in the background, not inside `Sink.Closed`. The RFC 8 §12.1 and RFC 17 §2.3 text for
+    in the background, not inside `Sink.Closed`. The server stops before the engine
+    (RFC 17 §2.5), so a waiter that ended only on `retry` would block the server's stop on
+    a channel only the engine's later `Close` ends, or leak past it (V33). It selects on the
+    server's stop too:
+
+    ```go
+    select {
+    case err := <-retry: // finish the release with its outcome
+    case <-s.stopping:   // no done(...): start step 3's marker finishes the release
+    }
+    ```
+
+    The VFS plan's piece 7 builds the waiter with the release paths, and V33 gains a case
+    there: a release stalled across `Filesystem.Stop` leaves no goroutine. The RFC 8 §12.1 and RFC 17 §2.3 text for
     it goes in #3608.
+
+    Still owed beside it: `ErrFileOpen` has no adapter row, yet RFC 17 §4.3 has
+    `vfs.Errors()` return every sentinel, and RFC 20 §7.3 checks each adapter's table total
+    against it. RFC 17 §4.3 gains the sentence that `Errors()` omits a value only the service
+    and the engine exchange, naming `ErrFileOpen`, in the RFC pull request after #3608 (T5.4).
 
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and

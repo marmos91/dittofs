@@ -198,7 +198,7 @@ subtasks and tests can cite them.
 | R9 | Until its stability point the journal is the write's authority: its pending operation is in the file's entry, in version order, before `Write` answers, so a `Read`, `Overlay` or `Allocation` that starts after reflects it | invariant | §4.1, E15 | T3.2, T3.4, T3.5, T3.6 |
 | R10 | A `Write` that fails never calls `WriteOpts.Done`; a zero-length `Write` stages nothing, answers the verifier and calls `Done` once, with nothing charged | invariant | §12.1 | T3.2 |
 | R11 | `Draw` issues the next version of the file's journal and no other: above every version staged or drawn on that journal before it, with no version of the engine's or the store's own, and takes no lock (the caller holds the accept lock) | MUST | §4.1, RFC 1 §4.3 | T3.3 |
-| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3, RFC 17 §4.3 | T3.2, T3.3, T3.5 |
+| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3 | T3.2, T3.3, T3.5 |
 
 **Overlay**
 
@@ -381,7 +381,7 @@ test/enginev2/known.yaml  T3.2  its entry
   - `Write` makes no `Existence`, `Content` or `Lifecycle` call.
   - The `mtime` passed is the clock's `Now` in nanoseconds, 0 under `TimeModify`.
   - Every accepted write's operation is in the entry before `Write` returns.
-  - A refused write leaves no operation and calls no `Done`.
+  - A refused write leaves no operation, calls no `Done`, and leaves no entry behind.
 - **Tests:** a `Write` with every `Existence` and `Content` call blocked until the test ends,
   which still returns (catches a store call on the write path, R6); the change `Since`
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
@@ -392,8 +392,10 @@ test/enginev2/known.yaml  T3.2  its entry
   and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
   verifier); a
-  write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
-  (catches a leaked `journalv2` error or an early `Done`); `OtherShareError` answered
+  write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation,
+  and `entryOf(f) == nil` for a file with no entry before (catches a leaked `journalv2` error,
+  an early `Done`, or an `unlock` that never drops the entry, which otherwise shows only in
+  T4.3); `OtherShareError` answered
   `ErrCorrupt`; a `WriteAt` answering the context's error returns it as itself, not
   `ErrUnavailable` (catches the catch-all wrapping it); a zero-length write calls `Done` once and stages nothing; 32 concurrent
   writes of distinct files under `-race`, each operation present once.
@@ -537,3 +539,7 @@ A suggestion only: one pull request per subtask works as well.
    `Existence.Allocation` answers a run and a hole flag; D11 translates. RFC 6 §10.1 or
    RFC 8 §12.1 should say which.
 4. **A cause RFC 8 leaves open:** the answer at the re-ask's deadline (D6).
+5. **A context-error row in RFC 17 §4.3 and RFC 20 §7.3.** D4 and R12 pass the caller's
+   `ctx.Err()` through as itself, yet RFC 17 §4.3 lists no context error, and RFC 20 §7.3
+   and A7 answer an error with no row as a server fault, logged at `Error`. `internal/vfs`
+   already returns `ctx.Err()` raw, so the gap is not new, but D4 now rests on it.
