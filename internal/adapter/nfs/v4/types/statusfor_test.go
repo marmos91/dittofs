@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -71,8 +70,5 @@ func TestStatusFor_NilDefaultsAndUnwrap(t *testing.T) {
 	wrapped := fmt.Errorf("op failed: %w", &merrs.StoreError{Code: merrs.ErrNoSpace})
 	if got := StatusForErr(wrapped); got != NFS4ERR_NOSPC {
 		t.Errorf("StatusForErr(wrapped ErrNoSpace) = %d, want NFS4ERR_NOSPC (%d)", got, NFS4ERR_NOSPC)
-	}
-	if got := StatusForErr(engine.ErrStoreClosed); got != NFS4ERR_STALE {
-		t.Errorf("StatusForErr(ErrStoreClosed) = %d, want NFS4ERR_STALE (%d)", got, NFS4ERR_STALE)
 	}
 }

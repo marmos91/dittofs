@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -170,16 +169,13 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// 7. Apply attributes via MetadataService (all-or-nothing semantics), then
-	// reclaim block-store space on a size-down truncation (#832). See
-	// applySetAttrsWithTruncateReclaim for the pre-blocks-snapshot ordering.
-	// The pre-op file is only needed when the size changes (the reclaim is a
-	// no-op otherwise), so skip the extra read for mode/owner/time-only SETATTRs.
-	var preFile *metadata.File
-	if setAttrs.Size != nil {
-		preFile, _ = metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
-	}
-	if err := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, metadata.FileHandle(ctx.CurrentFH), preFile, setAttrs); err != nil {
+	// 7. Apply attributes via MetadataService (all-or-nothing semantics). A
+	// size change is metadata only: no content store is wired, so there is no
+	// content to cut or extend.
+	//
+	// decision: a shrink leaves the FileChunk rows past the new EOF until
+	// the cutover (package common, Size changes).
+	if _, err := metaSvc.SetFileAttributes(authCtx, metadata.FileHandle(ctx.CurrentFH), setAttrs); err != nil {
 		nfsStatus := types.StatusForErr(err)
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
@@ -220,70 +216,6 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		OpCode: types.OP_SETATTR,
 		Data:   encodeSetAttrSuccess(requestedBitmap),
 	}
-}
-
-// applySetAttrsWithTruncateReclaim applies attrs to the file via
-// MetadataService.SetFileAttributes and, on a size-down truncation, reclaims
-// the block-store space of the dropped tail. preFile is the file as observed
-// BEFORE the metadata write (so its FileAttr.Blocks still describes the full
-// pre-truncate extent); it may be nil when unavailable, in which case the
-// reclaim is skipped. The block-store Truncate is best-effort: the metadata
-// write is authoritative and already committed, so a reclaim failure is logged
-// but not surfaced as an error. This mirrors the v3 SETATTR / CREATE-truncate
-// path and keeps the handler coordinating metaSvc + blockStore per CLAUDE.md
-// invariants #1/#5. Used by both SETATTR and OPEN(UNCHECKED4) on an existing
-// file.
-func (h *Handler) applySetAttrsWithTruncateReclaim(
-	ctx *types.CompoundContext,
-	metaSvc *metadata.Service,
-	authCtx *metadata.AuthContext,
-	handle metadata.FileHandle,
-	preFile *metadata.File,
-	attrs *metadata.SetAttrs,
-) error {
-	apply := func(authCtx *metadata.AuthContext, preFile *metadata.File) error {
-		if _, err := metaSvc.SetFileAttributes(authCtx, handle, attrs); err != nil {
-			return err
-		}
-
-		// Reclaim block data past the new EOF only on a size change. This helper
-		// is also reached from OPEN(UNCHECKED4) with attrs carrying no size (mode
-		// only); guarding on attrs.Size != nil keeps a mode-only OPEN from
-		// truncating an existing file's content to zero. The helper further
-		// no-ops unless this is a genuine shrink (newSize < preFile.Size), reaps
-		// RefCount on every dropped block (#832), and is best-effort — the
-		// metadata write already committed. Same seam as NFSv3 SETATTR /
-		// CREATE-truncate and SMB SetEndOfFile.
-		if attrs.Size != nil {
-			if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, handle, preFile, *attrs.Size); rErr != nil {
-				logger.Warn("NFSv4 truncate reclaim failed",
-					"handle", string(handle), "size", *attrs.Size, "error", rErr)
-			}
-		}
-		return nil
-	}
-	if attrs.Size == nil {
-		return apply(authCtx, preFile)
-	}
-	file, err := metaSvc.GetFileForRead(authCtx.Context, handle)
-	if err != nil {
-		return err
-	}
-	if file.PayloadID == "" {
-		return apply(authCtx, file)
-	}
-	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, handle)
-	if err != nil {
-		return err
-	}
-	_, err = common.WithFilePayloadScope(authCtx, metaSvc, blockStore, handle, func(authCtx *metadata.AuthContext) (struct{}, error) {
-		fresh, err := metaSvc.GetFile(authCtx.Context, handle)
-		if err != nil {
-			return struct{}{}, err
-		}
-		return struct{}{}, apply(authCtx, fresh)
-	})
-	return err
 }
 
 // isSignificantAttrChange returns true if the attribute bitmap contains

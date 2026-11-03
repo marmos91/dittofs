@@ -236,7 +236,7 @@ whether its metadata commit is relaxed — two independent axes, see the
 
 **Eviction**:
 - Cache: LRU eviction when the RAM budget is reached. No data loss (the journal still holds the bytes). The cache is per-share but cross-file inside a share — the same content hash referenced by two files shares one entry.
-- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already offloaded to the block store qualify, so eviction never destroys the only copy of dirty bytes — which means a journal that hits its ceiling with nothing offloaded backpressures writes instead of evicting. Manual eviction via `dfsctl store block evict`.
+- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already offloaded to the block store qualify, so eviction never destroys the only copy of dirty bytes — which means a journal that hits its ceiling with nothing offloaded backpressures writes instead of evicting.
 
 ## Block Store — Local Journal Tier
 

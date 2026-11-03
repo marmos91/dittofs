@@ -7,7 +7,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -24,23 +23,6 @@ func (e *validationError) Error() string {
 
 // ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
 var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")
-
-// getServicesForHandle returns both the metadata service and the per-share block store
-// resolved from the given file handle.
-// Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg nfsRuntime, ctx context.Context, handle metadata.FileHandle) (*metadata.Service, *engine.Store, error) {
-	metaSvc := reg.GetMetadataService()
-	if metaSvc == nil {
-		return nil, nil, ErrMetadataServiceNotInitialized
-	}
-
-	blockStore, err := common.ResolveForWrite(ctx, reg, handle)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return metaSvc, blockStore, nil
-}
 
 // getMetadataService returns the metadata service from the runtime.
 // Returns an error if the service is not initialized.
@@ -161,33 +143,16 @@ func checkMFsymlink(
 	}
 }
 
-// readMFsymlinkContentForNFS reads content from the block store (uses local cache internally).
+// readMFsymlinkContentForNFS reads an MFsymlink candidate's content. Content
+// lives in the content store, and none is wired.
 func readMFsymlinkContentForNFS(
-	ctx context.Context,
-	reg nfsRuntime,
-	handle metadata.FileHandle,
+	_ context.Context,
+	_ nfsRuntime,
+	_ metadata.FileHandle,
 	payloadID metadata.PayloadID,
 ) ([]byte, error) {
 	if payloadID == "" {
 		return nil, nil
 	}
-
-	blockStore, err := common.ResolveForRead(ctx, reg, handle)
-	if err != nil {
-		return nil, err
-	}
-
-	// Routed through common.ReadFromBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	// The copy below materialises the pooled buffer into a caller-owned
-	// slice because the MFsymlink path retains the bytes past Release().
-	result, err := common.ReadFromBlockStore(ctx, blockStore, payloadID, 0, uint32(mfsymlink.Size))
-	if err != nil {
-		return nil, err
-	}
-	defer result.Release()
-
-	out := make([]byte, len(result.Data))
-	copy(out, result.Data)
-	return out, nil
+	return nil, common.ErrNoContentStore
 }

@@ -16,11 +16,9 @@ import (
 // The scan fetches no block and reads no file data, so its cost is a metadata
 // walk regardless of how much data the share holds.
 //
-// The unknown-hash check runs only when the share has a remote store. A
-// local-only share never marks a hash synced, so running it there would report
-// every row in the share as unknown. A share whose block store cannot be
-// resolved is treated as local-only — the conservative direction, since it
-// suppresses a check rather than inventing findings.
+// The unknown-hash check is skipped: hashes are marked synced only by a content
+// store, and none is wired (block.ErrNoContentStore), so running it would
+// report every row in the share as unknown.
 //
 // opts carries the repair switches through unchanged. With neither set the
 // call writes nothing, which is what a plain check does.
@@ -32,18 +30,7 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts blo
 		return nil, err
 	}
 
-	var skipped string
-	bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName)
-	switch {
-	case bsErr != nil || bs == nil:
-		skipped = "block store could not be resolved for this share"
-		logger.Warn("store check: block store lookup failed, cannot run the synced-hash check",
-			logger.KeyShare, shareName, "error", bsErr)
-	case !bs.HasRemoteStore():
-		skipped = "share has no remote store"
-	default:
-		opts.CheckSynced = true
-	}
+	const skipped = "no content store is wired"
 
 	res, err := blockgc.CheckManifests(ctx, shareName, mds, opts)
 	if err != nil {

@@ -64,14 +64,10 @@ type Deps interface {
 	TrashConfigForShare(shareName string) (Config, bool)
 	// EnabledTrashShares lists the shares with trash enabled.
 	EnabledTrashShares() []string
-	// FreeBlocks frees the CAS blocks for a permanently-deleted file (the
-	// payloadID and ChunkRef list RemoveFile returned). Implemented by the
-	// runtime via GetBlockStoreForHandle + blockStore.Delete. The reaper holds
-	// the file's blocks, so it threads them through directly; blockStore.Delete
-	// decrements each block's CAS RefCount so the GC can reclaim now-unreferenced
-	// chunks. (Callers without the manifest may pass nil — Delete then resolves
-	// it from the payload's FileChunk rows; see #1433.) No-op when payloadID is
-	// empty.
+	// FreeBlocks frees the content of a permanently-deleted file (the
+	// payloadID and ChunkRef list RemoveFile returned). The reaper holds the
+	// file's blocks, so it threads them through directly. No-op when payloadID
+	// is empty.
 	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.ChunkRef) error
 }
 

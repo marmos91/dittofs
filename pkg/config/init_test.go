@@ -52,8 +52,6 @@ func TestInitConfig_Success(t *testing.T) {
 		"database:",
 		"controlplane:",
 		"admin:",
-		"# Block Store Defaults",
-		"dfs config show --deduced",
 	}
 
 	for _, section := range expectedSections {

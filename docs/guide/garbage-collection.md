@@ -8,8 +8,7 @@ reclaimed **asynchronously** by garbage collection (GC). GC sweeps the share's
 The **journal** on disk (e.g. `/var/lib/dittofs/blocks`) is not swept by GC. It
 reclaims its own dead bytes as it rewrites, and evicts what the block store
 already holds when it comes under space pressure. So `dfsctl store block gc` is
-not the way to free journal disk — see
-[block eviction](cli.md#dfsctl-store-block-evict) for that.
+not the way to free journal disk.
 
 A block is reclaimed only when **no live file references it** and **no snapshot
 holds it**. Blocks shared by several files (deduplication) survive until the last

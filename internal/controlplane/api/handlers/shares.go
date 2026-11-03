@@ -887,13 +887,12 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			"journal_size", share.JournalSize, "read_buffer_size", share.ReadBufferSize)
 	}
 
-	// A block-store binding change is not picked up by the running syncer until
-	// the per-share BlockStore is rebuilt. Attempt a live hot-reload (#1532); only
-	// if that fails do we warn the operator that a restart is required, so the
-	// change is never a silent no-op for mirroring.
+	// A block-store binding change moves the running share onto the new remote
+	// store live; only if that fails do we warn the operator that a restart is
+	// required.
 	var updateWarnings []string
 	if blockStoreBindingChanged && h.runtime != nil {
-		if err := h.runtime.RebindShareBlockStore(r.Context(), share.Name, prevBlockStoreID); err != nil {
+		if err := h.runtime.RebindShareBlockStore(r.Context(), share.Name); err != nil {
 			logger.Error("Failed to hot-reload share block store after binding change; a restart is required",
 				"share", share.Name, "error", err)
 			updateWarnings = append(updateWarnings,
@@ -910,8 +909,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// acknowledgement carries on under the old terms. A failure to apply is the
 	// one case that needs the restart warning.
 	if (share.CommitAck != prevCommitAck || share.RelaxedMetadataCommit != prevRelaxed) && h.runtime != nil {
-		if err := h.runtime.ApplyShareDurability(share.Name,
-			share.CommitAck == models.CommitAckBlockStore, share.RelaxedMetadataCommit); err != nil {
+		if err := h.runtime.ApplyShareDurability(share.Name, share.RelaxedMetadataCommit); err != nil {
 			logger.Error("Failed to apply the durability change to the running share; a restart is required",
 				"share", share.Name, "error", err)
 			updateWarnings = append(updateWarnings,

@@ -51,7 +51,6 @@ func TestAddShare_ReadOnlyPropagatesToShareOptions(t *testing.T) {
 				metaSvcRegistrar{},
 				memBlockStoreProvider{},
 				journalDefaults(t, svc),
-				nil,
 			)
 			if err != nil {
 				t.Fatalf("AddShare: %v", err)

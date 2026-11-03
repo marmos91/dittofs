@@ -32,8 +32,6 @@ func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(removeCmd)
-	Cmd.AddCommand(statsCmd)
-	Cmd.AddCommand(evictCmd)
 	Cmd.AddCommand(healthCmd)
 	Cmd.AddCommand(gcCmd)
 	Cmd.AddCommand(gcStatusCmd)

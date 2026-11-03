@@ -49,13 +49,8 @@ import (
 //
 // # Local-only / metadata-only shares
 //
-// A share with no block store at all (BlockStore == nil — the
-// "metadata-only" edge case) skips the engine check and reports
-// purely on the metadata store's status.
-//
-// A share with a remote-less block store (local-only) is handled
-// transparently because [engine.Store.Healthcheck] already
-// returns healthy when there is no remote configured.
+// No share holds a content store (see block.ErrNoContentStore), so the
+// report is the metadata store's status alone.
 func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.Store) health.Report {
 	// `start` carries the monotonic reading used to compute latency.
 	// CheckedAt is sampled at the END of the probe (from `end` below)
@@ -82,13 +77,13 @@ func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.Store) healt
 	if metaStore != nil {
 		metaRep = metaStore.Healthcheck(ctx)
 	}
-	var blockRep health.Report
-	if s.BlockStore != nil {
-		blockRep = s.BlockStore.Healthcheck(ctx)
-	}
-
+	// decision: health covers the metadata store only while the data path is
+	// cut (block.ErrNoContentStore): there is no content store to probe, so a
+	// share reports healthy whatever its remote's state. Runtime.DrainAllUploads
+	// reports nothing pending for the same reason. Both must probe the engine
+	// again once the cutover wires it through vfs.Service.
 	end := time.Now()
-	worst := combineShareReports(metaRep, blockRep, metaStore != nil, s.BlockStore != nil)
+	worst := combineShareReports(metaRep, health.Report{}, metaStore != nil, false)
 	worst.CheckedAt = end.UTC()
 	worst.LatencyMs = end.Sub(start).Milliseconds()
 	return worst

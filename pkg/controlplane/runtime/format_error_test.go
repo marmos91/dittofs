@@ -7,9 +7,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	sharesvc "github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -43,8 +41,6 @@ func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 		sentinel error
 	}{
 		{"block", block.ErrFutureFormat},
-		{"journal", journal.ErrFutureFormat},
-		{"legacy", sharesvc.ErrLegacyLocalFormat},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rt, s := setupTestRuntime(t)
@@ -112,7 +108,7 @@ func TestLoadSharesFromStore_FormatErrorWinsOverUnresolvableBlockStore(t *testin
 	}
 	if err := rt.RegisterMetadataStore(metaName, &futureFormatStore{
 		BadgerMetadataStore: badgertest.NewInMemory(t),
-		sentinel:            sharesvc.ErrLegacyLocalFormat,
+		sentinel:            block.ErrFutureFormat,
 	}); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -126,8 +122,8 @@ func TestLoadSharesFromStore_FormatErrorWinsOverUnresolvableBlockStore(t *testin
 	}
 
 	err := LoadSharesFromStore(ctx, rt, s)
-	if !errors.Is(err, sharesvc.ErrLegacyLocalFormat) {
-		t.Fatalf("LoadSharesFromStore = %v; want errors.Is %v", err, sharesvc.ErrLegacyLocalFormat)
+	if !errors.Is(err, block.ErrFutureFormat) {
+		t.Fatalf("LoadSharesFromStore = %v; want errors.Is %v", err, block.ErrFutureFormat)
 	}
 }
 

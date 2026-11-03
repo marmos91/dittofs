@@ -2,18 +2,14 @@ package backend
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`
@@ -76,8 +72,9 @@ func reclaimBenchData(dir string) {
 // layer — that's the whole point of the comparison). Its cells pair against the
 // FUSE competitors' re-exported cells to expose the FUSE context-switch tax.
 //
-// Mount strings and `store block evict` are the documented interface (see
-// docs/guide/nfs.md, dfsctl). The server bringup (config schema + dfsctl
+// Mount strings are the documented interface (see docs/guide/nfs.md, dfsctl).
+// It has no cold barrier and no settle wait: both read the content store's
+// stats and evict it, and no content store is wired (block.ErrNoContentStore). The server bringup (config schema + dfsctl
 // bootstrap) is pinned against a live dfs on the VM — the first managed run is
 // where it gets tuned.
 const (
@@ -101,28 +98,8 @@ const (
 var dittofsDataDir = benchPath("/var/lib/bench-dittofs", "dittofs")
 
 // dittofsServerLog is where dittofsSetup redirects the benched server's stdout
-// and stderr. The cold barrier reads back the window it wrote while running, so
-// a barrier failure carries the server's own account of it.
+// and stderr.
 const dittofsServerLog = "/var/log/bench-dittofs.log"
-
-// dittofsDrainTimeout bounds each `dfsctl system drain-uploads` in the cold-evict
-// loop above the client's 6m default, so a large cold-evict working set drains
-// instead of aborting the cell on a bare deadline (issue #1668).
-const dittofsDrainTimeout = "15m"
-
-// dittofsDrainProgressInterval is how often the drain loop reports the store's
-// unsynced size while a drain-uploads call is in flight. The call prints nothing
-// until it returns and may legitimately run for minutes, so on a timeout the log
-// otherwise says only that the drain did not finish — not whether it was moving.
-// A falling unsynced size means slow; a flat one means wedged, and those two
-// need opposite fixes.
-const dittofsDrainProgressInterval = 30 * time.Second
-
-// dittofsDrainProgressSampleTimeout bounds one progress sample. Comfortably
-// under the sampling interval so a slow sample cannot queue behind the next one,
-// and short enough that an unresponsive server costs one skipped line rather
-// than the rest of the log.
-const dittofsDrainProgressSampleTimeout = 10 * time.Second
 
 // dittofsUnboundedMaxSize is the default local-journal cap: generous headroom so
 // a sustained write burst measures the tier's throughput, not its saturation
@@ -179,11 +156,9 @@ func init() {
 			Setup: func(ctx context.Context, env BackendEnv) error {
 				return dittofsSetup(ctx, env, durability, dittofsUnboundedMaxSize)
 			},
-			Mount:       dittofsMount,
-			Evict:       dittofsEvict,
-			WaitSettled: dittofsWaitSettled,
-			Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-			Teardown:    dittofsTeardown,
+			Mount:    dittofsMount,
+			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown: dittofsTeardown,
 		})
 	}
 
@@ -210,11 +185,9 @@ func init() {
 			Setup: func(ctx context.Context, env BackendEnv) error {
 				return dittofsSetup(ctx, env, "writeback", maxSize)
 			},
-			Mount:       dittofsMount,
-			Evict:       dittofsEvict,
-			WaitSettled: dittofsWaitSettled,
-			Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-			Teardown:    dittofsTeardown,
+			Mount:    dittofsMount,
+			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown: dittofsTeardown,
 		})
 	}
 }
@@ -399,511 +372,6 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 		}
 	}
 	return "", err
-}
-
-// dittofsColdBarrierFloorBytes is the resident-bytes threshold below which the
-// cold-barrier verification stops caring about an exact drop ratio — small
-// datasets and metadata slack shouldn't fail the check.
-const dittofsColdBarrierFloorBytes = 64 << 20 // 64 MiB
-
-// dittofsColdBarrierBudgetBytes is the most local disk that may still be resident
-// after the evict for the pass that follows to count as cold: the ≥80% drop the
-// barrier verifies. The drain ahead of it has to leave a residue this same budget
-// can absorb, so both derive the number here rather than each spelling it out.
-func dittofsColdBarrierBudgetBytes(residentBytes int64) int64 { return residentBytes / 5 }
-
-// dittofsBlockTotals is the subset of `dfsctl store block stats -o json` the
-// cold barrier needs: how much is resident locally, and how much is not yet
-// durable on the remote (so DrainLocalSynced can't drop it).
-type dittofsBlockTotals struct {
-	LocalDiskUsed  int64 `json:"local_disk_used"`
-	UnsyncedBytes  int64 `json:"unsynced_bytes"`
-	PendingUploads int   `json:"pending_uploads"`
-}
-
-func dittofsBlockStats(ctx context.Context) (dittofsBlockTotals, error) {
-	_, totals, err := dittofsBlockStatsRaw(ctx)
-	return totals, err
-}
-
-// dittofsBlockStatsRaw returns the parsed totals alongside the untouched JSON.
-// dittofsBlockTotals keeps three fields; the response also carries
-// eviction_suspended, remote_healthy, failed_syncs and the per-state block
-// counts — the fields that say WHY an evict declined to drop anything. The cold
-// barrier keeps the raw bytes so a failure can print those too.
-func dittofsBlockStatsRaw(ctx context.Context) ([]byte, dittofsBlockTotals, error) {
-	out, err := exec.Out(ctx, "dfsctl", "store", "block", "stats", "-o", "json")
-	if err != nil {
-		return nil, dittofsBlockTotals{}, fmt.Errorf("dfsctl store block stats: %w", err)
-	}
-	var resp struct {
-		Totals dittofsBlockTotals `json:"totals"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return out, dittofsBlockTotals{}, fmt.Errorf("parse block stats json: %w\n%s", err, out)
-	}
-	return out, resp.Totals, nil
-}
-
-// dittofsSettleTimeout bounds how long the warm-read settle waits for the block
-// store's async digestion to go idle before giving up and measuring anyway.
-const dittofsSettleTimeout = 120 * time.Second
-
-// dittofsSettleStableWindow is how long UnsyncedBytes must hold flat before the
-// store counts as idle. The block store carves+uploads on a periodic ticker
-// (UploadInterval, default 2s), so UnsyncedBytes only steps down once per tick
-// and is naturally flat between ticks. The window must exceed one tick, or a
-// sample landing in an inter-tick lull would declare idle while a full carve
-// pass is still queued — restarting mid-measurement and re-contaminating the
-// read. Poll spacing is a fraction of the window so several samples cover it.
-const (
-	dittofsSettleStableWindow = 4 * time.Second
-	dittofsSettlePollInterval = 500 * time.Millisecond
-)
-
-// dittofsWaitSettled blocks until the block store's async carve/upload/rollup of
-// freshly-written data goes idle, so the warm read pass measures a settled store
-// (served from the local journal) instead of one still writing CAS chunks to disk
-// and S3 — that concurrent digestion charges the read path for unrelated write
-// I/O and CPU, tanking warm rand-read latency. "Idle" is UnsyncedBytes holding
-// flat for longer than one carve/upload tick (see dittofsSettleStableWindow), not
-// unsynced==0: a sub-GiB file's final bytes stay pinned in the unsealed append
-// log indefinitely without another write. Polls passively — it never triggers a
-// drain (which can stall) — and on timeout logs and returns nil so a contaminated
-// measurement is surfaced rather than failing the cell.
-func dittofsWaitSettled(ctx context.Context) error {
-	start := time.Now()
-	deadline := start.Add(dittofsSettleTimeout)
-	prev := int64(-1)
-	var lastChange time.Time
-	for {
-		st, err := dittofsBlockStats(ctx)
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		if st.UnsyncedBytes != prev {
-			prev = st.UnsyncedBytes
-			lastChange = now
-		} else if now.Sub(lastChange) >= dittofsSettleStableWindow {
-			_, _ = fmt.Fprintf(exec.CmdOut, "settled: waited %dms for block-store sync to go idle (unsynced=%dMiB, flat %s)\n",
-				time.Since(start).Milliseconds(), st.UnsyncedBytes>>20, dittofsSettleStableWindow)
-			return nil
-		}
-		if now.After(deadline) {
-			_, _ = fmt.Fprintf(exec.CmdOut, "settle: block store still busy after %s (unsynced=%dMiB) — warm read may be contaminated\n",
-				dittofsSettleTimeout, st.UnsyncedBytes>>20)
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(dittofsSettlePollInterval):
-		}
-	}
-}
-
-// dittofsEvictSegmentBytes is the granularity at which eviction actually frees
-// local disk. The journal reclaims whole segments and refuses any segment still
-// holding an unsynced record, so one straggler keeps its entire segment resident.
-// The bench leaves Config.SegmentSize unset, so the bench share runs on
-// the journal's own default.
-const dittofsEvictSegmentBytes int64 = 256 << 20
-
-// dittofsDrainStragglerBytes is the smallest residue assumed able to pin a
-// segment of its own. Unsynced bytes are spread over an unknown number of
-// records, and only that count decides how many segments they pin, so the drain
-// has to assume the finest spread it can plausibly see — the carver's minimum
-// chunk.
-//
-// ponytail: an estimate standing in for a count the store already tracks, and a
-// deliberately pessimistic one — several stragglers sharing a segment (one file's
-// un-carved tail) are counted as if each held a segment of its own, so a residue
-// can be refused that eviction would in fact have freed. That direction is the
-// cheap one to be wrong in: a refused drain is loud, while a tolerated pin is a
-// warm number labelled cold. Report unsynced records (or pinned segments) from
-// `dfsctl store block stats` and both the estimate and its pessimism collapse
-// into reading that field.
-const dittofsDrainStragglerBytes int64 = chunker.MinChunkSize
-
-// dittofsDrainResidueOK reports whether a drain residue is small enough to leave
-// behind. Its size alone does not answer that: eviction frees segments, not
-// bytes, so what a residue costs is the segments it pins, and a residue is
-// harmless only when even the worst spread — every straggler alone in its own
-// segment — still fits the budget the cold barrier allows to survive. Below the
-// barrier's own floor that drop is never verified, so no residue there can
-// invalidate a measurement that was never going to be checked.
-func dittofsDrainResidueOK(unsyncedBytes, localResidentBytes int64) bool {
-	if unsyncedBytes <= 0 || localResidentBytes <= dittofsColdBarrierFloorBytes {
-		return true
-	}
-	return dittofsWorstCasePinnedBytes(unsyncedBytes) <= dittofsColdBarrierBudgetBytes(localResidentBytes)
-}
-
-// dittofsWorstCasePinnedBytes is the local disk an unsynced residue can hold down
-// when every straggler in it sits alone in its own segment.
-func dittofsWorstCasePinnedBytes(unsyncedBytes int64) int64 {
-	if unsyncedBytes <= 0 {
-		return 0
-	}
-	segments := (unsyncedBytes + dittofsDrainStragglerBytes - 1) / dittofsDrainStragglerBytes
-	return segments * dittofsEvictSegmentBytes
-}
-
-// dittofsDrainResidueErr reports a residue the drain could not get below,
-// spelling out the segment arithmetic that makes it fatal.
-func dittofsDrainResidueErr(st dittofsBlockTotals, rounds int) error {
-	pinned := dittofsWorstCasePinnedBytes(st.UnsyncedBytes)
-	return fmt.Errorf("drain-uploads left %dMiB unsynced after %d rounds (local=%dMiB pending_uploads=%d) — eviction frees whole %dMiB segments and skips any holding an unsynced record, so that residue can pin up to %dMiB locally, against the %dMiB the cold barrier lets survive",
-		st.UnsyncedBytes>>20, rounds, st.LocalDiskUsed>>20, st.PendingUploads,
-		dittofsEvictSegmentBytes>>20, pinned>>20, dittofsColdBarrierBudgetBytes(st.LocalDiskUsed)>>20)
-}
-
-// dittofsDrainUntilSynced loops `dfsctl system drain-uploads` until the residue
-// left unsynced can no longer pin enough segments to warm the cold pass, stable
-// across two polls. A single drain is not enough: rollup is async and carveFlush
-// is snapshot-at-claim, so one pass misses chunks that roll up mid-drain —
-// leaving them locally resident and un-evictable, so the "cold" pass silently
-// reads them from local disk (the confound that made several cold-read A/Bs
-// meaningless). The short settle between rounds lets the async rollup produce the
-// next batch of CAS chunks for the following drain to upload.
-func dittofsDrainUntilSynced(ctx context.Context) error {
-	const maxRounds = 60
-	// Consecutive rounds an intolerable residue may fail to reach a new low before
-	// the loop gives up. Each round costs a full drain-uploads timeout, so riding
-	// out every round on a residue that is going nowhere turns a failed barrier
-	// into a many-hour one. Progress is measured against the lowest residue seen
-	// rather than against the previous round, so neither a byte of jitter nor a
-	// transient rise while the store digests reads as a stall — only a run of
-	// rounds that all fail to beat the best does.
-	const maxStalledRounds = 3
-	stalled, stable := 0, 0
-	bestUnsynced := int64(-1)
-	for i := 0; i < maxRounds; i++ {
-		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
-		// working set can exceed the client's 6m default, and the failure surfaces
-		// as a bare "context deadline exceeded" that aborts the cell.
-		stop := dittofsReportDrainProgress(ctx, i)
-		err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads", "--timeout", dittofsDrainTimeout)
-		stop()
-		if err != nil {
-			return fmt.Errorf("dfsctl system drain-uploads: %w", err)
-		}
-		st, err := dittofsBlockStats(ctx)
-		if err != nil {
-			return err
-		}
-		switch {
-		case dittofsDrainResidueOK(st.UnsyncedBytes, st.LocalDiskUsed):
-			stalled = 0
-			if stable++; stable >= 2 {
-				return nil
-			}
-		case bestUnsynced >= 0 && st.UnsyncedBytes >= bestUnsynced:
-			stable = 0
-			if stalled++; stalled >= maxStalledRounds {
-				return dittofsDrainResidueErr(st, i+1)
-			}
-		default:
-			stable, stalled = 0, 0
-		}
-		if bestUnsynced < 0 || st.UnsyncedBytes < bestUnsynced {
-			bestUnsynced = st.UnsyncedBytes
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-	st, _ := dittofsBlockStats(ctx)
-	return dittofsDrainResidueErr(st, maxRounds)
-}
-
-// dittofsReportDrainProgress samples the store's unsynced size every
-// dittofsDrainProgressInterval and prints it, until the returned function is
-// called. round labels the samples so consecutive drains stay distinguishable
-// in the log. A sampling error is skipped rather than reported: the sampler is
-// commentary on the drain, and must never be the thing that fails the barrier.
-func dittofsReportDrainProgress(ctx context.Context, round int) func() {
-	done := make(chan struct{})
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		ticker := time.NewTicker(dittofsDrainProgressInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				// Bound each sample. The drain this reports on is exactly the
-				// situation where the server may be unresponsive, so an unbounded
-				// stats call could hang here for the rest of the run and take the
-				// stop function down with it — the progress log would go quiet at
-				// the moment it is most worth reading, and the barrier would then
-				// block waiting for a sampler that never returns.
-				sctx, cancel := context.WithTimeout(ctx, dittofsDrainProgressSampleTimeout)
-				st, err := dittofsBlockStats(sctx)
-				cancel()
-				if err != nil {
-					continue
-				}
-				_, _ = fmt.Fprintf(exec.CmdOut, "drain round %d: unsynced=%dMiB pending_uploads=%d\n",
-					round, st.UnsyncedBytes>>20, st.PendingUploads)
-			}
-		}
-	}()
-	return func() {
-		close(done)
-		<-finished
-	}
-}
-
-// dittofsBarrierLogTailBytes caps how much server log a failed cold barrier
-// reproduces. The barrier can run for minutes across many drain rounds, so it
-// keeps the most recent output — the window around the failure — rather than the
-// first bytes after the barrier started.
-const dittofsBarrierLogTailBytes = 256 << 10
-
-// dittofsBarrierDiag collects what the bare "local disk only fell X→Y" error
-// throws away: the full block-store stats JSON at each step, what the evict
-// reported freeing, and the server log written while the barrier ran. A step
-// left empty is one the barrier never reached, which is itself part of the
-// answer — a step that was reached but whose capture failed carries the note
-// dittofsCapture built for it, so the two never read alike.
-type dittofsBarrierDiag struct {
-	logOffset int64  // server-log size when the barrier started
-	entry     string // stats before the drain — the "before" the ratio is measured against
-	postDrain string // stats after the drain loop, i.e. immediately before the evict
-	evictOut  string // `store block evict -o json`: files evicted, bytes freed
-	postEvict string // stats after the evict — the "after" of the ratio
-}
-
-// dittofsCapture renders one captured command output for the dump: the output
-// itself, or a note naming the error when the capture failed. An empty string is
-// reserved for a step the barrier never reached.
-func dittofsCapture(out []byte, err error) string {
-	if err != nil {
-		return fmt.Sprintf("(capture failed: %v)", err)
-	}
-	if s := strings.TrimSpace(string(out)); s != "" {
-		return s
-	}
-	return "(command produced no output)"
-}
-
-// dump prints the collected evidence to the run log, which is pulled back off
-// the bench VM with the results. cause is the failure being explained.
-func (d *dittofsBarrierDiag) dump(cause error) {
-	_, _ = fmt.Fprintf(exec.CmdOut, "cold barrier diagnostics — %v\n", cause)
-	for _, step := range []struct {
-		label string
-		text  string
-	}{
-		{"block stats at barrier entry", d.entry},
-		{"block stats after drain (pre-evict)", d.postDrain},
-		{"evict result", d.evictOut},
-		{"block stats after evict", d.postEvict},
-	} {
-		text := step.text
-		if text == "" {
-			text = "not reached"
-		}
-		_, _ = fmt.Fprintf(exec.CmdOut, "  %s: %s\n", step.label, text)
-	}
-	_, _ = fmt.Fprintf(exec.CmdOut, "  surviving local tier: %s\n", dittofsResidentFiles(dittofsDataDir+"/blocks"))
-	_, _ = fmt.Fprintf(exec.CmdOut, "  server log (%s) since barrier entry:\n%s\n",
-		dittofsServerLog, dittofsLogSince(dittofsServerLog, d.logOffset))
-}
-
-// dittofsResidentSampleFiles is how many of the largest surviving files the
-// failure dump names.
-const dittofsResidentSampleFiles = 20
-
-// dittofsResidentFiles summarises what is still on the local tier under dir: the
-// file count, their total size, and the largest few by name and size. The block
-// stats JSON reports only an aggregate byte count, which cannot distinguish a
-// remainder made of whole journal segments (eviction's unit is a segment, so one
-// unsynced record keeps its entire segment resident) from one spread thinly
-// across many files. Best-effort: it explains a barrier that already failed and
-// must never add a second one, so every error becomes a parenthesised note.
-func dittofsResidentFiles(dir string) string {
-	type entry struct {
-		name string
-		size int64
-	}
-	if _, err := os.Stat(dir); err != nil {
-		// Distinguish "the tier emptied" from "the directory is not there" — the
-		// dump is read by someone deciding whether the evict worked.
-		return fmt.Sprintf("(unreadable: %v)", err)
-	}
-	var files []entry
-	var total int64
-	unreadable := 0
-	// The callback swallows every error so one bad subtree costs a line of the
-	// sample rather than the whole dump, but it counts them: a partial scan that
-	// printed as a complete one would misdescribe the tier the barrier left behind.
-	_ = filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
-		if err != nil {
-			unreadable++
-			return nil //nolint:nilerr // counted above and reported below, not silently dropped
-		}
-		if e.IsDir() {
-			return nil
-		}
-		info, err := e.Info()
-		if err != nil {
-			unreadable++
-			return nil //nolint:nilerr // ditto
-		}
-		files = append(files, entry{strings.TrimPrefix(path, dir+string(os.PathSeparator)), info.Size()})
-		total += info.Size()
-		return nil
-	})
-	if len(files) == 0 {
-		if unreadable > 0 {
-			return fmt.Sprintf("(unreadable: %d entries under %s could not be scanned)", unreadable, dir)
-		}
-		return fmt.Sprintf("%s is empty", dir)
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d files, %dMiB total; largest:", len(files), total>>20)
-	for _, f := range files[:min(len(files), dittofsResidentSampleFiles)] {
-		fmt.Fprintf(&b, " %s=%dMiB", f.name, f.size>>20)
-	}
-	if len(files) > dittofsResidentSampleFiles {
-		fmt.Fprintf(&b, " (+%d more)", len(files)-dittofsResidentSampleFiles)
-	}
-	if unreadable > 0 {
-		fmt.Fprintf(&b, "; %d entries unreadable, so the totals are a floor", unreadable)
-	}
-	return b.String()
-}
-
-// dittofsLogSize reports the current size of path, or 0 when it cannot be
-// stat'd. A wrong offset only widens the window the failure dump prints, so this
-// never fails the barrier.
-func dittofsLogSize(path string) int64 {
-	st, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return st.Size()
-}
-
-// dittofsLogSince returns the bytes of path written after offset off, keeping at
-// most dittofsBarrierLogTailBytes of the most recent output. It returns a
-// parenthesised note rather than an error for every failure: this runs only to
-// explain a barrier that already failed, and must never become a second failure.
-func dittofsLogSince(path string, off int64) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Sprintf("(unreadable: %v)", err)
-	}
-	defer func() { _ = f.Close() }()
-	st, err := f.Stat()
-	if err != nil {
-		return fmt.Sprintf("(unreadable: %v)", err)
-	}
-	if st.Size() <= off {
-		return "(the server logged nothing while the barrier ran)"
-	}
-	start := max(off, st.Size()-dittofsBarrierLogTailBytes)
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return fmt.Sprintf("(unreadable: %v)", err)
-	}
-	// Cap the read itself, not just the seek: the file can grow between the Stat
-	// above and this read, and a busy server would otherwise flood the run log.
-	b, err := io.ReadAll(io.LimitReader(f, dittofsBarrierLogTailBytes))
-	if len(b) == 0 && err != nil {
-		return fmt.Sprintf("(unreadable: %v)", err)
-	}
-	return string(b)
-}
-
-// dittofsEvict drops locally-cached blocks so the next read is cold-from-S3, and
-// on any failure prints the evidence explaining it. The barrier's own error
-// carries two byte counts, which say the local tier did not empty but not why.
-func dittofsEvict(ctx context.Context) error {
-	diag := dittofsBarrierDiag{logOffset: dittofsLogSize(dittofsServerLog)}
-	err := dittofsColdBarrier(ctx, &diag)
-	if err != nil {
-		diag.dump(err)
-	}
-	return err
-}
-
-// dittofsColdBarrier drains, evicts and then verifies that the local tier
-// actually emptied.
-//
-// The drain comes FIRST: `store block evict` drops only blocks already synced to
-// S3. A block whose upload is still in flight is left on local disk, so the
-// "cold" read serves it from cache — the pass reads warm, S3MB stays 0, and
-// cold≈warm. Draining first makes every block synced and therefore evictable, so
-// the next read genuinely comes from S3.
-//
-// diag accumulates the evidence for the failure dump as each step completes.
-func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
-	// Cold-read barrier. Force the whole warm-written file durable on S3, evict the
-	// local tier, then VERIFY it actually emptied — otherwise the cold pass reads
-	// locally-resident bytes and silently measures a warm read (the confound the
-	// DiskWr/NetRx meter exposed: cold pulled only ~15-33 MB/s from S3 while the
-	// data sat on the block volume).
-	raw, before, err := dittofsBlockStatsRaw(ctx)
-	diag.entry = dittofsCapture(raw, err)
-	if err != nil {
-		return err
-	}
-	if err := dittofsDrainUntilSynced(ctx); err != nil {
-		return err
-	}
-	// Sample between the drain and the evict: this separates "the drain left bytes
-	// the evict was right to refuse" from "the evict declined bytes the drain had
-	// already made durable" — which the before/after pair alone cannot tell apart.
-	raw, _, err = dittofsBlockStatsRaw(ctx)
-	diag.postDrain = dittofsCapture(raw, err)
-	if err != nil {
-		return err
-	}
-	// Evict local blocks + read buffer. DrainLocalSynced drops only synced blocks;
-	// now that everything is synced it can drop the whole file. Take the JSON
-	// result rather than the success line: bytes_freed says directly whether the
-	// evict declined to drop anything or dropped bytes that came back.
-	evictOut, err := exec.Out(ctx, "dfsctl", "store", "block", "evict", "-o", "json")
-	diag.evictOut = dittofsCapture(evictOut, err)
-	if err != nil {
-		return fmt.Errorf("dfsctl store block evict: %w", err)
-	}
-	raw, after, err := dittofsBlockStatsRaw(ctx)
-	diag.postEvict = dittofsCapture(raw, err)
-	if err != nil {
-		return err
-	}
-	// Verify: the local tier must have shed the bulk of its resident bytes. If a
-	// large remainder survives (>20% of a non-trivial starting size), the cold pass
-	// would read it from disk — FAIL LOUDLY rather than emit a warm number labelled
-	// "cold". The DiskWr/NetRx columns independently confirm coldness post-hoc.
-	if before.LocalDiskUsed <= dittofsColdBarrierFloorBytes {
-		// Below the floor the drop ratio is noise, so the assertion below cannot
-		// say whether the evict worked. Say that out loud: a silent return reads
-		// in the log exactly like a verified barrier, and the cold cell it labels
-		// may have been served warm.
-		_, _ = fmt.Fprintf(exec.CmdOut,
-			"warn: cold barrier UNVERIFIED — local disk %dMiB→%dMiB, under the %dMiB floor at which the drop is meaningful; treat this cold cell as unconfirmed\n",
-			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20, dittofsColdBarrierFloorBytes>>20)
-		return nil
-	}
-	if after.LocalDiskUsed > dittofsColdBarrierBudgetBytes(before.LocalDiskUsed) {
-		return fmt.Errorf("cold barrier failed: local disk only fell %dMiB→%dMiB (want ≥80%% drop); the cold pass would measure locally-served reads, not S3",
-			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
-	}
-	_, _ = fmt.Fprintf(exec.CmdOut, "cold barrier ok: local disk %dMiB→%dMiB\n",
-		before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
-	return nil
 }
 
 func dittofsTeardown(ctx context.Context) error {

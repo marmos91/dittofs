@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -21,7 +20,6 @@ import (
 // handle→share routing; v3 needs the adapter-provider hook).
 type nfsRuntime interface {
 	// Per-share block-store resolution (used via common.ResolveFor*).
-	common.BlockStoreRegistry
 
 	// Metadata service access.
 	GetMetadataService() *metadata.Service

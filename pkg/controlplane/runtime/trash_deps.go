@@ -72,25 +72,17 @@ func (d *trashDeps) EnabledTrashShares() []string {
 	return d.rt.sharesSvc.EnabledTrashShares()
 }
 
-// FreeBlocks frees the CAS blocks backing a permanently-deleted file. payloadID
-// and blocks are the values RemoveFile returned for the purged node; an empty
-// payloadID (hard links still reference the content, or a directory) is a
-// no-op. The per-share block store is resolved from the share root handle, and
-// Delete is invoked WITH the file's ChunkRef list so the engine decrements each
-// block's CAS RefCount and lets the GC reclaim chunks no other file references.
-// The reaper holds the removed file's blocks, so it threads them through
-// directly rather than making the engine re-enumerate them. (The NFS v3 / SMB
-// unlink path does not have the manifest on hand and passes nil; Delete then
-// resolves it from the payload's FileChunk rows — see #1433/#832.)
-func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.ChunkRef) error {
-	if payloadID == "" {
-		return nil
-	}
-	bs, err := d.rt.GetBlockStoreForHandle(ctx, root)
-	if err != nil {
-		return err
-	}
-	return bs.Delete(ctx, payloadID, blocks)
+// FreeBlocks frees the content backing a permanently-deleted file.
+//
+// decision: no content store is wired (block.ErrNoContentStore), so the purge
+// completes on its metadata alone and reaps none of the payload's FileChunk
+// rows. The same holds for every unlink and rename-over while the data path is
+// cut. The stranded-row reconcile (RunBlockGCReconcile, `dfsctl store block gc
+// --reconcile`) is the cleanup for those rows, since their inode is gone. The
+// cutover that wires the engine through vfs.Service must replace this with the
+// engine's delete.
+func (d *trashDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, _ string, _ []block.ChunkRef) error {
+	return nil
 }
 
 // trashPolicy adapts the shares service into a metadata.TrashPolicy. A single

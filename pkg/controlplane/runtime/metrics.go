@@ -16,38 +16,21 @@ import (
 func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 	var snap metrics.Snapshot
 
-	for _, ps := range r.sharesSvc.MetricsBlockStats() {
-		st := ps.Stats
+	for _, name := range r.sharesSvc.ListShares() {
 		// Logical bytes come straight from the metadata store's per-share
-		// counter. Avoid GetShareUsage here — its physical-bytes path calls into
-		// the block store (bs.Stats), and the on-disk figure is already
-		// st.LocalDiskUsed.
+		// counter. No content store is wired (block.ErrNoContentStore), so the
+		// content-store fields stay zero.
 		var logical int64
-		if ms, err := r.metadataService.GetStoreForShare(ps.ShareName); err == nil {
-			logical, _ = ms.GetUsedBytesForShare(ctx, ps.ShareName)
+		if ms, err := r.metadataService.GetStoreForShare(name); err == nil {
+			logical, _ = ms.GetUsedBytesForShare(ctx, name)
 		}
-		held, lastUnix := r.snapshotState(ctx, ps.ShareName)
+		held, lastUnix := r.snapshotState(ctx, name)
 		snap.Shares = append(snap.Shares, metrics.ShareSnapshot{
-			Name:                ps.ShareName,
-			DiskUsedBytes:       st.LocalDiskUsed,
-			DiskMaxBytes:        st.LocalDiskMax,
-			MemUsedBytes:        st.LocalMemUsed,
-			MemMaxBytes:         st.LocalMemMax,
-			AppendLogLimitBytes: st.AppendLogLimitBytes,
-			UnsyncedBytes:       st.UnsyncedBytes,
-			PendingUploads:      int64(st.PendingUploads),
-			CompletedSyncs:      int64(st.CompletedSyncs),
-			FailedSyncs:         int64(st.FailedSyncs),
-			RemoteHealthy:       st.RemoteHealthy,
-			HasRemote:           st.HasRemote,
-			OutageSeconds:       st.OutageDurationSecs,
-			OfflineReadsBlocked: st.OfflineReadsBlocked,
-			LogicalBytes:        logical,
-			FileCount:           int64(st.FileCount),
-			SnapshotsHeld:       held,
-			LastSnapshotUnix:    lastUnix,
-			Integrity:           integritySnapshot(r.ShareIntegrity(ps.ShareName)),
-			Offline:             offlineSnapshot(r.ShareOffline(ctx, ps.ShareName)),
+			Name:             name,
+			LogicalBytes:     logical,
+			SnapshotsHeld:    held,
+			LastSnapshotUnix: lastUnix,
+			Integrity:        integritySnapshot(r.ShareIntegrity(name)),
 		})
 	}
 
@@ -131,20 +114,5 @@ func integritySnapshot(s *health.IntegrityStatus) metrics.IntegrityScanSnapshot 
 		ClaimedUncoveredRanges: int64(s.ClaimedUncoveredRanges),
 		UnplaceableRows:        int64(s.UnplaceableRows),
 		UnknownHashRows:        int64(s.UnknownHashRows),
-	}
-}
-
-// offlineSnapshot renders a share's offline read readiness for the metrics
-// surface. A share with no block store to ask reports unknown rather than
-// safe.
-func offlineSnapshot(o *health.OfflineStatus) metrics.OfflineSnapshot {
-	if o == nil {
-		return metrics.OfflineSnapshot{}
-	}
-	return metrics.OfflineSnapshot{
-		Safe:             o.Safe,
-		Known:            o.Unknown == "",
-		RemoteOnlyBytes:  o.RemoteOnlyBytes,
-		RemoteOnlyRanges: o.RemoteOnlyRanges,
 	}
 }

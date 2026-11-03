@@ -79,7 +79,7 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 
 	// Upload concurrency is network-bound, not CPU-bound, so the default is
 	// adaptive auto-tuning rather than a function of cpus (#1407 — see
-	// AdaptiveUploadDefault). 0 flows through SyncerDefaults → cfg.ParallelUploads
+	// AdaptiveUploadDefault). 0 flows through to cfg.ParallelUploads
 	// unchanged, which the syncer reads as "auto-tune". An explicit
 	// per-remote parallel_uploads pins a fixed window instead.
 	parallelSyncs := AdaptiveUploadDefault

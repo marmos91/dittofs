@@ -3,7 +3,6 @@ package types
 import (
 	goerrors "errors"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -92,16 +91,12 @@ func StatusFor(code merrs.ErrorCode) uint32 {
 const nfs3Default = NFS3ErrIO
 
 // StatusForErr translates an error to an NFSv3 status code. nil maps to
-// NFS3OK; a block store closed under an in-flight op maps to the
-// stale-handle status (the share went away mid-transfer); a
+// NFS3OK; a
 // *merrs.StoreError (including wrapped forms) maps through StatusFor; any
 // other error falls back to the generic I/O status.
 func StatusForErr(err error) uint32 {
 	if err == nil {
 		return NFS3OK
-	}
-	if goerrors.Is(err, engine.ErrStoreClosed) {
-		return StatusFor(merrs.ErrStaleHandle)
 	}
 	var storeErr *merrs.StoreError
 	if !goerrors.As(err, &storeErr) {

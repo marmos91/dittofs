@@ -24,9 +24,7 @@ to get a quick overview of all shares before running share-specific commands.
 USED is the share's logical size: the sum of its file sizes, the same figure
 'du --apparent-size' would report over the mounted share. It is what QUOTA is
 measured against. It is not a count of bytes on disk, and will not match one:
-blocks are deduplicated and compressed, and a share whose blocks have been
-evicted to its remote store occupies almost nothing locally while its USED is
-unchanged. For on-disk figures, use 'dfsctl store block stats'.
+blocks are deduplicated and compressed.
 
 Examples:
   # List all shares as a table

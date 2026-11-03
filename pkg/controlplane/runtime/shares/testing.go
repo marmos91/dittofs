@@ -3,7 +3,6 @@ package shares
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -73,27 +72,6 @@ func (s *Service) SetLocalStoreDirForTesting(name, dir string) error {
 		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	share.localStoreDir = dir
-	return nil
-}
-
-// SetBlockStoreForTesting overrides the per-share BlockStore field under the
-// service lock. Test-only — used by tests that compose a minimal BlockStore
-// out of band and must publish it into the registry. Production code sets
-// BlockStore only during AddShare. Returns ErrShareNotFound if the share is
-// not registered.
-//
-// Use this instead of mutating a *Share returned by GetShare: GetShare now
-// hands back a snapshot copy, so registry state must be changed through a
-// locked setter.
-func (s *Service) SetBlockStoreForTesting(name string, bs *engine.Store) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	share, ok := s.registry[name]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
-	}
-	share.BlockStore = bs
-	s.blockStoreCache.Store(name, bs)
 	return nil
 }
 
@@ -170,7 +148,7 @@ func (s *Service) SetMinKerberosLevelForTesting(name, minLevel string) error {
 //
 // Test-only: panics if the share does not exist. Intended for runtime-
 // package tests that need to exercise RunBlockGC's enumeration without
-// standing up a full engine.Store. Not safe for production callers.
+// registering a share through AddShare. Not safe for production callers.
 func (s *Service) SetShareRemoteForTest(shareName string, rs remote.RemoteStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

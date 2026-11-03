@@ -14,7 +14,7 @@ import (
 )
 
 // gatingRegistrar parks AddShare inside its metadata-registration phase — past
-// the name reservation and past the block store it has already composed, but
+// the name reservation and the remote store it has already acquired, but
 // before the share is published. That is the window the fence has to survive,
 // and parking in it is what makes the test deterministic: nothing here waits on
 // a duration to line two goroutines up.
@@ -31,9 +31,9 @@ func (g *gatingRegistrar) RegisterStoreForShare(shareName string, store metadata
 }
 
 // gatingBlockStoreProvider parks the first config lookup made after it is armed.
-// A rebind's pre-validation is that lookup, so arming it just before a rebind
-// stops the rebind with its old store still live — which is where the fence then
-// falls.
+// A rebind resolves its new remote through that lookup, so arming it just
+// before a rebind stops the rebind with its old binding still live — which is
+// where the fence then falls.
 type gatingBlockStoreProvider struct {
 	memBlockStoreProvider
 	armed   atomic.Bool
@@ -59,9 +59,7 @@ func (g *gatingBlockStoreProvider) GetBlockStore(ctx context.Context, name strin
 }
 
 // TestAddShare_RefusedOnceTheBlockStoreFenceHasRun is the straightforward half:
-// a share arriving after shutdown has quiesced the data plane must not compose
-// one. Its dispatcher would commit manifest rows through a metadata store the
-// same shutdown is closing, which is exactly what the fence exists to stop.
+// a share arriving after shutdown has run the fence must not be published.
 func TestAddShare_RefusedOnceTheBlockStoreFenceHasRun(t *testing.T) {
 	svc := New()
 	store := badgertest.NewInMemory(t)
@@ -72,20 +70,19 @@ func TestAddShare_RefusedOnceTheBlockStoreFenceHasRun(t *testing.T) {
 
 	err := svc.AddShare(context.Background(),
 		&ShareConfig{Name: "/late", MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID},
-		fixedStoreProvider{store: store}, metadata.New(), memBlockStoreProvider{}, defaults, nil)
+		fixedStoreProvider{store: store}, metadata.New(), memBlockStoreProvider{}, defaults)
 	if !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("AddShare after CloseBlockStores = %v, want ErrShuttingDown", err)
 	}
-	if _, err := svc.GetBlockStoreForShare("/late"); err == nil {
-		t.Error("the refused share is registered with a running block store")
+	if svc.ShareExists("/late") {
+		t.Error("the refused share is registered")
 	}
 }
 
 // TestAddShare_RefusedWhenTheFenceFallsMidAdd is the half that matters. An
-// AddShare already past its name reservation has composed and STARTED a block
-// store, so the fence's registry snapshot does not contain it — refusing on
-// entry alone would let this one publish a running dispatcher after shutdown
-// had closed every other share's.
+// AddShare already past its name reservation is not refused by the entry
+// check, so only the check at publication keeps it from appearing after
+// shutdown.
 func TestAddShare_RefusedWhenTheFenceFallsMidAdd(t *testing.T) {
 	svc := New()
 	store := badgertest.NewInMemory(t)
@@ -102,7 +99,7 @@ func TestAddShare_RefusedWhenTheFenceFallsMidAdd(t *testing.T) {
 	go func() {
 		added <- svc.AddShare(context.Background(),
 			&ShareConfig{Name: "/midadd", MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID},
-			fixedStoreProvider{store: store}, gate, memBlockStoreProvider{}, defaults, nil)
+			fixedStoreProvider{store: store}, gate, memBlockStoreProvider{}, defaults)
 	}()
 
 	select {
@@ -113,8 +110,7 @@ func TestAddShare_RefusedWhenTheFenceFallsMidAdd(t *testing.T) {
 		t.Fatal("AddShare never reached its metadata phase")
 	}
 
-	// The share holds a reservation and a started block store, and is not in
-	// the registry — so this snapshot cannot see it.
+	// The share holds a reservation and is not in the registry.
 	svc.CloseBlockStores(context.Background())
 	close(gate.release)
 
@@ -127,42 +123,33 @@ func TestAddShare_RefusedWhenTheFenceFallsMidAdd(t *testing.T) {
 		t.Fatal("AddShare never returned")
 	}
 
-	if _, err := svc.GetBlockStoreForShare("/midadd"); err == nil {
-		t.Error("a share published a running block store after the shutdown fence closed every other one")
+	if svc.ShareExists("/midadd") {
+		t.Error("a share was published after the shutdown fence")
 	}
 }
 
-// TestRebindShareBlockStore_RefusedWhenTheFenceFallsMidRebind is the back door
-// the entry check cannot close. A rebind tears the live store down and builds a
-// replacement; if the fence falls in between it closes the OLD store — an
-// idempotent no-op, since the rebind already did — and the rebind then installs
-// a fresh, running one behind it.
-func TestRebindShareBlockStore_RefusedWhenTheFenceFallsMidRebind(t *testing.T) {
+// TestRebindShareBlockStore_RefusedByTheFence covers both halves for a rebind:
+// one arriving after the fence is refused on entry, and one the fence falls
+// under, while it resolves its new remote, is refused at the swap and leaves
+// the share on the remote it had.
+func TestRebindShareBlockStore_RefusedByTheFence(t *testing.T) {
 	const name = "/rebound"
 
 	svc := New()
 	store := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = store.Close() })
-	defaults := journalDefaults(t, svc)
 	provider := &gatingBlockStoreProvider{entered: make(chan struct{}), release: make(chan struct{})}
 
 	cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID}
 	if err := svc.AddShare(context.Background(), cfg, fixedStoreProvider{store: store},
-		metadata.New(), provider, defaults, nil); err != nil {
+		metadata.New(), provider, journalDefaults(t, svc)); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
-	original, err := svc.GetBlockStoreForShare(name)
-	if err != nil {
-		t.Fatalf("GetBlockStoreForShare: %v", err)
-	}
 
-	newCfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true, BlockStoreID: "other-block-store"}
 	provider.armed.Store(true)
-
 	rebound := make(chan error, 1)
 	go func() {
-		rebound <- svc.RebindShareBlockStore(context.Background(), newCfg, cfg,
-			fixedStoreProvider{store: store}, provider, defaults, nil)
+		rebound <- svc.RebindShareBlockStore(context.Background(), name, "other-block-store", provider)
 	}()
 
 	select {
@@ -172,9 +159,6 @@ func TestRebindShareBlockStore_RefusedWhenTheFenceFallsMidRebind(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the rebind never resolved its new binding")
 	}
-
-	// The rebind is past its entry check with the old store still live, so the
-	// fence sees and closes exactly the store the rebind is about to replace.
 	svc.CloseBlockStores(context.Background())
 	close(provider.release)
 
@@ -186,12 +170,11 @@ func TestRebindShareBlockStore_RefusedWhenTheFenceFallsMidRebind(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the rebind never returned")
 	}
-
-	current, err := svc.GetBlockStoreForShare(name)
-	if err != nil {
-		t.Fatalf("GetBlockStoreForShare after the refused rebind: %v", err)
+	if entries := svc.DistinctRemoteStores(); len(entries) != 1 || entries[0].ConfigID != testBlockStoreID {
+		t.Errorf("bound remotes after the refused rebind = %+v, want only %s", entries, testBlockStoreID)
 	}
-	if current != original {
-		t.Error("the rebind installed a fresh block store after the shutdown fence had closed the one it replaced")
+
+	if err := svc.RebindShareBlockStore(context.Background(), name, "other-block-store", provider); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("a rebind after the fence = %v, want ErrShuttingDown", err)
 	}
 }

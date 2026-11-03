@@ -186,7 +186,6 @@ Display current configuration
 Display the current DittoFS configuration.
 
 By default outputs YAML format. Use --output to change format.
-Use --deduced to show auto-deduced block store defaults based on system resources.
 
 ```
 dfs config show [flags]
@@ -203,15 +202,11 @@ dfs config show --output json
 
 # Show specific config file
 dfs config show --config /etc/dittofs/config.yaml
-
-# Show auto-deduced block store defaults
-dfs config show --deduced
 ```
 
 Flags:
 
 ```
-      --deduced         Show auto-deduced block store defaults based on system resources
   -o, --output string   Output format (yaml|json) (default "yaml")
 ```
 
@@ -696,14 +691,12 @@ Global flags:
       - [`dfsctl share snapshot-policy set`](#dfsctl-share-snapshot-policy-set) — Create or update a share's snapshot policy
       - [`dfsctl share snapshot-policy show`](#dfsctl-share-snapshot-policy-show) — Show a share's snapshot policy
     - [`dfsctl share unmount`](#dfsctl-share-unmount) — Unmount a mounted share
-    - [`dfsctl share warm`](#dfsctl-share-warm) — Warm a share's local block cache
   - [`dfsctl status`](#dfsctl-status) — Show server status
   - [`dfsctl store`](#dfsctl-store) — Store management
     - [`dfsctl store block`](#dfsctl-store-block) — Block store management
       - [`dfsctl store block add`](#dfsctl-store-block-add) — Add a block store
       - [`dfsctl store block audit-refcounts`](#dfsctl-store-block-audit-refcounts) — Verify every manifest block reference has a backing FileChunk row
       - [`dfsctl store block edit`](#dfsctl-store-block-edit) — Edit a block store
-      - [`dfsctl store block evict`](#dfsctl-store-block-evict) — Evict block store data
       - [`dfsctl store block gc`](#dfsctl-store-block-gc) — Run garbage collection for a block store share
       - [`dfsctl store block gc-status`](#dfsctl-store-block-gc-status) — Show the last block-store GC run summary for a share
       - [`dfsctl store block health`](#dfsctl-store-block-health) — Check block store health
@@ -711,7 +704,6 @@ Global flags:
       - [`dfsctl store block reclaim`](#dfsctl-store-block-reclaim) — Reclaim orphaned block storage (deletes; use --dry-run to preview)
       - [`dfsctl store block reconcile`](#dfsctl-store-block-reconcile) — Report orphaned block storage (read-only; no deletes)
       - [`dfsctl store block remove`](#dfsctl-store-block-remove) — Remove a block store
-      - [`dfsctl store block stats`](#dfsctl-store-block-stats) — Show block store statistics
     - [`dfsctl store check`](#dfsctl-store-check) — Scan manifests for ranges no chunk covers
     - [`dfsctl store metadata`](#dfsctl-store-metadata) — Manage metadata stores
       - [`dfsctl store metadata add`](#dfsctl-store-metadata-add) — Add a metadata store
@@ -4118,9 +4110,7 @@ to get a quick overview of all shares before running share-specific commands.
 USED is the share's logical size: the sum of its file sizes, the same figure
 'du --apparent-size' would report over the mounted share. It is what QUOTA is
 measured against. It is not a count of bytes on disk, and will not match one:
-blocks are deduplicated and compressed, and a share whose blocks have been
-evicted to its remote store occupies almost nothing locally while its USED is
-unchanged. For on-disk figures, use 'dfsctl store block stats'.
+blocks are deduplicated and compressed.
 
 ```
 dfsctl share list
@@ -4244,8 +4234,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
-      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
+      --dir-mode string      Directory permissions for SMB mount (octal) (default "0755")
+      --file-mode string     File permissions for SMB mount (octal) (default "0755")
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
@@ -5281,53 +5271,6 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
-### `dfsctl share warm`
-
-Warm a share's local block cache
-
-Proactively materialize a share's blocks onto the local disk tier.
-
-Starts an asynchronous job that downloads every remote block of the share into
-the local cache so subsequent reads are served locally. The command prints the
-job id and exits; use --watch to poll until the job completes.
-
-The share must have a remote tier configured. A pinned share with a bounded
-local tier may fail with a disk-full error if its working set exceeds the tier.
-
-```
-dfsctl share warm <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Start a warm job and exit
-dfsctl share warm /archive
-
-# Start and follow progress until done
-dfsctl share warm --watch /archive
-```
-
-Flags:
-
-```
-      --watch   Poll the job until it reaches a terminal state
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
 ### `dfsctl status`
 
 Show server status
@@ -5630,80 +5573,6 @@ Flags:
       --region string          AWS region (for s3)
       --secret-key string      AWS secret access key (for s3)
       --type string            Store type: s3, memory
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block evict`
-
-Evict block store data
-
-Evict block store data from local storage, forcing subsequent reads
-to fetch from the remote tier.
-
-By default, evicts both the in-memory read buffer and the resident local
-disk blocks for all shares. Local eviction drains every locally-resident
-block whose bytes are already synced to the remote — including the sealed
-log blobs that hold the bulk of resident data after a rollup, which the
-lazy --journal-size cap only reclaims on the write path. Blocks not yet
-uploaded to the remote are never dropped.
-
-Use --read-buffer-only to evict only the read buffer (in-memory).
-Use --local-only to evict only local disk data (preserves read buffer).
-Use --share to evict a specific share only.
-
-Safety: blocks that have not yet reached the share's block store are
-never dropped, since that would cause data loss. Eviction reclaims whole
-segments, so a segment holding even one un-uploaded record stays resident
-along with every synced block sharing it — run 'dfsctl system drain-uploads'
-until 'dfsctl store block stats' reports 0 pending remote bytes if you need
-everything to go cold.
-
-Uses: reclaim local disk on demand, or force cold (remote-served) reads for
-read-path benchmarking — the local tier is otherwise sticky, so a benchmark
-would measure locally-served reads.
-
-```
-dfsctl store block evict [flags]
-```
-
-**Examples:**
-
-```bash
-# Evict all storage tiers for all shares (drops resident local blocks)
-dfsctl store block evict
-
-# Evict only read buffer
-dfsctl store block evict --read-buffer-only
-
-# Evict only local disk data
-dfsctl store block evict --local-only
-
-# Evict data for a specific share
-dfsctl store block evict --share /export
-
-# Verbose output
-dfsctl store block evict -v
-```
-
-Flags:
-
-```
-      --local-only         Evict only local disk data (preserves read buffer)
-      --read-buffer-only   Evict only read buffer (in-memory)
-      --share string       Evict data for a specific share only
 ```
 
 Global flags:
@@ -6077,52 +5946,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block stats`
-
-Show block store statistics
-
-Display block store statistics.
-
-Without --share, shows aggregated totals across all shares with a per-share breakdown.
-With --share, shows statistics for a single share only.
-
-```
-dfsctl store block stats [flags]
-```
-
-**Examples:**
-
-```bash
-# Show aggregated block store stats
-dfsctl store block stats
-
-# Show stats for a specific share
-dfsctl store block stats --share /export
-
-# Output as JSON
-dfsctl store block stats -o json
-```
-
-Flags:
-
-```
-      --share string   Show stats for a specific share only
 ```
 
 Global flags:

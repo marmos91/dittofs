@@ -1480,24 +1480,13 @@ func ProcessAppInstanceId(
 		defer cancel()
 
 		for _, claimed := range claimedRows {
-			cleanupFile := (&OpenFile{
-				FileID:         claimed.FileID,
-				ShareName:      claimed.ShareName,
-				MetadataHandle: claimed.MetadataHandle,
-				PayloadID:      metadata.PayloadID(claimed.PayloadID),
-			}).WithName(OpenName{Path: claimed.Path})
-			// Locks first. The row is already consumed, so nothing retries this
-			// cleanup — and a cache flush that spends the whole budget would
-			// leave UnlockAllForOpen with an expired context and the displaced
-			// open's byte-range locks standing until the process restarts,
-			// blocking later opens of that file. The flush losing its budget
-			// costs cached data on a handle that is gone; the unlock losing it
-			// costs every future opener.
+			// The row is already consumed, so nothing retries this cleanup: the
+			// displaced open's byte-range locks would otherwise stand until the
+			// process restarts, blocking later opens of that file.
 			if err := metaSvc.UnlockAllForOpen(cleanupCtx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
 				logger.Debug("ProcessAppInstanceId: failed to release locks",
 					"id", claimed.ID, "path", claimed.Path, "error", err)
 			}
-			handler.flushFileCache(cleanupCtx, cleanupFile)
 		}
 	}
 	if persistedClosed > 0 {

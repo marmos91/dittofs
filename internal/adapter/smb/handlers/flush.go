@@ -213,12 +213,6 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("FLUSH: block store not available for handle", "path", path, "error", err)
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-	}
-
 	// Verify file exists
 	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
@@ -232,19 +226,15 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 	}
 
-	// ========================================================================
-	// Step 3: Flush data using BlockStore (same as NFS COMMIT)
-	// ========================================================================
-
-	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
-	if flushErr != nil {
-		logger.Warn("FLUSH: failed", "path", path, "error", flushErr)
-		// FLUSH is a content-path op (same as NFS COMMIT): StatusFor over
-		// ClassifyBlockStoreError maps a closed-store error (the share was removed/hot-reloaded
-		// mid-flush) to STATUS_FILE_CLOSED and preserves the
-		// CAS-corruption / remote-unavailable mappings, defaulting to the
-		// I/O-class status for opaque failures.
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(flushErr))}}, nil
+	// An empty file has no content to flush, only pending metadata. Any other
+	// file's content would have to be made durable, and no content store is
+	// wired. The handle must belong to this request's session before anything
+	// about its content is answered.
+	if file.Size != 0 {
+		if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+			return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+		}
+		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(common.ErrNoContentStore)}}, nil
 	}
 
 	// ========================================================================
@@ -273,7 +263,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
 		if metaErr != nil {
 			logger.Warn("FLUSH: metadata flush failed", "path", path, "error", metaErr)
-			// Continue - content is flushed, metadata will be fixed eventually
+			// Continue - metadata will be fixed eventually
 		} else if flushed {
 			logger.Debug("FLUSH: metadata flushed", "path", path)
 		}

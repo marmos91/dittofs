@@ -17,12 +17,10 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/sysinfo"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -320,52 +318,10 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	// Configure the background snapshot scheduler before Serve launches it.
 	rt.SetSnapshotSchedulerConfig(cfg.Snapshot.SchedulerPollInterval, cfg.Snapshot.SchedulerDisabled)
 
-	// Auto-deduce block store defaults from system resources
-	detector := sysinfo.NewDetector()
-	deduced := block.DeduceDefaults(detector)
-
-	logger.Info("System resources detected",
-		"memory", block.FormatBytes(detector.AvailableMemory()),
-		"memory_source", detector.MemorySource(),
-		"cpus", detector.AvailableCPUs(),
-	)
-	logger.Info("Auto-deduced block store defaults",
-		"read_buffer_size", block.FormatBytes(uint64(deduced.ReadBufferSize)),
-		"max_log_bytes", block.FormatBytes(deduced.MaxLogBytes),
-		"parallel_syncs", deduced.ParallelSyncs,
-		"parallel_fetches", deduced.ParallelFetches,
-		"prefetch_workers", deduced.PrefetchWorkers,
-	)
-
-	if floors := deduced.HitFloors(); len(floors) > 0 {
-		logger.Warn("Some deduced values hit minimum floors; system may be resource-constrained",
-			"floors", floors,
-			"system_memory", block.FormatBytes(detector.AvailableMemory()),
-			"system_cpus", detector.AvailableCPUs(),
-		)
-	}
-
-	// Resolve the effective append-log pressure budget default: the global
-	// config blockstore.journal.max_log_bytes wins when set, otherwise the
-	// system-deduced default.
-	effectiveMaxLogBytes := deduced.MaxLogBytes
-	if cfg.Blockstore.Journal.MaxLogBytes > 0 {
-		effectiveMaxLogBytes = cfg.Blockstore.Journal.MaxLogBytes
-	}
-
-	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
+	// Set per-share defaults BEFORE loading shares: AddShare roots each share's
+	// state directory under the journal path.
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		ReadBufferBytes:     deduced.ReadBufferSize,
-		MaxLogBytes:         block.ClampToInt64(effectiveMaxLogBytes),
-		JournalRoot:         cfg.Blockstore.Journal.Path,
-		ChunkSize:           cfg.Blockstore.Journal.ChunkSize,
-		ChunkMax:            cfg.Blockstore.Journal.ChunkMax,
-		DirtyExpire:         cfg.Blockstore.Journal.DirtyExpire,
-		BackpressureMaxWait: cfg.Blockstore.Journal.BackpressureMaxWait,
-	})
-	rt.SetSyncerDefaults(&shares.SyncerDefaults{
-		ParallelDownloads: deduced.ParallelFetches,
-		PrefetchWorkers:   deduced.PrefetchWorkers,
+		JournalRoot: cfg.Blockstore.Journal.Path,
 	})
 	// Wire operator-configured GC knobs into the runtime so
 	// gc.CollectGarbage receives them in gc.Options. Without this,
@@ -1055,8 +1011,7 @@ func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
-		!errors.Is(err, shares.ErrLegacyLocalFormat) {
+	if !errors.Is(err, block.ErrFutureFormat) {
 		return nil
 	}
 	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
@@ -1120,31 +1075,16 @@ func emitAdminPassword(password string) {
 		"mount and user configuration.")
 }
 
-// lastMigratingRelease is the newest release that still carries the pre-journal
-// reader and the in-place migration for the blobs/+logs/ layout. Later builds
-// detect that layout and refuse rather than adopting it as an empty journal, so
-// an operator holding such a share has to pass through this release once.
-//
-// It does not move when a new release ships: the migration was removed, not
-// deferred, so this names the last build that has it rather than the latest
-// build in general.
-const lastMigratingRelease = "v0.31.1"
-
 // formatMismatchDirective renders the multi-line operator directive printed
-// when a store cannot be opened because its on-disk format does not match this
-// build. The wrapped error is embedded verbatim so the operator sees which
-// store, the offending path and the two versions without fragile substring
-// extraction.
+// when a store cannot be opened because its on-disk format was written by a
+// newer build. The wrapped error is embedded verbatim so the operator sees
+// which store, the offending path and the two versions without fragile
+// substring extraction.
 //
 // It covers metadata stores and block stores alike, so the text says "state"
 // rather than naming either: the wrapped error already identifies which one.
-//
-// The two directions need different advice: state from a newer release is a
-// downgrade the operator can undo by going forward again, while a pre-journal
-// layout is an upgrade that has not run yet.
 func formatMismatchDirective(err error) string {
-	if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) {
-		return fmt.Sprintf(`Refusing to start: %s.
+	return fmt.Sprintf(`Refusing to start: %s.
 
 This state was written by a newer release of DittoFS. Opening it with this
 build would serve the stored files as zeros rather than fail, so the daemon
@@ -1155,23 +1095,4 @@ Upgrades are one-way. To recover, either:
   - restore the snapshot taken before the upgrade.
 
 No data has been modified.`, err)
-	}
-	return fmt.Sprintf(`Refusing to start: %s.
-
-This share holds a pre-journal blobs/+logs/ layout that this build cannot read.
-Opening it as an empty journal would serve every stored file as zeros, so the
-daemon stops instead. Nothing on disk has been modified.
-
-This build carries no migration for that layout. %[2]s does. To recover:
-
-  1. install %[2]s and start it once — it converts the share in place
-  2. wait for the conversion to finish, then stop it
-  3. upgrade to this build and start again
-
-If that is not possible, restore the snapshot taken before the upgrade.
-
-Do not skip step 1 expecting this build to re-ingest the bytes later: for a
-local-only share compacted before the upgrade, the index that locates bytes
-inside blobs/ is dropped by the metadata migrations, and those bytes cannot be
-recovered from the directory alone.`, err, lastMigratingRelease)
 }

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,7 +60,7 @@ controlplane:
     secret: "test-secret-key-for-testing-minimum-32-chars"
 blockstore:
   local:
-    max_log_bytes: 3221225472
+    path: /srv/dittofs/blocks
 `
 	_, err := Load(writeConfigFile(t, content))
 	if err == nil {
@@ -77,19 +79,21 @@ blockstore:
 // The same file under the new name must load cleanly — otherwise the guard is
 // rejecting everything and the test above proves nothing.
 func TestLoad_AcceptsRenamedBlockstoreJournalSection(t *testing.T) {
-	content := `
+	// The path must be absolute on every OS, so it is built, not written.
+	want := filepath.Join(t.TempDir(), "blocks")
+	content := fmt.Sprintf(`
 controlplane:
   jwt:
     secret: "test-secret-key-for-testing-minimum-32-chars"
 blockstore:
   journal:
-    max_log_bytes: 3221225472
-`
+    path: '%s'
+`, want)
 	cfg, err := Load(writeConfigFile(t, content))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Blockstore.Journal.MaxLogBytes != 3<<30 {
-		t.Errorf("MaxLogBytes: got %d, want %d", cfg.Blockstore.Journal.MaxLogBytes, 3<<30)
+	if cfg.Blockstore.Journal.Path != want {
+		t.Errorf("Path: got %q, want %q", cfg.Blockstore.Journal.Path, want)
 	}
 }

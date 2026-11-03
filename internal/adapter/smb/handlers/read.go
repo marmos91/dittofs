@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
@@ -280,15 +279,10 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
-	// Step 5: Get metadata service and block store
+	// Step 5: Get metadata service
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, openFile.MetadataHandle)
-	if err != nil {
-		logger.Warn("READ: block store not available for handle", "path", path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-	}
 
 	// ========================================================================
 	// Step 6: Build AuthContext and validate permissions
@@ -407,88 +401,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
-	// ========================================================================
-	// Step 11: Read data from BlockStore (uses local cache internally)
-	// ========================================================================
-
-	// Regular-file READ routes through the pooled
-	// common.ReadFromBlockStore helper. The returned buffer is pool-backed,
-	// and readResult.Release is handed to the response encoder via
-	// SMBResponseBase.ReleaseData so the pool.Put fires AFTER the wire write
-	// completes (plain, encrypted, compound). On error paths the helper
-	// already returns the buffer internally, so ReleaseData stays nil.
-	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
-	if err != nil {
-		logger.Warn("READ: content read failed", "path", path, "error", err)
-		// types.StatusFor over ClassifyBlockStoreError mirrors the old
-		// ContentErrorToSMBStatus behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
-		// because ReadFromBlockStore has already released the pooled buffer
-		// on the error path.
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
-	}
-
-	logger.Debug("READ successful",
-		"path", path,
-		"offset", req.Offset,
-		"requested", req.Length,
-		"actual", len(readResult.Data))
-
-	// ========================================================================
-	// Step 11b: Update CurrentByteOffset (MS-FSA 2.1.5.3 ("Server Requests a Read") / smb2.read.position)
-	// ========================================================================
-	//
-	// Per MS-FSA Server Algorithm for Reading a File: after a successful
-	// READ at Offset O of Length L, the open's CurrentByteOffset advances to
-	// O + (bytes returned). This is what GetInfo FilePositionInformation
-	// (and FILE_ALL_INFORMATION.PositionInformation at offset 80) must
-	// return. Windows clients carry their own client-side position and do
-	// not depend on this for I/O dispatch, but the smb2.read.position
-	// torture test asserts the value.
-	recordReadProgress(openFile, req.Offset, uint64(len(readResult.Data)))
-
-	// ========================================================================
-	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
-	// ========================================================================
-
-	// Per MS-FSA 2.1.5.3 ("Server Requests a Read"), after a successful read the server updates
-	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
-	// IsAtimeFrozen takes openFile.mu (read) so we observe a consistent value
-	// against a concurrent SET_INFO freeze/thaw on the same handle.
-	//
-	// Successive READs on one handle coalesce: the store write happens at most
-	// once per smbAtimeUpdateWindow, and the newest access time is held on the
-	// handle until QUERY_INFO reads it or CLOSE persists it.
-	if !openFile.IsAtimeFrozen() {
-		now := time.Now()
-		if noteSmbAccess(openFile, now) {
-			// A frozen ChangeTime is held across the bump, and a dropped bump is
-			// a lost timestamp update rather than an expected error, so it is
-			// visible at Debug.
-			attrs := &metadata.SetAttrs{Atime: &now}
-			holdFrozenCtime(openFile, attrs)
-			if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
-				logger.Debug("READ: atime update failed", "path", path, "error", err)
-			}
-		}
-	}
-
-	// ========================================================================
-	// Step 13: Return success response
-	// ========================================================================
-
-	// Hand readResult.Release to the encoder — NOT a defer in the
-	// handler. The encoder fires it once AFTER the wire write completes so
-	// the pooled buffer stays valid through compound response assembly and
-	// encryption.
-	return &ReadResponse{
-		SMBResponseBase: SMBResponseBase{
-			Status:      types.StatusSuccess,
-			ReleaseData: readResult.Release,
-		},
-		DataOffset:    0x50, // Standard offset (header + response struct)
-		Data:          readResult.Data,
-		DataRemaining: 0,
-	}, nil
+	// A read returns content, and no content store is wired.
+	return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(common.ErrNoContentStore)}}, nil
 }
 
 // handleSymlinkRead generates MFsymlink content for a symlink read request.

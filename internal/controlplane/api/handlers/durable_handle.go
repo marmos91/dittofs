@@ -10,7 +10,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -182,19 +181,6 @@ func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, r
 		if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
 			logger.Debug("cleanupDurableHandle: failed to release locks",
 				"id", handleID, "error", err)
-		}
-	}
-
-	// Step 2: Flush payload data (resolved per share from metadata handle)
-	if h.PayloadID != "" && len(h.MetadataHandle) > 0 {
-		if blockStore, bsErr := rt.GetBlockStoreForHandle(ctx, metadata.FileHandle(h.MetadataHandle)); bsErr == nil {
-			if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {
-				logger.Debug("cleanupDurableHandle: flush failed",
-					"id", handleID, "error", err)
-			}
-		} else {
-			logger.Debug("cleanupDurableHandle: block store not available",
-				"id", handleID, "error", bsErr)
 		}
 	}
 }

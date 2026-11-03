@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -182,33 +181,8 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_NOTSUPP)
 	}
 
-	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, dstHandle)
-	if err != nil {
-		logger.Error("NFSv4.2 CLONE: cannot resolve block store", "share", dstShare, "error", err)
-		return cloneErr(types.NFS4ERR_SERVERFAULT)
-	}
-	store, err := metaSvc.GetStoreForShare(dstShare)
-	if err != nil {
-		logger.Error("NFSv4.2 CLONE: cannot resolve metadata store", "share", dstShare, "error", err)
-		return cloneErr(types.NFS4ERR_SERVERFAULT)
-	}
-
-	// Recheck the range after draining the source, alongside the manifest
-	// replacement. A destination that grew since the checks above must keep
-	// its tail rather than being silently truncated to the source's size.
-	if err := common.CloneWholeFile(
-		ctx.Context, blockStore, store, nil,
-		srcHandle, dstHandle,
-		dstFile.PayloadID, count, metaSvc,
-	); err != nil {
-		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
-		return cloneErr(types.StatusForErr(err))
-	}
-
-	logger.Debug("NFSv4.2 CLONE",
-		"srcOffset", srcOffset, "dstOffset", dstOffset, "count", count,
-		"share", dstShare, "client", ctx.ClientAddr)
-	return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_CLONE, Data: encodeStatusOnly(types.NFS4_OK)}
+	// A clone shares content, and no content store is wired.
+	return noContentStoreResult(types.OP_CLONE)
 }
 
 // decodeCloneArgs decodes CLONE4args: cl_src_stateid, cl_dst_stateid,

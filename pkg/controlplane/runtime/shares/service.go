@@ -3,16 +3,12 @@ package shares
 import (
 	"context"
 	"fmt"
-	"io"
-	"math"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -104,10 +100,6 @@ type Share struct {
 	// Retention policy for local blocks.
 	RetentionPolicy block.RetentionPolicy
 	RetentionTTL    time.Duration
-
-	// BlockStore is the per-share block store orchestrator.
-	// Nil only for metadata-only shares (unlikely in practice).
-	BlockStore *engine.Store
 
 	// remoteConfigID tracks which remote store config this share uses (for ref counting).
 	remoteConfigID string
@@ -307,61 +299,10 @@ type Service struct {
 	// share-set listeners (pseudo-fs rebuild, NFSv4 delegation recall).
 	authInvalidateCallbacks map[int]func()
 
-	// metricsRec is the inline metrics recorder threaded into every per-share
-	// block store's eviction/backpressure path. Shares are constructed before
-	// the metrics registry exists, so the runtime installs it post-startup via
-	// SetMetrics (which back-fills already-registered shares); createBlockStore-
-	// ForShare applies it to shares added later. Guarded by mu. Nil disables
-	// inline recording.
-	metricsRec journal.MetricsRecorder
-
-	// rebindMu serializes RebindShareBlockStore calls. A rebind tears down and
-	// rebuilds a share's per-share BlockStore over the same local dir, which is
-	// not safe to overlap with another rebind of the same share. Rebinds are
-	// rare (operator-initiated binding changes), so a single coarse mutex across
-	// all shares is acceptable and keeps the teardown/rebuild strictly ordered.
-	rebindMu sync.Mutex
-
-	// warmJobs tracks in-flight/completed async share-warm jobs (one active per
-	// share). Self-guarded; runs warm runs on detached contexts cancelled on
-	// RemoveShare. See warm.go.
-	warmJobs *warmRegistry
-
-	// blockStoreCache is a lock-free mirror of registry[name].BlockStore keyed by
-	// share name. Every NFS/SMB data op resolves the per-share store here without
-	// touching s.mu, so the read/write hot path pays no reader-lock contention.
-	// It is written only under s.mu at the three points that change a share's
-	// store — AddShare (publish), RemoveShare (delete), RebindShareBlockStore
-	// (swap) — so it never lags the registry at a lock-release boundary. A miss
-	// falls through to the locked registry, which reproduces the exact
-	// not-found/no-store errors, so the cache holds only non-nil stores.
-	blockStoreCache sync.Map // shareName -> *engine.Store
-
-	// closed is set by CloseBlockStores, under mu, before it snapshots the
-	// registry. It is the fence's memory: a share whose block store is composed
-	// after that snapshot is taken would start a carve dispatcher the fence has
-	// already run past, and that dispatcher commits FileChunk manifest rows
-	// through a metadata store the shutdown is about to close — or has closed.
-	//
-	// Both paths that can install a live store check it under mu at the moment
-	// they publish, which is what orders them against the snapshot: either the
-	// publish wins and the snapshot sees the store, or closed is already set and
-	// the publish refuses. AddShare and RebindShareBlockStore also check it on
-	// entry, so neither builds a store it would then have to tear down.
-	//
-	// decision: what this orders is PUBLICATION, not the dispatcher. Both paths
-	// start the store they are composing well before they reach their publish
-	// check, so a store that loses the race was running for the length of that
-	// window and is then closed by the refusal — and that close drains it
-	// against metadata stores the shutdown may already have closed. The window
-	// is short, unreachable without an operator editing shares during a
-	// shutdown, and costs a logged failed carve on a process that is leaving.
-	// Withdraw the exemption by moving the composition itself under a gate,
-	// which means holding a lock across a block-store open.
-	//
-	// It is never cleared. CloseBlockStores runs when the process is leaving,
-	// and a Service that has quiesced its data plane has no way back: the
-	// registry's stores are closed and nothing re-opens them.
+	// closed is set by CloseBlockStores, under mu. AddShare checks it on entry
+	// and again at the moment it publishes, so a share added during shutdown is
+	// never published past the fence. It is never cleared: CloseBlockStores
+	// runs when the process is leaving.
 	closed bool
 }
 
@@ -372,16 +313,7 @@ func New() *Service {
 		remoteStores:            make(map[string]*sharedRemote),
 		changeCallbacks:         make(map[int]func(shares []string)),
 		authInvalidateCallbacks: make(map[int]func()),
-		warmJobs:                newWarmRegistry(),
 	}
-}
-
-// modeLabel returns a human-readable label for logging based on whether a remote store is configured.
-func modeLabel(hasRemote bool) string {
-	if hasRemote {
-		return "remote-backed"
-	}
-	return "local-only"
 }
 
 // sanitizeShareName converts a share name to a filesystem-safe directory name.
@@ -415,9 +347,8 @@ func (s *Service) GetShare(name string) (*Share, error) {
 	// SetShare* mutate the stored *Share under s.mu, so handing out the live
 	// pointer lets a caller race those writes (torn read of ReadOnly, Squash,
 	// Enabled, …) once the RLock is released. Copying every scalar field under
-	// the lock makes the read atomic. Pointer/slice fields (BlockStore,
-	// RootHandle) are shared by design — BlockStore is independently
-	// thread-safe and the slices are never mutated in place after AddShare.
+	// the lock makes the read atomic. Slice fields (RootHandle) are shared by
+	// design — they are never mutated in place after AddShare.
 	snapshot := *share
 	return &snapshot, nil
 }
@@ -477,28 +408,6 @@ func (s *Service) ListShares() []string {
 	return names
 }
 
-// SetMetrics installs the inline metrics recorder and back-fills every
-// already-registered share's block store with it. Called once by the runtime
-// after the metrics registry is built (which happens after startup share
-// loading). Shares added afterwards pick the recorder up in
-// createBlockStoreForShare. Idempotent and nil-tolerant.
-func (s *Service) SetMetrics(rec journal.MetricsRecorder) {
-	s.mu.Lock()
-	s.metricsRec = rec
-	stores := make([]*engine.Store, 0, len(s.registry))
-	for _, sh := range s.registry {
-		if sh.BlockStore != nil {
-			stores = append(stores, sh.BlockStore)
-		}
-	}
-	s.mu.Unlock()
-	// Apply outside the lock — SetMetrics only swaps an atomic pointer in the
-	// store, but keeping store calls off s.mu avoids any future lock-ordering
-	// surprise.
-	for _, bs := range stores {
-		bs.SetMetrics(rec)
-	}
-}
 func (s *Service) ShareExists(name string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -596,33 +505,16 @@ func (s *Service) CountShares() int {
 	return len(s.registry)
 }
 
-// XattrStreamReader returns a metadata.StreamContentReader that materialises a
-// named-stream child's content as an xattr value via the per-share block store.
-// It is wired into metadata.Service.SetXattrStreamReader so the unified xattr
-// resolver can surface stream-entity-backed xattrs (the read half of
-// cross-protocol parity for SMB-created named streams). The metadata layer
-// stays block-engine-agnostic; this wrapper is the single seam where xattr
-// resolution reaches the block store (GetBlockStoreForHandle + ReadAt).
-//
-// A zero-size stream yields an empty value. Streams large enough to exceed an
-// int slice are rejected; named-stream xattr values are expected to be small.
+// XattrStreamReader returns the metadata.StreamContentReader wired into
+// metadata.Service.SetXattrStreamReader, which surfaces a named stream's content
+// as an xattr value. A zero-size stream yields an empty value; any other
+// stream's content lives in the content store and answers
+// block.ErrNoContentStore.
 func (s *Service) XattrStreamReader() metadata.StreamContentReader {
-	return func(ctx context.Context, streamHandle metadata.FileHandle, attr *metadata.FileAttr) ([]byte, error) {
+	return func(_ context.Context, _ metadata.FileHandle, attr *metadata.FileAttr) ([]byte, error) {
 		if attr == nil || attr.Size == 0 || attr.PayloadID == "" {
 			return []byte{}, nil
 		}
-		if attr.Size > math.MaxInt32 {
-			return nil, fmt.Errorf("stream-backed xattr too large: %d bytes", attr.Size)
-		}
-		bs, err := s.GetBlockStoreForHandle(ctx, streamHandle)
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, int(attr.Size))
-		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), buf, 0)
-		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
-			return nil, rerr
-		}
-		return buf[:n], nil
+		return nil, block.ErrNoContentStore
 	}
 }

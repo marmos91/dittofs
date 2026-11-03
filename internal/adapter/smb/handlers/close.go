@@ -195,31 +195,22 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 3: Flush cached data to block store (ensures durability)
+	// Step 3: Snapshot the handle for the teardown
 	// ========================================================================
 
-	// Flush cached data to ensure durability.
-	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
-	// Routed through common.CommitBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
+	// CLOSE is a durability point (MS-SMB2 3.3.5.10): a failed flush is
+	// recorded in flushFailStatus and applied to the response below, while
+	// handle teardown still runs unconditionally. No content store is wired
+	// (common.ErrNoContentStore), so only the pending metadata is flushed.
 	//
-	// CLOSE is a durability point (MS-SMB2 3.3.5.10): the client treats a
-	// successful CLOSE as a guarantee that its writes reached stable storage.
-	// If the durable flush fails (e.g. append-log backpressure surfaces
-	// fs.ErrPressureTimeout when the rollup pool is wedged), we MUST surface
-	// the failure as a non-success status rather than silently ack the close —
-	// otherwise the client believes data it never persisted is committed
-	// (silent write truncation, #1267). The mapped status is recorded and
-	// applied to the response below; handle teardown still runs unconditionally
-	// so the failed flush does not leak the open-file/lease state.
 	// Snapshot the path once so the flush and teardown log lines below all
 	// name the same file even if a rename lands mid-close. The delete block
 	// takes its own snapshot: the delete must act on the handle's name as of
 	// the delete, not as of CLOSE entry.
 	closePath := openFile.Name().Path
 
-	// One metadata-handle snapshot for the whole teardown. The block-store
-	// resolve, the pending-write flush, the atime write, the lock release and
+	// One metadata-handle snapshot for the whole teardown. The pending-write
+	// flush, the atime write, the lock release and
 	// the lease break must all name the same file: SET_REPARSE_POINT republishes
 	// MetadataHandle under openFile.mu when a placeholder becomes a symlink, and
 	// a mid-teardown republish would otherwise split the flush, the unlock and
@@ -228,24 +219,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	var flushFailStatus types.Status
 	payloadID := openFile.GetPayloadID()
-	if !openFile.IsDirectory && payloadID != "" {
-		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, metaHandle)
-		if bsErr != nil {
-			// A ResolveForWrite failure is NOT a block-store content/durability
-			// error — it surfaces handle-decode / share-registry / config
-			// problems. Map it through the generic mapper (StatusInternalError
-			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
-			// errors via smb/types.StatusForErr. Only the CommitBlockStore failure
-			// below is a true content error (ClassifyBlockStoreError).
-			logger.Warn("CLOSE: block store not available for handle", "path", closePath, "error", bsErr)
-			flushFailStatus = types.StatusForErr(bsErr)
-		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, payloadID); flushErr != nil {
-			logger.Warn("CLOSE: flush failed", "path", closePath, "error", flushErr)
-			flushFailStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
-		} else {
-			logger.Debug("CLOSE: flushed", "path", closePath, "payloadID", payloadID)
-		}
-	}
 
 	// ========================================================================
 	// Step 4: Flush pending metadata writes (deferred commit optimization)
@@ -850,28 +823,10 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	return true, nil
 }
 
-// readMFsymlinkContent reads the content of a potential MFsymlink file.
-// It reads from the block store which uses local cache internally.
-func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) ([]byte, error) {
-	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metaHandle)
-	if err != nil {
-		return nil, fmt.Errorf("block store not available: %w", err)
-	}
-
-	// Read the MFsymlink content (always 1067 bytes).
-	// Routed through common.ReadFromBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	// The bytes are copied into a caller-owned slice because the MFsymlink
-	// parse path retains them past Release().
-	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.GetPayloadID(), 0, uint32(mfsymlink.Size))
-	if err != nil {
-		return nil, err
-	}
-	defer result.Release()
-
-	out := make([]byte, len(result.Data))
-	copy(out, result.Data)
-	return out, nil
+// readMFsymlinkContent reads the content of a potential MFsymlink file. Content
+// lives in the content store, and none is wired.
+func (h *Handler) readMFsymlinkContent(_ *SMBHandlerContext, _ *OpenFile, _ metadata.FileHandle) ([]byte, error) {
+	return nil, common.ErrNoContentStore
 }
 
 // convertToRealSymlink removes the regular file and creates a symlink in its place.
@@ -909,14 +864,6 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	if err != nil {
 		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
 	}
-
-	// Delete content from block store (best-effort). RemoveFile returns an
-	// empty PayloadID when content must survive (hard link / recycle).
-	var removedPayloadID metadata.PayloadID
-	if removed != nil {
-		removedPayloadID = removed.PayloadID
-	}
-	h.purgeBlockStorePayload(ctx.Context, metaHandle, removedPayloadID, name.Path, "CLOSE")
 
 	// Create the real symlink, carrying the MFsymlink file's owner across.
 	// authCtx is the caller's, so an empty FileAttr would re-home the symlink to

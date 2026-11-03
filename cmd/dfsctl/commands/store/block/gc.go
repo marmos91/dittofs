@@ -240,3 +240,24 @@ func printGCStatsTable(status *apiclient.GCJobStatus) error {
 
 	return nil
 }
+
+// formatBytes formats a byte count as a human-readable string.
+func formatBytes(b int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case b == 0:
+		return "0"
+	case b < KB:
+		return fmt.Sprintf("%d B", b)
+	case b < MB:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	case b < GB:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
+	}
+}

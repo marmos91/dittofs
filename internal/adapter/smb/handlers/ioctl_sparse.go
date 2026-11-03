@@ -1,17 +1,13 @@
 package handlers
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Sparse-file FSCTL handlers — issue #359.
@@ -214,7 +210,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 			if err != nil {
 				logger.Warn("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: scan failed",
 					"path", path, "error", err)
-				return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
+				return NewErrorResult(types.StatusForErr(err)), nil
 			}
 		} else {
 			ranges = []allocatedRange{{Offset: allocStart, Length: allocEnd - allocStart}}
@@ -261,99 +257,20 @@ type allocatedRange struct {
 	Length uint64
 }
 
-// sparseClusterSize is the deallocation granularity used by our sparse-file
-// QAR scan. NTFS deallocates in 64 KiB chunks on Windows Server 2012; we use
-// 4 KiB so the smbtorture sparse_punch test (4 KiB file, full-file punch)
-// reports the hole accurately. Within a cluster, presence of any non-zero
-// byte marks the whole cluster as allocated — matches the "FSCTL_QUERY_
-// ALLOCATED_RANGES returns extents, not byte-level holes" semantic in
-// MS-FSCC §2.3.52 (FSCTL_QUERY_ALLOCATED_RANGES Reply) and avoids fragmenting pattern data (whose individual
-// bytes contain interior zeros) into hundreds of tiny ranges.
-const sparseClusterSize = uint64(4096)
-
 // scanAllocatedRanges walks the file payload over [start, end) at
 // sparseClusterSize granularity and returns the contiguous allocated
 // (any-non-zero) cluster runs, with the first/last range clamped to the
 // request window per Samba `fsctl_qar` and smb2.ioctl.sparse_qar_ob1.
 //
 // Used only when modeDOSSparse is set — plain files report a single range
-// without touching block-store data. DittoFS payloads zero-grow on demand,
-// so SET_ZERO_DATA on a sparse file naturally renders the punched cluster(s)
-// as all-zero and they drop out of the QAR result.
+// without touching content. A file with content answers
+// common.ErrNoContentStore: no content store is wired to probe.
 func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *OpenFile, file *metadata.FileAttr, start, end uint64) ([]allocatedRange, error) {
-	if file.PayloadID == "" {
+	if file.PayloadID == "" || file.Size == 0 {
 		return nil, nil
 	}
-	blockStore, err := common.ResolveForRead(authCtx.Context, h.Registry, openFile.MetadataHandle)
-	if err != nil {
-		return nil, err
-	}
-	// One deadline for every probe read of the scan, not one per cluster.
-	readCtx, cancel := common.WithRequestDeadline(authCtx.Context)
-	defer cancel()
-
-	// Align scan to cluster boundaries so cluster-allocated reporting is
-	// stable regardless of where the request window starts. We probe each
-	// cluster intersecting [start, end) and clamp the emitted ranges back
-	// to [start, end) at the end.
-	firstCluster := start / sparseClusterSize
-	// end is exclusive, so the last covered cluster index is (end-1)/cluster.
-	lastCluster := (end - 1) / sparseClusterSize
-
-	var (
-		ranges    []allocatedRange
-		curOffset uint64
-		curEnd    uint64
-		inRun     bool
-	)
-	flush := func() {
-		if !inRun {
-			return
-		}
-		off := max(curOffset, start)
-		ce := min(curEnd, end)
-		if off < ce {
-			ranges = append(ranges, allocatedRange{Offset: off, Length: ce - off})
-		}
-		inRun = false
-	}
-	for cluster := firstCluster; cluster <= lastCluster; cluster++ {
-		clusterStart := cluster * sparseClusterSize
-		clusterEnd := clusterStart + sparseClusterSize
-		probeLen := uint32(sparseClusterSize)
-		// Stop probing past the actual file size — anything past EOF is an
-		// implicit hole, mirroring NTFS QAR which clamps to allocated size.
-		if clusterStart >= file.Size {
-			break
-		}
-		if clusterEnd > file.Size {
-			probeLen = uint32(file.Size - clusterStart)
-		}
-		result, readErr := common.ReadFromBlockStore(readCtx, blockStore, file.PayloadID, clusterStart, probeLen)
-		if readErr != nil {
-			return nil, readErr
-		}
-		data := result.Data
-		hasNonZero := false
-		for _, b := range data {
-			if b != 0 {
-				hasNonZero = true
-				break
-			}
-		}
-		result.Release()
-		if hasNonZero {
-			if !inRun {
-				curOffset = clusterStart
-				inRun = true
-			}
-			curEnd = clusterEnd
-		} else {
-			flush()
-		}
-	}
-	flush()
-	return ranges, nil
+	// Probing a cluster reads content, and no content store is wired.
+	return nil, common.ErrNoContentStore
 }
 
 // fileZeroDataBufSize is the on-wire size of a FILE_ZERO_DATA_INFORMATION
@@ -440,207 +357,18 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Clamp the zero-fill window to the current file size: SET_ZERO_DATA
-	// MUST NOT extend the file (Samba `fsctl_zero_data`; covered by
-	// smb2.ioctl.sparse_punch_invalid which writes [4096, 4104) on a 4096-
-	// byte file and asserts size stays 4096). If the entire request is past
-	// EOF the call is a no-op success.
-	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
+	// SET_ZERO_DATA MUST NOT extend the file (Samba `fsctl_zero_data`), so a
+	// range starting at or past EOF is a no-op success and needs no content
+	// store.
+	file, err := h.Registry.GetMetadataService().GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		return NewErrorResult(types.StatusForErr(err)), nil
 	}
-	result, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (*HandlerResult, error) {
-		scopedHandler := *ctx
-		scopedHandler.Context = authCtx.Context
-		ctx := &scopedHandler
-		fileForSize, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-		if err != nil {
-			return NewErrorResult(types.StatusForErr(err)), nil
-		}
-		if fileOffset >= fileForSize.Size {
-			resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
-			return NewResult(types.StatusSuccess, resp), nil
-		}
-		beyond = min(beyond, fileForSize.Size)
-
-		// Byte-range lock check on the write window. WRITE and COPYCHUNK both
-		// gate on this; without it another handle could hold a conflicting
-		// lock over [fileOffset, beyond) and the zero-fill would silently win
-		// (smb2.ioctl.sparse_lock).
-		if err := metaSvc.CheckLockForIO(
-			authCtx.Context,
-			openFile.MetadataHandle,
-			openFile.OpenID(),
-			ctx.SessionID,
-			fileOffset,
-			beyond-fileOffset,
-			true, // isWrite
-		); err != nil {
-			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: blocked by lock",
-				"path", path, "offset", fileOffset, "length", beyond-fileOffset)
-			return NewErrorResult(types.StatusFileLockConflict), nil
-		}
-
-		// Break Level II (Read) caching leases held by other clients on the
-		// target so they invalidate stale cached data. Mirrors the WRITE and
-		// COPYCHUNK paths.
-		if h.LeaseManager != nil {
-			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
-			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
-				logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: oplock break failed (non-fatal)",
-					"path", path, "error", breakErr)
-			}
-		}
-
-		// Capture the stored ChangeTime before the fill stamps it, so the frozen
-		// restore below can tell the fill's own stamp from a peer's advance.
-		preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
-
-		committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
-		// The fill runs through the ordinary write chain, and CommitWrite stamps
-		// Mtime and ChangeTime from inside the write transaction where no SetAttrs
-		// reaches. Put the frozen values back afterwards the way WRITE does
-		// (MS-FSA §2.1.5.15.2).
-		//
-		// Deferred, and conditional on a chunk having actually committed. Deferred
-		// because the fill commits chunk by chunk, so a failure partway has already
-		// stamped the chunks that landed and the failure return needs the restore
-		// as much as the success return does. Conditional because the restore
-		// writes every frozen timestamp back explicitly, which drags a value some
-		// other opener advanced after the freeze backwards — acceptable as the
-		// price of undoing this operation's own stamp, but not on a failure that
-		// stamped nothing, where it would be a backwards write performed by an
-		// operation that changed no file state at all.
-		//
-		// The restore runs on a context detached from cancellation, because the
-		// case it most needs to cover is the cancelled one: the fill checks for
-		// cancellation between chunks, so a cancel after the first commit is
-		// exactly when timestamps have been stamped and the request is about to
-		// return without repairing them. Carrying the cancelled context here would
-		// mean the write that repairs the damage is the one write guaranteed to
-		// fail. Values are kept so the auth identity travels with it; only the
-		// cancellation is dropped, and a timeout bounds the detour so a wedged
-		// store cannot hold the handler open.
-		//
-		// A no-op on a handle with nothing frozen.
-		if committed {
-			restoreAuth := *authCtx
-			detached, cancelRestore := context.WithTimeout(
-				context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
-			restoreAuth.Context = detached
-			defer cancelRestore()
-			defer h.restoreFrozenTimestamps(&restoreAuth, openFile, preOpCtime)
-		}
-
-		if fillErr != nil {
-			if errors.Is(fillErr, errZeroFillCancelled) {
-				return NewErrorResult(types.StatusCancelled), nil
-			}
-			logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
-				"path", path, "error", fillErr)
-			return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(fillErr))), nil
-		}
-
-		// SMB requires immediate cross-session metadata visibility (unlike NFS
-		// which uses explicit COMMIT). Flush deferred metadata so a subsequent
-		// QUERY_INFO sees the new size/timestamps without waiting for CLOSE.
-		// Relaxed (#1687): visibility from the metadata write, durability from the
-		// journal size reconcile on restart; CLOSE/FLUSH remain strict.
-		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
-			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
-				"path", path, "error", flushErr)
-		}
-
-		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
-		return NewResult(types.StatusSuccess, resp), nil
-	})
-	if scopeErr != nil && result == nil {
-		if errors.Is(scopeErr, context.Canceled) || errors.Is(scopeErr, context.DeadlineExceeded) {
-			return NewErrorResult(types.StatusCancelled), nil
-		}
-		return NewErrorResult(types.StatusForErr(scopeErr)), nil
-	}
-	return result, scopeErr
-}
-
-// frozenRestoreTimeout bounds the frozen-timestamp restore that follows a
-// zero-fill. The restore deliberately outlives a cancelled request, so it needs
-// a deadline of its own to keep a wedged metadata store from holding the
-// handler open after the client has gone.
-const frozenRestoreTimeout = 5 * time.Second
-
-// zeroFillChunkSize is the chunk we use to issue zero-fill writes. A single
-// 1 MiB scratch buffer keeps the steady-state RAM cost bounded while still
-// amortising the per-write metadata round-trip on multi-MB zero ranges.
-const zeroFillChunkSize = 1 << 20
-
-// errZeroFillCancelled is a sentinel for context-cancelled zero fills so the
-// caller can map back to STATUS_CANCELLED instead of a generic write error.
-var errZeroFillCancelled = errors.New("zero-fill cancelled")
-
-// zeroFillRange writes [start, end) as zeros through the standard
-// PrepareWrite/WriteAt/CommitWrite chain. The write is chunked so we never
-// allocate more than zeroFillChunkSize regardless of how large the requested
-// range is — smbtorture's hole-punch tests exercise multi-MB ranges.
-//
-// Reports whether any chunk committed. A caller repairing timestamps the
-// commits stamped needs to tell "failed having changed nothing" from "failed
-// partway", because those want different repairs.
-func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFile, start, end uint64) (bool, error) {
-	// SET_ZERO_DATA writes zeros through the handle's data stream; like WRITE it
-	// is handle-based (#1240). The open already authorized write against the DACL
-	// ceiling (the caller gated on FILE_WRITE_DATA), so the metadata layer must
-	// not re-deny on the file's POSIX mode / DOS-READONLY attribute.
-	authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
-	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
-	if err != nil {
-		return false, err
+	if fileOffset >= file.Size {
+		return NewResult(types.StatusSuccess, buildIoctlResponse(FsctlSetZeroData, fileID, nil)), nil
 	}
 
-	// The request's own context is captured before the scope wraps it, so the
-	// result can tell a client cancel apart from the write deadline below.
-	reqCtx := authCtx.Context
-	committed, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (bool, error) {
-		chunkLen := min(uint64(zeroFillChunkSize), end-start)
-		zeros := make([]byte, chunkLen)
-		// One deadline for every chunk the range is written in, not one per chunk:
-		// the scope's, since WithRequestDeadline keeps it. The cancel check below
-		// stays on the request's own context, so a client cancel is still told
-		// apart from the deadline ending a write.
-		writeCtx, cancel := common.WithRequestDeadline(authCtx.Context)
-		defer cancel()
-
-		committed := false
-		for offset := start; offset < end; {
-			if err := reqCtx.Err(); err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return committed, errZeroFillCancelled
-				}
-				return committed, err
-			}
-			remaining := min(end-offset, uint64(len(zeros)))
-			newSize := offset + remaining
-			writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
-			if err != nil {
-				return committed, err
-			}
-			if err := common.WriteToBlockStore(writeCtx, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
-				return committed, err
-			}
-			if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
-				return committed, err
-			}
-			committed = true
-			offset += remaining
-		}
-		return committed, nil
-	})
-	// A cancel that ends the wait for the scope is still a cancel. The write
-	// deadline is not: its error passes through, as on develop.
-	if err != nil && reqCtx.Err() != nil {
-		return committed, errZeroFillCancelled
-	}
-	return committed, err
+	// Zeroing a range inside the file writes content, and no content store is
+	// wired.
+	return NewErrorResult(types.StatusForErr(common.ErrNoContentStore)), nil
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -237,7 +236,6 @@ func (h *Handler) SetAttr(
 		// with the SetFileAttributes mutation(s) (H9). For the two-phase size+other
 		// case, Before comes from the first (size) call and After from the second.
 		var setWcc *metadata.DirWcc
-		sizeApplied := false
 		if hasSize && hasOtherAttrs {
 			// Apply size change first (separate call per RFC 5661)
 			sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
@@ -268,8 +266,6 @@ func (h *Handler) SetAttr(
 					AttrAfter:       wccAfter,
 				}, nil
 			}
-
-			sizeApplied = true
 
 			// Now apply other attributes (without size)
 			otherAttrs := metadata.SetAttrs{
@@ -303,37 +299,6 @@ func (h *Handler) SetAttr(
 		} else {
 			// Only size or only other attributes - single call is fine
 			setWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
-			sizeApplied = hasSize && err == nil
-		}
-
-		// SetFileAttributes prunes FileAttr.Blocks + size, but the per-share block
-		// store still holds the dropped CAS chunks and physical tail bytes. Drive
-		// the shared reclaim with the PRE-truncate snapshot (currentFile, captured
-		// before SetFileAttributes ran) so the engine reaps RefCount on every
-		// dropped block (#832) and a later re-extend reads zeros, not stale data.
-		// No-ops unless a genuine shrink; best-effort (metadata already committed).
-		// Same helper as NFSv4 SETATTR / CREATE-truncate and SMB SetEndOfFile.
-		//
-		// Gated on sizeApplied rather than on overall success, and placed before the
-		// error branch below: the size phase commits on its own, so a later phase
-		// being rejected leaves the blocks past the new size orphaned all the same.
-		//
-		// decision: the reclaim is best-effort and its failure is only logged, so
-		// the client is told NFS3OK with the tail still live. That covers every way
-		// it can fail -- a dead request context, an unresolvable block store, a
-		// failing reap -- not just the cancellation case, and the cost is more than
-		// wasted space: the helper exists because a later re-extend over an
-		// un-reclaimed tail reads the discarded bytes back as file content instead
-		// of a hole. Detaching the context would close the cancellation case alone
-		// and trade it for block-store I/O that outlives the request while holding
-		// the store-close lock. Withdraw the exemption -- fail the SETATTR, or
-		// queue the reclaim for retry -- if a re-extend ever reads back stale tail
-		// bytes in practice rather than in principle.
-		if sizeApplied {
-			if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, fileHandle, currentFile, *req.NewAttr.Size); rErr != nil {
-				logger.WarnCtx(ctx.Context, "SETATTR: block store truncate reclaim failed",
-					"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", rErr)
-			}
 		}
 
 		if err != nil {
@@ -393,32 +358,12 @@ func (h *Handler) SetAttr(
 			AttrAfter:       wccAfter,
 		}, nil
 	}
-	if req.NewAttr.Size == nil {
-		return apply(ctx)
-	}
-	file, err := metaSvc.GetFileForRead(ctx.Context, fileHandle)
-	if err != nil {
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
-	}
-	if file.PayloadID == "" {
-		return apply(ctx)
-	}
-	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, fileHandle)
-	if err != nil {
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
-	}
-	var response *SetAttrResponse
-	err = blockStore.WithPayloadScope(ctx.Context, []string{string(file.PayloadID)}, false, func(scopeCtx context.Context) error {
-		scoped := *ctx
-		scoped.Context = scopeCtx
-		var callErr error
-		response, callErr = apply(&scoped)
-		return callErr
-	})
-	if err != nil && response == nil {
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
-	}
-	return response, err
+	// A size change is metadata only: no content store is wired, so there is no
+	// content to cut or extend.
+	//
+	// decision: a shrink leaves the FileChunk rows past the new EOF until
+	// the cutover (package common, Size changes).
+	return apply(ctx)
 }
 
 // Request Validation

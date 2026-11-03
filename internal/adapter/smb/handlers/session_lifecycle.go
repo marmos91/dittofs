@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
@@ -397,11 +396,6 @@ func (h *Handler) closeFilesWithFilter(
 			_ = metaSvc.UnlockAllForOpen(ctx, metaHandle, openFile.OpenID())
 		}
 
-		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.GetPayloadID() != "" {
-			h.flushFileCache(ctx, openFile)
-		}
-
 		// Execute the delete-on-close decided above. TDIS / LOGOFF / disconnect
 		// skip the explicit CLOSE handler, so this is where the unlink happens
 		// for them. The target was snapshotted by the election, so a rename
@@ -540,35 +534,6 @@ func (h *Handler) closeFilesWithFilter(
 	}
 
 	return closed
-}
-
-// purgeBlockStorePayload best-effort deletes a deleted file's block-store
-// payload using that file's own stored PayloadID. Files created after #1166
-// PR-3 get a UUID-based PayloadID (metadata.buildPayloadID), so a recreate at
-// the same path now gets a fresh content_id and cannot collide with this
-// file's bytes. This purge is still required to reclaim the deleted file's
-// append-log/CAS state (otherwise its append log and tracked size would leak;
-// historically a path-derived recreate could even read its stale bytes —
-// e.g. a sparse hole surfacing non-zero bytes, smb2.ioctl.copy_chunk_sparse_dest).
-// Callers invoke this only AFTER the metadata removal succeeds, so a block-store
-// miss is harmless and GC reclaims any straggler CAS chunks; all errors are
-// logged at Debug and swallowed.
-
-func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.FileHandle, payloadID metadata.PayloadID, path, caller string) {
-	if payloadID == "" || len(handle) == 0 {
-		return
-	}
-	blockStore, err := common.ResolveForWrite(ctx, h.Registry, handle)
-	if err != nil {
-		return
-	}
-	// Pass nil blocks: the block store resolves this payload's manifest and
-	// reaps each row's refcount so the chunks become GC-eligible (#1433), in
-	// addition to purging the append log + tracked size.
-	if delErr := blockStore.Delete(ctx, string(payloadID), nil); delErr != nil {
-		logger.Debug(caller+": block-store payload delete failed (non-fatal)",
-			"path", path, "payloadID", payloadID, "error", delErr)
-	}
 }
 
 // handleDeleteOnClose performs the delete operation for files marked with
@@ -916,40 +881,6 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 		"filesClosed", filesClosed,
 		"treesDeleted", treesDeleted,
 		"leaked", leaked)
-}
-
-// flushFileCache flushes cached data for an open file.
-// This is a helper used during cleanup to ensure data durability.
-
-func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	payloadID := openFile.GetPayloadID()
-	if payloadID == "" {
-		return
-	}
-	// Snapshot once: a rename landing mid-flush would otherwise let the three
-	// log lines below name different paths for the same operation.
-	path := openFile.Name().Path
-
-	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("flushFileCache: block store not available for handle",
-			"path", path,
-			"error", err)
-		return
-	}
-
-	// Use blocking Flush for immediate durability
-	_, flushErr := blockStore.Flush(ctx, string(payloadID))
-	if flushErr != nil {
-		logger.Warn("flushFileCache: flush failed",
-			"path", path,
-			"payloadID", payloadID,
-			"error", flushErr)
-	} else {
-		logger.Debug("flushFileCache: flushed",
-			"path", path,
-			"payloadID", payloadID)
-	}
 }
 
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.

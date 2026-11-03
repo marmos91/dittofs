@@ -15,7 +15,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -352,34 +351,15 @@ func checkReadPermission(
 	return types.NFS4_OK
 }
 
-// resolveBlockStore resolves the per-share block store for ctx.CurrentFH,
-// taking the write path when forWrite is set. On failure it returns the
-// SERVERFAULT result the caller returns unchanged, tagged with op.
-//
-// The nil-Registry guard lives here rather than in common.ResolveFor* so the
-// NFSv4-specific concern stays out of the shared resolver.
-func (h *Handler) resolveBlockStore(ctx *types.CompoundContext, op uint32, forWrite bool) (*engine.Store, *types.CompoundResult) {
-	serverFault := func() *types.CompoundResult {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: op,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+// noContentStoreResult is the answer of an operation that reads or writes
+// file content: common.ErrNoContentStore, tagged with op.
+func noContentStoreResult(op uint32) *types.CompoundResult {
+	status := types.StatusForErr(common.ErrNoContentStore)
+	return &types.CompoundResult{
+		Status: status,
+		OpCode: op,
+		Data:   encodeStatusOnly(status),
 	}
-	if h.Registry == nil {
-		logger.Debug("NFSv4 no registry configured", "op", types.OpName(op), "client", ctx.ClientAddr)
-		return nil, serverFault()
-	}
-	resolve := common.ResolveForRead
-	if forWrite {
-		resolve = common.ResolveForWrite
-	}
-	blockStore, err := resolve(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
-	if err != nil {
-		logger.Debug("NFSv4 block store resolve failed", "op", types.OpName(op), "error", err, "client", ctx.ClientAddr)
-		return nil, serverFault()
-	}
-	return blockStore, nil
 }
 
 // getMetadataServiceForCtx returns the MetadataService from the handler's registry.

@@ -28,7 +28,6 @@ func TestAddShare_RequiresBlockStore(t *testing.T) {
 		metaSvcRegistrar{},
 		memBlockStoreProvider{},
 		journalDefaults(t, svc),
-		nil,
 	)
 	if err == nil {
 		t.Fatal("AddShare without a block store: want error, got nil")

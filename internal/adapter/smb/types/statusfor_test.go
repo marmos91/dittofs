@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -106,16 +105,10 @@ func TestStatusFor_NilDefaultsAndUnwrap(t *testing.T) {
 	if got := StatusForErr(wrapped); got != StatusDiskFull {
 		t.Errorf("StatusForErr(wrapped ErrNoSpace) = %d, want StatusDiskFull", got)
 	}
-	if got := StatusForErr(engine.ErrStoreClosed); got != StatusFileClosed {
-		t.Errorf("StatusForErr(ErrStoreClosed) = %d, want StatusFileClosed", got)
-	}
 	if got := StatusForLockErr(nil); got != StatusSuccess {
 		t.Errorf("StatusForLockErr(nil) = %d, want StatusSuccess", got)
 	}
 	if got := StatusForLockErr(fmt.Errorf("boom")); got != StatusInternalError {
 		t.Errorf("StatusForLockErr(non-StoreError) = %d, want StatusInternalError", got)
-	}
-	if got := StatusForLockErr(engine.ErrStoreClosed); got != StatusFileClosed {
-		t.Errorf("StatusForLockErr(ErrStoreClosed) = %d, want StatusFileClosed", got)
 	}
 }

@@ -236,14 +236,6 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	// default, so it has to be named here.
 	symlinkAttr := carriedAttr(removed, &metadata.FileAttr{Mode: 0o777})
 
-	// Delete content from block store (best-effort). RemoveFile returns an
-	// empty PayloadID when content must survive (hard link / recycle).
-	var removedPayloadID metadata.PayloadID
-	if removed != nil {
-		removedPayloadID = removed.PayloadID
-	}
-	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, name.Path, "SET_REPARSE_POINT")
-
 	symlink, _, err := metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
 	if err != nil {
 		// The placeholder is already unlinked; CreateSymlink failing would

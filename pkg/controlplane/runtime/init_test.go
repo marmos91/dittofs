@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -76,57 +75,6 @@ func createRemoteBlockStoreConfig(t *testing.T, s cpstore.Store, name string) st
 	return id
 }
 
-func TestPerShareBlockStoreLocalOnly(t *testing.T) {
-	rt, s := setupTestRuntime(t)
-	ctx := context.Background()
-
-	// Create a local block store config in the DB.
-	localID := createBlockStoreConfig(t, s, "test-local")
-
-	// Create a share in the DB referencing the local block store.
-	metaStores, _ := s.ListMetadataStores(ctx)
-	share := &models.Share{
-		Name:            "/test-share",
-		MetadataStoreID: metaStores[0].ID,
-		BlockStoreID:    localID,
-	}
-	if _, err := s.CreateShare(ctx, share); err != nil {
-		t.Fatalf("failed to create share: %v", err)
-	}
-
-	// Load shares (this creates BlockStores).
-	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
-		t.Fatalf("LoadSharesFromStore failed: %v", err)
-	}
-
-	// Verify share exists with non-nil BlockStore.
-	shareObj, err := rt.GetShare("/test-share")
-	if err != nil {
-		t.Fatalf("GetShare failed: %v", err)
-	}
-	if shareObj.BlockStore == nil {
-		t.Fatal("expected non-nil BlockStore after local-only init")
-	}
-
-	// Verify BlockStore works: write and read back data.
-	testData := []byte("hello per-share")
-	if _, err := shareObj.BlockStore.WriteAt(ctx, "test-payload", nil, testData, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	readBuf := make([]byte, len(testData))
-	n, err := shareObj.BlockStore.ReadAt(ctx, "test-payload", readBuf, 0)
-	if err != nil {
-		t.Fatalf("ReadAt failed: %v", err)
-	}
-	if n != len(testData) {
-		t.Errorf("expected %d bytes, got %d", len(testData), n)
-	}
-	if string(readBuf) != string(testData) {
-		t.Errorf("expected %q, got %q", testData, readBuf)
-	}
-}
-
 // TestLoadSharesResolvesBlockStoreByName reproduces #1312: a share whose
 // local_block_store_id (and remote_block_store_id) column holds the block
 // store *name* rather than its UUID — the shape persisted by the
@@ -167,47 +115,17 @@ func TestLoadSharesResolvesBlockStoreByName(t *testing.T) {
 		t.Fatalf("LoadSharesFromStore failed: %v", err)
 	}
 
-	shareObj, err := rt.GetShare("/demo")
-	if err != nil {
-		t.Fatalf("share /demo did not load after restart (block store not resolved by name): %v", err)
+	if !rt.ShareExists("/demo") {
+		t.Fatal("share /demo did not load after restart (block store not resolved by name)")
 	}
-	if shareObj.BlockStore == nil {
-		t.Fatal("expected non-nil BlockStore for share referencing block stores by name")
-	}
-	if shareObj.BlockStore.RemoteStore() == nil {
-		t.Fatal("expected non-nil remote store for share referencing remote block store by name")
-	}
-
-	// Sanity: the resolved local store is usable.
-	data := []byte("by-name resolution works")
-	if _, err := shareObj.BlockStore.WriteAt(ctx, "payload", nil, data, 0); err != nil {
-		t.Fatalf("WriteAt on name-resolved block store failed: %v", err)
-	}
-	buf := make([]byte, len(data))
-	if _, err := shareObj.BlockStore.ReadAt(ctx, "payload", buf, 0); err != nil {
-		t.Fatalf("ReadAt on name-resolved block store failed: %v", err)
-	}
-	if string(buf) != string(data) {
-		t.Errorf("expected %q, got %q", data, buf)
+	if entries := rt.sharesSvc.DistinctRemoteStores(); len(entries) != 1 {
+		t.Fatalf("expected the name-resolved remote store to be bound, got %d", len(entries))
 	}
 }
 
-// TestRebindShareBlockStore_Live exercises the #1532 hot-reload: changing a
-// running share's block-store binding takes effect live, with no restart.
-//
-// Every share has exactly one block store, so a rebind repoints it rather than
-// attaching or detaching one. That costs the test its old observation: it used
-// to watch RemoteStore() go nil -> non-nil -> nil. Both states are non-nil now,
-// and pointer identity says nothing either, because a rebind tears the store
-// down and rebuilds it even when the target is unchanged. Which remote is
-// bound is not observable from outside the block store, so what is asserted
-// here is the rebind path's contract: a binding it cannot resolve is refused,
-// and the share is still writable afterwards either way.
-//
-// Two mechanisms deliver that survival — a pre-flight resolve before teardown,
-// and a rebuild of the previous binding if the new store fails to build — so
-// disabling either one alone leaves this passing. Disabling both fails it with
-// "block store is closed", which is the damage it exists to catch.
+// TestRebindShareBlockStore_Live exercises the hot-reload: changing a running
+// share's block-store binding moves it onto the new remote store live, and a
+// binding that cannot be resolved is refused with the old one kept.
 func TestRebindShareBlockStore_Live(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
@@ -240,278 +158,27 @@ func TestRebindShareBlockStore_Live(t *testing.T) {
 			t.Fatalf("UpdateShare: %v", err)
 		}
 	}
-	writable := func(what string) {
+	bound := func(want string) {
 		t.Helper()
-		shareObj, err := rt.GetShare("/reb")
-		if err != nil {
-			t.Fatalf("GetShare (%s): %v", what, err)
-		}
-		if _, err := shareObj.BlockStore.WriteAt(ctx, "payload", nil, []byte("ok"), 0); err != nil {
-			t.Fatalf("WriteAt (%s): %v", what, err)
+		entries := rt.sharesSvc.DistinctRemoteStores()
+		if len(entries) != 1 || entries[0].ConfigID != want {
+			t.Fatalf("bound remotes = %+v, want exactly %s", entries, want)
 		}
 	}
 
-	writable("before any rebind")
+	bound(storeA)
 
-	// A binding that does not resolve must be refused BEFORE the live store is
-	// torn down, so a bad PUT cannot take a serving share down with it.
 	bind("no-such-store")
-	if err := rt.RebindShareBlockStore(ctx, "/reb", storeA); err == nil {
+	if err := rt.RebindShareBlockStore(ctx, "/reb"); err == nil {
 		t.Fatal("rebind to an unknown block store must be refused")
 	}
-	writable("after a refused rebind")
+	bound(storeA)
 
-	// A resolvable binding is applied live.
 	bind(storeB)
-	if err := rt.RebindShareBlockStore(ctx, "/reb", storeA); err != nil {
+	if err := rt.RebindShareBlockStore(ctx, "/reb"); err != nil {
 		t.Fatalf("rebind A->B: %v", err)
 	}
-	writable("after rebinding to B")
-
-	// And again, back the other way.
-	bind(storeA)
-	if err := rt.RebindShareBlockStore(ctx, "/reb", storeB); err != nil {
-		t.Fatalf("rebind B->A: %v", err)
-	}
-	writable("after rebinding back to A")
-}
-
-func TestPerShareBlockStoreIsolation(t *testing.T) {
-	rt, s := setupTestRuntime(t)
-	ctx := context.Background()
-
-	// Create two different local block store configs (both memory type for speed).
-	localID1 := createBlockStoreConfig(t, s, "local-1")
-	localID2 := createBlockStoreConfig(t, s, "local-2")
-
-	metaStores, _ := s.ListMetadataStores(ctx)
-	metaID := metaStores[0].ID
-
-	// Create two shares in DB.
-	share1 := &models.Share{
-		Name:            "/share-1",
-		MetadataStoreID: metaID,
-		BlockStoreID:    localID1,
-	}
-	if _, err := s.CreateShare(ctx, share1); err != nil {
-		t.Fatalf("failed to create share-1: %v", err)
-	}
-
-	share2 := &models.Share{
-		Name:            "/share-2",
-		MetadataStoreID: metaID,
-		BlockStoreID:    localID2,
-	}
-	if _, err := s.CreateShare(ctx, share2); err != nil {
-		t.Fatalf("failed to create share-2: %v", err)
-	}
-
-	// Load shares.
-	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
-		t.Fatalf("LoadSharesFromStore failed: %v", err)
-	}
-
-	s1, _ := rt.GetShare("/share-1")
-	s2, _ := rt.GetShare("/share-2")
-
-	if s1.BlockStore == nil || s2.BlockStore == nil {
-		t.Fatal("both shares should have non-nil BlockStores")
-	}
-
-	// Write data to share-1.
-	data1 := []byte("data for share 1")
-	if _, err := s1.BlockStore.WriteAt(ctx, "payload-1", nil, data1, 0); err != nil {
-		t.Fatalf("share-1 WriteAt failed: %v", err)
-	}
-
-	// Write different data to share-2.
-	data2 := []byte("data for share 2")
-	if _, err := s2.BlockStore.WriteAt(ctx, "payload-2", nil, data2, 0); err != nil {
-		t.Fatalf("share-2 WriteAt failed: %v", err)
-	}
-
-	// Verify share-1 does NOT see share-2's data (different local stores).
-	readBuf1 := make([]byte, len(data2))
-	_, err := s1.BlockStore.ReadAt(ctx, "payload-2", readBuf1, 0)
-	// For memory local stores, this should either return zero-filled buffer or
-	// the data won't be found. Since both are memory stores but separate instances,
-	// the data should not be present.
-	if err == nil {
-		// Data was read. With separate memory stores, the buffer should be zeros.
-		isZero := true
-		for _, b := range readBuf1 {
-			if b != 0 {
-				isZero = false
-				break
-			}
-		}
-		if !isZero {
-			t.Error("share-1's BlockStore should not see share-2's payload-2 data")
-		}
-	}
-
-	// Verify share-2 does NOT see share-1's data.
-	readBuf2 := make([]byte, len(data1))
-	_, err = s2.BlockStore.ReadAt(ctx, "payload-1", readBuf2, 0)
-	if err == nil {
-		isZero := true
-		for _, b := range readBuf2 {
-			if b != 0 {
-				isZero = false
-				break
-			}
-		}
-		if !isZero {
-			t.Error("share-2's BlockStore should not see share-1's payload-1 data")
-		}
-	}
-
-	// Verify each share can read its OWN data.
-	readBuf1Own := make([]byte, len(data1))
-	n, err := s1.BlockStore.ReadAt(ctx, "payload-1", readBuf1Own, 0)
-	if err != nil {
-		t.Fatalf("share-1 ReadAt own data failed: %v", err)
-	}
-	if n != len(data1) || string(readBuf1Own) != string(data1) {
-		t.Errorf("share-1 read back: expected %q, got %q", data1, readBuf1Own)
-	}
-
-	readBuf2Own := make([]byte, len(data2))
-	n, err = s2.BlockStore.ReadAt(ctx, "payload-2", readBuf2Own, 0)
-	if err != nil {
-		t.Fatalf("share-2 ReadAt own data failed: %v", err)
-	}
-	if n != len(data2) || string(readBuf2Own) != string(data2) {
-		t.Errorf("share-2 read back: expected %q, got %q", data2, readBuf2Own)
-	}
-}
-
-func TestPerShareBlockStoreRemoteSharing(t *testing.T) {
-	rt, s := setupTestRuntime(t)
-	ctx := context.Background()
-
-	// Create a SHARED remote block store config.
-	remoteID := createRemoteBlockStoreConfig(t, s, "shared-remote")
-
-	metaStores, _ := s.ListMetadataStores(ctx)
-	metaID := metaStores[0].ID
-
-	// Create two shares referencing the SAME remote block store.
-	share1 := &models.Share{
-		Name:            "/remote-share-1",
-		MetadataStoreID: metaID,
-		BlockStoreID:    remoteID,
-	}
-	if _, err := s.CreateShare(ctx, share1); err != nil {
-		t.Fatalf("failed to create remote-share-1: %v", err)
-	}
-
-	share2 := &models.Share{
-		Name:            "/remote-share-2",
-		MetadataStoreID: metaID,
-		BlockStoreID:    remoteID,
-	}
-	if _, err := s.CreateShare(ctx, share2); err != nil {
-		t.Fatalf("failed to create remote-share-2: %v", err)
-	}
-
-	// Load shares.
-	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
-		t.Fatalf("LoadSharesFromStore failed: %v", err)
-	}
-
-	s1, _ := rt.GetShare("/remote-share-1")
-	s2, _ := rt.GetShare("/remote-share-2")
-
-	if s1.BlockStore == nil || s2.BlockStore == nil {
-		t.Fatal("both shares should have non-nil BlockStores")
-	}
-
-	// Both BlockStores should have non-nil remote stores.
-	remote1 := s1.BlockStore.RemoteStore()
-	remote2 := s2.BlockStore.RemoteStore()
-	if remote1 == nil || remote2 == nil {
-		t.Fatal("both BlockStores should have non-nil remote stores")
-	}
-
-	// Verify shared remote: write via share-1's remote, visible via share-2's remote.
-	testData := []byte("shared remote data")
-	const blockID = "shared-remote-block"
-	if err := remote1.PutBlock(ctx, blockID, bytes.NewReader(testData)); err != nil {
-		t.Fatalf("write to shared remote via share-1 failed: %v", err)
-	}
-	readBack, err := remote2.GetBlock(ctx, blockID)
-	if err != nil {
-		t.Fatalf("read from shared remote via share-2 failed: %v", err)
-	}
-	if string(readBack) != string(testData) {
-		t.Errorf("expected %q from shared remote, got %q", testData, readBack)
-	}
-
-	// Remove share-1. Remote store should still be open (ref count > 0).
-	if err := rt.RemoveShare("/remote-share-1"); err != nil {
-		t.Fatalf("RemoveShare failed: %v", err)
-	}
-
-	// share-2's remote store should still work.
-	if err := s2.BlockStore.RemoteStore().HealthCheck(ctx); err != nil {
-		t.Fatalf("remote store should still be healthy after removing one share: %v", err)
-	}
-
-	// Remove share-2. Now the remote store should be fully cleaned up.
-	if err := rt.RemoveShare("/remote-share-2"); err != nil {
-		t.Fatalf("RemoveShare for share-2 failed: %v", err)
-	}
-
-	// Verify both shares are gone.
-	if rt.ShareExists("/remote-share-1") || rt.ShareExists("/remote-share-2") {
-		t.Error("shares should not exist after removal")
-	}
-}
-
-func TestRemoveShareClosesBlockStore(t *testing.T) {
-	rt, s := setupTestRuntime(t)
-	ctx := context.Background()
-
-	localID := createBlockStoreConfig(t, s, "local-close")
-
-	metaStores, _ := s.ListMetadataStores(ctx)
-	metaID := metaStores[0].ID
-
-	share := &models.Share{
-		Name:            "/close-test",
-		MetadataStoreID: metaID,
-		BlockStoreID:    localID,
-	}
-	if _, err := s.CreateShare(ctx, share); err != nil {
-		t.Fatalf("failed to create share: %v", err)
-	}
-
-	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
-		t.Fatalf("LoadSharesFromStore failed: %v", err)
-	}
-
-	shareObj, _ := rt.GetShare("/close-test")
-	if shareObj.BlockStore == nil {
-		t.Fatal("expected non-nil BlockStore")
-	}
-	bs := shareObj.BlockStore
-
-	// Remove the share.
-	if err := rt.RemoveShare("/close-test"); err != nil {
-		t.Fatalf("RemoveShare failed: %v", err)
-	}
-
-	// Verify share is gone from registry.
-	if rt.ShareExists("/close-test") {
-		t.Error("share should not exist after removal")
-	}
-
-	// Verify write to the closed BlockStore returns an error.
-	// After Close(), the syncer and local store are stopped. Depending on the
-	// implementation, WriteAt may return an error or silently succeed to the
-	// closed memory store. We just verify no panic occurs.
-	_, _ = bs.WriteAt(ctx, "post-close-payload", nil, []byte("should fail or noop"), 0)
+	bound(storeB)
 }
 
 // A share whose block store reference resolves to nothing is reported by name,

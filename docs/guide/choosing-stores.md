@@ -53,7 +53,7 @@ absorbs writes, and hands them to an async syncer that offloads them to the bloc
 - Run **`s3`** for real workloads: writes hit the journal first and sync to S3 in the
   background; reads are served from the journal and fetched from S3 on miss.
 - Size the journal to your hot set with the per-share `--journal-size`. Leaving it unset
-  means no configured ceiling — see [Configuration § Journal size](configuration.md#journal-size-and-eviction).
+  means no configured ceiling.
 - DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
   MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
   Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —

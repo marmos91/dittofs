@@ -16,8 +16,7 @@ import (
 const hardlinkTestShareName = "/hl"
 
 // newHardlinkTestShare builds a memory-backed runtime holding one empty share
-// and returns it with that share's root handle and a root auth context. Tests
-// that need a plain context for block-store calls take authCtx.Context.
+// and returns it with that share's root handle and a root auth context.
 func newHardlinkTestShare(t *testing.T) (*runtime.Runtime, metadata.FileHandle, *metadata.AuthContext) {
 	t.Helper()
 	ctx := context.Background()
@@ -66,10 +65,9 @@ func newHardlinkTestShare(t *testing.T) (*runtime.Runtime, metadata.FileHandle, 
 	}
 }
 
-// createHardlinkTestFile creates name under parent holding size bytes of a
-// non-zero pattern, and returns the file's handle with the payload id backing
-// its content. The write is flushed, so the bytes are the block store's to
-// keep or reclaim by the time the caller drives a handler.
+// createHardlinkTestFile creates name under parent with a committed size of
+// size bytes, and returns the file's handle with the payload id backing its
+// content. No content store is wired, so the bytes themselves are not stored.
 func createHardlinkTestFile(
 	t *testing.T,
 	rt *runtime.Runtime,
@@ -79,7 +77,6 @@ func createHardlinkTestFile(
 	size int,
 ) (metadata.FileHandle, string) {
 	t.Helper()
-	ctx := authCtx.Context
 	metaSvc := rt.GetMetadataService()
 
 	file, _, err := metaSvc.CreateFile(authCtx, parent, name, &metadata.FileAttr{
@@ -92,20 +89,9 @@ func createHardlinkTestFile(
 	if err != nil {
 		t.Fatalf("EncodeFileHandle %s: %v", name, err)
 	}
-	bs, err := rt.GetBlockStoreForHandle(ctx, handle)
-	if err != nil {
-		t.Fatalf("GetBlockStoreForHandle %s: %v", name, err)
-	}
 	wop, err := metaSvc.PrepareWrite(authCtx, handle, uint64(size))
 	if err != nil {
 		t.Fatalf("PrepareWrite %s: %v", name, err)
-	}
-	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte((i % 251) + 1)
-	}
-	if _, err := bs.WriteAt(ctx, string(wop.PayloadID), nil, data, 0); err != nil {
-		t.Fatalf("WriteAt %s: %v", name, err)
 	}
 	if _, err := metaSvc.CommitWrite(authCtx, wop); err != nil {
 		t.Fatalf("CommitWrite %s: %v", name, err)
@@ -144,69 +130,136 @@ func openHardlinkTestFile(
 	return h, open
 }
 
-// TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload pins that a SET_INFO
-// FileLinkInformation with ReplaceIfExists=TRUE frees the content of the file it
-// replaced, not just its directory entry. The metadata layer deliberately never
-// deletes payload bytes — RemoveFile returns the removed file's PayloadID so the
-// handler can — and a handler that ignores that return leaves the replaced
-// file's records indexed as live in the local tier, where no reclamation path
-// treats them as dead and the bytes survive every restart.
-//
-// Asserting on observable block-store state pins both directions: the replaced
-// file's payload must be gone AND the newly linked file's payload must survive,
-// so releasing the wrong payload fails here instead of passing.
-func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
-	rt, rootHandle, authCtx := newHardlinkTestShare(t)
-	ctx := authCtx.Context
+// setupWriteTestShare wires a handler + runtime + the caller's metadata store
+// with a single read-write share, commits a small write's size to a file named
+// "data" under the share root (no content store is wired, so no bytes are
+// stored), and registers an OpenFile for it. A
+// nil metaStore uses a plain memory metadata store. Returns the handler, a
+// primed SMBHandlerContext, the file's metadata handle, and the FileID of the
+// registered OpenFile.
+func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMBHandlerContext, metadata.FileHandle, [16]byte) {
+	t.Helper()
+	ctx := context.Background()
 
-	// The file that ReplaceIfExists will destroy, and the file being linked
-	// over it. Distinct sizes so a mixed-up payload id cannot pass unnoticed.
-	_, victimPayload := createHardlinkTestFile(t, rt, authCtx, rootHandle, "victim.bin", 4096)
-	srcHandle, srcPayload := createHardlinkTestFile(t, rt, authCtx, rootHandle, "src.bin", 2048)
-
-	// Equal ids would make the two assertions below contradictory, so the test
-	// would fail either way; this just names the broken setup instead of
-	// reporting it as a handler bug.
-	if victimPayload == srcPayload {
-		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
-	}
-
-	bs, err := rt.GetBlockStoreForHandle(ctx, srcHandle)
+	cps, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
 	if err != nil {
-		t.Fatalf("GetBlockStoreForHandle: %v", err)
+		t.Fatalf("cpstore.New: %v", err)
 	}
-	exists := func(payloadID string) bool {
-		t.Helper()
-		ok, err := bs.Exists(ctx, payloadID)
-		if err != nil {
-			t.Fatalf("Exists %s: %v", payloadID, err)
-		}
-		return ok
+	rt := newTestRuntime(t, cps)
+
+	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "flushmeta", Type: "badger", Config: `{"in_memory":true}`}); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	if !exists(victimPayload) {
-		t.Fatalf("setup broken: victim payload %q absent before the hardlink replace", victimPayload)
+	if metaStore == nil {
+		metaStore = badgertest.NewInMemory(t)
+	}
+	if err := rt.RegisterMetadataStore("flushmeta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	h, open := openHardlinkTestFile(t, rt, rootHandle, srcHandle, "src.bin")
-
-	// Hard-link src.bin onto the existing name victim.bin, replacing it.
-	buf := encodeFileLinkInfoWire(t, true, [8]byte{}, "victim.bin")
-	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileLinkInformation, buf)
-	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
-		t.Fatalf("setFileInfoFromStore(FileLinkInformation): err=%v resp=%v", err, resp)
+	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "flushbs", Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	if exists(victimPayload) {
-		size, sizeErr := bs.GetSize(ctx, victimPayload)
-		if sizeErr != nil {
-			t.Errorf("replaced payload %q still present after the hardlink replace (size unreadable: %v)", victimPayload, sizeErr)
-		} else {
-			t.Errorf("replaced payload %q still holds %d live bytes after the hardlink replace", victimPayload, size)
-		}
+	const shareName = "/flush"
+	if err := rt.AddShare(ctx, &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "flushmeta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
+		RootAttr: &metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o777,
+		},
+	}); err != nil {
+		t.Fatalf("AddShare: %v", err)
 	}
-	if !exists(srcPayload) {
-		t.Errorf("linked file's payload %q was dropped by the hardlink replace", srcPayload)
+
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
 	}
+
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:  ctx,
+		Identity: &metadata.Identity{UID: &uid, GID: &gid},
+	}
+	metaSvc := rt.GetMetadataService()
+
+	const fileName = "data"
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, fileName, &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	payload := []byte("payload-that-must-flush")
+	writeOp, err := metaSvc.PrepareWrite(authCtx, fileHandle, uint64(len(payload)))
+	if err != nil {
+		t.Fatalf("PrepareWrite: %v", err)
+	}
+	if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
+		t.Fatalf("CommitWrite: %v", err)
+	}
+
+	committed, err := metaSvc.GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile post-write: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+
+	const callerUID, callerGID uint32 = 1000, 1000
+	suid, sgid := callerUID, callerGID
+	sess := h.CreateSession("127.0.0.1:12345", false, "test-user", "")
+	sess.User = &models.User{
+		Username: "test-user",
+		UID:      &suid,
+		Groups:   []models.Group{{GID: &sgid}},
+	}
+
+	const treeID uint32 = 1
+	h.StoreTree(&TreeConnection{
+		TreeID:     treeID,
+		SessionID:  sess.SessionID,
+		ShareName:  shareName,
+		Permission: models.PermissionReadWrite,
+	})
+
+	fileID := [16]byte{7}
+	openFile := (&OpenFile{
+		FileID:         fileID,
+		TreeID:         treeID,
+		SessionID:      sess.SessionID,
+		ShareName:      shareName,
+		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
+		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
+		MetadataHandle: fileHandle,
+		PayloadID:      committed.PayloadID,
+	}).WithName(OpenName{Path: fileName, FileName: fileName, ParentHandle: rootHandle})
+	h.StoreOpenFile(openFile)
+
+	smbCtx := &SMBHandlerContext{
+		Context:   ctx,
+		SessionID: sess.SessionID,
+		TreeID:    treeID,
+		ShareName: shareName,
+	}
+
+	return h, smbCtx, fileHandle, fileID
 }
 
 // TestSetInfo_HardlinkReplace_SelfLinkKeepsContent pins that linking a file
@@ -214,23 +267,14 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 //
 // ReplaceIfExists removes the existing destination before creating the link. If
 // that destination IS the file being linked, and it holds the only link, the
-// removal drops the last link and hands back a non-empty PayloadID — so
-// releasing those bytes destroys the very content the operation was supposed to
-// leave in place, while CreateHardLink resurrects the name over nothing. The
-// client sees STATUS_SUCCESS and a file whose contents are gone.
-//
-// This is why the release is guarded on the destination being a different
-// inode, and this test is what proves the guard fires.
+// removal drops the last link, and CreateHardLink then resurrects the name over
+// a different inode. The name must keep resolving to the same file, with its
+// size and the payload behind it.
 func TestSetInfo_HardlinkReplace_SelfLinkKeepsContent(t *testing.T) {
 	rt, rootHandle, authCtx := newHardlinkTestShare(t)
 	ctx := authCtx.Context
 
 	handle, payloadID := createHardlinkTestFile(t, rt, authCtx, rootHandle, "a.txt", 4096)
-	bs, err := rt.GetBlockStoreForHandle(ctx, handle)
-	if err != nil {
-		t.Fatalf("GetBlockStoreForHandle: %v", err)
-	}
-
 	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
 
 	// Link a.txt onto its own name with ReplaceIfExists set.
@@ -240,15 +284,15 @@ func TestSetInfo_HardlinkReplace_SelfLinkKeepsContent(t *testing.T) {
 		t.Fatalf("setFileInfoFromStore(self link): err=%v resp=%v", err, resp)
 	}
 
-	// The name must survive, and so must the bytes behind it.
-	if _, cErr := rt.GetMetadataService().GetChild(ctx, rootHandle, "a.txt"); cErr != nil {
+	child, cErr := rt.GetMetadataService().GetChild(ctx, rootHandle, "a.txt")
+	if cErr != nil {
 		t.Fatalf("a.txt no longer resolves after linking it onto its own name: %v", cErr)
 	}
-	stillThere, exErr := bs.Exists(ctx, payloadID)
-	if exErr != nil {
-		t.Fatalf("Exists: %v", exErr)
+	file, err := rt.GetMetadataService().GetFile(ctx, child)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
 	}
-	if !stillThere {
-		t.Errorf("payload %q was destroyed by linking a.txt onto its own name", payloadID)
+	if string(file.PayloadID) != payloadID || file.Size != 4096 {
+		t.Errorf("a.txt after a self link = payload %q size %d, want payload %q size 4096", file.PayloadID, file.Size, payloadID)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -150,7 +149,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	tgtBeforeCtime := uint64(tgtDirFile.Ctime.UnixNano())
 
 	// Perform the rename: Move(fromDir, fromName, toDir, toName)
-	clobbered, _, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
+	_, _, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
 	if renameErr != nil {
 		status := types.StatusForErr(renameErr)
 		logger.Debug("NFSv4 RENAME failed",
@@ -164,16 +163,6 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 			OpCode: types.OP_RENAME,
 			Data:   encodeStatusOnly(status),
 		}
-	}
-
-	// Free the bytes of whatever this rename renamed over. The rename is
-	// already committed and the client has its answer, so a failure to release
-	// them is logged rather than surfaced.
-	if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, tgtDirHandle, clobbered); relErr != nil {
-		logger.Warn("NFSv4 RENAME: failed to delete clobbered content",
-			"newname", newName,
-			"payload_id", clobbered.PayloadID,
-			"error", relErr)
 	}
 
 	// Get post-operation attributes for both directories

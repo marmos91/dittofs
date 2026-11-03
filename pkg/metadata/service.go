@@ -100,9 +100,8 @@ type Service struct {
 
 	// xattrStreamReader, if set, reads the content of a named-stream child File
 	// so the xattr resolver can surface stream-backed xattr values (the
-	// stream-entity backing). It is wired by the runtime layer, which has
-	// block-store access (GetBlockStoreForHandle + engine.Store.ReadAt); the
-	// metadata Service stays block-engine-agnostic. Nil (the default) leaves
+	// stream-entity backing). It is wired by the runtime layer, which owns
+	// content access; the metadata Service stays block-engine-agnostic. Nil (the default) leaves
 	// stream NAMES enumerable via ListXattr but makes GetXattr report a
 	// stream-only name as absent. Installed via SetXattrStreamReader.
 	xattrStreamReader StreamContentReader

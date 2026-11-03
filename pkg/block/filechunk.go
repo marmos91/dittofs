@@ -158,18 +158,14 @@ type EngineFileChunkStore interface {
 	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 }
 
-// FlushResult indicates the outcome of a flush operation. The full
-// (Finalized, err) state machine and the caller-retry guidance live on
-// engine.Store.Flush in pkg/block/engine, which produces every value of this
-// type. It cannot be linked from here: that package imports this one.
+// FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {
 	// Finalized indicates all blocks have been synced to the backend
 	// store. When false alongside a nil error, the call hit a soft
 	// non-fatal condition (remote unhealthy or another mirror pass
 	// already in flight); the dirty state is unchanged and will be
 	// re-attempted by the next Flush or the periodic uploader. Callers
-	// MUST NOT spin-retry on Finalized=false — see engine.Store.Flush in
-	// pkg/block/engine.
+	// MUST NOT spin-retry on Finalized=false.
 	Finalized bool
 }
 

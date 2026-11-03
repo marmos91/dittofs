@@ -485,11 +485,10 @@ func (h *Handler) handleOpenClaimNull(
 						"client", ctx.ClientAddr)
 					return openError(types.NFS4ERR_OPENMODE)
 				}
-				// child was fetched via Lookup above and still reflects the full
-				// pre-truncate extent, so it is the pre-op snapshot the reclaim
-				// needs. Shared with the SETATTR path.
+				// decision: a shrink leaves the FileChunk rows past the new EOF until
+				// the cutover (package common, Size changes).
 				truncate := &metadata.SetAttrs{Size: createAttrs.Size}
-				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, truncate); setErr != nil {
+				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, truncate); setErr != nil {
 					return openError(types.StatusForErr(setErr))
 				}
 			}

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -28,30 +27,12 @@ func (h *Handler) setFileInfoFromStore(
 	class types.FileInfoClass,
 	buffer []byte,
 ) (*SetInfoResponse, error) {
-	if (class != types.FileEndOfFileInformation && class != types.FileAllocationInformation) || len(buffer) < 8 {
-		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
-	}
-	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
-	if err != nil {
-		return setInfoStatus(types.StatusForErr(err)), nil
-	}
-	if file.PayloadID == "" {
-		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
-	}
-	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
-	if err != nil {
-		return setInfoStatus(types.StatusForErr(err)), nil
-	}
-	result, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (*SetInfoResponse, error) {
-		// Size operations use authCtx.Context for metadata and payload I/O.
-		// Keep the dispatcher's context so it receives their PostSend hooks.
-		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
-	})
-	if err != nil && result == nil {
-		return setInfoStatus(types.StatusForErr(err)), nil
-	}
-	return result, err
+	// Size changes are metadata only: no content store is wired, so there is
+	// no content to cut or extend.
+	//
+	// decision: a shrink leaves the FileChunk rows past the new EOF until
+	// the cutover (package common, Size changes).
+	return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
 }
 
 func (h *Handler) applyFileInfoFromStore(
@@ -547,9 +528,8 @@ func (h *Handler) applyFileInfoFromStore(
 			// restore below can tell Move's own stamp from a peer's advance.
 			preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
 
-			var clobberedStream *metadata.File
 			var renameWcc *metadata.RenameWcc
-			clobberedStream, renameWcc, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
+			_, renameWcc, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
 					"from", oldFileName,
@@ -559,12 +539,6 @@ func (h *Handler) applyFileInfoFromStore(
 			}
 
 			h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
-
-			// Renaming a stream onto an existing stream name unlinks the
-			// stream that was there; free its content.
-			if clobberedStream != nil {
-				h.purgeBlockStorePayload(ctx.Context, toDir, clobberedStream.PayloadID, toName, "SET_INFO stream rename")
-			}
 
 			// Move's LastChangeTime stamp is an automatic update, so a
 			// timestamp frozen on this handle has to be put back the same way
@@ -1003,16 +977,11 @@ func (h *Handler) applyFileInfoFromStore(
 		// sibling entry. Remove the matched-case destination upfront so Move
 		// inserts the source under the client-requested casing.
 		if isOverwrite && dstMatchedName != "" && dstMatchedName != toName {
-			removed, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName)
+			_, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName)
 			if rmErr != nil {
 				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
 					"name", dstMatchedName, "error", rmErr)
 				return setInfoStatus(types.StatusForErr(rmErr)), nil
-			}
-			// RemoveFile drops the name and the inode but never the bytes; its
-			// PayloadID is empty whenever the content must survive.
-			if removed != nil {
-				h.purgeBlockStorePayload(ctx.Context, toDir, removed.PayloadID, dstMatchedName, "SET_INFO rename overwrite")
 			}
 		}
 
@@ -1023,9 +992,8 @@ func (h *Handler) applyFileInfoFromStore(
 		// Move stamps the renamed inode's LastChangeTime. A client holding
 		// this handle open must keep observing the ChangeTime it was handed at
 		// CREATE, so put the pre-rename value back.
-		var clobbered *metadata.File
 		var renameWcc *metadata.RenameWcc
-		clobbered, renameWcc, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
+		_, renameWcc, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Name().Path,
@@ -1035,13 +1003,6 @@ func (h *Handler) applyFileInfoFromStore(
 		}
 
 		h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
-
-		// The pre-remove above only fires for a case-mismatched destination, so
-		// an exact-case ReplaceIfExists overwrite reaches Move's own clobber
-		// path instead, and its victim's bytes are released here.
-		if clobbered != nil {
-			h.purgeBlockStorePayload(ctx.Context, toDir, clobbered.PayloadID, toName, "SET_INFO rename")
-		}
 
 		// Move's LastChangeTime stamp is an automatic update, so a timestamp
 		// frozen on this handle has to be put back the same way WRITE and
@@ -1381,12 +1342,6 @@ func (h *Handler) applyFileInfoFromStore(
 			Size: &newSize,
 		}
 
-		// Snapshot the pre-truncate file BEFORE SetFileAttributes prunes
-		// FileAttr.Blocks, so the block-store truncate reclaim below can reap
-		// RefCount on every dropped block and discard the physical tail bytes.
-		// Best-effort: a snapshot failure only forfeits reclaim, not the op.
-		preFile, _ := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-
 		// Capture the stored ChangeTime before SetFileAttributes stamps it, so
 		// the frozen restore below can tell the truncate's own stamp from a
 		// peer's advance.
@@ -1396,16 +1351,6 @@ func (h *Handler) applyFileInfoFromStore(
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(types.StatusForErr(err)), nil
-		}
-
-		// Physically discard block data past the new EOF. SetFileAttributes
-		// only prunes the metadata block list + size; without this the tail
-		// bytes survive and a later re-extend re-exposes them as file content
-		// instead of a zero-filled hole (data-integrity / info-leak bug). NFS
-		// SETATTR/CREATE-truncate drive the same common helper.
-		if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, preFile, newSize); rErr != nil {
-			logger.Warn("SET_INFO: block store truncate reclaim failed",
-				"path", openFile.Name().Path, "size", newSize, "error", rErr)
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
@@ -1526,14 +1471,6 @@ func (h *Handler) applyFileInfoFromStore(
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
 							"path", openFile.Name().Path, "error", err)
 						return setInfoStatus(types.StatusForErr(err)), nil
-					}
-					// Discard block data past the new EOF (curFile is the pre-op
-					// snapshot). Same reclaim the FileEndOfFileInformation path
-					// drives — without it a later re-extend re-exposes the tail
-					// bytes as content instead of zeros.
-					if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, curFile, requested); rErr != nil {
-						logger.Warn("SET_INFO: allocation-driven block truncate reclaim failed",
-							"path", openFile.Name().Path, "size", requested, "error", rErr)
 					}
 					h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 					flushSmbDelayedWrite(openFile)

@@ -19,7 +19,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -59,10 +58,7 @@ func TestStart_FutureFormatExitCode(t *testing.T) {
 
 	// Synthesize the exact wrap shape runtime.LoadSharesFromStore
 	// produces: `share %q: %w` around the fs.NewWithOptions output, which
-	// is itself `share %s: %w` around block.ErrFutureFormat. The second
-	// loadErr covers the journal-local sentinel branch: the OR must catch
-	// both sentinels, so a regression flipping it to block-only cannot
-	// silently downgrade a future journal directory to warn-and-skip.
+	// is itself `share %s: %w` around block.ErrFutureFormat.
 	sharePath := filepath.Join(t.TempDir(), "share-A")
 	innerErr := fmt.Errorf("share %s: %w", sharePath, block.ErrFutureFormat)
 	loadErr := fmt.Errorf("share %q: %w", "share-A", innerErr)
@@ -70,11 +66,6 @@ func TestStart_FutureFormatExitCode(t *testing.T) {
 	stop := handleLoadSharesError(loadErr, w)
 	if stop == nil {
 		t.Fatalf("handleLoadSharesError returned no exit status on a future-format error")
-	}
-	journalErr := fmt.Errorf("share %q: %w", "share-J",
-		fmt.Errorf("share %s: %w", filepath.Join(t.TempDir(), "share-J"), journal.ErrFutureFormat))
-	if handleLoadSharesError(journalErr, w) == nil {
-		t.Fatalf("handleLoadSharesError returned no exit status on a journal sentinel")
 	}
 
 	// Close the writer so the reader sees EOF, then drain.
