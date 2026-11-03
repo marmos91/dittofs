@@ -667,7 +667,10 @@ attached, and `Stats` names it and its device.
    destination's from the clone spec its `Removal` record carries. A rebuilt
    clone's batches run only once `Holds.Served` returns for the source's shard,
    so its last batch's `Release` finds the hold open state's `ServeShard`
-   installed; a new primary's rebuild waits the same way. A clone whose
+   installed; a new primary's rebuild waits the same way. The wait is itself a
+   scheduled batch, whose context the scheduler's `Stop` cancels, so `Close`'s
+   join of the batches in flight reaches a clone still waiting for a shard that
+   is handed away and never served here. A clone whose
    phase 1 had not committed keeps the copies the journal already holds above
    *v* in its destination extent, and re-makes, and reserves for, only the
    source runs none of them covers; a reservation refused for space does not

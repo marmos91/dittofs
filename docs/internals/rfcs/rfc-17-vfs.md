@@ -585,8 +585,17 @@ the next start's grace, and a recall in flight is neither forced nor revoked.
 the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
 `CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
-dropped: the release it would run is a pending release, written with the
-unlink, which the next start's recovery runs (§5.3).
+dropped. A release it would run is a pending release, written with the unlink,
+which the next start's recovery runs (§5.3). A deferred unlink it would run,
+a volatile delete-on-close, is lost with the process
+([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring)).
+
+> decision: a delete-on-close whose last close is a clone's `CloneClose`
+> during stop is dropped, as a volatile delete-on-close is at any crash: the
+> file keeps its name, which a client may delete again. It costs only a clone
+> in flight at a clean stop over a delete-pending source. Have the engine join
+> its clone batches before the filesystem stops if a client is found to rely
+> on that delete.
 
 **The filesystem keeps no event queue.** It hands each event to the sink as it
 builds it, and the sink's contract is that it never blocks (§3.3): the sink
@@ -2143,10 +2152,11 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 // where it does not change; scopes are QuotaUser for a new owner and
 // QuotaGroup for a new group. bytes is the file's Charged plus one inode.
 func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
-	q.mu.Lock() // the tracker's own mutex, which every Done takes too: no Done lands between the read, the check and the move
+	used := q.used(ctx, owner, f, scopes) // committed totals plus unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
+	q.mu.Lock()                           // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
 	defer q.mu.Unlock()
 	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
-	if err := q.check(ctx, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check
+	if err := q.checkUsed(used, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check, in memory
 		return nil, err
 	}
 	q.move(writes, owner, scopes)              // each still released once, by its write's Done, from wherever it then is
