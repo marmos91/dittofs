@@ -73,7 +73,7 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 		if run.Length == 0 {
 			a.eof, end = cursor, math.MaxInt64 // nothing committed from cursor on
 		} else {
-			a.segs = []seg{{cursor, end, hole}}
+			a.segs = []seg{{off: cursor, end: end, hole: hole}}
 		}
 		for _, op := range ops {
 			a.apply(op)
@@ -112,10 +112,12 @@ func b2i(b bool) int {
 	return 0
 }
 
-// seg is a run of one class: hole or data.
+// seg is a run of one class: hole or data. sp is the store's span it came
+// from, which Read classifies; a run a pending operation painted has none.
 type seg struct {
 	off, end int64
 	hole     bool
+	sp       entity.Span
 }
 
 // allocation is what a file holds from a cursor on: runs of hole and data,
@@ -167,13 +169,17 @@ func (a *allocation) paint(o, e int64, hole bool) {
 			continue
 		}
 		if s.off < o {
-			out = append(out, seg{s.off, o, s.hole})
+			l := s
+			l.end = o
+			out = append(out, l)
 		}
 		if s.end > e {
-			out = append(out, seg{e, s.end, s.hole})
+			r := s
+			r.off = e
+			out = append(out, r)
 		}
 	}
-	out = append(out, seg{o, e, hole})
+	out = append(out, seg{off: o, end: e, hole: hole})
 	slices.SortFunc(out, func(x, y seg) int { return cmp.Compare(x.off, y.off) })
 	a.segs = out
 }

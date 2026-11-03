@@ -31,6 +31,8 @@ type Engine struct {
 	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
 	files    *files                   // per-file state
 	sample   func() vfserr.Verifier   // samples a write's verifier, before it is staged
+	reads    readSeries
+	lost     lostLog
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and

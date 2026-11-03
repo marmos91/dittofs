@@ -137,3 +137,18 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.removals.Add(1)
 	e.files.unlock(f, fe)
 }
+
+// Reads is engine_reads_total of class, by its label.
+func (e *Engine) Reads(class string) int64 {
+	for c, name := range readClassNames {
+		if name == class {
+			return e.reads.byClass[c].Load()
+		}
+	}
+	panic("no read class " + class)
+}
+
+// ReadSeconds is engine_read_seconds: its count and total.
+func (e *Engine) ReadSeconds() (int64, time.Duration) {
+	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
+}
