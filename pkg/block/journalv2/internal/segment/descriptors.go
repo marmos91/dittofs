@@ -580,8 +580,11 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	if file == nil {
 		return nil
 	}
-	c.budget.Give()
+	// The slot goes back only once the file is closed, as every other close
+	// path orders it: the process never holds a descriptor past its bound
+	// while a close runs.
 	err := file.Close()
+	c.budget.Give()
 	c.dropRef(e)
 	return err
 }

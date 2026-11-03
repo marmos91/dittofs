@@ -2204,3 +2204,42 @@ func TestDescriptorsCloseAndShutdownOnOneReleaseWaitOutTheFileClose(t *testing.T
 		t.Fatalf("the cache holds %d entries after Forget, want 0", n)
 	}
 }
+
+// TestDescriptorsCloseKeepsItsSlotUntilTheFileIsClosed checks the budget's
+// bound across a Close: the slot returns only once the file is closed, so a
+// read of another segment cannot open a descriptor while this one is still
+// being closed and take the process past its limit.
+func TestDescriptorsCloseKeepsItsSlotUntilTheFileIsClosed(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 1)
+	shutRegister(t, e.c)
+	e.stock(t, 2)
+	e.read(t, 1)
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	closed := make(chan error, 1)
+	go func() { closed <- e.c.Close(1) }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Close's file close never reached the hold")
+	}
+
+	if r, err := e.c.Acquire(2); err == nil {
+		r.Release()
+		t.Fatal("Acquire(2) succeeded while segment 1's file was still closing, want ErrNoDescriptor")
+	} else if !errors.Is(err, segment.ErrNoDescriptor) {
+		t.Fatalf("Acquire(2) = %v, want ErrNoDescriptor", err)
+	}
+
+	h.Release()
+	if err := <-closed; err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	r, err := e.c.Acquire(2)
+	if err != nil {
+		t.Fatalf("Acquire(2) after the close = %v, want nil", err)
+	}
+	r.Release()
+}
