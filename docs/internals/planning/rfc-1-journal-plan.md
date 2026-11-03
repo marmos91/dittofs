@@ -604,7 +604,8 @@ each tier's dependencies are in the epic's file, §7:
     byte-identical afterwards;
   - a crash between journal init and `kvstore.Init`: a start reports the store lost, and
     a re-run of the initialisation step wipes the devices and succeeds;
-  - a crash after `kvstore.Init`: the next start completes the `J‖journal` records.
+  - a crash between `kvstore.Init` and the `J‖journal` writes: a start reports the store
+    lost, and a re-run of the initialisation step completes the records.
 - **Other sources**, kept to what the crash seam cannot cover at component level (it
   already covers fsyncgate-style failed fsyncs, a crash at every sync point and reordered
   writes; the scenarios that need special hosts are parked in §6):
@@ -1024,8 +1025,10 @@ refusal, so v1 state can never be read as a fresh install.
 2. `kvstore.Init`, which writes the format record, `Installation` and the share list in one
    transaction. **This is the point of no return.** `kvstore.Open` refuses a store without
    the format record, so nothing else in the store can be written before it;
-3. what the store holds besides, the `J‖journal` records included, written idempotently,
-   and repeated at every start so that a crash after step 2 leaves no gap.
+3. what the store holds besides, the `J‖journal` records included, written idempotently
+   by this step only, never by a start. A crash between steps 2 and 3 is settled by
+   running the step again; a start that finds a journal with no record reports the
+   metadata store lost (RFC 8 §2.5).
 
 The step must be re-runnable. A crash between steps 1 and 2 leaves devices whose `format`
 names an installation with no store, which a *start* must report as a lost store
