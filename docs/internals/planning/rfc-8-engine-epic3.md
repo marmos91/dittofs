@@ -289,7 +289,10 @@ subtasks and tests can cite them.
   suspended. The entry keeps each operation's clock time as its change time, so `Ctime` is
   the newest operation's time and `Mtime` the newest time of an operation that set it, zero
   when none did. A suspended write's change time is therefore memory only, and a restart
-  cannot rebuild it (§9, point 4). A `decision:` marker at the replay names it.
+  cannot rebuild it (§9, point 4). A `decision:` marker at the replay names it. The commit
+  keeps the same two times only once epic 4's T4.3 splits `kvstore.PendingOp`'s single
+  `Time` into a modify and a change time, with its commit test over the real `kvstore`;
+  until then the answer flips at the group commit.
 - **D11, an allocation's class.** `Existence.Allocation` answers a run and whether it is a
   hole; the engine's `Allocation` answers an `entity.Span`. It answers `Hole` for a hole and
   `Uncarved` for data, with no ref, since a caller reads only hole against data. A

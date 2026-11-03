@@ -653,6 +653,13 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   1, each file synced before its batch commits (§5.1), batches bounded by `G` and `K`, a file
   split over several in version order, `Settle` with the store's `Applied`, `Done` from the
   commit that records the write's usage. Turns §1.4's "sync before existence" row green.
+  `kvstore.PendingOp` keeps one `Time` for both modify and change, and `Commit` applies it
+  to both, so a suspended write's commit either moves `Mtime` (given the clock's time) or
+  leaves `Ctime` behind (given zero), and the File record disagrees with what epic 3's
+  `Overlay` answered before the commit. T4.3 splits it into a modify and a change time,
+  applied apart, and the capture fills them from the entry (epic 3's D10). Tested by a
+  suspended write the group commit commits over the real `kvstore`: the File record keeps
+  the earlier write's `Mtime` and carries the suspended write's `Ctime`.
 - T4.4 The split: `Existence.Commit` commits every other file in the same call and returns
   the failing ones in its map, so the engine backs off only the files it names, and halves
   the batch only when the whole call fails; a file failing alone backed off, with a
