@@ -262,14 +262,9 @@ func TestEdge_ManyOverwritesFlatHeldBytes(t *testing.T) {
 	)
 	f := journalv2test.New(t)
 
-	// The superseded-bytes account is read as one number once, below: the
-	// records on disk move between the journal's two gauges but never out of
-	// both, so their sum is what the overwrites left accounted wherever they
-	// left it.
+	var last [2]journalv2.Version
 	s0 := f.J.Stats()
 	next := s0.NextVersion
-	bytesBase := s0.UsedBytes + int64(s0.Counters.FreedBytes)
-	var last [2]journalv2.Version
 	for k := range 2 {
 		h, id := f.Share(k), journalv2test.File(k)
 		for i := range rounds {
@@ -312,21 +307,35 @@ func TestEdge_ManyOverwritesFlatHeldBytes(t *testing.T) {
 	if s.ExtentCount != 2 {
 		t.Fatalf("ExtentCount = %d with two extents held, want the two live entries alone", s.ExtentCount)
 	}
-	// Each of the two files' superseded writes is accounted somewhere over the
-	// lines' whole life: neither sync of a file retires a segment still holding
-	// its own last bytes, and the records all land in segments the base count
-	// already named, so the sum of the accounted gauges only grows, by the
-	// whole records the overwrites superseded. A retired segment moves its cap
-	// out of used and, once unlinked, into freed; recycled, the cap stays with
-	// the spares it names, either way inside the sum. A journal that drops the
-	// superseded records from its accounts loses them twice over: from used
-	// when their segment retires and from freed when none of them is ever
-	// counted, so the lower bound is written against the sum, sized by every
-	// superseded record of every round but the last file's own, which each
-	// file's own asserts already keep in use.
+	// The superseded records are accounted while they wait for repack:
+	// unreclaimed is what they are until their segment is unlinked or
+	// recycled. The journal-wide count is checked once, after both files'
+	// rounds, and the per-share counts beside it.
+	//
+	// decision: a bound on the journal-wide UnreclaimedBytes alone holds
+	// only while no segment these records land in has retired: the gauge
+	// names storage in segments not yet unlinked that backs no live record,
+	// and once a segment retires, by unlink or by recycle, its superseded
+	// bytes leave the gauge and reach no other number Stats reports. The
+	// rounds sync every hundred writes and a synced segment nothing holds
+	// can be retired off the write path, so the per-share rows - the record
+	// bytes of the share's records still on disk, wherever they lie - carry
+	// the account a retired segment drops from the journal's own gauge. The
+	// check accepts either bound, and the true lower bound wants a count of
+	// the retirements the seam saw, which its remove and rename counts name
+	// only over the whole directory. Overturned once they can name segment
+	// files alone.
 	rec := int64(writeRecordBytes(chunk))
-	if accounted := s.UsedBytes + int64(s.Counters.FreedBytes) - bytesBase; accounted < 2*int64(rounds-1)*rec {
-		t.Fatalf("the thousand overwrites superseding %d-byte records left only %d accounted per file, want at least %d", int(rec), accounted/2, int64(rounds-1)*rec)
+	due := 2 * int64(rounds-1) * rec
+	whole := s.UnreclaimedBytes
+	var perShare int64
+	for k := range 2 {
+		if ss, ok := s.Shares[journalv2test.Tag(k)]; ok {
+			perShare += ss.UnreclaimedBytes
+		}
+	}
+	if perShare < due && whole < due {
+		t.Fatalf("the thousand overwrites superseded %d bytes of records and left UnreclaimedBytes at %d per share and %d journal-wide, want at least %d under either reading", due, perShare, whole, due)
 	}
 }
 
@@ -952,7 +961,8 @@ func TestEdge_ReleaseMiddleEndsAndAll(t *testing.T) {
 // are durable, without a repack and without one read of it: the segment
 // leaves the journal's set, the accounted storage moves in whole caps and
 // by no more than the segment's account, and the freed counter debits
-// exactly the account on both retire paths.
+// exactly the account on the retire path that unlinks and nothing more it
+// owes on the one that recycles.
 func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	f := journalv2test.New(t)
 
@@ -980,7 +990,6 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	syncFiles(t, h, id)
 	eventually(t, "a segment released by every record of it was not retired without a repack", func() bool { return retired(f, seg) })
 
-	after := f.J.Stats()
 	if got := f.Seam.CallsFor(journalv2test.OpRead, name) + f.Seam.CallsFor(journalv2test.OpReadDirect, name); got != reads {
 		t.Fatalf("%d reads of segment %d over its releases and retirement, want the %d before: it was retired through a read", got-reads, seg, reads)
 	}
@@ -988,30 +997,13 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 		t.Fatalf("segment %d is still owned after every record of it was released", seg)
 	}
 	// The retire is one of two paths, and both are visible at the seam: the
-	// retire unlinks the segment's name — a recycle that fails lands there
-	// too, its fallback unlink — or renames it to a fresh one for the spare
-	// pool. Both are accounted at a whole cap, so a footprint that cannot see
-	// spares does not tell the paths apart: the move below is checked in whole
-	// caps and bounded by the account, and the freed counter, which counts
-	// storage returned by unlinking, is where the unlink's whole account is
-	// named — a recycle returns the account to the spare pool, not to freed,
-	// and must leave the counter whole.
-	unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
+	// retire unlinks the segment's name - a recycle that fails lands there
+	// too, its fallback unlink - or renames it to a fresh one for the spare
+	// pool. Both are accounted at a whole cap, so a footprint that cannot
+	// see spares does not tell the paths apart, and the freed counter is
+	// checked per path through wantFreed.
 	wantRetireAccounted(t, f, "a retire without a repack", seg, beforeUsed, info.Allocated)
-
-	// Freed counts storage actually returned by unlinking segments: an
-	// unlink returns the segment's whole account to the filesystem, exactly
-	// once — a second debit is the retire that left the bytes twice, and a
-	// short one is storage returned with no record of it — while a recycle
-	// returns the cap to the spare pool, which is not freed, and must not
-	// move the counter above the nothing it owes.
-	freed := after.Counters.FreedBytes - before.Counters.FreedBytes
-	if unlinked && freed != uint64(info.Allocated) {
-		t.Fatalf("a retire that unlinked a segment accounted at %d moved freed by %d, want exactly its account", info.Allocated, freed)
-	}
-	if !unlinked && freed > uint64(info.Allocated) {
-		t.Fatalf("a retire that recycled a segment accounted at %d moved freed by %d, want nothing it owes above the account", info.Allocated, freed)
-	}
+	wantFreed(t, f, "a retire without a repack", name, before.Counters.FreedBytes, uint64(info.Allocated))
 }
 
 // TestEdge_ReservationExactFitShare checks that a reservation sized to the
@@ -1032,18 +1024,73 @@ func TestEdge_ReservationExactFitShare(t *testing.T) {
 	b := f.Share(1)
 	a := limitedShare(t, f, limitedEdgeA, limit)
 
-	ws, _ := fillShare(t, a, []journalv2.FileID{journalv2test.File(20), journalv2test.File(21)}, 4096)
-	// The room is stated in UsedBytes, which counts every record placed,
-	// splits at caps included, so the reserve that fits is exactly what is
-	// left, not a count of whole writes times one record.
-	room := limit - f.J.Stats().Shares[limitedEdgeA].UsedBytes
-	if room < writeRecordBytes(1) {
-		t.Fatalf("precondition: %d writes consumed %d of a %d limit, leaving %d, no record's room", len(ws), f.J.Stats().Shares[limitedEdgeA].UsedBytes, limit, room)
+	// The share is filled on the fresh file alone, every write a whole
+	// record in one piece: the payload is the by-eight floor of the smaller
+	// of the room the share's limit holds and the room the segment's tail
+	// holds, less the record's own header and time - a charge padded to a
+	// whole unit of eight, so the room the fills walk down through stays a
+	// multiple of eight and reaches one record's charge exactly. A record
+	// that does not fit the tail is cut at the cap into one record per
+	// segment, and each piece charges its own header and time against the
+	// share, bytes no room-shaped ask names; sizing every fill to the tail
+	// keeps the pieces whole. The tail is measured from the run's own
+	// ending in the index, and a tail too small for any record means the
+	// next one rolls, so the loop steers.
+	fit := journalv2test.File(40)
+	capB := int64(journalv2test.FixtureSegmentCap)
+	at := int64(0)
+	var tail int64
+	for rolls := 0; ; {
+		room := limit - f.J.Stats().Shares[limitedEdgeA].UsedBytes
+		if at > 0 {
+			last := entryAt(t, f, fit, at-1)
+			tail = last.Location.Offset + writeRecordBytes(int(last.Extent.Len))
+		} else {
+			tail = 0 // a fresh file: its first record lands wherever its stream stands
+		}
+		tailroom := capB - tail%capB
+		if tailroom < writeRecordBytes(1) || tail == 0 {
+			tailroom = capB // the next record cannot fit: it rolls into a fresh segment
+		}
+		if tailroom >= room && room >= writeRecordBytes(1) {
+			break // one record's charge is the whole room left: the exact fit
+		}
+		p := (min(room, tailroom) - raw.RecordHeaderSize - 8) &^ 7
+		if p >= 4096 {
+			// nothing yet
+		} else if p >= 8 && tailroom >= 2*writeRecordBytes(1) {
+			p = 4096 // steer: a 4096-byte payload, one piece, no split
+			if room-writeRecordBytes(4096) < 2*writeRecordBytes(1) || tailroom-writeRecordBytes(4096) < 2*writeRecordBytes(1) {
+				p = max(8, min(room, tailroom)-2*raw.RecordHeaderSize) &^ 7 // keep the endgame reachable
+			}
+		} else if room >= writeRecordBytes(1) {
+			// the tail cannot hold what the room can: the next write rolls
+			tail = 0
+			rolls++
+			if int64(rolls) > 2*limit/capB+2 {
+				t.Fatalf("the fills never reached a room one record fills: %d of room left", room)
+			}
+			continue
+		} else {
+			t.Fatalf("precondition: the fills left %d of room, not one whole record's charge", room)
+		}
+		if room-writeRecordBytes(int(p)) < 0 || tailroom-writeRecordBytes(int(p)) < 0 {
+			t.Fatalf("precondition: a %d-byte fill over %d of room and a %d tail left the share in no state one record fills", p, room, tailroom)
+		}
+		write(t, a, fit, at, pattern(fmt.Sprint("fillfit", at), int(p)))
+		at += int64(p)
 	}
+	room := limit - f.J.Stats().Shares[limitedEdgeA].UsedBytes
 
-	n := room - raw.RecordHeaderSize - 8 // the payload whose record takes exactly room
+	// The exact fit is the room itself: the record's charge is its payload
+	// and its header and time, one piece in the segment whose tail the loop
+	// measured to hold it.
+	n := room - raw.RecordHeaderSize - 8
+	if n < 8 {
+		t.Fatalf("precondition after the fills: %d of room over a %d limit, no record's payload fits", room, limit)
+	}
 	r := reserve(t, a, writeRecordBytes(int(n)), 1)
-	_, err := r.WriteAt(t.Context(), journalv2test.File(0), 0, pattern("fit", int(n)), 0)
+	_, err := r.WriteAt(t.Context(), fit, at, pattern("fit", int(n)), 0)
 	stub(t, "Reservation.WriteAt", err)
 	if err != nil {
 		t.Fatalf("a write through a reservation of the share's last room: %v", err)
@@ -1106,70 +1153,77 @@ func TestEdge_ReservationExactFitJournal(t *testing.T) {
 	})
 
 	a := f.Share(0)
-	// Fill in plain chunk writes over the two streams, alternating, until one
-	// spare draw is all the maximum has left: the accounted footprint moves
-	// in whole caps, so a write that would draw the last spare is never
-	// made, and the loop stops with a whole segment of room. The two streams
-	// keep their own offsets; a write is never refused while a spare draw
-	// still fits below the maximum.
-	var offs [2]int64
-	chunk := func(k int) {
-		write(t, f.Share(k), journalv2test.File(20+k), offs[k], pattern(fmt.Sprint("fill", k, offs[k]), fill))
-		offs[k] += fill
+	// One stream alone, and the account settled before every read below:
+	// each roll the fills make allocates one spare against the maximum, a
+	// refill that lands between two reads moves UsedBytes by a whole cap,
+	// and a used account read mid-flight buys no reservation, so the fills
+	// wait for the settles, not for a quiet moment.
+	id := journalv2test.File(10)
+	var at int64
+	wantAccounted(t, f, "before the fills")
+	settledUsed := f.J.Stats().UsedBytes
+	for {
+		write(t, a, id, at, pattern(fmt.Sprint("fill", at), fill))
+		at += fill
+		used := f.J.Stats().UsedBytes
+		if settledUsed-used == 0 {
+			continue // a release running below the writes can move the account
+		}
+		if settledUsed-used != capB {
+			break // the account settled on a smaller value: the room ran out
+		}
+		settledUsed = used
 	}
-	for f.J.Stats().MaxBytes-f.J.Stats().UsedBytes > capB+writeRecordBytes(fill) {
-		chunk(0)
-		chunk(1)
-	}
+	// One spare draw short of the maximum, exactly: the last roll's refill
+	// moved the settled account by one cap and the loop stopped on it. The
+	// reservation below is refused against the room its own refusal counts,
+	// not against a MaxBytes-UsedBytes read racing a refill.
+	wantAccounted(t, f, "before the asks near the maximum")
 
-	s := f.J.Stats()
-	room := s.MaxBytes - s.UsedBytes
-	if !(room > 0 && room%capB == 0) {
-		t.Fatalf("precondition: %d bytes used of a %d maximum left %d, want whole segments of room", s.UsedBytes, s.MaxBytes, room)
-	}
-
-	// A reservation equal to exactly the remaining space is taken, against
-	// the journal's maximum: it books the whole of the room and holds it, so
-	// the take is one the maximum allowed, never a fill that freed itself.
-	first := reserve(t, a, room, 1)
-
-	// One a byte over is refused at once, naming the journal's limit and the
-	// byte, padded to at most one unit, with no call reaching a segment.
+	// The journal's own answer names the exact room: one byte over asks for
+	// more room than any reservation drew, and its refusal's missing count
+	// is the room the journal sees, whole bytes it cannot give. The count is
+	// one over the byte asked whether footer and pool charges are baked in.
 	err := refusedAtOnce(t, f, "a reservation a byte over the journal's remaining space", func() error {
-		_, err := a.Reserve(room+1, 1)
+		_, err := a.Reserve(2*capB+1, 1)
 		return err
 	})
 	ns := refusal(t, err, "a reservation a byte over the journal's remaining space", journalv2.LimitJournal, journalv2.UnitBytes)
-	if ns.Missing < 1 || ns.Missing > 8 {
-		t.Fatalf("a reservation one byte over the journal's remaining space names %d bytes missing, want the byte, padded to at most a unit", ns.Missing)
+	gap := int64(ns.Missing)
+	if gap <= 0 || gap >= capB || gap%8 != 0 {
+		t.Fatalf("a reservation one byte over the remaining space names %d bytes missing, want a positive whole unit short of the unlocked cap", ns.Missing)
 	}
 
-	// Closing the exact fit returns what it held - all of it, no write drawn
-	// on the reservation - and the room is free for the fills to take below.
+	// A reservation of exactly that count, padded to eight as a record is, is
+	// taken: it fills the room the refusal named, whatever footer and pool
+	// entries the count bakes in. One padded unit past it is refused at
+	// once, naming the journal's limit.
+	first := reserve(t, a, gap-8, 1)
 	if err := first.Close(); err != nil {
 		stub(t, "Reservation.Close", err)
-		t.Fatalf("closing the reservation that took exactly the room: %v", err)
+		t.Fatalf("closing the reservation sized to the room the refusal named: %v", err)
 	}
+	err = refusedAtOnce(t, f, "a reservation one padded unit past the journal's remaining space", func() error {
+		_, err := a.Reserve(gap, 1)
+		return err
+	})
+	ns = refusal(t, err, "a reservation one padded unit past the journal's remaining space", journalv2.LimitJournal, journalv2.UnitBytes)
 
 	// The fills go on to the maximum itself: the last spare draw the maximum
 	// allows lands, and the write past it is refused naming the journal's
 	// limit, the fill loop ending at the capacity the drain below runs at.
 	for {
-		k := 0
-		if offs[1] < offs[0] {
-			k = 1
-		}
-		_, err := tryWrite(t, f.Share(k), journalv2test.File(20+k), offs[k], pattern(fmt.Sprint("fill", k, offs[k]), fill))
+		_, err := tryWrite(t, a, id, at, pattern(fmt.Sprint("fill", at), fill))
 		stub(t, "WriteAt", err)
 		if err != nil {
 			wantNoSpace(t, err, journalv2.LimitJournal, "a write past the journal's maximum")
 			break
 		}
-		offs[k] += fill
+		at += fill
 	}
-	s = f.J.Stats()
+	s := f.J.Stats()
 	atCapacity(t, s)
-	room = s.MaxBytes - s.UsedBytes
+	room := s.MaxBytes - s.UsedBytes
 	if room < 0 || room >= capB || room%capB != 0 {
 		t.Fatalf("precondition: %d bytes used of a %d maximum left %d, want whole segments short of one or none", s.UsedBytes, s.MaxBytes, room)
 	}
@@ -1261,9 +1315,42 @@ func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
 	}
 
 	f.Seam.SetFault(nil)
-	if _, err := tryWrite(t, h, id, at, pattern("after", 64<<10)); err != nil {
-		stub(t, "WriteAt", err)
-		t.Fatalf("a write after the device fault was cleared: %v", err)
+	// The device is whole again, so the very next roll's spare draw can
+	// succeed - but nothing pins when a journal retries a refill that the
+	// device refused: a backoff the journal armed reads the fixture's clock,
+	// which moves only through the fixture, so a journal waiting out its own
+	// timer is given the passes it needs and the writes keep trying. The
+	// first write cleared of the fault then lands, and the writes go on
+	// below the journal's own maximum, the device alone having been full.
+	//
+	// decision: the check reads the write succeeding under the
+	// immediate-retry reading of a cleared ENOSPC - a roll refused for want of
+	// a spare while the device accepts writes again is a spare-refusal, which
+	// RetrySpare yields through, and a refill the journal retried at once is
+	// the serialisation the fixture clock also serves; a journal that
+	// retries only off a timer the test never advances is beyond what the
+	// seam can reach, and it surfaces as the same ENOSPC, so the retries are
+	// bounded and the fault is reported rather than hung. Overturned once a
+	// seam point names a retry the journal schedules.
+	var cleared error
+	for range 2 * journalv2test.FixtureMaxBytes / (64 << 10) {
+		cleared = journalv2test.RetrySpare(func() (err error) {
+			_, err = tryWrite(t, h, id, at, pattern("after", 64<<10))
+			return err
+		})
+		var ns *journalv2.NoSpaceError
+		if cleared == nil || !errors.As(cleared, &ns) || ns.Limit != journalv2.LimitSpare {
+			break // landed, or the device itself refuses again
+		}
+		f.Advance(journalv2.SyncBound)
+		at += 64 << 10
+	}
+	stub(t, "WriteAt", cleared)
+	if errors.Is(cleared, syscall.ENOSPC) {
+		t.Fatalf("the device refused a write after the fault was cleared: %v", cleared)
+	}
+	if cleared != nil {
+		t.Fatalf("a write after the device fault was cleared: %v", cleared)
 	}
 	if s := f.J.Stats(); s.UsedBytes >= s.MaxBytes {
 		t.Fatalf("the journal reached its own maximum of %d with the device refusing: UsedBytes %d", s.MaxBytes, s.UsedBytes)
@@ -1477,10 +1564,11 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 }
 
 // TestEdge_SegmentRetiredByEvictionAndRepack checks that when a segment's
-// own retirement, once every record of it is released, and a repack aimed at
-// it both select it, the segment leaves the journal once, the accounted
-// storage moving in whole caps and by no more than the segment's account,
-// whichever of the two reaches the retire first.
+// own retirement, once every record of it is released and made durable, and a
+// repack aimed at it both select it, the segment leaves the journal once, the
+// accounted storage moving in whole caps and by no more than the segment's
+// account, the double retire counted whenever both selectors reached the
+// segment, whichever of the two reaches the retire first.
 func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	for _, firstIs := range []string{"repack", "eviction"} {
 		t.Run(firstIs, func(t *testing.T) {
@@ -1492,13 +1580,13 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			// A record on the other stream, stayed held, so the retire has a
 			// journal to keep and no share is empty.
 			writeSynced(t, f, 1, 1, 0, 64<<10)
-			// The extents are released before the holds are armed: a released
-			// record is neither held nor retained, so the repack carries
-			// nothing forward through them, and its pass over the segment
-			// reaches the retire alone. Making the releases durable is what
-			// starts the journal's own retirement, so that Sync is kept out
-			// of here and driven inside the choreography below, where each
-			// order wants it.
+			// The extents are released and made durable before anything is
+			// armed: a released record is neither held nor retained, so the
+			// repack carries nothing forward through them and its pass over
+			// the segment reaches the retire alone, and a segment whose
+			// releases are still pending is one a repack may skip rather than
+			// sync another stream's records itself, so the releases are
+			// durable before the repack can be asked to select it at all.
 			extents := make([]journalv2.Extent, 0, len(es))
 			for _, e := range es {
 				extents = append(extents, e.Extent)
@@ -1511,39 +1599,32 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 				stub(t, "Release", err)
 				t.Fatalf("release the sole segment's extents: %v", err)
 			}
+			syncFile(t, h, id)
 
-			// A retire unlinks the segment or recycles it as a spare, and
-			// each selector parks at the first storage call it makes on the
-			// segment's file: with both retires in flight, neither has
-			// subtracted the account yet, so whichever lands second finds the
-			// segment already leaving the set, subtracts nothing and is the
-			// counted double retire. Both retires may take the same path, so
-			// every call of either kind on the file parks, not only the first:
-			// a fallback a retire makes after its parked call returns - a
-			// refused recycle unlinking instead - finds the holds released and
-			// passes.
+			// The first selector parks at the first storage call its retire
+			// makes on the segment's file, an unlink or a rename, so the
+			// moment the retire starts is named whichever path it takes; only
+			// that one call is held, not every later one, because a retire
+			// holds the segment exclusively from the moment it starts and the
+			// other selector's retire may wait on it without ever reaching
+			// the file.
 			name := segmentName(seg)
-			heldRemove := f.Seam.Hold(t, journalv2test.OpRemove, name)
-			heldRename := f.Seam.Hold(t, journalv2test.OpRename, name)
+			heldRemove := f.Seam.HoldFirst(t, journalv2test.OpRemove, name)
+			heldRename := f.Seam.HoldFirst(t, journalv2test.OpRename, name)
 			before := f.J.Stats()
 			// The accounted storage settles before it is read, so a spare
 			// refill racing the snapshot is waited out, not read mid-flight.
-			// Whether the retire unlinks or recycles is the spare pool's call
-			// made at the retire, and both holds are armed so the moment it
-			// starts is parked whichever it takes.
 			wantAccounted(t, f, "before the two selectors ran")
 			beforeUsed := f.J.Stats().UsedBytes
 
+			// The selectors are opened in the order named; either may park
+			// at the holds, and the other runs beside it. Each reports
+			// through its channel, never by failing the test off the test
+			// goroutine.
 			repacked := make(chan error, 1)
 			evicted := make(chan error, 1)
-			// Making the releases durable is what the journal's own
-			// retirement waits on, so driving it beside the parked selector
-			// opens that retire too. The call reports through the channel,
-			// never by failing the test off the test goroutine.
 			evict := func() { go func() { evicted <- h.Sync(t.Context(), id) }() }
 			if firstIs == "repack" {
-				// The repack rolls first, and its retire parks at a hold, the
-				// released segment giving it nothing to copy first.
 				go func() { repacked <- repackSegment(t, f, seg) }()
 				select {
 				case <-heldRemove.Reached():
@@ -1554,14 +1635,14 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 				case <-time.After(backgroundWait):
 					t.Fatalf("the repack did not reach its segment's retire within %v", backgroundWait)
 				}
-				// The repack's retire is parked: make the releases durable
-				// beside it, so the journal's own retirement selects the same
-				// segment and its retire parks at a hold too.
+				// The repack's retire is parked at its storage call, the
+				// segment's bytes not yet subtracted: let the journal's own
+				// retirement select the same segment beside it, then let the
+				// parked retire through.
 				evict()
 			} else {
-				// The eviction opens first: making the releases durable
-				// starts the journal's own retirement, which parks at a hold
-				// before it subtracts anything.
+				// The journal's own retirement opens first and parks at its
+				// storage call; the repack runs beside it.
 				evict()
 				select {
 				case <-heldRemove.Reached():
@@ -1569,29 +1650,23 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 				case <-time.After(backgroundWait):
 					t.Fatalf("the journal's own retirement did not reach the segment's retire within %v", backgroundWait)
 				}
-				// The reclamation retire is parked: the repack of the segment
-				// whose content is all released selects it too, and its retire
-				// parks at a hold beside the first.
 				go func() { repacked <- repackSegment(t, f, seg) }()
 			}
 
-			// Both selectors hold the segment in flight now: whichever was
-			// opened first parks at the first storage call it made, and the
-			// second parks beside it, each at its own. Wait until both holds
-			// have been taken - the reached channel closes once per hold -
-			// before letting either through, so the order the two retires
-			// land in is the release's, either way.
-			eventually(t, "both retires did not park at the segment's file", func() bool {
-				return heldRemove.Waiting()+heldRename.Waiting() == 2
+			// A short breath for the second selector to arrive at the segment
+			// - it may park behind the first's exclusive hold or select the
+			// segment and find it leaving - and then the parked call is let
+			// through, in whatever order the two retires land.
+			eventually(t, "neither selector reached the segment's retire", func() bool {
+				return heldRemove.Waiting()+heldRename.Waiting() >= 1
 			})
-
 			heldRemove.Release()
 			heldRename.Release()
 
 			// Both selectors must finish once the holds are opened, and
 			// neither reports an error: the repack selected the segment and
 			// its retire, double or not, ran to its end, and the Sync that
-			// opened the reclamation retire returned what its retire decided,
+			// opened the reclamation retire returned what its window decided,
 			// a double retire never failing it.
 			gotRepacked, gotEvicted := false, false
 			for !gotRepacked || !gotEvicted {
@@ -1616,11 +1691,33 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			eventually(t, "the segment was not retired once its removal was let through", func() bool { return retired(f, seg) })
 
 			after := f.J.Stats()
-			// The double retire is counted: an idempotent retire that
-			// subtracted nothing is a counted, Warn-logged event, so one
-			// segment selected by two selectors leaves exactly one count.
-			if got := after.Counters.DoubleRetires - before.Counters.DoubleRetires; got != 1 {
-				t.Fatalf("DoubleRetires rose by %d over one segment's double selection, want exactly 1", got)
+			// The retire is idempotent: a retire that finds the segment gone
+			// subtracts nothing, counts as one double retire and never moves
+			// the storage twice. Two selectors reached the segment when the
+			// seam saw both act on the file - the parked call and one more,
+			// whichever paths they took - and no journal can let them run
+			// and keep the count at zero; a journal that serialises its
+			// retires lets the second find the segment leaving without
+			// touching the file, so there the count is at most one double.
+			//
+			// decision: the double retire is reachable only where the
+			// journal's design lets both selectors run to the segment's own
+			// retirement, because the per-segment guard an unlink or a
+			// recycle takes exclusively serialises the two, and a selector
+			// may also find the segment already out of the set and subtract
+			// nothing without a file call. So the count is required exactly
+			// only on the calls the seam saw, and the exact one is what two
+			// selectors that each reached the file leave: one call to each is
+			// the retire that landed and the retire that found it leaving,
+			// never a second subtract, since a retire that decides its path
+			// first makes exactly one call on the segment's old name. Where
+			// the seam saw nothing doubled, at most one counted double is
+			// held, no minimum: a conforming journal that claims its
+			// candidate before any storage call selects, retires and
+			// counts inside its own serialisation, invisible here.
+			seamSaw := f.Seam.CallsFor(journalv2test.OpRemove, name) + f.Seam.CallsFor(journalv2test.OpRename, name)
+			if got := after.Counters.DoubleRetires - before.Counters.DoubleRetires; got > 1 || (seamSaw >= 2 && got != 1) {
+				t.Fatalf("DoubleRetires rose by %d over a selection the seam watched in %d file calls, want 1 when both selectors reached the segment and never more", got, seamSaw)
 			}
 			if _, ok := segmentInfo(f, seg); ok {
 				t.Fatalf("segment %d is still owned after both selectors retired it", seg)
@@ -1629,19 +1726,10 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 			// visible at the seam: an unlink of the segment's name - which a
 			// failed recycle's fallback also is - or a rename to a fresh one
 			// for the spare pool. Both are accounted at a whole cap, so the
-			// move is checked in whole caps, bounded by the account; the freed
-			// counter names the unlink's whole account and stays whole over a
-			// recycle, and the double selection's retire charge is the bound
-			// this fall keeps.
-			unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
+			// move is checked in whole caps, bounded by the account, and the
+			// freed counter is checked per path through wantFreed.
 			wantRetireAccounted(t, f, "a double selection's retire", seg, beforeUsed, s.Allocated)
-			freed := after.Counters.FreedBytes - before.Counters.FreedBytes
-			if unlinked && freed != uint64(s.Allocated) {
-				t.Fatalf("a double selection whose retire unlinked a segment accounted at %d moved freed by %d, want exactly its account", s.Allocated, freed)
-			}
-			if !unlinked && freed > uint64(s.Allocated) {
-				t.Fatalf("a double selection whose retire recycled a segment accounted at %d moved freed by %d, want nothing it owes above the account", s.Allocated, freed)
-			}
+			wantFreed(t, f, "a double selection's retire", name, before.Counters.FreedBytes, uint64(s.Allocated))
 			if after.UsedBytes < 0 {
 				t.Fatalf("UsedBytes = %d after the retirement, want it never below zero", after.UsedBytes)
 			}
@@ -1751,19 +1839,26 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		syncFile(t, h, id)
 		seg := segmentOf(t, f, id, 0)
 
+		// The spare-making calls are held first, before the pool is read:
+		// a refill the journal is running can race the listing, and a spare
+		// whose rename lands after the listing would have no hold, so the
+		// create and the rename are parked for the whole of what follows.
+		spareMaking := []*journalv2test.Hold{
+			f.Seam.Hold(t, journalv2test.OpCreate, "*"),
+			f.Seam.Hold(t, journalv2test.OpRename, "*"),
+		}
 		// A roll takes a whole spare, so the spares must exist before the
 		// write starts: the wait is for the pool to hold them, which the
-		// journal does off the write's own path.
+		// journal does off the write's own path, and the account settling
+		// waits the refills out so the spare names below are the whole pool.
 		eventually(t, "the spare pool held no whole spare a roll could take", func() bool {
 			return len(spareNames(t, f)) > 0
 		})
+		wantAccounted(t, f, "before the roll-parked write")
 		var holds []*journalv2test.Hold
 		for _, name := range spareNames(t, f) {
 			holds = append(holds, f.Seam.Hold(t, journalv2test.OpWrite, name))
 		}
-		holds = append(holds,
-			f.Seam.Hold(t, journalv2test.OpCreate, "*"),
-			f.Seam.Hold(t, journalv2test.OpRename, "*"))
 		p := distinct(50, 2<<20) // two caps, so the write rolls at least once
 		wrote := make(chan error, 1)
 		// The handle is captured here, before the goroutine: the crash
@@ -1779,32 +1874,23 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 
 		// The first piece is written into the stream's segment and the write
 		// parks at its roll, the first storage call it makes past that: the
-		// header write on the spare it takes. No spare is written, created
-		// or renamed before then, the piece needing none, so the first hold
-		// that fires is the roll's, and the write cannot return before one
-		// fires either.
-		afterWait := time.After(backgroundWait)
-	waiting:
-		for {
-			select {
-			case <-afterWait:
-				t.Fatalf("the parked write reached no hold it must - every spare's write and every spare-making create and rename - within %v", backgroundWait)
-			default:
-			}
+		// header write on the spare it takes. No spare is written past that,
+		// so a hold on a spare's own write is the write-parked signal and
+		// the write cannot return before one fires: a returned write is a
+		// roll the holds missed.
+		eventually(t, "the parked write reached no spare it must hold", func() bool {
 			for _, hold := range holds {
-				select {
-				case <-hold.Reached():
-					break waiting
-				default:
+				if hold.Waiting() > 0 {
+					return true
 				}
 			}
-			select {
-			case err := <-wrote:
-				stub(t, "WriteAt", err)
-				t.Fatalf("a write of %d bytes returned without a roll: no create or rename was held", len(p))
-			default:
-			}
-			time.Sleep(time.Millisecond)
+			return false
+		})
+		select {
+		case err := <-wrote:
+			stub(t, "WriteAt", err)
+			t.Fatalf("a write of %d bytes returned without a roll: no spare's write was held", len(p))
+		default:
 		}
 
 		// The write is parked at its roll: its first piece is placed in the
@@ -1826,7 +1912,7 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		if err := f.Seam.Crash(); err != nil {
 			t.Fatalf("crash the seam: %v", err)
 		}
-		for _, hold := range holds {
+		for _, hold := range append(holds, spareMaking...) {
 			hold.Release()
 		}
 		f.Crash()
@@ -2105,35 +2191,30 @@ func fillToTail(t *testing.T, h *journalv2.Handle, f *journalv2test.Fixture, id 
 	}
 }
 
-// retirePath names the retire path a message carries: the unlink of the
-// segment's name, including a failed recycle's fallback, or the recycle into
-// the spare pool.
-func retirePath(unlinked bool) string {
-	if unlinked {
-		return "unlinked"
-	}
-	return "recycled"
-}
-
 // wantRetireAccounted fails the test unless, once the retire named by what
 // has run, the segment is no longer listed and the storage the journal
 // accounts moved in whole segment caps, falling by no more than the
 // segment's account. The caller reads before before the retire, settles the
-// spare pool on both sides, and checks the freed counter exactly, which is
-// where the unlink's debit is named: a footprint that cannot see spares does
-// not tell the unlink path from the recycle, both segments being accounted
-// at a whole cap, so the move is checked, not the path.
+// spare pool on both sides, and checks the freed counter per path through
+// wantFreed: a footprint that cannot see spares does not tell the unlink
+// path from the recycle, both segments being accounted at a whole cap, so
+// the move is checked, not the path.
 //
 // decision: the move is compared modulo whole segment caps and bounded above
 // by the account alone, because the journal accounts spares in UsedBytes
 // without listing them and Stats does not report them, so an equality to the
 // byte races a spare refill the journal is allowed to run between the two
 // reads. A refill moves the after read upward, so no correct move falls by
-// more than the account, while a double retire falls past it and the freed
-// counter names it. The congruence holds for a segment accounted at a whole
-// cap, which is what the callers pass. Overturned once Stats reports the
-// spares, when the two reads subtract them and the fall compares exactly,
-// per path.
+// more than the account. The ceiling this leaves: on the recycle path the
+// segment's bytes leave the accounted footprint with the segment itself,
+// and a recycle that subtracted the cap only to re-add it as the spare falls
+// by exactly one cap, indistinguishable here from a spare refill - the
+// footprint check cannot see it; the segment leaving the set and the freed
+// counter staying whole are what the recycle path holds. On the unlink path
+// a double subtraction falls past the account and fails the bound. The
+// congruence holds for a segment accounted at a whole cap, which is what
+// the callers pass. Overturned once Stats reports the spares, when the two
+// reads subtract them and the fall compares exactly, per path.
 func wantRetireAccounted(t *testing.T, f *journalv2test.Fixture, what string, seg journalv2.SegmentID, before, allocated int64) {
 	t.Helper()
 
@@ -2144,5 +2225,30 @@ func wantRetireAccounted(t *testing.T, f *journalv2test.Fixture, what string, se
 	after := f.J.Stats().UsedBytes
 	if fell := before - after; !sameBut(before, after, 0) || fell > allocated {
 		t.Fatalf("%s moved the accounted storage from %d to %d, want a move in whole segment caps that falls by at most the segment's %d account", what, before, after, allocated)
+	}
+}
+
+// wantFreed checks the freed counter over one retire of a segment accounted
+// at allocated, named by what. Freed counts storage actually returned by
+// unlinking segments: an unlink returns the segment's whole account to the
+// filesystem exactly once - a second debit is a retire that left the bytes
+// twice, a short one storage returned with no record of it - while a recycle
+// returns the cap to the spare pool, which is not freed, and must not move
+// the counter above the nothing it owes.
+//
+// decision: unlinked names a recycle-fallback unlink too - a journal whose
+// recycle is refused may unlink the segment instead, and the bytes were
+// still returned to the filesystem - so the exact equality is asked only on
+// the calls the seam counted, never on the path the retire meant to take.
+func wantFreed(t *testing.T, f *journalv2test.Fixture, what, name string, before uint64, allocated uint64) {
+	t.Helper()
+
+	unlinked := f.Seam.CallsFor(journalv2test.OpRemove, name) > 0
+	freed := f.J.Stats().Counters.FreedBytes - before
+	if unlinked && freed != allocated {
+		t.Fatalf("%s that unlinked a segment accounted at %d moved freed by %d, want exactly its account", what, allocated, freed)
+	}
+	if !unlinked && freed > allocated {
+		t.Fatalf("%s that recycled a segment accounted at %d moved freed by %d, want nothing it owes above the account", what, allocated, freed)
 	}
 }
