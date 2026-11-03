@@ -170,7 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
-| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, `vfserr.ErrFileOpen` for an abort (which T5.4 adds), or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to the next start's recovery; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, `vfserr.ErrFileOpen` for an abort (which T5.4 adds, and `vfs.Errors()` omits, as RFC 17 §4.3 is owed), or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to the next start's recovery; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -775,12 +775,16 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   `done(false)` it leads to clears the mark. The channel is `Delete`'s first result (C11, §6 point 15).
   `ErrFileOpen` passes only between the engine and the service and never reaches an adapter,
   so RFC 17 §4.3's table, which every adapter's table covers (RFC 20 §7.3), gains no row for
-  it: `vfserr` declares it beside that table's values, marked as the service's alone.
+  it: `vfserr` declares it beside that table's values, marked as the service's alone, and
+  `vfs.Errors()`, which RFC 20 §7.3 checks each adapter's table against, omits it. RFC 17
+  §4.3 says `Errors()` returns every sentinel and so gains the sentence that it omits a value
+  only the service and the engine exchange, in the RFC pull request after #3608 (§6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
   crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
   journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
-  the removed extent on another goroutine: it waits on the entry lock and then reads the pending removal, never
-  **Lost** (catches T5.1's lock released before the insert).
+  the removed extent on another goroutine, and a second hook parks that read between the
+  journal's answer and its entry read until the removal returns: the read then finds the
+  pending removal, never **Lost** (catches T5.1's lock released before the insert, every run).
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
@@ -1139,6 +1143,11 @@ follows the journal's, not this part's (§6 point 7).
     The VFS plan's piece 7 builds the waiter with the release paths, and V33 gains a case
     there: a release stalled across `Filesystem.Stop` leaves no goroutine. The RFC 8 §12.1 and RFC 17 §2.3 text for
     it goes in #3608.
+
+    Still owed beside it: `ErrFileOpen` has no adapter row, yet RFC 17 §4.3 has
+    `vfs.Errors()` return every sentinel, and RFC 20 §7.3 checks each adapter's table total
+    against it. RFC 17 §4.3 gains the sentence that `Errors()` omits a value only the service
+    and the engine exchange, naming `ErrFileOpen`, in the RFC pull request after #3608 (T5.4).
 
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
