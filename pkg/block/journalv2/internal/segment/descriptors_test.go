@@ -2077,3 +2077,130 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 		t.Fatalf("segment 2's descriptor was closed %d times, want 0: segment 1 was the least recently used idle one", got)
 	}
 }
+
+// TestDescriptorsClosesOnOneDrainWaitOutTheFileClose pins the Closes that
+// wait on one drain: the last Release wakes every one of them, and whichever
+// locks first detaches the file and closes it outside the mutex. A Close that
+// locks after it sees no file and must still not return while the file close
+// runs, or its caller frees storage the close has not finished with.
+func TestDescriptorsClosesOnOneDrainWaitOutTheFileClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	shutRegister(t, e.c)
+	e.stock(t, 1)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	drop := relRegister(t, r)
+
+	results := make(chan error, 2)
+	go func() { results <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("the first Close never started its drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	go func() { results <- e.c.Close(1) }()
+	time.Sleep(100 * time.Millisecond)
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	drop()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no Close reached the file close")
+	}
+
+	select {
+	case err := <-results:
+		t.Fatalf("a Close returned %v while the file close was still in flight, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("Close = %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a Close did not return after the file close ended")
+		}
+	}
+	e.c.Forget(1)
+	if n := segment.EntryCount(e.c); n != 0 {
+		t.Fatalf("the cache holds %d entries after Forget, want 0", n)
+	}
+	if closes := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+		t.Fatalf("segment 1's file was closed %d times, want once", closes)
+	}
+}
+
+// TestDescriptorsCloseAndShutdownOnOneReleaseWaitOutTheFileClose is the same
+// gap with a Shutdown among the waiters: its walk may take the file the last
+// Release woke it for, and a Close woken by the same Release must not return
+// while that close runs.
+func TestDescriptorsCloseAndShutdownOnOneReleaseWaitOutTheFileClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	shutRegister(t, e.c)
+	e.stock(t, 1)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	drop := relRegister(t, r)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close never started its drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- e.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.WaitArmed(e.c); {
+		if time.Now().After(deadline) {
+			t.Fatal("Shutdown never armed its wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	drop()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no close of segment 1 reached the hold")
+	}
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned %v while a close of its file was still in flight, want it to wait", err)
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned %v while a close of segment 1 was still in flight, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+	e.c.Forget(1)
+	if n := segment.EntryCount(e.c); n != 0 {
+		t.Fatalf("the cache holds %d entries after Forget, want 0", n)
+	}
+}

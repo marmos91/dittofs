@@ -541,18 +541,20 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	// per Close would strand the first waiter on a channel no Release will
 	// close, and returning without waiting would free storage while the last
 	// reader's call, or an open still in flight, holds the descriptor.
-	if e.refs > 0 {
+	//
+	// The wait loops: the last Release wakes every waiter, and whichever
+	// locks first detaches the file and holds a reference across its close.
+	// A waiter that locks after it finds that reference and waits again, so
+	// no Close returns while another holder is still closing the segment's
+	// file. The loop is bounded: the entry is gone, so no reader can take a
+	// new reference, and the references it can still wait on are closes.
+	for e.refs > 0 {
 		if e.drained == nil {
 			e.drained = make(chan struct{})
 		}
 		drained := e.drained
 		c.mu.Unlock()
 		<-drained
-
-		// The last Release closed drained and nilled the field. Whatever
-		// detached the descriptor below — this Close on a later round, a
-		// concurrent Close, or the cache's Shutdown — took the file with it,
-		// so the entries the drain leaves are settled exactly once.
 		c.mu.Lock()
 	}
 
