@@ -820,7 +820,8 @@ outside the extent changed.
 in the transaction that changes the owner. How usage is counted without a hot key
 is [RFC 16](rfc-16-metadata-store.md)'s. Enforcement is the filesystem service's, at the file's primary
 and at write time, against an in-memory reservation per principal, per project and per share
-released when the write's existence commits ([RFC 17](rfc-17-vfs.md)): a write is checked
+released when the write's existence commits ([RFC 17](rfc-17-vfs.md)), and at a `chown` or `chgrp`,
+which commits the file's pending existence and then, under the admission lock, reserves the charge it moves, and moves the file's outstanding write reservations, against the new owner's user quota and the new group's group quota only ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)): a write is checked
 before the charge exists, so the overshoot is bounded by each primary's
 reservation slack, and that bound is stated, not hidden.
 

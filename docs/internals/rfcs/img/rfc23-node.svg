@@ -67,18 +67,20 @@
   <text x="302" y="237" class="s">decides: admission, identity, squash, ordering, open state, metadata, content</text>
   <path d="M750,174 L750,200" class="ln"/>
 
-  <!-- row D: 8 identity, 7 open state, 5 engine, 6 GC -->
+  <!-- row D: 7 identity, 4 open state, 5 engine, 6 GC -->
   <rect x="250" y="284" width="145" height="40" rx="6" class="sv"/>
   <text x="262" y="302" class="h">7 · identity</text>
   <text x="262" y="317" class="s">resolver, authenticator</text>
   <rect x="413" y="284" width="145" height="40" rx="6" class="sv"/>
-  <text x="425" y="302" class="h">6 · open state</text>
+  <text x="425" y="302" class="h">4 · open state</text>
+  <text x="425" y="317" class="s">clone holds via an adapter</text>
   <rect x="576" y="284" width="145" height="40" rx="6" class="sv"/>
-  <text x="588" y="302" class="h">4 · engine</text>
+  <text x="588" y="302" class="h">5 · engine</text>
   <text x="588" y="317" class="s">called by the filesystem only</text>
   <rect x="739" y="284" width="145" height="40" rx="6" class="sv"/>
-  <text x="751" y="302" class="h">5 · GC</text>
+  <text x="751" y="302" class="h">6 · GC</text>
   <text x="751" y="317" class="s">sibling, not in the engine</text>
+  <path d="M576,304 L560,304" class="ln"/>
   <path d="M214,100 L262,280" class="ln"/>
   <path d="M330,246 L322,280" class="ln"/>
   <path d="M485,246 L485,280" class="ln"/>

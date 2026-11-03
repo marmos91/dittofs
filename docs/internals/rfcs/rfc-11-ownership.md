@@ -551,7 +551,8 @@ shard, and a directory renamed into it keeps its own.
 - **Cost.** One shard record per child of a marked directory, and one slot
   table per installation, whose size is fixed by the slot count, not by nodes or
   shards. A rebalance touches the shards of the moved slots only.
-- **A share lists its shards.** Creating a shard writes, in the same
+- **A share lists its shards.** Creating a shard draws its number from
+  `IDS‖shard`, never reused, and writes, in the same
   transaction, the share's shard-set key `S‖id‖shs‖shard`
   ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and the shard's removal
   deletes that key with the shard record. A walk over a share's shards — share
