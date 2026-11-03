@@ -44,6 +44,11 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 		return s, err
 	}
 	s.State = st.State
+	// ponytail: every share read scans the share's shard rows, one iterator
+	// on top of its point reads, though only a serve reads Shard; about 1µs
+	// and 23 allocations on in-memory badger. Read the shard where serve
+	// uses it, through a reader of its own, once a remote backend shows the
+	// extra read on every call's admission.
 	for row, err := range r.Scan(shardsPrefix(id), nil) {
 		if err != nil {
 			return s, err

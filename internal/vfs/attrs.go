@@ -175,9 +175,16 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	who, key := a.who(), keyOf(f)
-	// onOpen: times set by a caller the store's owner rule would refuse,
-	// through an open, which open state admits only on a grant holding
-	// write attributes; any other change keeps the caller's own rights.
+	// onOpen: times set by a caller other than the owner, through an open,
+	// which open state admits only on a grant holding write attributes; any
+	// other change keeps the caller's own rights.
+	//
+	// decision: a non-owner whose ACL entry grants write attributes is judged
+	// on the open too, so its time set through an open lacking them is refused
+	// though RFC 7 §7.7 lets its own rights make it, and the same set on no
+	// open succeeds: the store's owner rule is not visible here. It fails
+	// closed. Overturned once the store's owner rules are a read-only check
+	// this can call.
 	id := a.caller.Identity
 	onOpen := t.Open != nil && ch.Mask&^(attrTimes|entity.AttrSize) == 0 && ch.Mask&attrTimes != 0 &&
 		!id.Privileged && id.Principal != f.Owner

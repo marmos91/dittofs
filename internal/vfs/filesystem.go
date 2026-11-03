@@ -220,8 +220,14 @@ func New(d Deps) (*Filesystem, error) {
 // first, so each installs its persistent opens and enters grace, then ends
 // the open state of each share being removed; it does not wait for grace to
 // end. A step that fails leaves the filesystem built, and Start answers its
-// error: a shard it served stays served, as open state cannot unserve one,
-// and the node stops open state.
+// error.
+//
+// decision: a shard a failed Start served stays served, where RFC 17 §2.5
+// stops what the earlier steps started, as open state builds no
+// ReleaseShard (RFC 14 §11.3) to unserve it: a retried Start serves only the
+// shards not yet served, and a node giving up stops open state. Meanwhile a
+// served shard's grace end still runs its pending releases from the built
+// filesystem. Unserve them here once ReleaseShard is built.
 func (fs *Filesystem) Start(ctx context.Context) error {
 	fs.mu.Lock()
 	if fs.state != built || fs.starting {
@@ -245,8 +251,8 @@ func (fs *Filesystem) Start(ctx context.Context) error {
 // live or being removed, that no failed Start before it served, so each
 // installs its persistent opens, then has open state drop the state of every
 // share being removed, as its removal's step at a start does, telling each
-// holder: no call is admitted yet, so none is left to join. The table raises its events meanwhile, which the
-// filesystem delivers as when serving.
+// holder: no call is admitted yet, so none is left to join. The table raises
+// its events meanwhile, which the filesystem delivers as when serving.
 func (fs *Filesystem) serveShards(ctx context.Context) error {
 	ix := fs.meta.ShareIndex()
 	_, shares, err := ix.List(ctx)

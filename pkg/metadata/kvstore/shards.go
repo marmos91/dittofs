@@ -29,8 +29,10 @@ func (s *Store) Shard(ctx context.Context, id entity.ShardID) (sh entity.Shard, 
 //
 // decision: every raise also opens a new grace instance, GraceInstance =
 // Incarnation, because a single node's start always loses the shard's open
-// state: the table lives in the process that stopped. Only a start calls it.
-// A journal attach and a handover that ships the table raise the incarnation
+// state: the table lives in the process that stopped. Only a start calls it,
+// and the first serve of a share's shard this process has not served, as of
+// a share added while serving, where no reference was minted yet. A journal
+// attach and a handover that ships the table raise the incarnation
 // and keep the grace instance, so neither may come through here, or every
 // client of the shard would reclaim for nothing.
 //
