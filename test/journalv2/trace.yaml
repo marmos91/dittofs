@@ -170,7 +170,7 @@ rfc1 / 9.4 / C / "stranded tag salvaged after serving":
   reason: 'needs the store, a recovery import, salvage.path and the master key'
 rfc1 / 9.4 / C / "clone target survives a crash":
   pending: 2.11
-rfc1 / 9.4 / C / "header-only records are never failed":
+rfc1 / 9.4 / C / "header-only records are re-appended outside a read-only journal":
   pending: 2.11
 rfc1 / 9.4 / C / "a loss survives restart":
   pending: 2.11
@@ -215,8 +215,6 @@ rfc28 / 4.2 / A / "write carries its mtime":
   tests: [TestRFC28A_WriteCarriesItsMtime]
 rfc28 / 4.2 / A / "unproven tail verified at open":
   tests: [TestRFC28A_UnprovenTailVerifiedAtOpen]
-rfc28 / 4.2 / A / "failed directory sync is a failed window":
-  pending: 2.13b
 rfc28 / 4.2 / A / "directory flush on NTFS":
   owner: parked
   reason: 'epic 3 parks it: no host has real NTFS and a power cut'
@@ -352,3 +350,9 @@ rfc8 / 15 / "one clock":
   tests: [TestClock_WallJumpMovesNoTimer]
   owner: epic 11
   reason: 'the node half: two TestClocks across every component of a node; the journal''s half is the test'
+rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
+  pending: 2.7
+rfc1 / 9.4 / B / "read-only stops the drain":
+  pending: 2.10
+rfc28 / 4.2 / C / "an ended segment is emptied once":
+  pending: 2.13b
