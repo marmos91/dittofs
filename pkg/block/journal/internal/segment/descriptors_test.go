@@ -567,10 +567,10 @@ func (f *eioFault) At(op string, key []byte) (time.Duration, int, error) {
 }
 
 // TestDescriptorsNoSeamCallUnderTheCacheMutex checks the leaf-lock contract
-// (R69): no storage call — open, read or close — runs while the
+// (R69): no storage call — open, read, write, sync or close — runs while the
 // cache's mutex is held, so a fault consulted at every seam call must never
-// find the mutex taken. A lock held across I/O would make every reader of
-// every segment wait on the slowest operation in flight.
+// find the mutex taken. A lock held across I/O would make every caller of the
+// cache wait on the slowest operation in flight.
 func TestDescriptorsNoSeamCallUnderTheCacheMutex(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -591,6 +591,16 @@ func TestDescriptorsNoSeamCallUnderTheCacheMutex(t *testing.T) {
 	}
 	// A reopen: 1 was evicted when 3 was opened.
 	e.read(t, 1)
+
+	// The write path and the sync through it, so the fault consults them
+	// too: a write or a sync made under the mutex would be the same lock
+	// held across I/O as an open or a read.
+	if _, err := r.WriteAt(make([]byte, 16), 0); err != nil {
+		t.Fatalf("writing through segment 3's descriptor failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 3's descriptor failed: %v", err)
+	}
 
 	r.Release()
 
@@ -2285,5 +2295,229 @@ func TestDescriptorsASecondShutdownWaitsForTheFirst(t *testing.T) {
 	}
 	if got := e.openCount(1); got != 0 {
 		t.Fatalf("segment 1's descriptor count is %d after Shutdown, want 0", got)
+	}
+}
+
+// TestDescriptorsDirtyDescriptorPinned checks that a descriptor a write has
+// gone through is never closed to make room under the bound: reopening its
+// file can no longer see a writeback error the platform reported only through
+// the open handle, so the descriptor stays open until a sync through it has
+// covered the write or failed. It catches an eviction of a dirty descriptor —
+// the pin would be gone and nineteen reads past the bound would close it.
+func TestDescriptorsDirtyDescriptorPinned(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 20)
+	shutRegister(t, e.c)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	buf := make([]byte, 16)
+	if _, err := r.WriteAt(buf, 0); err != nil {
+		t.Fatalf("writing through segment 1's descriptor failed: %v", err)
+	}
+	r.Release()
+
+	// Reading nineteen more segments under a bound of four must not close
+	// segment 1's dirty descriptor: each one of these needs its slot.
+	for i := 2; i <= 20; i++ {
+		e.read(t, core.SegmentID(i))
+		if got := e.openCount(1); got != 1 {
+			t.Fatalf("segment 1's descriptor count is %d after reading segment %d, want its dirty descriptor held open", got, i)
+		}
+	}
+
+	// A sync through its descriptor covers the write, so the descriptor
+	// becomes evictable once its reference drops, and later reads close it
+	// to make room.
+	r, err = e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("reacquiring segment 1 failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 1 failed: %v", err)
+	}
+	r.Release()
+	if closeCalls := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; closeCalls != 0 {
+		t.Fatalf("segment 1's descriptor was closed %d times before its sync, want it held", closeCalls)
+	}
+	for i := 2; i <= 20; i++ {
+		e.read(t, core.SegmentID(i))
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after a sync and more reads, want it evicted", got)
+	}
+}
+
+// TestDescriptorsFailedSyncUnpins checks the pin's other side: a sync that
+// returns an error still covers the writes it started at, because its caller
+// has seen the failure — the durability layer owns the failed window from
+// there, and the bound is not to hold a descriptor open for writes nobody
+// will retry through it. It catches a failed sync that leaves the entry
+// pinned forever.
+func TestDescriptorsFailedSyncUnpins(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 20)
+	shutRegister(t, e.c)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	buf := make([]byte, 16)
+	if _, err := r.WriteAt(buf, 0); err != nil {
+		t.Fatalf("writing through segment 1's descriptor failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 1 failed: %v", err)
+	}
+	// Dirty again, and this time the sync fails.
+	if _, err := r.WriteAt(buf, 0); err != nil {
+		t.Fatalf("writing through segment 1's descriptor a second time failed: %v", err)
+	}
+	if err := e.seam.Schedule(journalv2test.Failing(journalv2test.OpSync, name(1), 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := r.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("syncing segment 1 under the fault = %v, want EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	r.Release()
+
+	// The failed sync covered the writes it started at, so the descriptor is
+	// evictable: reads past the bound close it to make room.
+	for i := 2; i <= 20; i++ {
+		e.read(t, core.SegmentID(i))
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after a failed sync and nineteen reads, want the descriptor evicted: a failed sync must unpin it", got)
+	}
+}
+
+// TestDescriptorsSyncDoesNotCoverAWriteInFlight checks the pin's numbering
+// rule: a write is counted once it has landed, so a Sync that starts while
+// another reference's write is still in flight does not cover it. The
+// group-commit shape — one reference appending, another syncing the same
+// descriptor — otherwise lets the fsync finish before the write lands yet mark
+// it covered, and the descriptor is evicted carrying a writeback error nobody
+// would ever see.
+func TestDescriptorsSyncDoesNotCoverAWriteInFlight(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 2)
+	e.stock(t, 3)
+	// Cleanups run last-registered first: the Shutdown registered here runs
+	// after the holds and references below unwind, so a failure on any
+	// assertion reports itself rather than wedging a parked call.
+	shutRegister(t, e.c)
+
+	a, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
+	}
+	h := e.seam.HoldFirst(t, journalv2test.OpWrite, name(1))
+	written := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 16)
+		_, err := a.WriteAt(buf, 0)
+		written <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write never reached the hold")
+	}
+
+	// The write is in flight: a Sync through a second reference returns nil,
+	// but it cannot have covered a write that had not landed.
+	b, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
+	}
+	select {
+	case err := <-written:
+		t.Fatalf("the held write returned %v with the hold up, want it parked", err)
+	default:
+	}
+	if err := b.Sync(); err != nil {
+		t.Fatalf("the sync through the second reference = %v, want nil: nothing fails it", err)
+	}
+	h.Release()
+	if err := <-written; err != nil {
+		t.Fatalf("the released write failed: %v", err)
+	}
+	a.Release()
+	b.Release()
+
+	// The write landed after the sync started, so no sync covers it: the
+	// descriptor is dirty and must not be closed to make room.
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 1 {
+		t.Fatalf("segment 1's descriptor count is %d after reads past the bound, want 1: the concurrent Sync covered a write that landed after the fsync", got)
+	}
+
+	// The pin lifts once a sync that started after the write returned.
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("reacquiring segment 1 failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 1 failed: %v", err)
+	}
+	r.Release()
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after a covering sync and reads past the bound, want it evicted", got)
+	}
+}
+
+// TestDescriptorsEverySlotDirtyOrReferenced checks the refusal when the bound
+// is full of descriptors that may not be closed: two dirty ones at a bound of
+// two leave the third segment's acquire with ErrNoDescriptor, performed with
+// no I/O and no wait — the refusal is the misconfiguration surfacing, which
+// is why the bound must exceed what the process's streams hold at once. It
+// catches a reclaim that falls back to closing a dirty entry.
+func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 2)
+	e.stock(t, 3)
+	shutRegister(t, e.c)
+
+	for _, id := range []core.SegmentID{1, 2} {
+		r, err := e.c.Acquire(id)
+		if err != nil {
+			t.Fatalf("acquiring segment %d failed: %v", id, err)
+		}
+		if _, err := r.WriteAt(make([]byte, 16), 0); err != nil {
+			t.Fatalf("writing through segment %d's descriptor failed: %v", id, err)
+		}
+		r.Release()
+	}
+
+	opens := e.seam.Calls(journalv2test.OpOpen)
+	start := time.Now()
+	if _, err := e.c.Acquire(3); !errors.Is(err, segment.ErrNoDescriptor) {
+		t.Fatalf("acquiring segment 3 with every slot dirty = %v, want ErrNoDescriptor", err)
+	}
+	if past := time.Since(start); past > time.Second {
+		t.Fatalf("the refusal took %v, want it at once: a dirty slot is not a queue to wait in", past)
+	}
+	if got := e.seam.Calls(journalv2test.OpOpen); got != opens {
+		t.Fatalf("the seam saw %d opens after the refusal, want still %d: the refusal performs no I/O", got, opens)
+	}
+	for _, id := range []core.SegmentID{1, 2} {
+		if got := e.openCount(id); got != 1 {
+			t.Fatalf("segment %d's descriptor count is %d after the refusal, want its dirty descriptor still held", id, got)
+		}
 	}
 }
