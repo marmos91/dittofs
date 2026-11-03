@@ -1725,17 +1725,3 @@
   reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
   issue: '#3379'
   message: 'fixture:'
-- test: TestEdge_SegmentRetiredByEvictionAndRepack/repack
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
-  issue: '#3379'
-  message: 'fixture:'
-- test: TestEdge_SegmentRetiredByEvictionAndRepack/eviction
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
-  issue: '#3379'
-  message: 'fixture:'
