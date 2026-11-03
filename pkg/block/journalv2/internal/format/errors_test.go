@@ -9,9 +9,11 @@ import (
 // classes are separate errors: an unknown kind is not damage, so a scan never
 // mistakenly steps over a kind it does not know by a length it read, and a
 // non-zero epoch is not damage, so recovery can tell a version this format
-// forbids from a rotted byte.
+// forbids from a rotted byte. The footer's own class is in the list too: a
+// segment that carries no usable footer is not damage either — it is a
+// segment to scan.
 func TestRecordErrorClassesAreDistinct(t *testing.T) {
-	errs := []error{ErrDamaged, ErrWrongPlace, ErrUnknownKind, ErrNonZeroEpoch}
+	errs := []error{ErrDamaged, ErrWrongPlace, ErrUnknownKind, ErrNonZeroEpoch, ErrNoFooter}
 	for i, a := range errs {
 		for j, b := range errs {
 			if i == j {

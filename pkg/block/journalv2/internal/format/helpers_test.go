@@ -149,7 +149,66 @@ var (
 
 	// testCut is the cut number of the hold, unhold and stamp goldens.
 	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
+
+	// The footer's test values, entry B's own byte patterns: entry A's
+	// fields reuse the record ones above, so both entries' bytes stay in
+	// ranges no other structure's uses. Every field reads back as its own
+	// pattern, so a field written a byte off, big-endian or in another
+	// field's place reads back wrong.
+	testEntryBFile = core.NewFileID([16]byte{
+		0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+		0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+	})
+
+	// testEntryBFileOffset is entry B's file offset.
+	testEntryBFileOffset int64 = 0x1716151413121110
+
+	// testEntryBRecordOffset is entry B's record offset within the segment:
+	// just past entry A's record, which runs 144 bytes from its own slot
+	// at 48.
+	testEntryBRecordOffset int64 = 144
+
+	// testEntryBLength is entry B's length.
+	testEntryBLength int64 = 0x2f2e2d2c2b2a2928
+
+	// testEntryBSeq is entry B's sequence number.
+	testEntryBSeq = core.Seq(0x5f5e5d5c5b5a5958)
+
+	// testEntryBVersion is entry B's content version, epoch half zero as
+	// this format version requires.
+	testEntryBVersion = core.Version{Epoch: 0, Counter: 0x7f7e7d7c7b7a7978}
+
+	// testEntryBTag is entry B's share tag.
+	testEntryBTag = core.ShareTag(0x87868584)
 )
+
+// testEntryA is the golden's first footer entry: a release whose record runs
+// 48..144, so the next record slot starts at 144.
+var testEntryA = CatalogEntry{
+	File:         testRecordFile,
+	Extent:       core.Extent{Off: testRecordFileOffset, Len: testRecordLength},
+	RecordOffset: 48,
+	Seq:          testRecordSeq,
+	Version:      testRecordVersion,
+	Kind:         KindRelease,
+	Tag:          testRecordTag,
+}
+
+// testEntryB is the golden's second footer entry: an unmark whose record runs
+// 144..240, so the seal marker sits at 240.
+var testEntryB = CatalogEntry{
+	File:         testEntryBFile,
+	Extent:       core.Extent{Off: testEntryBFileOffset, Len: testEntryBLength},
+	RecordOffset: testEntryBRecordOffset,
+	Seq:          testEntryBSeq,
+	Version:      testEntryBVersion,
+	Kind:         KindUnmark,
+	Tag:          testEntryBTag,
+}
+
+// testFooterOffset is the footerOffset the golden's trailer names: just past
+// the seal marker at 240, which sits just past entry B's record.
+const testFooterOffset int64 = 272
 
 // rechecksumRecord stores the seeded CRC32C of identity then [92,96)'s
 // covered bytes at [92,96) of a record header, so an edit fails a decode only
@@ -232,4 +291,71 @@ func wantSeededCRC(identity core.JournalID, b []byte) uint32 {
 // stale checksum.
 func rechecksumSeal(b []byte, identity core.JournalID) {
 	binary.LittleEndian.PutUint32(b[28:32], wantSeededCRC(identity, b[0:28]))
+}
+
+// rechecksumTrailer stores the CRC32C of [0,28) at [28,32) of a 32-byte
+// trailer, so an edit fails a read only for the edit, not for its stale
+// checksum.
+func rechecksumTrailer(b []byte) {
+	binary.LittleEndian.PutUint32(b[28:32], wantCRC(b[0:28]))
+}
+
+// rechecksumFooter recomputes a whole segment's trailer from the footer it
+// names: the footer CRC is taken over the entries again, and then the trailer
+// CRC over the trailer's own changed bytes. An edit to an entry or the
+// trailer's fields then fails a read only for the edit, never for a part of
+// the checksum chain the edit did not touch.
+//
+// The footer span is clamped to the bytes that exist, so a case whose edit
+// moves footerOffset or entryCount beyond the file still gets a checksum
+// over something: the reader refuses such a case by its own rule before it
+// reads any entries, so the checksum is never what fails it.
+func rechecksumFooter(seg []byte) {
+	trailer := seg[len(seg)-TrailerSize:]
+	footerOffset := int64(binary.LittleEndian.Uint64(trailer[8:16]))
+	entryCount := int64(binary.LittleEndian.Uint32(trailer[16:20]))
+
+	footer := []byte{}
+	if footerOffset >= 0 && footerOffset < int64(len(seg)-TrailerSize) {
+		end := footerOffset + entryCount*CatalogEntrySize
+		if end > int64(len(seg)-TrailerSize) || end < footerOffset {
+			end = int64(len(seg) - TrailerSize)
+		}
+		footer = seg[footerOffset:end]
+	}
+	binary.LittleEndian.PutUint32(trailer[20:24], wantCRC(footer))
+	rechecksumTrailer(trailer)
+}
+
+// sealedSegment builds a whole segment's bytes for a footer of entries: zeros
+// up to where the seal marker sits — the first record slot, 48, when there is
+// no entry, else just past the last entry's record — then the marker, the
+// entries, gap zero bytes (a full seal leaves the old life's or the cap's
+// bytes there; the reader never reads them), and the trailer. The records
+// themselves are zeros: the reader never reads them either, only their
+// entries' offsets.
+func sealedSegment(t testing.TB, entries []CatalogEntry, gap int) []byte {
+	t.Helper()
+
+	sealOff := int64(SegmentHeaderSize)
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		if last.RecordOffset < 0 {
+			t.Fatalf("entry record offset %d is below 0", last.RecordOffset)
+		}
+		sealOff = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
+	}
+	if sealOff%8 != 0 {
+		t.Fatalf("seal marker offset %d is not a multiple of 8", sealOff)
+	}
+
+	seg := make([]byte, sealOff)
+	seg = AppendSealMarker(seg, testIdentity, SealMarker{Segment: testSegment, Offset: sealOff})
+	footerOffset := sealOff + SealMarkerSize
+	for _, e := range entries {
+		seg = AppendCatalogEntry(seg, e)
+	}
+	footer := seg[footerOffset:]
+	seg = append(seg, make([]byte, gap)...)
+	return AppendTrailer(seg, footerOffset, footer)
 }
