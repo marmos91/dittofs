@@ -52,8 +52,9 @@ func testSetAttrsRights(t *testing.T, kvo Opener) {
 	}
 }
 
-// A chmod asks write the ACL: a non-owner granted it changes the mode, one
-// granted write attributes alone does not; and a write's clear of setuid and
+// A chmod asks write the ACL: a non-owner granted it changes the permission
+// bits but never sets setuid or setgid on the owner's file, one granted write
+// attributes alone changes nothing; and a write's clear of setuid and
 // setgid changes the mode alone, never the stored ACL a chmod would merge
 // into.
 func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
@@ -72,9 +73,10 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	if _, err := files.SetAttrs(ctx, carol, h, entity.Attrs{}.WithMode(0o666)); !isDenied(err) {
 		t.Errorf("chmod by a non-owner holding write attributes: %v", err)
 	}
-	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o4660)); err != nil || got.Mode&0o7777 != 0o4660 {
-		t.Errorf("chmod by a non-owner holding write the ACL: %o, %v", got.Mode, err)
+	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o6660)); err != nil || got.Mode&0o7777 != 0o660 || got.Owner != alice.Principal {
+		t.Errorf("chmod 6660 by a non-owner holding write the ACL: %o, %v, want 660 with setuid and setgid dropped", got.Mode, err)
 	}
+	must(t, errOf(files.SetAttrs(ctx, alice, h, entity.Attrs{}.WithMode(0o4660))))
 	before, err := files.ACL(ctx, f.admin, h)
 	must(t, err)
 	if got, err := files.ClearSetID(ctx, carol, h); err != nil || got.Mode&0o7777 != 0o660 {

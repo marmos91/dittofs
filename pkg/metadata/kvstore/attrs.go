@@ -40,7 +40,7 @@ func laterOf(now, prev time.Time) time.Time {
 // SetAttrs changes the attributes a names. Only a privileged caller changes
 // the owner or the immutable and append-only flags; the owner may change
 // the group to one it is in, the mode and the times, and a caller holding
-// write the ACL the mode. A chmod on a file with a stored ACL merges into the
+// write the ACL the mode's permission bits, never setuid or setgid. A chmod on a file with a stored ACL merges into the
 // ACL, and both are written together.
 //
 // A size change is refused: it goes through an existence commit, which
@@ -81,6 +81,12 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		next := file.Apply(a)
 		if a.Changes(entity.AttrMode) && !file.IsDir() && next.Mode&entity.ModeSetgid != 0 && !id.Privileged && !id.InGroup(next.Group) {
 			next.Mode &^= entity.ModeSetgid // a non-member cannot make a setgid program of a group it is not in
+		}
+		if a.Changes(entity.AttrMode) && !id.Privileged && id.Principal != file.Owner {
+			// A write-ACL holder's chmod sets only the permission bits: one
+			// who is not the owner cannot make a setuid or setgid program
+			// that runs as the owner or the owner's group.
+			next.Mode &^= entity.ModeSetuid | entity.ModeSetgid
 		}
 		if a.Changes(entity.AttrMode) {
 			if b, ok, err := get(tx, aclKey(share, file.ID)); err != nil {
