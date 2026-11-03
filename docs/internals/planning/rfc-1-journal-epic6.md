@@ -6,7 +6,7 @@ read-only and mixed durability); [RFC 28](../rfcs/rfc-28-journal-format.md) §2.
 append, a failed segment, the spare's directory entry) and §3.3 (the read-time half: "The response
 is to stop holding the extent" and "Scope of the refusal").
 **Track:** A.
-**Epic 6 estimate: 9 subtasks, 35 man-days.**
+**Epic 6 estimate: 8 subtasks, 35 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types, errors, `Stats` shapes and
 tracer; epic 2's test clock, fault schedule, crash-simulating seam and fixture; epic 3's record
 codec (the loss kind) and the `platform` sync and platform checks; epic 4's retained-extent set
@@ -60,15 +60,15 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 
 - `Sync`, group commit on a stream, the sync reaching the device, the durable watermark other
   epics ask (T6.1).
-- The sync bound, its timer, and the one behaviour for every share (T6.9).
+- The sync bound, its timer, and the one behaviour for every share (T6.1).
 - Loss records, loss events, the numbered ring and its counters (T6.2).
 - The loss generation (T6.2).
 - Retaining a superseded record until its superseding write is synced (T6.4).
 - A failed sync: the ended segment, the window, the per-file report, no wedge (T6.3).
 - Resolving a window by re-append (T6.5) or by failing it (T6.4).
-- The read-only state and the probe that ends it (T6.6, T6.7).
-- A record that does not verify when read (T6.8).
-- The counted checks of RFC 1 §9.7 for sync, and the metrics sweep (T6.9).
+- The read-only state and the probe that ends it (T6.6).
+- A record that does not verify when read (T6.7).
+- The counted checks of RFC 1 §9.7 for sync, and the metrics sweep (T6.8).
 
 ### 1.2 Out of scope
 
@@ -84,7 +84,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
   scan, confinement by the catalog while scanning, corruption found while rebuilding, placing the
   loss records found at open into the ring, appending a recovery loss record once, dropping at
   open the failed records this epic keeps (R34), re-verifying an unproven tail at open: epic 7.
-  Epic 7 calls this epic's handler (T6.8) for every record it drops as corrupt or stale.
+  Epic 7 calls this epic's handler (T6.7) for every record it drops as corrupt or stale.
 - `WriteAt`, `ReadAt`, `Fill`, reservations, the removals, `Handle.Close`, the version assigned in
   the file's serialised append, `Stats` aggregation and the lock recorder: epic 8. Epic 8 calls
   `Sync`, registers each written record with this epic, asks whether the journal is read-only
@@ -187,16 +187,16 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | 1 Unit tests | all | every R-number has a test that can fail, except R45, checked in review. Subtasks use E5's streams and tracker, E4's index and E3's codecs as they stand, and E2's seam, clock and fault schedule. Until E7 and E8 wire `Open` and `WriteAt`, a test drives the streams and the index directly and writes the records itself through E5's `Append` |
-| 2 Fuzz | T6.1, T6.3, T6.5, T6.8 | there is no parser of bytes here. T6.1 and T6.3 fuzz-drive interleavings of write, sync, failed sync and cancel against an oracle of what each `Sync` may return (R14, R17). T6.5 fuzz-drives the window's content (kinds, sizes, a failed re-read) against the rule that a record is either re-appended whole or failed. T6.8 drives a flipped byte at every offset of a record through the handler, and the property is that the extents are dropped or another copy is used, and never a served byte (R54) |
-| 3 Metrics and tracing | T6.1, T6.2, T6.3, T6.5, T6.6, T6.8 | `syncs`, `SyncDuration`, `LastSyncError`, `sync_failures`, `sync_reappended_bytes`, `Losses`, `LossGeneration`, `corrupt_extents` (labelled `outcome`), `stale_extents`, `DamagedSegments` and `ReadOnly` are maintained at the event that changes them and read without a walk. The `sync` span wraps a sync that is issued, with no journal lock held. A refused reservation, `fill`, offload and repack passes are E8's and E9's; open and recovery are E7's |
-| 4 Profiling | T6.1, T6.3, T6.6, T6.7, T6.9 | every test runs under E2's profiler. The sync leader, the timer goroutines and the probe are where goroutines could leak. T6.3 asserts the window ledger shrinks to zero when syncs succeed and holds nothing after a window is resolved. T6.1 asserts zero allocations per `Track` outside `-race` |
-| 5 Public and internals, `-race` | T6.1, T6.2, T6.3, T6.4, T6.5, T6.6, T6.8, T6.9 | internal API now; `Handle.Sync`, `ReadAt` and `Stats` behaviour is tested in E8, their consumer, and the loss rows that need `Open` in E7. T6.6 also tests the public errors and the `ReadOnly` field, which it adds. Concurrency is exercised under `-race` where subtasks list it |
+| 2 Fuzz | T6.1, T6.3, T6.5, T6.7 | there is no parser of bytes here. T6.1 and T6.3 fuzz-drive interleavings of write, sync, failed sync and cancel against an oracle of what each `Sync` may return (R14, R17). T6.5 fuzz-drives the window's content (kinds, sizes, a failed re-read) against the rule that a record is either re-appended whole or failed. T6.7 drives a flipped byte at every offset of a record through the handler, and the property is that the extents are dropped or another copy is used, and never a served byte (R54) |
+| 3 Metrics and tracing | T6.1, T6.2, T6.3, T6.5, T6.6, T6.7 | `syncs`, `SyncDuration`, `LastSyncError`, `sync_failures`, `sync_reappended_bytes`, `Losses`, `LossGeneration`, `corrupt_extents` (labelled `outcome`), `stale_extents`, `DamagedSegments` and `ReadOnly` are maintained at the event that changes them and read without a walk. The `sync` span wraps a sync that is issued, with no journal lock held. A refused reservation, `fill`, offload and repack passes are E8's and E9's; open and recovery are E7's |
+| 4 Profiling | T6.1, T6.3, T6.6, T6.8 | every test runs under E2's profiler. The sync leader, the timer goroutines and the probe are where goroutines could leak. T6.3 asserts the window ledger shrinks to zero when syncs succeed and holds nothing after a window is resolved. T6.1 asserts zero allocations per `Track` outside `-race` |
+| 5 Public and internals, `-race` | T6.1, T6.2, T6.3, T6.4, T6.5, T6.6, T6.7, T6.8 | internal API now; `Handle.Sync`, `ReadAt` and `Stats` behaviour is tested in E8, their consumer, and the loss rows that need `Open` in E7. T6.6 also tests the public errors and the `ReadOnly` field, which it adds. Concurrency is exercised under `-race` where subtasks list it |
 | 6 Known failures | none | every conformance row of this area needs `Open`, which E7 and E8 wire. This epic turns none green and adds none. §6 names, for each subtask, the conformance rows that stay red until `Open` exists, so the epic that wires it removes them from the list |
 | 7 v2 ignores v1 | all | enforced by the import test. Nothing of `pkg/block/journal` is read |
-| 8 Real storage | T6.1, T6.3–T6.9 | every test of a sync, a failed sync, a re-append, a read-only state or a corrupt record runs on a real directory through E2's seam. T6.2 and the retained-set half of T6.4 are logic over the index and the ring and test in memory, with one real-storage test each for the loss record's append |
-| 9 Comment markers | T6.1, T6.2, T6.3, T6.4, T6.5, T6.6, T6.7, T6.8, T6.9 | see §4. The RFC's `ponytail:` on the sync bound and its `ponytail:` on mixed durability go at the timer in T6.9 and at the shared sync in T6.1. Its `decision:` on header-only records in a read-only journal goes in T6.6, its `decision:` on a closed journal's retry-later answer at the refusal in T6.7 (the answer itself is E11's), and its `ponytail:` on the 30 s probe in T6.7 |
+| 8 Real storage | T6.1, T6.3–T6.8 | every test of a sync, a failed sync, a re-append, a read-only state or a corrupt record runs on a real directory through E2's seam. T6.2 and the retained-set half of T6.4 are logic over the index and the ring and test in memory, with one real-storage test each for the loss record's append |
+| 9 Comment markers | T6.1, T6.2, T6.3, T6.4, T6.5, T6.6, T6.7, T6.8 | see §4. The RFC's `ponytail:` on the sync bound and its `ponytail:` on mixed durability both go in T6.1, at the timer and at the shared sync. Its `decision:` on header-only records in a read-only journal goes in T6.6, its `decision:` on a closed journal's retry-later answer at the refusal in T6.6 (the answer itself is E11's), and its `ponytail:` on the 30 s probe in T6.6 |
 | 10 A test can fail | all | each test in §6 names the bug it catches |
-| 11 Exports | T6.6, T6.9 | `journalv2` loses `SyncPolicy`, `SetSyncPolicy` and `Share`'s policy argument (D2), and gains `ErrJournalReadOnly` and the `ReadOnly` field of `Stats` (D8). RFC 1 §3.7 and §5.4 name both. Everything else is in `internal/durability` |
+| 11 Exports | T6.1, T6.6 | `journalv2` loses `SyncPolicy`, `SetSyncPolicy` and `Share`'s policy argument (D2), and gains `ErrJournalReadOnly` and the `ReadOnly` field of `Stats` (D8). RFC 1 §3.7 and §5.4 name both. Everything else is in `internal/durability` |
 | 12 Created with its consumer | all | `internal/durability` lands with T6.1, and each file lands with the subtask that uses it. Until E7 and E8, tests are the only consumer: the package is logic over E5's streams and E4's index, tested on its own (rule 1), not a placeholder |
 
 ## 3. Requirements and invariants
@@ -216,17 +216,17 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A record is written before `WriteAt` returns, and synced by a `Sync` naming its file or within the sync bound, whichever comes first. `Sync` returns only once every operation on the named files that returned before the call is durable | MUST | RFC 1 §5.1, §3.1 | T6.1, T6.9 |
-| R2 | The journal is on durable local storage: a synced record survives a process crash, a host crash and power loss. No setting declares a journal not durable | MUST | RFC 1 §5.2 | T6.1, T6.9 |
+| R1 | A record is written before `WriteAt` returns, and synced by a `Sync` naming its file or within the sync bound, whichever comes first. `Sync` returns only once every operation on the named files that returned before the call is durable | MUST | RFC 1 §5.1, §3.1 | T6.1 |
+| R2 | The journal is on durable local storage: a synced record survives a process crash, a host crash and power loss. No setting declares a journal not durable | MUST | RFC 1 §5.2 | T6.1 |
 | R3 | A sync reaches the device. Where the plain file-sync call does not flush the device's write cache, the call that does is used. A data-only sync suffices on Linux; a sync of a byte range alone never does | MUST | RFC 1 §5.2 | T6.1 |
-| R4 | One sync covers every writer waiting on the stream (group commit), and it covers the stream's whole active segment, every share's records on it alike. With 16 concurrent writers on one stream, each syncing after every write, at most one sync is issued per four writes | MUST | RFC 1 §5.2, §9.7 | T6.1, T6.9 |
+| R4 | One sync covers every writer waiting on the stream (group commit), and it covers the stream's whole active segment, every share's records on it alike. With 16 concurrent writers on one stream, each syncing after every write, at most one sync is issued per four writes | MUST | RFC 1 §5.2, §9.7 | T6.1, T6.8 |
 | R5 | A `Sync` touches one segment only, the stream's active one. No `Sync` waits on a directory sync, because every segment records go to is a spare whose entry was synced before it was taken | invariant | RFC 1 §5.2, RFC 28 §2.2 | T6.1 |
 | R6 | A cancelled `Sync` stops waiting, not the sync: the sync runs on for the other writes it covers, and its outcome reaches the next `Sync` of the file. A `Sync` that returns the context's error clears no file's mark of an unreported failure | MUST | RFC 1 §3 | T6.1, T6.3 |
-| R7 | The journal states its sync bound, one constant of one second, and the bound is in time, not only in bytes | MUST | RFC 1 §5.2 | T6.9 |
-| R8 | The timer that keeps the bound is per stream, runs on the injected clock, and the sync it issues covers the stream's whole active segment | invariant | RFC 1 §5.2, §1.3 | T6.9 |
-| R9 | Every record is synced the same way on every share. There is no per-share sync mode and no setting that weakens the bound | invariant | RFC 1 §5.2 | T6.9 |
+| R7 | The journal states its sync bound, one constant of one second, and the bound is in time, not only in bytes | MUST | RFC 1 §5.2 | T6.1 |
+| R8 | The timer that keeps the bound is per stream, runs on the injected clock, and the sync it issues covers the stream's whole active segment | invariant | RFC 1 §5.2, §1.3 | T6.1 |
+| R9 | Every record is synced the same way on every share. There is no per-share sync mode and no setting that weakens the bound | invariant | RFC 1 §5.2 | T6.1 |
 | R10 | A failure to sync is reported to the caller. It is never recorded as success and never retried silently | MUST NOT | RFC 1 §5.2 | T6.1, T6.3 |
-| R11 | Mixed durability: on one stream, the bytes a writer that syncs every 4 KiB waits for stay at or below what another writer appended within one sync's interval, and never grow with that writer's file size | MUST | RFC 1 §9.7, §5.2 | T6.9 |
+| R11 | Mixed durability: on one stream, the bytes a writer that syncs every 4 KiB waits for stay at or below what another writer appended within one sync's interval, and never grow with that writer's file size | MUST | RFC 1 §9.7, §5.2 | T6.8 |
 | R12 | A completed sync advances the stream's synced-through value and publishes which records are durable, so that epics 5, 7 and 9 can apply the rules that a release record, a segment's records and a removal's retention are durable before an unlink or a drop. This epic applies none of those rules | invariant | RFC 1 §5.1 | T6.1 |
 
 **A failed sync window**
@@ -260,10 +260,10 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 | R32 | The window that was open is failed whole, raising the loss generation as a failed window does, with no loss record appended | invariant | RFC 1 §5.4 | T6.6 |
 | R33 | The window's header-only records are failed too: each is undone in memory, and every `Sync` that waits on one fails with `ErrJournalReadOnly`. Only a loss record's drop stands | invariant | RFC 1 §5.4 | T6.6 |
 | R34 | The sequence number of every record failed this way is kept per journal directory in the process, as the loss generation is, for the next open of that directory in the process to drop. That open publishes no event and raises neither the loss generation nor a file's loss sequence. (The drop at open is epic 7's) | invariant | RFC 1 §5.4 | T6.6 |
-| R35 | While read-only the journal probes every 30 s. A probe first runs the checks open makes of the mount and the directory, not recovery, and only once they pass tries to make a spare, which it keeps as the reopen's first. A probe whose checks fail creates nothing, and the probes hold at most one spare | invariant | RFC 1 §5.4 | T6.7 |
-| R36 | A device that takes writes again but that open would refuse stays read-only, and `journal_read_only` names the failed check | invariant | RFC 1 §5.4 | T6.7 |
-| R37 | Once a spare is made, the journal reports the device writable again, and its caller closes and reopens it. The state ends only with a reopen | invariant | RFC 1 §5.4 | T6.7 |
-| R38 | `Stats.ReadOnly` says whether the journal is read-only, the error that made it so, and whether a spare has since been made | MUST | RFC 1 §3.7, §5.4 | T6.6, T6.7 |
+| R35 | While read-only the journal probes every 30 s. A probe first runs the checks open makes of the mount and the directory, not recovery, and only once they pass tries to make a spare, which it keeps as the reopen's first. A probe whose checks fail creates nothing, and the probes hold at most one spare | invariant | RFC 1 §5.4 | T6.6 |
+| R36 | A device that takes writes again but that open would refuse stays read-only, and `journal_read_only` names the failed check | invariant | RFC 1 §5.4 | T6.6 |
+| R37 | Once a spare is made, the journal reports the device writable again, and its caller closes and reopens it. The state ends only with a reopen | invariant | RFC 1 §5.4 | T6.6 |
+| R38 | `Stats.ReadOnly` says whether the journal is read-only, the error that made it so, and whether a spare has since been made | MUST | RFC 1 §3.7, §5.4 | T6.6 |
 
 **Loss records and loss events**
 
@@ -294,20 +294,20 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R54 | When a record is found not to verify, the journal removes the extents it backs from the placement index and serves no byte from that record | MUST | RFC 28 §3.3 | T6.8 |
-| R55 | The journal does not tell the offloaded outcome from the dirty one itself, and never substitutes zeros in either case: it drops what it cannot produce | MUST NOT | RFC 28 §3.3 | T6.8 |
-| R56 | Corruption of an offloaded extent and of a dirty one are reported distinguishably as loss events: a refetch against destroyed content | MUST | RFC 28 §3.3, RFC 1 §3.8 | T6.2, T6.8 |
-| R57 | The refusal is confined to the records that do not verify: one bad record says nothing of its neighbours | MUST | RFC 28 §3.3 | T6.8 |
-| R58 | Each record dropped as corrupt is a loss event with a loss record, unless another copy of it verifies. Among copies with equal numbers the one that verifies is used, and a copy that does not verify while another with its sequence number does is not a loss and gets no loss record | invariant | RFC 28 §3.3 | T6.8 |
-| R59 | A record found corrupt before its sync is dropped with an unsynced loss record, and one found corrupt after its sync with a synced one | invariant | RFC 1 §3.8 | T6.8 |
-| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and is not selected by a reclamation pass while it still backs held extents it cannot produce. Once those extents are dropped it may proceed. (Selection is epic 9's; this epic reports and clears the damage) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.8 |
-| R61 | A read that fails with an I/O error, not a verification failure, drops nothing and reports no loss. What the journal does with such a read is open (D11) | invariant | RFC 28 §3.3 | T6.8 |
+| R54 | When a record is found not to verify, the journal removes the extents it backs from the placement index and serves no byte from that record | MUST | RFC 28 §3.3 | T6.7 |
+| R55 | The journal does not tell the offloaded outcome from the dirty one itself, and never substitutes zeros in either case: it drops what it cannot produce | MUST NOT | RFC 28 §3.3 | T6.7 |
+| R56 | Corruption of an offloaded extent and of a dirty one are reported distinguishably as loss events: a refetch against destroyed content | MUST | RFC 28 §3.3, RFC 1 §3.8 | T6.2, T6.7 |
+| R57 | The refusal is confined to the records that do not verify: one bad record says nothing of its neighbours | MUST | RFC 28 §3.3 | T6.7 |
+| R58 | Each record dropped as corrupt is a loss event with a loss record, unless another copy of it verifies. Among copies with equal numbers the one that verifies is used, and a copy that does not verify while another with its sequence number does is not a loss and gets no loss record | invariant | RFC 28 §3.3 | T6.7 |
+| R59 | A record found corrupt before its sync is dropped with an unsynced loss record, and one found corrupt after its sync with a synced one | invariant | RFC 1 §3.8 | T6.7 |
+| R60 | A segment holding one or more unreadable records is reported, in `DamagedSegments` and its per-segment row, and is not selected by a reclamation pass while it still backs held extents it cannot produce. Once those extents are dropped it may proceed. (Selection is epic 9's; this epic reports and clears the damage) | MUST | RFC 28 §3.3, RFC 1 §3.7 | T6.7 |
+| R61 | A read that fails with an I/O error, not a verification failure, drops nothing and reports no loss. What the journal does with such a read is open (D11) | invariant | RFC 28 §3.3 | T6.7 |
 
 **Stats and metrics of this area**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R62 | `LastSyncError`, `SyncDuration`, `ReadOnly`, `Losses`, `LossGeneration`, `DamagedSegments` and the counters `syncs`, `sync_failures`, `sync_reappended_bytes`, `corrupt_extents` and `stale_extents` are served from maintained counters: no walk of the index or the segment set, and no lock a write needs | MUST | RFC 1 §3.7, §3.9 | T6.1, T6.2, T6.3, T6.5, T6.6, T6.8 |
+| R62 | `LastSyncError`, `SyncDuration`, `ReadOnly`, `Losses`, `LossGeneration`, `DamagedSegments` and the counters `syncs`, `sync_failures`, `sync_reappended_bytes`, `corrupt_extents` and `stale_extents` are served from maintained counters: no walk of the index or the segment set, and no lock a write needs | MUST | RFC 1 §3.7, §3.9 | T6.1, T6.2, T6.3, T6.5, T6.6, T6.7 |
 | R63 | What an operator needs to tell a wedged journal from a slow one, when syncing is failing or the journal is read-only, is readable from one `Stats` call | MUST | RFC 1 §3.8 | T6.3, T6.6 |
 | R64 | `LastSyncError` is the most recent sync failure, and when it happened | invariant | RFC 1 §3.7 | T6.3 |
 
@@ -315,23 +315,23 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R65 | Metrics are reachable: each condition a metric of this area names is driven and its metric moves | test row | RFC 1 §9.4 D | T6.9 |
+| R65 | Metrics are reachable: each condition a metric of this area names is driven and its metric moves | test row | RFC 1 §9.4 D | T6.8 |
 | R66 | Failed sync window: write A and B to one segment, fail the sync, let a later sync of the segment succeed. `Sync` for A and B failed or returned only after A and B were synced in another segment, and after a crash both read back or `Sync` reported the failure | test row | RFC 1 §9.4 A | T6.3, T6.4, T6.5 |
 | R67 | Re-append trusts no page cache: reads of the failed segment return stale bytes, and the re-append carries the checksummed bytes or fails the part | test row | RFC 1 §9.4 A | T6.5 |
 | R68 | A re-append keeps its numbers: a truncate over a re-appended record still outranks it, before and after a reopen | test row | RFC 1 §9.4 A | T6.5 |
 | R69 | Loss by exact record: v5 synced, v10 unsynced and failed with its window. A read serves v5 and the loss record names v10's sequence number | test row | RFC 1 §9.4 A | T6.2, T6.4 |
-| R70 | A synced loss masks what it superseded: v5 synced, v10 synced, v10 corrupt, v5 still on disk. The extent reads `missing`, never v5 | test row | RFC 1 §9.4 A | T6.2, T6.8 |
+| R70 | A synced loss masks what it superseded: v5 synced, v10 synced, v10 corrupt, v5 still on disk. The extent reads `missing`, never v5 | test row | RFC 1 §9.4 A | T6.2, T6.7 |
 | R71 | A failed window is reported once: file F with no `Sync` waiting, the timer's sync failed. The next `Sync(F)` fails, the one after succeeds, and `Sync(G)` of a file not in the window succeeds throughout | test row | RFC 1 §9.4 A | T6.3 |
 | R72 | A failed window does not wedge: A written, its sync failed and the window failed, B written and synced. The first `Sync` failed, the second succeeds, A reads `missing` with a loss event and an offload of the file proceeds | test row | RFC 1 §9.4 B | T6.3, T6.4 |
 | R73 | Sync failure: a failed sync is seen by the caller, and subsequent writes through the same journal take a new segment and succeed | test row | RFC 1 §9.4 B | T6.3 |
 | R74 | Header-only records are re-appended outside a read-only journal: a truncate and a release in one failed window are both re-appended, no loss event names either, and the failed segment carries no seal marker | test row | RFC 1 §9.4 C | T6.5 |
-| R75 | Read-only stops the drain: the journal turns read-only on `EROFS` and on a second refusal in a row, takes no further spare, appending calls and a waiting `Sync` fail at once with `ErrJournalReadOnly`, reads still serve, a spare is tried every 30 s, and a probe whose checks fail creates nothing and `journal_read_only` names the check | test row | RFC 1 §9.4 B | T6.6, T6.7 |
-| R76 | A loss raises the loss generation: it rises by one for a corrupt dirty extent and for a failed window resolved by failing it, before the failing `Sync` returns, and not for a corrupt offloaded extent, a stale one, or a window resolved by re-appending | test row | RFC 1 §9.4 A | T6.2, T6.4, T6.8 |
+| R75 | Read-only stops the drain: the journal turns read-only on `EROFS` and on a second refusal in a row, takes no further spare, appending calls and a waiting `Sync` fail at once with `ErrJournalReadOnly`, reads still serve, a spare is tried every 30 s, and a probe whose checks fail creates nothing and `journal_read_only` names the check | test row | RFC 1 §9.4 B | T6.6 |
+| R76 | A loss raises the loss generation: it rises by one for a corrupt dirty extent and for a failed window resolved by failing it, before the failing `Sync` returns, and not for a corrupt offloaded extent, a stale one, or a window resolved by re-appending | test row | RFC 1 §9.4 A | T6.2, T6.4, T6.7 |
 | R77 | The generation never repeats: raised to 3, the journal closed and opened again in the same process continues above 3 | test row | RFC 1 §9.4 D | T6.2 |
 | R78 | Loss events: a corrupt dirty extent and a stale one each appear in `Losses` with their file, extent, version, reason and offloaded bit, and each is counted | test row | RFC 1 §9.4 D | T6.2 |
 | R79 | A loss survives restart, the write half: the loss record of a dropped corrupt dirty extent is durable before the event is read, and a record a loss record names stays dropped. (The reopen is epic 7's) | test row | RFC 1 §9.4 C | T6.2 |
-| R80 | Corrupt dirty and corrupt offloaded: after the record is corrupted, a read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss for a dirty extent and as repairable for an offloaded one | test row | RFC 28 §4.2 A | T6.8 |
-| R81 | Neighbours survive: with a catalog present, one corrupt record leaves every other record of its segment readable | test row | RFC 28 §4.2 C | T6.8 |
+| R80 | Corrupt dirty and corrupt offloaded: after the record is corrupted, a read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss for a dirty extent and as repairable for an offloaded one | test row | RFC 28 §4.2 A | T6.7 |
+| R81 | Neighbours survive: with a catalog present, one corrupt record leaves every other record of its segment readable | test row | RFC 28 §4.2 C | T6.7 |
 | R82 | A cancelled `Sync`: a `Sync` cancelled while it waits returns the context's error, and after the sync fails the next `Sync` of the file reports the failure; a `Sync` with a done context does not clear a pending failure | test row | RFC 1 §9.4 C | T6.1, T6.3 |
 
 ## 4. Decisions this epic takes
@@ -354,14 +354,14 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
     raise the generation by the rules of R39–R51; the one entry point for every loss, whoever
     found it (D6);
   - `Corrupt(ctx, Corruption) (CorruptOutcome, error)`: the handler for a record that does not
-    verify (T6.8), whose outcome is `Dropped` or `UseCopy` with the other copy's location;
+    verify (T6.7), whose outcome is `Dropped` or `UseCopy` with the other copy's location;
   - `Generation() uint64` and `Stats() Part`, the fields of R62 for E8's `Stats` aggregation;
   - `Stop()`, which joins the timers and the probe before E5's segments close.
 - **D2, one sync behaviour, so `SyncPolicy` goes.** RFC 1 §5.2 says every record is synced the
   same way on every share, keeps the bound a constant and names a per-share mode only as an
   upgrade behind a `ponytail:`. RFC 1 §3's `Share` takes no policy. E1 declared `SyncPolicy`
   (`Bounded`, `Standard`), `Handle.SetSyncPolicy` and a policy argument of `Share` from an
-  earlier text of the RFC. T6.9 removes the three from the public surface and from `internal/core`,
+  earlier text of the RFC. T6.1 removes the three from the public surface and from `internal/core`,
   and the signature test follows the RFC. A `ponytail:` marker at the timer says there is
   one behaviour, names its ceiling (a bulk writer that never syncs pays at most one flush per
   stream per second) and the upgrade (a per-share mode that syncs only on request) once J1's case
@@ -390,7 +390,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   window may therefore end part re-appended and part failed. The failed part raises the loss
   generation once for the window (R48) and marks the files of the failed records (R17); the
   re-appended part does neither (R23, R50).
-- **D6, one entry point for every loss.** `Lose` is called by T6.4 (a failed window), by T6.8
+- **D6, one entry point for every loss.** `Lose` is called by T6.4 (a failed window), by T6.7
   (a corrupt read), by E7 (a record dropped as corrupt or stale at open) and by E9 (a stale
   extent at `MarkOffloaded`, a record that does not verify at an offer or a repack). It appends
   the loss record (R41), publishes the event (R39, R40) and raises the generation by its rules
@@ -458,14 +458,14 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 pkg/block/journalv2/
   errors.go          T6.6   ErrJournalReadOnly
   stats.go           T6.6   ReadOnly (ReadOnlyState)
-  handle.go          T6.9   SetSyncPolicy removed; Share loses its policy argument
+  handle.go          T6.1   SetSyncPolicy removed; Share loses its policy argument
   internal/
     core/
-      policy.go      T6.9   removed
-      limits.go      T6.9   SyncBound kept; T6.7 adds the probe interval
+      policy.go      T6.1   removed
+      limits.go      T6.1   SyncBound kept; T6.6 adds the probe interval
     durability/
       sync.go        T6.1   Sync, the leader, Durable, Track's entry point
-      timer.go       T6.9   the sync bound's timer per stream
+      timer.go       T6.1   the sync bound's timer per stream
       loss.go        T6.2   Lose, the loss record's append, the event, the ring
       generation.go  T6.2   the loss generation and the per-directory registry
       retain.go      T6.4   release of retained extents when the superseder syncs
@@ -473,8 +473,8 @@ pkg/block/journalv2/
       fail.go        T6.4   failing a window
       reappend.go    T6.5   re-appending a window
       readonly.go    T6.6   the read-only state, Admit, Observe, the failed-sequence list
-      probe.go       T6.7   the probe
-      corrupt.go     T6.8   the corruption handler and the copy table
+      probe.go       T6.6   the probe
+      corrupt.go     T6.7   the corruption handler and the copy table
     index/
       window.go      T6.4   the failed-window operation exported for this package
     *_test.go
@@ -482,12 +482,12 @@ pkg/block/journalv2/
 
 ## 6. Subtasks
 
-### T6.1 Sync and group commit
+### T6.1 Sync, group commit and the sync bound
 
-**Subtask T6.1 estimate: 4 man-days.**
+**Subtask T6.1 estimate: 6 man-days.**
 
 - **Track:** A. **Depends on:** S2; E5's `Append` and tracker (T5.4b); E3's `platform` sync.
-- **Covers:** R1–R6, R10, R12, R62, R82.
+- **Covers:** R1–R10, R12, R62, R82.
 - **Deliverables:** `internal/durability/sync.go`: `Durability` with `Track(Written)`, which
   registers a written record in the stream's ledger (D4); `Sync(ctx, ids...)`, which finds the
   highest unsynced record of each named file, waits until its stream's synced-through value
@@ -500,13 +500,22 @@ pkg/block/journalv2/
   A `decision:` marker at the leader (D3). A `ponytail:` marker at the shared sync carries the
   RFC's note on mixed durability: a sync covers the stream's whole active segment, so a frequent
   syncer waits for what another writer appended; bounded by what one stream accepts in one
-  sync's latency; upgrade to a stream of its own for a frequently flushing file when T6.9's
+  sync's latency; upgrade to a stream of its own for a frequently flushing file when T6.8's
   check and J1's mixed case show the latency rising.
+  In `internal/durability/timer.go`: one timer per stream on the injected clock, armed when a
+  stream holds a record no sync has covered and fired `SyncBound` after the write; the sync it
+  issues is the leader's, so it covers the active segment and every share's records on it.
+  `SyncBound() time.Duration`. The removal of `SyncPolicy`, `Handle.SetSyncPolicy` and `Share`'s
+  policy argument from `journalv2` and `internal/core`, with the signature test and E1's doc
+  comments following RFC 1 §3 (D2). The `ponytail:` marker of D2 sits at the timer.
+- **Why over 5 man-days:** the bound is a timer that issues this subtask's own sync on the same
+  leader and stream, so it is one topic on one dependency chain. Split off, `Sync` would ship
+  beside a `SyncPolicy` the RFC no longer has.
 - **Acceptance criteria:**
   - A `Sync` of a file returns only after a sync that covers its last record completed; one
     naming a file with nothing unsynced returns at once.
   - 16 writers syncing after every write on one stream cause at most one sync per four writes
-    (the counted check is T6.9's; here the leader's bookkeeping is asserted).
+    (the counted check is T6.8's; here the leader's bookkeeping is asserted).
   - A slot that completed after a sync began is not reported durable by it.
   - A `Sync` touches only the stream's active segment, and no `Sync` issues or waits on a
     directory sync.
@@ -514,6 +523,13 @@ pkg/block/journalv2/
   - `Durable` answers true exactly for records a completed sync covered.
   - A sync that fails returns an error to every waiter on it and is counted.
   - `Track` allocates nothing, outside `-race`.
+  - A record that no `Sync` names is synced after `SyncBound` of virtual time, not before, and
+    not later than one bound after the write.
+  - A timer armed by one write covers every record written before it fires.
+  - Two shares on one stream get the same behaviour, and the package declares no per-share mode.
+  - A timer that fires with nothing unsynced issues no sync.
+  - The signature test fails if `SetSyncPolicy` or a policy argument reappears.
+  - After `Stop`, no timer goroutine is left.
 - **Tests:** a seam that holds each sync until 16 waiters are queued, counting the syncs issued
   (catches one sync per waiter, and one per 16, which would leave a late writer waiting); a
   slot held open at the seam while a later one completes and syncs, asserting the earlier
@@ -523,8 +539,13 @@ pkg/block/journalv2/
   succeed and the cancelled caller's error is the context's (catches a cancel that abandons the
   sync); the device-flushing call is the one the seam sees on each supported platform's fake
   (catches a range-only sync, R3); a fuzz-driven interleaving of write, sync, cancel and failed
-  sync against an oracle of the states a `Sync` may return in; an allocation count of `Track`.
-  Conformance rows that stay red until `Open`: the cancelled-call row (R82's call half).
+  sync against an oracle of the states a `Sync` may return in; an allocation count of `Track`;
+  and for the bound, the test clock advanced just below and just past the bound with one record
+  written (catches a bound that is off by a tick or counted from the wrong event); two shares'
+  records on one stream, one sync (catches a per-share timer); a firing with nothing unsynced
+  (catches a sync per tick); `rfc_signatures_test.go` against RFC 1 §3's `Share`; the profiler on
+  `Stop` (catches a leaked timer). Conformance rows that stay red until `Open`: the cancelled-call
+  row (R82's call half).
 
 ### T6.2 Loss records, loss events and the loss generation
 
@@ -586,6 +607,7 @@ pkg/block/journalv2/
   window of many records (catches a raise per record). Conformance rows that stay red until
   `Open`: loss by exact record, a synced loss masks what it superseded, loss events, a loss
   survives restart, a loss raises the loss generation, generation never repeats.
+
 ### T6.3 A failed sync: the ended segment, the window and the report
 
 **Subtask T6.3 estimate: 4.5 man-days.**
@@ -668,6 +690,7 @@ pkg/block/journalv2/
   by a write and a `Sync` (R72); a window that held a record a later write covered (E4's
   part-handover, asserted through the index). Conformance rows that stay red until `Open`: loss
   by exact record, a failed window does not wedge, a loss raises the loss generation.
+
 ### T6.5 Re-appending a failed window
 
 **Subtask T6.5 estimate: 4 man-days.**
@@ -706,12 +729,12 @@ pkg/block/journalv2/
   rows that stay red until `Open`: re-append trusts no page cache, a re-append keeps its numbers,
   header-only records are re-appended outside a read-only journal.
 
-### T6.6 The read-only state
+### T6.6 The read-only state and its probe
 
-**Subtask T6.6 estimate: 3.5 man-days.**
+**Subtask T6.6 estimate: 5.5 man-days.**
 
-- **Track:** A. **Depends on:** T6.3, T6.4.
-- **Covers:** R16, R24, R28–R34, R38, R62, R63, R75.
+- **Track:** A. **Depends on:** T6.3, T6.4; E3's platform checks; E5's `Make`.
+- **Covers:** R16, R24, R28–R38, R62, R63, R75.
 - **Deliverables:** `internal/durability/readonly.go`: the state, the error and the time that
   entered it; `Observe(storage.FS)` (D12), which turns the journal read-only on the first
   `EROFS` from any call; the second condition of R28, called from T6.5 and T6.4 when a stream's
@@ -724,6 +747,18 @@ pkg/block/journalv2/
   `ReadOnlyState` for E8's `Stats` and E9's `report`. In `journalv2`: `ErrJournalReadOnly`,
   `Stats.ReadOnly` and `ReadOnlyState` (D8). The RFC's `decision:` on failing header-only
   records in a read-only journal sits here.
+  In `internal/durability/probe.go`: while the journal is read-only, a probe every 30 s of the
+  injected clock (the constant in `internal/core`, D14) runs the checks open makes of the mount
+  and the directory, and only if they pass makes one spare through E5's `Make`, which it keeps for
+  the reopen (at most one at a time); once a spare is made, `ReadOnlyState` says the device is
+  writable again; a failing check is named in `journal_read_only` (a `Stats` value beside
+  `ReadOnly`), and a probe whose checks fail creates nothing. `Stop` joins the probe. A
+  `decision:` marker at the refusal of a reopen (E11) names the retry-later answer and what
+  overturns it (RFC 1 §5.4); a `ponytail:` marker names the fixed 30 s and the upgrade to a
+  `Resume` with a backoff.
+- **Why over 5 man-days:** the probe exists only while the state holds and is the state's one
+  way out, so it is one topic on one dependency chain. Split off, the state would land with no
+  exit but a reopen nobody is told to make.
 - **Acceptance criteria:**
   - An `EROFS` from a write, a sync, a create, an allocate, a rename, an unlink, a truncate or a
     directory sync turns the journal read-only, each in turn.
@@ -736,46 +771,28 @@ pkg/block/journalv2/
     the process, and a journal in a new process does not have them.
   - The state is not left except by closing the journal.
   - `Stats.ReadOnly` says whether, why and since when.
+  - No probe happens before 30 s of virtual time, and one happens every 30 s after.
+  - A probe whose checks fail creates no file and `journal_read_only` names the check.
+  - A probe whose checks pass makes one spare, and the next one makes none while it exists.
+  - After the spare exists `ReadOnlyState` reports it, and the journal stays read-only until
+    closed.
+  - `Stop` leaves no goroutine.
 - **Tests:** every call kind failing with `EROFS` at the seam, one at a time (catches a call site
   that does not feed the choke point); the two-refusals sequence and the one-refusal sequence
   (catches an entry that is too early, which turns a transient fault into a read-only journal, and
   one that is too late, which drains the spares); `Admit` before and after; the window with a
   truncate (catches a header-only record kept in memory, which hides content the metadata still
   names); the list across two journals on one directory in one process (D7); `Stats` after each
-  step. Conformance rows that stay red until `Open`: read-only stops the drain.
+  step; and for the probe, the test clock advanced in steps of 29 s and 1 s (catches an interval
+  off by one tick); the seam's call log across a failed probe (catches a spare created on a mount
+  that may still be read-only); the checks failing as on a mount without cache flushes, then
+  passing (catches a probe that tries a spare without them); two probes with the first spare
+  still there; the profiler on `Stop`. Conformance rows that stay red until `Open`: read-only
+  stops the drain, both halves.
 
-### T6.7 The read-only probe
+### T6.7 A record that does not verify when it is read
 
-**Subtask T6.7 estimate: 2 man-days.**
-
-- **Track:** A. **Depends on:** T6.6; E3's platform checks; E5's `Make`.
-- **Covers:** R35–R38, R75.
-- **Deliverables:** `internal/durability/probe.go`: while the journal is read-only, a probe every
-  30 s of the injected clock (the constant in `internal/core`, D14) runs the checks open makes of
-  the mount and the directory, and only if they pass makes one spare through E5's `Make`, which it
-  keeps for the reopen (at most one at a time); once a spare is made, `ReadOnlyState` says the
-  device is writable again; a failing check is named in `journal_read_only` (a `Stats` value
-  beside `ReadOnly`), and a probe whose checks fail creates nothing. `Stop` joins the probe. A
-  `decision:` marker at the refusal of a reopen (E11) names the retry-later answer and what
-  overturns it (RFC 1 §5.4); a `ponytail:` marker names the fixed 30 s and the upgrade to a
-  `Resume` with a backoff.
-- **Acceptance criteria:**
-  - Nothing happens before 30 s of virtual time, and a probe happens every 30 s after.
-  - A probe whose checks fail creates no file and `journal_read_only` names the check.
-  - A probe whose checks pass makes one spare, and the next one makes none while it exists.
-  - After the spare exists `ReadOnlyState` reports it, and the journal stays read-only until
-    closed.
-  - `Stop` leaves no goroutine.
-- **Tests:** the test clock advanced in steps of 29 s and 1 s (catches an interval off by one
-  tick); the seam's call log across a failed probe (catches a spare created on a mount that may
-  still be read-only); the checks failing as on a mount without cache flushes, then passing
-  (catches a probe that tries a spare without them); two probes with the first spare still there;
-  the profiler on `Stop`. Conformance rows that stay red until `Open`: read-only stops the drain
-  (its recovery half).
-
-### T6.8 A record that does not verify when it is read
-
-**Subtask T6.8 estimate: 4 man-days.**
+**Subtask T6.7 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T6.2, T6.5 (the copy table); E3's record codec; E4's index.
 - **Covers:** R54–R62, R70, R76, R80, R81.
@@ -813,110 +830,90 @@ pkg/block/journalv2/
   dirty, corrupt offloaded, a synced loss masks what it superseded, neighbours survive, a loss
   raises the loss generation.
 
-### T6.9 The sync bound, the counted checks and the metrics sweep
+### T6.8 The counted checks and the metrics sweep
 
-**Subtask T6.9 estimate: 3.5 man-days.**
+**Subtask T6.8 estimate: 1.5 man-days.**
 
-- **Track:** A. **Depends on:** T6.1, T6.3, T6.6, T6.8.
-- **Covers:** R1, R2, R4, R7–R9, R11, R65.
-- **Deliverables:** `internal/durability/timer.go`: one timer per stream on the injected clock,
-  armed when a stream holds a record no sync has covered and fired `SyncBound` after the write;
-  the sync it issues is T6.1's, so it covers the active segment and every share's records on it.
-  `SyncBound() time.Duration`. The removal of `SyncPolicy`, `Handle.SetSyncPolicy` and `Share`'s
-  policy argument from `journalv2` and `internal/core`, with the signature test and E1's doc
-  comments following RFC 1 §3 (D2). The `ponytail:` marker of D2 sits at the timer. The two
-  counted checks of RFC 1 §9.7 for this area, as tests under E2's profiler and seam: syncs per
-  write (16 writers on one stream, each syncing after every write, the seam holding each sync
-  until all 16 wait, at most one sync per four writes) and mixed durability (one writer syncing
-  every 4 KiB beside one streaming 1 MiB writes synced only at the end of each 256 MiB file, the
-  seam counting the bytes each of the first writer's syncs waited for, which must stay at or
-  below what the second appended within one sync's interval). A metrics test that drives each
-  condition a metric of this area names (a sync, a failed sync, a re-append, a loss of each
-  reason, a corrupt extent of each outcome, a read-only entry) and reads each metric through the
-  exporter's name.
+- **Track:** A. **Depends on:** T6.1, T6.3, T6.6, T6.7.
+- **Covers:** R4, R11, R65.
+- **Deliverables:** the two counted checks of RFC 1 §9.7 for this area, as tests under E2's
+  profiler and seam: syncs per write (16 writers on one stream, each syncing after every write,
+  the seam holding each sync until all 16 wait, at most one sync per four writes) and mixed
+  durability (one writer syncing every 4 KiB beside one streaming 1 MiB writes synced only at the
+  end of each 256 MiB file, the seam counting the bytes each of the first writer's syncs waited
+  for, which must stay at or below what the second appended within one sync's interval). A
+  metrics test that drives each condition a metric of this area names (a sync, a failed sync, a
+  re-append, a loss of each reason, a corrupt extent of each outcome, a read-only entry) and reads
+  each metric through the exporter's name.
 - **Acceptance criteria:**
-  - A record that no `Sync` names is synced after `SyncBound` of virtual time, not before, and
-    not later than one bound after the write.
-  - A timer armed by one write covers every record written before it fires.
-  - Two shares on one stream get the same behaviour, and the package declares no per-share mode.
-  - A timer that fires with nothing unsynced issues no sync.
-  - The signature test fails if `SetSyncPolicy` or a policy argument reappears.
-  - After `Stop`, no timer goroutine is left.
   - The syncs-per-write check passes at the bound and fails at one sync per write and at none.
   - The mixed-durability check passes, and does not grow when the second writer's file is made
     four times larger.
   - Every metric of this area moves for the condition it names.
-- **Tests:** the test clock advanced just below and just past the bound with one record written
-  (catches a bound that is off by a tick or counted from the wrong event); two shares' records
-  on one stream, one sync (catches a per-share timer); a firing with nothing unsynced (catches a
-  sync per tick); `rfc_signatures_test.go` against RFC 1 §3's `Share`; the profiler on `Stop`
-  (catches a leaked timer); and for the checks, each check run against the real leader (D3), and
-  against a deliberately broken copy that syncs per waiter and one that syncs once per 16,
-  asserting the check fails on each (catches a check that cannot fail, rule 10); the metrics
-  test. Conformance rows that stay red until `Open`: metrics are reachable (the part of it that
-  is this area's).
+- **Tests:** each check run against the real leader (D3), and against a deliberately broken copy
+  that syncs per waiter and one that syncs once per 16, asserting the check fails on each (catches
+  a check that cannot fail, rule 10); the metrics test. Conformance rows that stay red until
+  `Open`: metrics are reachable (the part of it that is this area's).
 
 ## 7. Order of work
 
 T6.1 comes first: epic 8 consumes `Sync`, and everything else here is a way a sync fails or
-what a sync leaves out. Two lanes then run side by side. The **sync lane**: T6.3, then T6.4,
-T6.5, T6.6 and T6.7, which turn a failed sync into a resolved window and a read-only state.
-The **loss lane**: T6.2, then T6.8, which give every loss a record, an event and a generation
-and build the handler epic 8's `ReadAt` and epic 9's offers call. The lanes meet at T6.4, which
-needs the loss API and the generation, and at T6.8, which needs T6.5's copy table. T6.9 closes
-the epic: its counted checks and metrics sweep read the failed sync, the read-only state and
-the corruption handler, so the sync bound they share a subtask with lands last too. Until it
-does, a record no `Sync` names is synced at the next `Sync` of its stream or at a roll, and
-epic 8 codes against `Share(tag, limit, floor)` whatever E1's stub still declares.
+what a sync leaves out. It carries the sync bound and the removal of `SyncPolicy`, so epic 8
+codes against `Share(tag, limit, floor)` from the first pull request. Two lanes then run side by
+side. The **sync lane**: T6.3, then T6.4, T6.5 and T6.6, which turn a failed sync into a resolved
+window and a read-only state with its probe. The **loss lane**: T6.2, then T6.7, which give
+every loss a record, an event and a generation and build the handler epic 8's `ReadAt` and
+epic 9's offers call. The lanes meet at T6.4, which needs the loss API and the generation, and
+at T6.7, which needs T6.5's copy table. T6.8 closes the epic: its counted checks and metrics
+sweep read the sync, the failed sync, the read-only state and the corruption handler.
 
 ```mermaid
 flowchart TD
-  S2(["S2 red suite in CI"]):::sync --> T1["T6.1 Sync and group commit"]
+  S2(["S2 red suite in CI"]):::sync --> T1["T6.1 Sync, group commit and the sync bound"]
   S2 --> T2["T6.2 Loss records, events and generation"]
   E5s(["E5 streams and tracker"]):::sync --> T1
   E5e(["E5 ended segment hand-off"]):::sync --> T3
   E4r(["E4 retained set and failed-window operation"]):::sync --> T4
   T1 --> C1(["after T6.1: E8 can call Sync"]):::sync
   T1 --> T3["T6.3 Failed sync and window"]
-  T1 --> T4["T6.4 Superseded kept until synced, failing a window"]
-  T2 --> T4
+  T2 --> T4["T6.4 Superseded kept until synced, failing a window"]
   T3 --> T4
   T3 --> T5["T6.5 Re-append"]
   T4 --> T5
-  T3 --> T6["T6.6 Read-only state"]
+  T3 --> T6["T6.6 Read-only state and probe"]
   T4 --> T6
-  T6 --> T7["T6.7 Read-only probe"]
-  T2 --> T8["T6.8 Corruption on read"]
-  T5 --> T8
+  T2 --> T7["T6.7 Corruption on read"]
+  T5 --> T7
   T2 --> C2(["after T6.2: Lose and the generation usable by E7 and E9"]):::sync
-  T8 --> C3(["after T6.8: ReadAt's failure path and offers can drop"]):::sync
-  T1 --> T9["T6.9 Sync bound, counted checks, metrics"]
-  T3 --> T9
-  T6 --> T9
-  T8 --> T9
+  T7 --> C3(["after T6.7: ReadAt's failure path and offers can drop"]):::sync
+  T6 --> T8["T6.8 Counted checks and metrics"]
+  T7 --> T8
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
+The graph draws each subtask's direct dependencies after transitive reduction: T6.4 also depends
+on T6.1 and T6.8 on T6.1 and T6.3, through the edges drawn.
+
 Checkpoints:
 
-- After T6.1: `Sync` and `Durable` exist, so E8 can wire `Handle.Sync` and E5's rules on
-  durable records can ask a question.
+- After T6.1: `Sync`, `Durable` and the sync bound exist, so E8 can wire `Handle.Sync` and E5's
+  rules on durable records can ask a question.
 - After T6.2: any epic can report a loss through `Lose`, with its record, its event and its
   generation, which is what E7 and E9 need to start their corruption paths.
 - After T6.4: a failed sync ends in a resolved window, which closes the failed-sync half of the
   epic.
-- After T6.8: `ReadAt`'s failure path and the offers of E9 have the handler they call.
+- After T6.7: `ReadAt`'s failure path and the offers of E9 have the handler they call.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1 | 4 | E5 tracker, E3 platform sync | the sync and group commit: what E8 wires first |
+| 1 | T6.1 | 6 | E5 tracker, E3 platform sync | the sync, group commit and the bound, with `SyncPolicy` removed: what E8 wires first |
 | 2 | T6.2 | 4.5 | E5 headroom, E3 loss record | the loss record, the event, the ring and the generation: one entry point for every loss |
 | 3 | T6.3, T6.4 | 9.5 | PR 1, PR 2, E4 retained set, E5 hand-off | a failed sync and its resolution by failing, so no window is left pending |
 | 4 | T6.5 | 4 | PR 3 | the re-append that replaces failing where the bytes can be proven |
-| 5 | T6.6, T6.7 | 5.5 | PR 3 | the read-only state and its probe, with the two public additions |
-| 6 | T6.8, T6.9 | 7.5 | PR 2, PR 4, PR 5 | the corruption handler, then the sync bound with `SyncPolicy` removed and the checks that close the epic |
+| 5 | T6.6 | 5.5 | PR 3 | the read-only state and its probe, with the two public additions |
+| 6 | T6.7, T6.8 | 5.5 | PR 2, PR 4, PR 5 | the corruption handler and the checks that close the epic |
 
 PR 1 and PR 2 can be open side by side, and so can PR 4 and PR 5 once PR 3 has merged. A
 suggestion only: one pull request per subtask works as well.
@@ -925,18 +922,18 @@ suggestion only: one pull request per subtask works as well.
 
 - **E1's surface and the RFC disagree on the sync policy.** RFC 1 §5.2 gives one behaviour and
   `Share` takes no policy; E1 declared `SyncPolicy`, `SetSyncPolicy` and a policy argument. D2
-  follows the RFC and T6.9 removes them, which amends a surface frozen at S1. Confirm with
+  follows the RFC and T6.1 removes them, which amends a surface frozen at S1. Confirm with
   E1's owner and the RFC's author, and say in the RFC that a per-share mode is an upgrade only.
-  If the policy is kept, T6.9 becomes a smaller subtask and the timer must honour `Standard`.
+  If the policy is kept, T6.1 becomes a smaller subtask and the timer must honour `Standard`.
 - **`ErrJournalReadOnly` and `Stats.ReadOnly` were never declared.** D8 adds them after S1.
   Confirm the shape of `ReadOnlyState` with E8's owner, who aggregates `Stats`.
 - **A read that fails with `EIO`.** #3440 asks what the journal does with it, and #3511 would
   keep the extent held, retry a bounded number of times and count the segment suspect. D11 drops
   nothing and returns the error, which holds under #3511 and is not decided for #3440. If the
-  RFC's answer is that an `EIO` read drops the extent, T6.8 gains a branch.
+  RFC's answer is that an `EIO` read drops the extent, T6.7 gains a branch.
 - **A header that does not verify.** #3449 asks whether a loss is named when a record's header
   fails to verify in a scanned segment. At read time the index already names the record, so
-  T6.8 names it; the scanned case is E7's, and the two should agree.
+  T6.7 names it; the scanned case is E7's, and the two should agree.
 - **Another copy of a record at read time (D10).** Only a re-append's original is registered.
   A copy a repack carried is not. Confirm with E9's owner whether it will register the source of
   a carry, or whether the RFC's "unless another copy verifies" is meant for recovery alone.

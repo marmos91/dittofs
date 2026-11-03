@@ -578,7 +578,7 @@ pkg/block/journalv2/
 
 **Subtask T8.2 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.1; E4's span query with exact gaps and the change version (E4-2, E4-7); E5's positioned read and read drain (T5.2, T5.4b); E3's record codec; T6.8's `Corrupt`.
+- **Track:** B. **Depends on:** T8.1; E4's span query with exact gaps and the change version (E4-2, E4-7); E5's positioned read and read drain (T5.2, T5.4b); E3's record codec; T6.7's `Corrupt`.
 - **Covers:** R28–R40, R91, R107.
 - **Deliverables:** `read.go`: `ReadAt(ctx, h, id, off, p)`. It takes the file's append domain
   only long enough to read `asOf` (D3), then the file index shared to resolve the span, copies
@@ -587,8 +587,8 @@ pkg/block/journalv2/
   verifies its payload checksum with E3's codec, compares the header it found with the index
   entry (D5) and copies out only the bytes the caller asked for. It fills `held` with each
   piece's version, leaves the bytes of every missing piece untouched, and never widens
-  `missing`. A record that fails either check is passed to T6.8's `Corrupt`: on `UseCopy` the read continues from the other copy's location, and on `Dropped` it reports the extent missing. A reference the drain has closed makes the read
-  resolve again, or report the extent missing. An I/O error from the read is returned as itself and changes nothing (§9). Until T6.8 has landed (§7), a record that fails a check is reported as `ErrCorrupt` and never served.
+  `missing`. A record that fails either check is passed to T6.7's `Corrupt`: on `UseCopy` the read continues from the other copy's location, and on `Dropped` it reports the extent missing. A reference the drain has closed makes the read
+  resolve again, or report the extent missing. An I/O error from the read is returned as itself and changes nothing (§9). Until T6.7 has landed (§7), a record that fails a check is reported as `ErrCorrupt` and never served.
 - **Acceptance criteria:**
   - A sentinel in `p` survives a read of a never-written extent and of a released one, and both
     appear in `missing` identically.
@@ -1076,7 +1076,7 @@ version surface, and T8.4 adds the tag rule on top of them. Capacity (T8.5, then
 T8.10) puts `WriteAt` and `Fill` behind admission. `Fill` and the removals (T8.7, T8.8) follow
 the tag rule and capacity, and T8.8 waits for epic 6's `Sync`. T8.9 closes the
 engine's surface. T8.11 to T8.14 are the cross-cutting closers: the lock order, cancellation
-and close, `Stats` and the counted checks. T8.2 does not wait for T6.8, epic 6's handler for a record that does not verify: until it lands, a record that fails a check is reported as `ErrCorrupt` and never served, and the call to `Corrupt` is a follow-up change under T8.2 once T6.8 has merged.
+and close, `Stats` and the counted checks. T8.2 does not wait for T6.7, epic 6's handler for a record that does not verify: until it lands, a record that fails a check is reported as `ErrCorrupt` and never served, and the call to `Corrupt` is a follow-up change under T8.2 once T6.7 has merged.
 
 ```mermaid
 flowchart TD
@@ -1159,7 +1159,7 @@ A suggestion only: one pull request per subtask works as well.
   `Append` (T6.1, which epic 6's own open points ask this epic to confirm sits in each appending
   path: T8.1 puts it there, and epic 9 must for its records); `Sync(ctx, ids...)` (T6.1) for the
   durability of a removal (T8.8); `Admit()` (T6.6), first in every appending call (T8.5); `Corrupt`
-  (T6.8), whose outcomes `Dropped` and `UseCopy` T8.2 handles; and `Durability.Stats()`,
+  (T6.7), whose outcomes `Dropped` and `UseCopy` T8.2 handles; and `Durability.Stats()`,
   `ReadOnlyState` and `Generation()` for `Stats` (T8.13). The gap: `Since` yields, and `Files`
   lists, every synced loss record of a file until the caller settles it (RFC 1 §3.10, §3.7),
   but T6.2's ring is bounded and E4's markers hold removals, not losses. Neither epic keeps
@@ -1172,7 +1172,7 @@ A suggestion only: one pull request per subtask works as well.
   whether one could be made against the maximum, without taking either. T5.6 declares the roll
   and its refusals but not that question. Epic 5's own open point asks for the same confirmation
   about the lock domains.
-- **Epic 1's document lags its code.** Its 1.5 lists the handle's calls without a context and `Share` with a sync policy, while RFC 1 §3 and the package on the integration branch take a context first and `Share(tag, limit, floor)`. This breakdown follows the RFC, as does epic 6, whose T6.9 removes the policy and whose T6.6 adds `ErrJournalReadOnly`. Epic 1's document should be revised.
+- **Epic 1's document lags its code.** Its 1.5 lists the handle's calls without a context and `Share` with a sync policy, while RFC 1 §3 and the package on the integration branch take a context first and `Share(tag, limit, floor)`. This breakdown follows the RFC, as does epic 6, whose T6.1 removes the policy and whose T6.6 adds `ErrJournalReadOnly`. Epic 1's document should be revised.
 - **The order in which refusals are named (D6) is this epic's.** RFC 1 §6 fixes only that `spare`
   is named last. Confirm the order with the RFC's author, and put it in the RFC.
 - **What "the headroom" measures (D8) is this epic's reading.** RFC 1 §6 states its size, the
