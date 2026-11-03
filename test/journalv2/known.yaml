@@ -330,7 +330,7 @@
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs the version counter and a share attachment raising it above the share floor.'
-  issue: '#3379'
+  issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1C_CancelledCallChangesNothingOrCompletes
   status: fail
@@ -358,7 +358,7 @@
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs files owned by the share whose records built them, the cross-share refusals, tag-conflict recovery and forget.'
-  issue: '#3596'
+  issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1C_FillBeatsOlderWrite
   status: fail

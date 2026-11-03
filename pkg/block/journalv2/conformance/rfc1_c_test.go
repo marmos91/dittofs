@@ -39,18 +39,43 @@ func cOffload(t *testing.T, h *journalv2.Handle, id journalv2.FileID, through jo
 // TestRFC1C_ReseedAfterRepack checks that after a repack has moved an
 // extent's record into another segment, `MarkOffloaded` at the versions the
 // offload was offered with still marks the extent and permits its release,
-// across a crash.
+// across a crash. The bit is cleared and the release record of a second,
+// dead extent is made durable before the repack, so the repack actually moves
+// the record and the mark after the crash can rest only on the repacked one.
 func TestRFC1C_ReseedAfterRepack(t *testing.T) {
 	f := journalv2test.New(t)
 	h, id := f.Share(0), journalv2test.File(0)
 	const size = 64 << 10
 	e := ext(0, size)
+	dead := ext(size, size)
 
-	w := write(t, h, id, 0, distinct(0, size))
-	o := cOffload(t, h, id, w)
+	// Two extents in one segment, both offloaded, so the second one's release
+	// leaves its record dead beside the first's live one: a repack of the
+	// share reclaims the dead record's room by moving the live one. The offer
+	// sketches both, its Oldest through Newest spanning e's version.
+	write(t, h, id, 0, distinct(0, size))
+	d := write(t, h, id, size, distinct(1, size))
+	o := cOffload(t, h, id, d)
+	wantBits(t, f, id, e, true, "the extent before the unmark")
+	wantBits(t, f, id, dead, true, "the dead extent before its release")
+
+	// The bit of e is cleared and the release of the dead extent is made
+	// durable, so the repack below frees the dead record and cannot be a
+	// no-op that leaves everything in place, and the reopened journal rebuilds
+	// the cleared bit from the durable unmark record rather than the
+	// offloaded one.
+	unmark(t, h, id, e)
+	release(t, h, id, dead)
+	syncFile(t, h, id)
+
+	seg := segmentOf(t, f, id, 0)
 	repackAll(t, f, journalv2.RepackScope{Share: journalv2test.Tag(0)})
+	if got := segmentOf(t, f, id, 0); got == seg {
+		t.Fatalf("the repack left byte 0 of the file in segment %d, want another one", seg)
+	}
 	f.Crash()
 
+	wantBits(t, f, id, e, false, "the extent before the reseed")
 	err := f.Share(0).MarkOffloaded(t.Context(), id, []journalv2.Extent{e}, o.Oldest, o.Newest)
 	stub(t, "MarkOffloaded", err)
 	if err != nil {
@@ -101,10 +126,10 @@ func TestRFC1C_ReleaseRecordLost(t *testing.T) {
 
 	w := write(t, h, id, 0, p)
 	cOffload(t, h, id, w)
-	// The row releases the segment's last held extent, so the segment is
-	// sealed first and the release record lands in the stream's next one.
-	// Release returns once the record is written, never durable, so the
-	// crash below cuts the first sync that could make it durable; the hold
+	// The extent the release drops is its segment's last held one, so the
+	// segment is sealed first and the release record lands in the stream's
+	// next one. Release returns once the record is written, never durable, so
+	// the crash below cuts the first sync that could make it durable; the hold
 	// is on any segment, since release records never go to a sealed one.
 	seg := segmentOf(t, f, id, 0)
 	sealNow(t, f, seg)
@@ -242,14 +267,18 @@ func TestRFC1C_StaleFill(t *testing.T) {
 // TestRFC1C_IncrementalReport checks that the report of an offload callback
 // is incremental: extents reported mid-callback before the callback fails
 // stay marked offloaded and releasable, while the rest of the offer stays
-// neither, across a crash.
+// neither. Only the journal's memory holds these marks — the records behind
+// them are appends the journal keeps in memory until they sync — so the check
+// makes no crash: a crash could lose the reported record on its way to storage
+// on a correct journal too.
 func TestRFC1C_IncrementalReport(t *testing.T) {
 	f := journalv2test.New(t)
 	h, id := f.Share(0), journalv2test.File(0)
 	const size = 32 << 10
 
 	// Two writes sealed into different segments, so the offer spans at least
-	// two blocks of the placement index.
+	// two blocks of the upload, the unit a report is made in: a journal that
+	// marks per upload-block boundary keeps only whole blocks.
 	var ws []journalv2.Version
 	for i := range 2 {
 		ws = append(ws, write(t, h, id, int64(i)*size, distinct(i, size)))
@@ -285,10 +314,9 @@ func TestRFC1C_IncrementalReport(t *testing.T) {
 		t.Fatalf("the offload failing mid-callback returned nil")
 	}
 
-	// The row asserts the marks the report made and the ones it did not; its
-	// records are appends the journal keeps in memory until they sync, so no
-	// crash is made here — the row has none, and a crash could lose the
-	// reported record on its way to storage on a correct journal too.
+	// The marks the report made hold and the ones it did not stay clear:
+	// everything reported so far stays marked offloaded and releasable, and
+	// the rest stays dirty and a later call offers it again.
 	for _, x := range offer {
 		wantBits(t, f, id, x.Extent, x.Extent.Off == 0, "the extent after the failed offload")
 		if x.Extent.Off != 0 {
@@ -426,6 +454,19 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 			}
 		}
 	}
+	// Every record is in a sealed segment before the crash, release records
+	// included: a maximum read over the sealed segments alone would otherwise
+	// miss the highest ones, and the sequence check below could pass without
+	// the reopen having raised anything.
+	f.Advance(2 * journalv2test.IdleSealAge)
+	eventually(t, "the release records' segments were not sealed once idle", func() bool {
+		for _, name := range segmentFiles(t, f) {
+			if !endsInTrailer(durable(t, f, name)) {
+				return false
+			}
+		}
+		return true
+	})
 	f.Crash()
 
 	seqMax, versionMax := cDiskMaxima(t, f)
@@ -437,19 +478,37 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 	if v.Compare(next) < 0 {
 		t.Fatalf("the write after the reopen was given %+v, below the reported next version %+v", v, next)
 	}
-	// The new record's sequence is read from its own segment's catalog, so
-	// the segment is sealed first: an unsealed one carries no catalog.
+	// The new record's own sequence is read from its own catalog entry — its
+	// entry's file id and file offset name one record alone — so the segment
+	// is sealed first: an unsealed one carries no catalog. Reading the disk's
+	// maximum again instead would compare the old maximum with itself.
 	syncFile(t, f.Share(0), journalv2test.File(0))
-	sealNow(t, f, segmentOf(t, f, journalv2test.File(0), 3*512))
-	if got, _ := cDiskMaxima(t, f); got <= seqMax {
+	seg := segmentOf(t, f, journalv2test.File(0), 3*512)
+	sealNow(t, f, seg)
+	wantEntry := journalv2test.File(0).Bytes()
+	const wantOff = 3 * 512
+	var got uint64
+	var found int
+	data := durable(t, f, segmentName(seg))
+	_, entries := trailerOf(t, data)
+	for _, e := range entries {
+		if bytes.Equal(e[0:16], wantEntry[:]) && binary.LittleEndian.Uint64(e[16:24]) == wantOff {
+			found++
+			at := int64(binary.LittleEndian.Uint32(e[24:28]))
+			got = binary.LittleEndian.Uint64(data[at+48 : at+56])
+		}
+	}
+	if found != 1 {
+		t.Fatalf("segment %d's catalog holds %d entries of file %v at offset %d, want exactly one", seg, found, journalv2test.File(0), wantOff)
+	}
+	if got <= seqMax {
 		t.Fatalf("the record written after the reopen carries sequence %d, which does not exceed the highest %d on disk", got, seqMax)
 	}
 
 	want := indexSnapshot(t, f)
 	for _, seed := range []uint64{1, 2, 3} {
-		f.Shutdown()
 		f.Seam.ShuffleList(seed)
-		f.Reopen()
+		f.Crash()
 		wantSameIndex(t, f, want)
 	}
 }
@@ -614,6 +673,14 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		}
 		if got := f.J.Stats().NextVersion; got != next {
 			t.Fatalf("the refused calls moved the next version to %+v, want %+v", got, next)
+		}
+		// The bit and the tag the refused Release and Forget stood on are
+		// checked before the crash too, so what the crash drops below is
+		// nothing those calls changed, not the crash having settled their
+		// records for them.
+		wantBits(t, f, id, e, true, "the extent still offloaded after the refused calls")
+		if _, ok := f.J.Stats().Shares[qt]; !ok {
+			t.Fatalf("tag %d left Stats().Shares by the refused Forget", qt)
 		}
 		f.Crash()
 		if es := heldEntries(t, f, journalv2test.File(1)); len(es) != 0 {
@@ -805,10 +872,10 @@ func TestRFC1C_RestampAfterLostStore(t *testing.T) {
 	var other journalv2.JournalID
 	copy(other[:], "another journal")
 
-	// The row refuses a restamp with another journal's identity against the
-	// journal shut, as the fixture's own TryRestamp runs it. Restamp is handed
-	// the seam's storage, like every journal call in this suite, so its refusal
-	// is observable through the seam and nothing it touched moves.
+	// A restamp with another journal's identity is refused with the journal
+	// shut, as the fixture's own TryRestamp runs it. Restamp is handed the
+	// seam's storage, like every journal call in this suite, so its refusal is
+	// observable through the seam and nothing it touched moves.
 	f.Shutdown()
 	before := dirNow(t, f)
 	err = journalv2.Restamp(t.Context(), f.Dir, other, i3, journalv2.WithStorage(f.Seam.FS()))
@@ -1484,9 +1551,11 @@ func TestRFC1C_LossSurvivesRestart(t *testing.T) {
 	flipAt(t, f, name, loc.Offset+int64(start)+int64(len(p)/2))
 
 	// The read that finds the corruption raises the loss; the event is not
-	// read out before the crash. A successful journal keeps it on disk as
-	// a loss record.
+	// read out before the crash. The loss record it appends is made durable
+	// before the crash, so the open below reads the loss back from the record
+	// on disk rather than re-detecting the corruption.
 	wantExtentMissing(t, f.Share(0), id, e)
+	syncFile(t, f.Share(0), id)
 	f.Crash()
 
 	losses := f.J.Stats().Losses

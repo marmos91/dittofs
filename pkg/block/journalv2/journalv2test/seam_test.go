@@ -1219,6 +1219,9 @@ func TestShuffleListPermutesTheListing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if slices.Equal(got, plain) {
+		t.Fatalf("seed 1 left the listing %v in the directory's own order", got)
+	}
 	sortedGot := slices.Clone(got)
 	slices.Sort(sortedGot)
 	if !slices.Equal(sortedGot, plain) {
