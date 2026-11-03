@@ -198,7 +198,7 @@ subtasks and tests can cite them.
 | R9 | Until its stability point the journal is the write's authority: its pending operation is in the file's entry, in version order, before `Write` answers, so a `Read`, `Overlay` or `Allocation` that starts after reflects it | invariant | §4.1, E15 | T3.2, T3.4, T3.5, T3.6 |
 | R10 | A `Write` that fails never calls `WriteOpts.Done`; a zero-length `Write` stages nothing, answers the verifier and calls `Done` once, with nothing charged | invariant | §12.1 | T3.2 |
 | R11 | `Draw` issues the next version of the file's journal and no other: above every version staged or drawn on that journal before it, with no version of the engine's or the store's own, and takes no lock (the caller holds the accept lock) | MUST | §4.1, RFC 1 §4.3 | T3.3 |
-| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3, RFC 17 §4.3 | T3.2, T3.3, T3.5 |
+| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3 | T3.2, T3.3, T3.5 |
 
 **Overlay**
 
@@ -537,3 +537,7 @@ A suggestion only: one pull request per subtask works as well.
    `Existence.Allocation` answers a run and a hole flag; D11 translates. RFC 6 §10.1 or
    RFC 8 §12.1 should say which.
 4. **A cause RFC 8 leaves open:** the answer at the re-ask's deadline (D6).
+5. **A context-error row in RFC 17 §4.3 and RFC 20 §7.3.** D4 and R12 pass the caller's
+   `ctx.Err()` through as itself, yet RFC 17 §4.3 lists no context error, and RFC 20 §7.3
+   and A7 answer an error with no row as a server fault, logged at `Error`. `internal/vfs`
+   already returns `ctx.Err()` raw, so the gap is not new, but D4 now rests on it.
