@@ -1673,13 +1673,15 @@ admits. The table's own entry mutex is a leaf inside one table call or one
 timer step, and is never held when a call returns. Timer-driven table changes
 take the entry mutex alone, so one can land between a `CheckIO` and the write it
 admits; each only removes or relaxes state, which no admitted write depends on.
-Wherever the table may grant or revoke on a file the call does not name —
-serving a file's waiters in the timer's steps, and after `AckRecall`,
-`FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect` and
-`Locks.ReleaseLockOwner` — it takes that file's admission lock itself, through
-the `order` function the node hands the table at `Start`
-([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the service calls
-those holding no admission lock. Every table
+Wherever the table may grant or revoke on a file the call does not name
+(serving a file's waiters in the timer's steps, and after `AckRecall`,
+`FreeState`, `Clients.Connect`, `Expire`, `Revoke`, `Disconnect`,
+`Locks.ReleaseLockOwner` and the engine's `CloneClose`), it takes that file's
+admission lock itself, through the `order` function the node hands the table
+at `Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)), so the
+service, and the engine for `CloneClose`, call those holding no admission
+lock; the engine makes its `CloneOpen` and `CloneClose` holding none
+([RFC 14 §11](rfc-14-open-state.md#11.%20Interface)). Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
 protocol, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`. An open is authorised as `c.ForOpen(backup)`: `c`, but privileged only for a
@@ -2152,7 +2154,7 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 // where it does not change; scopes are QuotaUser for a new owner and
 // QuotaGroup for a new group. bytes is the file's Charged plus one inode.
 func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
-	used := q.used(ctx, owner, f, scopes) // committed totals plus unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
+	used := q.used(ctx, owner, f, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
 	q.mu.Lock()                           // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
 	defer q.mu.Unlock()
 	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done

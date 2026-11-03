@@ -2656,8 +2656,9 @@ service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller but one: the
 engine calls `CloneOpen`, `CloneClose` and `Recovery.Served` for a clone, through
 its own `CloneHold`, which the node adapts to the table
 ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)), so the engine
-imports nothing of open state. The engine makes its `CloneOpen` and
-`CloneClose` from a clone batch, holding no admission lock. The service makes
+imports nothing of open state. The engine makes its `CloneOpen` between a
+clone's phase 1 and phase 2, and its `CloneClose` from the clone's last batch,
+holding no admission lock in either. The service makes
 every mutating call and every `Checks` call on a file under that file's
 admission lock ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary),
 [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order)); a call the service
