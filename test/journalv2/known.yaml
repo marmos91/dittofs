@@ -1617,14 +1617,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against a share's limit.'
+  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against a share''s limit.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestEdge_ReservationExactFitJournal
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against the journal's maximum.'
+  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against the journal''s maximum.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
@@ -1645,14 +1645,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs records without bytes at the journal's maximum.'
+  reason: 'No journal yet: the fixture fails at Init. Needs records without bytes at the journal''s maximum.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestEdge_WriteLargerThanSegmentRest
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than its segment's tail.'
+  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than its segment''s tail.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestEdge_WriteLargerThanSegment
@@ -1674,6 +1674,13 @@
   fix: planned
   category: feature
   reason: 'No journal yet: the fixture fails at Init. Needs Open and Init over a lone format file.'
+  issue: '#3378'
+  message: 'fixture:'
+- test: TestEdge_OpenUnrecognisedFormatVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'No journal yet: the fixture fails at Init. Needs the open to refuse an unrecognised format version.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestEdge_FillOverHeldDirtyAndAbsent

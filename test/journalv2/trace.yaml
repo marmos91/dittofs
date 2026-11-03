@@ -302,9 +302,9 @@ rfc1 / 9.2 / "Capacity and storage":
 rfc28 / 4.1 / -:
   tests: [TestEdge_WriteLargerThanSegmentRest, TestEdge_WriteLargerThanSegment]
 rfc28 / 4.1 / "Opening":
-  tests: [TestEdge_OpenEmptyDirectory, TestEdge_OpenFormatOnly]
+  tests: [TestEdge_OpenEmptyDirectory, TestEdge_OpenFormatOnly, TestEdge_OpenUnrecognisedFormatVersion]
   owner: parked
-  reason: 'the older-format leg: format version 1 is the only one, so no older format exists to open; tested once a second version exists'
+  reason: 'the older-format leg reaches only an unrecognised version, which TestEdge_OpenUnrecognisedFormatVersion covers; no version other than 1 exists, so a recognised older or newer format is tested once a second version lands'
 
 rfc1 / 9.7 / "syncs per write":
   pending: 2.8
