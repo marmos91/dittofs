@@ -53,13 +53,22 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 	if a == nil {
 		return vfs.OpenResult{}, fs.pseudoOpen(ctx, at, req.Disposition)
 	}
-	switch {
-	case req.Reconnect != nil:
+	if req.Reconnect != nil {
 		return fs.reconnect(ctx, a, c, req)
+	}
+	// The whole open, its lookup, create and truncate included, is decided
+	// as the open is: over SMB privileged only with backup or restore intent.
+	a.caller = forOpen(a.caller, c.Protocol, req.Backup)
+	switch {
 	case req.DeleteOnClose && req.Access&entity.Delete == 0:
 		// Refused before anything is created, as an open asking delete on
 		// close without delete opens nothing.
 		return vfs.OpenResult{}, vfs.ErrInvalid
+	case req.Access&^(entity.EntryRights|entity.SystemSecurity|vfs.MaximumAllowed) != 0:
+		// A right no entry names is granted to no one on an existing file,
+		// so a creating open, which decides nothing on the new file, is
+		// refused it too.
+		return vfs.OpenResult{}, vfs.ErrAccess
 	case req.Access&entity.SystemSecurity != 0 && !a.caller.Admin:
 		// Only an admin reads or writes the audit list, as SetACL guards it,
 		// so a creating open, which decides nothing on the new file, cannot
@@ -179,7 +188,7 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	if overwrite {
 		access |= entity.WriteData
 	}
-	cp := forOpen(a.caller, c.Protocol, req.Backup)
+	cp := a.caller
 	max, err := fs.authz.Rights(ctx, cp, h, via, entity.EntryRights)
 	if err != nil {
 		return vfs.OpenResult{}, storeErr(err)
@@ -207,7 +216,7 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	// an SMB open joins an existing lease only when its own principal is one
 	// of the lease's openers', and any other is granted no grant. That fails
 	// closed, costing a second user on one connection the shared cache.
-	// Fill Conn once Call carries those principals.
+	// Fill Conn once OpenRequest carries those principals, from the SMB adapter.
 	o, err := fs.opens.Open(ctx, who, keyOf(f), openstate.OpenRequest{
 		Unlinked: f.Nlink == 0 && !f.IsDir(), Via: fileOf(via), Name: req.Name,
 		Privileged: req.Backup && a.caller.Privileged, Access: access, Deny: req.Deny, DeleteOnClose: req.DeleteOnClose,
@@ -224,11 +233,18 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 	file, err := fs.openedFile(ctx, a, h, f, overwrite)
 	if err != nil {
 		// No client holds the open's reference to close it, so it is closed
-		// here, on a context the call's end does not cancel. An unlinked f
-		// it alone held is released here, under the admission lock already
-		// held, as a close releases it.
-		ctx := context.WithoutCancel(ctx)
-		if cr, cerr := fs.opens.Close(ctx, who, ref, req.Seqs); cerr == nil && cr.Orphan {
+		// here, on a context the call's end does not cancel, though Drain's
+		// deadline does. An unlinked f it alone held is released here, under
+		// the admission lock already held, as a close releases it.
+		ctx, cancel := fs.detached(ctx)
+		defer cancel()
+		// The close quotes no owner number: the open took the request's, and
+		// the client numbers its next request after it.
+		cr, cerr := fs.opens.Close(ctx, who, ref, vfs.Seqs{})
+		switch {
+		case cerr != nil:
+			fs.log.Warn("vfs: a failed open not closed", "file", f.ID, "err", cerr)
+		case cr.Orphan:
 			if rerr := fs.release(ctx, keyOf(f)); rerr != nil {
 				fs.log.Warn("vfs: a release after a failed open failed", "file", f.ID, "err", rerr)
 			}
@@ -254,36 +270,58 @@ func (fs *Filesystem) openedFile(ctx context.Context, a *admitted, h vfs.Handle,
 // open state matches it, holding no lock: it changes no file. Its maximal
 // access is the caller's without privilege over SMB, as a new open answers
 // it. The reads after the attach run on a context the call's end does not
-// cancel, so a client dropping mid-reconnect does not fail them.
+// cancel, though Drain's deadline does, so a client dropping mid-reconnect
+// does not fail them.
 //
-// decision: a store failure reading the file or its rights after open state
-// attached the open answers an error for a reconnect that happened, so the
-// client's retry is refused as no reclaim and it loses the durable handle.
-// Open state has no way to park the open again; the reads are a record and
-// an ACL read, which fail only with the store. Park the open again on that
-// failure once open state offers it, if such failures are seen.
+// decision: a failure reading the file, its overlay or its rights after
+// open state attached the open answers an error for a reconnect that
+// happened, and the open is closed again, as a durable open that times out
+// is: the client's retry is refused as no reclaim and it loses the durable
+// handle, but nothing it cannot reach stays held. Open state has no way to
+// park the open again; park it on that failure once open state offers it,
+// if such failures are seen.
 func (fs *Filesystem) reconnect(ctx context.Context, a *admitted, c vfs.Call, req vfs.OpenRequest) (vfs.OpenResult, error) {
 	m := openstate.ReconnectMatch{Share: a.share.ID, Create: req.CreateID, Lease: req.Lease}
 	o, err := fs.opens.Reconnect(ctx, a.who(), req.Reconnect.Open, m, c.Session)
 	if err != nil {
 		return vfs.OpenResult{}, openErr(err)
 	}
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := fs.detached(ctx)
+	defer cancel()
 	h := entity.NewHandle(a.share.ID, o.Open.File)
 	var via vfs.Handle
 	if !o.Open.Via.IsZero() {
 		via = entity.NewHandle(a.share.ID, o.Open.Via)
 	}
+	ref := vfs.OpenRef{Kind: openstate.RefOpened, State: o.Open.Ref, Open: o.Open.ID, Handle: h}
 	f, err := fs.file(ctx, a, h)
+	var max entity.AccessMask
+	if err == nil {
+		max, err = fs.authz.Rights(ctx, forOpen(a.caller, c.Protocol, false), h, via, entity.EntryRights)
+		err = storeErr(err)
+	}
 	if err != nil {
+		// No client holds the reference to close it.
+		unlock := fs.Admission(o.Open.File)
+		cr, cerr := fs.opens.Close(ctx, a.who(), ref, vfs.Seqs{})
+		unlock()
+		if cerr != nil {
+			fs.log.Warn("vfs: a failed reconnect not closed", "file", o.Open.File, "err", cerr)
+		} else {
+			fs.closed(ctx, a.share.ID, o.Open.File, cr)
+		}
 		return vfs.OpenResult{}, err
 	}
-	max, err := fs.authz.Rights(ctx, forOpen(a.caller, c.Protocol, false), h, via, entity.EntryRights)
-	if err != nil {
-		return vfs.OpenResult{}, storeErr(err)
-	}
-	ref := vfs.OpenRef{Kind: openstate.RefOpened, State: o.Open.Ref, Open: o.Open.ID, Handle: h}
 	return vfs.OpenResult{Ref: ref, File: f, MaximalAccess: max, Grant: o.Grant}, nil
+}
+
+// detached is ctx without the call's own end, for what a call finishes once
+// its change has committed or open state recorded its open: Drain's
+// deadline and Stop still end it, as they end every call.
+func (fs *Filesystem) detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(fs.stop, cancel)
+	return ctx, func() { stop(); cancel() }
 }
 
 // forOpen is c as an open over protocol p is decided: over SMB, which
@@ -420,22 +458,19 @@ func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef) (
 // one open state made itself, holding none of f's locks: the deferred unlink
 // of a delete-pending f, then the release of an f left with no name and no
 // open. It answers the directory's WCC when the deferred unlink ran at once.
-// The release runs in the background, counted against share, so a call
-// ending mid-release does not leave f's content held until the next start.
+// The release runs on the call, on a context the call's end does not
+// cancel, so a call ending mid-release does not leave f's content held
+// until the next start.
 func (fs *Filesystem) closed(ctx context.Context, share entity.ShareID, f entity.FileID, cr openstate.CloseResult) *vfs.WCC {
 	var w *vfs.WCC
 	if d := cr.Unlink; d != nil {
 		w = fs.unlinkClosed(ctx, share, f, *d, 0)
 	}
 	if cr.Orphan {
-		uncount := fs.count(share)
-		if !fs.background(func(ctx context.Context) {
-			defer uncount()
-			if err := fs.releaseAlone(ctx, share, f); err != nil {
-				fs.log.Warn("vfs: a release after a last close failed", "file", f, "err", err)
-			}
-		}) {
-			uncount() // stopped: the next start's recovery runs it
+		ctx, cancel := fs.detached(ctx)
+		defer cancel()
+		if err := fs.releaseAlone(ctx, share, f); err != nil {
+			fs.log.Warn("vfs: a release after a last close failed", "file", f, "err", err)
 		}
 	}
 	return w
@@ -453,14 +488,19 @@ func (fs *Filesystem) closed(ctx context.Context, share entity.ShareID, f entity
 // to outlast them; then retry when open state reports the recall resolved.
 //
 // While a retry waits, the file is neither delete pending nor unlinked:
-// open state handed the mark back at the close. A new open of it, a create
-// of its name and a rename of it can each land meanwhile; the retry then
-// removes the name from under that open, finds the name taken by another
-// file and removes nothing, or finds no entry and removes nothing, the
-// delete lost without being counted. Overturned by a delete on close found
-// lost this way; then keep the file delete pending in open state until the
-// service reports the unlink's outcome.
+// open state handed the mark back at the close. A new open of it is
+// granted, and the retry then removes the name from under that open; a
+// create of its name is refused ErrExist rather than ErrDeletePending; a
+// rename of it succeeds, and the retry then finds no entry, or another file
+// created under the name, and removes nothing, the delete lost without being
+// counted. Overturned by a delete on close found lost this way; then keep
+// the file delete pending in open state until the service reports the
+// unlink's outcome.
 const unlinkRetries = 8
+
+// unlinkRetry is the wait before a delayed deferred unlink's first retry,
+// and unlinkWait the longest wait, which each try met by grace waits.
+var unlinkRetry, unlinkWait = 50 * time.Millisecond, 2 * time.Second
 
 // unlinkClosed is attempt try of the deferred unlink d records for f, and
 // answers the directory's WCC when it ran. One delayed is retried in the
@@ -476,14 +516,17 @@ func (fs *Filesystem) unlinkClosed(ctx context.Context, share entity.ShareID, f 
 	case errors.As(err, &failed):
 		fs.log.Warn("vfs: a release after a deferred unlink failed", "file", f, "err", err)
 	case errors.As(err, &delay) && try < unlinkRetries, errors.Is(err, vfs.ErrGrace):
-		wait := min(50*time.Millisecond<<min(try, 6), 2*time.Second)
+		next, wait := try+1, min(unlinkRetry<<min(try, 6), unlinkWait)
+		if errors.Is(err, vfs.ErrGrace) {
+			next, wait = try, unlinkWait // a grace answer spends no retry
+		}
 		if !fs.background(func(ctx context.Context) {
 			t := time.NewTimer(wait)
 			defer t.Stop()
 			select {
 			case <-t.C:
 				defer fs.count(share)()
-				fs.unlinkClosed(ctx, share, f, d, try+1)
+				fs.unlinkClosed(ctx, share, f, d, next)
 			case <-ctx.Done():
 				fs.refused(f, ctx.Err())
 			}

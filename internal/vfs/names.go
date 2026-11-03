@@ -286,7 +286,7 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 	// alone, which checks it is the caller's open of the file. So a delete
 	// through a handle opened with DELETE by a caller without delete-child
 	// on the directory is refused. Decide through the open's grant once
-	// opens are built and record it.
+	// the store's calls take an open's grant.
 	if err := fs.authz.Decide(ctx, a.caller, op, h, dir.H, name, entity.Delete); err != nil {
 		return vfs.UnlinkResult{}, false, storeErr(err)
 	}
@@ -515,6 +515,9 @@ func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvst
 	if orphan.File.IsZero() {
 		return nil
 	}
+	// The release outlives the call's end, as a last close's does.
+	ctx, cancel := fs.detached(ctx)
+	defer cancel()
 	if err := fs.release(ctx, keyOf(f)); err != nil {
 		return releaseFailed{err}
 	}
