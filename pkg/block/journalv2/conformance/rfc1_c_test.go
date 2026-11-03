@@ -207,7 +207,6 @@ func TestRFC1C_StaleFill(t *testing.T) {
 			r := read(t, h, id, 0, size)
 			wantMissing(t, r, 0, []journalv2.Extent{e}, "the extent before anything was written")
 			asOf := r.asOf
-			before := len(heldEntries(t, f, id))
 
 			w := leg.newer(t, f, h, id)
 			syncFile(t, h, id)
@@ -217,6 +216,11 @@ func TestRFC1C_StaleFill(t *testing.T) {
 			}
 
 			p := distinct(2, size)
+			// The baseline is taken after the content, its sync and the
+			// release are settled, so the count the stale Fill can move is
+			// compared against the index as the Fill found it, held entries
+			// and removal markers alike.
+			before := len(heldEntries(t, f, id))
 			err := h.Fill(t.Context(), id, 0, p, asOf, w)
 			stub(t, "Fill", err)
 			if err != nil && !errors.Is(err, journalv2.ErrStaleFill) {
@@ -299,42 +303,32 @@ func TestRFC1C_IncrementalReport(t *testing.T) {
 // rather than being rebuilt into the index. The second leg plants a record
 // of an unknown kind beside it and asserts the same refusal.
 func TestRFC1C_EpochHalfIsZero(t *testing.T) {
+	// record builds a one-record segment holding a write whose version and
+	// kind are the leg's, every other field shared by the two legs.
+	record := func(kind byte, version raw.Version, tag string, id journalv2.SegmentID, identity [16]byte) []byte {
+		r := raw.Record{
+			Identity:     identity,
+			Kind:         kind,
+			Segment:      uint64(id),
+			FileID:       journalv2test.File(0).Bytes(),
+			Offset:       1 << 20,
+			Length:       4096,
+			Seq:          1 << 40,
+			Version:      version,
+			Tag:          uint32(journalv2test.Tag(0)),
+			RecordOffset: raw.SegmentHeaderSize,
+			Write:        &raw.WriteBody{Payload: pattern(fmtTag(tag, 0, 0, 1<<20), 4096)},
+		}
+		return append(raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes(), r.Bytes()...)
+	}
 	for i, leg := range []struct {
-		name   string
-		record func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte
+		name       string
+		kind       byte
+		version    raw.Version
+		payloadTag string
 	}{
-		{name: "epoch half", record: func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte {
-			r := raw.Record{
-				Identity:     identity,
-				Kind:         1,
-				Segment:      uint64(id),
-				FileID:       journalv2test.File(0).Bytes(),
-				Offset:       1 << 20,
-				Length:       4096,
-				Seq:          1 << 40,
-				Version:      raw.Version{Epoch: 1, Counter: 1 << 40},
-				Tag:          uint32(journalv2test.Tag(0)),
-				RecordOffset: raw.SegmentHeaderSize,
-				Write:        &raw.WriteBody{Payload: pattern(fmtTag("e", 0, 0, 1<<20), 4096)},
-			}
-			return append(raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes(), r.Bytes()...)
-		}},
-		{name: "unknown kind", record: func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte {
-			r := raw.Record{
-				Identity:     identity,
-				Kind:         15,
-				Segment:      uint64(id),
-				FileID:       journalv2test.File(0).Bytes(),
-				Offset:       1 << 20,
-				Length:       4096,
-				Seq:          1 << 40,
-				Version:      raw.Version{Counter: 1 << 40},
-				Tag:          uint32(journalv2test.Tag(0)),
-				RecordOffset: raw.SegmentHeaderSize,
-				Write:        &raw.WriteBody{Payload: pattern(fmtTag("k", 0, 0, 1<<20), 4096)},
-			}
-			return append(raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes(), r.Bytes()...)
-		}},
+		{name: "epoch half", kind: 1, version: raw.Version{Epoch: 1, Counter: 1 << 40}, payloadTag: "e"},
+		{name: "unknown kind", kind: 15, version: raw.Version{Counter: 1 << 40}, payloadTag: "k"},
 	} {
 		t.Run(leg.name, func(t *testing.T) {
 			// The first leg is watched; the second runs unwatched, the
@@ -348,7 +342,7 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 			writeSynced(t, f, 0, 0, 0, 64<<10)
 			f.Shutdown()
 			id := newestID(t, f) + 1
-			plant(t, f, segmentName(id), leg.record(t, f, id, journalIdentity(t, f)))
+			plant(t, f, segmentName(id), record(leg.kind, leg.version, leg.payloadTag, id, journalIdentity(t, f)))
 
 			err := f.TryReopen()
 			stub(t, "Open", err)
@@ -359,14 +353,19 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 	}
 }
 
-// cSeqMax returns the highest record sequence number among the sealed
-// segments' catalogued records on disk, parsed from the record header each
-// entry names. An unsealed segment has no catalog to read, and a correct
-// journal may leave one behind a crash, so it is skipped.
-func cSeqMax(t *testing.T, f *journalv2test.Fixture) uint64 {
+// cDiskMaxima returns the highest record sequence number and the highest
+// content version among the sealed segments' catalogued records on disk,
+// parsed from the bytes every entry and the record header it names carry.
+// Both outlive the index: an entry names a version no live index entry
+// holds, so a rebuild that forwards the live index's maximum alone hands out
+// one a settled removal or a released extent still stands on. An unsealed
+// segment has no catalog to read, and a correct journal may leave one behind
+// a crash, so it is skipped.
+func cDiskMaxima(t *testing.T, f *journalv2test.Fixture) (uint64, journalv2.Version) {
 	t.Helper()
 
-	var max uint64
+	var seqMax uint64
+	var versionMax journalv2.Version
 	for _, name := range segmentFiles(t, f) {
 		b := durable(t, f, name)
 		if !endsInTrailer(b) {
@@ -374,32 +373,30 @@ func cSeqMax(t *testing.T, f *journalv2test.Fixture) uint64 {
 		}
 		_, entries := trailerOf(t, b)
 		for _, e := range entries {
+			ev := journalv2.Version{
+				Epoch:   binary.LittleEndian.Uint64(e[44:52]),
+				Counter: binary.LittleEndian.Uint64(e[52:60]),
+			}
+			if versionMax.Compare(ev) < 0 {
+				versionMax = ev
+			}
 			at := int64(binary.LittleEndian.Uint32(e[24:28])) // the record's offset in its segment
 			if at < raw.SegmentHeaderSize || at+raw.RecordHeaderSize > int64(len(b)) {
 				t.Fatalf("%s names a record at %d, which its durable bytes do not hold", name, at)
 			}
-			if seq := binary.LittleEndian.Uint64(b[at+48 : at+56]); seq > max {
-				max = seq
+			if seq := binary.LittleEndian.Uint64(b[at+48 : at+56]); seq > seqMax {
+				seqMax = seq
+			}
+			rv := journalv2.Version{
+				Epoch:   binary.LittleEndian.Uint64(b[at+56 : at+64]),
+				Counter: binary.LittleEndian.Uint64(b[at+64 : at+72]),
+			}
+			if versionMax.Compare(rv) < 0 {
+				versionMax = rv
 			}
 		}
 	}
-	return max
-}
-
-// cVersionMax returns the highest content version of the live index entries
-// of every file the index holds.
-func cVersionMax(t *testing.T, f *journalv2test.Fixture) journalv2.Version {
-	t.Helper()
-
-	var max journalv2.Version
-	for _, es := range f.J.Inspect().All() {
-		for _, en := range es {
-			if max.Compare(en.Version) < 0 {
-				max = en.Version
-			}
-		}
-	}
-	return max
+	return seqMax, versionMax
 }
 
 // TestRFC1C_Monotonicity checks that after a crash the next sequence number
@@ -412,19 +409,30 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 		// Several sealed segments per stream, so the shuffle has an order to
 		// hide.
 		for i := range 3 {
-			write(t, h, id, int64(i)*512, distinct(10*k+i, 512))
+			v := write(t, h, id, int64(i)*512, distinct(10*k+i, 512))
 			syncFile(t, h, id)
 			sealNow(t, f, segmentOf(t, f, id, int64(i)*512))
+			if i == 2 {
+				// Each stream's last write is offloaded and released before
+				// the crash, so the highest version on disk is content no
+				// live index entry holds: a rebuild that forwards the live
+				// index's maximum alone hands out that version, which the
+				// released extent's settled record still stands on.
+				cOffload(t, h, id, v)
+				release(t, h, id, ext(int64(i)*512, 512))
+				// The release record is made durable, so no reopen order can
+				// mark the extent held again.
+				syncFile(t, h, id)
+			}
 		}
 	}
 	f.Crash()
 
-	onDisk := cVersionMax(t, f)
+	seqMax, versionMax := cDiskMaxima(t, f)
 	next := f.J.Stats().NextVersion
-	if next.Compare(onDisk) <= 0 {
-		t.Fatalf("the next version %+v does not exceed the highest on disk %+v", next, onDisk)
+	if next.Compare(versionMax) <= 0 {
+		t.Fatalf("the next version %+v does not exceed the highest on disk %+v", next, versionMax)
 	}
-	seqMax := cSeqMax(t, f)
 	v := write(t, f.Share(0), journalv2test.File(0), 3*512, distinct(30, 512))
 	if v.Compare(next) < 0 {
 		t.Fatalf("the write after the reopen was given %+v, below the reported next version %+v", v, next)
@@ -433,7 +441,7 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 	// the segment is sealed first: an unsealed one carries no catalog.
 	syncFile(t, f.Share(0), journalv2test.File(0))
 	sealNow(t, f, segmentOf(t, f, journalv2test.File(0), 3*512))
-	if got := cSeqMax(t, f); got <= seqMax {
+	if got, _ := cDiskMaxima(t, f); got <= seqMax {
 		t.Fatalf("the record written after the reopen carries sequence %d, which does not exceed the highest %d on disk", got, seqMax)
 	}
 
@@ -531,9 +539,11 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-attach T: %v", err)
 	}
-	if got := read(t, th, fid, 0, size); len(got.missing) == 0 {
+	got := read(t, th, fid, 0, size)
+	if len(got.missing) == 0 {
 		t.Fatalf("F still reads through the re-attached tag the caller forgot: %+v", got)
 	}
+	wantMissing(t, got, 0, []journalv2.Extent{ext(0, size)}, "F through the re-attached tag the caller forgot")
 	if got := len(since(t, th, fid, journalv2.Version{})); got != 0 {
 		t.Fatalf("Since over F through the forgotten tag yielded %d changes, want none", got)
 	}
@@ -569,6 +579,11 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		qid := journalv2test.File(2)
 		qp := distinct(7, size)
 		write(t, qh, qid, 0, qp)
+		// Both content writes are synced, and so survive the crash below:
+		// what the crash drops is nothing the refused calls appended, not
+		// the two extents the leg reads back after it.
+		syncFile(t, h, id)
+		syncFile(t, qh, qid)
 		if err := qh.Close(); err != nil {
 			t.Fatalf("close Q's handle: %v", err)
 		}
@@ -665,11 +680,13 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		cancel()
 		hold.Release()
 
-		if err := <-done; !errors.Is(err, context.Canceled) {
+		err := <-done
+		stub(t, "Sync", err)
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("the cancelled Sync returned %v, want the context's error", err)
 		}
 		f.Seam.SetFault(nil)
-		err := h.Sync(t.Context(), id)
+		err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, journalv2.ErrSyncFailed) {
 			t.Fatalf("the Sync after the cancelled one returned %v, want the failure it raced", err)
@@ -789,11 +806,12 @@ func TestRFC1C_RestampAfterLostStore(t *testing.T) {
 	copy(other[:], "another journal")
 
 	// The row refuses a restamp with another journal's identity against the
-	// journal shut, as the fixture's own TryRestamp runs it. It reads no time
-	// and no setting, so Restamp ignores every option and none is passed.
+	// journal shut, as the fixture's own TryRestamp runs it. Restamp is handed
+	// the seam's storage, like every journal call in this suite, so its refusal
+	// is observable through the seam and nothing it touched moves.
 	f.Shutdown()
 	before := dirNow(t, f)
-	err = journalv2.Restamp(t.Context(), f.Dir, other, i3)
+	err = journalv2.Restamp(t.Context(), f.Dir, other, i3, journalv2.WithStorage(f.Seam.FS()))
 	stub(t, "Restamp", err)
 	if !errors.Is(err, journalv2.ErrIdentityMismatch) {
 		t.Fatalf("restamping with another journal's identity returned %v, want the identity mismatch", err)
@@ -822,11 +840,11 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	fp := distinct(0, size)
 	write(t, th, fid, 0, fp)
 	gp := distinct(1, size)
-	dv := write(t, th, gid, 0, gp)
+	write(t, th, gid, 0, gp)
 	syncFile(t, th, gid)
 
 	markers := f.J.Stats().RemovalMarkers
-	_, err = th.Delete(t.Context(), gid)
+	deleteV, err := th.Delete(t.Context(), gid)
 	stub(t, "Delete", err)
 	if err != nil {
 		t.Fatalf("delete G, settling nothing: %v", err)
@@ -876,13 +894,14 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	}
 
 	// A fresh write under the re-attached tag is held and served across a
-	// crash, and its version exceeds the forgotten content's, so the forget
-	// settled the old content without burying the tag or restarting its
-	// versions at one a caller has already recorded.
+	// crash, and its version exceeds the deleted content's, which is the
+	// highest version the forgotten content settled, so the forget settled
+	// the old content without burying the tag or restarting its versions at
+	// one a caller has already recorded.
 	fp2 := distinct(2, size)
 	after := write(t, th, fid, 0, fp2)
-	if after.Compare(dv) <= 0 {
-		t.Fatalf("the write after the forget was given version %+v, not above the forgotten content's %+v", after, dv)
+	if after.Compare(deleteV) <= 0 {
+		t.Fatalf("the write after the forget was given version %+v, not above the deleted content's %+v", after, deleteV)
 	}
 	syncFile(t, th, fid)
 	f.Crash()
@@ -1155,7 +1174,7 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		// so without it the record is never rebuilt and no conflict surfaces.
 		entry := raw.Entry{
 			FileID: gid.Bytes(), Offset: 0, RecordOffset: raw.SegmentHeaderSize, Length: size,
-			Seq: 1<<40 + 1, Version: raw.Version{Epoch: w.Epoch, Counter: w.Counter}, Kind: 1, Tag: uint32(b),
+			Seq: 1 << 40, Version: raw.Version{Epoch: w.Epoch, Counter: w.Counter}, Kind: 1, Tag: uint32(b),
 		}
 		plant(t, g, segmentName(id), sealedSegmentBytes(journalIdentity(t, g), id, []raw.Record{record}, []raw.Entry{entry}))
 		g.Reopen()
@@ -1317,46 +1336,55 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	name := segmentName(seg)
 	before := segmentCalls(t, f)
 
-	// The failure is armed and the segment serves stale bytes while the
-	// window's two header-only records are still unsynced: a Truncate is
-	// otherwise durable on return, so its record would be synced before the
-	// failure could cover it.
-	f.FailNext(journalv2test.OpSync, name, 1)
-	f.Seam.StaleReads(name)
-	_, err := h.Truncate(t.Context(), aid, size/2)
-	stub(t, "Truncate", err)
-	if err != nil {
-		t.Fatalf("truncate A's file: %v", err)
+	// A and B share one stream, so the release record lands beside A's
+	// extent, and a window the failed sync covers can hold both records.
+	if got := segmentOf(t, f, bid, 0); got != seg {
+		t.Fatalf("B's offloaded extent is held from segment %d, want A's %d so one window can hold both records", got, seg)
 	}
-	err = h.Release(t.Context(), bid, []journalv2.Extent{ext(0, size)})
-	f.Seam.SetFault(nil) // the window may have resolved during the Release; the Sync still names it
+
+	// The failure is armed before either record exists and the segment serves
+	// stale bytes, so the window holds two header-only records: the release
+	// is not durable on return, so it is issued first and sits unsynced in
+	// the active segment; the truncate follows, and its own inline sync —
+	// which durability requires before it returns — fails on the armed fault
+	// with the release record still unsynced beside it. The fault stays armed
+	// through the Sync that resolves the window, so a journal that retries
+	// the same segment either way cannot pass a failed window as clean.
+	f.FailNext(journalv2test.OpSync, name, 2)
+	f.Seam.StaleReads(name)
+	err := h.Release(t.Context(), bid, []journalv2.Extent{ext(0, size)})
 	stub(t, "Release", err)
 	if err != nil {
 		t.Fatalf("release B's offloaded extent: %v", err)
+	}
+	_, err = h.Truncate(t.Context(), aid, size/2)
+	stub(t, "Truncate", err)
+	if err != nil {
+		t.Fatalf("truncate A's file: %v", err)
 	}
 	err = h.Sync(t.Context(), aid, bid)
 	f.Seam.SetFault(nil)
 	stub(t, "Sync", err)
 
-	// A correct journal re-appends both header-only records into another
-	// segment and fails nothing: the Sync's window resolves by the re-append,
-	// which §5.3 allows to surface as either a nil error or the failure it
-	// raced.
+	// A correct journal resolves the window by re-appending both header-only
+	// records — a header-only record is never failed — and the Sync names the
+	// files it kept whole, so it resolves to either a nil error with the
+	// re-append done, or the failure it raced, both of which the failed
+	// window's once-per-file report rules out for nothing it held.
 	failed := errors.Is(err, journalv2.ErrSyncFailed)
 	if err != nil && !failed {
 		t.Fatalf("the Sync over the failed window returned %v, want ErrSyncFailed or a re-append", err)
 	}
-	if got := f.J.Stats().Counters.SyncReappendedBytes; got == 0 {
-		t.Fatalf("the window resolved without re-appending a byte of the truncate or the release")
-	}
 
-	// The re-append lands outside the failed segment, in an existing one or
-	// a fresh spare alike: its writes are counted under their own segment's
-	// name, so a write count rising on any file but the failed one pins it
-	// wherever it went. The truncate's and the release's own records do land
-	// in the failed segment — its stream's active one — before their syncs
-	// fail, so the failed segment is allowed its two window writes here and
-	// asserted to take none afterwards below.
+	// Both records are re-appended, not just one: each is a header-only
+	// record, so each re-append carries at least a record header, and the
+	// counter that names the re-appended bytes must cover both. With the
+	// release issued before the truncate's failing sync, no ordinary append
+	// lands outside the failed segment after the fault is armed, so the rise
+	// outside it is the re-append and nothing else.
+	if got := f.J.Stats().Counters.SyncReappendedBytes; got < 2*raw.RecordHeaderSize {
+		t.Fatalf("%d bytes were re-appended after the failed sync, want the window's two header-only records: %d at least", got, 2*raw.RecordHeaderSize)
+	}
 	after := segmentCalls(t, f)
 	prefix := journalv2test.OpWrite + " "
 	suffix := " " + name
@@ -1374,7 +1402,9 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	// No record of the window is failed: neither file gains a loss event,
 	// whatever names them, and the removals the two records describe still
 	// hold before and after a reopen. A's synced half below the truncation
-	// stays held from the failed segment by §5.3's rule, so it is exempt.
+	// stays held from the failed segment — the records synced into it before
+	// the failure keep their place until repack copies them — so it is
+	// exempt.
 	for _, l := range f.J.Stats().Losses {
 		for _, id := range []journalv2.FileID{aid, bid} {
 			if l.File == id {
@@ -1382,8 +1412,19 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 			}
 		}
 	}
-	if es := heldEntries(t, f, aid); len(es) != 1 || es[0].Extent != ext(0, size/2) {
-		t.Fatalf("A holds %+v after the window, want its synced half only", es)
+	var held, marked int
+	for _, en := range heldEntries(t, f, aid) {
+		switch {
+		case en.Kind == journalv2.EntryHeld && en.Extent == ext(0, size/2):
+			held++
+		case en.Kind == journalv2.EntryMarker && en.Extent.Off == size/2:
+			marked++
+		default:
+			t.Fatalf("A holds unexpected entry %+v after the window, want its synced half and the truncate's marker", en)
+		}
+	}
+	if held != 1 || marked != 1 {
+		t.Fatalf("A holds %d held entries and %d markers after the window, want one of each", held, marked)
 	}
 
 	// Both extents read missing before the reopen.
@@ -1391,8 +1432,9 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	wantExtentMissing(t, f.Share(0), bid, ext(0, size))
 
 	// The failed segment never takes another record: a write the failed
-	// window did not cover lands in the stream's next segment, as §5.3's
-	// "takes no further append" requires, even one that resolves inline.
+	// window did not cover lands in the stream's next segment, as the
+	// failed-sync semantics' "takes no further append" requires, even one
+	// that resolves inline.
 	write(t, f.Share(0), aid, size, distinct(2, 512))
 	if got := f.Seam.CallsFor(journalv2test.OpWrite, name); got != writesFailed {
 		t.Fatalf("%d writes were appended to the failed segment once its window resolved, want the %d it held at the failure", got, writesFailed)

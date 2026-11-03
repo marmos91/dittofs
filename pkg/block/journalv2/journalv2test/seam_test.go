@@ -1192,10 +1192,10 @@ func TestTornEndRefusesACutPastTheWrite(t *testing.T) {
 	}
 }
 
-// TestShuffleListPermutatesTheListing pins that ShuffleList permutes the order
+// TestShuffleListPermutesTheListing pins that ShuffleList permutes the order
 // List returns, deterministically per seed, while keeping every name, and that
 // zero restores the directory's own order.
-func TestShuffleListPermutatesTheListing(t *testing.T) {
+func TestShuffleListPermutesTheListing(t *testing.T) {
 	s := newSeam(t)
 	for i := range 8 {
 		f := create(t, s, fmt.Sprintf("seg-%02d", i))
