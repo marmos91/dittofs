@@ -724,8 +724,16 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
 - T5.1 The three removals through phase 1, `Settle` and the post. Phase 1 commits the
   file's pending existence, the file synced first (§5.1), so it calls `Done` for every write
   it records, one of C9's
-  commit paths, tested with T4.7's reservation counter.
-- T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged.
+  commit paths, tested with T4.7's reservation counter. Unlike a write (epic 3's D3), a
+  truncate holds the file's entry lock across the journal's `Truncate` and the insert of its
+  pending operation: the journal stops holding the extent at once, and a `ReadAt` landing
+  between the two would find it missing with no pending truncate in the entry yet, so
+  `Covering` would answer it uncarved at or below `asOf` and the read **Lost** (epic 3's
+  R22). A `decision:` marker at the lock names it: reads of the file wait out one journal
+  removal, and it is withdrawn if the journal can hand back the removal's version before
+  it stops holding the extent.
+- T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged. The entry lock is held
+  across the journal's `Deallocate` and the insert, under T5.1's marker.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
   fixed backoff, `removal_stalled` after five failed batches. A clone's `Holds.Hold` answered
   `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
@@ -766,7 +774,10 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   ended by an abort yields `ErrFileOpen` on `retry`, not `ErrUnavailable`, and the
   `done(false)` it leads to clears the mark. The channel is `Delete`'s first result (C11, §6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
-  crash over T2.2's fixture and the journal's crash seam (rule 8).
+  crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
+  journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
+  the removed extent on another goroutine: it waits on the entry lock and then reads the pending removal, never
+  **Lost** (catches T5.1's lock released before the insert).
 
 ### Epic 6 — Start, bindings and recovery ⛔
 
