@@ -774,6 +774,9 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   the other, and D4's catch-all would turn an unnamed error into the latter. Tested: a stall
   ended by an abort yields `ErrFileOpen` on `retry`, not `ErrUnavailable`, and the
   `done(false)` it leads to clears the mark. The channel is `Delete`'s first result (C11, §6 point 15).
+  `ErrFileOpen` passes only between the engine and the service and never reaches an adapter,
+  so RFC 17 §4.3's table, which every adapter's table covers (RFC 20 §7.3), gains no row for
+  it: `vfserr` declares it beside that table's values, marked as the service's alone.
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
   crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
   journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
