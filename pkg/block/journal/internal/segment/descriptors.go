@@ -109,9 +109,9 @@ type descEntry struct {
 	drained chan struct{} // set by Close(id) while references remain; closed by the last Release
 
 	// idle is the entry's element in the cache's idle list when the
-	// descriptor is open and clean: a referenced entry stays linked, and the
-	// reclaimer skips it by its refs; a dirty one is unlinked, because the
-	// reclaimer is then not to reach it at all.
+	// descriptor is open: a referenced or dirty entry stays linked, and the
+	// reclaimer skips both of those — the first by its refs, the second by
+	// the dirty check that is the pin's one rule.
 	idle *list.Element
 
 	written atomic.Uint64 // writes issued through the descriptor, counted once each has landed
@@ -393,16 +393,14 @@ func (c *Descriptors) lastRefLocked(e *descEntry) {
 		return
 	}
 	if e.file != nil && !draining {
-		if e.dirty() {
-			// A dirty descriptor is kept out of the reclaimer's reach: its
-			// writes may have reached no sync yet, and closing it to make
-			// room would drop the writeback error the platform reports only
-			// through the open handle. It stays on no list; the release that
-			// follows a covering or failed Sync — this same tail, with the
-			// entry clean — links it back.
-			c.idleRemove(e)
-			return
-		}
+		// A dirty entry stays linked, as a referenced one does: the
+		// reclaimer's own scan is what skips it — a write through it may
+		// have reached no sync, and closing it to make room would drop the
+		// writeback error the platform reports only through the open
+		// handle. Staying linked keeps the entry reachable by the scan, so
+		// the release that follows a covering or failed Sync needs no path
+		// of its own to make it evictable again.
+		//
 		// A cache whose Shutdown has begun relinks too: its wait is not a
 		// reason to hold the descriptor out of the reclaimer's reach, and
 		// Shutdown takes only the files still attached once the wait ends.
@@ -471,17 +469,17 @@ func (r Ref) Sync() error {
 }
 
 // Release returns the reference. When it is the last one on the segment's
-// descriptor, the descriptor becomes evictable — it enters the idle list when
-// it is clean, and stays open with its slot when a write through it has
-// reached no sync yet — and the drain Close(id) started, or the Shutdown of
-// the cache, is signalled. It performs no I/O.
+// descriptor, the descriptor enters the idle list — a referenced or dirty
+// entry rides it like a clean one — and the drain Close(id) started, or the
+// Shutdown of the cache, is signalled. It performs no I/O.
 //
 // decision: a descriptor with an unsynced write is not closed to make room
 // under the bound until a sync through it has covered every such write or has
 // failed, because a reopened descriptor may never see a writeback error the
 // platform dropped along with the file's in-memory state — so the bound
 // counts such descriptors, and Acquire refuses with ErrNoDescriptor rather
-// than evicting one. Withdraw the exemption only if a close ever reaches a
+// than evicting one. The pin is the reclaimer's dirty check alone; the entry
+// itself stays linked. Withdraw the exemption only if a close ever reaches a
 // segment whose writes are not yet covered (Close(id) and Shutdown are it:
 // below).
 func (r Ref) Release() {
@@ -543,14 +541,10 @@ func (c *Descriptors) reclaimOne() bool {
 	// skipped and never closed or given twice — this scan need not, and must
 	// not, refuse for it.
 
-	// The least recently used idle entry: the list's back. A referenced
-	// entry stays linked, so the scan passes over it, and the reclaimer
-	// never takes one of those.
-	//
-	// A dirty entry is skipped too — defence in depth, since a dirty entry
-	// is never linked: the last release unlinks it, so the scan cannot
-	// reach it at all. The check stands so a Release that disagrees may not
-	// turn into an eviction.
+	// The least recently used idle entry: the list's back. Referenced and
+	// dirty entries stay linked, so the scan passes over them, and the
+	// reclaimer never takes one of those: a dirty descriptor is the rule
+	// here, not defence in depth — the pin is this one check.
 	var victim *descEntry
 	for el := c.idle.Back(); el != nil; el = el.Prev() {
 		e := el.Value.(*descEntry)

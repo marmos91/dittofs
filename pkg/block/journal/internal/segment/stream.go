@@ -82,28 +82,31 @@ type tslot struct {
 // decision: every field is guarded by the owning stream's append mutex, the
 // segment append domain. Nothing else may touch the tracker.
 //
-// ponytail: the in-flight slots sit in a ring buffer that grows by doubling
-// only when full, so a steady stream of appends allocates nothing on the
-// sorted path. The growth copies the ring into order, so the slot numbers
-// stop naming their indices; headSlot below is what still maps a slot to its
-// place. Upgrade to a freelist of slot records if the doubling copy of a very
-// deep in-flight run ever shows in a profile.
+// ponytail: the in-flight slots sit in one slice whose head is always index 0,
+// grown by doubling only when full, so reserves allocate nothing in steady
+// state — but every pop shifts the slice down, so a completion costs O(live)
+// copies. Upgrade to a true ring with a moving head index, unrolled on
+// growth, if the in-flight depth of a real journal makes the shift show in a
+// profile.
 type tracker struct {
-	ring []tslot // the in-flight slots, physically laid out from head on
-	live int     // slots held in the ring
+	ring []tslot // the in-flight slots, the oldest at index 0
+	live int     // slots held
 
 	next uint64 // the next slot number to hand out
 
-	// headSlot is the slot number that sits at the ring's start. A slot's
-	// place in the ring is its distance from headSlot, which doubling does
-	// not move.
+	// headSlot is the slot number that sits at the slice's start: a slot's
+	// place is its distance from headSlot, since reservations are numbered
+	// in order and pops advance the head.
 	headSlot uint64
 
 	completed int64 // the end of the well-completed prefix
 	synced    int64 // the highest completed value a returned Sync covered
 	freeze    bool  // a slot's write failed: the prefix never moves again
-	failedAt  int64 // the failed slot's own offset, the cap of every later sync
 }
+
+// The failed slot's own offset needs no field of its own: slots are
+// contiguous, so when the head fails, completed — the end of the prefix
+// before it — is exactly the failed slot's offset, and it never moves again.
 
 // reset starts the tracker for a segment whose first record slot is first:
 // the header write is not a tracker slot — it completes before any record is
@@ -114,11 +117,10 @@ func (t *tracker) reset(first int64) {
 	t.completed = first
 	t.synced = 0
 	t.freeze = false
-	t.failedAt = 0
 }
 
 // reserve takes the slot for the record at [off, end) and returns its
-// number. It allocates only when the ring is full, growing it by doubling,
+// number. It allocates only when the slice is full, growing it by doubling,
 // so after a warm-up nothing on this path touches the allocator.
 //
 // Past a freeze a slot is handed out but not held: no completion after a
@@ -170,12 +172,13 @@ func (t *tracker) complete(slot uint64, ok bool) {
 		t.live--
 		t.headSlot++
 	}
-	if !t.freeze && t.live > 0 && t.ring[0].done && !t.ring[0].ok {
-		// The failed slot caps every value a later sync may carry: the
-		// prefix it bounds is its own offset, so what a sync records above
-		// it claims bytes no fsync covered.
+	if t.live > 0 && t.ring[0].done && !t.ring[0].ok {
+		// The head slot failed: the prefix is complete up to the failed
+		// slot's own offset and never moves again, which is the whole
+		// freeze — completed already sits exactly there, so no sync
+		// recorded from syncStart can name more, and the reservations
+		// after the failure are handed out but not held.
 		t.freeze = true
-		t.failedAt = t.ring[0].off
 	}
 }
 
@@ -185,14 +188,10 @@ func (t *tracker) syncStart() int64 {
 	return t.completed
 }
 
-// syncDone records that a returned Sync covered up to through.
+// syncDone records that a returned Sync covered up to through. The freeze needs
+// no clamp of its own: through is what syncStart named, and a frozen prefix
+// never names an offset past the failed slot.
 func (t *tracker) syncDone(through int64) {
-	// A freeze caps what any sync may claim: the failed slot's own offset
-	// is the farthest the prefix names, so a through past it is a word for
-	// bytes no fsync covered.
-	if t.freeze && through > t.failedAt {
-		through = t.failedAt
-	}
 	if through > t.synced {
 		t.synced = through
 	}
@@ -228,7 +227,7 @@ type Stream struct {
 	ref      Ref
 	taking   chan struct{} // armed while one caller runs the take for all
 	closed   bool
-	inflight sync.WaitGroup // the appends Close waits for, added to under the lock
+	inflight sync.WaitGroup // the appends and syncs Close waits for, added to under the lock
 }
 
 // NewStream returns the append stream no of the journal identity over set,
@@ -259,10 +258,10 @@ func NewStream(no uint32, identity core.JournalID, set *Set, maker *Maker, cache
 // 0. It performs I/O, so it runs with no lock held (R12).
 //
 // If Make failed there is nothing to clean up — Make cleans up after itself.
-// If Take itself failed, the id is still a spare in the ledger and its
-// reservation is what DropSpare returns. A failure past Take ends the member
-// segment in the ledger at its cap, for a retirement to unlink, and releases
-// the ref when one was taken.
+// If Take itself failed, the id named no spare, so there is nothing of the
+// ledger's to unwind either: the error is returned as it is. A failure past
+// Take ends the member segment in the ledger at its cap, for a retirement to
+// unlink, and releases the ref when one was taken.
 //
 // ponytail: the next segment is made on the write path, because no spare
 // pool exists yet. Upgrade to a roll that takes a pool spare and names its
@@ -273,9 +272,11 @@ func (s *Stream) take() (core.SegmentID, Ref, error) {
 		return 0, Ref{}, err
 	}
 	if err := s.set.Take(id); err != nil {
-		if _, derr := s.set.DropSpare(id); derr != nil {
-			return 0, Ref{}, errors.Join(err, derr)
-		}
+		// Take's only refusal is ErrNotInSet, and the id it refused named
+		// no spare: the ledger holds nothing of this take's to unwind, so
+		// the error travels unchanged — the file the Maker left is what a
+		// retirement unlinks, and Make itself made the file whole before
+		// Take was ever asked.
 		return 0, Ref{}, err
 	}
 	ref, err := s.cache.Acquire(id)
@@ -325,10 +326,17 @@ func (s *Stream) endTaken(id core.SegmentID, ref Ref, err error) error {
 // with nothing reserved and nothing written.
 func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, error) {
 	s.appendMu.Lock()
-	s.inflight.Add(1) // under the lock, before anything is reserved
+	if s.closed {
+		s.appendMu.Unlock()
+		return Placed{}, ErrStreamClosed
+	}
+	// Counted before anything is reserved and under the same lock Close sets
+	// closed under, so every Add happens before Close's Wait: the group is
+	// never reused while a Wait runs.
+	s.inflight.Add(1)
+	defer s.inflight.Done()
 	for {
 		if s.closed {
-			s.inflight.Done()
 			s.appendMu.Unlock()
 			return Placed{}, ErrStreamClosed
 		}
@@ -349,17 +357,18 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 			s.appendMu.Unlock()
 			id, ref, terr := s.take()
 			s.appendMu.Lock()
+			takeClosed := s.closed
 			s.takeSettle()
-			if terr != nil || s.closed {
-				// A failed take left no segment. A take that landed but
-				// found the stream closed while it ran is unwanted too, so
-				// it is unwound the same way a failed one is.
+			if terr != nil || takeClosed {
+				// A failed take left no segment. A take that landed but the
+				// stream closed while it ran is unwanted too, so it is
+				// unwound the same way a failed one is — outside the lock,
+				// for the unwind takes the ledger's and the cache's.
+				s.appendMu.Unlock()
 				if terr == nil {
 					terr = s.endTaken(id, ref, ErrStreamClosed)
 				}
-				s.inflight.Done()
-				s.appendMu.Unlock()
-				if s.closed {
+				if takeClosed {
 					return Placed{}, ErrStreamClosed
 				}
 				return Placed{}, terr
@@ -383,30 +392,39 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		// The seal's reserve bounds the room (R11): a record fits when what
 		// remains after it still holds the marker, a footer entry for every
 		// record in the segment — this one included — and the trailer.
-		fits := s.next+size+sealRoom(s.count+1) <= s.set.cap
-
+		//
 		// "A write that does not fit in what remains of the current segment
 		// is split at the cap into records, one per segment, each carrying
 		// its own file offset and the write's version." — RFC 28 §2.2. The
 		// whole record is one piece when it fits: no empty piece, no early
-		// split.
+		// split. A piece that does not fit whole is sized by the closed
+		// form of Size — the header, the kind's own body bytes and the
+		// payload that fits, padded to the slot's grid — never by a search,
+		// so a refusal costs the same as a fit.
 		placed := payload
-		if !fits && hasPayload && payload > 0 {
-			for piece := payload - 1; piece >= 1; piece-- {
-				h.Extent.Len = piece
-				if s.next+h.Size()+sealRoom(s.count+1) <= s.set.cap {
-					placed, fits = piece, true
-					break
-				}
+		if size+sealRoom(s.count+1) > s.set.cap-s.next {
+			// The bytes of body a piece takes besides its payload: a write
+			// its modification time, and nothing for a fill.
+			overhead := int64(format.RecordHeaderSize)
+			if h.Kind == format.KindWrite {
+				overhead += 8
 			}
-			size = h.Size()
-		}
-		if !fits {
-			// Nothing was reserved and nothing written: the position did not
-			// move, so the segment's remaining room is exactly what it was.
-			s.inflight.Done()
-			s.appendMu.Unlock()
-			return Placed{}, ErrSegmentFull
+			fit := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) - overhead
+			switch {
+			case hasPayload && fit >= payload:
+				// The whole record fits after all: the padded form of the
+				// reserve check above is the one that judged it.
+			case hasPayload && fit >= 1:
+				h.Extent.Len = fit
+				size, placed = h.Size(), fit
+			default:
+				// Not even one payload byte places, or the kind carries no
+				// payload and does not fit: nothing is reserved and nothing
+				// written, so the position did not move and the segment's
+				// remaining room is exactly what it was.
+				s.appendMu.Unlock()
+				return Placed{}, ErrSegmentFull
+			}
 		}
 
 		slot := s.tracker.reserve(h.Offset, h.Offset+size)
@@ -444,7 +462,6 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 			})
 		}
 		s.appendMu.Unlock()
-		s.inflight.Done()
 
 		if werr != nil {
 			// ponytail: a failed write does not yet end its segment, and
@@ -484,15 +501,31 @@ func (s *Stream) takeSettle() {
 // therefore covered is recorded on the way back. The first Sync covers the
 // segment header (R8), which completes before any reservation exists.
 //
-// It is the primitive the durability layer's Sync drives.
+// It is the primitive the durability layer's Sync drives. Sync is an
+// in-flight operation of the stream's own, counted as an append is, so Close
+// waits it out before releasing the active segment's ref — an fsync running
+// on a descriptor nobody holds would race the cache's reclaim for the very
+// error the sync exists to surface.
+//
+// decision: Sync answers ErrStreamClosed after Close rather than a soothing
+// nil, because Close fsyncs nothing of the appends that landed before it, so
+// a nil here would read as "everything acknowledged is durable" to a caller
+// that synced after closing. Withdraw it if the durability layer ever needs a
+// benign sync past the close; until then the refusal is the true answer.
 func (s *Stream) Sync() error {
 	s.appendMu.Lock()
-	if s.closed || s.id == 0 || s.ref == (Ref{}) {
+	if s.closed {
 		s.appendMu.Unlock()
-		// No segment is active — or the stream has closed and released the
-		// one it held: nothing to make durable and no ref to make it with.
-		return nil
+		return ErrStreamClosed
 	}
+	if s.id == 0 {
+		s.appendMu.Unlock()
+		return nil // no segment is active: nothing to make durable
+	}
+	// Counted under the lock Close sets closed under, like Append's.
+	s.inflight.Add(1)
+	defer s.inflight.Done()
+
 	through := s.tracker.syncStart()
 	ref := s.ref
 	s.appendMu.Unlock()
@@ -531,10 +564,12 @@ func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
 
 // Close closes the stream: further appends answer ErrStreamClosed, and the
 // in-flight ones — an in-flight take counted with them, for it runs inside an
-// append — are waited for, so on return no append is still writing. The
-// active segment's ref is released, so the cache's Shutdown is never blocked
-// by a ref the stream forgot. A second Close is a no-op; the full close
-// rules come with the seal and the roll.
+// append, and an in-flight Sync, whose fsync holds the descriptor the
+// released ref must not drop — are waited for, so on return no append is
+// still writing and no sync is still running. The active segment's ref is
+// released, so the cache's Shutdown is never blocked by a ref the stream
+// forgot. A second Close is a no-op; the full close rules come with the seal
+// and the roll.
 func (s *Stream) Close() error {
 	s.appendMu.Lock()
 	if s.closed {
