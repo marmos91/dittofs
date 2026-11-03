@@ -115,10 +115,11 @@ Epic 2 makes "done" measurable before any implementation exists, following
   stage-3 composition root (epic 11).
 - **Crash-simulating storage seam.** It wraps a **real** filesystem and records every
   write, allocation and truncate since each file's last sync, and every create, rename and
-  unlink since the last directory sync. A simulated crash discards exactly those
-  operations. The seam can also fail, delay, tear or reorder any single call, including
-  sync, directory sync and the uncached (direct I/O) read. Killing the process is never
-  used as a stand-in.
+  unlink since the last directory sync. A simulated crash decides which of those survive:
+  none, part of one, or any subset (RFC 28 §4.4). The seam can also fail or delay any
+  single call, including sync, directory sync and the uncached (direct I/O) read, tear a
+  write, and lose a write, a sync or a directory sync; reordering is the crash's, never a
+  call's (RFC 1 §1.3). Killing the process is never used as a stand-in.
 - **Reference model.** A pure in-memory model of the journal: each file's bytes, each
   extent's offloaded bit, removal markers, and what `Since` yields. The model-based test
   and the e2e assertions compare against it after every step. A failing seed is kept and
@@ -497,8 +498,9 @@ failure.
   - offered bytes and repack sources are verified;
   - retained extents survive repack;
   - no pin on a segment under repack.
-- **Group B, wedging and unbounded use** (29 checks):
+- **Group B, wedging and unbounded use** (30 checks):
   - reservations, reserve-ahead, handle close;
+  - a journal that cannot write turns read-only instead of draining its spares;
   - named refusals, share limits, repack at capacity;
   - descriptor bound, coalescing, index bound;
   - headroom is allocated, and the below-half rule;
@@ -525,7 +527,7 @@ failure.
   - forget leaves nothing to settle;
   - stranded tag reported, then salvaged;
   - clone target survives a crash;
-  - header-only records are never failed;
+  - header-only records are re-appended outside a read-only journal;
   - a loss survives a restart.
 - **Group D, observability** (11 checks): wedge visible, accounting follows the cap,
   generation never repeats, `Stats` is cheap and keeps its inequalities, backlog age,
