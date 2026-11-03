@@ -162,7 +162,7 @@ func (fs *Filesystem) openHandle(ctx context.Context, a *admitted, c vfs.Call, r
 //
 // decision: an open that created its file is granted what it asks without
 // deciding it on the new file, as the add right on its directory was
-// decided: a create asking write with a mode granting none, as an extracting
+// decided (RFC 19 §3.1): a create asking write with a mode granting none, as an extracting
 // archiver sends, is granted, as POSIX's open with O_CREAT is. Its maximal
 // access is still the file's own. Overturned by an inherited ACL found to
 // deny its creator a right the create needs.
@@ -599,6 +599,13 @@ func (m openMark) Releasing(ctx context.Context, f openstate.FileKey) (func(bool
 // ponytail: the pending releases a release writes for the file's named
 // streams are run by the next start's recovery, not after it, as Delete
 // reports none. Run each here once the engine's Delete reports them.
+//
+// decision: every failed Delete ends the mark, as an aborted release does,
+// though one failing before phase 1 because the journal turned read-only
+// should keep it until the process ends, so no open lands that a later run
+// of the release could abort on: Delete answers a bare error, so the two
+// are not told apart. Keep the mark on that failure once Delete reports
+// which it was.
 func (fs *Filesystem) release(ctx context.Context, key openstate.FileKey) error {
 	done, held, err := fs.marks.Releasing(ctx, key)
 	if err != nil || held {
