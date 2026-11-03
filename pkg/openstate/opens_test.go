@@ -623,7 +623,7 @@ func TestStreamDenyModesArePerStream(t *testing.T) {
 	if _, err := f.open(n, base, OpenRequest{Access: wr}); err != nil {
 		t.Errorf("a write open of the base beside a stream's deny-write: %v", err)
 	}
-	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, true); err != nil {
+	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, entity.WriteData); err != nil {
 		t.Errorf("an anonymous write beside a stream's deny-write: %v", err)
 	}
 	if _, err := f.open(q, base, OpenRequest{Stream: other, Access: wr}); err != nil {
@@ -948,7 +948,7 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 		t.Errorf("while marked: %v", err)
 	}
 	done(false)
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); err != nil {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); err != nil {
 		t.Errorf("a write under the delegation after an aborted release: %v, want it kept", err)
 	}
 	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l == nil {
@@ -964,7 +964,7 @@ func TestReleasingWithStateButNoOpen(t *testing.T) {
 		t.Fatalf("Releasing again: %v", err)
 	}
 	done(true)
-	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrBadState) {
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); !errors.Is(err, ErrBadState) {
 		t.Errorf("a write under the delegation of a released file: %v, want ErrBadState", err)
 	}
 	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l != nil {
