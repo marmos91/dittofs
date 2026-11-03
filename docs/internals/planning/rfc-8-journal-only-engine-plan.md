@@ -374,7 +374,7 @@ harness (`journalv2test/prof`) wired to the fixture.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | `pkg/block/enginev2`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
-| 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 12.75 | A | 4, 8 |
+| 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 20 | B | 5, 6, 7 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 12.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
@@ -382,9 +382,9 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **60** | **162** | | |
+| | **Total** | | **60** | **162.25** | | |
 
-**Plan estimate: 60 subtasks, 162 man-days.**
+**Plan estimate: 60 subtasks, 162.25 man-days.**
 
 RFC 8 is 3,394 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -600,7 +600,7 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
 
 ### Epic 3 — Write, read and overlay ⛔
 
-**Epic 3 estimate: 6 subtasks, 12.75 man-days.**
+**Epic 3 estimate: 6 subtasks, 13 man-days.**
 
 A file's bytes in and out. The per-file entry (guard, pending existence, overlay) is one
 map entry sharded by file, kept while the file has pending existence, a removal in flight or

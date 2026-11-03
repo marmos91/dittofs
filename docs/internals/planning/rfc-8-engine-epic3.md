@@ -12,7 +12,8 @@ write records; [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` an
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/enginev2` surface
 (`Engine`, `Deps`, the `Journal` and `Handle` interfaces, `WriteOpts`, `Overlay`) and E2's
-fake journal (`enginev2test.FakeJournal`), profiler wiring and red rows. Nothing of epic 4:
+fake journal (`enginev2test.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
+which put the share on every content call (D1). Nothing of epic 4:
 `Write` answers a stand-in verifier until epic 4's T4.1 replaces it (D12).
 **Blocks:** epic 4, whose group commit captures the pending operations T3.1 and T3.2
 record per file, and whose T4.1 replaces T3.2's stand-in verifier; epic 5, which records its truncates and deallocates as pending operations
@@ -110,8 +111,10 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    logging rules are RFC 25's, applied as written.
 4. **Profiling.** Tests and benchmarks run under E2's profiling harness and fail on
    goroutine, descriptor or memory leaks and on anomalous resource growth. No
-   allocations-per-op assertion: RFC 8 §15.4 defers its engine-cost benchmark until a
-   profile shows engine time on the request path.
+   allocations-per-op benchmark assertion: RFC 8 §15.4 defers its engine-cost benchmark
+   until a profile shows engine time on the request path. `testing.AllocsPerRun` stays for
+   the zero-allocation lookups (T3.1's `entryOf`, T3.4's `Overlay` with nothing pending):
+   it asserts that a lookup creates nothing, a correctness property, not a cost per op.
 5. **Public interface and internals.** Tests cover both the internal package API and the
    public behaviour the epic enables, including concurrency under `-race`. Test at the
    layer that **consumes** a value (see `CLAUDE.md`, "Verifying a change"): a field the engine
@@ -235,10 +238,15 @@ subtasks and tests can cite them.
 
 - **D1, a file's binding.** Every content method takes the file's `ShareID` beside its
   `FileID`, as `PreWarm` does: the filesystem has it from the handle, and the engine keys
-  its binding on it. A share with no binding answers `ErrStale`, as a removed share does.
-  T3.1 adds `bindingOf(share)`, a read of the copy-on-write share table. The parameter
-  lands in RFC 8 §12.1 and RFC 17 §2.3's `Content`, and in `pkg/block/enginev2`'s
-  declared signatures, ahead of T3.1, as #3547's review settled.
+  its binding on it; `Clone` and `Copy` name a source and a destination share. A share
+  being removed or retired answers `ErrStale`; any other share with no binding here
+  answers `ErrDelay` with `DelayFrozen`, since its handles and open state stay valid (RFC 8
+  §12.1 as #3608 words it). T3.1 adds `bindingOf(share)`, a read of the copy-on-write share
+  table, which knows only bound shares, so it answers `DelayFrozen` for any other; the
+  removed and retired states, and their `ErrStale`, land with epic 6's `Unbind` and `Drop`.
+  The parameter is not on this base yet: it lands in RFC 8 §12.1 and RFC 17 §2.3 with
+  #3608, and in `pkg/block/enginev2`'s and `internal/vfs`'s declared signatures with
+  #3609, both ahead of T3.1.
 - **D2, the unit composition.** `Bind` and `Start` are epic 6's, so a unit test cannot bind
   a share through them. T3.1 adds `export_test.go`, in package `enginev2`, with a hook that
   installs one binding over a `Journal` and a `Handle`, and a helper in the engine's test
@@ -289,7 +297,7 @@ subtasks and tests can cite them.
   suspended. The entry keeps each operation's clock time as its change time, so `Ctime` is
   the newest operation's time and `Mtime` the newest time of an operation that set it, zero
   when none did. A suspended write's change time is therefore memory only, and a restart
-  cannot rebuild it (§9, point 4). A `decision:` marker at the replay names it. The commit
+  cannot rebuild it (§9, point 2). A `decision:` marker at the replay names it. The commit
   keeps the same two times only once epic 4's T4.3 splits `kvstore.PendingOp`'s single
   `Time` into a modify and a change time, with its commit test over the real `kvstore`;
   until then the answer flips at the group commit.
@@ -329,7 +337,8 @@ test/enginev2/known.yaml  T3.2  its entry
 
 **Subtask T3.1 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** S2.
+- **Track:** A. **Depends on:** S2; #3608 and #3609, which put the share on every content
+  call (D1).
 - **Covers:** R1, R2, R3, R4, R5.
 - **Deliverables:** `file.go`: the entry map sharded by a hash of the `FileID`, each shard a
   map behind its own mutex held only to look up, insert or remove; the entry with its own
@@ -344,7 +353,8 @@ test/enginev2/known.yaml  T3.2  its entry
   - A shard's lock is never held while an entry's lock is waited on, nor across any call
     out of the package.
   - A lookup for a file with no entry allocates nothing and creates nothing.
-  - A call naming a share with no binding answers `ErrStale` and touches no journal.
+  - A call naming a share with no binding answers `ErrDelay` with `DelayFrozen` and
+    touches no journal.
 - **Tests:** one file's entry lock held through the hook while a second file in the same
   shard is looked up, inserted and released (catches a shard lock held across an entry
   wait, or a striped entry); the `-race` run with writers on 64 files over the composition;
@@ -377,8 +387,11 @@ test/enginev2/known.yaml  T3.2  its entry
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
   behind the tag, over the real one where the journal reads it back (catches a wrong unit or
   an ignored `Suspend`); a journal wrapper that counts `WriteAt` calls, with
-  `sampleVerifier` swapped through `export_test.go` for one that records that count: it reads
-  0 (catches sampling after staging, R8, which the zero stand-in alone cannot show); a
+  `sampleVerifier` swapped through `export_test.go` for one that records that count in a recorder
+  started at -1 and answers a verifier of its own: the hook ran once, the recorder reads 0,
+  and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
+  zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
+  verifier); a
   write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
   (catches a leaked `journalv2` error or an early `Done`); `OtherShareError` answered
   `ErrCorrupt`; a `WriteAt` answering the context's error returns it as itself, not
@@ -513,20 +526,14 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-1. **A file's share.** Settled: the content methods take the share (D1).
-2. **The verifier's edge.** T3.2 returns the verifier T4.1 derives, an edge from epic 4 into
-   epic 3 that the dependency graph between epics does not draw. This document breaks it
-   with a stand-in (D12) so epic 3 waits for nothing of epic 4; the graph between epics
-   should either add an edge from epic 4 to epic 3, which T4.1 allows since it needs nothing of epic 3
-   and comes first on track B, or note the stand-in and T4.1's replacing it.
-3. **No row over the real journal turns green in this epic.** E2's fixture composes the
+1. **No row over the real journal turns green in this epic.** E2's fixture composes the
    engine through `Start`, epic 6's, and the journal's `WriteAt` and `ReadAt` are not built
    yet. The rows R5 and R26 to R29 name leave `known.yaml` once both exist.
-4. **A suspended write's `ctime`** (D10): the journal records `mtime` only, so a restart
+2. **A suspended write's `ctime`** (D10): the journal records `mtime` only, so a restart
    loses it; RFC 28's to decide. And when every pending write suspended `mtime`, `Overlay`
    answers a zero `Mtime`: the filesystem service should keep the File record's, which
    RFC 17 §5.7 ("the times … are the overlay's") does not say.
-5. **`Allocation`'s type.** RFC 8 §12.1 answers RFC 6 §2's `Span`, while `kvstore`'s
+3. **`Allocation`'s type.** RFC 8 §12.1 answers RFC 6 §2's `Span`, while `kvstore`'s
    `Existence.Allocation` answers a run and a hole flag; D11 translates. RFC 6 §10.1 or
    RFC 8 §12.1 should say which.
-6. **A cause RFC 8 leaves open:** the answer at the re-ask's deadline (D6).
+4. **A cause RFC 8 leaves open:** the answer at the re-ask's deadline (D6).
