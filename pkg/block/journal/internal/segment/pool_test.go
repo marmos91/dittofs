@@ -1131,6 +1131,11 @@ func TestPoolHoldAboveTheTargetIsSatisfiableOnRetry(t *testing.T) {
 	// The refused ask is demand the refill makes up: the retry must find the
 	// third spare. The retry is the engine's own — refused, then asked again
 	// once the pool has made the spare up — so it is bounded-yielded here.
+	// The bound counts attempts, not time, and the waits it has to cover are
+	// a make or two each: a runner whose makes are slow spends the budget on
+	// yields, not on the makes, and the settle below settles however long
+	// the makes take, because demand is a level (see the accumulation test)
+	// and never refills more than the shortfall.
 	var h *segment.Hold
 	for range poolAttempts {
 		var herr error
@@ -1329,5 +1334,71 @@ func TestPoolTakeServesTheOldestSpareFirst(t *testing.T) {
 		t.Fatalf("the takes handed out %d then %d, want the ids ascending: the oldest spare first",
 			first, second)
 	}
+	p.Stop()
+}
+
+// TestPoolRefusedHoldRetriesDoNotAccumulateDemand: a refused Hold's demand
+// is a level, not a running sum. Ten refusals of the same ask, made while
+// the worker's make is parked so none can land in between, are one
+// shortfall of one spare — the ask is the same hold retrying — and the pool
+// settles at exactly the target plus that one. It catches a refill that
+// over-makes spares for every refusal, whose extra segments sit above the
+// target for good and whose made files a slow runner keeps churning out
+// behind a test that long gave up.
+func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// Park the worker's next create, so the refusals below land while nothing
+	// can make: every shortfall is recorded before any spare arrives, the
+	// exact window a retrying engine widens.
+	park := seam.Hold(t, journalv2test.OpCreate, "*")
+
+	// The same hold is refused ten times — the ask is 3 over a pool holding
+	// 2, short one spare each time.
+	for i := 1; i <= 10; i++ {
+		_, err := p.Hold(3)
+		assertSpareRefusal(t, fmt.Sprintf("the refused Hold(3), ask %d of 10", i), err, 1)
+	}
+
+	// Freed, the worker serves the shortfall: one make beyond the fill's
+	// two, the pool settling at exactly three ready.
+	park.Release()
+	awaitCounters(t, "the one-spare shortfall made", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 3 })
+	made := seam.Calls(journalv2test.OpCreate)
+	if made != 3 {
+		t.Fatalf("after the shortfall the pool made %d files, want 3: two of the fill and one spare of demand, not one per refusal", made)
+	}
+	// The settle: a refill that accumulated the demand would draw its next
+	// make here, one fsync chain at a time, and the count would move.
+	for range 1 << 16 {
+		if got := seam.Calls(journalv2test.OpCreate); got != made {
+			t.Fatalf("with the demand level settled the worker began another make (%d files, want still %d): refusals accumulated as demand", got, made)
+		}
+		runtime.Gosched()
+	}
+	if c := p.Counters(); c.Spares != 3 || c.Held != 0 {
+		t.Fatalf("the settled pool reports %+v, want 3 ready and none owed", c)
+	}
+
+	// The retried hold is served, its three takes go through, and its close
+	// returns the pool to its target's shape.
+	h, err := p.Hold(3)
+	if err != nil {
+		t.Fatalf("the retried Hold(3): %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if id, err := h.Take(); err != nil || id == 0 {
+			t.Fatalf("the hold's take %d: (%d, %v)", i, id, err)
+		}
+	}
+	h.Close()
+	awaitCounters(t, "the pool back at its target after the close", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 && c.Held == 0 })
 	p.Stop()
 }

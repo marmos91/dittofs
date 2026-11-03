@@ -98,7 +98,7 @@ type Pool struct {
 	mu         sync.Mutex
 	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
 	held       int                           // spares owed to open holds; guarded by mu
-	pending    int                           // spares a refused Hold still asks, demand the refill makes up; guarded by mu
+	pending    int                           // the largest shortfall a refused Hold still asks, a level not a sum; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
@@ -284,6 +284,16 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 	// rather than inside it — the target exists so every stream can roll
 	// once without waiting for a spare — so the refill is what keeps an open
 	// reservation from consuming the spares the unreserved rolls need.
+	//
+	// The demand is a level, the largest shortfall one refused ask still
+	// wants, never a running sum: the same hold refused ten times before a
+	// make lands is one shortfall of one spare, and summing the refusals
+	// would make ten spares that then sit above the target for good. A
+	// second, smaller ask rides inside a larger outstanding one, so the
+	// level is the max. A served Hold clears the level: the ask that made
+	// it found its spares, and whatever demand another hold still holds is
+	// re-recorded by its own next refused retry, which is the loop the
+	// level exists to serve.
 	ready := int64(len(p.ready[Content]))
 	if ready-int64(p.held) < int64(n) {
 		missing := int64(n) - (ready - int64(p.held))
@@ -292,7 +302,9 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 			// blames a shortage past the hold it refuses: capped at n.
 			missing = int64(n)
 		}
-		p.pending += int(missing)
+		if int(missing) > p.pending {
+			p.pending = int(missing)
+		}
 		p.mu.Unlock()
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
 	}
@@ -544,7 +556,10 @@ func (p *Pool) refill() bool {
 		p.ready[c] = append(p.ready[c], id)
 		if c == Content && len(p.ready[Content]) > p.t.Content+p.held {
 			// A content spare above the target and every hold's demand pays
-			// down the shortfall a refused Hold asked for.
+			// the demand level down by one. The level reaches zero exactly as
+			// ready reaches target+held+pending, so the pass's own condition
+			// ends it here: the level never runs negative, because the only
+			// makes that reach this line are the ones the level itself drew.
 			p.pending--
 		}
 		p.deviceFull = false
