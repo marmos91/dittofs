@@ -689,7 +689,7 @@ cases, and where the two differ for one node, this section wins:
   node that uses the embedded metadata store and is not the only node, one
   configured with one role only, and one without a journal device or
   remote-tier credentials. It then builds the metadata store, the remote stores,
-  the journal, the syncer, the engine, GC, open state, identity, the
+  the journal, the syncer, open state, the engine, GC, identity, the
   filesystem service and last the adapters, handed the `vfs.Filesystem`
   directly; it starts them in that order, so the adapters accept clients only
   once everything under them serves, and stops them in reverse. The startup

@@ -555,7 +555,8 @@ one gateway node's memory; a client that loses the node signs in again.
   handle keeps the access granted at its open. Any failed re-authentication
   tears the session down as
   MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
-  complete `STATUS_NOTIFY_CLEANUP`, and its trees are removed.
+  complete `STATUS_NOTIFY_CLEANUP`, its trees are removed, and the session
+  ends through one `Disconnect`, as at `LOGOFF`.
 
 > decision: a successful re-authentication replaces the session's identity in
 > place, and open handles keep the access granted at open. MS-SMB2 3.3.5.5 and
@@ -679,16 +680,72 @@ carries many users' sessions at once.
 
 - The client record of an SMB client **MUST** be keyed by `ClientGuid` alone
   and hold no principal
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): a negotiate naming a
-  known `ClientGuid` finds that record whoever then authenticates, and is never
-  refused for its principal.
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): the first
+  authenticated `SESSION_SETUP` naming a known `ClientGuid` finds that record
+  whoever authenticates, and is never refused for its principal. A null or
+  guest session never joins a client, so its opens are granted no lease or
+  oplock: the grant budget, the caching fence and a break's routing are a
+  client's, and a guest has none. The `CREATE` succeeds with
+  `SMB2_OPLOCK_LEVEL_NONE` and no lease context in the response.
 - Principals bind where SMB binds them: each session to the user who set it
   up, and each open to its opener
   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A reconnect, a replay and
   every call through a FileId are checked against the open's principal, never
   the record's.
+- **A break goes by its lease's opens, never by the record**
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): to a session holding
+  one of the lease's opens (MS-SMB2 3.3.4.7); if every one is disconnected,
+  only to a session of that client signed in as one of the openers; and if
+  there is none, nowhere, so the break times out (§6.3). The service names the
+  session, found from the lease's opens through `Grants.Openers`
+  ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)), and the adapter sends on that session's connection and nowhere
+  else. When every open is disconnected, the service names none: it asks the
+  adapter on each node in `Reach.Sessions` in parallel, giving it the openers,
+  and each picks a session of the client signed in now as an opener, or none,
+  and answers whether it sent ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A session
+  re-authenticated as another principal, null or guest is therefore never
+  picked for the opener's break. An acknowledgement is checked against the open's principal, not only
+  the `ClientGuid`; one arriving on the connection the break was sent on is
+  made as the session the break was sent to, since the sessions of one
+  machine's users share that connection and MS-SMB2 does not say which of them
+  carries the acknowledgement.
+- **A lease is joined only by an opener**
+  ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)): a `CREATE`
+  presenting the key of an existing lease of the file joins it only for a
+  principal already one of the lease's openers, or one on a connection that
+  carries an opener's session, which the adapter passes as
+  `OpenRequest.Conn`. Any other caller's `CREATE` succeeds with
+  `SMB2_OPLOCK_LEVEL_NONE` and no lease: a server may grant less caching than
+  asked, so the open works and only its caching is withheld. A user who sends
+  alice-pc's `ClientGuid` and alice's lease key and signs in as herself opens
+  the file uncached and never sees a break of alice's, nor answers one, and a
+  change of hers to the file that conflicts with the lease
+  ([RFC 14 §5.2](rfc-14-open-state.md#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)) breaks alice's lease.
+
+  > decision: a join refused by the connection test withholds the lease, not
+  > the open. The test rests on a machine's users sharing one connection, which
+  > no capture has checked yet; multichannel, or a redirector that opens a
+  > connection per user, would fail it for a legitimate user, and withholding
+  > only caching makes that case slower rather than broken. Revisit once a
+  > capture of a multi-session host settles the connection model.
 - What RFC 14 keeps per client is therefore per machine: the grant budget, and
   the caching fence after a missed break (§6.3).
+
+  > decision: a stranger who sends a machine's `ClientGuid` joins its record, so
+  > shares its grant budget and its 90 s caching fence: by holding grants, or by
+  > missing a break of its own, it can deny that machine caching. It cannot read
+  > the machine's breaks, which go by open, nor answer them, nor join a lease
+  > to become an opener, since a join needs an opener's principal or an
+  > opener's connection. It becomes an opener only of a key no grant names,
+  > by opening under it first, which keeps the machine uncached under that key
+  > ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). Nor can it change a file without breaking the machine's
+  > lease on it, since a lease is a caller's own only when the caller's
+  > principal is one of its openers', and a refused join records no key. Keying the record by principal would refuse every
+  > user but the first on a shared host (below). The connection test trusts
+  > every user signed in on one machine's connection as that machine's users
+  > already trust each other's cache. Revisit if a `ClientGuid` shared this way
+  > is seen in the wild, or if a capture of a multi-session host shows an
+  > acknowledgement on a connection other than the break's.
 - **A logoff closes only its own session's opens** (MS-SMB2 3.3.5.6), and
   releases nothing else of the record: another user's disconnected durable or
   persistent opens on the same machine keep running their timeouts. The record
@@ -876,8 +933,10 @@ file open locally, until the server takes the promise back.
 - The lease key, parent lease key and lease epoch are carried on the grant
   (`Key`, `Parent` and `Epoch`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
-  every open of a file by one client under one key; a key already naming a
-  grant on another file is refused with `STATUS_INVALID_PARAMETER`. The
+  every open of a file by one client under one key; for one of the key's
+  openers, a key already naming a grant on another file is refused with
+  `STATUS_INVALID_PARAMETER`, and anyone else's open under it is granted
+  uncached ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). The
   v2 create context's epoch travels as `OpenRequest.Epoch`, which a new lease
   starts from; the grant's `V2` fixes the version at creation, and a v2
   lease's `Epoch` rises with every change of its caching sent to the client,
@@ -909,7 +968,7 @@ clients do not, so the adapter finishes the request itself:
 
 1. answers an interim `STATUS_PENDING` with an async ID, and frees the worker;
 2. lets the primary send the holder a break (`LEASE_BREAK_NOTIFICATION`, or
-   `OPLOCK_BREAK`) through its callbacks, requiring an acknowledgement
+   `OPLOCK_BREAK`) through its callbacks, on a session §4.4 picks, requiring an acknowledgement
    (`ACK_REQUIRED`) when write or handle caching is broken;
 3. re-runs the request when the holder acknowledges, its break reaches the
    deadline ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)),
@@ -1374,6 +1433,12 @@ request is backed by an RFC 14 watch, fed by the service's `Notify` callback.
   ([RFC 14 §2.5](rfc-14-open-state.md#2.5%20Watch)). The client re-lists, as
   it does after an overflow. A change is never silently missed for being in
   another shard; on one node every change arrives with its detail.
+- **A change made over another protocol is reported too**, with one gap: a
+  change to a regular file's attributes or data made through no open made by
+  name — an NFSv3 `WRITE` or `SETATTR`, I/O under an anonymous stateid — is
+  reported to no watch, as
+  [RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision
+  says, until the store keeps a file's names.
 
 ## 9. File information
 
@@ -1885,7 +1950,9 @@ A Windows file can carry named alternate data streams beside its main content.
   `STATUS_ACCESS_DENIED`, so the caller does not learn whether the target
   exists, and one holding it `STATUS_NOT_SUPPORTED`. No service call renames a
   stream: `Rename` moves an entry
-  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), and a stream has no entry
+  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations),
+  [RFC 7 §5.3](rfc-7-namespace-metadata.md#5.3%20Rename%20moves%20an%20entry%20and%20nothing%20else)),
+  and a stream has no entry
   ([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).
   A rename of a file one of whose streams is open sharing delete is granted,
   where Windows answers `STATUS_ACCESS_DENIED`; a stream open that does not
@@ -2275,7 +2342,8 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
-| `Client.Pending` | never set | — | an SMB client is confirmed in one step, by `NEGOTIATE` |
+| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4); the record is not released while any remains (RFC 14 §2.1) |
+| `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call, except with backup intent (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
@@ -2294,6 +2362,7 @@ mapping it needs is here.
 | `Open.Suspended` | the -1 and -2 timestamp sentinels of a set-info (§9.3) | — | `ChangeTime` is never suspended (S15) |
 | `Open.LossSeen` | nothing on the wire | — | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
 | `CachingGrant.Key` | the lease key | — | an oplock has none and covers its one open |
+| `OpenRequest.Conn` | the principals of the other sessions on the `CREATE`'s connection | — | lets a second user of one machine join its lease; a stranger on another connection cannot (§4.4) |
 | `CachingGrant.Epoch`, `V2` | the v2 lease epoch, starting from the create context's | — | unsent for a v1 lease and an oplock |
 | `CachingGrant.Parent` | the v2 lease's parent lease key, as its first request named it | — | written with a persistent open's lease; never read by RFC 14 |
 | `CachingGrant` kind: read; read + write; read + write + handle; any of R, RW, RH, RWH | Level II; exclusive; batch; a lease | — | a break to a level is `RecallGrant` to that kind, acknowledged through `AckRecall` |
@@ -2374,7 +2443,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrDelay` — a store conflict still unresolved at the service's deadline (`DelayConflict`) | held pending and re-run up to `smb_pending_cap`; still conflicting there, `STATUS_FILE_NOT_AVAILABLE` |
 | `ErrDelay` — the share quiesced or frozen for a move ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) | held pending until the freeze ends, then re-run; at `migration.freeze_timeout` plus 35 s, `STATUS_FILE_NOT_AVAILABLE`; if the namespace has moved, `STATUS_NETWORK_NAME_DELETED` and the moved shares' trees end (§6.3) |
 | `ErrDelay` — the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, a remote outage included ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | held pending and re-run for as long as the cause lasts, up to `smb_pending_cap` (10 min by default); `STATUS_DISK_FULL` only at that cap, or at once if the cause turns permanent |
-| `ErrDelay` with `DelayCommit` — the metadata store stalled: its own transaction, the existence commit a stable write or `FLUSH` waits on (§9.4; [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), a raise of the share's version limit, or a write waiting on quota slack | held pending and re-run up to `smb_pending_cap`; only there `STATUS_UNEXPECTED_IO_ERROR`, as a failed read is ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
+| `ErrDelay` with `DelayCommit` — the metadata store stalled: its own transaction, the existence commit a stable write or `FLUSH` waits on (§9.4; [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)), a raise of the share's version limit, a write waiting on quota slack, or a stable write whose sync may have lost it ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)) | held pending and re-run up to `smb_pending_cap`; only there `STATUS_UNEXPECTED_IO_ERROR`, as a failed read is ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 | `ErrUnavailable` — a read, query or control request meeting a remote outage on a block not held locally ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) | held pending and re-run up to `smb_pending_cap`, as a store stall is; only there `STATUS_UNEXPECTED_IO_ERROR`. A `READ` whose verified bytes reach its `MinimumCount` is answered with them at once, short; one whose verified bytes fall below `MinimumCount` is held the same way, never answered short, since MS-SMB2 3.3.5.12 fails a read below `MinimumCount` and the client would see an error for a transient outage. `ErrLost` and `ErrCorrupt` are answered at once ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) |
 | `ErrIncomplete` — a read, through a snapshot or a copy made from one, of a file its cut lists as incomplete ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), or a copychunk or duplicate-extents from such a file, refused before anything changes ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) | `STATUS_UNEXPECTED_IO_ERROR` at once |
 | no service error — the adapter's own refusal of a request past its connection's floor while the node's hold pool cannot take it (§3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
@@ -2406,6 +2475,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrLocked` | `STATUS_FILE_LOCK_CONFLICT` for I/O; `STATUS_LOCK_NOT_GRANTED` for a lock asked to fail at once |
 | `ErrRangeNotLocked` | `STATUS_RANGE_NOT_LOCKED`: an unlock element names a range the open does not hold; the elements before it stay unlocked (§7) |
 | `ErrDeletePending` | `STATUS_DELETE_PENDING` |
+| `ErrPastEnd` — not reached: `QUERY_ALLOCATED_RANGES` clamps its range to the file's size before calling `Seek` | `STATUS_SUCCESS` with no ranges, should it ever be reached |
 
 SMB clients do not retry a request on their own, so every condition that may
 clear by itself is held pending, never answered as a failure the client would
@@ -2563,7 +2633,7 @@ name, a SID, a principal or a client address
 | §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. Client A holds an RW lease and a local lock; client B sends `LOCK` over the range: assert A's lease is broken and its lock reaches the server before B is answered. Repeat with A holding an R lease; assert it is broken to none before B is granted. A `LOCK` of three `FAIL_IMMEDIATELY` elements whose third conflicts: assert `STATUS_LOCK_NOT_GRANTED` and none of the three held. An unlock of three ranges whose second is not held: assert `STATUS_RANGE_NOT_LOCKED`, the first unlocked and the third still held. A `LOCK` of two elements without `FAIL_IMMEDIATELY`: assert `STATUS_INVALID_PARAMETER`. | locks held in the adapter, a lock request that does not break read or write caching, or a failed multi-element `LOCK` leaving earlier ranges held |
 | §7 waiting locks | Client B waits on client A's lock; A holds it 5 minutes, then releases: assert B's lock granted and its request completed. B waits again; send `CANCEL` racing A's unlock, 10^3 times: assert each request is either `STATUS_CANCELLED` with no lock held by B afterwards, or success with the lock held. | a waiting lock answered on a timer, or a cancel answered before `CancelLock` |
 | §6.3 handle before sharing, NFS | Client A opens with deny-write under an RWH lease and closes its handle locally; an NFSv4 client opens for write and an NFSv3 client writes. Assert each is told to retry while A's handle caching is broken, then succeeds. | an NFS request refused by a deny mode only a handle cache held |
-| §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported. With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
+| §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported, except a regular file's through no open made by name ([RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision). With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
 | §9 info classes | smbtorture `smb2.getinfo`, `smb2.setinfo`, `smb2.dir`, `smb2.streams`, with `smb2.streams.io` a known failure because a named stream is not deleted on its own ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and `smb2.streams.names`, `smb2.streams.rename`, `smb2.streams.rename2` and `smb2.streams.basefile-rename-with-open-stream` known failures until a named stream can be renamed and a rename of a base file with an open stream is refused as Windows does; MS-FSA test cases for the classes of Appendix E.1. | |
 | §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it, and through the base file's open without `DELETE`, rename it to an existing stream's name: assert each `STATUS_ACCESS_DENIED`. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a stream rename sent to `Rename` as a `base:stream` entry, or without `DELETE` answered `STATUS_OBJECT_NAME_COLLISION` |
 | §9.3 timestamps | smbtorture `smb2.timestamps`; −1 on one open, write through it and through a second open on another node: only the second moves `LastWriteTime`. −1 on `ChangeTime` too, write through the first open, and assert an NFSv3 `GETATTR` shows `ctime` moved. | suspension in adapter memory, or a frozen NFS ctime |
@@ -2795,8 +2865,8 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` | |
-| `LOGOFF` | `Close` of each of the session's opens, durable and persistent ones included | MS-SMB2 3.3.5.6 closes every open of the session; `Disconnect` is for a session's lost connection, and keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, again after the node's entry was removed or at each new node epoch, storing the `Gen` each returns and, if the node then holds no session of the `ClientGuid`, a session counted from the step that decides its `Connect` or skips it — the setup's connection dropped, or a re-list landed after the last `LOGOFF` — sending `Disconnect` with `Last` and that `Gen` ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | a break with every open disconnected is sent from the adapter's session table ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); a failed re-authentication's teardown ends the session as `LOGOFF` does |
+| `LOGOFF` | `Disconnect` with `Logoff`, which closes every open of the session, durable and persistent ones included, running delete on close and orphan releases through `Sink.Closed` as a `CLOSE` runs them, and `Last` with the node entry's latest `Gen` when it was the node's last session of the `ClientGuid`, repeated at the newer `Gen` it returns while the node still holds none; `ErrStaleClient` counts as success | MS-SMB2 3.3.5.6 closes every open of the session; a lost connection's `Disconnect`, without `Logoff`, keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
 | `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |

@@ -210,7 +210,21 @@ type ClientLease struct {
 type Reach struct {
 	Callback NodeID   // (cluster) the gateway node holding its back channel; zero: none
 	Down     bool     // the back channel is lost: signalled to the client, no grant offered, until it rebinds
-	Sessions []NodeID // (cluster) gateway nodes holding a session of it; Destroy is refused while any remains
+	Sessions []ReachNode // (cluster) gateway nodes holding a session of it, one entry per node (below); Destroy is refused while any remains
+	Gen      uint64      // the highest Gen any entry has taken; never lowered, so no Gen repeats across an entry's removal
+}
+
+type ReachNode struct {
+	Node  NodeID
+	Epoch uint64 // the node epoch it was listed under (RFC 11 §3.1): an entry at an older epoch than its node's current one counts as absent until Connect or AddSession replaces it (below)
+	Gen   uint64 // set above Reach.Gen by every Connect or AddSession that lists the node; a Last removes the entry only at the Gen it names
+}
+
+// SessionEnd is how Disconnect ends one session.
+type SessionEnd struct {
+	Logoff bool // SMB LOGOFF or a failed re-authentication's teardown: every open of the session closes, durable and persistent included; otherwise its last channel ended: volatile opens close, the rest start their Timeout (§8.1)
+	Last   bool   // the node's last session of the client: removes the node's Reach.Sessions entry in the same step, if its Gen is still Gen
+	Gen    uint64 // with Last: the latest Gen the adapter holds for the entry when it decided last; a newer one means the node was listed again meanwhile: the entry stays and Disconnect returns its Gen
 }
 
 // ShardMark is one shard the client holds state in.
@@ -276,14 +290,113 @@ nothing the adapter refuses.
 
 **An SMB client record names a machine, not a user.** One Windows machine sends
 one name on every connection, and a multi-session host carries many users'
-sessions under it. The SMB record therefore holds no `Owner`: a negotiate
-naming a known name finds its record whoever authenticates, and is never
-refused for its principal. Principals bind per session and per open: every
+sessions under it. The SMB record therefore holds no `Owner`: the first
+authenticated session setup naming a known name finds its record whoever
+authenticates, and is never refused for its principal. A null or guest session
+never joins a client: it registers no record and is never one of a record's
+sessions. Its opens are therefore offered no caching grant, lease or oplock:
+the grant budget, the caching fence and a break's routing all hang off a
+client (§5.3, §5.5), and a guest has none. Principals bind per session and per open: every
 open keeps its opener's principal (§2.2) and a reconnect must match it
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)). A session's end
 closes only that session's opens, and such a record is released once it holds
-no open and no SMB-durable or persistent open's `Timeout` is still running. An
+no open, no SMB-durable or persistent open's `Timeout` is still running, and
+`Reach.Sessions` is empty. An
 NLM record has no owner either; its host is named by its `Name` alone.
+
+**An SMB break is routed by the grant's opens, never by the record.** A
+`ClientGuid` travels in clear, so anyone can send a machine's and hold a session
+under its record; a callback path kept per SMB client is one a stranger can
+move. The service therefore sends a lease or oplock break to a session holding
+one of the grant's opens: each open keeps the session it was made or last
+reconnected on (`Session`, §2.2), that session signed in as the opener, and a
+durable reconnect re-attaches an open only for its opener's principal
+([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens), MS-SMB2 3.3.5.9.12).
+When every open of the grant is disconnected, the break goes only to a session
+of that client signed in as one of the openers, which the adapter on the node
+holding it picks from its own session table
+([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and runs to its deadline
+(§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
+and the adapter calls it at each node's first authenticated session of the
+client, so no other `SESSION_SETUP` makes a mutating call; an NFSv4.1
+`AddSession` adds its node too. A node asked that holds no session of the
+client signed in as an opener picks none. Otherwise
+the service picks the session from the grant's opens as `Grants.Openers` returns them
+([§11.3](#11.3%20Methods)) and names it to the adapter, which delivers to it and to no other.
+`AckRecall` on a lease or oplock is
+admitted only from a caller whose principal is one of its openers', never on
+the client alone, and is `ErrNotYours` otherwise. A lease is joined the same
+way: an open presenting the key of an existing lease joins it only for a
+principal already one of its openers, or one signed in on the same connection
+as an opener's session (`OpenRequest.Conn`, §2.4); otherwise the open is
+granted with no lease (§2.4). So a stranger presenting alice-pc's `ClientGuid` and alice's
+lease key, both of which travel in clear, receives none of alice's breaks,
+cannot answer them, cannot become an opener to receive the next one, and
+breaks alice's lease with any change she makes to the file that conflicts with
+the lease ([§5.2](#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)), since the lease is not hers (§2.4).
+The routing needs no principal on the record: a connected open names its
+session, so that case holds across a restart, and the sessions a node keeps for
+the disconnected case are the adapter's, and end with the node's process; a `SessionRef` names the node holding the session
+(RFC 17 `Peers.Recall`), so it holds across nodes. NFSv4.1 keeps its back channel and
+the rule for moving it (`Reach.Callback`, §4.1); NLM's callbacks
+go to the address in the host's name, which nothing moves.
+
+**A node's entry is kept once per node, never per session.** It leaves with the
+node's last session of the client, removed by the `Disconnect` that ends that
+session (`SessionEnd.Last`) in the same step, so no teardown makes a second
+mutating call, or with the node's loss. An entry names the node epoch it was
+listed under ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)),
+and one at an older epoch than its node's current one counts as absent, so a
+restarted node's entry, whose sessions died with its process, holds nothing up.
+A node epoch also rises without a restart — a node a takeover marked takes a
+new lease at a higher one, and its sessions survive — so at every new node
+epoch the adapter lists the node again for each client it holds a session of:
+`Connect` for SMB, `AddSession` for NFSv4.1 with the record's current
+`Adapter` as both `prev` and `next`. Each replaces an older-epoch entry rather
+than treating the node as already listed; until it runs, the entry counts as
+absent.
+
+The adapter decides first and last under a per-client step on its node, held
+only around that local decision, never across the call it leads to, so no
+`SESSION_SETUP` waits behind another session's `LOGOFF` and its slowest
+primary. A session counts as the node's from the step that decides its
+`Connect` — whether it sends one or skips it because one is already in flight —
+not from when it reaches the adapter's session table, and stops counting at the
+step that decides its end; "holds a session" below means this count. Otherwise
+a second session that skipped its `Connect` behind a first one in flight would
+not yet be counted when that `Connect` returns for a first session whose
+connection dropped, and the node would be unlisted while the second serves.
+The entry's `Gen` orders the calls instead: every `Connect` or
+`AddSession` that lists the node, a re-list at a new epoch included, sets it
+above every `Gen` the record has given, so none repeats across a removal, and
+the adapter stores every `Gen` such a call returns. Each time one returns, the
+adapter decides again under its step, and if the node then holds no session of
+the client — a re-list that landed after the last session's removal, or a
+`SESSION_SETUP` whose connection dropped while its `Connect` was in flight — it
+sends `Disconnect` with `Last` and the `Gen` just returned. The last session's
+`Disconnect` passes the latest `Gen` the adapter held when it decided last and
+removes the entry only if it still matches. On a mismatch the entry stays and
+`Disconnect` returns its current `Gen`; the adapter stores it and decides again
+under its step, repeating the `Disconnect` with that `Gen` if the node still
+holds no session of the client, and stopping otherwise. So a session set up
+while the last one ends either lists the node again before the removal, which
+then removes nothing, or runs after it and adds the node back: a node holding a
+session is never left unlisted. And a re-list, which has no session behind it,
+never keeps a node listed that holds none: landing before the removal, its
+`Gen` sends the last session's end round once more; landing after it, its own
+return sends the `Disconnect`.
+
+**A `Disconnect` closes at the primaries before it unlists.** In a cluster the
+lease owner sends the session's end to each primary holding the client's state
+first and runs its own step, with `Last`'s removal, only once every one has
+acknowledged. A primary that does not answer fails the call with the entry
+kept, and the adapter repeats it until it succeeds; a repeat finds the closed
+opens gone and closes nothing twice. The repeats end with the record: once it
+is released, a repeat is `ErrStaleClient`, and the adapter counts that, or a
+`Disconnect` finding the node's entry already gone, as success. Otherwise a `Last` committed before an
+unreachable primary closed its share of the session would leave that
+primary's durable opens open, and, with the node's lease live, their `Timeout`
+would never start.
 
 **An adapter's record is written with the change it belongs to.** Some protocol
 detail must survive a lost connection, node or restart although the table
@@ -343,7 +456,7 @@ type Open struct {
 	File       FileID
 	Stream     FileID       // the named stream it opens; zero: the base file
 	Via        FileID       // the directory it was opened through (§9.5); zero: opened by handle or ID, counted under no directory, no delete through a parent; kept across a reconnect
-	Name       []byte       // its entry in Via, the one a delete pending removes (§9.4); a rename of that entry moves it; nil: opened by handle
+	Name       []byte       // its entry in Via, the one a delete pending removes (§9.4); a rename of that entry moves it, and an unlink or a rename over it clears it (§11.3, `Renamed`); nil: opened by handle, or its entry removed
 	Mode       OpenMode     // what it may do, and what it refuses other opens (§6)
 	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
@@ -439,6 +552,15 @@ unless the caller's principal (`Caller.Principal`, §11.3) is the open's, or
 the client's `Owner` where `Protect` is set (§2.1). An NFSv4.0 stateid crosses
 the wire in clear and binds no session, so without the per-call check anyone
 who sees one writes with the opener's access. The same holds for a lock state.
+
+**An open is used only for the access it was granted.** `CheckIO` names the
+access the I/O wants: `ReadData` for a read, `WriteData` for a write starting
+below the file's size, and `AppendData` for one starting at or past it, the
+size being the one the filesystem read under the file's admission lock. I/O
+through an open, or through a lock state taken under it, whose `Access` lacks
+what it wants is refused `ErrAccess`. So an open holding `AppendData` without
+`WriteData` can only append: a write starting below the size is refused, and
+one at or past it is admitted.
 
 **I/O under a grant's reference is the client's, and authorised afresh.** A
 client may use a grant that covers no open for I/O by any of its owners, under
@@ -613,17 +735,58 @@ client under a different key holds a different grant, which conflicts as
 another client's would. So a change judges whose a grant is by the open it came
 through: `CheckChange`'s `via` names it, and only a grant under that open's key,
 the oplock over that open, or a grant of the caller's client that covers no
-open — an NFS delegation — is the caller's own; with no `via`, every grant of
-the caller's client is. A delegation is its client's whatever open the change
+open — an NFS delegation — is the caller's own; with no `via`, a delegation of
+the caller's client, and every other grant of the caller's client whose openers
+include the caller's principal, is. A lease or oplock is thus the caller's own
+only when the caller's principal is one of its openers', through a `via` and
+without one. A delegation is its client's whatever open the change
 came through, as the lock and I/O paths judge it, and as an NFSv4 server
 breaks no delegation for its own client's change. `via` **MUST** be an open of
 the changed file itself, a named stream's open counting as its base file's;
 one of any other file is `ErrBadState`, as a reference with another file's
-handle is (§2.11). A key already naming a grant on another file makes
-the open `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`; the key
-is free again when its lease's last open closes. An oplock covers exactly the one open that asked for it. An NFS
+handle is (§2.11).
+A key is judged against its openers first. A key no grant names is free, so
+its first open starts the lease and its caller becomes the key's first opener.
+Whether a key is free and the open's hold on it are one step under the table's
+index lock, which spans the table's files, so of two first opens under one free
+key on two files of one primary only one starts a lease; the other is judged
+against the key as the first left it.
+Otherwise a caller is one of a key's openers
+when its principal is that of an open holding the key, or when some principal in
+`OpenRequest.Conn`, the other sessions signed in on the open's connection, is;
+any other caller's open is granted with no grant at all and records no key
+(`Open.Grant` zero), on the key's file or any other, so it neither joins the
+lease nor collides with the key, and a change through it finds no grant of its
+own, since a key travels in clear and joining makes an opener (§2.1). For one of
+the key's openers, a key already naming a grant on another file makes the open
+`ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
+existing lease of the file joins it. The key is free again when its lease's last
+open closes. An oplock covers exactly the one open that asked for it. An NFS
 delegation is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
+
+> decision: a key is the first opener's, refusing only the grant to anyone
+> else, which keeps a misjudged caller working, uncached. Both the `ClientGuid` and the key travel in clear, so mallory needs no
+> access to alice's file: while alice's key is free she opens any file she can
+> under alice-pc's `ClientGuid` and that key, becomes its opener, and keeps
+> alice uncached on every file under the key for as long as she holds the open.
+> She gains no grant, break or byte of alice's, and alice's opens all succeed.
+> Withdraw this if a key can be bound to the principal that chose it before its
+> first open, or if being uncached ever costs a client more than speed.
+
+> decision: a key's hold is per primary. The index lock spans one table, so
+> first opens under one free key on two files with different primaries, by
+> alice and mallory, can both start a lease, and the key then names grants on
+> two files, which `ErrInvalid` refuses on one primary. The cost is the one
+> above, on the other primary's files: each holds only her own file's lease,
+> gains no grant, break or byte of the other's, and the other's later open of
+> that file under the key is granted uncached. A failover or a batch move can
+> later bring both files onto one primary. That primary keeps the lease it
+> already holds under the key and installs the arriving file's opens with no
+> lease, as uncached: a holder still connected is sent a break to none, and a
+> disconnected one learns it at its reconnect, whose answer carries the lease's
+> state (`Reconnect`). So the key again names one file's lease there. Claim the (client, key) binding at the lease owner if a client
+> is seen relying on that refusal across files.
 
 **The epoch orders a lease's changes.** Every change of a v2 lease's `Kind`
 sent to the holder — a break, an upgrade on a later open — **MUST** raise
@@ -980,7 +1143,10 @@ whose ranges do not overlap are independent.
 **A waiter has one lifetime, this one.** It is dropped when it is granted; when
 its owner cancels it (`CancelLock`) or, polling, has not polled by `Deadline`;
 when it is replaced (above); when, callback, its grant is refused (above); when
-its open closes, or its open's session loses its last channel; and with
+its open closes, or its open's session loses its last channel; when a
+committed release drops its file
+([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)), a callback waiter
+reported `LockWaitOver(granted=false)`; and with
 everything else its client holds when the client's lease expires or its state
 is revoked
 ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
@@ -1144,7 +1310,8 @@ client's back-channel node — is the service's, through RFC 17's `Peers`
 ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)). The table
 reaches outward only through its `Sink` (§11.1). The gateway and the adapters
 hold none of it; it is the concrete `*openstate.Table` in the service's `Deps`,
-and the only lock manager
+which the engine reaches only for a clone's hold, through the node's adapter
+([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)), and the only lock manager
 ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).
 
 **The open-state step has two levels.**
@@ -1285,7 +1452,8 @@ owner once, through the service, before it grants the client state.
 **An unheard node is not a silent client (cluster).** The lease owner expires a
 client only when no node holding one of its sessions (`Reach.Sessions`) has
 reported within the lease, and each such node is either lost or has itself
-reported the client silent. A serving node that cannot reach the client's lease
+reported the client silent; a node leaves the list at its last session's end
+([§2.1](#2.1%20Client)), so a node holding none holds no client up. A serving node that cannot reach the client's lease
 owner for more than half a lease stops admitting the client's open-state
 requests, answering them `ErrUnavailable`, so a link that fails between the
 lease owner and a gateway can neither expire a client in use nor leave a client
@@ -1306,7 +1474,9 @@ using state its lease owner may have ended.
 
 **The back channel has a home (cluster).** Recalls and notifications go out over
 the client's back channel, which one gateway node holds: the record's
-`Reach.Callback`. The service routes each callback there. When that node is
+`Reach.Callback`. The service routes each callback there, except an SMB
+break, which goes by the grant's opens to the node holding the session it
+picks (§2.1). When that node is
 lost, the service calls `ChannelDown`, which sets the record's `Reach.Down`
 in one compare-and-swap, and every node serving the client
 signals it until the client binds a new back channel, which runs `Rebind`: it
@@ -2241,6 +2411,27 @@ durable, and on an abort it changes nothing, an issued ID left unused. Under the
 lock no call's open or close of the file lands between the two; a timer
 step's close can, and the commit deletes the record the unlink wrote for it.
 
+**A release marks the table first.** Before it calls the engine's `Delete`, the
+service calls `Opens.Releasing`, which fails, changing nothing, while the table
+holds an open of the file, and otherwise marks the file releasing: from then on
+an open of it by handle is answered as for a released file, stale
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), step 1). Two rules make the mark safe:
+
+- **It is taken under the file's admission lock.** Every open of the file is
+  admitted under that lock, so none lands between the check for opens and the
+  journal's `Delete`, which drops bytes no abort can put back. At a last close,
+  at a timer's `Sink.Closed` and at `GraceEnded` the service holds no admission
+  lock yet, so it takes the file's first; without it an open by handle could
+  slip in between the check and the `Delete` and lose its bytes.
+- **`done(false)` clears it.** The service reports through `done` whether the
+  release committed. When phase 1 aborts — on a durable open this table never
+  admitted, for example — `done(false)` clears the mark; left set, every later
+  open of that live file would answer stale until a restart. `done(true)` drops
+  the file from the table.
+
+The mark is volatile. A crash after it loses nothing: the file's pending
+release is still stored, and recovery runs it again once grace ends (§9.2).
+
 ### 9.2 A new primary releases nothing before grace ends
 
 Volatile opens held by a failed primary are gone with it. Until its grace period
@@ -2453,7 +2644,11 @@ a new grace instance only when the change lost the shard's open state (§4.4).
 ## 11. Interface
 
 Signatures are indicative; the obligations above are normative. The filesystem
-service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller, and makes
+service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller but one: the
+engine calls `CloneOpen`, `CloneClose` and `Recovery.Served` for a clone, through
+its own `CloneHold`, which the node adapts to the table
+([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)), so the engine
+imports nothing of open state. The service makes
 every mutating call and every `Checks` call on a file under that file's
 admission lock ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary),
 [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order)); a call the service
@@ -2500,7 +2695,7 @@ type Order func(f FileID) (unlock func())
 // Sink is how open state reaches clients and the service: every other call goes
 // into the table, and these come out of it. The service implements it.
 type Sink interface {
-	RecallGrant(g CachingGrant)                          // to g.Recall.To, at g.Client
+	RecallGrant(g CachingGrant)                          // to g.Recall.To: an NFS grant at g.Client's back channel, an SMB one at the session the service picks from its opens (§2.1)
 	Notify(c ClientID, w WatchID, ch []Change) // may arrive after the Revoked or ClientEnded that ended w; the service drops it
 	Revoked(r Revocation)
 	LockWaitOver(w LockWaiter, granted bool)             // to w.Owner.Client; the service reports the client's answer through WaitAnswered
@@ -2544,9 +2739,12 @@ a time a record stores. A handover ships remaining durations, re-armed on the
 receiver's clock.
 
 **A close the table makes itself reaches the service.** A `Timeout` that
-passes, grace's end (§9.2), an expiry or revoke (§4.3) and an app instance's
-replacement (§8.1) close opens with no `Close` call to answer. When such a
-close leaves an orphan or a pending unlink, the table calls `Closed` once,
+passes, grace's end (§9.2), an expiry or revoke (§4.3), an app instance's
+replacement (§8.1), a `Disconnect` — the session's volatile opens at its
+last channel's end, every open of it at a `Logoff` (§2.1) — and a clone's
+`CloneClose` (§9.2) close opens with no `Close` call to answer. Each such close releases the open's locks and serves
+the file's waiters as a `Close` does. When one leaves an orphan or a pending
+unlink, the table calls `Closed` once,
 after the step commits, and the service runs it as it runs a `Close`'s
 `CloseResult` ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive),
 [§9.4](#9.4%20Delete%20on%20close)). A process lost before it runs loses
@@ -2651,9 +2849,10 @@ the suite runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20
 The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which
 `node.New` builds it into, calls `Start(ctx, sink, order)` with the built
 `*vfs.Filesystem` as the `Sink` and its admission lock as `order`, after the store
-and before the service's `Start`
+and before the engine's and the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the service's
-`Stop`, before the store's. `Start` starts the timer and nothing
+`Stop` and the engine's `Close`, which joins the clone batches that call
+`CloneClose`, before the store's. `Start` starts the timer and nothing
 else; the service's `Start` then calls `Recovery.ServeShard` for each shard
 this node serves, passing the shard's `GraceInstance`, which the node's start
 transaction raised ([§4.4](#4.4%20Grace%20is%20per%20shard)); it installs its persistent and clone
@@ -2737,16 +2936,16 @@ type FileKey struct {
 
 type Clients interface {
 	Propose(ctx, c Client, from netip.Addr) (Proposal, error)               // §2.9; changes no state; ErrDelay past the node's or the source's cap
-	Connect(ctx, c Client, p *Proposal) (ClientID, error)                   // nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included
+	Connect(ctx, c Client, p *Proposal) (id ClientID, gen uint64, err error) // nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included; SMB: lists the calling node in Reach.Sessions, replacing an older-epoch entry, and returns its Gen (§2.1)
 	Record(ctx, c ClientID) (Client, error)                                 // the record as written, Adapter included; changes nothing
-	AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // records node's session and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
+	AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // records node's session, listing node in Reach.Sessions as Connect does, and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
 	Renew(ctx, c ClientID) (ClientStatus, error)
 	Expire(ctx, c ClientID) error                                           // node-local: ends the client's state here (§4.3)
 	Revoke(ctx, c ClientID) error                                           // node-local: as Expire, keeping record, sessions and revoked set; at the lease owner it also empties Shards (§5.3)
 	Destroy(ctx, who Caller) error                                          // ErrClientBusy while a session or held state remains; releases nothing; the revoked set goes with the record
 	Rebind(ctx, who Caller, node NodeID) error                              // a new back channel: sets Reach.Callback, clears Reach.Down
 	ChannelDown(ctx, c ClientID) error                                      // the back channel's node is lost: sets Reach.Down; no grant until Rebind (§4.1)
-	Disconnect(ctx, c ClientID, s SessionRef) error                         // closes the session's volatile opens; starts the rest's Timeout
+	Disconnect(ctx, c ClientID, s SessionRef, end SessionEnd) (gen uint64, err error) // ends one session as end says, at each primary before the lease owner; its closes reach Sink.Closed (§11.1); Last also removes the node's Reach.Sessions entry at end.Gen, or leaves a newer one and returns its Gen; zero once the entry is gone; ErrStaleClient once the record is released (§2.1)
 }
 
 type Opens interface {
@@ -2758,9 +2957,11 @@ type Opens interface {
 	Close(ctx, who Caller, o OpenRef, q Seqs) (CloseResult, error)          // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
 	Flushed(ctx, who Caller, o OpenID, loss uint64) error                   // ErrLost once per loss (§8.1)
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
-	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry
+	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
+	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry; a nil toName and zero toDir, after an unlink or a rename over f, clears them
+	Entry(ctx, who Caller, f FileKey, o OpenRef) (dir FileID, name []byte, err error) // the Via and Name of the open o names, a lock state's open's for a Locked one, as renames have moved them; zero and nil for one made by handle, one whose entry was removed, or a reference naming no open; changes nothing. RFC 17 §3.5 reports a change to f's attributes or data there
 	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: holds in the table the source open of no client that the clone's first phase wrote in its transaction; ErrBadState when none is stored
-	CloneClose(ctx, o OpenID) (CloseResult, error)                          // §9.2: the clone's last batch, whose transaction deleted the hold
+	CloneClose(ctx, o OpenID) error                                         // §9.2: the clone's last batch, whose transaction deleted the hold; an orphan or pending unlink it leaves reaches Sink.Closed, as a Disconnect's do
 	Channel(ctx, who Caller, o OpenID, seq uint16, replay bool) (stale bool, done func(), err error) // §8.1: admits a request at channel sequence seq and counts it in flight; done uncounts it whenever it leaves, its open disconnected or not, never below zero
 }
 
@@ -2774,7 +2975,8 @@ type Locks interface {
 }
 
 type Grants interface {
-	AckRecall(ctx, who Caller, g GrantID, to GrantKind) error               // no recall in flight: a delegation's return, else ErrNoRecall (§2.4); to GrantNone: a return
+	AckRecall(ctx, who Caller, g GrantID, to GrantKind) error               // no recall in flight: a delegation's return, else ErrNoRecall (§2.4); to GrantNone: a return; a lease or oplock only from one of its openers' principals, else ErrNotYours (§2.1)
+	Openers(ctx, g GrantID) ([]Open, error)                                 // the opens g covers, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1); a delegation covers none; changes nothing
 }
 
 type Watches interface {
@@ -2785,6 +2987,7 @@ type Watches interface {
 
 type Recovery interface {
 	ServeShard(ctx, share ShareID, s ShardID, instance uint64) error        // begins serving s of share: installs its durable opens, then grace unless the table already holds s under instance (§4.4); arms grace's end (§9.2)
+	Served(ctx, s ShardID) error                                            // returns once ServeShard(s) has installed s's durable opens, or at ctx's end; changes nothing. A rebuilt clone's batches wait on it (RFC 8 §2.5 step 4)
 	ReleaseShard(ctx, s ShardID) error                                      // stops serving s and drops its entries
 	ReclaimComplete(ctx, who Caller, shown []GraceRef) error                // ends the client's reclaim only in the instances it was shown (§4.4)
 	TestState(ctx, who Caller, s []StateRef) []error                        // nothing changed
@@ -2793,7 +2996,7 @@ type Recovery interface {
 }
 
 type Checks interface {
-	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, write bool) error // f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
+	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
 	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.Protocol picks §7's or §9.5's rule
 }
 ```
@@ -2814,6 +3017,7 @@ type OpenRequest struct {
 	Durable       *DurableKeys  // an SMB-durable or persistent open's keys
 	DeleteOnClose bool
 	Lease         LeaseKey      // the key of the grant to cover it; zero: none
+	Conn          []Principal   // SMB: the principals of the other sessions on the create's connection; one among an existing lease's openers lets the caller join it (§2.4)
 	Epoch         *uint16       // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; ignored for an existing lease (§2.4)
 	Parent        LeaseKey      // a v2 lease request's parent key, kept with a new lease (CachingGrant.Parent); zero: none
 	SetID         bool          // the file's mode has setuid or setgid, as the service read it: no write caching (§5.4)
@@ -2966,6 +3170,8 @@ var (
 	ErrNotYours        = errors.New("openstate: state held by another client or principal")
 	ErrNotYoursSessioned = fmt.Errorf("%w: state created on a session, presented without one", ErrNotYours) // §2.2
 	ErrDeletePending   = errors.New("openstate: file is delete pending")
+	ErrFileOpen        = errors.New("openstate: the file has an open") // §9.1: Releasing on a file any open holds, a clone's hold included
+	ErrReleasing       = errors.New("openstate: the file is being released") // §9.1: an open, or a second Releasing, while the mark is set; the service answers it stale
 	ErrBadSeqID        = errors.New("openstate: owner sequence out of order")
 	ErrClientInUse     = errors.New("openstate: client name held by another principal")
 	ErrClientBusy      = errors.New("openstate: client still holds a session or state")
@@ -2973,7 +3179,7 @@ var (
 	ErrRecordChanged   = errors.New("openstate: client record's Adapter changed since it was read")
 	ErrAdapterVersion  = errors.New("openstate: adapter record of a version this node cannot read")
 	ErrInvalid         = errors.New("openstate: request out of bounds: an Adapter record past 4 KiB, a lock list past 64 ranges, an owner past 1,024 bytes, delete on close without delete access")
-	ErrAccess          = errors.New("openstate: the open does not hold the access the change needs") // §9.4
+	ErrAccess          = errors.New("openstate: the open was not granted the access the request needs") // §2.2, §9.4
 	ErrUnavailable     = errors.New("openstate: the client's lease owner is unreachable") // §4.1
 	ErrStopped         = errors.New("openstate: table not started, or stopped")
 	ErrCreateInUse     = errors.New("openstate: create ID names another open of the client") // §8.1: an SMB create's CreateGuid, held by an open its create did not make
@@ -3011,7 +3217,7 @@ Deleted numbers are not reused.
 | L11 | (cluster) A primary serves no open state past its node lease expiry less the drift bound. | Pause a primary past its node lease, let a new primary finish grace, resume the old one: assert it grants nothing. |
 | L14 | A delete-pending file refuses every new open and every rename, keeps its name until its last open closes, and then loses that name through the ordinary unlink, run as the marker; it is durable while the file has a persistent open. | Open a file twice over SMB, the first delete-on-close; close the first. The name resolves, a third open through each protocol and a rename are refused `ErrDeletePending`; close the second, the name is gone and the file released; with a second hard link, only the opened name goes. Repeat on a persistent open across a failover, and with the last open closed by an administrator's revoke: the unlink runs as the marker. |
 | L15 | A reconnect matches only on client, principal, share, create ID and lease key, and rebinds the open to the reconnecting session; a replay returns its first result; an app instance closes only another client's open, for a caller that may read the file. | Reconnect an SMB durable v2 open with each of another client, principal, share, create ID and lease key: each refused, the exact match accepted. Replay a create with a dropped reply: one open, `Replayed`. On a persistent open, replay a lock with a sequence after a failover: success and one lock; a two-range lock under one sequence takes both ranges, and its retry after a refusal is applied, not answered as a replay. Reconnect in S2, drop S2's last channel: `Timeout` starts; equal session IDs on two nodes: disconnecting one leaves the other's opens. App instance: B with A's instance closes A's open; a lower version, a caller without read, and A's own second create do not. |
-| L16 | One grant per (client, lease key, file); opens under one key never break their own lease; a v2 lease's epoch rises with every change of its kind sent to the holder, and a v1 lease's stays zero; an NFS delegation is never a handle grant; a new v2 lease starts at its request's epoch and a timeout raises none; an unasked return of a delegation is valid, an acknowledgement of a lease or oplock with no recall in flight is `ErrNoRecall`; a stat open breaks no grant; a change through an open breaks the caller's other keys. | Open a file twice from one client under one key, then under a second key: the second open does not break the first's lease, the third does, the first lease starts at the request's epoch (smbtorture `v2_epoch1`), each break carries a higher epoch, and no delegation is offered with the handle kind. Return a delegation with no recall outstanding: accepted, the grant gone. Acknowledge a lease break twice, and once after its recall timed out: each `ErrNoRecall`, nothing changed (smbtorture `breaking2`, `breaking5`, `lease.timeout`); an acknowledgement to a kind the recall did not ask is `ErrInvalid`, and the recall stays for a lease and ends at none for an oplock. A stat open from another client against a write lease: no break; one asking write-EA: broken. Rename through an open under key A a file with a lease under key B from the same client: B is broken; with no `via`, it is not. |
+| L16 | One grant per (client, lease key, file); opens under one key never break their own lease; a v2 lease's epoch rises with every change of its kind sent to the holder, and a v1 lease's stays zero; an NFS delegation is never a handle grant; a new v2 lease starts at its request's epoch and a timeout raises none; an unasked return of a delegation is valid, an acknowledgement of a lease or oplock with no recall in flight is `ErrNoRecall`; a stat open breaks no grant; a change through an open breaks the caller's other keys. | Open a file twice from one client under one key, then under a second key: the second open does not break the first's lease, the third does, the first lease starts at the request's epoch (smbtorture `v2_epoch1`), each break carries a higher epoch, and no delegation is offered with the handle kind. Return a delegation with no recall outstanding: accepted, the grant gone. Acknowledge a lease break twice, and once after its recall timed out: each `ErrNoRecall`, nothing changed (smbtorture `breaking2`, `breaking5`, `lease.timeout`); an acknowledgement to a kind the recall did not ask is `ErrInvalid`, and the recall stays for a lease and ends at none for an oplock. A stat open from another client against a write lease: no break; one asking write-EA: broken. Rename through an open under key A a file with a lease under key B from the same client: B is broken; with no `via`, it is not. Race first opens under one free key on two files of one primary, by alice and by mallory under one `ClientGuid`: exactly one holds a lease, and the other's open is granted uncached. |
 | L17 | A lock names an owner, and an NFSv4 or NLM owner's locks never conflict with each other; an NLM lock needs no open. A lock request's ranges are granted all or none, at most 64 of them, and only a single range waits; an unlock stops at the first range its owner does not hold, `ErrRangeNotLocked`, which an NFSv4 or NLM owner never meets. A loss of NLM locks raises the durable NSM state number and reports it before grace. | Two NFSv4 lock-owners of one client lock one range: the second refused, its `LockedError` naming the first; one owner's overlapping ranges merge. An NLM lock is held with no open and refuses an overlapping NFSv4 lock. Over SMB, lock three ranges in one call whose third conflicts: refused, none held; a 65-range list: `ErrInvalid`, no step taken; a two-range list asking to wait: answered as not waiting. Unlock three in one call whose second is not held: `ErrRangeNotLocked`, the first released and the third held. Fail over a shard holding two hosts' NLM locks: the number rose before grace, both are reported through `Revoked`, their reclaims granted and a non-reclaim lock `ErrGrace`; a restart notice from one releases its locks at once. |
 | L20 | Each write request is applied whole under one version at the file's primary; overlapping writes resolve byte by byte in the primary's arrival order. | Service layer: two clients, one per protocol, write overlapping 1 MiB extents of distinct patterns 10⁴ times, with commits and offloads between: the overlap holds one writer's pattern, whole, the one acknowledged last. |
 | L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. | Suspend `Modify` on the first of two SMB opens; write through each: unchanged, then advanced; resume, write: advanced. Repeat on a persistent open across a failover. |
@@ -3044,7 +3250,7 @@ Deleted numbers are not reused.
 | L49 | A state reference carries its type, shard, grace-instance bits and ≥64 random bits; a miss is stale in grace or for another instance's bits, bad otherwise. | A recall misses its deadline: `ErrRevoked` until `FreeState`. An expired client's references are `ErrBadState`, as a forged one. A single-node restart under an NFSv4.0 lock: `ErrStaleState`, and the reclaim granted. Restart 40 times: a reference of the first instance is never answered as anything but stale or bad. **(cluster)** After a batch move, `TestState` and `FreeState` answer as before and a reconnect by the old `FileId` succeeds; fail the receiving shard over: the moved reference is stale, the forwarding entry kept, and works after the reclaim. |
 | L50 | An expired or revoked client's state is released in every view; an administrator's revoke keeps its record, sessions and revoked references, each answered revoked until freed, and empties its `Shards`, so no reclaim survives a restart; an ownerless client's revoke deletes its record; `Destroy` releases nothing. | Grant through one adapter, let the lease expire, open conflictingly through the other: granted without a restart. Revoke a client: its state is released for others at once, each reference `ErrRevoked` with `AdminRevoked` set and `RecallableRevoked` clear until freed. Revoke X, let Y take its lock, restart: X's reclaim is `ErrNoReclaim`, and its next ordinary open lists the shard again. Revoke an NLM host and restart: no notice, no record, a reclaim `ErrNoReclaim`. `Destroy` with a session or state: `ErrClientBusy`, nothing released; with only revoked references: the record and its revoked set gone. |
 | L51 | No grant with write caching is offered on a file whose mode has the setuid or setgid bit, and a mode change that sets either bit recalls the write caching of every grant held on the file. | Open a setuid file for write as a non-owner: no write grant offered, over NFS and SMB, and for setgid. Grant a write delegation, then set setuid from another client: the delegation is recalled before the mode change returns; a `ChangeSetID` from the holder itself recalls its own write caching too. pjdfstest `chmod/12.t` is the e2e half (§13). |
-| L52 | An SMB logoff closes only its own session's opens and releases nothing else. | Two sessions under one `ClientGuid` each hold opens; log one off: only its opens close. |
+| L52 | An SMB logoff closes only its own session's opens and releases nothing else; a node leaves `Reach.Sessions` at its last session of the client, and the record is not released while any node remains. | Two sessions under one `ClientGuid` each hold opens; log one off: only its opens close, and the node stays listed. Log the other off: one `Disconnect` with `Last`, the node unlisted and the record released. Hold one idle session on each of two nodes with no open: the record stays until both end. Race a `SESSION_SETUP` against a node's last `LOGOFF`: the node is listed exactly when it holds a session, and the setup does not wait for the `LOGOFF`. Restart a listed node: its old entry counts as absent and `Destroy` succeeds. Mark a listed node lapsed and let it take a new lease with its session alive: it is listed again at the new epoch. `LOGOFF` the last session holding a delete-on-close open: the file is released. Make one primary unreachable during a `LOGOFF`: the entry stays until a repeat succeeds there. Re-list a node at a new epoch while its last session ends, the re-list's `Connect` landing before the `Disconnect`: the `Disconnect` returns the new `Gen`, the adapter's repeat unlists the node, and the record is released; again with the `Connect` landing after the `Disconnect` removed the entry: the adapter, finding no session on return, sends `Disconnect` with the re-list's `Gen`, the node is unlisted and the record released. Drop a `SESSION_SETUP`'s connection while its `Connect` is in flight: the same. Authenticate a second session while the first's `Connect` is in flight, so it skips its own, then drop the first's connection and return its `Connect` before the second reaches the session table: no `Disconnect` is sent, and the node stays listed. Repeat a `Disconnect` after the record is released: `ErrStaleClient`, counted as success. |
 | L53 | (cluster) The opens of sessions held by a node whose node lease lapsed are timed as disconnected from the lapse. | Kill the node holding a session with SMB durable opens: each `Timeout` starts at the lapse, and a reconnect through another node finds them. |
 | L54 | The stateid index, the per-client index, the per-`Via` counts and the grant-budget counts are derived from the files' entries. | Model layer: after any operation sequence, each equals the rebuild `export_test.go` exposes; after `Expire`, the client is in none of them. |
 | L55 | Watches are bounded per client, and a watch's undelivered changes are bounded: it hands the `Sink` at most 65 changes a sweep. | Register watches past 1,024: `ErrDelay` (`DelayResources`). A burst of 10⁵ changes under one watch whose client does not read leaves one pending `ChangeEnumerate` and a bounded heap. Across sweeps of more than 65 changes each, no sweep hands the `Sink` more than 65 for the watch. |

@@ -678,7 +678,13 @@ The lower half of the drawing above:
    drain, or by a reconfigure that removes its listen address, as a namespace
    move's release does (§3.1, §3.3). Closing cancels the context of
    every request still in progress on the connection, drops the connection's
-   state, and, for the last channel of an SMB session, calls `Disconnect`.
+   state, and, for the last channel of an SMB session, calls `Disconnect`, with
+   `Last` and the node entry's latest `Gen` when it was the node's last session
+   of the client, repeating it until it succeeds; a newer `Gen` it returns is
+   stored and the decision taken again, and `ErrStaleClient` counts as success.
+   A `Connect` still in flight when its connection closes takes the same
+   decision when it returns, and sends that `Disconnect` itself
+   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
@@ -704,24 +710,47 @@ through it.
 
 | Callback | Why the service calls it | SMB on the wire | NFS on the wire |
 | --- | --- | --- | --- |
-| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on alice-pc's session | `CB_RECALL` on the NFSv4.1 back channel |
+| `RecallGrant` | alice-pc holds a read-write-handle lease on `report.docx`; build01 writes the file over NFSv3. The lease must be broken before the write | lease break notification on the session holding alice's open, which the service names; with every open disconnected, on one of this node's sessions of alice-pc signed in as an opener, which the adapter picks | `CB_RECALL` on the NFSv4.1 back channel |
 | `Notify` | Explorer watches `projects/`; build01 creates a file in it | `CHANGE_NOTIFY` response to the request alice-pc left pending | `CB_NOTIFY` (NFSv4.1, optional) |
 | `LockWaitOver` | build01 waits for a lock alice-pc holds; alice-pc unlocks | the pending `LOCK` request finally answered | `NLMPROC4_GRANTED` RPC to build01's lock manager |
 | `RecallAny` | build01 reaches 4096 delegations at one primary | nothing: SMB has no such request | `CB_RECALL_ANY` keeping 2048, on NFSv4.1 only |
 | `Revoked` | build01's lease expired, an administrator revoked its client, the share was removed or moved | pending requests answered with the protocol's error; a moved share's trees ended | same, by the protocol's own errors |
 
 Each protocol implements the interface once, on a small per-client value that
-knows the client's connection or host and nothing about files:
+knows the client's connection or host and nothing about files. An SMB break
+goes to the session the service names; only when every open of the grant is
+disconnected does the service name none, and the adapter then picks one of its
+own sessions of the client signed in now as one of the openers, or sends
+nothing ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)):
 
 ```go
 // smbCallbacks is what the SMB adapter registers at Connect for one client.
 type smbCallbacks struct {
-	sess *session.Session // the client's session: its channels' writers, its pending requests
+	client   vfs.ClientID
+	sessions *session.Table // this node's sessions: each one's current principal, which re-authentication replaces, its channels' writers, its pending requests
 }
 
-func (c *smbCallbacks) RecallGrant(ctx context.Context, g metadata.CachingGrant, to vfs.GrantKind) error {
+func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
+	if s == (vfs.SessionRef{}) {
+		sess, ok := c.sessions.SignedInAs(c.client, openers) // every open is disconnected: a session of the client signed in now as an opener
+		if !ok {
+			return false, nil // none on this node: nothing sent, not an error
+		}
+		return c.send(ctx, sess, g, to)
+	}
+	sess, ok := c.sessions.Get(s)
+	if !ok {
+		return false, session.ErrGone // ended since the service picked it: an error, as no live channel is
+	}
+	return c.send(ctx, sess, g, to)
+}
+
+func (c *smbCallbacks) send(ctx context.Context, sess *session.Session, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
 	msg := wire.LeaseBreak{Key: leaseKey(g), NewState: leaseState(to)}
-	return c.sess.Notify(ctx, &msg) // encoded and queued on a live channel's writer (§6.2); none live is an error
+	if err := sess.Notify(ctx, &msg); err != nil { // encoded and queued on a live channel's writer (§6.2); none live is an error
+		return false, err
+	}
+	return true, nil
 }
 ```
 
@@ -820,6 +849,7 @@ type Deps struct {
 	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Pools   *resources.Pools  // RFC 24 §2.3: receive, reply, connection state
 	Metrics *metrics.Registry // RFC 25 §2
+	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger  *slog.Logger
 	// Dial opens an outbound connection from a given local address: NLM's
 	// callbacks to a host, from the floating address it used (§3.3). A test

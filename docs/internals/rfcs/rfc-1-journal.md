@@ -3021,3 +3021,17 @@ The open questions of the on-disk format and of recovery are
    of 64 pinned segments per offer and of 256 across offers are proposals; none
    has been measured against a journal held at its limit. The idle-seal
    threshold is [RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)'s.
+5. **Repack seals for capacity.** A capacity refusal's last step
+   ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) needs each active segment that holds the
+   scope's unreclaimed bytes sealed, at most one per stream until repack
+   retires it, so repack can reach those bytes. A segment seals only when full
+   or idle ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), so this RFC owes a rule in `Repack`'s contract
+   ([§7.2](#7.2%20Repack)), not a new call: a pass scoped to a share seals such a segment
+   itself, and its seal marker draws on the reserved headroom ([§6](#6.%20Capacity)). The
+   step's sync needs nothing new: `Sync` ([§3.1](#3.1%20Write)) takes any set of files,
+   so a share's scope is the files its `Files` ([§3.7](#3.7%20State%20introspection)) yields.
+6. **Unreclaimed bytes per segment.** The same step waits while the scope's
+   sealed segments hold unreclaimed bytes, but the per-segment accounting of
+   [§4.4](#4.4%20Inspection) reports allocated and held bytes only, and `UnreclaimedBytes`
+   ([§3.7](#3.7%20State%20introspection)) counts active segments too. This RFC owes unreclaimed bytes in
+   §4.4's breakdown.
