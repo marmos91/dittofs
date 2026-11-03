@@ -1289,15 +1289,15 @@ func TestPoolReplaceAloneWakesTheRefill(t *testing.T) {
 	}
 
 	// The replace alone re-owes a spare the pool holds no spare for: its own
-	// kick is what wakes the worker to make it.
+	// kick is what wakes the worker to make it. The wait's condition is the
+	// pool's own settled state — the make landed in the class, not merely
+	// begun at the seam — with the create count risen beside it, so nothing
+	// after the wait can still race the make in flight.
 	h.Replace()
-	awaitCounters(t, "the replaced demand made", p,
+	awaitCounters(t, "the replaced demand made and landed", p,
 		func(c segment.PoolCounters) bool {
-			return c.Held == 1 && seam.Calls(journaltest.OpCreate) == made+1
+			return c.Spares == 2 && c.Held == 1 && seam.Calls(journaltest.OpCreate) == made+1
 		})
-	if c := p.Counters(); c.Spares != 2 || c.Held != 1 {
-		t.Fatalf("after the replace's make the counters are %+v, want 2 ready (the target and the debt) and 1 owed", c)
-	}
 	h.Close()
 	p.Stop()
 }
