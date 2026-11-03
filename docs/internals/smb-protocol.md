@@ -220,48 +220,15 @@ internal/adapter/nfs/            internal/adapter/smb/
 
 ---
 
-## Two-Phase Write Pattern
+## Data path
 
-WRITE operations use a two-phase commit pattern:
-
-```go
-// 1. Prepare write (validate permissions, get ContentID)
-writeOp, err := metadataStore.PrepareWrite(authCtx, handle, newSize)
-
-// 2. Resolve per-share block store and write data
-blockStore, _ := rt.GetBlockStoreForHandle(ctx, handle)
-blockStore.WriteAt(ctx, writeOp.ContentID, data, offset)
-
-// 3. Commit write (update metadata: size, timestamps)
-metadataStore.CommitWrite(authCtx, writeOp)
-```
-
----
-
-## Block Store Integration
-
-SMB handlers use the same per-share block store as NFS, routed through the shared
-`internal/adapter/common/` helpers so NFS and SMB share one code path for block-store
-resolution and pooled READ:
-
-```go
-// Resolve per-share block store from file handle
-blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, handle)
-
-// Read path (pooled buffer; release fires after wire write completes)
-readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore,
-    payloadID, offset, count)
-// Response hands readResult.Release to the encoder via SMBResponseBase.ReleaseData
-
-// Write path (data is caller-owned, no Release closure)
-err := common.WriteToBlockStore(ctx.Context, blockStore, payloadID, data, offset)
-
-// Commit path (flush + discard *FlushResult)
-err := common.CommitBlockStore(ctx.Context, blockStore, payloadID)
-```
-
-These three helpers (`ReadFromBlockStore`, `WriteToBlockStore`, `CommitBlockStore`) are the
-seam that plumbs `[]BlockRef` into the engine — handler code does not change.
+No content store is wired until the adapters run on `vfs.Service`. WRITE
+validates its target with `metaSvc.PrepareWrite` (permissions, type, read-only
+share) and then answers `common.ErrNoContentStore`, which `types.StatusForErr`
+maps to the generic I/O status; READ, FLUSH, copy-chunk and the sparse-range
+ioctls answer the same for a file with content. A zero-length WRITE, FLUSH of an
+empty file and SET_ZERO_DATA at or past EOF still succeed, and size changes
+(end-of-file, allocation, overwrite) are metadata updates.
 
 ### READ Response Buffer Pool
 

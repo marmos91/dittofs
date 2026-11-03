@@ -332,7 +332,7 @@ the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the per-share `BlockStore` engine.
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once the data path is wired.
 
 **Metadata Store:**
 
@@ -344,19 +344,11 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 6. Implement `EnumerateFileChunks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](implementing-stores.md#metadatastoreenumeratefilechunks-v0150-phase-11).
 7. **Note**: Permission checking is handled by `MetadataService`, not stores
 
-**Block Store (Local):**
+**Journal (local tier):**
 
-1. Implement the `pkg/block/journal.LocalStore` interface. It is the
-   journal-native surface keyed by `(payloadID, offset)` — `WriteAt`,
-   `ReadAt`, `Hydrate`, `Commit`, `Truncate`, `Delete` — plus carve,
-   eviction, lifecycle and retention methods. See `pkg/block/journal/localstore.go`
-   for the full list.
-2. Storage is payload-keyed, NOT content-addressed: the local tier is a
-   per-file byte cache, so it does not implement `block.Store`.
-3. Each share gets an isolated local storage directory
-4. The `pkg/block/blockstoretest/` suites do not apply here — they target the
-   hash-keyed and block-keyed remote surfaces. Model tests on the existing
-   package tests under `pkg/block/journal/`.
+The local tier is `pkg/block/journal`, one journal per device with a handle per
+share; it is not a pluggable backend. Its conformance checks run under the
+`journal_conformance` tag (`pkg/block/journal/conformance/`).
 
 **Block Store (Remote):**
 
@@ -431,7 +423,8 @@ Adapters receive a runtime reference and **interact with services, not stores di
    - `Protocol()`: Return name
    - `Port()`: Return listen port
    - `Healthcheck(ctx)`: Report health from cheap, already-tracked signals
-3. Use `runtime.GetBlockStoreForHandle()` for per-share block store access
+3. Reach file content through `vfs.Service` once the data path is wired; until
+   then a data operation answers `block.ErrNoContentStore`
 4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
@@ -461,14 +454,6 @@ func (a *Adapter) SetRuntime(rtAny any) {
 
     // Protocol-specific wiring: hand the runtime to the components that need it.
     a.handler.Registry = rt
-}
-
-func (a *Adapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
-    // Resolve the per-share block store from the file handle.
-    blockStore, _ := a.Registry.GetBlockStoreForHandle(ctx, handle)
-    buf := make([]byte, size)
-    blockStore.ReadAt(ctx, blockID, buf, 0)
-    return buf, nil
 }
 ```
 

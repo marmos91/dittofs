@@ -163,17 +163,20 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    the Runtime can route. Handlers never parse or interpret them. They must stay stable across
    restarts for persistent backends.
 
-4. **Block stores are per-share, and every share has one.** Each share owns a
-   `*engine.Store` (journal + block store + syncer). No global block store exists.
-   Resolve via `rt.GetBlockStoreForHandle(ctx, handle)`. The `*engine.Store` itself is never
-   shared, but the S3/memory store behind it is ref-counted when shares reference the same
-   config. Each share's journal hangs off the server-level `blockstore.journal.path` in its
-   own subdirectory, so two shares never share one. Lifecycle is tied to `AddShare` /
+4. **The data path is cut until the cutover.** No share holds a content store: every
+   operation that reads or writes file content answers `block.ErrNoContentStore`
+   (`pkg/block/errors.go`), which each protocol maps to its generic I/O status, while
+   metadata operations and size changes run against the metadata service. The engine is
+   `pkg/block/engine` (formerly `enginev2`) over `pkg/block/journal`; after the cutover the
+   adapters reach it through `vfs.Service`, never directly. Each share still binds one block
+   store config, and its remote store is ref-counted per config across the shares that use it;
+   its state directory hangs off `blockstore.journal.path`. Lifecycle is tied to `AddShare` /
    `RemoveShare`.
 
-5. **WRITE coordinates metadata + block store in this order:** `metadataStore.WriteFile`
-   (permission check, size/mtime update, returns pre-op attrs for WCC) →
-   `GetBlockStoreForHandle` → `blockStore.WriteAt` → return updated attrs.
+5. **WRITE validates before it answers:** `metaSvc.PrepareWrite` (permission check, type,
+   read-only share) runs first, so a refused write keeps its own status; a zero-count write
+   succeeds, and any other answers `ErrNoContentStore` before it breaks a lease or changes
+   metadata.
 
 6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
    `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
@@ -182,17 +185,14 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    that conformance suite. Block stores have exactly one suite,
    `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
    `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
-   interface and its `BlockStoreConformance` were deleted. The local tier is payload-keyed and
-   is covered by its own package tests.
+   interface and its `BlockStoreConformance` were deleted. The journal and the engine carry their
+   own conformance suites (`journal_conformance`, `engine_conformance` tags).
 
-   **`pkg/block` no longer declares a whole-block-store interface.** `Reader`, `Writer`, `Flusher` and
-   `ComposedStore` are gone too — nothing consumed them but one `var _` assertion and some doc
-   cross-references, while every method they declared was already pinned by concrete call sites
-   on `*engine.Store`. The tier contracts live with their tiers (`remote.RemoteBlockStore`,
-   `journal.LocalStore`); what stays in `pkg/block/blockstore.go` is what both sides speak —
-   `Meta`, `DurabilityReporter` and `IsDurable`, all live. So a method reachable only from tests
-   now has nothing holding its signature up: say so with a `decision:` marker at the method
-   rather than reintroducing an interface to pin it.
+   **`pkg/block` declares no whole-block-store interface.** The tier contracts live with their
+   tiers (`remote.RemoteBlockStore`, the journal's own API); what stays in
+   `pkg/block/blockstore.go` is what both sides speak — `Meta`, `DurabilityReporter` and
+   `IsDurable`. So a method reachable only from tests has nothing holding its signature up: say
+   so with a `decision:` marker at the method rather than reintroducing an interface to pin it.
 
 ## Verifying a change
 

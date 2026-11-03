@@ -11,8 +11,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 ## Table of Contents
 
 - [Core Abstraction Layers](#core-abstraction-layers)
-- [Per-Share Block Store Isolation](#per-share-block-store-isolation)
-- [Storage Tiers](#storage-tiers)
+- [Data path](#data-path)
 - [Adapter Pattern](#adapter-pattern)
 - [Control Plane Pattern](#control-plane-pattern)
 - [Service Layer](#service-layer)
@@ -20,7 +19,6 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Directory Structure](#directory-structure)
 - [Multi-Node Metadata](#multi-node-metadata)
 - [Durable Handle State Flow](#durable-handle-state-flow)
-- [Engine API + BlockRef + Cache](#engine-api--blockref--cache)
 - [Migration & Block-Layout Routing](#migration--block-layout-routing)
 
 ## Core Abstraction Layers
@@ -33,7 +31,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │            (NFS, SMB)                   │
 │       pkg/adapter/{nfs,smb}/            │
 └───────────────┬─────────────────────────┘
-                │ GetBlockStoreForHandle(handle)
+                │ metadata service (data path cut)
                 ▼
 ┌─────────────────────────────────────────┐
 │              Runtime                    │
@@ -42,8 +40,8 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │                                         │
 │  ┌──────────┐ ┌────────┐ ┌──────────┐  │
 │  │ adapters │ │ stores │ │  shares  │  │
-│  │lifecycle │ │registry│ │per-share │  │
-│  └──────────┘ └────────┘ │BlockStore│  │
+│  │lifecycle │ │registry│ │ registry │  │
+│  └──────────┘ └────────┘ │ + remote │  │
 │  ┌──────────┐ ┌────────┐ └──────────┘  │
 │  │  mounts  │ │lifecycl│ ┌──────────┐  │
 │  │ tracking │ │  serve  │ │ identity │  │
@@ -97,7 +95,6 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
   - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
   - `AddAdapter(adapter)`: Direct adapter injection (for testing)
-  - `GetBlockStoreForHandle(ctx, handle)`: Resolves per-share BlockStore from a file handle via `shares.Service`
 
 **2. Control Plane Store** (`pkg/controlplane/store/`)
 - Persistent configuration (users, groups, permissions, adapters)
@@ -132,16 +129,11 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **Recycle bin (trash).** The recycle trap lives inside `MetadataService.RemoveFile`, `RemoveDirectory`, and `Move`, gated by a per-share `TrashPolicy` read through a locked accessor. When the policy enables the bin, an unlink (NFS REMOVE/RMDIR, SMB delete-on-close) or a replace-overwrite (a `Move` whose destination clobbers an existing node) moves the victim into a single shared `#recycle` directory at the share root instead of destroying it, preserving the original path subtree and owner. Block deletion is deferred: recycling returns an empty `PayloadID` so protocol adapters skip the block-deletion step, and a recycled node keeps its content blocks until it is reaped or the bin is emptied. The runtime's `trash.Service` (`pkg/controlplane/runtime/trash/`) owns list/restore/empty and runs a background reaper that enforces the per-share retention-days and max-size policy on an hourly interval (oldest-first eviction). Disabling trash auto-empties the bin.
 
-**6. BlockStore** (`pkg/block/`)
-- Per-share block storage orchestrator. Each share gets its own `*engine.Store` instance.
-- `engine.Store` composes the share's journal (`journal.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.RemoteSync`
-- Each share gets an isolated journal directory beneath `blockstore.journal.path`; block stores can be shared across shares (ref counted)
-- `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
-- Sub-packages:
-  - `engine/`: BlockStore orchestrator — composes the journal and the block store and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
-  - `journal/`: the on-disk journal every share gets — the production `journal.LocalStore`. The `LocalStore` interface lives here too, alongside it. Tests outside the package open a real store through `journal/journaltest/`.
-  - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing)
-  - `storetest/`: Conformance test helpers for new backend implementations
+**6. Block storage** (`pkg/block/`)
+- The data path is cut: no share holds a content store, and every operation that reads or writes file content answers `block.ErrNoContentStore` (see [Data path](#data-path)).
+- `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). After the cutover the adapters reach it through `vfs.Service`.
+- `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Each share binds one block store config; `shares.Service` acquires its remote store on AddShare and releases it on RemoveShare, ref-counted per config across the shares that use it.
+- `gc/`: mark-sweep over the remote stores and the metadata manifests.
 
 **7. Metadata Store** (`pkg/metadata/store.go`)
 - **Simple CRUD interface** for file/directory metadata
@@ -152,260 +144,25 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
     (`in_memory: true`) for tests
 - File handles are opaque identifiers (implementation-specific format)
 
-## Per-Share Block Store Isolation
+## Data path
 
-Each share in DittoFS gets its own `*engine.BlockStore` instance, providing complete data isolation between shares.
+No share holds a content store until the adapters run on `vfs.Service`. Every
+operation that reads or writes file content answers `block.ErrNoContentStore`
+(`pkg/block/errors.go`), carried to the adapters as `common.ErrNoContentStore`
+in the I/O row, so each protocol answers its generic I/O status. Metadata
+operations run against the metadata service as before; a size change is a
+metadata update only, and an operation that touches no content (a zero-count
+WRITE, COMMIT or FLUSH of an empty file) succeeds. Snapshot create and restore
+answer the same sentinel, since a snapshot captures content.
 
-### How It Works
+Each share keeps a state directory beneath `blockstore.journal.path`
+(`<path>/shares/<share-name>/`) holding its gc-state, snapshots and migration
+journal, and binds one remote store, ref-counted per block store config across
+the shares that use it.
 
-1. **Share Creation**: When a share is added via `dfsctl share create`, the runtime creates a dedicated BlockStore instance with:
-   - An isolated journal directory beneath `blockstore.journal.path` (`<path>/shares/<share-name>/journal/`)
-   - A reference to its one block store (shared across shares via ref counting)
-
-2. **Handle Resolution**: Protocol handlers call `GetBlockStoreForHandle(ctx, handle)` which:
-   - Extracts the share name from the file handle
-   - Returns the share's dedicated BlockStore instance
-   - There is no global BlockStore
-
-3. **Share Removal**: When a share is removed, its BlockStore is closed:
-   - The journal directory is cleaned up
-   - The block store's reference count is decremented
-   - If ref count reaches zero, the block store connection is closed
-
-### Isolation Properties
-
-- **Data Isolation**: Each share's journal lives in its own directory
-- **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry.
-- **Block Store Sharing**: Multiple shares can reference the same block store (e.g., same S3 bucket). Chunk bytes are packed into `blocks/<id>` container objects; identical chunks dedup by content hash across every share that targets the same bucket+prefix. For isolation, give shares different buckets or prefixes
-- **Lifecycle Independence**: Block stores are created/closed with share lifecycle
-
-## Storage Tiers
-
-DittoFS uses a three-tier storage model for block data:
-
-```
-┌─────────────────────────────────────┐
-│  Cache (In-Memory, CAS-keyed)       │
-│  pkg/block/engine/cache.go     │
-│  - Single type, keyed by ContentHash│
-│  - LRU eviction                     │
-│  - Internal sequential prefetch     │
-│    (3-trigger threshold)            │
-│  - Cross-file dedup                 │
-│  - RAM budget auto-sized per share  │
-│    from available system memory     │
-│  - Volatile (lost on restart)       │
-└──────────────┬──────────────────────┘
-               │ cache miss
-               ▼
-┌─────────────────────────────────────┐
-│  Local Journal (write-back cache)   │
-│  pkg/block/journal/                 │
-│  - Append-only, log-structured      │
-│  - Absorbs writes, local-ack        │
-│  - Persistent across restarts       │
-│  - Per-share isolated directory     │
-└──────────────┬──────────────────────┘
-               │ cold read (range not cached)
-               ▼
-┌─────────────────────────────────────┐
-│  Block Store                        │
-│  pkg/block/remote/s3/          │
-│  - S3 or compatible object store    │
-│  - Slowest (network I/O)            │
-│  - Durable (survives node loss)     │
-│  - Shared across shares (ref count) │
-└─────────────────────────────────────┘
-```
-
-**Read Path**: `Engine.ReadAt` resolves a file's bytes by `(payloadID,
-offset)`. If the range is present in the local journal it is served straight
-from a journal segment. On a cold miss the engine resolves the chunk's remote
-locator from the FileChunk manifest, issues a ranged read into its enclosing
-`blocks/<id>` object, decodes and BLAKE3-verifies the chunk end-to-end
-(fail-closed), then hydrates the bytes back into the journal so subsequent
-reads are warm. A per-payload sequential tracker drives remote prefetch.
-
-**Write Path**: `Engine.WriteAt` appends the dirty range to the local journal
-and acknowledges immediately (write-back) — there is no synchronous chunking,
-hashing, or upload on the client path. A background carve pass later packs the
-accumulated dirty ranges into remote blocks (see below). How durable the ack is
-depends on the share's commit acknowledgement (`journal` or `block-store`) and on
-whether its metadata commit is relaxed — two independent axes, see the
-[durability guide](../guide/durability.md).
-
-**Eviction**:
-- Cache: LRU eviction when the RAM budget is reached. No data loss (the journal still holds the bytes). The cache is per-share but cross-file inside a share — the same content hash referenced by two files shares one entry.
-- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already offloaded to the block store qualify, so eviction never destroys the only copy of dirty bytes — which means a journal that hits its ceiling with nothing offloaded backpressures writes instead of evicting.
-
-## Block Store — Local Journal Tier
-
-Every share's local tier is the **journal** (`pkg/block/journal/`): a single
-append-only, log-structured **write-back cache** in front of the block store. It
-is provisioned automatically under `blockstore.journal.path` and is not a store
-an operator configures.
-It replaces the earlier two-tier design (a per-file append-only log plus a
-separate rolled-up "log-blob" tier) with one substrate. See the journal
-package's own doc comment for the authoritative model; this section covers it
-at architecture altitude.
-
-A client write (`WriteAt`) appends a dirty record for `(payloadID, offset)` to
-a shared segment file and acknowledges immediately — it never chunks, hashes,
-or uploads on the client path, and it never fsyncs (durability is a separate
-`Commit`, driven by NFS COMMIT / SMB Flush and the share's commit acknowledgement).
-Cold-read hydration (`Hydrate`) funnels through the same append primitive, the
-only difference being that a hydrated record is born *clean* (already durable
-in the remote store, so immediately evictable) while a client write is born
-*dirty* (must be carved before it can be evicted). The journal is keyed by
-`(payloadID, offset)`, not by content hash.
-
-`*journal.Store` (`pkg/block/journal/`) IS the live per-file byte cache — the
-composition layer holds it directly (no adapter between them). The journal
-owns its own segment layout, carve, eviction, and local garbage collection.
-Its load-bearing knobs all live in the server config's `blockstore.journal` block
-(`path`, `chunk_size`, `chunk_max`, `dirty_expire`, `max_log_bytes`,
-`backpressure_max_wait`) plus the per-share `journal_size` ceiling; the old
-rollup/append-log options (`rollup_workers`, `stabilization_ms`,
-`orphan_log_min_age_seconds`) are vestigial — the journal carves on its own
-age/size gate.
-
-### Carve: local → remote
-
-A background **carve** pass turns accumulated dirty ranges into remote blocks.
-The engine's carve dispatcher (`pkg/block/engine/carve_dispatch.go`) ticks
-every `UploadInterval` (default 2s) and asks the journal to carve each file;
-the journal applies its own age/size batching gate and serializes carve per
-shard internally. Carving a file FastCDC-chunks its dirty ranges (min 1 MiB /
-avg 4 MiB / max 16 MiB by default), BLAKE3-hashes each chunk, and — via the
-engine-supplied `BlockSink` — dedups against remote-durable chunks, seals each
-chunk (compression/encryption), frames the survivors into a packed block
-(4 MiB by default, `journal.Config.CarveBlockSize`), uploads the block with one `PutBlock`, and
-commits the block record, per-chunk synced markers, and per-file FileChunk
-manifest rows in a single metadata transaction (`metadata.DefaultCommitBlock`).
-`PutBlock` runs before the commit, so a crash in between leaves an orphan block
-object (reclaimed by GC), never an unbacked record; a re-carve targets a fresh
-block ID and never double-commits.
-
-Dedup is answered by a durability oracle: a chunk is treated as already offloaded
-iff its hash is present in the per-share `SyncedHashStore`. A share whose block
-store is not yet resolvable still carves — the local block sink records only the
-FileChunk manifest rows (hash + `DataSize`, no block key) so clone, snapshot, and
-restore can resolve the file's chunks, but nothing is uploaded.
-
-The carve pass fans out across files: a single sequential pass (one file, one
-block, one `PutBlock` at a time) leaves the uplink almost idle. Two separate
-bounds apply, and conflating them is what made upload concurrency the product
-of two windows rather than the number the config declares:
-
-- The **adaptive upload window** (`pkg/block/syncer/upload_controller.go`, wired
-  from `pkg/block/engine/syncer.go`) bounds **concurrent block `PutBlock` calls**.
-  Every carve pass shares one window, holding a slot per block from submit until
-  that block's commit returns. A pinned `--parallel-uploads` fixes it; the
-  default (adaptive) mode ramps it between a floor and ceiling to track the
-  goodput knee, sampling the peak of this same window so it reads PUT
-  concurrency rather than a proxy for it.
-- The **carve fan-out** (`carveFanOut` in `pkg/block/engine/carve_dispatch.go`)
-  bounds how many files one pass carves at once. It is sized as
-  `max(carveFanOut, current window)` and holds none of the window's slots —
-  acquiring them per file is what nested the two bounds, and would deadlock a
-  pass against its own uploads.
-
-Files in one shard still serialize on the journal's per-shard carve lock, so
-with many small files that shard count, not the window, is usually the real
-ceiling on concurrent uploads.
-
-Explicit `Flush` / `SyncNow` force-carve a file's (or all files') dirty ranges
-and serialize against the background dispatcher on the same per-shard lock, so
-the two never pack the same range twice. In `ManualSync` mode the background
-dispatcher is suppressed and `Flush`/`SyncNow` are the sole carve drivers.
-
-### Reads and integrity
-
-`ReadAt` resolves by `(payloadID, offset)`. A range present in the journal is
-served straight from its segment. A range that was written but has since been
-evicted reports `ReadState.Cold`, and a range the journal has no interval for
-reports `ReadState.Hole`; the engine reconciles both against the FileChunk
-manifest, since the journal alone cannot tell a never-written range from one
-whose interval it lost. For each covering row it resolves the remote locator,
-ranged-GETs the enclosing `blocks/<id>` object, decodes the wire frame,
-recomputes BLAKE3 over the chunk bytes, and — on success — hydrates the verified
-bytes back into the journal so subsequent reads are warm. A range no row covers
-is a genuine sparse hole and stays zero-filled, unless the payload holds a row
-whose ID carries no offset: that range is unknown, so the read refuses with
-`ErrManifestInconsistent` rather than inventing zeros.
-
-Integrity is fail-closed: every remote fetch is BLAKE3-verified before the
-bytes reach the caller, and a mismatch is returned as an error (and counted),
-never as data. On the local side, integrity rests on the journal's own
-segment-recovery CRC scan at open — there is no per-read local-hash check, so
-a cold read that fails remote verification cannot be silently self-healed from
-local bytes.
-
-### Eviction and local GC
-
-Under disk pressure the journal evicts whole **fully-synced** segments
-approx-LRU; only ranges already carved to the remote qualify, so eviction
-never destroys the only copy of dirty bytes. Eviction is health-gated: while
-the remote is unhealthy, cold-marking a range would strand unrecoverable
-bytes, so eviction is paused. The journal-native store has no pin/ttl/lru
-retention knob; only the pin/non-pin distinction reaches it, as the switch that
-enables or disables eviction.
-
-The journal's own garbage collection (repack) only relocates live cache bytes
-between local segments to reclaim dead space — it **never** touches the remote
-store. Reclaiming remote block objects by refcount stays with the engine's
-block-GC sweep (see [Garbage Collection](#garbage-collection-mark-sweep)),
-whose per-remote serialization is what makes a decrement safe.
-
-### Per-share `journal.Store` surface
-
-Per the per-share block-store invariants (in `CLAUDE.md`), all journal state —
-segments, interval index, carve/eviction machinery, disk budget — lives inside
-the per-share `*journal.Store` the composition layer holds directly. No global
-state is shared across shares; local storage directories are always isolated.
-
-## Block Lifecycle (three-state)
-
-The block lifecycle has three persisted states held on `FileChunk.State`
-indexed by `ContentHash`. There is no parallel state in memory, in fd
-pools, or anywhere else: the metadata store is the single source of truth,
-and `engine.Syncer` is the sole owner of state transitions.
-
-```
-   Pending ──claim batch──▶ Syncing ──PUT success + meta txn──▶ Remote
-                              ▲                                    │
-                              └──janitor (>claim_timeout)──────────┘
-                                                                   │
-                                                     (RefCount → 0)│
-                                                                   ▼
-                                                              GC eligible
-```
-
-- **Pending**: `RefCount ≥ 1`; bytes are local; not yet uploaded.
-- **Syncing**: a syncer goroutine has claimed the block; the upload is in
-  flight.
-- **Remote**: PUT of the packed block object returned 200 AND the
-  metadata transaction setting `State=Remote` committed (no orphan flag
-  without metadata-txn success).
-
-**Restart recovery:** at syncer Start, a one-shot janitor pass
-requeues any `Syncing` row whose `last_sync_attempt_at` is older than
-`syncer.claim_timeout` (default 10m) back to `Pending`. CAS keys are
-content-defined so a duplicate re-upload writes the same bytes to the
-same key — idempotent by construction.
-
-**Restart re-drain.** Ranges written to the journal but not yet carved into a
-remote block when the process crashed are durable on local disk and are
-re-drained automatically on restart: the journal's recovered interval index
-re-marks every not-yet-carved record dirty at `Open`, so the carve dispatcher
-picks them up on its next tick without any separate reconcile walk or
-metadata-side pending set.
-
-**Why a metadata write for every claim?** The Pending → Syncing
-transition is the serialization point against duplicate uploads across
-syncer instances. The batched-claim cost is one txn per tick, in exchange
-for exact restart recovery and a single-query introspection of stuck
-blocks (`State=Syncing AND last_sync_attempt_at < now − 1h`).
+The engine (`pkg/block/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
+(`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
+their own, behind the `engine_conformance` and `journal_conformance` tags.
 
 ## Garbage Collection (mark-sweep)
 
@@ -696,39 +453,6 @@ call only (`WithRestoreTimeout`).
 For the full operator runbook see
 [SNAPSHOTS.md](../guide/snapshots.md).
 
-## Block Reads (verified)
-
-A read resolves by `(payloadID, offset)` — no remote trial-and-error — and
-takes one of two paths:
-
-1. **Local journal hit.** If the range is present in the local journal, its
-   bytes are served straight from the journal segment. This is the steady-state
-   path for recently-written and recently-read data.
-2. **Remote packed block.** On a cold miss (the range was written but has been
-   evicted), the engine resolves the chunk's `ChunkLocator`
-   (`BlockID` + `[WireOffset, WireOffset+WireLength)`) from the FileChunk
-   manifest, issues a ranged GET against the packed remote object
-   `blocks/<BlockID>`, decodes the wire frame, and recomputes BLAKE3 over the
-   chunk bytes. A verified chunk is hydrated back into the journal so subsequent
-   reads take path 1.
-
-A synced chunk whose locator is empty (standalone) or missing is
-**post-migration drift** — the startup migration rewrites every standalone
-locator to a block locator before the share serves — so such a locator is
-refused fail-closed rather than read.
-
-**Fail-closed integrity.** Every remote fetch is BLAKE3-verified before the
-bytes reach the caller. A mismatch is never surfaced as data: the read returns
-an error and increments a corruption metric. Local integrity rests on the
-journal's segment-recovery CRC scan at open; there is no per-read local-hash
-check, so a cold read that fails remote verification is not silently
-self-healed from local bytes — it fails closed and the corruption is recorded.
-
-The pre-v0.16 non-CAS layout (`{payloadID}/block-{N}`) is no longer read at
-runtime. A store directory still on that layout is refused on open, directing
-the operator to migrate with dittofs ≤ v0.21. See
-[Migration & Block-Layout Routing](#migration--block-layout-routing).
-
 ## Adapter Pattern
 
 DittoFS uses the Adapter pattern to provide clean protocol abstractions:
@@ -750,22 +474,6 @@ type RuntimeSetter interface {
     SetRuntime(rt any)
 }
 
-// Example: NFS Adapter accesses per-share block stores via runtime
-type NFSAdapter struct {
-    config  NFSConfig
-    runtime *runtime.Runtime
-}
-
-func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
-    // Resolve per-share block store from file handle
-    blockStore, err := a.runtime.GetBlockStoreForHandle(ctx, handle)
-    // Read data via the block store with a caller-snapshot []BlockRef.
-    // The engine binary-searches blocks for the requested range; sparse
-    // holes outside any BlockRef are zero-filled.
-    n, err := blockStore.ReadAt(ctx, payloadID, attr.Blocks, dest, offset)
-    // ...
-}
-
 // Multiple adapters can run concurrently, sharing the same runtime
 rt := runtime.New(cpStore)
 rt.SetAdapterFactory(createAdapterFactory())
@@ -778,20 +486,10 @@ NFSv3, NFSv4, and SMB v2/3 handlers share a single package of helpers at
 `internal/adapter/common/` so the three adapters do not each carry a
 private copy of the same logic. The package exposes:
 
-- **Block-store resolution**: `common.ResolveForRead` / `common.ResolveForWrite`
-  wrap `Runtime.GetBlockStoreForHandle` via a narrow `BlockStoreRegistry`
-  interface (satisfied implicitly by `*runtime.Runtime`). All three
-  protocols' READ/WRITE/COMMIT paths route through these two calls.
-- **Pooled read buffer**: `common.ReadFromBlockStore` returns a
-  `BlockReadResult` whose `Release()` is handed to the response encoder,
-  which invokes it after the wire write completes. NFSv3, NFSv4, and SMB
-  regular-file READ all adopt the pool; pipe/symlink READ paths stay on
-  heap allocations by design (documented in SMB.md).
-- **`[]BlockRef` seam**: `common.ReadFromBlockStore`,
-  `common.WriteToBlockStore`, and `common.CommitBlockStore` are the single
-  edit points that feed resolved `[]BlockRef` into the engine. Handler code
-  stays untouched; changes to the block-ref threading stay confined to
-  `common/`.
+- **No content store**: `common.ErrNoContentStore` is the answer every
+  data operation gives while the data path is cut: `block.ErrNoContentStore`
+  in the I/O row, so each protocol's `StatusForErr` maps it to its own I/O
+  status.
 - **Metadata error translation**: per-package `StatusFor` switches in the
   adapter types packages (`internal/adapter/nfs/types`,
   `internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`), each with
@@ -936,32 +634,10 @@ lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusi
 
 ### Write Coordination Pattern
 
-WRITE operations require coordination between metadata and block stores:
-
-```go
-// 1. Update metadata (validates permissions, updates size/timestamps);
-//    capture the caller-snapshot []BlockRef for the engine.
-attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
-currentBlocks := attr.Blocks  // []blockstore.BlockRef sorted by Offset
-
-// 2. Resolve per-share block store from file handle
-blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
-
-// 3. Write actual data via per-share block store; engine FastCDC-rechunks
-//    the affected range and returns the new []BlockRef.
-newBlocks, err := blockStore.WriteAt(ctx, string(attr.PayloadID), currentBlocks, data, offset)
-
-// 4. Persist newBlocks in the same metadata txn that updates Size/Mtime.
-//    The engine never opens the metadata txn itself.
-err = metadataStore.SetFileChunks(handle, newBlocks, authCtx)
-
-// 5. Post-txn surgical cache invalidation: drop only the hashes that
-//    disappeared, preserving warm dedup entries.
-removed := diffRemovedHashes(currentBlocks, newBlocks)
-blockStore.Cache().InvalidateFile(string(attr.PayloadID), removed)
-
-// 6. Return updated attributes to client for cache consistency
-```
+WRITE validates its target with `metaSvc.PrepareWrite` (permissions, type,
+read-only share), which modifies no metadata, so a refused write answers with
+its own status. A zero-count WRITE then succeeds; any other answers
+`common.ErrNoContentStore` until the adapters run on `vfs.Service`.
 
 ## Built-In and Custom Backends
 
@@ -1049,8 +725,8 @@ dittofs/
 │   │   ├── middleware/           # The remote-store decorators
 │   │   │   ├── compression/      # Optional per-chunk compression
 │   │   │   └── encryption/       # Optional per-chunk encryption
-│   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
-│   │   ├── journal/              # The per-share journal (append-only segments)
+│   │   ├── engine/               # The engine (RFC 8), not yet wired to the adapters
+│   │   ├── journal/              # The journal (RFC 1), one per device
 │   │   │   ├── localstore.go     # LocalStore interface (*Store implements it)
 │   │   │   └── journaltest/      # Throwaway real store for outside tests
 │   │   ├── syncer/               # Local -> remote sync
@@ -1099,18 +775,8 @@ dittofs/
 │       └── ...                   # Per-section config (logging, gc, snapshot, ...)
 │
 ├── internal/                     # Private implementation details
-│   ├── adapter/common/           # Shared NFS/SMB adapter helpers: block-store
-│   │   │                         # resolution (ResolveForRead/Write), pooled
-│   │   │                         # ReadFromBlockStore + WriteToBlockStore +
-│   │   │                         # CommitBlockStore ([]BlockRef seam), and the
-│   │   │                         # consolidated metadata.ErrorCode ->
-│   │   │                         # NFS3/NFS4/SMB mapping tables.
-│   │   ├── resolve.go            # BlockStoreRegistry narrow interface +
-│   │   │                         # ResolveForRead/Write
-│   │   ├── read_payload.go       # Pooled BlockReadResult + ReadFromBlockStore
-│   │   ├── write_payload.go      # WriteToBlockStore + CommitBlockStore seams
-│   │   ├── normalize.go          # Block-store error → *merrs.StoreError normalization
-│   │   └── errclassify.go        # Raw block-store error → metadata code classifier
+│   ├── adapter/common/           # Shared NFS/SMB adapter helpers:
+│   │   └── content.go            # ErrNoContentStore, the data path's answer
 │   ├── adapter/nfs/              # NFS protocol internals
 │   │   ├── rpc/                  # RPC layer (call/reply handling)
 │   │   │   └── gss/              # RPCSEC_GSS framework
@@ -1183,108 +849,6 @@ OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
 
 **Admin API**: `GET /api/v1/durable-handles` lists all active handles with remaining timeout. `DELETE /api/v1/durable-handles/{id}` force-closes a specific handle.
 
-## Engine API + BlockRef + Cache
-
-The read path is structured so the engine never imports `pkg/metadata` on
-hot paths; it consumes a caller-supplied `[]BlockRef` snapshot as the
-authoritative content list for every file.
-
-### BlockRef — the content unit
-
-`BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size uint32)`
-defined in `pkg/block/types.go`. `FileAttr.Blocks []BlockRef` (in
-`pkg/metadata/file_types.go`) is the authoritative, offset-sorted list of
-every chunk that composes a file. It is populated on every sync
-finalization; the engine resolves a read range against it.
-
-Badger inline-encodes `Blocks []BlockRef` inside the existing `FileAttr`
-blob (gob).
-
-### Engine API
-
-```go
-// pkg/block/engine/engine.go
-ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
-WriteAt(ctx, payloadID, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
-Truncate(ctx, payloadID, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
-Delete(ctx, payloadID, blocks []BlockRef) error
-CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, error)
-```
-
-Range-coverage semantics: the engine resolves the requested range against
-the offset-sorted slice; sparse holes
-inside `FileAttr.Size` are zero-filled — `no BlockRef for this range` is
-documented behavior, not a bug. Past `FileAttr.Size` returns short-read or
-EOF.
-
-`CopyPayload` is **O(1)** — a single metadata transaction increments
-`FileChunk.RefCount` for every distinct hash in `srcBlocks` and inserts
-the dst rows. No data copy.
-
-`MetadataCoordinator` (`pkg/block/engine/coordinator.go`) is the
-narrow interface the engine uses to mutate refcounts and persist
-`FileAttr.Blocks`. The engine never opens a metadata txn itself — a
-strict-grep build gate enforces zero `pkg/metadata` imports under
-`pkg/block/engine/*.go` production files except a single justified
-exception in `gc.go`.
-
-### Cache
-
-The `Cache` type (`pkg/block/engine/cache.go`) is keyed solely by
-`ContentHash`. It combines read buffering and prefetch into a single
-per-share type. The cache is **in-memory (RAM-only), CAS-keyed, and
-volatile** — there is no cache-budget config knob. Its byte budget
-(`maxBytes`, passed to `NewCache`) is **auto-deduced from available system
-memory at startup** (`AvailableMemory / 8`, clamped to a floor; see
-`pkg/block/defaults.go`), wired into the engine as `ReadBufferBytes`.
-Two files reading the same chunk hit the same entry (cross-file dedup).
-
-```go
-// pkg/block/engine/cache.go (hint API)
-OnRead(payloadID PayloadID, hashes []ContentHash, fileSize uint64)
-InvalidateFile(payloadID PayloadID, removedHashes []ContentHash)  // surgical
-```
-
-Sequential prefetch triggers after 3 consecutive sequential reads (to
-suppress speculative prefetch on accidental two-block runs in random-IO
-workloads). Bounded concurrency: 4 worker goroutines per cache by default.
-LRU eviction.
-
-Cache misses load through `local.Get` — a single content-addressed local
-read that returns a freshly allocated buffer, which the Cache copies into its
-LRU slot. There is no `mmap`/page-cache fast path on any platform (the cache
-is RAM-only); the allocation simply moves earlier in the pipeline than the
-former mmap-then-copy design.
-
-`InvalidateFile` is **surgical**: the caller passes only the hashes that
-disappeared from the file, so other files still referencing those hashes
-via dedup keep them warm. Invalidation happens **post-txn** — the caller
-commits the new `[]BlockRef` first, then drops cache entries.
-
-### Adapter call sites unchanged
-
-All NFS v3/v4 + SMB v2 protocol handlers stay untouched. The
-`internal/adapter/common/{ResolveForRead, ResolveForWrite,
-WriteToBlockStore, ReadFromBlockStore}` helpers absorb the `[]BlockRef`
-threading, so changes to the read/write path stay confined to the helpers.
-
-### Operator surfaces
-
-- `dfsctl store block audit-refcounts <share>` runs the manifest
-  consistency audit: every block reference in `FileAttr.Blocks` must have
-  a backing `FileChunk` row at the same offset with the same hash. It
-  reports `total_refs`, `backed_refs` and `dangling_refs`; a non-zero
-  dangling count is corruption and the command exits non-zero. It does
-  not look for leaked blocks. It emits aggregate counts as structured slog
-  INFO and persists the last-run summary at
-  `<localStore>/audit-state/last-inv02.json`. See
-  `docs/guide/cli.md` for the full reference and `docs/guide/faq.md` for operator
-  guidance.
-- The cache has no operator-facing config knobs: its RAM budget is
-  auto-deduced from available system memory at startup (see
-  `pkg/block/defaults.go`), the sequential-prefetch trigger (3 consecutive
-  reads) is fixed, and the prefetch worker count defaults to 4 in code.
-
 ## Migration & Block-Layout Routing
 
 DittoFS has had three block layouts (see the migration guide's table). Neither
@@ -1298,7 +862,7 @@ re-ingested.
 The current layout packs chunks into `blocks/<id>` container objects. A share
 carrying leftover standalone-CAS state — remote `cas/` objects, or chunk
 locators that still point at standalone objects — is no longer converted. The
-conversion ran at `engine.Store.Start` through v0.31 and is gone; nothing
+conversion ran at engine start through v0.31 and is gone; nothing
 replaces it, and there is no boot-time scan for the state it handled.
 
 The read path refuses that state rather than guessing, one chunk at a time:

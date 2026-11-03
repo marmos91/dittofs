@@ -561,8 +561,8 @@ dittofs/
 - `LOOKUP`: Resolve name in directory to file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses per-share block store)
-- `WRITE`: Write file content (coordinates metadata + per-share block store)
+- `READ`: Read file content (answers I/O until the data path is wired; see below)
+- `WRITE`: Write file content (validated against metadata; answers I/O until the data path is wired)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -584,29 +584,15 @@ dittofs/
 - `GET_DIR_DELEGATION`: Request directory delegation with CB_NOTIFY
 - `BACKCHANNEL_CTL`: Configure backchannel for server-initiated callbacks
 
-### Write Coordination Pattern
+### Data path
 
-WRITE operations require coordination between metadata and per-share block stores:
-
-```go
-// 1. Update metadata (validates permissions, updates size/timestamps)
-attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
-
-// 2. Resolve per-share block store from file handle
-blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
-
-// 3. Write actual data via per-share block store
-err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
-
-// 4. Return updated attributes to client for cache consistency
-```
-
-The metadata store:
-- Validates write permission
-- Returns pre-operation attributes (for WCC data)
-- Updates file size if extended
-- Updates mtime/ctime timestamps
-- Ensures PayloadID exists (content-addressed block reference)
+No content store is wired until the adapters run on `vfs.Service`. WRITE runs
+`metaSvc.PrepareWrite` first (permissions, type, read-only share), so a refused
+write keeps its own status; a zero-count WRITE succeeds, and any other answers
+`common.ErrNoContentStore`, which `types.StatusForErr` maps to `NFS3ERR_IO` /
+`NFS4ERR_IO`. READ, COMMIT, CLONE, DEALLOCATE and the data runs of READ_PLUS
+answer the same for a file with content; on an empty file, or past EOF, they
+succeed as before. SETATTR and CREATE size changes are metadata updates.
 
 ### Buffer Pooling
 
@@ -635,7 +621,7 @@ var NfsDispatchTable = map[uint32]*nfsProcedure{
 Each handler follows the same pattern:
 1. Check context cancellation
 2. Validate request
-3. Get stores from registry (metadata store + per-share block store)
+3. Get the metadata service from the registry
 4. Perform operation via store methods
 5. Build and return response
 

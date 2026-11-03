@@ -5,10 +5,10 @@ mark-sweep (`CollectGarbage`), block compaction, orphan reclamation, the
 read-only orphan report, the manifest check/repair pass and the refcount audit.
 
 The package is a **leaf with respect to the engine** — it reads a share's
-metadata store and a remote block store and holds no `*engine.Store`. The one
-edge back is `AdoptDedup`, which the engine's carve dedup oracle calls so an
-adoption is recorded under the same stripe lock the sweep's claim takes; see
-`sweepguard.go` for why the two decisions have to be ordered.
+metadata store and a remote block store and holds no engine. `AdoptDedup` is the
+write path's entry into the sweep guard, recording an adoption under the same
+stripe lock the sweep's claim takes; nothing calls it while the data path is
+cut, and see `sweepguard.go` for why the two decisions have to be ordered.
 
 ## The live set must span every lifecycle state
 
