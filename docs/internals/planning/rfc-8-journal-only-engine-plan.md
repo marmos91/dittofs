@@ -117,21 +117,22 @@ with stage 2:
 - `Engine`, `New(Deps)`, `Apply(Settings)`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`,
   `Stats` and the twelve content methods, with RFC 8 §12.1's signatures and stub bodies.
 - `Deps` (§2.6) narrowed to this part: `Devices`, `Open`, `Existence`, `Content`, `Lifecycle`,
-  `Opens`, `Closed`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
+  `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
-  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Opens` is open
-  state's two clone calls, as RFC 14 §9.2 names them: `CloneOpen`, which takes over the
-  source record the clone's phase 1 writes and so runs after it, taken before
-  `Content.Resume` runs phase 2, and `CloneClose`, called once `Resume` returns (epic 8). `Closed` is open
-  state's `Sink.Closed` as a function, `func(entity.FileID, openstate.CloseResult)`: the
-  engine hands it what `CloneClose` leaves, an orphan whose release only the service can
-  run. The service implements `Sink` already and is built after the engine, so the root
-  passes a closure over it. A release's mark stays the service's (epic 5). Each
-  interface holds exactly the methods this part calls: `Opens`' `CloneOpen` and `CloneClose`; the journal's `Share`,
+  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is
+  RFC 8 §2.6's `CloneHold`, open state's three clone calls in the engine's own types:
+  `Hold`, RFC 14 §9.2's `CloneOpen`, which takes over the source record the clone's phase 1
+  writes and so runs after it, taken before `Content.Resume` runs phase 2; `Release`, its
+  `CloneClose`, called once `Resume` returns, whose orphan open state reports through its
+  own `Sink.Closed`, so the engine hands the service nothing; and `Served`, its
+  `Recovery.Served`, which a clone rebuilt at start waits on for its source's shard (epic
+  8). A release's mark stays the service's (epic 5). Each
+  interface holds exactly the methods this part calls: `Holds`' `Hold`, `Release` and `Served`; the journal's `Share`,
   `Forget`, `Strand`, `Stats`, `Draw`, `SetVersionLimit`, `Repack` (`journalv2` declares it
-  on `*Journal`, scoped by its argument), `Close`, and §6 point 8's scope sync, seal and
-  per-segment unreclaimed figure once RFC 1 declares them; the handle's `WriteAt`, `ReadAt`, `Sync`,
+  on `*Journal`, scoped by its argument, and sealing a share scope's active segments itself
+  once RFC 1 §7.2 says so), `Close`, and §6 point 8's per-segment unreclaimed figure once
+  RFC 1 declares it; the handle's `WriteAt`, `ReadAt`, `Sync`,
   `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, `Reserve`, `Close`, `Since`, `Settle`,
   `Files`. `Existence` declares `Clone`, where `kvstore` has it, not on `Content` as RFC 6
   §10.1 does; the RFC follows the code (§6 point 2). `Journal` and `Handle` are
@@ -147,10 +148,10 @@ with stage 2:
   standard-library types only, as `journalv2` declares its own.
 - The types at the boundary: the engine takes `entity.FileID` and `entity.JournalVersion`
   and converts once, at its journal interface; no `journalv2` type crosses `Content`.
-  `Opens` and `Closed` take `openstate`'s `FileKey`, `CloneSource` and `CloseResult` as they
-  are, since Go matches a method by type identity, and the engine reads open state's answers
-  by its `DelayError` (`DelayFrozen`) and `ErrBadState`, so it imports `pkg/openstate` for
-  those types and values and calls nothing of it but `Deps.Opens`.
+  A clone's hold on its source is `Deps.Holds`, a `CloneHold` (`Hold`, `Release`, `Served`)
+  in the engine's own types (`CloneSrc`), which the root adapts from open state, so the
+  engine imports no `pkg/openstate` (RFC 0 I6). An orphan a clone's `Release` leaves
+  reaches the filesystem through open state's own `Sink.Closed`.
 
 `Content` is declared by stage 2 in `internal/vfs/filesystem.go` (#3534), over `pkg/vfs`
 (#3533), and matches RFC 8 §12.1: C1, C2 and C5 to C7 landed with them, as #3543 answered
@@ -169,6 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -217,7 +219,7 @@ with a known file.
   self-fence threshold, self-fence on an erroring store.
 - **RFC 8 §15.3, Group C** (3 rows): §2.1 declared interfaces, §2.2 no assertions, §2.4
   settings.
-- **Rows of this part's own** (6), which the second part deletes or keeps: a carved run fails
+- **Rows of this part's own** (5), which the second part deletes or keeps: a carved run fails
   `ErrUnavailable`, never zeros or `ErrLost`; a refused write on a full journal answers
   `ErrDelay` with `DelayCapacity` while the sealed segments of the refusal's scope hold
   unreclaimed bytes (journal-wide for the journal's own capacity, so a share with none of its
@@ -231,10 +233,8 @@ with a known file.
   with the precondition asserted that the share's `UnreclaimedBytes` is 0 while the
   superseded records are retained (RFC 1 §3.8), answered `ErrDelay` and then served, never
   `ErrNoSpace`. An engine answering `ErrNoSpace` whenever one repack frees nothing fails the
-  last two. Two more pin RFC 8 §10.2's last step as #3547 words it: a share at its limit whose
-  only unreclaimed bytes sit in its idle active segment, below the idle-seal threshold, is
-  served after the engine seals that segment, which an engine that never seals fails with an
-  endless `ErrDelay`; and a refusal while a failed window is unresolved answers `ErrDelay`,
+  last two. One more pins RFC 8 §10.2's last step as #3547 words it: a refusal while a
+  failed window is unresolved answers `ErrDelay`,
   and the write is served once the window resolves, which an engine counting only what
   repack can take now fails with `ErrNoSpace`. The window is made with the journal's crash
   seam, as the journal's own failed-window row makes it (a `sim` schedule failing the
@@ -373,18 +373,18 @@ harness (`journalv2test/prof`) wired to the fixture.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | `pkg/block/enginev2`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
-| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 46 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
-| 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 12.75 | A | 4, 8 |
+| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
+| 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 20 | B | 5, 6, 7 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 12.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Opens`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **60** | **162** | | |
+| | **Total** | | **60** | **162.25** | | |
 
-**Plan estimate: 60 subtasks, 162 man-days.**
+**Plan estimate: 60 subtasks, 162.25 man-days.**
 
 RFC 8 is 3,394 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -422,7 +422,8 @@ flowchart TD
   S3 --> E9["E9 Integration"]
   X(["stage 2 piece 8, Data"]):::sync -.-> E9
   S3 -. "after S3" .-> P11(["stage 2 piece 11, Copy and clone"]):::sync -. "V22, V26" .-> E9
-  R(["open state's Releasing, stage 1 follow-up"]):::sync -. "T5.4's tests only" .-> E5
+  R(["open state's Releasing, stage 1 follow-up"]):::sync -. "T5.4's tests" .-> E5
+  R -. "T8.3's unlink during Resume" .-> E8
   E9 --> E10["E10 E2E green 🔀"]:::sync
   S4(["S4 the journal's calls built"]):::sync --> E10
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -433,13 +434,14 @@ flowchart TD
 
 - **S1 🔀 Interfaces frozen and `Content` agreed** (end of epic 1). The team and stage 2
   review every signature, and C1 to C8 of §1.3 are settled, C1, C2 and C5 to C7 having
-  landed; C9 is settled by #3543, and C10 is
-  carried as §6 point 3. The journal plan calls this agreement its S4a. Nothing in epics 3 to 8
+  landed; C9 is settled by #3543, C10 is
+  carried as §6 point 3, and C11 is §6 point 15's proposal. The journal plan calls this agreement its S4a. Nothing in epics 3 to 8
   starts before it.
 - **S2 🔀 Red suite in CI** (end of epic 2). `engine-conformance` compiles, runs on every pull
-  request, fails at the journal's `Open` and is listed whole in `known.yaml`. The fixture,
-  the fault-injecting store, the fake journal and the profiler are green. Epics 3, 4 and 6
-  start here.
+  request and is listed whole in `known.yaml`. The fixture, the fault-injecting store, the
+  fake journal and the profiler build and run, and every row over the fixture is red at the
+  journal's `Init` until the journal team builds `Init` and `Open`. Epics 3, 4 and 6 start
+  here.
 - **S3 🔀 Engine complete over the fake journal** (epics 3 to 8 done). Every method of §1.3
   has its behaviour, unit-tested over the fake journal, and every conformance row whose
   journal call exists is green. Epic 9 starts here.
@@ -464,9 +466,11 @@ flowchart TD
 - **Stage 2 piece 11, Copy and clone (external, rif's team)** blocks T9.4's V22 copy and
   clone cases and V26. It needs S3, not all of stage 3 (§6 point 9).
 - **Open state's `Releasing` (external, the stage 1 follow-up, rif's team)** blocks T5.4's
-  tests alone: a release is marked through it. T5.4's outcomes and the abort routine T6.5
-  reuses are built and unit-tested over the fake journal without it, so epics 6 and 8 wait
-  on none of it, and a late `Releasing` delays only epic 5's finish.
+  tests and one of T8.3's: a release is marked through it, and T8.3's source unlinked during
+  `Resume` keeps its content only because `Releasing` refuses that release with
+  `ErrFileOpen`. T5.4's outcomes and the abort routine T6.5 reuses are built and unit-tested
+  over the fake journal without it, so epic 6 waits on none of it, and a late `Releasing`
+  delays only the finish of epics 5 and 8.
 - **The journal (external, the journal v2 team)** blocks every conformance row over the real
   journal, and so epic 10. What this part calls, by journal epic: E4's index, E3's codecs and
   E5's streams under everything; E8's `Share`, `WriteAt`, `ReadAt`, `Draw`,
@@ -474,9 +478,10 @@ flowchart TD
   `Settle`, `Files`, the named refusals and `Stats`; E6's `Sync`, loss records, the
   loss ring and failed windows; E7's `Open` with floor and `expect`; E9's `Repack`,
   auto-retire, `Forget` and `Strand`, and none of its offload half; E10's `J‖journal`
-  record written by the initialisation step; and the three calls §6 point 8 asks for, a
-  sync of a scope, a seal of a scope's active segments and unreclaimed bytes per segment,
-  which T7.1 makes. The first rows to turn green come with the
+  record written by the initialisation step; and what §6 point 8 asks of RFC 1 for T7.1,
+  `Repack` scoped to a share sealing the scope's active segments itself and unreclaimed
+  bytes per segment; the scope's sync is the handle's `Sync` over its `Files`, which
+  `journalv2` has. The first rows to turn green come with the
   journal plan's S3 (`WriteAt`, `ReadAt`); files survive a restart from its epic 7's `Open`.
 
 ### 3.4 Splitting the work
@@ -497,10 +502,13 @@ flowchart TD
   epic 3's per-file state lands. Track C's recovery waits on epics 4 and 5, and the store
   view, the share table, start step 1 and the version limit fill that wait; epic 7 comes
   after epic 6, so the E4 edge is met by then. Track A has the one long wait: with one
-  engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. T7.1, the
+  engineer per track, epic 8 waits on epic 5 for about 20 man-days after epic 3. Epic 3's
+  `Write` needs no edge from epic 4: T3.2 answers a stand-in verifier, a fixed zero, which
+  T4.1 replaces. T7.1, the
   refusal mapping on `Write`'s path, fills most of it: it needs epic 3, T4.6's per-file
   report and the fake journal, its version-limit row wired to epic 6's raise once that
-  lands, and its last step built against §6 point 8's three calls once RFC 1 names them, so
+  lands, and its last step built against §6 point 8's sealing `Repack` and per-segment
+  figure once RFC 1 names them, so
   track A builds it then and track C keeps the rest of epic 7. T8.1's admission checks,
   which need no removal, fill the rest.
 - **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
@@ -547,7 +555,7 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 - T1.1 The package, `Engine`, `New(Deps)` refusing a missing capability by name, `Apply`
   validating `Settings`, lifecycle and share method stubs.
 - T1.2 `Deps` and its declared interfaces (`Journal`, `Handle`, `Reservation`, `Existence`,
-  `Content`, `Lifecycle`, `Opens`, `Clock`) holding exactly §1.3's calls, and the boundary
+  `Content`, `Lifecycle`, `CloneHold`, `Clock`) holding exactly §1.3's calls, and the boundary
   conversions of `entity.FileID` and `entity.JournalVersion` to the journal's types, one
   line each over `journalv2`'s converters, which their own round-trip tests cover.
 - T1.3 The content method stubs and their types: `WriteOpts`, `Overlay` in C1's form,
@@ -555,14 +563,15 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 - T1.4 The engine over `pkg/vfs/vfserr` (C5 to C7), which stage 2 created on #3533: its
   errors, `DelayCause`, `CrossKind`, `Extent` and `Verifier` taken from there, and the engine's import walk with its one allowlist: no package of `enginev2`
   imports `pkg/vfs` or v1 (rule 7).
-- T1.5 The S1 review with stage 2: C1 to C10 settled, or carried to §6.
+- T1.5 The S1 review with stage 2: C1 to C11 settled, or carried to §6.
 
 ### Epic 2 — Red e2e suite and test foundations ⛔
 
 **Epic 2 estimate: 9 subtasks, 28.5 man-days.**
 
 §1.4 whole. Every row is written red against the real composition and listed in
-`known.yaml`; the fixture fails at the journal's `Open` until the journal has one. Sections
+`known.yaml`; every row over the fixture is red at the journal's `Init` until the journal
+has `Init` and `Open`. Sections
 owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition rule.
 
 - T2.1 Registration: `engine-conformance` in `test/suites.yaml` (`format: go-json`,
@@ -571,7 +580,7 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   `docs/internals/testing.md`'s suite table regenerated with `dt docs`.
 - T2.2 The fixture: the engine over the real journal on a temporary directory, `kvstore` on
   an in-memory `kv.KV`, the real open-state table over the same `kv.KV` with `ServeShard`
-  called for each bound share's own shard and passed as `Deps.Opens`, `sim.TestClock`, the journal's crash seam,
+  called for each bound share's own shard and adapted as `Deps.Holds`, `sim.TestClock`, the journal's crash seam,
   and the journal's profiling harness wired to it, one `prof.Watch` call. T4.7, T5.4, T5.5's
   crash, T6.5, T7.1 and T8.3 test over it rather than build a second fixture; every test over
   it sits behind `engine_conformance`, listed in `known.yaml` until the journal calls it needs
@@ -587,11 +596,11 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
 - T2.6 Group A rows of the lifecycle and clone (14): §2.5, §2.7, §9.1.
 - T2.7 Group B rows (11).
 - T2.8 Group C rows (3).
-- T2.9 This part's own rows (6).
+- T2.9 This part's own rows (5).
 
 ### Epic 3 — Write, read and overlay ⛔
 
-**Epic 3 estimate: 6 subtasks, 12.75 man-days.**
+**Epic 3 estimate: 6 subtasks, 13 man-days.**
 
 A file's bytes in and out. The per-file entry (guard, pending existence, overlay) is one
 map entry sharded by file, kept while the file has pending existence, a removal in flight or
@@ -605,7 +614,8 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
 
 - T3.1 Per-file state, sharded, with its bound's `ponytail:` marker.
 - T3.2 `Write`: sample the verifier's inputs, stage through `WriteAt` with the clock's time
-  unless suspended, record the pending operation, answer; admission is epic 7's.
+  unless suspended, record the pending operation, answer; admission is epic 7's. Until
+  T4.1, the verifier is a stand-in, a fixed zero.
 - T3.3 `Draw` on the file's journal, under the caller's accept lock.
 - T3.4 `Overlay` from the file's entry alone, in C1's and C2's form: the pending operations
   replayed in version order, a truncate setting `Size` and `SizeSet`, each later write raising
@@ -613,7 +623,8 @@ Sections owned: RFC 8 §1.1 (the request path), §4.1, §7.1, §7.5, §7.6, §12
   fails: a write of 0 to 8 KiB at v3, then a truncate to 4 KiB at v5 (`SizeSet`, `Size` 4 KiB);
   then a write ending at 12 KiB at v6 (`Size` 12 KiB, `SizeSet` still true); then a write
   ending at 2 KiB at v7 (`Size` 12 KiB, `SizeSet` still true).
-- T3.5 `Read`: `ReadAt`, `Covering` per missing extent, §7.1's table, the re-ask on `applied` or
+- T3.5 `Read`: `ReadAt`, `Covering` per missing extent, §7.1's table with every pending
+  write, truncate and deallocate at or below `asOf` applied, the re-ask on `applied` or
   an overwrite version above `asOf` within the deadline, **Lost** reported once per extent,
   the carved case.
 - T3.6 `Allocation`: `Existence.Allocation` with the pending operations applied, a zero ref
@@ -642,6 +653,21 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   1, each file synced before its batch commits (§5.1), batches bounded by `G` and `K`, a file
   split over several in version order, `Settle` with the store's `Applied`, `Done` from the
   commit that records the write's usage. Turns §1.4's "sync before existence" row green.
+  `kvstore.PendingOp` keeps one `Time` for both modify and change, and `Commit` applies it
+  to both, so a suspended write's commit either moves `Mtime` (given the clock's time) or
+  leaves `Ctime` behind (given zero), and the File record disagrees with what epic 3's
+  `Overlay` answered before the commit. T4.3 splits it into a modify and a change time,
+  applied apart, and the capture fills them from the entry (epic 3's D10). Tested by a
+  suspended write the group commit commits over the real `kvstore`: the File record keeps
+  the earlier write's `Mtime` and carries the suspended write's `Ctime`. The entry's drop
+  once its operations commit marks it dead under its own lock, and `lockFor` and `lockOf`
+  retry on a dead entry; both are already built in T3.1's `file.go` (`unlock` and the
+  `dead` field). Without that, a write that looked the entry up, dropped the shard lock and
+  locked the entry after the commit dropped it would land in an orphan: `Overlay` misses
+  it, no capture takes it, and its `Done` never runs. Tested under `-race` with a hook
+  between `lockFor`'s lookup and its lock, in which the commit drops the entry: the write
+  lands in a live entry, `Overlay` reflects it, the next group commit commits it and its
+  `Done` runs once.
 - T4.4 The split: `Existence.Commit` commits every other file in the same call and returns
   the failing ones in its map, so the engine backs off only the files it names, and halves
   the batch only when the whole call fails; a file failing alone backed off, with a
@@ -701,25 +727,29 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   commit paths, tested with T4.7's reservation counter.
 - T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
-  fixed backoff, `removal_stalled` after five failed batches. A clone's `CloneOpen` answered
+  fixed backoff, `removal_stalled` after five failed batches. A clone's `Holds.Hold` answered
   `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
   the five (T8.3).
-- T5.4 A release's contract with the service: `Delete` answers one of four outcomes. Phase
+- T5.4 A release's contract with the service: `Delete` answers one of four outcomes,
+  through C11's `(retry <-chan error, err error)`. Phase
   1 committed: the service answers `done(true)`. Aborted by a holder: `done(false)` clears
   the mark, and the engine settles the abort, without its removal, and reports it as data
   loss (RFC 8 §2.5 step 3); the pending writes the aborted release dropped get `Done` with
   nothing charged. Not committed yet, as on a store stall at the deadline, after the
   journal's `Delete` has dropped the bytes: the service keeps the mark, and the engine hands
-  the retry of phase 1 to T5.3's loop, with no goroutine of its own, and hands back a
-  channel buffered by one that yields the retry's outcome once: committed, aborted, or
-  stopped when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
+  the retry of phase 1 to T5.3's loop, with no goroutine of its own, and returns as `retry`
+  a channel buffered by one that yields the retry's outcome once: nil once committed, the
+  abort's error, or `ErrUnavailable` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
-  it. Into an extent a clone registered (T8.1): `ErrDelay`, answered before the journal's
-  `Delete`, so nothing is dropped, with the same channel, which yields retry once the clone
-  drops its registration, or stopped when `Close` or `Drop` comes first, the unlink's
+  it. Into an extent a clone registered (T8.1): pending too, answered before the journal's
+  `Delete`, so nothing is dropped, with the same channel, which yields `ErrDelay` with
+  `DelayClone` once the clone drops its registration, or `ErrUnavailable` when `Close` or `Drop`
+  comes first, the unlink's
   pending release then running at the next start; the service answers `done(false)` and runs
-  the release again on retry. That branch reads T8.1's registration, so it is built and
+  the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
+  the unlink answers success, and the service waits on `retry` in the background, never
+  inside `Sink.Closed`, and finishes the release with its outcome. That branch reads T8.1's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
@@ -728,6 +758,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   file marked until phase 1 commits, then the channel yields committed; a stall that
   outlasts five retries raises `removal_stalled`, and the abort that ends it clears it. The
   stopped outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
+  The channel is `Delete`'s first result (C11, §6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
   crash over T2.2's fixture and the journal's crash seam (rule 8).
 
@@ -743,7 +774,9 @@ Sections owned: RFC 8 §1.1 (the share table's `decision:`), §2.3, §2.4, §2.5
 and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused share.
 
 - T6.1 The store's `Lifecycle` view: the `J‖journal` read, the batched version-limit calls,
-  `RaiseIncarnations`; `kvstoretest` cases.
+  `RaiseIncarnations`; `kvstoretest` cases. It replaces the stub `Lifecycle` T2.2's fixture
+  passes, which refuses every call, and reads the identity from `Fixture.Journal`, the
+  `JournalID` the fixture kept from `Init`.
 - T6.2 The copy-on-write share table and the bindings' states; `Bind` attaching above the
   floor, writing the share's limit as a tracked max-write, raising the shard's incarnation.
 - T6.3 Start step 1: floors and identity read, each journal opened through `Deps.Open`, a
@@ -765,7 +798,7 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   `K`-bounded transactions, `SetVersionLimit` after, the two markers.
 - T6.8 `Close`: refuse, the last group commit, joins within their bounds, close in reverse,
   nothing closed under a live loop. Tested with T5.4's stopped outcome: a `Close` while the
-  removal loop retries a release's phase 1 yields stopped on its channel, with no
+  removal loop retries a release's phase 1 yields `ErrUnavailable` on its channel, with no
   `done(...)`, and leaves the marker for T6.5.
 - T6.9 `Unbind` and `Drop`: admit nothing new, join, `keepHolds` refused; `Close` the handle,
   `Forget` the tag. `Drop` takes the share's files out of the group commit's due set and
@@ -794,8 +827,10 @@ segments hold unreclaimed bytes and no cause of the table's second row holds, an
 repack freed: two refused writes racing for the same segments would otherwise answer a false
 disk-full. Bytes under a running pass count, and so do those in a segment behind an
 unresolved failed window, which repack refuses until the window resolves (RFC 1 §7.2). The
-scope sync, the seal and the per-segment unreclaimed figure are the journal's to give, and
-RFC 1 declares none of them yet (§6 point 8). The
+scope sync is the handle's `Sync` over the share's `Files` (every bound share's for the
+journal's scope), and the seal is the scoped `Repack`'s own; the per-segment unreclaimed
+figure is the journal's to give, and RFC 1 declares it and the seal in `Repack` only as
+open questions yet (§6 point 8). The
 version-limit, index-bound and spare rows answer `ErrDelay` while a raise, a repack or a
 spare can still clear them. Nothing is paced: with no drain, §10.2.1's rate is its floor,
 and every write past half the limit would be delayed for nothing.
@@ -829,15 +864,16 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
   scope, seal each active segment holding the scope's unreclaimed bytes (never one of a
   stream whose capacity-sealed segment still awaits repack), repack and retry; still
   refused, `ErrDelay` while the scope's sealed segments hold unreclaimed bytes and no cause
-  of the table's second row holds, else `ErrNoSpace`. The scope sync, the seal and the
-  per-segment unreclaimed figure are the journal's to give (§6 point 8). A `SyncError` from
+  of the table's second row holds, else `ErrNoSpace`. The sync is `Sync` over the scope's
+  `Files`, the seal is inside the scoped `Repack`, and the per-segment unreclaimed figure
+  is the journal's to give (§6 point 8). A `SyncError` from
   that sync goes to T4.6's per-file report, so the file's next `Commit` still fails once;
   the deadline rule; the `decision:` and `ponytail:` markers.
   Turns green §1.4's two cases that `ErrNoSpace` on a repack freeing nothing fails: two
   concurrent refusals with the first pass held, and an unsynced overwrite at the share's
-  limit under `Standard`; and §1.4's two cases of §10.2's last step: the only unreclaimed
-  bytes in an idle active segment, served after the seal, and an unresolved failed window
-  giving `ErrDelay`, then the write once it resolves. Also tested: a timer's failed window
+  limit under `Standard`; and §1.4's case of §10.2's last step: an unresolved failed window
+  giving `ErrDelay`, then the write once it resolves. The seal in an idle active segment is
+  the journal's `Repack` and tested in its conformance (§6 point 8). Also tested: a timer's failed window
   followed by a refusal whose sync takes the window's report, then the file's `Commit`
   fails once.
 - T7.2 The self-fence: the store time of the last write transaction any part of the engine
@@ -863,22 +899,23 @@ excluded. Spans: a clone's batches as root spans.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
   record; the uncarved carry. Until the clone is done, T8.1's registration holds the
-  source: its release is a removal into the registered extent, answered `ErrDelay` before
-  the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields retry
-  when the registration drops (T8.3); the service answers `done(false)` and runs the release
+  source: its release is a removal into the registered extent, answered pending before
+  the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields
+  `ErrDelay` with `DelayClone` when the registration drops (T8.3); the service answers `done(false)` and runs the release
   again then. T5.4's `ErrDelay` branch is built and tested here, where the registration is.
 - T8.3 The clone-kind open and phase 2. Before `Content.Resume`, which runs every batch of
-  phase 2 in one call and whose last batch deletes the record, `Deps.Opens.CloneOpen` with
+  phase 2 in one call and whose last batch deletes the record, `Deps.Holds.Hold` with
   the destination and the version `CloneTarget` drew, which takes over the record, or finds
-  the hold `install` made when the shard began. Once `Resume` returns, `CloneClose`, whose
-  orphan report goes to `Deps.Closed`: an unlink after `CloneOpen` finds the hold in the
-  table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and only that
-  report runs it. Then the registration drops, which yields retry on T5.4's channel to every
-  release it answered `ErrDelay`: an unlink before `CloneOpen` leaves the table no entry,
+  the hold `install` made when the shard began. Once `Resume` returns, `Release`, whose
+  orphan open state reports through its own `Sink.Closed`: an unlink after `Hold` finds the
+  hold in the table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and
+  only that report runs it. A clone rebuilt at start waits on `Served` for its source's
+  shard before its batches run. Then the registration drops, which yields `ErrDelay` on T5.4's channel to every
+  release it answered pending: an unlink before `Hold` leaves the table no entry,
   so no orphan, and the service runs that release again. Both paths can meet the
   registration only before it drops, and both then hold the channel, so neither loses the
-  release. The service takes no open. `CloneOpen`'s
-  `FileKey` names the source share's own shard, which `Bind` gave the engine in `Share`
+  release. The service takes no open. `Hold`'s
+  `CloneSrc.Shard` names the source share's own shard, which `Bind` gave the engine in `Share`
   (§1.3), so a clone in a second share is never answered `DelayFrozen` for a shard the
   fixture does not serve:
 
@@ -892,13 +929,13 @@ excluded. Spans: a clone's batches as root spans.
   `Start` and `ServeShard` from the service's, after it, and `ErrStopped`, the table not
   started yet, hold phase 2 before `Resume`, which the loop retries with its backoff,
   counted toward no `removal_stalled` (T5.3); no step of `Start` waits on it. Any other
-  failure of `CloneOpen` is logged and holds nothing: `Resume` runs, its last batch drops
-  the record, and no `CloneClose` follows. `ErrBadState` from `CloneClose` is success, since
+  failure of `Hold` is logged and holds nothing: `Resume` runs, its last batch drops
+  the record, and no `Release` follows. `ErrBadState` from `Release` is success, since
   a restart before `install` drops the hold. Tested over T2.2's fixture: the source unlinked
-  between phase 1 and `CloneOpen`, held there by `DelayFrozen`, keeps its content, the
-  release answered `ErrDelay` with no byte dropped, and runs again once the registration
+  between phase 1 and `Hold`, held there by `DelayFrozen`, keeps its content, the
+  release answered pending with no byte dropped, and runs again once the registration
   drops, the source's bytes then gone; the source unlinked during `Resume` keeps its
-  content until `Deps.Closed` gets the orphan and the release runs; a `CloneOpen` that fails
+  content until `Sink.Closed` reports the orphan and the release runs; a `Hold` that fails
   other than `DelayFrozen` or `ErrStopped` leaves phase 2 to finish.
 - T8.4 The destination held until done; removals of it held; a retry joining a running
   clone; `ErrDelay` at the deadline, success once done.
@@ -906,10 +943,10 @@ excluded. Spans: a clone's batches as root spans.
 - T8.6 Rebuild at start: the registration from the source's clone-kind open record when
   phase 1 wrote it, otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
-  `CloneOpen`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
+  `Hold`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
   13). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
-  it stands and `CloneClose` reports no orphan. Its bytes stay until the next start, the
+  it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
 
 ### Epic 9 — Integration: the filesystem service over the engine
@@ -981,8 +1018,9 @@ follows the journal's, not this part's (§6 point 7).
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
    §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
    §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); RFC 8 §2.6 gains
-   `Opens`, open state's `CloneOpen` and `CloneClose`, and `Closed`, for the orphan
-   `CloneClose` leaves; §8.1's "the engine reads and writes no open state" narrows to a
+   `Holds`, a `CloneHold` with `Hold`, `Release` and `Served` over open state's `CloneOpen`,
+   `CloneClose` and `Recovery.Served`, the orphan `Release` leaves reported by open state's
+   own `Sink.Closed`; §8.1's "the engine reads and writes no open state" narrows to a
    release; and §9.1's clone open "entered in the source's open table at its primary at
    admission" becomes the engine's, taken before phase 2, with the registration holding the
    source until the clone is done and a release it delayed run again when it drops (point
@@ -1007,16 +1045,20 @@ follows the journal's, not this part's (§6 point 7).
    the journal plan have no issue yet; epic 10's estimate is a guess until they do. Salvage export of stranded tags after serving stays
    the second part's. The journal plan's "out of scope" gains the rename of `journalv2` at
    the cutover.
-8. **A capacity refusal's three journal calls:** RFC 8 §10.2's last step, as #3547 words
-   it, syncs the refused scope, seals each active segment that holds the scope's unreclaimed
-   bytes, at most one per stream until repack retires it, and waits while the scope's sealed
-   segments hold unreclaimed bytes. RFC 1 declares none of the three: `Sync` names files, a
-   segment seals only when full or idle (RFC 28 §3.1), and §4.4's per-segment accounting
-   reports allocated and held bytes only, while §3.7's `UnreclaimedBytes` counts active
-   segments too. T7.1 needs a sync of a scope, the share or the journal; a seal on demand of
-   a scope's active segments, its marker drawing on the reserved headroom so a journal at its
-   limit still takes it; and unreclaimed bytes per segment in §4.4's breakdown. #3547 records
-   all three in RFC 1 §10, questions 5 to 7, and the seal for capacity in RFC 28.
+8. **What a capacity refusal asks of RFC 1:** RFC 8 §10.2's last step, as #3547 words it,
+   syncs the refused scope, repacks it sealing each active segment that holds the scope's
+   unreclaimed bytes, at most one per stream until repack retires it, and waits while the
+   scope's sealed segments hold unreclaimed bytes. The sync needs nothing new: `Sync` takes
+   any set of files, so the scope's sync is `Sync` over the share's `Files` (every bound
+   share's for the journal), which `journalv2` already has. Two things are new. A segment
+   seals only when full or idle (RFC 28 §3.1), so `Repack` scoped to a share seals the
+   scope's active segments itself, its marker drawing on the reserved headroom so a journal
+   at its limit still takes it. And §4.4's per-segment accounting reports allocated and held
+   bytes only, while §3.7's `UnreclaimedBytes` counts active segments too, so §4.4 gains
+   unreclaimed bytes per segment. #3547 records both in RFC 1 §10, questions 5 and 6, and
+   the seal for capacity in RFC 28. The seal is the journal's `Repack`, so its test is the
+   journal's conformance, not a row of §1.4: the engine's half, a sync and then a repack
+   scoped to the share, is the unsynced-overwrite row's.
 
 **For rif's team (stages 1 and 2)**
 9. **Stage 2 pieces 8 and 11.** Piece 8, Data, gates epic 9's data cases. Piece 11, Copy and
@@ -1026,17 +1068,18 @@ follows the journal's, not this part's (§6 point 7).
    (point 13).
 10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
     so the `Content` check runs over it (T9.2).
-11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests. The same
+11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's
+    unlink during `Resume`. The same
     follow-up could lift T8.6's ceiling: `CloneClose` reporting an orphan for a source whose
     release waits for a start, the upgrade its own `decision:` names.
 12. **A throwaway front end** (a CLI or FUSE) before stage 5's adapters: not planned; the
     integration tier is how the part is used before then.
-13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Opens`, not the
-    service's: `CloneOpen` takes over the source record the clone's phase 1 writes, matched
+13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Holds`, not the
+    service's: `Hold`, open state's `CloneOpen`, takes over the source record the clone's phase 1 writes, matched
     on the version `CloneTarget` draws, so nothing can call it before phase 1; the engine
-    takes it before `Content.Resume` runs phase 2, and calls `CloneClose` once `Resume`
-    returns, as RFC 14 §9.2 has it follow the clone's last batch, handing the service its
-    orphan through `Deps.Closed`.
+    takes it before `Content.Resume` runs phase 2, and calls `Release`, its `CloneClose`, once `Resume`
+    returns, as RFC 14 §9.2 has it follow the clone's last batch; open state hands the
+    service its orphan through its own `Sink.Closed`.
     Until the clone is done, the source is held by the registration, not the open, and a
     release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
     takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
@@ -1044,6 +1087,21 @@ follows the journal's, not this part's (§6 point 7).
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
     someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
     adapts it.
+15. **How a delayed `Delete` hands back its retry (C11).** T5.4's stall and T8.2's
+    registered extent both answer a release that the service finishes or runs again later.
+    The retry stays between the engine and the service, off the error value: a
+    `*vfserr.Delay` returned by `Delete` would reach the client through RFC 17's unlink and
+    rename, and a channel cannot cross `vfs.Serve`. So `vfserr.Delay` gains nothing, and
+
+    ```go
+    Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // retry non-nil only when the release is pending; yields its outcome once, or ErrUnavailable at Close/Drop
+    ```
+
+    `retry` is T5.4's channel: nil once phase 1 committed, the abort's error, `ErrDelay`
+    with `DelayClone` once a clone's registration drops, or `ErrUnavailable`, the marker left
+    for start. While it is pending the unlink answers success, and the service waits on it
+    in the background, not inside `Sink.Closed`. The RFC 8 §12.1 and RFC 17 §2.3 text for
+    it goes in #3608.
 
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
@@ -1091,11 +1149,11 @@ follows the journal's, not this part's (§6 point 7).
 | RFC 8 §15.4 | 10 (B5, B7, B9 adapted) |
 | RFC 8 §16 | Q5: 4 (`G`); Q7: out (the cut gate) |
 | RFC 8 Appendices A and B | dropped by #3547 (§6 point 2); A's defects are rows of §1.4 |
-| RFC 1 §3, §3.1 to §3.2, §3.6 to §3.8, §3.10, §4.3, §4.4, §5.3, §6, §7.2, §10 (questions 5 to 7) | constraints: the calls of §1.3, consumed by epics 3 to 8 |
+| RFC 1 §3, §3.1 to §3.2, §3.6 to §3.8, §3.10, §4.3, §4.4, §5.3, §6, §7.2, §10 (questions 5 and 6) | constraints: the calls of §1.3, consumed by epics 3 to 8 |
 | RFC 6 §8.1, §10.1 | constraints: 3 (`Covering`, `Allocation`), 4 (`Overwrites`, `Commit`) |
 | RFC 16 §3 (`Lifecycle`), §4.2 (`J‖journal`, `S‖id‖vl`) | 6 (T6.1) |
 | RFC 17 §2.3 (`Content`), §4.3 (errors, `pkg/vfs/vfserr`) | 1 |
 | RFC 17 §6 V19, V20, V22, V25, V26; §8 integration tier | 9 |
-| RFC 14 §2.2 (clone-kind open), §9.1 (`Releasing`), §9.2 (`CloneOpen`, `CloneClose`) | 8 (the engine takes and closes the clone-kind open through `Deps.Opens` and hands its orphan to `Deps.Closed`; T8.3, T8.6), 5 (the service marks a release; T5.4) |
+| RFC 14 §2.2 (clone-kind open), §9.1 (`Releasing`), §9.2 (`CloneOpen`, `CloneClose`) | 8 (the engine takes and closes the clone-kind open through `Deps.Holds`, its orphan reported by open state's `Sink.Closed`; T8.3, T8.6), 5 (the service marks a release; T5.4) |
 | RFC 25 §2.1, §3.9, §8 | rule 3; 9 (spans and conditions through the composition) |
 | RFC 29 §4.9, R11 | 2 (T2.1) |
