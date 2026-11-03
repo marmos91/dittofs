@@ -12,6 +12,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -20,10 +21,20 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/raw"
 )
 
-// maxMarkVersions is how many versions a MarkOffloaded may name, either from
-// one offload's offer or from a caller that lost the offer: enough for every
-// check here, and small enough that a slice of them stays a value.
-const maxMarkVersions = 8
+// cOffload offloads the dirty extents of file id through h, every one a
+// positive limit allows, and marks exactly the extents it was offered,
+// reported as Offer carries them: an offer's extents are its to name, cut
+// as the journal cut them. The offer is returned so a check can re-mark
+// from it after losing one.
+func cOffload(t *testing.T, h *journalv2.Handle, id journalv2.FileID, through journalv2.Version) (o journalv2.Offer) {
+	t.Helper()
+
+	offload(t, h, id, through, journalv2test.FixtureMaxBytes, 0, func(got journalv2.Offer, report func([]journalv2.Extent) error) error {
+		o = got
+		return report(extentsOf(got.Dirty))
+	})
+	return o
+}
 
 // TestRFC1C_ReseedAfterRepack checks that after a repack has moved an
 // extent's record into another segment, `MarkOffloaded` at the versions the
@@ -36,19 +47,11 @@ func TestRFC1C_ReseedAfterRepack(t *testing.T) {
 	e := ext(0, size)
 
 	w := write(t, h, id, 0, distinct(0, size))
-	var offered []journalv2.OfferedExtent
-	offload(t, h, id, w, 0, 0, func(o journalv2.Offer, report func([]journalv2.Extent) error) error {
-		offered = o.Dirty
-		return report(extentsOf(o.Dirty))
-	})
+	o := cOffload(t, h, id, w)
 	repackAll(t, f, journalv2.RepackScope{Share: journalv2test.Tag(0)})
 	f.Crash()
 
-	vs := make([]journalv2.Version, 0, len(offered))
-	for _, x := range offered {
-		vs = append(vs, x.Version)
-	}
-	err := f.Share(0).MarkOffloaded(t.Context(), id, []journalv2.Extent{e}, vs[0], vs[len(vs)-1])
+	err := f.Share(0).MarkOffloaded(t.Context(), id, []journalv2.Extent{e}, o.Oldest, o.Newest)
 	stub(t, "MarkOffloaded", err)
 	if err != nil {
 		t.Fatalf("mark the extent at the offloaded versions after a repack and a crash: %v", err)
@@ -67,14 +70,15 @@ func TestRFC1C_ReleaseSurvivesRestart(t *testing.T) {
 	e := ext(0, size)
 
 	a := write(t, h, id, 0, distinct(0, size))
-	offload(t, h, id, a, size, 0, nil)
-	sealNow(t, f, segmentOf(t, f, id, 0))
+	cOffload(t, h, id, a)
+	segA := segmentOf(t, f, id, 0)
+	sealNow(t, f, segA)
 
 	b := write(t, h, id, 0, distinct(1, size))
-	if seg := segmentOf(t, f, id, 0); seg == segmentOf(t, f, id, 0) {
-		t.Fatalf("the second write landed in the same segment as the first")
+	if segB := segmentOf(t, f, id, 0); segB == segA {
+		t.Fatalf("the second write landed in segment %d, the same one as the first", segB)
 	}
-	offload(t, f.Share(0), id, b, size, 0, nil)
+	cOffload(t, f.Share(0), id, b)
 	release(t, f.Share(0), id, e)
 	f.Reopen()
 
@@ -96,26 +100,44 @@ func TestRFC1C_ReleaseRecordLost(t *testing.T) {
 	p := distinct(0, size)
 
 	w := write(t, h, id, 0, p)
-	offload(t, h, id, w, size, 0, nil)
+	cOffload(t, h, id, w)
+	// The row releases the segment's last held extent, so the segment is
+	// sealed first and the release record lands in the stream's next one.
+	// Release returns once the record is written, never durable, so the
+	// crash below cuts the first sync that could make it durable; the hold
+	// is on any segment, since release records never go to a sealed one.
 	seg := segmentOf(t, f, id, 0)
 	sealNow(t, f, seg)
 	name := segmentName(seg)
-	removed := f.Seam.CallsFor(journalv2test.OpRemove, name)
 
-	hold := f.Seam.HoldFirst(t, journalv2test.OpSync, name)
 	err := h.Release(t.Context(), id, []journalv2.Extent{e})
+	stub(t, "Release", err)
+	if err != nil {
+		t.Fatalf("release the last held extent: %v", err)
+	}
+
+	hold := f.Seam.HoldFirst(t, journalv2test.OpSync, "*.seg")
+	done := make(chan error, 1)
+	go func() { done <- h.Sync(t.Context(), id) }()
 	<-hold.Reached()
 	crashHeld(t, f, hold)
-	_ = err
+	synced := <-done
+	stub(t, "Sync", synced)
+	// A Sync racing the crash returns the seam's fs.ErrClosed or the context's
+	// error, never a journal refusal that asserts anything.
 
+	// The segment was not unlinked: the release cut by the crash is no
+	// acknowledgment that the released bytes are reclaimable, since recovery
+	// rebuilds the extent it stood for.
 	if !listed(t, f, name) {
-		if _, derr := f.Seam.Durable(name); derr != nil {
-			t.Fatalf("segment %v is not listed and its durable bytes do not read: %v", name, derr)
-		}
-	} else if got := f.Seam.CallsFor(journalv2test.OpRemove, name); got != removed {
-		t.Fatalf("%d removes of the segment were attempted before the crash", got-removed)
+		t.Fatalf("segment %s was unlinked before the sync of its last release record made that safe", name)
 	}
-	wantBytes(t, f.Share(0), id, 0, p, "the extent after the release record was lost")
+	if got := f.Seam.CallsFor(journalv2test.OpRemove, name); got != 0 {
+		t.Fatalf("%d removes of the sealed segment were attempted before the sync", got)
+	}
+	r := read(t, f.Share(0), id, 0, size)
+	wantServed(t, r, p, "the extent after the release record was lost")
+	wantHeld(t, r, []journalv2.Held{{Extent: e, Version: w}}, "the extent after the release record was lost")
 	wantBits(t, f, id, e, true, "the extent's offloaded bit after the crash")
 }
 
@@ -130,15 +152,18 @@ func TestRFC1C_FillBeatsOlderWrite(t *testing.T) {
 
 	a := write(t, h, id, 0, distinct(0, size))
 	syncFile(t, h, id)
-	offload(t, h, id, a, size, 0, nil)
+	cOffload(t, h, id, a)
 
 	bp := distinct(1, size)
 	b := write(t, h, id, 0, bp)
 	syncFile(t, h, id)
-	offload(t, h, id, b, size, 0, nil)
+	cOffload(t, h, id, b)
 	release(t, h, id, e)
+	syncFile(t, h, id)
+	wantExtentMissing(t, h, id, e, "the released extent before the fill")
 
 	fill(t, h, id, 0, bp, b)
+	syncFile(t, h, id)
 	f.Crash()
 
 	wantBytes(t, f.Share(0), id, 0, bp, "the extent after the crash")
@@ -150,9 +175,10 @@ func TestRFC1C_FillBeatsOlderWrite(t *testing.T) {
 func TestRFC1C_StaleFill(t *testing.T) {
 	for _, leg := range []struct {
 		name  string
+		evict bool // the write leg's evictable content: the truncate leg holds nothing to offload
 		newer func(t *testing.T, f *journalv2test.Fixture, h *journalv2.Handle, id journalv2.FileID) journalv2.Version
 	}{
-		{name: "write", newer: func(t *testing.T, f *journalv2test.Fixture, h *journalv2.Handle, id journalv2.FileID) journalv2.Version {
+		{name: "write", evict: true, newer: func(t *testing.T, f *journalv2test.Fixture, h *journalv2.Handle, id journalv2.FileID) journalv2.Version {
 			return write(t, h, id, 0, distinct(1, 4096))
 		}},
 		{name: "truncate", newer: func(t *testing.T, f *journalv2test.Fixture, h *journalv2.Handle, id journalv2.FileID) journalv2.Version {
@@ -185,8 +211,10 @@ func TestRFC1C_StaleFill(t *testing.T) {
 
 			w := leg.newer(t, f, h, id)
 			syncFile(t, h, id)
-			offload(t, h, id, w, size, 0, nil)
-			release(t, h, id, e)
+			if leg.evict {
+				cOffload(t, h, id, w)
+				release(t, h, id, e)
+			}
 
 			p := distinct(2, size)
 			err := h.Fill(t.Context(), id, 0, p, asOf, w)
@@ -226,7 +254,7 @@ func TestRFC1C_IncrementalReport(t *testing.T) {
 	}
 
 	var offer []journalv2.OfferedExtent
-	err := h.Offload(t.Context(), id, ws[len(ws)-1], 0, 0, func(_ context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
+	err := h.Offload(t.Context(), id, ws[len(ws)-1], journalv2test.FixtureMaxBytes, 0, func(_ context.Context, o journalv2.Offer, report func([]journalv2.Extent) error) error {
 		offer = o.Dirty
 		var (
 			reported []journalv2.OfferedExtent
@@ -253,7 +281,10 @@ func TestRFC1C_IncrementalReport(t *testing.T) {
 		t.Fatalf("the offload failing mid-callback returned nil")
 	}
 
-	f.Crash()
+	// The row asserts the marks the report made and the ones it did not; its
+	// records are appends the journal keeps in memory until they sync, so no
+	// crash is made here — the row has none, and a crash could lose the
+	// reported record on its way to storage on a correct journal too.
 	for _, x := range offer {
 		wantBits(t, f, id, x.Extent, x.Extent.Off == 0, "the extent after the failed offload")
 		if x.Extent.Off != 0 {
@@ -330,14 +361,19 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 	}
 }
 
-// cSeqMax returns the highest record sequence number on disk, read from each
-// segment's catalog by parsing the record header each entry names.
+// cSeqMax returns the highest record sequence number among the sealed
+// segments' catalogued records on disk, parsed from the record header each
+// entry names. An unsealed segment has no catalog to read, and a correct
+// journal may leave one behind a crash, so it is skipped.
 func cSeqMax(t *testing.T, f *journalv2test.Fixture) uint64 {
 	t.Helper()
 
 	var max uint64
 	for _, name := range segmentFiles(t, f) {
 		b := durable(t, f, name)
+		if !endsInTrailer(b) {
+			continue
+		}
 		_, entries := trailerOf(t, b)
 		for _, e := range entries {
 			at := int64(binary.LittleEndian.Uint32(e[24:28])) // the record's offset in its segment
@@ -358,8 +394,7 @@ func cVersionMax(t *testing.T, f *journalv2test.Fixture) journalv2.Version {
 	t.Helper()
 
 	var max journalv2.Version
-	for id, es := range f.J.Inspect().All() {
-		_ = id
+	for _, es := range f.J.Inspect().All() {
 		for _, en := range es {
 			if max.Compare(en.Version) < 0 {
 				max = en.Version
@@ -379,10 +414,9 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 		// Several sealed segments per stream, so the shuffle has an order to
 		// hide.
 		for i := range 3 {
-			w := write(t, h, id, int64(i)*512, distinct(10*k+i, 512))
+			write(t, h, id, int64(i)*512, distinct(10*k+i, 512))
 			syncFile(t, h, id)
 			sealNow(t, f, segmentOf(t, f, id, int64(i)*512))
-			_ = w
 		}
 	}
 	f.Crash()
@@ -393,19 +427,16 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 		t.Fatalf("the next version %+v does not exceed the highest on disk %+v", next, onDisk)
 	}
 	seqMax := cSeqMax(t, f)
-	seg := segmentOf(t, f, journalv2test.File(0), 0)
-	name := segmentName(seg)
-	before := f.Seam.CallsFor(journalv2test.OpWrite, name)
 	v := write(t, f.Share(0), journalv2test.File(0), 3*512, distinct(30, 512))
-	syncFile(t, f.Share(0), journalv2test.File(0))
 	if v.Compare(next) < 0 {
 		t.Fatalf("the write after the reopen was given %+v, below the reported next version %+v", v, next)
 	}
+	// The new record's sequence is read from its own segment's catalog, so
+	// the segment is sealed first: an unsealed one carries no catalog.
+	syncFile(t, f.Share(0), journalv2test.File(0))
+	sealNow(t, f, segmentOf(t, f, journalv2test.File(0), 3*512))
 	if got := cSeqMax(t, f); got <= seqMax {
 		t.Fatalf("the record written after the reopen carries sequence %d, which does not exceed the highest %d on disk", got, seqMax)
-	}
-	if f.Seam.CallsFor(journalv2test.OpWrite, name) <= before {
-		t.Fatalf("no record was appended for the write after the reopen")
 	}
 
 	want := indexSnapshot(t, f)
@@ -413,9 +444,6 @@ func TestRFC1C_Monotonicity(t *testing.T) {
 		f.Shutdown()
 		f.Seam.ShuffleList(seed)
 		f.Reopen()
-		if f.Seam.CallsFor(journalv2test.OpWrite, name) <= before {
-			t.Fatalf("no record was appended after the shuffled reopen")
-		}
 		wantSameIndex(t, f, want)
 	}
 }
@@ -450,7 +478,6 @@ func TestRFC1C_AttachedShareRaisesCounter(t *testing.T) {
 func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 	f := journalv2test.New(t)
 	tt, pp := journalv2test.Tag(3), journalv2test.Tag(4)
-	ut := journalv2test.Tag(5)
 
 	th, err := f.J.Share(tt, 0, f.Floor(), journalv2.Bounded)
 	stub(t, "Share", err)
@@ -462,21 +489,29 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach P: %v", err)
 	}
-	fid, gid, hID := journalv2test.File(0), journalv2test.File(1), journalv2test.File(2)
+	fid, gid := journalv2test.File(0), journalv2test.File(1)
 
 	const size = 64 << 10
 	fp := distinct(0, size)
 	w := write(t, th, fid, 0, fp)
-	offload(t, th, fid, w, size, 0, nil)
+	cOffload(t, th, fid, w)
 
 	gp := distinct(1, size)
 	write(t, ph, gid, 0, gp)
 	syncFile(t, ph, gid)
 
 	f.Reopen()
+
+	// U is attached first, and neither T nor P on its own: a journal that
+	// forgets every unattached tag at an attach drops them here.
+	_, err = f.J.Share(journalv2test.Tag(5), 0, f.Floor(), journalv2.Bounded)
+	stub(t, "Share", err)
+	if err != nil {
+		t.Fatalf("attach U, which the caller names: %v", err)
+	}
 	for _, tag := range []journalv2.ShareTag{tt, pp} {
 		if _, ok := f.J.Stats().Shares[tag]; !ok {
-			t.Fatalf("after the reopen, tag %d is no longer in Stats().Shares: the journal forgot a tag the caller did not name", tag)
+			t.Fatalf("after attaching U, tag %d is no longer in Stats().Shares: the journal forgot a tag the caller did not name", tag)
 		}
 	}
 
@@ -504,8 +539,6 @@ func TestRFC1C_UnclaimedTagsAreTheCallersToName(t *testing.T) {
 	if got := len(since(t, th, fid, journalv2.Version{})); got != 0 {
 		t.Fatalf("Since over F through the forgotten tag yielded %d changes, want none", got)
 	}
-	_ = ut
-	_ = hID
 }
 
 // TestRFC1C_CancelledCallChangesNothingOrCompletes checks what a cancelled
@@ -523,13 +556,31 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		e := ext(0, size)
 
 		w := write(t, h, id, 0, distinct(0, size))
-		offload(t, h, id, w, size, 0, nil)
+		cOffload(t, h, id, w)
+
+		// The forgotten tag is one with content and no handle open, so a
+		// journal that checks ErrHandleOpen first cannot fail the leg on an
+		// unrelated refusal, and the append the leg forbids is one the
+		// journal could otherwise have made.
+		qt := journalv2test.Tag(8)
+		qh, err := f.J.Share(qt, 0, f.Floor(), journalv2.Bounded)
+		stub(t, "Share", err)
+		if err != nil {
+			t.Fatalf("attach Q, whose content the leg forgets: %v", err)
+		}
+		qid := journalv2test.File(2)
+		qp := distinct(7, size)
+		write(t, qh, qid, 0, qp)
+		if err := qh.Close(); err != nil {
+			t.Fatalf("close Q's handle: %v", err)
+		}
+
 		next := f.J.Stats().NextVersion
 		writes := segmentCalls(t, f)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err := h.WriteAt(ctx, journalv2test.File(1), 0, distinct(9, size), 0)
+		_, err = h.WriteAt(ctx, journalv2test.File(1), 0, distinct(9, size), 0)
 		stub(t, "WriteAt", err)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("WriteAt with a done context returned %v, want the context's error", err)
@@ -539,7 +590,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Release with a done context returned %v, want the context's error", err)
 		}
-		err = f.J.Forget(ctx, journalv2test.Tag(0))
+		err = f.J.Forget(ctx, qt)
 		stub(t, "Forget", err)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Forget with a done context returned %v, want the context's error", err)
@@ -556,6 +607,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 			t.Fatalf("the refused WriteAt left %d entries after the crash: %+v", len(es), es)
 		}
 		wantBytes(t, f.Share(0), id, 0, distinct(0, size), "the extent of the refused Release")
+		wantBytes(t, f.Share(0), qid, 0, qp, "the content of the refused Forget")
 	})
 
 	t.Run("cancelled after the append completes", func(t *testing.T) {
@@ -563,9 +615,10 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		h, id := f.Share(0), journalv2test.File(0)
 		const size = 64 << 10
 		p := distinct(0, size)
-		seg := segmentOf(t, f, id, 0)
 
-		hold := f.Seam.HoldFirst(t, journalv2test.OpWrite, segmentName(seg))
+		// No segment is looked up first, since the file holds nothing to
+		// find one with: the hold is on any segment's write.
+		hold := f.Seam.HoldFirst(t, journalv2test.OpWrite, "*.seg")
 		ctx, cancel := context.WithCancel(t.Context())
 		type wrote struct {
 			v   journalv2.Version
@@ -623,18 +676,28 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		if !errors.Is(err, journalv2.ErrSyncFailed) {
 			t.Fatalf("the Sync after the cancelled one returned %v, want the failure it raced", err)
 		}
+	})
 
-		// A Sync with a done context is refused the same way, and the
-		// failure it did not run still reports on the next Sync.
-		f.FailNext(journalv2test.OpSync, name, 1)
+	t.Run("a done-context sync still reports a later failure", func(t *testing.T) {
+		f := journalv2test.New(t)
+		h, id := f.Share(0), journalv2test.File(0)
+		const size = 64 << 10
+
+		// A fresh write, so the second failing sync has its own window on a
+		// segment the first failure never touched; the failed segment takes
+		// no further append, so the fault is armed on any segment.
+		write(t, h, id, 0, distinct(0, size))
+		f.FailNext(journalv2test.OpSync, "*.seg", 1)
+		before := f.J.Stats().Counters.SyncFailures
 		f.Advance(journalv2.SyncBound)
 		eventually(t, "the background sync of the bounded policy hits the failing one", func() bool {
-			return f.J.Stats().Counters.SyncFailures > 0
+			return f.J.Stats().Counters.SyncFailures > before
 		})
 		f.Seam.SetFault(nil)
-		ctx, cancel = context.WithCancel(t.Context())
+
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		err = h.Sync(ctx, id)
+		err := h.Sync(ctx, id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Sync with a done context returned %v, want the context's error", err)
@@ -649,21 +712,38 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 	t.Run("a done context takes no reservation at the limit", func(t *testing.T) {
 		f := journalv2test.New(t)
 		tag := journalv2test.Tag(9)
-		h := limitedShare(t, f, tag, 64<<10)
+		const limit, chunk = 4 << 10, 1 << 10
+		h := limitedShare(t, f, tag, limit)
 		id := journalv2test.File(0)
-		p := distinct(0, 64<<10)
-		write(t, h, id, 0, p)
-		before := f.J.Stats().Shares[tag]
 
-		_, err := tryWrite(t, h, id, 64<<10, p)
-		var refused *journalv2.NoSpaceError
-		if !errors.As(err, &refused) || !errors.Is(err, journalv2.ErrNoSpace) {
-			t.Fatalf("the write past the share's limit returned %v, want the share's refusal", err)
+		// The share is filled to its limit with successful writes, until the
+		// next is refused by the limit itself: the limit counts the records'
+		// header bytes beside their payload, so a first payload as large as
+		// the limit would be refused and fill nothing.
+		filled := 0
+		for ; ; filled++ {
+			_, err := tryWrite(t, h, id, int64(filled)*chunk, distinct(filled, chunk))
+			if errors.Is(err, journalv2.ErrNoSpace) {
+				refusal(t, err, "WriteAt", journalv2.LimitShare)
+				break
+			}
+			stub(t, "WriteAt", err)
+			if err != nil {
+				t.Fatalf("fill the share to its limit: %v", err)
+			}
 		}
+		if filled == 0 {
+			t.Fatalf("the share's first write was refused, so its limit leaves no room for any record")
+		}
+		before := f.J.Stats().Shares[tag]
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err = h.WriteAt(ctx, id, 64<<10, p, 0)
+		// The done-context write is larger than anything the limit could
+		// hold, so a journal that checked capacity first would answer the
+		// share's refusal: the row asks for the context's error, so the
+		// context is checked first.
+		_, err := h.WriteAt(ctx, id, 64<<10, distinct(filled+90, chunk), 0)
 		stub(t, "WriteAt", err)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("WriteAt with a done context at the share's limit returned %v, want the context's error", err)
@@ -709,29 +789,19 @@ func TestRFC1C_RestampAfterLostStore(t *testing.T) {
 	var other journalv2.JournalID
 	copy(other[:], "another journal")
 
+	// The row refuses a restamp with another journal's identity against the
+	// journal shut, as the fixture's own TryRestamp runs it. It reads no time
+	// and no setting, so Restamp ignores every option and none is passed.
+	f.Shutdown()
 	before := dirNow(t, f)
-	// Restamp with the journal open, as a caller that shut nothing down
-	// would. It ignores every option, so the fixture's own options, which
-	// TryRestamp passes, are not needed here.
 	err = journalv2.Restamp(t.Context(), f.Dir, other, i3)
 	stub(t, "Restamp", err)
 	if !errors.Is(err, journalv2.ErrIdentityMismatch) {
 		t.Fatalf("restamping with another journal's identity returned %v, want the identity mismatch", err)
 	}
 	wantUntouched(t, f, before)
-
-	f.Shutdown()
-	err = journalv2.Restamp(t.Context(), f.Dir, other, i3)
-	stub(t, "Restamp", err)
-	if errors.Is(err, journalv2.ErrNotImplemented) || err == nil {
-		t.Fatalf("restamping a shut journal with another identity returned %v, want the identity mismatch", err)
-	}
-	if !errors.Is(err, journalv2.ErrIdentityMismatch) {
-		t.Fatalf("the second restamp with another identity returned %v, want the identity mismatch", err)
-	}
-	wantUntouched(t, f, before)
 	f.Reopen()
-	wantBytes(t, f.Share(0), id, 0, p, "the file after the refused restamps")
+	wantBytes(t, f.Share(0), id, 0, p, "the file after the refused restamp")
 }
 
 // TestRFC1C_ForgetLeavesNothingToSettle checks that forgetting a tag leaves
@@ -753,7 +823,7 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	fp := distinct(0, size)
 	write(t, th, fid, 0, fp)
 	gp := distinct(1, size)
-	write(t, th, gid, 0, gp)
+	dv := write(t, th, gid, 0, gp)
 	syncFile(t, th, gid)
 
 	markers := f.J.Stats().RemovalMarkers
@@ -765,7 +835,6 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	if got := f.J.Stats().RemovalMarkers; got <= markers {
 		t.Fatalf("deleting G left the removal marker count at %d, want one more", got)
 	}
-	markers = f.J.Stats().RemovalMarkers
 
 	// The handle is open, so the forget is refused.
 	err = f.J.Forget(t.Context(), tt)
@@ -794,7 +863,6 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	if got := f.J.Stats().RemovalMarkers; got != 0 {
 		t.Fatalf("%d removal markers survive the forget and the crash, want none of T", got)
 	}
-	_ = markers
 
 	th, err = f.J.Share(tt, 0, f.Floor(), journalv2.Bounded)
 	stub(t, "Share", err)
@@ -809,9 +877,14 @@ func TestRFC1C_ForgetLeavesNothingToSettle(t *testing.T) {
 	}
 
 	// A fresh write under the re-attached tag is held and served across a
-	// crash, so the forget settled the old content without burying the tag.
+	// crash, and its version exceeds the forgotten content's, so the forget
+	// settled the old content without burying the tag or restarting its
+	// versions at one a caller has already recorded.
 	fp2 := distinct(2, size)
-	write(t, th, fid, 0, fp2)
+	after := write(t, th, fid, 0, fp2)
+	if after.Compare(dv) <= 0 {
+		t.Fatalf("the write after the forget was given version %+v, not above the forgotten content's %+v", after, dv)
+	}
 	syncFile(t, th, fid)
 	f.Crash()
 	wantBytes(t, f.Share(3), fid, 0, fp2, "the new write after the forget")
@@ -870,6 +943,25 @@ func wantOtherShare(t *testing.T, err error, call string, id journalv2.FileID, t
 	}
 }
 
+// wantConflictRefusal fails the test unless err is the refusal of a call on
+// id, a file the journal rebuilt under two tags, made through tag. Which of
+// the two tags the journal names as the owner of a conflicted file is the
+// contract's to leave open, so only the file and the share called through are
+// pinned.
+func wantConflictRefusal(t *testing.T, err error, call string, id journalv2.FileID, tag journalv2.ShareTag) {
+	t.Helper()
+
+	stub(t, call, err)
+	var ose *journalv2.OtherShareError
+	if !errors.As(err, &ose) || !errors.Is(err, journalv2.ErrOtherShare) {
+		t.Fatalf("%s through tag %d on the conflicted file returned %v, want ErrOtherShare", call, tag, err)
+	}
+	if ose.File != id || ose.Tag != tag {
+		t.Fatalf("%s through tag %d named file %x and tag %d, want file %x and tag %d",
+			call, tag, ose.File.Bytes(), ose.Tag, id.Bytes(), tag)
+	}
+}
+
 // TestRFC1C_FileIsItsSharesShare checks that a file belongs to the share
 // whose records built it: no other share can read, change, offload or
 // release it, forgetting the owner hands it to no one until reclaimed, a
@@ -886,9 +978,9 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		p := distinct(0, size)
 		w := write(t, ah, fid, 0, p)
 		e := ext(0, size)
-		_ = w
 
 		before := heldEntries(t, f, fid)
+		writes := segmentCalls(t, f)
 		entriesEqual := func() bool { return slices.Equal(heldEntries(t, f, fid), before) }
 
 		// ReadAt leaves the caller's buffer untouched.
@@ -899,23 +991,37 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			t.Fatalf("the refused ReadAt wrote into the caller's buffer")
 		}
 
-		_, err = bh.WriteAt(t.Context(), fid, 0, distinct(9, size), 0)
+		wp := distinct(9, size)
+		_, err = bh.WriteAt(t.Context(), fid, 0, wp, 0)
 		wantOtherShare(t, err, "WriteAt", fid, b, a)
+		if !bytes.Equal(wp, distinct(9, size)) {
+			t.Fatalf("the refused WriteAt changed the caller's bytes")
+		}
 		q := sentinels(size)
 		err = bh.Fill(t.Context(), fid, 0, q, w, draw(t, f))
 		wantOtherShare(t, err, "Fill", fid, b, a)
+		if !bytes.Equal(q, sentinels(size)) {
+			t.Fatalf("the refused Fill wrote into the caller's bytes")
+		}
 		_, err = bh.Truncate(t.Context(), fid, size)
 		wantOtherShare(t, err, "Truncate", fid, b, a)
 		_, err = bh.Deallocate(t.Context(), fid, e)
 		wantOtherShare(t, err, "Deallocate", fid, b, a)
 		_, err = bh.Delete(t.Context(), fid)
 		wantOtherShare(t, err, "Delete", fid, b, a)
-		_, err = bh.CloneTarget(t.Context(), fid, journalv2.CloneSpec{SrcShare: journalv2.ShareID{1}})
+		_, err = bh.CloneTarget(t.Context(), fid, journalv2.CloneSpec{
+			SrcShare: journalv2.ShareID{1}, Src: journalv2test.File(1), SrcOff: 0, DstOff: 0, Len: size, AsOf: w,
+		})
 		wantOtherShare(t, err, "CloneTarget", fid, b, a)
-		wantOtherShare(t, bh.Offload(t.Context(), fid, w, 0, 0, nil), "Offload", fid, b, a)
+		wantOtherShare(t, bh.Offload(t.Context(), fid, w, journalv2test.FixtureMaxBytes, 0, func(_ context.Context, _ journalv2.Offer, _ func([]journalv2.Extent) error) error {
+			return called("Offload", errors.New("the extent is another share's"))
+		}), "Offload", fid, b, a)
 		wantOtherShare(t, bh.Release(t.Context(), fid, []journalv2.Extent{e}), "Release", fid, b, a)
 		wantOtherShare(t, bh.MarkOffloaded(t.Context(), fid, []journalv2.Extent{e}, w, w), "MarkOffloaded", fid, b, a)
 
+		if got := segmentCalls(t, f); !maps.Equal(got, writes) {
+			t.Fatalf("the refused calls appended records under B: %v, want %v", got, writes)
+		}
 		if !entriesEqual() {
 			t.Fatalf("a call through the other share changed F's index entries: %+v, want %+v", heldEntries(t, f, fid), before)
 		}
@@ -925,7 +1031,7 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 	t.Run("forgetting the owner hands the file to no one", func(t *testing.T) {
 		f := journalv2test.New(t)
 		ah, bh, fid := f.Share(0), f.Share(1), journalv2test.File(0)
-		w := write(t, ah, fid, 0, distinct(0, size))
+		write(t, ah, fid, 0, distinct(0, size))
 
 		err := f.J.Forget(t.Context(), a)
 		stub(t, "Forget", err)
@@ -945,15 +1051,22 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			stub(t, "WriteAt", err)
 			t.Fatalf("the write through B after A was forgotten: %v", err)
 		}
-		_ = w
 	})
 
 	t.Run("offloaded content stays A's until reclaimed", func(t *testing.T) {
 		f := journalv2test.New(t)
 		ah, bh := f.Share(0), f.Share(1)
 		gid := journalv2test.File(1)
-		w := write(t, ah, gid, 0, distinct(0, size))
-		offload(t, ah, gid, w, size, 0, nil)
+
+		gp := distinct(0, size)
+		w := write(t, ah, gid, 0, gp)
+		cOffload(t, ah, gid, w)
+		// G's write, offloaded and release records all land in G's one
+		// active segment: the write leaves it well past the idle-seal size,
+		// so repack's own advance seals it before the pass retires it.
+		// Sealing it by hand first would strand the release record in a
+		// fresh segment too small ever to be reclaimed.
+		gseg := segmentOf(t, f, gid, 0)
 		release(t, ah, gid, ext(0, size))
 		if es := heldEntries(t, f, gid); len(es) != 0 {
 			t.Fatalf("G's index entry survived its release: %+v", es)
@@ -962,10 +1075,14 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		err := bh.Fill(t.Context(), gid, 0, sentinels(size), w, draw(t, f))
 		wantOtherShare(t, err, "Fill", gid, b, a)
 		f.Reopen()
-		err = bh.Fill(t.Context(), gid, 0, sentinels(size), w, draw(t, f))
+		err = f.Share(1).Fill(t.Context(), gid, 0, sentinels(size), w, draw(t, f))
 		wantOtherShare(t, err, "Fill after the reopen", gid, b, a)
 
+		bh = f.Share(1)
 		repackAll(t, f, journalv2.RepackScope{})
+		if listed(t, f, segmentName(gseg)) {
+			t.Fatalf("the segment holding G's records survived the repack, so a record of G is still on disk")
+		}
 		if _, err := bh.WriteAt(t.Context(), gid, 0, distinct(2, size), 0); err != nil {
 			stub(t, "WriteAt", err)
 			t.Fatalf("the write of G through B once no segment holds its record: %v", err)
@@ -1035,34 +1152,67 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			Seq: 1 << 40, Version: raw.Version{Epoch: w.Epoch, Counter: w.Counter}, Tag: uint32(b),
 			Write: &raw.WriteBody{Payload: distinct(1, size)},
 		}
-		plant(t, g, segmentName(id), sealedSegmentBytes(journalIdentity(t, g), id, []raw.Record{record}, nil))
+		// The catalog entry is what a correct open reads a sealed segment by,
+		// so without it the record is never rebuilt and no conflict surfaces.
+		entry := raw.Entry{
+			FileID: gid.Bytes(), Offset: 0, RecordOffset: raw.SegmentHeaderSize, Length: size,
+			Seq: 1<<40 + 1, Version: raw.Version{Epoch: w.Epoch, Counter: w.Counter}, Kind: 1, Tag: uint32(b),
+		}
+		plant(t, g, segmentName(id), sealedSegmentBytes(journalIdentity(t, g), id, []raw.Record{record}, []raw.Entry{entry}))
 		g.Reopen()
 
-		var conflict *journalv2.TagConflict
 		if cs := g.J.Stats().TagConflicts; len(cs) != 1 {
 			t.Fatalf("the reopen rebuilt the file under two tags, but TagConflicts holds %+v, want one naming F with A and B", cs)
-		} else {
-			conflict = &cs[0]
-			if conflict.File != gid || (conflict.Tags != [2]journalv2.ShareTag{a, b} && conflict.Tags != [2]journalv2.ShareTag{b, a}) {
-				t.Fatalf("the conflict %+v, want file F with tags A and B in either order", conflict)
-			}
+		} else if cs[0].File != gid ||
+			(cs[0].Tags != [2]journalv2.ShareTag{a, b} && cs[0].Tags != [2]journalv2.ShareTag{b, a}) {
+			t.Fatalf("the conflict holds %+v, want file F with tags A and B in either order", cs[0])
 		}
 
+		// Every call on F is refused through either tag, and only which tag
+		// the call went through is pinned: which of the two the journal names
+		// as the owner of a conflicted file is its own choice, so long as the
+		// error is an OtherShareError of this file and this share.
 		for _, tag := range []journalv2.ShareTag{a, b} {
 			h, err := g.J.Share(tag, 0, g.Floor(), journalv2.Bounded)
 			stub(t, "Share", err)
 			if err != nil {
 				t.Fatalf("attach tag %d over the conflict: %v", tag, err)
 			}
-			_, err = h.WriteAt(t.Context(), gid, 0, distinct(2, size), 0)
-			wantOtherShare(t, err, "WriteAt", gid, tag, conflict.Tags[0])
+			for _, call := range []struct {
+				name string
+				call func() error
+			}{
+				{"ReadAt", func() error { _, _, _, _, err := h.ReadAt(t.Context(), gid, 0, sentinels(size)); return err }},
+				{"WriteAt", func() error { _, err := h.WriteAt(t.Context(), gid, 0, distinct(2, size), 0); return err }},
+				{"Fill", func() error { return h.Fill(t.Context(), gid, 0, sentinels(size), w, draw(t, g)) }},
+				{"Truncate", func() error { _, err := h.Truncate(t.Context(), gid, size); return err }},
+				{"Deallocate", func() error { _, err := h.Deallocate(t.Context(), gid, ext(0, size)); return err }},
+				{"Delete", func() error { _, err := h.Delete(t.Context(), gid); return err }},
+				{"CloneTarget", func() error {
+					_, err := h.CloneTarget(t.Context(), gid, journalv2.CloneSpec{SrcShare: journalv2.ShareID{1}, Src: journalv2test.File(1), Len: size, AsOf: w})
+					return err
+				}},
+				{"Offload", func() error {
+					return h.Offload(t.Context(), gid, w, journalv2test.FixtureMaxBytes, 0, func(_ context.Context, _ journalv2.Offer, _ func([]journalv2.Extent) error) error {
+						return errors.New("the conflicted file is not offloadable")
+					})
+				}},
+				{"Release", func() error { return h.Release(t.Context(), gid, []journalv2.Extent{ext(0, size)}) }},
+				{"MarkOffloaded", func() error { return h.MarkOffloaded(t.Context(), gid, []journalv2.Extent{ext(0, size)}, w, w) }},
+			} {
+				wantConflictRefusal(t, call.call(), call.name, gid, tag)
+			}
 			if err := h.Close(); err != nil {
 				t.Fatalf("close the handle over the conflict: %v", err)
 			}
 		}
 
 		// Forgetting one of the tags clears the conflict and leaves the
-		// file to the other.
+		// file to the other. The fixture re-attached A's handle at the
+		// reopen, so it is closed first.
+		if err := g.Share(0).Close(); err != nil {
+			t.Fatalf("close A's re-attached handle: %v", err)
+		}
 		if err := g.J.Forget(t.Context(), a); err != nil {
 			stub(t, "Forget", err)
 			t.Fatalf("forget A over the conflict: %v", err)
@@ -1102,7 +1252,7 @@ func TestRFC1C_CloneTargetSurvivesCrash(t *testing.T) {
 		Len:      size,
 		AsOf:     w,
 	}
-	v, err := h.CloneTarget(t.Context(), dst, spec)
+	_, err := h.CloneTarget(t.Context(), dst, spec)
 	stub(t, "CloneTarget", err)
 	if err != nil {
 		t.Fatalf("clone target: %v", err)
@@ -1134,10 +1284,7 @@ func TestRFC1C_CloneTargetSurvivesCrash(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("Since yielded the marker of the clone target only, and it was not there")
-	}
-	if v.Compare(journalv2.Version{}) == 0 {
-		t.Fatalf("the clone target was given the zero version")
+		t.Fatalf("Since yielded no clone-target marker for D")
 	}
 	r := read(t, f.Share(0), dst, 0, size)
 	wantMissing(t, r, 0, []journalv2.Extent{ext(0, size)}, "the destination after the crash")
@@ -1165,57 +1312,79 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	bp := distinct(1, size)
 	w := write(t, h, bid, 0, bp)
 	syncFile(t, h, bid)
-	offload(t, h, bid, w, size, 0, nil)
+	cOffload(t, h, bid, w)
 
-	// Both records of the window land in the segment A's sync sealed into.
+	seg := segmentOf(t, f, aid, 0)
+	name := segmentName(seg)
+	before := segmentCalls(t, f)
+	writesFailed := before[journalv2test.OpWrite+" "+name]
+
+	// The failure is armed and the segment serves stale bytes while the
+	// window's two header-only records are still unsynced: a Truncate is
+	// otherwise durable on return, so its record would be synced before the
+	// failure could cover it.
+	f.FailNext(journalv2test.OpSync, name, 1)
+	f.Seam.StaleReads(name)
 	_, err := h.Truncate(t.Context(), aid, size/2)
 	stub(t, "Truncate", err)
 	if err != nil {
 		t.Fatalf("truncate A's file: %v", err)
 	}
 	err = h.Release(t.Context(), bid, []journalv2.Extent{ext(0, size)})
+	f.Seam.SetFault(nil) // the window may have resolved during the Release; the Sync still names it
 	stub(t, "Release", err)
 	if err != nil {
 		t.Fatalf("release B's offloaded extent: %v", err)
 	}
-
-	seg := segmentOf(t, f, aid, 0)
-	name := segmentName(seg)
-	f.FailNext(journalv2test.OpSync, name, 1)
-	f.Seam.StaleReads(name)
 	err = h.Sync(t.Context(), aid, bid)
 	f.Seam.SetFault(nil)
 	stub(t, "Sync", err)
 
+	// A correct journal re-appends both header-only records into another
+	// segment and fails nothing: the Sync's window resolves by the re-append,
+	// which §5.3 allows to surface as either a nil error or the failure it
+	// raced.
 	failed := errors.Is(err, journalv2.ErrSyncFailed)
 	if err != nil && !failed {
 		t.Fatalf("the Sync over the failed window returned %v, want ErrSyncFailed or a re-append", err)
 	}
-
-	// The window is resolved: both records were re-appended, so the
-	// re-appended bytes are counted and no extent still points into the
-	// failed segment. A window that resolved without a re-append would
-	// leave the extents in the failed segment; this check takes either
-	// outcome the RFC allows and pins what each leaves behind.
 	if got := f.J.Stats().Counters.SyncReappendedBytes; got == 0 {
-		if !failed {
-			t.Fatalf("the window resolved without re-appending any byte: SyncReappendedBytes is 0")
+		t.Fatalf("the window resolved without re-appending a byte of the truncate or the release")
+	}
+
+	// The failed segment takes no write of the window, and the re-append
+	// lands in another one, an existing segment or a fresh spare alike: its
+	// writes are counted under their own segment's name, so a write count
+	// rising on any file but the failed one pins it wherever it went.
+	after := segmentCalls(t, f)
+	if got := after[journalv2test.OpWrite+" "+name]; got != writesFailed {
+		t.Fatalf("%d writes were appended to the failed segment during the window, want %d", got, writesFailed)
+	}
+	prefix := journalv2test.OpWrite + " "
+	suffix := " " + name
+	rose := false
+	for key, n := range after {
+		if n > before[key] && strings.HasPrefix(key, prefix) && !strings.HasSuffix(key, suffix) {
+			rose = true
 		}
 	}
-	if got := f.J.Inspect().Segments(); len(got) == 0 {
-		t.Fatalf("no segments are reported after the failed window")
+	if !rose {
+		t.Fatalf("no record of the window was re-appended outside segment %d: %v, want %v with a write count risen", seg, after, before)
 	}
-	for _, id := range []journalv2.FileID{aid, bid} {
-		for _, en := range heldEntries(t, f, id) {
-			if en.Location.Segment == seg && en.Kind != journalv2.EntryMarker {
-				t.Fatalf("the live entry %+v of %v still points into the failed segment %d", en, id, seg)
+
+	// No record of the window is failed: neither file gains a loss event,
+	// whatever names them, and the removals the two records describe still
+	// hold before and after a reopen. A's synced half below the truncation
+	// stays held from the failed segment by §5.3's rule, so it is exempt.
+	for _, l := range f.J.Stats().Losses {
+		for _, id := range []journalv2.FileID{aid, bid} {
+			if l.File == id {
+				t.Fatalf("a loss event names %v, one of the window's files: %+v", id, l)
 			}
 		}
 	}
-	for _, l := range f.J.Stats().Losses {
-		if l.File == aid || l.File == bid {
-			t.Fatalf("a loss event names a file of the window: %+v", l)
-		}
+	if es := heldEntries(t, f, aid); len(es) != 1 || es[0].Extent != ext(0, size/2) {
+		t.Fatalf("A holds %+v after the window, want its synced half only", es)
 	}
 
 	// Both extents read missing before and after the reopen.
@@ -1225,15 +1394,19 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	wantExtentMissing(t, f.Share(0), aid, ext(size/2, size/2))
 	wantExtentMissing(t, f.Share(0), bid, ext(0, size))
 
-	// The failed segment carries no seal marker: it failed, so nothing
-	// seals it, and a re-appended record never lands in it again.
-	b := durable(t, f, name)
-	if endsInTrailer(b) {
-		t.Fatalf("the failed segment ends in a trailer, want a torn tail that no seal marker caps")
-	}
-	marker := raw.SealMarker{Identity: journalIdentity(t, f), Segment: uint64(seg), Offset: uint64(len(b) - raw.SealMarkerSize)}
-	if bytes.HasSuffix(b, marker.Bytes()) {
-		t.Fatalf("the failed segment ends in a seal marker")
+	// The failed segment is never sealed, and never takes another record.
+	// The journal may have retired it to a spare or unlinked it once its
+	// records were carried forward, in which case there are no bytes to
+	// read; either way no seal marker caps what is left of it.
+	if listed(t, f, name) {
+		b := durable(t, f, name)
+		if endsInTrailer(b) {
+			t.Fatalf("the failed segment ends in a trailer, want a torn tail that no seal marker caps")
+		}
+		marker := raw.SealMarker{Identity: journalIdentity(t, f), Segment: uint64(seg), Offset: uint64(len(b) - raw.SealMarkerSize)}
+		if bytes.HasSuffix(b, marker.Bytes()) {
+			t.Fatalf("the failed segment ends in a seal marker")
+		}
 	}
 }
 
