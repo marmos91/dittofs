@@ -177,8 +177,8 @@ func TestDescriptorsSharedBudgetBindsBothCaches(t *testing.T) {
 	b := cacheEnv{budget: budget, c: segment.NewDescriptors(seamB.FS(), name, budget), seam: seamB}
 	a.stock(t, 16)
 	b.stock(t, 16)
-	defer a.c.Shutdown()
-	defer b.c.Shutdown()
+	shutRegister(t, a.c)
+	shutRegister(t, b.c)
 
 	for round := 0; round < 2; round++ {
 		for i := 1; i <= 16; i++ {
@@ -205,7 +205,7 @@ func TestDescriptorsBoundHoldsWithManySegments(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 40)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	for round := 0; round < 3; round++ {
 		for i := 1; i <= 40; i++ {
@@ -230,7 +230,7 @@ func TestDescriptorsReopenCountedOncePerMiss(t *testing.T) {
 
 	e := newCache(t, 1)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	for i := 0; i < 2; i++ {
 		e.read(t, 1)
@@ -267,7 +267,7 @@ func TestDescriptorsReferencePreventsEviction(t *testing.T) {
 
 	e := newCache(t, 2)
 	e.stock(t, 17)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1) // the open miss: the descriptor enters the idle list on its release
 	r, err := e.c.Acquire(1)
@@ -300,7 +300,7 @@ func TestDescriptorsCloseClosesAndRejects(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1)
 	if got := e.openCount(1); got != 1 {
@@ -349,11 +349,7 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 	// assertion unwinds the held references first and the failure reports
 	// itself — a deferred Shutdown would instead wedge on a reference the
 	// failed test never dropped, and the run would hang to the timeout.
-	t.Cleanup(func() {
-		if err := e.c.Shutdown(); err != nil {
-			t.Errorf("Shutdown after the failed check = %v, want nil", err)
-		}
-	})
+	shutRegister(t, e.c)
 	rA, err := e.c.Acquire(1)
 	if err != nil {
 		t.Fatalf("acquiring segment 1 failed: %v", err)
@@ -455,7 +451,7 @@ func TestDescriptorsContinuousReadersDoNotStarveClose(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	const readers = 8
 	var wg sync.WaitGroup
@@ -536,6 +532,21 @@ func relRegister(t *testing.T, r segment.Ref) (drop func()) {
 	return x.drop
 }
 
+// shutRegister registers the cache's Shutdown as the test's last cleanup,
+// checking what the Shutdown returns: it is the joined errors of the files
+// it closed, and a test whose cache cannot shut down cleanly must fail on
+// that, not pass on an error its cleanup swallowed. Register it once the
+// cache is built — before any hold or reference registers its own cleanup,
+// so theirs run first: a failure on an assertion unwinds what keeps the
+// Shutdown waiting before it runs.
+func shutRegister(t *testing.T, c *segment.Descriptors) {
+	t.Cleanup(func() {
+		if err := c.Shutdown(); err != nil {
+			t.Errorf("Shutdown = %v, want nil", err)
+		}
+	})
+}
+
 // eioFault fails the first n calls of op on the file named key with EIO; every
 // other call passes. It counts its calls atomically, so concurrent calls are
 // numbered one of them's.
@@ -564,7 +575,7 @@ func TestDescriptorsNoSeamCallUnderTheCacheMutex(t *testing.T) {
 
 	e := newCache(t, 2)
 	e.stock(t, 4)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	f := &heldFault{c: e.c, ok: true}
 	e.seam.SetFault(f)
@@ -606,7 +617,7 @@ func TestDescriptorsRefusalMakesNoIO(t *testing.T) {
 
 	e := newCache(t, 2)
 	e.stock(t, 3)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	r1, err := e.c.Acquire(1)
 	if err != nil {
@@ -647,7 +658,7 @@ func TestDescriptorsFailedOpenRetries(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.seam.SetFault(&eioFault{op: journalv2test.OpOpen, key: name(1), n: 1})
 
@@ -676,7 +687,7 @@ func TestDescriptorsForget(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1)
 	if err := e.c.Close(1); err != nil {
@@ -759,7 +770,7 @@ func TestDescriptorsRaceSoak(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 8)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	const readers = 32
 	const closed = core.SegmentID(5) // the segment whose Close runs midway
@@ -871,7 +882,7 @@ func TestDescriptorsHitAllocatesNothing(t *testing.T) {
 
 	e := newCache(t, 2)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	// Warm: the descriptor is open and its entry rides the idle list.
 	e.read(t, 1)
@@ -913,11 +924,7 @@ func TestDescriptorsCloseRacingAnOpen(t *testing.T) {
 	// its own, so it runs after the hold's release: a failure while a parked
 	// call holds a reference unwinds the hold first and the failure reports
 	// itself instead of wedging the Shutdown past the run's timeout.
-	t.Cleanup(func() {
-		if err := e.c.Shutdown(); err != nil {
-			t.Errorf("Shutdown after the failed check = %v, want nil", err)
-		}
-	})
+	shutRegister(t, e.c)
 
 	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
 	opener := make(chan error, 1)
@@ -1064,11 +1071,7 @@ func TestDescriptorsASecondCloseWaitsForTheOpenDrain(t *testing.T) {
 	// its own, so it runs after the hold's release: a failure while a parked
 	// call holds a reference unwinds the hold first and the failure reports
 	// itself instead of wedging the Shutdown past the run's timeout.
-	t.Cleanup(func() {
-		if err := e.c.Shutdown(); err != nil {
-			t.Errorf("Shutdown after the failed check = %v, want nil", err)
-		}
-	})
+	shutRegister(t, e.c)
 
 	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
 	opener := make(chan error, 1)
@@ -1221,7 +1224,7 @@ func TestDescriptorsAStaleAcquireOfAMissingFileLeavesNoTrace(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	for i := 0; i < 3; i++ {
 		if _, err := e.c.Acquire(7); !errors.Is(err, segment.ErrSegmentGone) {
@@ -1247,7 +1250,7 @@ func TestDescriptorsEvictionFollowsRecency(t *testing.T) {
 
 	e := newCache(t, 2)
 	e.stock(t, 3)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1)
 	e.read(t, 2)
@@ -1271,7 +1274,7 @@ func TestDescriptorsForgetKeepsALiveEntry(t *testing.T) {
 
 	e := newCache(t, 1)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1)
 	e.read(t, 2) // evicts 1: the entry's descriptor is closed, but the entry is live
@@ -1316,8 +1319,8 @@ func TestDescriptorsAIdleJournalYieldsToAnother(t *testing.T) {
 	b := cacheEnv{budget: budget, c: segment.NewDescriptors(seamB.FS(), name, budget), seam: seamB, stocked: map[core.SegmentID]int{}}
 	a.stock(t, 4)
 	b.stock(t, 4)
-	defer a.c.Shutdown()
-	defer b.c.Shutdown()
+	shutRegister(t, a.c)
+	shutRegister(t, b.c)
 
 	// Journal A fills the whole budget with idle descriptors: four reads of
 	// four distinct segments, each released — nothing held.
@@ -1363,7 +1366,7 @@ func TestDescriptorsAStaleAcquireAfterForgetLeavesNoTrace(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
-	defer e.c.Shutdown()
+	shutRegister(t, e.c)
 
 	e.read(t, 1)
 	if err := e.c.Close(1); err != nil {
@@ -1523,11 +1526,7 @@ func TestDescriptorsCloseWaitsAReclaimClosingThatSegment(t *testing.T) {
 	// its own, so it runs after the hold's release: a failure while a parked
 	// call holds a reference unwinds the hold first and the failure reports
 	// itself instead of wedging the Shutdown past the run's timeout.
-	t.Cleanup(func() {
-		if err := e.c.Shutdown(); err != nil {
-			t.Errorf("Shutdown after the failed check = %v, want nil", err)
-		}
-	})
+	shutRegister(t, e.c)
 
 	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
 	e.read(t, 1)
@@ -1718,11 +1717,7 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	// its own, so it runs after the hold's release: a failure while a parked
 	// call holds a reference unwinds the hold first and the failure reports
 	// itself instead of wedging the Shutdown past the run's timeout.
-	t.Cleanup(func() {
-		if err := e.c.Shutdown(); err != nil {
-			t.Errorf("Shutdown after the failed check = %v, want nil", err)
-		}
-	})
+	shutRegister(t, e.c)
 
 	// A first open of segment 1 fails EIO, and it is held at the seam while
 	// the cache's own takeSlot has already taken the slot — the opener's
