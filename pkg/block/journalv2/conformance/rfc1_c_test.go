@@ -301,10 +301,9 @@ func TestRFC1C_IncrementalReport(t *testing.T) {
 func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 	for i, leg := range []struct {
 		name   string
-		record func(t *testing.T, f *journalv2test.Fixture, identity [16]byte) []byte
+		record func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte
 	}{
-		{name: "epoch half", record: func(t *testing.T, f *journalv2test.Fixture, identity [16]byte) []byte {
-			id := newestID(t, f) + 1
+		{name: "epoch half", record: func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte {
 			r := raw.Record{
 				Identity:     identity,
 				Kind:         1,
@@ -320,8 +319,7 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 			}
 			return append(raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes(), r.Bytes()...)
 		}},
-		{name: "unknown kind", record: func(t *testing.T, f *journalv2test.Fixture, identity [16]byte) []byte {
-			id := newestID(t, f) + 1
+		{name: "unknown kind", record: func(t *testing.T, f *journalv2test.Fixture, id journalv2.SegmentID, identity [16]byte) []byte {
 			r := raw.Record{
 				Identity:     identity,
 				Kind:         15,
@@ -350,7 +348,7 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 			writeSynced(t, f, 0, 0, 0, 64<<10)
 			f.Shutdown()
 			id := newestID(t, f) + 1
-			plant(t, f, segmentName(id), leg.record(t, f, journalIdentity(t, f)))
+			plant(t, f, segmentName(id), leg.record(t, f, id, journalIdentity(t, f)))
 
 			err := f.TryReopen()
 			stub(t, "Open", err)
@@ -739,10 +737,11 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		// The done-context write is larger than anything the limit could
-		// hold, so a journal that checked capacity first would answer the
-		// share's refusal: the row asks for the context's error, so the
-		// context is checked first.
+		// The done-context write is the same size as one the share just
+		// refused, at an offset the limit leaves no record room for, so a
+		// journal that checked capacity first would answer the share's
+		// refusal: the row asks for the context's error, so the context is
+		// checked first.
 		_, err := h.WriteAt(ctx, id, 64<<10, distinct(filled+90, chunk), 0)
 		stub(t, "WriteAt", err)
 		if !errors.Is(err, context.Canceled) {
@@ -1317,7 +1316,6 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	seg := segmentOf(t, f, aid, 0)
 	name := segmentName(seg)
 	before := segmentCalls(t, f)
-	writesFailed := before[journalv2test.OpWrite+" "+name]
 
 	// The failure is armed and the segment serves stale bytes while the
 	// window's two header-only records are still unsynced: a Truncate is
@@ -1352,14 +1350,14 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 		t.Fatalf("the window resolved without re-appending a byte of the truncate or the release")
 	}
 
-	// The failed segment takes no write of the window, and the re-append
-	// lands in another one, an existing segment or a fresh spare alike: its
-	// writes are counted under their own segment's name, so a write count
-	// rising on any file but the failed one pins it wherever it went.
+	// The re-append lands outside the failed segment, in an existing one or
+	// a fresh spare alike: its writes are counted under their own segment's
+	// name, so a write count rising on any file but the failed one pins it
+	// wherever it went. The truncate's and the release's own records do land
+	// in the failed segment — its stream's active one — before their syncs
+	// fail, so the failed segment is allowed its two window writes here and
+	// asserted to take none afterwards below.
 	after := segmentCalls(t, f)
-	if got := after[journalv2test.OpWrite+" "+name]; got != writesFailed {
-		t.Fatalf("%d writes were appended to the failed segment during the window, want %d", got, writesFailed)
-	}
 	prefix := journalv2test.OpWrite + " "
 	suffix := " " + name
 	rose := false
@@ -1371,6 +1369,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	if !rose {
 		t.Fatalf("no record of the window was re-appended outside segment %d: %v, want %v with a write count risen", seg, after, before)
 	}
+	writesFailed := after[journalv2test.OpWrite+" "+name]
 
 	// No record of the window is failed: neither file gains a loss event,
 	// whatever names them, and the removals the two records describe still
@@ -1387,17 +1386,26 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 		t.Fatalf("A holds %+v after the window, want its synced half only", es)
 	}
 
-	// Both extents read missing before and after the reopen.
+	// Both extents read missing before the reopen.
 	wantExtentMissing(t, f.Share(0), aid, ext(size/2, size/2))
 	wantExtentMissing(t, f.Share(0), bid, ext(0, size))
+
+	// The failed segment never takes another record: a write the failed
+	// window did not cover lands in the stream's next segment, as §5.3's
+	// "takes no further append" requires, even one that resolves inline.
+	write(t, f.Share(0), aid, size, distinct(2, 512))
+	if got := f.Seam.CallsFor(journalv2test.OpWrite, name); got != writesFailed {
+		t.Fatalf("%d writes were appended to the failed segment once its window resolved, want the %d it held at the failure", got, writesFailed)
+	}
+
 	f.Reopen()
 	wantExtentMissing(t, f.Share(0), aid, ext(size/2, size/2))
 	wantExtentMissing(t, f.Share(0), bid, ext(0, size))
 
-	// The failed segment is never sealed, and never takes another record.
-	// The journal may have retired it to a spare or unlinked it once its
-	// records were carried forward, in which case there are no bytes to
-	// read; either way no seal marker caps what is left of it.
+	// The failed segment never gains the seal marker its re-appended records
+	// would have needed to be read back from it. The journal may have retired
+	// it to a spare or unlinked it once its records were carried forward, in
+	// which case there are no bytes to read.
 	if listed(t, f, name) {
 		b := durable(t, f, name)
 		if endsInTrailer(b) {
