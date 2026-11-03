@@ -154,8 +154,8 @@ runtime soft limit is set in the environment.
    it, so the collector works harder as the heap nears the limit rather than
    letting it pass.
 3. It derives every pool (§2.3) and the defaults that follow from them: the
-   journal's index bound, 1 GiB at 51 bytes an entry for its one journal, about
-   19 million entries with their excess (§7.1); the syncer's worker counts, reduced from 128 so
+   journal's index bound, 1 GiB at 65 bytes an entry for its one journal, about
+   14.7 million entries with their excess (§7.1); the syncer's worker counts, reduced from 128 so
    both halves and their staging fit 1 GiB (§7.2); the connection limit (§4.4).
 4. It logs each pool, its fraction and its source, and exports them as gauges
    (§10).
@@ -491,7 +491,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
 | `Pools`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
-| `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Server` | entries dropped at zero |
+| `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
 | sizes: metadata store, index, transfers | the root, from `Split` | the store, each journal, the syncer | handed at construction; the owner sizes itself |
 
@@ -773,7 +773,7 @@ reservation: waiting would keep it, and the memory is what the cap protects.
 **How the service learns a call's bytes.** `core` attaches the call's receive
 and reply charge to the call's context once, before the service is called, as
 it already passes a call's hold bound (`vfs.WithHold`,
-[RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). The server's admission reads it
+[RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). The filesystem's admission reads it
 and adds each half to the share's count for its pool in the same step that
 checks the cap:
 
@@ -781,7 +781,7 @@ checks the cap:
 func WithCharge(ctx context.Context, receive, reply int64) context.Context
 func ChargeOf(ctx context.Context) (receive, reply int64) // 0, 0 for an internal caller no adapter reserved for
 
-// ShareCap is the server's per-share count (§4.2): one per service, built over the
+// ShareCap is the filesystem's per-share count (§4.2): one per service, built over the
 // receive and reply budgets, whose fill it reads. A map entry exists only while a share
 // has a call in flight, so a removed share leaves nothing behind.
 type ShareCap struct{ /* mu; per share: receive bytes, reply bytes */ }
@@ -987,13 +987,13 @@ from here. The inventory, from the socket down:
 | listen backlog | the system's maximum | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | the kernel refuses |
 | connections | `connection_limit`, a quarter per address | §4.4 | closed at accept |
 | socket receive buffer | the kernel's autotuning | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | TCP window closes |
-| requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), §3.4 | not read |
+| requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
 | requests waiting for reply bytes | the requests admitted | §3.3 | the call's deadline, then `DelayResources` |
 | the writer's queue | the connection's flow-control bound | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
-| held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), §4.3 | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter |
-| blocked lock waiters | the open-state pool | [RFC 14](rfc-14-open-state.md), §4.6 | `DelayResources` |
+| held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [§4.3](#4.3%20Held%20requests%3A%20where%20their%20bytes%20go) | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter |
+| blocked lock waiters | 1,024 per client per primary, charged to the open-state pool | [RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded), [§4.6](#4.6%20Open%20state) | `DelayResources` |
 | directory watches, and the changes each holds undelivered | 1,024 watches per client per primary, charged to the open-state pool; 64 changes or 64 KiB per watch | [RFC 14 §2.5](rfc-14-open-state.md#2.5%20Watch) | a new watch `DelayResources`; past a watch's bound its changes collapse to one rescan |
 | recalls not yet sent (the open-state outbox) | 4,096 per primary | [RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays) | a request that would start another recall `DelayResources`; no deadline runs while a recall waits |
 | callbacks to clients | the writer's queue, the callback deadline | [RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver) | the client is not answering |
@@ -1129,15 +1129,15 @@ anyway is a failed accept or a failed transfer, counted, never a crash.
 ### 7.1 The journal's index
 
 [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)
-bounds each journal's index by `ExtentLimit` entries of about 51 bytes. This RFC
-gives the index pool's ceiling to the node's journals in proportion to each
-journal's maximum footprint
+bounds each journal's index by `ExtentLimit` entries of about 65 bytes, the cost
+of extents written in random order. This RFC gives the index pool's ceiling to
+the node's journals in proportion to each journal's maximum footprint
 ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)):
 
 - `ExtentLimit`'s default is the journal's part of the index pool divided by the
   entry cost and by nine eighths, so the bound and its excess together fit: on a
-  64 GiB node with one journal, 8 GiB, about 150 million entries; on an 8 GiB
-  node, about 19 million;
+  64 GiB node with one journal, 8 GiB, about 117 million entries; on an 8 GiB
+  node, about 14.7 million;
 - an `ExtentLimit` set so that the node's journals together exceed the pool —
   the bound plus its eighth of excess
   ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)),

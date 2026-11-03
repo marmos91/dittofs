@@ -146,11 +146,11 @@ node that is not its file's primary is forwarded there by that node's gateway,
 which decides nothing; the primary's filesystem service decides it. Every node
 shares one replicated metadata store and one bucket.
 
-![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Server, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's server with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
+![A cluster of identical nodes S1, S2 and S3, each running adapters, vfs.Gateway, vfs.Serve with vfs.Filesystem, open state, metadata transactions, and the journal, engine, syncer and GC; each is primary of one shard and replica of the others; S2's gateway forwards a write for shard A to S1's filesystem with an envelope, and every node reads and writes one external replicated metadata store and shares one S3 bucket](img/rfc0-cluster.svg)
 
 The layers are drawn in [§1.3](#1.3%20The%20layers); what the gateway and the
-server each do, and why the one interface between nodes is the filesystem
-service, in [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) and [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut).
+filesystem each do, and why the one interface between nodes is the filesystem
+service, in [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides) and [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut).
 
 ### The words you need
 
@@ -432,7 +432,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has. The first release's installation is one node | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
 | **node** | one DittoFS server process, built by `node.New`; every node runs every component and can be a primary or a replica | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type) |
 | **role** | `protocol` or `storage`: one configuration flag. Every node runs both, and a node configured with one refuses to start. The metadata store is not a role: it is an external store every node calls | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type) |
-| **gateway node** / **`vfs.Gateway`** | **(cluster)** the node a client's call arrives at / its implementation of `vfs.Service` that forwards the call to the primary when it is not the primary itself. It decides nothing: `vfs.Serve` fences and deduplicates the call at the primary, and `vfs.Server` there decides it | [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides), [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary) |
+| **gateway node** / **`vfs.Gateway`** | **(cluster)** the node a client's call arrives at / its implementation of `vfs.Service` that forwards the call to the primary when it is not the primary itself. It decides nothing: `vfs.Serve` fences and deduplicates the call at the primary, and `vfs.Filesystem` there decides it | [RFC 15 §2.3](rfc-15-topology.md#2.3%20The%20gateway%20forwards%2C%20the%20filesystem%20decides), [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary) |
 | **route envelope** | **(cluster)** what every forwarded call carries: request ID, shard and epoch, sending node and node epoch, hop count | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) |
 | **floating address** / **SMB Witness** | **(cluster)** a client-facing address the cluster owns and a surviving node takes over / the SMB protocol that tells a client an address moved or a node is draining | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing) |
 | **shard** | a set of files with one primary at a time; a share is one shard, and only in a cluster can a subtree or each child of a marked directory be its own. A file is never split across shards | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
@@ -638,14 +638,14 @@ Conformance is checked by a per-component import-graph test.
 
 ### 1.3 The layers
 
-![One binary, one node type: NFS and SMB adapters and pNFS endpoints call one vfs.Service, where vfs.Server decides at the primary and, in a cluster, vfs.Gateway forwards each call there; below it sit the metadata store, open state and the content subsystem, over a transactional KV, journal devices and the remote tier](img/rfc0-architecture.svg)
+![One binary, one node type: NFS and SMB adapters and pNFS endpoints call one vfs.Service, where vfs.Filesystem decides at the primary and, in a cluster, vfs.Gateway forwards each call there; below it sit the metadata store, open state and the content subsystem, over a transactional KV, journal devices and the remote tier](img/rfc0-architecture.svg)
 
 Four layers, each calling only the one below:
 
 | Layer | What it does | Specified in |
 | --- | --- | --- |
 | **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20, the adapter model; RFC 21, NFS, and RFC 22, SMB (draft) |
-| **Filesystem service** | the one protocol-neutral API adapters call, `vfs.Service`; `vfs.Server` decides and orders every client operation across the parts below, at the primary; in a cluster `vfs.Gateway` forwards each call there and decides nothing | [RFC 17](rfc-17-vfs.md) |
+| **Filesystem service** | the one protocol-neutral API adapters call, `vfs.Service`; `vfs.Filesystem` decides and orders every client operation across the parts below, at the primary; in a cluster `vfs.Gateway` forwards each call there and decides nothing | [RFC 17](rfc-17-vfs.md) |
 | **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
 | **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
 
@@ -655,7 +655,7 @@ node every arrow in the picture is a local call. In a cluster several alike
 nodes share one replicated KV, and one interface carries client calls between
 them: a whole
 `vfs.Service` call, forwarded by the gateway of the node it arrived at to the
-file's primary, whose server decides it
+file's primary, whose filesystem decides it
 ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)). The replicated KV beneath
 them is no DittoFS node at all.
 
@@ -689,8 +689,8 @@ cases, and where the two differ for one node, this section wins:
   node that uses the embedded metadata store and is not the only node, one
   configured with one role only, and one without a journal device or
   remote-tier credentials. It then builds the metadata store, the remote stores,
-  the journal, the syncer, the engine, GC, open state, identity, the
-  filesystem service and last the adapters, handed the `vfs.Server`
+  the journal, the syncer, open state, the engine, GC, identity, the
+  filesystem service and last the adapters, handed the `vfs.Filesystem`
   directly; it starts them in that order, so the adapters accept clients only
   once everything under them serves, and stops them in reverse. The startup
   checks are
@@ -744,7 +744,7 @@ cases, and where the two differ for one node, this section wins:
 
 | Concern | Single node: binds the first release | Cluster only |
 | --- | --- | --- |
-| composition | one node, built by the composition root above; adapters call `vfs.Server` directly and every arrow in [§1.3](#1.3%20The%20layers) is a local call | `vfs.Gateway` and `vfs.Serve`, the route envelope, forwarding, floating addresses |
+| composition | one node, built by the composition root above; adapters call `vfs.Filesystem` directly and every arrow in [§1.3](#1.3%20The%20layers) is a local call | `vfs.Gateway` and `vfs.Serve`, the route envelope, forwarding, floating addresses |
 | shards | each share is one shard, and the node is its primary; a shard is held in exactly one journal, on one device, while the node keeps one journal per device, so a share writes at one journal device's rate however many devices the node has ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20primary%20per%20shard), [RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) | subtree and per-child shards, the slot table, moves ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)–[§4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | shard record | one per share, naming the node as primary with the journal that serves the share. **Every start raises every shard's incarnation, in the transaction that records the start**, and every journal attach raises the attached share's; so every restart opens a new grace instance ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | replicas, replica count and floor, epoch changes by handover and takeover |
 | node epoch | raised by one at every start, in the same transaction; no lease is renewed | the node lease, its renewal, takeover, grace after takeover |
@@ -1587,10 +1587,10 @@ Every condition below has exactly one specified behaviour.
 | **Node lost** | On a single node, a node that restarts is **Crash**; a host that does not come back takes its journal device with it, which is **Journal device lost**. **(cluster)** A replica takes the node's shards over once its lease has lapsed plus the drift bound ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)); acknowledged writes survive in the replicas' journals. |
 | **Partition** | On a single node, a partition from the remote tier is **Remote tier unavailable**; the embedded metadata store cannot be partitioned from its node. **(cluster)** A node cut off from the metadata store fences itself at half its lease and its shards fail over where the store is reachable; a primary cut off from a replica cannot acknowledge until that replica is removed ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)). |
 | **Metadata store stalled or erroring** | The store answers nothing, or fails every write while reads complete. On a single node it is **Metadata unwritable** while it lasts, and once no write transaction has committed for 30 s the engine fences the node as a local fault, not a lease loss: writes and stability points answer retry-later, reads continue, and the node resumes with no new node epoch when a write commits ([§1.4](#1.4%20The%20single-node%20profile)). **(cluster)** A node that cannot renew fences itself at half its lease, and its shards fail over. |
-| **Journal sync fails** | The device reports a failed sync for a window of appended records, or the directory sync that makes a new segment's name durable fails. The journal re-appends the window or fails it. Failing it drops exactly the window's records, named by sequence number, as loss events, and raises its loss generation; what else each loss reaches — here, content those unsynced records superseded is held again — is [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)'s rule. The failure is reported once to the next `Sync` of each file that had a write in the window, waiting or not, and then cleared, so that stability point fails and the NFS write verifier changes. A later sync of the same file covers only what was appended after, so it is never wedged by the failed window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). |
+| **Journal sync fails** | The device reports a failed sync for a window of appended records. The journal re-appends the window or fails it. Failing it drops exactly the window's records, named by sequence number, as loss events, and raises its loss generation; what else each loss reaches — here, content those unsynced records superseded is held again — is [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)'s rule. The failure is reported once to the next `Sync` of each file that had a write in the window, waiting or not, and then cleared, so that stability point fails and the NFS write verifier changes. A later sync of the same file covers only what was appended after, so it is never wedged by the failed window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)). A filesystem that refuses every write turns the journal read-only: reads continue, writes are refused, and the journal is reopened once it can write again ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). |
 | **Metadata store lost** | The store's data is gone or unreadable — on a single node the embedded store went with its host or its device. A start tells this from a first start by the explicit initialisation step, which wrote the installation ID into both the store's Installation record and every journal's `format` file ([§1.4](#1.4%20The%20single-node%20profile)): a journal naming an installation with no store beside it is this row — the journal's open, given no recorded identity because the store holds none, fails and reports the store lost ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)) — and a store with no journal is **Journal device lost**. A start never creates a store, so the node does not open a new, empty one in its place: it refuses to serve, naming the store, and GC deletes nothing. An operator starts a recovery import from the newest catalog backup ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)); files then read as of that backup, content written after it is not served as current, and GC resumes only once the operator confirms the import ([§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave)). The import gives the shares new identities, so no share claims the journal's old tags: before serving, each such tag is stranded and reported with its held and dirty bytes; while serving, it is exported for salvage under `salvage.path` and then forgotten, a failed export being a health condition that is retried and never withholds service ([RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) step 5). The same holds for a tag left by a deleted share. **(cluster)** The replicated store survives a node's loss; losing every replica is this row. |
 | **Clock outside its bound** | A clock runs faster or slower than the clock-rate bound allows, or two hosts' clocks read further apart than the clock-offset bound ([§1.4](#1.4%20The%20single-node%20profile)). Every wait on another clock's timeout is sized by those bounds, so outside them such a wait can end early: an abandoned put's delete can race a put still running, and an importer can take a namespace before the old installation's fence has passed. The node cannot detect this alone; it **MUST** report a host clock not under time synchronisation as a health condition of the node, and the deployment owns the bound. **(cluster)** The drift bound of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) is the same assumption for leases. |
-| **Node started from a copied image** | The node runs on a restored or cloned copy of its own disks: the platform's machine-generation identifier differs from the one recorded. The node mints a new instance and holds no namespace until an operator says whether this copy is the installation ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Meanwhile it refuses every write at once with no space (`ErrNoSpace`), the answer for a cause only an operator clears ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)), rather than staging writes that cannot be offloaded until the journal fills; reads of offloaded content continue. This is the third exception of [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave). |
+| **Node started from a copied image** | The node runs on a restored or cloned copy of its own disks: the platform's machine-generation identifier differs from the one recorded. The node mints a new instance and holds no namespace until an operator accepts it, namespace by namespace ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Meanwhile the shares of every namespace not yet accepted refuse every write at once with no space (`ErrNoSpace`), the answer for a cause only an operator clears ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)), rather than staging writes that cannot be offloaded until the journal fills; reads of offloaded content continue. This is the third exception of [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave). |
 | **Material unavailable** | The material provider cannot supply a key ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)). Behaves as **Remote tier unavailable**: offload cannot encode and reads of **Remote** extents cannot decode. Material lost for good is not this row: its blocks are not offloaded ([§4.2](#4.2%20The%20residency%20function)). |
 
 ### 10.1 Capacity is a bound, not a target
@@ -1609,8 +1609,8 @@ cause is removed, with three exceptions: a lost journal device on a share no
 other journal holds waits for an operator to acknowledge the loss; a lost
 metadata store waits for an operator to run a recovery import and confirm it
 before GC resumes; and a node started from a copied or restored image waits for
-an operator to say whether it is the installation, refusing writes at once
-meanwhile. **(cluster)** A fourth: a relinquished shard whose replicas are truly
+an operator to accept it, namespace by namespace, refusing those namespaces'
+writes at once meanwhile. **(cluster)** A fourth: a relinquished shard whose replicas are truly
 lost leaves only when an operator acknowledges the loss
 ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)). An implementation **MUST NOT** have any other state reachable by normal
 operation from which it cannot return without operator action.

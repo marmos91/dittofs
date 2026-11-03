@@ -16,7 +16,7 @@
 
 <rect x="20" y="40" width="860" height="48" rx="5" class="k"/>
 <text x="34" y="60" class="h">node.New (RFC 23 §2.1) builds and owns; the node (RFC 23 §2.2) starts, stops and sets shares</text>
-<text x="34" y="78" class="s">start: store → remotes → syncer → engine.Start(shares) opens journals → GC → open state → identity → vfs.Server → adapters; stop reverses</text>
+<text x="34" y="78" class="s">start: store → remotes → syncer → engine.Start(shares) opens journals → GC → open state → identity → vfs.Filesystem → adapters; stop reverses</text>
 
 <path d="M170 90V106" class="arr"/><path d="M450 90V106" class="arr"/><path d="M730 90V106" class="arr"/>
 
@@ -31,7 +31,7 @@
 <text x="352" y="158" class="s">prepare, then close the gate</text>
 
 <rect x="580" y="108" width="300" height="58" rx="5" class="vfs"/>
-<text x="592" y="128" class="h">*vfs.Server (RFC 17), holds *Engine</text>
+<text x="592" y="128" class="h">*vfs.Filesystem (RFC 17), holds *Engine</text>
 <text x="592" y="144" class="s">the only caller of the content methods,</text>
 <text x="592" y="158" class="s">at the file's primary</text>
 

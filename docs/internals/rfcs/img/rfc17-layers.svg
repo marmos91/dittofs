@@ -36,7 +36,7 @@
   <path d="M124,94 L124,128" class="ln"/><path d="M350,94 L350,128" class="ln"/><path d="M576,94 L576,128" class="ln"/>
 
   <rect x="24" y="130" width="652" height="150" rx="8" class="sv"/>
-  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— six area interfaces; a gateway routes each call, the server at the primary decides it</text>
+  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— six area interfaces; a gateway routes each call, the filesystem at the primary decides it</text>
   <rect x="36" y="162" width="150" height="48" rx="4" class="pr"/>
   <text x="46" y="180" class="h">clients</text><text x="46" y="197" class="s">Connect, Renew, Destroy</text>
   <rect x="196" y="162" width="150" height="48" rx="4" class="pr"/>
