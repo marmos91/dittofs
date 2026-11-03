@@ -36,7 +36,7 @@ jobs:
             experimental-features = nix-command flakes
 
       # decision: go.mod's toolchain release, as tests.yml has, rather than a
-      # floating 1.27.x, which resolves to whichever 1.27 the machine already has.
+      # floating 1.26.x, which resolves to whichever 1.26 the machine already has.
       - name: Install Go
         uses: actions/setup-go@v7
         with:
