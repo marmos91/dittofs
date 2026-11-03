@@ -54,6 +54,22 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	return v, nil
 }
 
+// Draw is the next version of the journal holding file f of share s, for a
+// change stored outside the journal: above every version staged or drawn on
+// that journal before it, and no version of the engine's own. The caller
+// holds the file's accept lock, so Draw takes no lock and creates no entry.
+func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return entity.JournalVersion{}, err
+	}
+	v, err := b.j.Draw()
+	if err != nil {
+		return entity.JournalVersion{}, e.journalErr(err)
+	}
+	return entity.JournalVersion(v.Bytes()), nil
+}
+
 // insert adds op to the entry's operations in version order. The caller
 // holds the entry's lock.
 //

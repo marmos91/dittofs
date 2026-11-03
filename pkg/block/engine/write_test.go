@@ -168,3 +168,38 @@ func TestConcurrentWritesOfDistinctFiles(t *testing.T) {
 		}
 	}
 }
+
+// Draw issues the journal's next version: write, draw, write strictly
+// increase, and a draw creates no entry. At the version limit it is ErrDelay,
+// no journal type.
+func TestDrawIsTheJournalsNextVersion(t *testing.T) {
+	u := newUnit(t)
+	f, g := entity.NewFileID(), entity.NewFileID()
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("a"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := u.e.Draw(t.Context(), u.share.ID, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 1, []byte("b"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Fatal(err)
+	}
+	ops := u.e.Pending(f)
+	drawn := journal.VersionFromBytes(d)
+	if len(ops) != 2 || ops[0].Version.Compare(drawn) >= 0 || drawn.Compare(ops[1].Version) >= 0 {
+		t.Errorf("write %v, draw %v, write %v: want strictly increasing", ops[0].Version, drawn, ops[1].Version)
+	}
+	if u.e.HasEntry(g) {
+		t.Error("a draw created an entry")
+	}
+	if err := u.j.SetVersionLimit(journal.Version{Counter: drawn.Counter + 2}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = u.e.Draw(t.Context(), u.share.ID, g)
+	var delay *vfserr.Delay
+	var noSpace *journal.NoSpaceError
+	if !errors.As(err, &delay) || errors.As(err, &noSpace) {
+		t.Errorf("a draw at the version limit: %v, want ErrDelay with no journal type", err)
+	}
+}
