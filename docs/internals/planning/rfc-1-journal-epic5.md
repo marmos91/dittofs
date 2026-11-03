@@ -5,12 +5,12 @@
 §5.3, §6 (allocation, spares, refusals), §7.1, §7.3, §7.4 and §8.2–§8.7; the descriptor and
 stream settings of [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B.
 **Track:** A.
-**Epic 5 estimate: 11 subtasks, 33.25 man-days.**
+**Epic 5 estimate: 11 subtasks, 33.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types and settings, and its
 storage seam (`storage.FS`, `storage.File`); epic 2's crash-simulating seam, fixture and
 profiler; epic 3's segment header and names, record, seal marker, catalog entry and trailer
 codecs, and the OS `Allocate`; epic 4's per-segment byte accounting.
-**Blocks:** epic 6 (`Sync` works on this epic's streams), epic 7 (recovery reads the segments
+**Blocks:** epic 6 (`Sync` works on this epic's streams, and its ledger is filled by this epic's `Append`, R88), epic 7 (recovery reads the segments
 this epic writes, and re-adopts its spares), epic 8 (the data path appends and reads through
 this epic's streams; its integration tests wait for the minimal stream) and epic 9 (reclamation
 retires segments through this epic's executor).
@@ -98,7 +98,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 - **S2**, red suite in CI: E2's suite runs in CI from every pull request.
 - **S3**, walking skeleton: a minimal append stream from this epic, one stream with no pool
   and no seal, plus E8's `WriteAt` and `ReadAt`, so the first conformance tests turn green.
-  **T5.1, T5.2, T5.4a and T5.4b are this epic's half, about 12.25 man-days.**
+  **T5.1, T5.2, T5.4a and T5.4b are this epic's half, about 12.75 man-days.**
 - **S4**, core complete: E3–E9 done.
 
 ## 2. General rules for each epic
@@ -198,6 +198,7 @@ below or in §1.2.
 | R11 | A stream seals a segment while what remains still holds the seal marker, a footer entry for every record in it and the trailer | invariant | RFC 28 §2.5 | T5.4b, T5.7 |
 | R12 | Of the lock domains only the file append domain is held across I/O. Reserving a position in a segment takes the segment append domain for the reservation alone, and the record write happens outside it | invariant | RFC 1 §8.2 | T5.4b |
 | R87 | Records, once written, are immutable: a record is written once at its reserved slot and never rewritten, and a recycle's zeroing touches only a retired segment's header and trailer slots | invariant | RFC 28 §2.2 | T5.4b, T5.9 |
+| R88 | Every record `Append` writes, whatever path appended it, is registered once with the durability sink (epic 6's ledger), after its bytes are written and before `Append` returns its location; every completed sync of a segment, a seal's and a roll's included, is reported to the same sink with the offset it covered. (Added with the breakdown of epics 6 and 8: epic 6 owns what the sink does) | invariant | RFC 1 §5.2, §5.3 | T5.4b, T5.7 |
 
 **The spare pool**
 
@@ -259,7 +260,7 @@ below or in §1.2.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R48 | A failed append ends its segment, fresh or recycled: no further append, not even a seal marker. The stream continues in a new segment naming no predecessor, and the segment is never sealed | MUST | RFC 28 §2.2, RFC 1 §5.1, §5.3 | T5.10 |
-| R49 | The records written to the ended segment since its last successful sync are handed to the failed-window resolution (re-append or fail: epic 6). This epic hands them over and decides nothing about them | MUST | RFC 28 §2.2, RFC 1 §5.3 | T5.10 |
+| R49 | The records written to the ended segment since its last successful sync go to the failed-window resolution (re-append or fail: epic 6). This epic hands over the end event, naming the segment and its failed slot, and epic 6 reads the window's records from the ledger `Append` filled (R88), so there is one list of them. This epic decides nothing about them | MUST | RFC 28 §2.2, RFC 1 §5.3 | T5.10 |
 | R50 | An ended segment stays accounted at its cap to the journal until it is unlinked | MUST | RFC 1 §5.3, §7.3 | T5.1, T5.10 |
 
 **Accounting**
@@ -529,16 +530,20 @@ pkg/block/journalv2/internal/
 
 ### T5.4b Minimal append stream and positioned read
 
-**Subtask T5.4b estimate: 4 man-days.**
+**Subtask T5.4b estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T5.1, T5.2, T5.4a; E3's record codec and segment header.
-- **Covers:** R2, R5, R6, R8, R10–R12, R69, R75, R86, R87.
+- **Covers:** R2, R5, R6, R8, R10–R12, R69, R75, R86–R88.
 - **Deliverables:** `internal/segment/stream.go`: `Stream` with one active segment, made by
   T5.4a's `Make` on the write path (D10), the header written once when the stream takes it,
   and `Append(record)` that reserves a position under the segment append lock without I/O
   (R12), writes the record outside it, and splits at the cap by reporting how many bytes fit
   so the caller continues in the next segment (T5.6). The ordered-completion tracker (D2) and
-  the synced-through value a record carries. `ReadAt(location, p)`: a reference on T5.2's
+  the synced-through value a record carries. The durability sink (R88): a stream takes, when it is
+  built, the two functions epic 6 registers; `Append` calls the first once per record, with its
+  location, length, sequence number, version, file, kind and payload checksum (and, for a
+  header-only record, its bytes), after the write and before it returns; the tracker calls the
+  second with the offset each completed sync covered, whoever issued the sync. `ReadAt(location, p)`: a reference on T5.2's
   descriptor, the read, the reference dropped (D8). The stream keeps its write position,
   entries and tracker under that segment's append domain (D13).
 - **Acceptance criteria:**
@@ -556,6 +561,8 @@ pkg/block/journalv2/internal/
   - `Append` returns a record's location only after its bytes are written, so a caller can
     publish it as its last step.
   - The stream stops short of the cap by the room the seal still needs (R11).
+  - Every record `Append` writes reaches the sink once, before `Append` returns, and every
+    completed sync reaches it with the offset it covered (R88).
 - **Tests:** the tracker with a later slot completing and syncing first while an earlier one
   is held (catches a "last synced offset" implementation, D2); the split at the cap with the
   pieces' offsets and versions asserted; a record that exactly fills what remains of the
@@ -563,8 +570,9 @@ pkg/block/journalv2/internal/
   followed by two appends, asserting both synced-through values; the allocation count of the
   reservation; a lock-held-during-I/O check on the segment append lock (catches R12); the
   seam's write log and the allocated size against the accounted one (catches a record written
-  twice, R87, and accounting that trails the filesystem, R75); `-race` with 16 appenders and a
-  reader.
+  twice, R87, and accounting that trails the filesystem, R75); a recording sink across appends of
+  several kinds and a failed one (catches a record that reaches the sink twice, or not at all, or
+  before its bytes are written, R88); `-race` with 16 appenders and a reader.
 
 ### T5.5 The spare pool
 
@@ -637,7 +645,7 @@ pkg/block/journalv2/internal/
 **Subtask T5.7 estimate: 4.25 man-days.**
 
 - **Track:** A. **Depends on:** T5.4b; E3's seal marker, catalog entry and trailer codecs.
-- **Covers:** R1, R11, R24–R36, R38, R53, R72, R85.
+- **Covers:** R1, R11, R24–R36, R38, R53, R72, R85, R88.
 - **Deliverables:** `internal/segment/seal.go`: the stream keeps one catalog entry per record
   it appended; `Seal(early)`, which takes its entries as data so that epic 7 can seal a
   scanned segment through the same writer, makes every record durable, appends the marker, the
@@ -656,6 +664,8 @@ pkg/block/journalv2/internal/
     truncation sync leaves it sealed and accounted at its cap. Which segment follows each is
     T5.6's.
   - A second `Seal` writes nothing.
+  - Each of the seal's syncs that completes reaches the durability sink with the offset it
+    covered (R88).
   - An append racing a seal lands before the marker or is refused and rolls to the next
     segment. None lands after the marker.
   - E3's footer reader accepts the footer of a sealed segment, and reports "no footer" for the
@@ -749,8 +759,9 @@ pkg/block/journalv2/internal/
   failed append (a short write, fewer bytes than asked with no error, is one), or at the
   request of the durability code after a failed sync: it accepts no further append and no
   seal, the stream's next roll takes a spare whose header names no predecessor, the
-  synced-through value stays below the failed slot, and the records written since the last
-  successful sync are handed to a registered consumer, which epic 6 fills in. The ledger keeps
+  synced-through value stays below the failed slot, and the end event, naming the segment and the
+  failed slot, is handed to a registered consumer, which epic 6 fills in and which reads the
+  window's records from its own ledger (R49, R88). The ledger keeps
   the segment at its cap, and T5.9 treats it as never recyclable. The ended state itself is
   T5.1's, and T5.7 already sets it on a failed seal sync: this subtask adds the
   append-failure trigger, the predecessor-free next segment and the hand-off.
@@ -759,12 +770,11 @@ pkg/block/journalv2/internal/
   - A short write, with no error, ends the segment the same way.
   - The next append goes to a new segment whose predecessor is zero.
   - Every record reserved after the failed slot carries a synced-through value below it.
-  - The unsynced records of the window reach the consumer exactly once, each with its
-    sequence number, version and location.
+  - The end event reaches the consumer exactly once, naming the segment and the failed slot.
   - An ended segment that was itself recycled from the pool behaves the same.
 - **Tests:** three concurrent appends, the middle one failed at the seam and a third completed
   (the RFC 28 zero-slot row, write half, R77); the fourth append's segment and predecessor; a
-  recycled segment's failed append; the window records handed over once; the footprint of the
+  recycled segment's failed append; the end event handed over once; the footprint of the
   ended segment at its cap until its unlink.
 
 ### T5.11 Refill from retirements, and closing the set
@@ -797,7 +807,7 @@ After T5.1 and T5.2, which can run side by side, `Make` (T5.4a) comes first, and
 stream (T5.4b) needs all three. From there two lanes run side by side. The **stream lane**:
 T5.7, T5.6, T5.8, T5.10. The **pool lane**: T5.5, then T5.9 once the seal exists. They meet at
 T5.6, which needs the pool, and at T5.11, which needs the retirement and the idle worker. The
-S3 skeleton needs T5.1, T5.2, T5.4a and T5.4b, about 12.25 man-days.
+S3 skeleton needs T5.1, T5.2, T5.4a and T5.4b, about 12.75 man-days.
 
 ```mermaid
 flowchart TD
@@ -846,7 +856,7 @@ Checkpoints:
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T5.1, T5.2 | 5.75 | | the ledger and the descriptor cache with its drain: logic over the storage seam that every later subtask uses, with no format dependency |
-| 2 | T5.4a, T5.4b | 6.5 | PR 1, E3 `Allocate`, E3 records | making a segment and the minimal stream on it: the S3 half this epic owes |
+| 2 | T5.4a, T5.4b | 7 | PR 1, E3 `Allocate`, E3 records | making a segment and the minimal stream on it: the S3 half this epic owes |
 | 3 | T5.5 | 2.25 | PR 2 | the spare pool, which can be open beside PR 4 |
 | 4 | T5.7 | 4.25 | PR 2, E3 seal and catalog | the seal and its crash matrix |
 | 5 | T5.6, T5.8, T5.10 | 8.5 | PR 3, PR 4 | the roll, the idle seal and the end of a segment, which share the stream's next-segment path |
@@ -855,6 +865,13 @@ Checkpoints:
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
+
+- **R88 was added by the breakdown of epics 6 and 8.** `Append` registers every record with
+  epic 6's ledger, and the tracker reports every completed sync, so no appending path (epic 8's
+  or epic 9's) can leave a record out of a failed window, and a seal's sync releases the `Sync`
+  calls waiting on it. T5.10 hands over only the end event as a result, and T5.4b's estimate
+  rises by 0.5 man-days. The sub-issues of T5.4b, T5.7 and T5.10 need syncing once this revision
+  merges.
 
 - **The pool target has no value in any RFC.** RFC 28 §2.2 says a retired segment becomes a
   spare "while the pool is below its target" and names no number. D3 takes `SpareTarget` for

@@ -61,7 +61,7 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
   `Init`, `Open`, `Restamp`, `Journal`, `Handle`, `Reservation`, and every method in
   §3.1–§3.11, §4.3 (`Draw`, `SetVersionLimit`), §4.4 (inspection) and §7.2 (`Repack`).
   It also means every value type (`FileID`, `Extent`, `Held`, `Version`, `ShareTag`,
-  `SyncPolicy`, `Offer`, `Change`, `CloneSpec`, `RepackScope`, `Stats`, …) and the error
+  `Offer`, `Change`, `CloneSpec`, `RepackScope`, `Stats`, …) and the error
   set (`ErrNoSpace` carrying which limit refused, the stale-fill error, closed, forgotten,
   …).
 - **The storage seam** (RFC 1 §1.3): `storage.FS`, `storage.File` and `WithStorage`. It
@@ -284,7 +284,7 @@ everything before it.
    A: E3 format        B: E4 index
         │                   │
         ▼                   │
-   A: E5 segments ──────────┤        S3: walking skeleton (E5 minimal stream + E8 WriteAt/ReadAt)
+   A: E5 segments ──────────┤        S3: walking skeleton (E5 minimal stream + E6 T6.1–T6.4, T6.7 + E8 WriteAt/ReadAt)
         │   ╲               ▼
         │    ╲─────► B: E8 data path & capacity
         ▼                   │
@@ -311,8 +311,12 @@ everything before it.
 - **S2. Red suite in CI** (end of E2). The conformance suite compiles, runs, fails, and is
   all listed as known failures. The system scenario catalogue is written. The seam, clock,
   model and profiler are green. Implementation epics start here.
-- **S3. Walking skeleton** (mid E5 / mid E8). A minimal append stream from E5 (one stream,
-  no spare pool, no seal) plus E8's `WriteAt` and `ReadAt` on top of E4's index. The first
+- **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). A minimal append stream from E5 (one
+  stream, no spare pool, no seal), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt` and `ReadAt`
+  on top of E4's index. The skeleton therefore includes durability tracking (`Sync`, group
+  commit and the sync bound), the retained-extent drop on sync, failed-window resolution, and
+  the read-time corruption rule, so `WriteAt` and `ReadAt` are built against the durability they
+  ship with rather than against stand-ins. The first
   conformance tests turn green and leave the known-failure list, and the entries still red
   move from failing in the fixture to failing on a stub (epic 2, D4). **E8's integration
   tests are blocked on this point.** E5 therefore delivers the minimal stream as its first
@@ -346,6 +350,9 @@ everything before it.
 - **E4** blocks E7 (rebuild fills the index), E8 and E9. It is pure in-memory code with no
   storage dependency, so it can start at S2.
 - **E5** blocks E6, E7 and E8's integration tests.
+- **E6's T6.1 to T6.4 and T6.7** block S3: E8's `WriteAt` needs `Sync`, the ledger epic 5's
+  `Append` fills, the retained-extent drop and the failed-window resolution, and its `ReadAt`
+  the corruption rule.
 - **E6** blocks E7: recovery appends E6's loss records.
 - **E6's read-time corruption rule** blocks E8's `ReadAt` failure path and E9's offer and
   repack verification, which call it outside recovery. E7 calls the same handler from
@@ -380,8 +387,8 @@ owner (for example, epic 1's 1.4 is on track B).
 | --- | --- | --- | --- |
 | 0 | E1: skeleton and import test, observability, storage seam | E1: value types, errors, lifecycle, public API (`Journal`, `Handle`, ops) | review → **S1** |
 | 1 | E2: test clock and fault schedule, crash-simulating seam, profiler, `raw` | E2: reference model, fixture and `dt` registration, conformance test bodies, traceability matrix | → **S2** |
-| 2 | E3, then E5 (minimal stream first) | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
-| 3 | E6, then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
+| 2 | E3, then E5 (minimal stream first), then E6's T6.1 to T6.4 and T6.7 | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
+| 3 | E6's remaining subtasks (re-append, read-only state and probe, counted checks), then E7 | E8 remainder, then E9 | → **S4**; S4a with rif |
 | 4 | E10: device config keys, start check, journal side of initialisation | E11 planning, once S4a exists | |
 | 5 | E11 | E11 | → **S5** |
 | 6 | E12 burn-down of recovery, format and durability failures | E12 burn-down of data-path and reclamation failures | release |
@@ -740,7 +747,8 @@ Epic 6 implements RFC 1 §5 and §3.8.
     policy argument are removed;
   - no `Sync` waits on a directory sync: every segment records go to is a spare whose
     entry is durable before it is taken (RFC 28 §2.2; epic 5's D6);
-  - the §5.1 ordering rules as assertions.
+  - the §5.1 ordering rules: this epic publishes which records are durable, and epics 5 and 9
+    assert the rules on it before an unlink or a drop;
 - **Failed-sync windows:**
   - while the journal runs, never append to, or seal, a failed segment (recovery at the
     next open treats it as RFC 28 §2.2 and §3.3 say, epic 7);
@@ -1074,8 +1082,8 @@ broken down into subtasks and estimated only once that interface is agreed with 
   - adding a share maps to `Share`;
   - removing a share maps to `Close` then `Forget`, in the order RFC 16 §2.3.2 requires;
   - shutdown closes the journals.
-- **The remaining configuration:** share-to-device placement, per-share limit and
-  `sync.policy`, `ExtentLimit`, `DescriptorLimit`, `headroom_records`, `salvage.path`.
+- **The remaining configuration:** share-to-device placement, per-share limit,
+  `ExtentLimit`, `DescriptorLimit`, `headroom_records`, `salvage.path`.
 - **Metadata the journal relies on**, from RFC 16's store
   ([#3120](https://github.com/marmos91/dittofs/pull/3120)), with no control-plane fields
   of its own:
