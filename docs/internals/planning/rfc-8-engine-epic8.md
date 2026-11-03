@@ -700,9 +700,8 @@ A suggestion only: one pull request per subtask works as well.
 4. **`CloneSrc.AsOf` holds *v*** (D9): RFC 14's `CloneSource.Version` and the engine's field
    name say `asOf`, while the record `kvstore` writes and `CloneOpen` matches carries the
    clone's version. One of the three should change.
-5. **`Share.Namespace` is an S1 surface change** (D2): RFC 8 §12.1's `Share` has it, E1's
-   does not. It is one field the node fills at `Bind`, reviewed with whoever composes the
-   engine at stage 4.
+5. **`Share.Namespace`** (D2): settled. RFC 8 §12.1's `Share` already has it, so E1's gains
+   it in T8.1; the node fills it at `Bind`.
 6. **`Reserve`'s `n`.** RFC 1 §6 says "`n` record bytes in all", RFC 8 §9.1 "their bytes". The
    engine passes the copies' payload bytes; if the journal counts record headers in `n`, it
    should say so in RFC 1 §6, and the engine adds them.
