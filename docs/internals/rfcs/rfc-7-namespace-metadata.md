@@ -2199,7 +2199,7 @@ that moves backward, or repeats, keeps a stale cache alive.
   raised ahead of use; every write of it — at start, at attach and at each
   raise — is a tracked max-write, so journals serving different shards of one
   share never lower one another's limit. When it is raised, and the rule, are
-  stated once, in [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), and the attach rule raises the counter
+  stated once, in [RFC 8 §2.7](rfc-8-engine.md#2.7%20The%20version%20limit), and the attach rule raises the counter
   above the limit as well as the floor. A crash then
   skips the rest of a block, and never repeats a version any client saw.
 - **Every stored `Version` is in the floor.** A change that draws a `Version`

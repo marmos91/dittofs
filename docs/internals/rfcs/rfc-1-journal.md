@@ -1738,7 +1738,7 @@ version the counter will issue and the versions left below the limit, so a
 caller rebuilding its limits — after a lost store — sets them above the
 counter, never below it. The caller raises the limit, durably, by time rather
 than only while half remain — far enough ahead that a metadata stall does not
-exhaust it before the self-fence would ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) sizes it); a
+exhaust it before the self-fence would ([RFC 8 §2.7](rfc-8-engine.md#2.7%20The%20version%20limit) sizes it); a
 `WriteAt`, `Draw` or header-only record that draws a new version — a truncate,
 deallocate, delete or clone target — that would reach it fails with
 `ErrNoSpace` naming the limit, which the engine answers as `ErrDelay`
