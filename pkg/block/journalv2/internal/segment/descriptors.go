@@ -549,6 +549,16 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	if file != nil {
 		e.file = nil
 		c.open--
+		// The reference held across the close is what makes a second
+		// Close of this segment — or the cache's Shutdown — wait it out:
+		// without it, a caller that reaches the entry while the close runs
+		// sees no file and no reference and returns nil, freeing storage
+		// the close has not finished with. The drop after the close
+		// settles any drain that took the wait in the meantime, and the
+		// error is the close's own: the caller of the first Close is the
+		// one to report it.
+		e.refs++
+		c.totalRefs++
 	}
 	c.mu.Unlock()
 
@@ -556,7 +566,9 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		return nil
 	}
 	c.budget.Give()
-	return file.Close()
+	err := file.Close()
+	c.dropRef(e)
+	return err
 }
 
 // openFailed records that an Acquire's open did not come to it — the slot was

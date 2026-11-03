@@ -1879,6 +1879,105 @@ func TestDescriptorsShutdownWaitsOutACloseTheReclaimIsStillMaking(t *testing.T) 
 	}
 }
 
+// TestDescriptorsASecondCloseWaitsForTheFirstOnesFileClose pins the gap
+// between two Closes of one segment: the first detaches the file under the
+// mutex and closes it after unlocking, so a second that arrives while that
+// close runs sees no file and no reference and returns nil — green-lighting
+// an unlink of storage the first close is still flushing (RFC 1 §7.4). The
+// close holds a reference for its own file, as a reclaim's does, so the
+// second Close waits the close out.
+func TestDescriptorsASecondCloseWaitsForTheFirstOnesFileClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+	e.read(t, 1)
+
+	// The first Close parks in the middle of its file close, the exact
+	// window the second can arrive in.
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	first := make(chan error, 1)
+	go func() { first <- e.c.Close(1) }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first Close's file close never reached the hold")
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- e.c.Close(1) }()
+	// The second must arrive while the first's close is parked: it is
+	// blocked from returning only if the drain owns it.
+	select {
+	case err := <-second:
+		t.Fatalf("the second Close returned %v while the first one's file close was still in flight, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	if err := <-first; err != nil {
+		t.Fatalf("the first Close = %v, want nil", err)
+	}
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the second Close = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second Close did not return after the first one's file close ended")
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after both Closes, want 0", got)
+	}
+	if closes := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+		t.Fatalf("segment 1's file was closed %d times, want once", closes)
+	}
+}
+
+// TestDescriptorsShutdownWaitsOutACloseStillRunning checks the same gap on
+// Shutdown's side: a Close that detached its file and is closing it outside
+// the mutex holds a reference, which is what keeps the shutdown's close walk
+// from returning over it — the walk takes files, and a walk that walked over
+// an in-flight close would shut the cache down and free storage the close
+// had not finished with.
+func TestDescriptorsShutdownWaitsOutACloseStillRunning(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 2)
+	e.read(t, 1)
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	closed := make(chan error, 1)
+	go func() { closed <- e.c.Close(1) }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Close's file close never reached the hold")
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- e.c.Shutdown() }()
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned %v while a Close was still in the middle of its file close, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	if err := <-closed; err != nil {
+		t.Fatalf("the Close = %v, want nil", err)
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the Close's file close ended")
+	}
+}
+
 func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
