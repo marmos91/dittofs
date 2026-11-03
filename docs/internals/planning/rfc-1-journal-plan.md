@@ -742,7 +742,8 @@ Epic 6 implements RFC 1 §5 and §3.8.
     next open treats it as RFC 28 §2.2 and §3.3 say, epic 7);
   - re-append with the original numbers, only from an in-memory copy or a re-read that
     verifies against the checksum kept at write time;
-  - header-only records are always re-appended;
+  - header-only records are re-appended, except in a read-only journal, where they are
+    undone with the window (RFC 1 §5.4);
   - or fail the window, with unsynced loss records;
   - a superseded record is kept until its superseding write syncs (retained);
   - each failed window is reported once per file, and does not wedge the file;
@@ -750,8 +751,11 @@ Epic 6 implements RFC 1 §5 and §3.8.
   - entered when a call fails with `EROFS`, or when a sync or append fails in the spare
     a stream took to leave a failed segment before any sync in it succeeded;
   - sticky until reopen: appending calls fail at once with `ErrJournalReadOnly` and take
-    no spare, `ReadAt` keeps serving, the open window is failed, and `report` stays in
-    memory, as §5.4 specifies (a loss record's drop is the one undo that stands);
+    no spare, `ReadAt` keeps serving, and `report` stays in memory; the open window is
+    failed with no loss record appended, raising the loss generation, and its header-only
+    records are undone in memory, every `Sync` waiting on one failing with
+    `ErrJournalReadOnly`, as §5.4 specifies (a loss record's drop is the one undo that
+    stands);
   - the failed records' sequence numbers kept per directory in the process, for the
     next open to drop (epic 7);
   - every 30 s, a probe runs open's Appendix A checks and, only if they pass, makes one
@@ -822,16 +826,19 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
     or bad seal marker in a segment named as a predecessor are corruption. A bad seal
     marker no successor names is part of the torn tail. Pending: zeros at a stream's tail
     with no later record (#3405);
-  - a torn tail truncated at its start, made durable and sealed; a torn slot before a
-    verifying record, a torn header, or a failed append's slot found again ends the
-    segment instead: truncated the same way, never sealed (RFC 28 §3.1, §3.3);
+  - a torn tail truncated at its start, made durable and sealed, unless its sync fails in
+    this open (then its segment is a failed one, never sealed; RFC 28 §3.1); a torn slot
+    before a verifying record, a torn header, or a failed append's slot found again ends
+    the segment instead: truncated the same way, never sealed (RFC 28 §3.1, §3.3);
   - the unproven tail is fsynced, re-read with direct I/O, and re-appended from the repack
     reserve on failure; if its sync fails, its segment is a failed one (RFC 28 §3.1);
   - then, before the journal serves, each segment recovery ended is emptied in RFC 28
     §3.3's order: loss records synced first, live records and their loss records
-    re-appended whole under their numbers into a sealed spare (another spare if its sync
-    fails, the open failing when none is left), a record whose copy already verifies
-    skipped, then the segment unlinked and the directory synced.
+    re-appended whole under their numbers into a sealed spare (if its sync fails, once
+    more into another spare; a write or sync failing there too, the second refusal in a
+    row, or no spare to be had, fails the open and leaves the ended segment in place), a
+    record whose copy already verifies skipped, then the segment unlinked and the
+    directory synced.
 - **Corruption** (RFC 28 §3.3), the first subtask, since epics 8 and 9 call it: a record
   that does not verify has its extents dropped, never served or replaced by zeros, and is
   a loss event telling an offloaded extent from a dirty one, unless another copy with its
