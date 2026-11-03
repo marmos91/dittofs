@@ -74,8 +74,8 @@ func HighestID(names []string) core.SegmentID {
 	return top
 }
 
-// drawID returns the next id. It is Maker's own, but the recycle (a later
-// step of this epic) draws from the same counter.
+// drawID returns the next id. It is Maker's own, but the recycle draws from
+// the same counter.
 func (m *Maker) drawID() core.SegmentID {
 	return core.SegmentID(m.last.Add(1))
 }
@@ -111,8 +111,9 @@ func (m *Maker) make(id core.SegmentID) error {
 	spare := format.SpareName(id)
 	name := format.SegmentName(id)
 
-	// The step that failed, for the error fail names. The file steps run
-	// in order, so the label names whichever call first broke the sequence.
+	// The step that failed, for the error fail names: whichever call first
+	// broke the sequence keeps its label, a close that fails after it cannot
+	// claim it.
 	step := "create"
 	var err error
 
@@ -130,12 +131,10 @@ func (m *Maker) make(id core.SegmentID) error {
 		if aerr := f.Allocate(0, m.set.cap); aerr != nil {
 			step, err = "allocate", aerr
 		} else if serr := f.Sync(); serr != nil {
-			// The sync comes before the close, so no descriptor that wrote
-			// into the file is closed over unsynced writes.
 			step, err = "sync", serr
 		}
-		// The close releases the handle whether or not it succeeds; its
-		// error is a failed step too, joined with the one before it.
+		// decision: the sync runs before the close, so no descriptor that
+		// wrote into the file is ever closed over unsynced writes.
 		if clerr := f.Close(); clerr != nil {
 			if err == nil {
 				step = "close"
@@ -163,7 +162,8 @@ func (m *Maker) make(id core.SegmentID) error {
 // is never taken, so whatever the attempt left is unlinked and only after
 // the unlink has happened is the reservation returned. A leftover that
 // cannot be unlinked stays in the set, End-ed and accounted at its cap,
-// until a retirement unlinks it.
+// until a retirement unlinks it — under both of the id's format names, for
+// the ledger keeps no name.
 func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	spare := format.SpareName(id)
 	name := format.SegmentName(id)
@@ -174,21 +174,18 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	// a `.seg` that exists by then is one this make either renamed into
 	// place or replaced, both of which it may unlink. A rename that failed
 	// may have left the file under either name; only storage knows which.
+	//
+	// decision: an id collision is trusted to the seed (R16): Make neither
+	// checks nor protects a name above the id it was seeded with. Every id
+	// the seed hands over names a file nothing of this Maker's owns, but a
+	// seed that skips one breaks R16 on its own — the first spare a restart
+	// makes would meet a leftover under its name whatever Make did about
+	// it. A bad seed replaces or unlinks a live segment here. Withdraw if
+	// anything but a directory scan of every name the directory holds ever
+	// seeds a Maker.
 	names := []string{spare}
 	if step == "rename" || step == "sync_dir" {
 		names = append(names, name)
-	}
-
-	// decision: a create refused with fs.ErrExist means the Maker drew an id
-	// the directory already held — a caller bug of the seed, or a file
-	// nothing of the journal owns. The refusal covers Create's own error
-	// alone, which the step label names exactly; removing that name could
-	// unlink a live segment, so the failure path gives the name a wider
-	// berth than its own leftover: the reservation is returned and the
-	// directory is left exactly as the Maker found it.
-	if step == "create" && errors.Is(stepErr, fs.ErrExist) {
-		_, dropErr := m.set.DropSpare(id)
-		return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, dropErr))
 	}
 
 	// decision: no SyncDir after the cleanup, whichever way the cleanup ends.
@@ -199,15 +196,13 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	// of every step, and hold Make's return on the durability of a removal
 	// the ledger has already returned.
 	var remErr error
-	removed := true
 	for _, remove := range names {
 		if err := m.fs.Remove(remove); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			removed = false
 			remErr = errors.Join(remErr, err)
 		}
 	}
 
-	if removed {
+	if remErr == nil {
 		// Only after the removals have returned is the reservation given
 		// back: the footprint never runs below the storage in use.
 		_, err := m.set.DropSpare(id)
@@ -216,17 +211,18 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 
 	// A leftover that could not be unlinked stays in the set, in the segment
 	// half (Take moves the spare there, holding the cap) marked Ended, until
-	// a retirement unlinks it under whichever name it finds.
+	// a retirement unlinks it. The ledger keeps no name, so its unlink of
+	// this leftover must try both format.SpareName(id) and format.SegmentName(id),
+	// treating fs.ErrNotExist as gone, whichever of the two the file sits
+	// under.
 	if err := m.set.Take(id); err != nil {
 		remErr = errors.Join(remErr, err)
 	}
 	if err := m.set.End(id); err != nil {
 		remErr = errors.Join(remErr, err)
 	}
-	// The Warn names the names the cleanup actually tried, not the pair of
-	// format names for the id: a failure before the rename never tried the
-	// segment's, and a name the operator is sent to look under must be one a
-	// file can be under.
+	// The Warn names the names the cleanup actually tried: a name the
+	// operator is sent to look under must be one a file can be under.
 	m.log.Warn("segment: a failed make left a spare the unlink could not remove",
 		"id", uint64(id), "names", names, "err", remErr)
 
