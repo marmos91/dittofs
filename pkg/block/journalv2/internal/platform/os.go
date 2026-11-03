@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || windows
 
 package platform
 
@@ -9,12 +9,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
 
-// filePerm is the mode a created file is asked for, which the umask can only
-// narrow: the journal holds its users' data, so only the process's own user
-// reads it.
-const filePerm = 0o600
-
 // OS is a storage.FS over the directory dir, on the operating system's files.
+// Create, Open, and a file's WriteAt, Truncate and Size are per system
+// (os_unix.go, os_windows.go); the rest is shared here.
 type OS struct {
 	dir   string
 	calls calls
@@ -37,24 +34,6 @@ func newOS(dir string, c calls) *OS {
 
 func (o *OS) path(name string) string {
 	return filepath.Join(o.dir, name)
-}
-
-func (o *OS) Create(name string) (storage.File, error) {
-	f, err := os.OpenFile(o.path(name), os.O_RDWR|os.O_CREATE|os.O_EXCL, filePerm)
-	if err != nil {
-		return nil, err
-	}
-
-	return o.newFile(f, name), nil
-}
-
-func (o *OS) Open(name string) (storage.File, error) {
-	f, err := os.OpenFile(o.path(name), os.O_RDWR, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	return o.newFile(f, name), nil
 }
 
 func (o *OS) Rename(oldName, newName string) error {
@@ -106,23 +85,6 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 // caller that must not trust the cache.
 func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
 	return f.ReadAt(p, off)
-}
-
-func (f *file) WriteAt(p []byte, off int64) (int, error) {
-	return f.f.WriteAt(p, off)
-}
-
-func (f *file) Truncate(size int64) error {
-	return f.f.Truncate(size)
-}
-
-func (f *file) Size() (int64, error) {
-	fi, err := f.f.Stat()
-	if err != nil {
-		return 0, err
-	}
-
-	return fi.Size(), nil
 }
 
 func (f *file) Close() error {

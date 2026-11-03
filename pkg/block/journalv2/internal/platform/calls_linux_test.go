@@ -52,16 +52,16 @@ func TestSyscallTableIsReal(t *testing.T) {
 	}
 }
 
-// TestNoCallBesideTheTable fails on a golang.org/x/sys/unix or syscall name
-// used outside the table's files other than a constant or type the package
-// passes as data, and on Sync or Fd taken from anything, an *os.File's own
-// sync or its raw descriptor. On macOS the os package's File.Sync answers a
-// full sync the filesystem refuses with a plain fsync, which RFC 1 §5.2
-// forbids. A test that swaps the table sees only calls made through it, so a
-// call made beside it would go unseen. It reads every non-test file whatever
-// its build tags, finds the packages by import path so a renamed import is
-// caught, and refuses a dot or blank import of them, whose names it could not
-// tell apart.
+// TestNoCallBesideTheTable fails on a golang.org/x/sys/unix,
+// golang.org/x/sys/windows or syscall name used outside the table's files
+// other than a constant or type the package passes as data, and on Sync or Fd
+// taken from anything, an *os.File's own sync or its raw descriptor. On macOS
+// the os package's File.Sync answers a full sync the filesystem refuses with a
+// plain fsync, which RFC 1 §5.2 forbids. A test that swaps the table sees only
+// calls made through it, so a call made beside it would go unseen. It reads
+// every non-test file whatever its build tags, finds the packages by import
+// path so a renamed import is caught, and refuses a dot or blank import of
+// them, whose names it could not tell apart.
 func TestNoCallBesideTheTable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -95,14 +95,40 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"DT_CHR":                   true,
 		"DT_BLK":                   true,
 		"Dirent":                   true,
-	}
-	tables := map[string]bool{
-		"calls.go":        true,
-		"calls_darwin.go": true,
+
+		// Windows: constants, the handle, overlapped and file information
+		// types, the conversion of a path to UTF-16, which makes no system
+		// call, and the errno type and ENOSPC a full volume is matched with.
+		"GENERIC_READ":               true,
+		"GENERIC_WRITE":              true,
+		"FILE_SHARE_READ":            true,
+		"FILE_SHARE_WRITE":           true,
+		"FILE_SHARE_DELETE":          true,
+		"CREATE_NEW":                 true,
+		"OPEN_EXISTING":              true,
+		"FILE_ATTRIBUTE_NORMAL":      true,
+		"FILE_FLAG_BACKUP_SEMANTICS": true,
+		"FileAllocationInfo":         true,
+		"FileEndOfFileInfo":          true,
+		"ERROR_INVALID_PARAMETER":    true,
+		"ERROR_DISK_FULL":            true,
+		"ERROR_HANDLE_DISK_FULL":     true,
+		"Handle":                     true,
+		"Overlapped":                 true,
+		"ByHandleFileInformation":    true,
+		"UTF16PtrFromString":         true,
+		"Errno":                      true,
+		"ENOSPC":                     true,
 	}
 	raw := map[string]bool{
-		"golang.org/x/sys/unix": true,
-		"syscall":               true,
+		"golang.org/x/sys/unix":    true,
+		"golang.org/x/sys/windows": true,
+		"syscall":                  true,
+	}
+	tables := map[string]bool{
+		"calls.go":         true,
+		"calls_darwin.go":  true,
+		"calls_windows.go": true,
 	}
 
 	entries, err := os.ReadDir(".")
