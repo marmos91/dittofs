@@ -170,7 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
-| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delay` gains `Ready <-chan struct{}`, which T5.4's channel becomes (§6 point 15) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, or `ErrStopped` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -715,22 +715,26 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   fixed backoff, `removal_stalled` after five failed batches. A clone's `Holds.Hold` answered
   `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
   the five (T8.3).
-- T5.4 A release's contract with the service: `Delete` answers one of four outcomes. Phase
+- T5.4 A release's contract with the service: `Delete` answers one of four outcomes,
+  through C11's `(retry <-chan error, err error)`. Phase
   1 committed: the service answers `done(true)`. Aborted by a holder: `done(false)` clears
   the mark, and the engine settles the abort, without its removal, and reports it as data
   loss (RFC 8 §2.5 step 3); the pending writes the aborted release dropped get `Done` with
   nothing charged. Not committed yet, as on a store stall at the deadline, after the
   journal's `Delete` has dropped the bytes: the service keeps the mark, and the engine hands
-  the retry of phase 1 to T5.3's loop, with no goroutine of its own, and hands back a
-  channel buffered by one that yields the retry's outcome once: committed, aborted, or
-  stopped when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
+  the retry of phase 1 to T5.3's loop, with no goroutine of its own, and returns as `retry`
+  a channel buffered by one that yields the retry's outcome once: nil once committed, the
+  abort's error, or `ErrStopped` when `Close` or `Drop` ends the loop mid-retry, which leaves the marker for start
   step 3 and needs no `done(...)`. A retry that keeps failing raises `removal_stalled` for
   the file after five failures, as a phase 2 batch does, and a commit or an abort clears
-  it. Into an extent a clone registered (T8.1): `ErrDelay`, answered before the journal's
-  `Delete`, so nothing is dropped, with the same channel, which yields retry once the clone
-  drops its registration, or stopped when `Close` or `Drop` comes first, the unlink's
+  it. Into an extent a clone registered (T8.1): pending too, answered before the journal's
+  `Delete`, so nothing is dropped, with the same channel, which yields `ErrDelay` with
+  `DelayClone` once the clone drops its registration, or `ErrStopped` when `Close` or `Drop`
+  comes first, the unlink's
   pending release then running at the next start; the service answers `done(false)` and runs
-  the release again on retry. That branch reads T8.1's registration, so it is built and
+  the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
+  the unlink answers success, and the service waits on `retry` in the background, never
+  inside `Sink.Closed`, and finishes the release with its outcome. That branch reads T8.1's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
@@ -739,7 +743,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   file marked until phase 1 commits, then the channel yields committed; a stall that
   outlasts five retries raises `removal_stalled`, and the abort that ends it clears it. The
   stopped outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
-  `Delete` returns `error`, so how it hands the channel back is C11 (§6 point 15).
+  The channel is `Delete`'s first result (C11, §6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
   crash over T2.2's fixture and the journal's crash seam (rule 8).
 
@@ -779,7 +783,7 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   `K`-bounded transactions, `SetVersionLimit` after, the two markers.
 - T6.8 `Close`: refuse, the last group commit, joins within their bounds, close in reverse,
   nothing closed under a live loop. Tested with T5.4's stopped outcome: a `Close` while the
-  removal loop retries a release's phase 1 yields stopped on its channel, with no
+  removal loop retries a release's phase 1 yields `ErrStopped` on its channel, with no
   `done(...)`, and leaves the marker for T6.5.
 - T6.9 `Unbind` and `Drop`: admit nothing new, join, `keepHolds` refused; `Close` the handle,
   `Forget` the tag. `Drop` takes the share's files out of the group commit's due set and
@@ -880,9 +884,9 @@ excluded. Spans: a clone's batches as root spans.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
   record; the uncarved carry. Until the clone is done, T8.1's registration holds the
-  source: its release is a removal into the registered extent, answered `ErrDelay` before
-  the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields retry
-  when the registration drops (T8.3); the service answers `done(false)` and runs the release
+  source: its release is a removal into the registered extent, answered pending before
+  the journal's `Delete`, so nothing is dropped, with T5.4's channel, which yields
+  `ErrDelay` with `DelayClone` when the registration drops (T8.3); the service answers `done(false)` and runs the release
   again then. T5.4's `ErrDelay` branch is built and tested here, where the registration is.
 - T8.3 The clone-kind open and phase 2. Before `Content.Resume`, which runs every batch of
   phase 2 in one call and whose last batch deletes the record, `Deps.Holds.Hold` with
@@ -891,8 +895,8 @@ excluded. Spans: a clone's batches as root spans.
   orphan open state reports through its own `Sink.Closed`: an unlink after `Hold` finds the
   hold in the table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and
   only that report runs it. A clone rebuilt at start waits on `Served` for its source's
-  shard before its batches run. Then the registration drops, which yields retry on T5.4's channel to every
-  release it answered `ErrDelay`: an unlink before `Hold` leaves the table no entry,
+  shard before its batches run. Then the registration drops, which yields `ErrDelay` on T5.4's channel to every
+  release it answered pending: an unlink before `Hold` leaves the table no entry,
   so no orphan, and the service runs that release again. Both paths can meet the
   registration only before it drops, and both then hold the channel, so neither loses the
   release. The service takes no open. `Hold`'s
@@ -914,7 +918,7 @@ excluded. Spans: a clone's batches as root spans.
   the record, and no `Release` follows. `ErrBadState` from `Release` is success, since
   a restart before `install` drops the hold. Tested over T2.2's fixture: the source unlinked
   between phase 1 and `Hold`, held there by `DelayFrozen`, keeps its content, the
-  release answered `ErrDelay` with no byte dropped, and runs again once the registration
+  release answered pending with no byte dropped, and runs again once the registration
   drops, the source's bytes then gone; the source unlinked during `Resume` keeps its
   content until `Sink.Closed` reports the orphan and the release runs; a `Hold` that fails
   other than `DelayFrozen` or `ErrStopped` leaves phase 2 to finish.
@@ -1069,17 +1073,20 @@ follows the journal's, not this part's (§6 point 7).
     someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
     adapts it.
 15. **How a delayed `Delete` hands back its retry (C11).** T5.4's stall and T8.2's
-    registered extent both answer a release that the service runs again later, through a
-    channel. RFC 8 §12.1 and `internal/vfs/filesystem.go` declare `Delete(ctx, f) error`,
-    RFC 8 says only that a release fails at its deadline (§11.2's store row), and
-    `vfserr.Delay` carries `Cause`, `Until` and `Moved`, so nothing carries the channel.
-    Proposed for S1: both answer `*vfserr.Delay`, `DelayCommit` for the stall and
-    `DelayClone` for the registration, with a new `Ready <-chan struct{}` the engine closes
-    once the retry's outcome is known; the service unwraps it with `errors.As`, waits on
-    `Ready`, and calls `Delete` again, which answers that outcome: nil once phase 1
-    committed, the abort's error, or the release run once the registration dropped, or
-    stopped after `Close` or `Drop`, the marker left for start. RFC 8 §12.1 and RFC 17
-    §4.3 would name the field.
+    registered extent both answer a release that the service finishes or runs again later.
+    The retry stays between the engine and the service, off the error value: a
+    `*vfserr.Delay` returned by `Delete` would reach the client through RFC 17's unlink and
+    rename, and a channel cannot cross `vfs.Serve`. So `vfserr.Delay` gains nothing, and
+
+    ```go
+    Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // retry non-nil only when the release is pending; yields its outcome once, or ErrStopped at Close/Drop
+    ```
+
+    `retry` is T5.4's channel: nil once phase 1 committed, the abort's error, `ErrDelay`
+    with `DelayClone` once a clone's registration drops, or `ErrStopped`, the marker left
+    for start. While it is pending the unlink answers success, and the service waits on it
+    in the background, not inside `Sink.Closed`. The RFC 8 §12.1 and RFC 17 §2.3 text for
+    it goes in #3608.
 
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
