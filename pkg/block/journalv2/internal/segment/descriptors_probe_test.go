@@ -40,3 +40,13 @@ func EntryGone(c *Descriptors, id core.SegmentID) bool {
 	defer c.mu.Unlock()
 	return c.entries[id] != nil && c.entries[id].gone
 }
+
+// WaitArmed reports whether Shutdown's wait is armed: its signal channel is
+// set, after the wait has been taken back against a total a reclaimer's
+// reference moved. Checks that the wait loops rather than answering one
+// signal read it.
+func WaitArmed(c *Descriptors) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shutDone != nil
+}

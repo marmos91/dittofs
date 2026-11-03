@@ -339,6 +339,10 @@ func (c *Descriptors) lastRefLocked(e *descEntry) {
 	}
 	if c.shut && c.totalRefs == 0 && c.shutDone != nil {
 		close(c.shutDone)
+		// Nilled at once: a reclaim can take and drop a reference across
+		// this signal — the wait's channel was made for one signal — and a
+		// second close here would panic on a closed channel.
+		c.shutDone = nil
 	}
 	if e.absent {
 		// The file was proven gone while it was being opened, and no
@@ -618,10 +622,19 @@ func (c *Descriptors) Shutdown() error {
 	// References remain: wait for them with no mutex held, signalled by the
 	// Release that brings the cache's total to zero. None is held: the wait
 	// ends at once.
-	if c.totalRefs > 0 {
-		c.shutDone = make(chan struct{})
+	//
+	// The wait loops rather than answering one signal, because a signal
+	// does not mean the total stays zero: a reclaim the budget makes while
+	// Shutdown waits — another journal asking this one that is shutting
+	// down — takes a reference for its close and drops it after, moving the
+	// total across the signal. Looping re-arms the wait until zero holds
+	// under the mutex, so Shutdown cannot return while a late reclaim is
+	// mid-close.
+	for c.totalRefs > 0 {
+		done := make(chan struct{})
+		c.shutDone = done
 		c.mu.Unlock()
-		<-c.shutDone
+		<-done
 		c.mu.Lock()
 		c.shutDone = nil
 	}

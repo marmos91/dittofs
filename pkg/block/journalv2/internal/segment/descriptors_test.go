@@ -3,6 +3,7 @@ package segment_test
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1705,6 +1706,176 @@ func TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt(t *testing.T) {
 	// then, but it must not hold up a Cache-wide Shutdown.
 	if err := e.c.Shutdown(); err != nil {
 		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+}
+
+// TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait pins the pairing of
+// Shutdown's wait with the reclaimer's reference. The reference a reclaim
+// takes and drops around its close can cross the signal the wait was
+// answered by — the last release closed the wait's channel, and a reclaim
+// has not yet let Shutdown take the mutex again — so closing the channel
+// again on the crossing drop would panic on a closed channel. GOMAXPROCS(1)
+// keeps the reclaim on one goroutine with the signal: no yield sits between
+// the two, so the crossing is staged, not raced for.
+func TestDescriptorsShutdownSurvivesAReclaimAcrossItsWait(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	runtime.GOMAXPROCS(1)
+	defer func(n int) { runtime.GOMAXPROCS(n) }(runtime.GOMAXPROCS(1))
+
+	for round := 0; round < 20; round++ {
+		e := newCache(t, 8)
+		e.stock(t, 3)
+		e.read(t, 1) // idle
+		e.read(t, 2) // idle
+
+		r3, err := e.c.Acquire(3)
+		if err != nil {
+			t.Fatalf("acquiring segment 3 failed: %v", err)
+		}
+		dropR3 := relRegister(t, r3)
+
+		shutdown := make(chan error, 1)
+		go func() { shutdown <- e.c.Shutdown() }()
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			_, err := e.c.Acquire(9)
+			if errors.Is(err, segment.ErrCacheClosed) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("Shutdown never started")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		// Shutdown is parked in its wait before the reference drops: the
+		// signal must find an armed wait, so the poll reads the probe
+		// rather than guessing the scheduler reached the park in time.
+		for deadline := time.Now().Add(10 * time.Second); !segment.WaitArmed(e.c); {
+			if time.Now().After(deadline) {
+				t.Fatal("Shutdown never armed its wait for the held reference")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		// The last reference drops, which is the signal the wait answers
+		// on. The shutdown goroutine is runnable but this one holds the
+		// single processor, so nothing runs between the signal and the
+		// reclaims below: each closes an idle file on this goroutine and
+		// drops its reference — a crossing the closed channel must survive.
+		dropR3()
+		for i := 0; i < 2; i++ {
+			if !e.budget.Reclaim() {
+				t.Fatalf("Reclaim %d found no idle descriptor, want the cache's two idle segments", i)
+			}
+		}
+
+		select {
+		case err := <-shutdown:
+			if err != nil {
+				t.Fatalf("Shutdown = %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Shutdown did not return once the reclaims ran")
+		}
+	}
+}
+
+// TestDescriptorsShutdownWaitsOutACloseTheReclaimIsStillMaking pins the wait
+// itself. A reclaim running across the wait can hold its reference when the
+// wait's signal fires — or take it right after — so a wait answered once
+// walks off and returns while the reclaim is still mid-close, and its
+// caller may free storage the close has not finished with. The wait must
+// be taken back against the cache's total under the mutex.
+//
+// The staging leans on the scheduler's most-recent-goroutine-first handoff:
+// the reclaim goroutine is made runnable before the last reference drops,
+// so it runs before the shutdown once the test blocks — its file close is
+// parked at the seam hold, reference held, while the shutdown decides.
+func TestDescriptorsShutdownWaitsOutACloseTheReclaimIsStillMaking(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	runtime.GOMAXPROCS(1)
+	defer func(n int) { runtime.GOMAXPROCS(n) }(runtime.GOMAXPROCS(1))
+
+	e := newCache(t, 8)
+	e.stock(t, 2)
+	e.read(t, 1) // idle, the reclaim's victim
+	e.read(t, 2) // idle, the shutdown walk's to take
+
+	r2, err := e.c.Acquire(2)
+	if err != nil {
+		t.Fatalf("acquiring segment 2 failed: %v", err)
+	}
+	dropR2 := relRegister(t, r2)
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- e.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.WaitArmed(e.c); {
+		if time.Now().After(deadline) {
+			t.Fatal("Shutdown never armed its wait for the held reference")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	reclaimDone := make(chan bool, 1)
+	go func() { reclaimDone <- e.budget.Reclaim() }()
+	// The signal: the last reference drops with the reclaim runnable behind
+	// it, so the reclaim's reference crosses the wait's closed channel
+	// before the shutdown retakes the mutex.
+	dropR2()
+
+	// A close of segment 1 is in flight: whichever of the reclaim and the
+	// shutdown walk detached the file, its Close parks at the hold, and
+	// nothing else completes it.
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no close of segment 1 parked at the hold")
+	}
+
+	// While that close is parked — mid-flight, its file still open to the
+	// process — the Shutdown must not return. An answered-once wait walks
+	// off over it; the callers of both would free the segment's storage
+	// under the open descriptor (RFC 1 §7.4).
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned %v with a close of segment 1 still in flight, want it to wait the close out", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The close ends and, with it, the reference whichever holder holds for
+	// it: the wait — taken back — signals out, and the Shutdown returns
+	// only behind the close that held it. When the shutdown walk beat the
+	// reclaim to the file the reclaimer reports nothing, which is not a
+	// failure: the wait held its end either way.
+	h.Release()
+	select {
+	case reclaimed := <-reclaimDone:
+		_ = reclaimed
+		// The reclaim's goroutine exits here only after the release
+		// completes and its own drop has run — the channel send is plain
+		// `reclaimed <- ...` after Reclaim returns, so by the time this
+		// receive completes the ref is dropped. It may not: the send and
+		// the drop can interleave with the receive, so the poll settles it
+		// rather than one read.
+		for deadline := time.Now().Add(10 * time.Second); segment.Refs(e.c, 1) != 0; {
+			if time.Now().After(deadline) {
+				t.Fatalf("segment 1's entry holds %d references after the reclaim finished, want 0", segment.Refs(e.c, 1))
+			}
+			time.Sleep(time.Millisecond)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reclaim did not finish behind the released close")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the close ended")
 	}
 }
 
