@@ -196,7 +196,7 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 func TestTheLastUnlinkReleasesOnlyAFileNoOpenHolds(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
-	content := n.engine.(*fakeContent)
+	content := n.engine
 	held := n.create(t, n.admin, n.fs.Root, "held", vfs.CreateRegular)
 	free := n.create(t, n.admin, n.fs.Root, "free", vfs.CreateRegular)
 	for _, f := range []vfs.File{held.File, free.File} {
@@ -415,12 +415,17 @@ func TestARemovalJoinsACreateAdmittedBeforeIt(t *testing.T) {
 
 // admitted returns once a call holds the admission lock of k, as a change
 // does once it is admitted, and fails the test if the call answers on done
-// first. It probes the lock without waiting on it.
+// first or is not admitted within a second. It probes the lock without
+// waiting on it.
 func (n *names) admitted(t *testing.T, k lockorder.Key, done <-chan error) {
 	t.Helper()
 	now, cancel := context.WithCancel(context.Background())
 	cancel()
+	deadline := time.Now().Add(time.Second)
 	for {
+		if time.Now().After(deadline) {
+			t.Fatal("the call was not admitted within a second")
+		}
 		release, err := n.locks.Take(now, lockorder.Set{Admit: []lockorder.Key{k}})
 		if err != nil {
 			return
