@@ -294,8 +294,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   clone runs.
 - **D2, who refuses what.** The engine refuses what it can judge before the journal step:
   a zero length, overlap, `clone_max_len`, an extent under a running clone, the namespace,
-  and a source extent past the source's end at `asOf`, which `kvstore`'s phase 1 also
-  refuses and so would otherwise be met after the journal step. The namespace check compares
+  and a source extent past the source's end at `asOf`, which T8.2's sizing pass finds (D5)
+  and `kvstore`'s phase 1 also refuses, so it would otherwise be met after the journal step. The namespace check compares
   the two shares' write namespaces, `Share.Namespace`, a field RFC 8 §12.1's `Share`
   declares and T8.1 adds; `Bind` gives it. A `decision:` marker says a share listing more than
   one namespace, a re-home of RFC 27, needs the whole list, which `kvstore`'s phase 1
@@ -316,15 +316,17 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   withdrawn if RFC 17 moves the hold into the engine (§9, point 2).
 - **D4, the registrations.** A registration is an extent and a running clone, kept in each
   file's entry, which it keeps alive (epic 3's bound: an entry exists while it holds
-  something). The source's is installed under the source's guard, taken and released at
-  once, and its entry lock, so a removal of the file in flight ends first and one after
-  sees it; then the clone waits until the writes admitted before it have staged. `Write`
+  something). The source's is installed under the source's entry lock once a removal of the
+  source extent in flight, which the entry records (epic 3), has ended: the clone waits it
+  out without taking the source's guard (RFC 8 §6.4, §9.1, E6), and a removal admitted after
+  sees the registration under the entry lock. Then the clone waits until the writes admitted
+  before it have staged. `Write`
   counts itself admitted under the entry lock before `WriteAt` and uncounts once its
   operation is inserted, and checks the registrations at that point. The destination's
   extent is registered with the source's, before the reservation. A same-file clone holds
-  one entry with two registrations and takes the file's guard twice in sequence, never
-  nested. Checked on every write, the registration costs one more entry-lock round per
-  write; no marker, since nothing is simplified.
+  one entry with two registrations, registers its source extent once, and takes no guard
+  twice: the only guard it takes is the destination's, at the journal step (T8.2). Checked
+  on every write, the registration costs one more entry-lock round per write.
 - **D5, sizing the reservation.** `Reserve` needs the bytes and write count of the copies
   before the journal step, and the journal reports held extents only through `ReadAt`.
   Admission resolves the source extent at `asOf` with epic 3's resolution, in windows of the
@@ -351,9 +353,9 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   kept done until pruned, if retries after a restart are seen in logs.
 - **D8, a phase-1 refusal after the journal step.** `kvstore`'s phase 1 refuses an overlap,
   a source past its end, two namespaces and a destination already cloning, after the journal
-  step that RFC 8 §9.1 says no refusal may follow. Admission refuses each first (D2, D4), so
-  phase 1 meets one only when the store changed under a registered extent by a path this
-  part does not have. Met anyway, it is logged at `Error` naming both files, and the clone
+  step that RFC 8 §9.1 says no refusal may follow. Admission refuses each first (D2, D4),
+  the past-end source in T8.2's step 1 once `asOf` is read, so phase 1 meets one only when
+  the store changed under a registered extent by a path this part does not have. Met anyway, it is logged at `Error` naming both files, and the clone
   is retried from its spec with the removal loop's backoff, raising `removal_stalled`; it
   never fails and never undoes. A `decision:` marker names it, and is withdrawn if the
   store's check moves to an admission read (§9, point 3).
@@ -458,9 +460,12 @@ pkg/block/enginev2/
   into the destination extent, a truncate into the source extent, a deallocate inside it
   and a clone into it each answer `ErrDelay` with `DelayClone`, while a write one byte past
   each extent is served (catches a registration of the whole file, or none, R6, R22); a
-  read and an `Allocation` of the destination extent answer `DelayClone`; a same-file clone
-  completes its registration with the file's guard free afterwards (catches a guard taken
-  twice or held, R8); `-race` with 32 writers on the source file while a clone registers.
+  read and an `Allocation` of the destination extent answer `DelayClone`; a deallocate
+  inside the source extent held by a hook between its journal step and phase 1: the
+  registration returns only after it ends (catches a removal in flight not waited out, R7);
+  a deallocate outside the source extent held the same way, so it holds the file's guard: a
+  same-file clone's registration returns meanwhile, with one source registration on the
+  entry (catches the source's guard taken, or its extent registered twice, R8); `-race` with 32 writers on the source file while a clone registers.
 
 ### T8.2 Reservation, journal step, copies and phase 1
 
@@ -471,7 +476,9 @@ pkg/block/enginev2/
 - **Covers:** R4, R10, R11, R12, R13, R14, R15, R16, R17, R24, R26, R33, R35, R38.
 - **Deliverables:** `clone.go`'s steps 1 to 4: the source synced and its pending existence
   committed, the sizing pass (D5, its marker), `Reserve` on the destination's handle, a
-  refusal undoing both registrations and mapped by epic 3's journal-error mapping; then on
+  refusal undoing both registrations and mapped by epic 3's journal-error mapping; a source
+  extent past the source's end at `asOf`, found by the sizing pass, refused `ErrInvalid` the
+  same way (D2); then on
   the clone's own goroutine (D6) the destination's guard, `CloneTarget` with the spec, the
   clone operation in the entry (D13), the copies of every held run through the reservation
   with the clock's time, `Sync`, the reservation's `Close`, `Existence.Clone` with the
@@ -491,7 +498,10 @@ pkg/block/enginev2/
     clone, never zeros.
 - **Tests:** a reservation refused by the fake: the clone fails with the mapped error, both
   registrations are gone (a write into the source extent is served), the destination reads
-  its prior content, and the journal saw no `CloneTarget` (R4, R35's first case); a source
+  its prior content, and the journal saw no `CloneTarget` (R4, R35's first case); a clone
+  whose source extent ends past the source's end at `asOf`: `ErrInvalid`, the journal sees no
+  `CloneTarget`, and the destination reads its prior content (catches the refusal left to
+  phase 1, after `CloneTarget` wiped the destination range, R4); a source
   of three held runs and two holes: `Reserve` is called with the runs' bytes and buffer
   count, and every `Reservation.WriteAt` version is above the `CloneTarget` version (catches
   copies drawn before the journal step, or through the handle's `WriteAt`, R13); a group
