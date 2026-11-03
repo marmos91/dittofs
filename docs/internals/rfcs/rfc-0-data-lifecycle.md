@@ -764,7 +764,7 @@ cases, and where the two differ for one node, this section wins:
 > may write the share. It holds only if nothing else refuses writes sooner: the
 > version limit ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)) is raised by a metadata transaction, so its
 > headroom **MUST** cover the peak version rate for the margin
-> [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) sets — 30 s plus the existence age plus one second — or a stall
+> [RFC 8 §2.7](rfc-8-engine.md#2.7%20The%20version%20limit) sets — 30 s plus the existence age plus one second — or a stall
 > refuses writes within seconds. Overturned by a measured stall distribution on the
 > embedded store whose tail makes 30 s of such writes exceed the journal's
 > headroom, or by a second node, which brings the lease back.
