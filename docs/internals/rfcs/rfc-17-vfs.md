@@ -586,16 +586,23 @@ the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
 `CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
 dropped. A release it would run is a pending release, written with the unlink,
-which the next start's recovery runs (§5.3). A deferred unlink it would run,
-a volatile delete-on-close, is lost with the process
+which the next start's recovery runs (§5.3). A deferred unlink it would run is
+lost with the process: its delete pending is volatile by then, since a durable
+one's `DeleteRecord` is deleted by the close that leaves the file no persistent
+open ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and a
+volatile one is lost
 ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring)).
 
-> decision: a delete-on-close whose last close is a clone's `CloneClose`
-> during stop is dropped, as a volatile delete-on-close is at any crash: the
-> file keeps its name, which a client may delete again. It costs only a clone
-> in flight at a clean stop over a delete-pending source. Have the engine join
-> its clone batches before the filesystem stops if a client is found to rely
-> on that delete.
+> decision: a source's delete-on-close, set through a volatile or a persistent
+> open, is lost when its clone is not done before the filesystem stops: a
+> `CloneClose` whose `Sink.Closed` reaches the stopped filesystem is dropped,
+> and a clone the engine's stop cancels resumes after the restart with the mark
+> gone, as a volatile delete-on-close is at any crash
+> ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): the file
+> keeps its name, which a client may delete again. It costs only a clone in
+> flight at a clean stop over a delete-pending source. Write the mark durably
+> once a clone's hold is the file's last open, and have `ServeShard` install it
+> with the clone's source open, if a client is found to rely on that delete.
 
 **The filesystem keeps no event queue.** It hands each event to the sink as it
 builds it, and the sink's contract is that it never blocks (§3.3): the sink

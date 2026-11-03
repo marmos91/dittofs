@@ -2570,7 +2570,10 @@ it keeps nothing alive; it is an unlink waiting for the opens to end.
 **Durability.** Delete pending is volatile with the opens that cause it. While
 the file has a persistent open it **MUST** be durable: a `DeleteRecord`,
 written in the transaction of the close or set-disposition that makes it, and
-deleted by the unlink's transaction or by the clear.
+deleted by the unlink's transaction, by the clear, or by the close that leaves
+the file no persistent open, after which it is volatile with the opens left, a
+clone's source open among them, so no record outlives every open that could
+run it.
 
 > decision: without a persistent open, a failover loses a pending delete with
 > the opens, and the file keeps its name — the outcome a crash before the last
