@@ -29,6 +29,31 @@ var testInstallation = core.InstallationID{
 // testFormatFile is the format file the golden file holds.
 var testFormatFile = FormatFile{Identity: testIdentity, Installation: testInstallation}
 
+// otherIdentity is a second journal's identity: a segment naming it is that
+// journal's, not damaged. Its bytes are in no other header field's range.
+var otherIdentity = core.JournalID{
+	0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+	0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+}
+
+// The segment header's test values, one range of bytes per field, raw's.
+var (
+	testSegment            = core.SegmentID(0x0807060504030201)
+	testPredecessor        = core.SegmentID(0x3837363534333231)
+	testStream      uint32 = 0x44434241
+)
+
+// testSegmentHeader is the header the pred golden holds; with a zero
+// predecessor it is the nopred golden's. The identity is testIdentity in
+// both, so a decode with testIdentity succeeds and one with otherIdentity
+// reports foreign.
+var testSegmentHeader = SegmentHeader{
+	Identity:    testIdentity,
+	ID:          testSegment,
+	Predecessor: testPredecessor,
+	Stream:      testStream,
+}
+
 // readGolden reads testdata/golden/<name>.hex: # to end of line a comment,
 // whitespace ignored, the rest hex. It takes the interface of both testing.T
 // and testing.F, so a fuzz test's seeds read it too.
@@ -73,4 +98,11 @@ func wantCRC(b []byte) uint32 {
 // edit fails a decode only for the edit, not for its stale checksum.
 func rechecksum(b []byte) {
 	binary.LittleEndian.PutUint32(b[52:56], wantCRC(b[0:52]))
+}
+
+// rechecksumHeader stores the CRC32C of [0,44) at [44,48) of a segment
+// header, so an edit fails a decode only for the edit, not for its stale
+// checksum.
+func rechecksumHeader(b []byte) {
+	binary.LittleEndian.PutUint32(b[44:48], wantCRC(b[0:44]))
 }

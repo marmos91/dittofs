@@ -1,0 +1,9 @@
+# segment header with no predecessor: 48 bytes (RFC 28 section 2.2)
+44 4a 48 31                                       # [0,4)   magic "DJH1"
+01 00                                             # [4,6)   format version 1
+00 00                                             # [6,8)   reserved
+10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f   # [8,24)  journal identity
+01 02 03 04 05 06 07 08                           # [24,32) segment id 0x0807060504030201
+00 00 00 00 00 00 00 00                           # [32,40) predecessor 0, none
+41 42 43 44                                       # [40,44) stream 0x44434241
+fe d5 b0 c5                                       # [44,48) CRC32C of [0,44), 0xc5b0d5fe
