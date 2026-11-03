@@ -140,17 +140,8 @@ type DescriptorBudget struct {
 }
 
 // NewDescriptorBudget returns a budget of limit open descriptors. A limit of
-// zero means a quarter of the process's open-file limit, clamped to
-// [1, 65536]; a negative one is refused by the first journal opened with it,
-// with ErrInvalidSetting.
-//
-// decision: the default is capped at 65536 even on a host whose open-file
-// limit would give a quarter far above it, because every segment the journals
-// map each holds costs kernel memory — a page cache entry and a file — and
-// 65536 of them is already more address-space and reclaim churn than the
-// round-robin reclaimer walks well. Raise the cap when a measured reopen
-// rate under the mixed read soak shows the cap is being hit — that is the
-// cost the bound trades against, not just the process's own open-file room.
+// zero means a quarter of the process's open-file limit; a negative one is
+// refused by the first journal opened with it, with ErrInvalidSetting.
 //
 // decision: the zero value of DescriptorBudget is not usable — its limit is
 // zero, so TryTake never succeeds — and callers must build the budget here,
@@ -307,15 +298,16 @@ func (b *DescriptorBudget) Reclaim() bool {
 const fallbackDescriptorLimit = 1024
 
 // defaultDescriptorLimit returns the default bound: a quarter of the
-// process's open-file limit where the platform reports one, clamped to
-// [1, 65536]; the fallback where it does not. The clamp runs on the uint64
-// the limit was read as, so the conversion to int cannot wrap on a platform
-// whose int is narrower than the limit it reports.
+// process's open-file limit where the platform reports one — the floor at 1
+// covers a limit of 2 or 3, whose quarter rounds away — and the fallback
+// where it does not. The arithmetic runs on the uint64 the limit was read
+// as, so the conversion to int cannot wrap on a platform whose int is
+// narrower than a limit it reports.
 func defaultDescriptorLimit() int {
 	cur, known := platformOpenFileLimit()
 	if !known {
 		return fallbackDescriptorLimit
 	}
 
-	return int(min(max(cur/4, 1), 1<<16))
+	return int(max(cur/4, 1))
 }

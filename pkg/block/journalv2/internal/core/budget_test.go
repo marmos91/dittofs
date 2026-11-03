@@ -11,9 +11,11 @@ import (
 const deadlockGuard = 5 * time.Second
 
 // TestDescriptorBudgetDefaultLimitChecksQuarter checks that a budget of limit
-// zero resolves to a quarter of the process's open-file limit, clamped to
-// [1, 65536]: a default not derived from the process defeats the bound's
-// purpose, protecting nothing on a process whose open-file limit is low.
+// zero resolves to a quarter of the process's open-file limit, floor 1 and
+// uncapped: a default not derived from the process defeats the bound's
+// purpose, protecting nothing on a process whose open-file limit is low, and
+// a cap would silently cut a host whose limit leaves room for far more
+// descriptors than a quarter of it.
 func TestDescriptorBudgetDefaultLimitChecksQuarter(t *testing.T) {
 	b := NewDescriptorBudget(0)
 
@@ -30,16 +32,10 @@ func TestDescriptorBudgetDefaultLimitChecksQuarter(t *testing.T) {
 		return
 	}
 
-	want := int(cur / 4)
-	if want < 1 {
-		want = 1
-	}
-	if want > 1<<16 {
-		want = 1 << 16
-	}
+	want := int(max(cur/4, 1))
 	if got := b.Limit(); got != want {
-		t.Fatalf("Limit = %d, want %d: a quarter of the open-file limit %d, clamped to [1, %d]",
-			got, want, cur, 1<<16)
+		t.Fatalf("Limit = %d, want %d: a quarter of the open-file limit %d, floor 1, uncapped",
+			got, want, cur)
 	}
 }
 
