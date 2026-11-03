@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
@@ -79,16 +78,12 @@ func TestRFC1D_AccountingFollowsCap(t *testing.T) {
 	}
 
 	// An idle segment past the idle-seal threshold is sealed early, on the
-	// journal's own goroutine.
-	write(t, h, journalv2test.File(2), 0, make([]byte, 2*journalv2test.FixtureIdleSealBytes))
-	f.Advance(journalv2test.IdleSealAge + time.Second)
-
-	// decision: the seal runs on the journal's goroutine once the clock
-	// passes the idle age, so only a real-time wait sees it land.
-	for deadline := time.Now().Add(2 * time.Second); check("an idle seal") == 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("no segment was sealed short of its cap after the idle-seal age")
-		}
+	// journal's own goroutine, which sealIdle waits for through the seam.
+	c := rec{0, journalv2test.File(2), journalv2.Extent{Off: 0, Len: 2 * journalv2test.FixtureIdleSealBytes}, journalv2.Version{}, nil}
+	c.version = write(t, h, c.id, 0, make([]byte, c.extent.Len))
+	sealIdle(t, f, c)
+	if check("an idle seal") == 0 {
+		t.Fatalf("no segment is sealed short of its cap %d after the idle seal of file %v's segment: %+v", journalv2test.FixtureSegmentCap, c.id, f.J.Inspect().Segments())
 	}
 }
 

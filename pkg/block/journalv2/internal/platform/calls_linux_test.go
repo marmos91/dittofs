@@ -33,6 +33,12 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"close", "unix.Close", got.close, unix.Close},
 		{"fallocate", "unix.Fallocate", got.fallocate, unix.Fallocate},
 		{"pwrite", "unix.Pwrite", got.pwrite, unix.Pwrite},
+		{"openat", "unix.Openat", got.openat, unix.Openat},
+		{"fstatfs", "unix.Fstatfs", got.fstatfs, unix.Fstatfs},
+		{"fstat", "unix.Fstat", got.fstat, unix.Fstat},
+		{"statx", "unix.Statx", got.statx, unix.Statx},
+		{"ioctlGetUint32", "unix.IoctlGetUint32", got.ioctlGetUint32, unix.IoctlGetUint32},
+		{"getdents", "unix.Getdents", got.getdents, unix.Getdents},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -47,13 +53,15 @@ func TestSyscallTableIsReal(t *testing.T) {
 }
 
 // TestNoCallBesideTheTable fails on a golang.org/x/sys/unix or syscall name
-// used outside calls.go other than a constant the package passes as data, and
-// on Sync or Fd taken from a field such as f.f, an *os.File's own fsync or
-// its raw descriptor. A test that swaps the table sees only calls made
-// through it, so a call made beside it would go unseen. It reads every
-// non-test file whatever its build tags, finds the packages by import path so
-// a renamed import is caught, and refuses a dot or blank import of them,
-// whose names it could not tell apart.
+// used outside the table's files other than a constant or type the package
+// passes as data, and on Sync or Fd taken from anything, an *os.File's own
+// sync or its raw descriptor. On macOS the os package's File.Sync answers a
+// full sync the filesystem refuses with a plain fsync, which RFC 1 §5.2
+// forbids. A test that swaps the table sees only calls made through it, so a
+// call made beside it would go unseen. It reads every non-test file whatever
+// its build tags, finds the packages by import path so a renamed import is
+// caught, and refuses a dot or blank import of them, whose names it could not
+// tell apart.
 func TestNoCallBesideTheTable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -65,6 +73,32 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"EINVAL":                   true,
 		"EOPNOTSUPP":               true,
 		"FALLOC_FL_ALLOCATE_RANGE": true,
+		"F_FULLFSYNC":              true,
+		"F_PREALLOCATE":            true,
+		"F_ALLOCATEALL":            true,
+		"F_PEOFPOSMODE":            true,
+		"Fstore_t":                 true,
+		"Stat_t":                   true,
+		"O_NOFOLLOW":               true,
+		"O_NONBLOCK":               true,
+		"AT_EMPTY_PATH":            true,
+		"STATX_MNT_ID":             true,
+		"FS_IOC_GETFLAGS":          true,
+		"Statfs_t":                 true,
+		"Statx_t":                  true,
+		"ENOSYS":                   true,
+		"DT_REG":                   true,
+		"DT_DIR":                   true,
+		"DT_LNK":                   true,
+		"DT_FIFO":                  true,
+		"DT_SOCK":                  true,
+		"DT_CHR":                   true,
+		"DT_BLK":                   true,
+		"Dirent":                   true,
+	}
+	tables := map[string]bool{
+		"calls.go":        true,
+		"calls_darwin.go": true,
 	}
 	raw := map[string]bool{
 		"golang.org/x/sys/unix": true,
@@ -79,7 +113,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "calls.go" {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || tables[name] {
 			continue
 		}
 
@@ -118,15 +152,16 @@ func TestNoCallBesideTheTable(t *testing.T) {
 				return true
 			}
 
-			switch x := sel.X.(type) {
-			case *ast.Ident:
-				if pkgs[x.Name] && !constants[sel.Sel.Name] {
+			if x, ok := sel.X.(*ast.Ident); ok && pkgs[x.Name] {
+				if !constants[sel.Sel.Name] {
 					t.Errorf("%s: %s.%s outside the table", fset.Position(sel.Pos()), x.Name, sel.Sel.Name)
 				}
-			case *ast.SelectorExpr:
-				if sel.Sel.Name == "Sync" || sel.Sel.Name == "Fd" {
-					t.Errorf("%s: .%s on a field, beside the table", fset.Position(sel.Pos()), sel.Sel.Name)
-				}
+
+				return true
+			}
+
+			if sel.Sel.Name == "Sync" || sel.Sel.Name == "Fd" {
+				t.Errorf("%s: .%s beside the table", fset.Position(sel.Pos()), sel.Sel.Name)
 			}
 
 			return true

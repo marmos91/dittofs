@@ -14,10 +14,10 @@ type Journal struct{}
 // to record as the journal it expects in dir.
 //
 // Init reads no time and needs no clock. It is the only call that creates a
-// journal. It refuses, with
-// ErrJournalExists and writing nothing, a directory that already holds a
-// format file or a segment. A negative setting is refused with
-// ErrInvalidSetting.
+// journal, and only in an empty directory: it refuses, with ErrNotEmpty and
+// writing nothing, a directory that holds any entry but a format.tmp, which
+// an Init that crashed before its rename leaves. A negative setting is
+// refused with ErrInvalidSetting.
 func Init(ctx context.Context, dir string, install InstallationID, opts ...Option) (JournalID, error) {
 	return JournalID{}, ErrNotImplemented
 }
@@ -26,8 +26,11 @@ func Init(ctx context.Context, dir string, install InstallationID, opts ...Optio
 // disk. It never creates one.
 //
 // expect is the identity the caller recorded for dir. With expect non-zero,
-// Open fails with ErrNoJournal when dir holds no journal, empty or missing,
-// and with an IdentityError when it holds another journal. With expect zero,
+// Open fails with ErrNoJournal when dir holds no journal, empty, missing, or
+// holding neither a format file nor a segment, and with an IdentityError
+// when it holds another journal. A directory holding a segment and no format
+// file is a journal Open cannot identify: it fails with ErrUnidentified and
+// is left as it is. With expect zero,
 // Open always fails: with an IdentityError naming the identity and
 // installation ID it found, and whether any segment is present, or with
 // ErrNoJournal. A format file of an unknown format version, or a record of an
