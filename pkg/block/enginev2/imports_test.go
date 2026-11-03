@@ -19,12 +19,13 @@ const module = "github.com/marmos91/dittofs/"
 // packages under this directory it applies to; "*" is every one. Nothing of
 // the previous engine, journal, syncer, carver, remote tier or metadata
 // service is on it, and neither is the filesystem's package: the engine takes
-// only its errors, from pkg/vfs/vfserr.
+// only its errors, from pkg/vfs/vfserr. Open state is the fixture's alone,
+// which adapts the table to the engine's CloneHold as the root does.
 var allowed = map[string][]string{
 	module + "pkg/block/journalv2":  {"*"},
 	module + "pkg/metadata/entity":  {"*"},
 	module + "pkg/metadata/kvstore": {"*"},
-	module + "pkg/openstate":        {"*"},
+	module + "pkg/openstate":        {"enginev2test"},
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock.
@@ -68,9 +69,9 @@ func TestImportRule(t *testing.T) {
 }
 
 // TestImportRuleRefusesPreviousAndFilesystem pins the rule's edges: the
-// previous components and the filesystem's package are refused, while the
-// metadata packages the engine needs, below the previous metadata service,
-// and the filesystem's errors are allowed.
+// previous components, the filesystem's package and open state are refused,
+// while the metadata packages the engine needs, below the previous metadata
+// service, and the filesystem's errors are allowed.
 func TestImportRuleRefusesPreviousAndFilesystem(t *testing.T) {
 	for _, c := range []struct {
 		path    string
@@ -91,7 +92,7 @@ func TestImportRuleRefusesPreviousAndFilesystem(t *testing.T) {
 		{module + "pkg/block/enginev2/enginev2test", true},
 		{module + "pkg/metadata/entity", true},
 		{module + "pkg/metadata/kvstore", true},
-		{module + "pkg/openstate", true},
+		{module + "pkg/openstate", false},
 		{module + "pkg/vfs/vfserr", true},
 		{"context", true},
 	} {

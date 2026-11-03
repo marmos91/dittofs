@@ -9,7 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
-	"github.com/marmos91/dittofs/pkg/openstate"
 )
 
 // Deps is what the composition root hands New. Each interface holds exactly
@@ -22,13 +21,10 @@ type Deps struct {
 	Existence Existence
 	Content   Content
 	Lifecycle Lifecycle
-	Opens     Opens
-	// Closed is open state's Sink.Closed: what a clone's CloneClose leaves,
-	// an orphan whose release only the filesystem service can run.
-	Closed func(f entity.FileID, r openstate.CloseResult)
-	Clock  Clock
-	Logger *slog.Logger
-	Tracer Tracer
+	Holds     CloneHold // a clone's hold on its source; the root adapts open state to it
+	Clock     Clock
+	Logger    *slog.Logger
+	Tracer    Tracer
 }
 
 // Journal is one device's journal, as the engine calls it.
@@ -98,12 +94,29 @@ type Lifecycle interface {
 	RaiseIncarnations(ctx context.Context, shards []entity.ShardID) error
 }
 
-// Opens is open state's hold on a clone's source: CloneOpen takes over the
-// source record the clone's first phase wrote, and CloneClose ends it once
-// the clone is done.
-type Opens interface {
-	CloneOpen(ctx context.Context, src openstate.FileKey, c openstate.CloneSource) (entity.OpenID, error)
-	CloneClose(ctx context.Context, id entity.OpenID) (openstate.CloseResult, error)
+// CloneHold is the part of open state a clone calls, in the engine's own
+// types, so the engine imports no open state; the root adapts the open-state
+// table to it.
+type CloneHold interface {
+	// Hold takes over the source open the clone's first phase wrote, before
+	// its second phase runs: open state's CloneOpen.
+	Hold(ctx context.Context, src CloneSrc) (entity.OpenID, error)
+	// Release ends the hold once the clone is done: open state's CloneClose.
+	// An orphan it leaves reaches the filesystem through open state's own
+	// Sink.Closed, not through the engine.
+	Release(ctx context.Context, o entity.OpenID) error
+	// Served returns once open state serves shard s, or at ctx's end: a
+	// clone rebuilt at start waits on it before its batches run.
+	Served(ctx context.Context, s entity.ShardID) error
+}
+
+// CloneSrc names a clone's source open.
+type CloneSrc struct {
+	Share entity.ShareID
+	Shard entity.ShardID
+	File  entity.FileID
+	Dst   entity.FileID         // the destination, whose removal record holds the clone spec
+	AsOf  entity.JournalVersion // the version the source was read at
 }
 
 // Clock is the node's one source of time, as the engine reads it.

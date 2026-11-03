@@ -171,12 +171,9 @@ func (f *Fixture) start() {
 		Existence: f.FS.Store.Existence(),
 		Content:   f.FS.Store.Content(),
 		Lifecycle: unbuiltLifecycle{},
-		Opens:     f.Opens.Opens(),
-		Closed: func(id entity.FileID, r openstate.CloseResult) {
-			t.Errorf("fixture: the engine left file %v an orphan: %+v", id, r)
-		},
-		Clock:  f.Clock,
-		Logger: f.logger,
+		Holds:     cloneHold{opens: f.Opens.Opens(), t: t},
+		Clock:     f.Clock,
+		Logger:    f.logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {}
 		},
@@ -267,3 +264,30 @@ func (quietSink) GraceEnded(entity.ShareID, openstate.ShardID)                  
 
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
+
+// cloneHold adapts the open-state table to the engine's CloneHold, as the
+// composition root does.
+//
+// ponytail: an orphan CloneClose leaves fails the test, standing in for open
+// state's Sink.Closed, which reports it once CloneClose stops returning it;
+// and Served answers at once, since the fixture serves the share's shard
+// before the engine starts. Wait on open state's Recovery.Served once it
+// exists and a test rebuilds a clone at start.
+type cloneHold struct {
+	opens openstate.Opens
+	t     testing.TB
+}
+
+func (h cloneHold) Hold(ctx context.Context, src enginev2.CloneSrc) (entity.OpenID, error) {
+	return h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+}
+
+func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
+	r, err := h.opens.CloneClose(ctx, o)
+	if r != (openstate.CloseResult{}) {
+		h.t.Errorf("fixture: the clone's close left an orphan: %+v", r)
+	}
+	return err
+}
+
+func (cloneHold) Served(context.Context, entity.ShardID) error { return nil }

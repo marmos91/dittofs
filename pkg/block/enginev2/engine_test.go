@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
-	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
@@ -23,7 +21,7 @@ func fullDeps() Deps {
 		existence struct{ Existence }
 		content   struct{ Content }
 		lifecycle struct{ Lifecycle }
-		opens     struct{ Opens }
+		holds     struct{ CloneHold }
 		clock     struct{ Clock }
 	)
 	return Deps{
@@ -34,8 +32,7 @@ func fullDeps() Deps {
 		Existence: existence{},
 		Content:   content{},
 		Lifecycle: lifecycle{},
-		Opens:     opens{},
-		Closed:    func(entity.FileID, openstate.CloseResult) {},
+		Holds:     holds{},
 		Clock:     clock{},
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
