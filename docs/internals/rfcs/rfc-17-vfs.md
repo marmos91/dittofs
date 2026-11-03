@@ -1382,7 +1382,7 @@ const (
 	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
 	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
 	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or an open-state shard not yet served here (RFC 14 §11.3)
+	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3)
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
@@ -2271,7 +2271,7 @@ carved refs adopted, all resolved at one point in the source's history.
   client continues. A copychunk's chunks are one call's `Extents`, run in
   order, and the count is the bytes copied across them, so the adapter derives
   chunks and bytes written from it. A chunk refused after others are done
-  answers the same short count; only a refusal of the first chunk returns its error. Between
+  answers the same short count; only a refusal of the first chunk returns its error. **(cluster)** Between
   shards the destination's filesystem copies the bytes itself, reading at the
   source's primary in bounded chunks, so no adapter composes a copy
   (§4.1). A copy is always synchronous, as copychunk and NFSv4.2 `COPY` are

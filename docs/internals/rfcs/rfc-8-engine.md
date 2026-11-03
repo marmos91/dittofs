@@ -3089,11 +3089,20 @@ the rest drains stays invisible to every sum.
 The engine is one concrete type, `*Engine`; nothing declares it as an
 interface. The filesystem, `*vfs.Filesystem` at the file's primary, is
 the only caller of the content methods ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); adapters never reach
-the engine. Each content method names the file's share beside the file: a
-`FileID` carries no shard, and the engine keys a file's binding, its journal
-handle and every store call by its share, so the filesystem, which has the
-share from the handle, passes it, as it does to `PreWarm`. A share with no
-binding answers `ErrStale`. The lifecycle, share and control methods are node-local. Their
+the engine. Each content method names the file's share beside the file, as
+`PreWarm` names its share: a `FileID` carries no shard, and the engine keys a
+file's binding, its journal handle and every store call by its share, so the
+filesystem, which has the share from the handle, passes it. A share being
+removed or retired answers `ErrStale`, as admission already answers it
+([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). Any
+other share with no binding here (one refused at start or left unattached by a
+lost journal device, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing);
+one of a namespace whose claim does not answer held,
+[RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop); or one created
+and not yet bound, [RFC 23 §3.2](rfc-23-control-plane.md#3.2%20A%20share))
+answers `ErrDelay` (`DelayFrozen`), as an open-state shard not yet served here
+does, since its handles and open state stay valid; `LossSeq`, which returns no
+error, answers 0. The lifecycle, share and control methods are node-local. Their
 callers are the node ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components), [§2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which starts and stops the
 engine, sets and stops shares and runs pre-warm and the upload drain; a share's
 removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)); and the snapshot cut ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
@@ -3102,15 +3111,15 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | --- | --- |
 | `Start(shares)`, `Close()` | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
 | `Bind(s)`, `Unbind(id, keepHolds)`, `Drop(id)` | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
-| `Write(file, off, p)` | [§4](#4.%20Write) |
-| `Draw(file)` | the version of a change stored outside the journal, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) |
-| `Commit(file, off, n)` | the stability point, [§5](#5.%20Commit%3A%20the%20stability%20point) |
-| `LossSeq(file)` | the file's loss sequence, read without a sync, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
-| `Read(file, off, dst)` | [§7](#7.%20Read) |
-| `Truncate(file, size)`, `Deallocate(file, off, n)`, `Delete(file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
-| `Clone(src, dst, x)`, `Copy(src, dst, xs)` | [§9](#9.%20Clone) |
-| `Overlay(file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
-| `Allocation(file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
+| `Write(share, file, off, p)` | [§4](#4.%20Write) |
+| `Draw(share, file)` | the version of a change stored outside the journal, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) |
+| `Commit(share, file, off, n)` | the stability point, [§5](#5.%20Commit%3A%20the%20stability%20point) |
+| `LossSeq(share, file)` | the file's loss sequence, read without a sync, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
+| `Read(share, file, off, dst)` | [§7](#7.%20Read) |
+| `Truncate(share, file, size)`, `Deallocate(share, file, off, n)`, `Delete(share, file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
+| `Clone(srcShare, src, dstShare, dst, x)`, `Copy(srcShare, src, dstShare, dst, xs)` | [§9](#9.%20Clone) |
+| `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
+| `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 | `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator) |
 | `WaitOffloaded()` | [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) |
@@ -3172,20 +3181,23 @@ func (e *Engine) Unbind(ctx context.Context, id ShareID, keepHolds bool) error /
 func (e *Engine) Drop(ctx context.Context, id ShareID) error                   // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
 // Content: called only by *vfs.Filesystem, at the file's primary (RFC 17 §2.1).
-// Every call names the file's share, which the filesystem has from the handle; a
-// share with no binding answers ErrStale, as a removed share does (RFC 16 §2.3.1).
+// Every call names the file's share, which the filesystem has from the handle. A
+// share being removed or retired answers ErrStale (RFC 16 §2.3.1); any other with
+// no binding here answers ErrDelay (DelayFrozen); LossSeq, which returns no
+// error, answers 0.
 func (e *Engine) Write(ctx context.Context, s ShareID, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, s ShareID, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, s ShareID, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
-func (e *Engine) LossSeq(s ShareID, f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1); 0 for a share with no binding
+func (e *Engine) LossSeq(s ShareID, f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1); 0 for a share with no binding, the value every file's sequence starts from, so an open recorded at it learns of every later loss
 func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
 func (e *Engine) Deallocate(ctx context.Context, s ShareID, f FileID, off, n int64) error
 func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) error // the file's release (RFC 7 §4.5); never the journal's Release, which evicts
-func (e *Engine) Clone(ctx context.Context, s ShareID, src, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; both files of s, as a clone between shards is refused before it (RFC 17 §5.9)
-func (e *Engine) Copy(ctx context.Context, s ShareID, src, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; both files of s
+func (e *Engine) Clone(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; the shares differ for a clone between two shares of one namespace (§9.1)
+func (e *Engine) Copy(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; the shares as for Clone
 func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
 func (e *Engine) Allocation(ctx context.Context, s ShareID, f FileID, off int64) (Span, error)      // RFC 6 §2's Span, the journal's uncommitted operations applied (§7.6)
+
 // Control: node-local.
 func (e *Engine) PrepareCut(ctx context.Context, shard ShardID) error              // RFC 12 §2.3 prepare, gate open
 func (e *Engine) CommitCut(ctx context.Context, shard ShardID) error               // gate closed: cut points, commit up to them; nothing above until the gate reopens
@@ -3232,10 +3244,11 @@ the leaf package of the filesystem's error values, which imports only the
 standard library and which `pkg/vfs` re-exports as aliases
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the engine never imports `pkg/vfs`:
 `ErrLost` ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), reported as data loss), `ErrUnavailable` ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably), transient),
-`ErrCorrupt` ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves), and the journal's `ErrOtherShare`, never retried), `ErrNoSpace`
+`ErrStale` (a share being removed or retired, §12.1), `ErrCorrupt` ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves), and the journal's `ErrOtherShare`, never retried), `ErrNoSpace`
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
 `CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), and `ErrDelay` with its
-`Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`.
+`Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`,
+`DelayFrozen` (a share with no binding here, §12.1).
 
 ### 12.2 A retried mutation is answered, not re-applied
 
