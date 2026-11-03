@@ -156,7 +156,7 @@ func TestDescriptorBudgetReclaimReleasesMutex(t *testing.T) {
 func TestDescriptorBudgetReclaimRoundRobin(t *testing.T) {
 	var mu sync.Mutex
 	var order []int
-	declines := map[int]bool{0: true} // the first reclaimer holds only dirty or referenced descriptors
+	declines := map[int]bool{0: true} // the first reclaimer holds only referenced descriptors
 	b := NewDescriptorBudget(1)
 	for i := 0; i < 3; i++ {
 		i := i

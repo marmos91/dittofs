@@ -107,9 +107,7 @@ type Clock interface {
 // gives one back when it closes one. When no slot is open, the journal asks
 // the budget to Reclaim one: the budget asks every registered journal, in
 // round-robin order, to close one idle descriptor, and the first that does
-// yields its slot. A descriptor that has written but whose write no sync has
-// covered or failed is not closed to make room, so such a descriptor holds
-// its slot until a sync through it returns.
+// yields its slot.
 //
 // decision: the budget is a value built once and passed to each journal,
 // because the limit is per process while each journal is built separately.
