@@ -1,12 +1,15 @@
 package engine_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 const kib = 1 << 10
@@ -117,4 +120,39 @@ func TestAllocationEndsAtTheEndOfFile(t *testing.T) {
 	k := u.committed(t, "k", 4*kib, 4*kib)
 	u.e.AddOp(k, 1, true, 12*kib, 0)
 	u.allocations(t, k, run{0, 4 * kib, false}, run{4 * kib, 8 * kib, true}, run{12 * kib, 0, false})
+}
+
+// failingExistence is block metadata whose Allocation answers err.
+type failingExistence struct {
+	engine.Existence
+	err error
+}
+
+func (f failingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+	return entity.Extent{}, false, f.err
+}
+
+// A store refusal crosses the content boundary as the filesystem's own: its
+// ErrStale as ErrStale, its ErrDelay as ErrDelay with DelayClone, the
+// context's error as itself, and anything else as ErrUnavailable.
+func TestAllocationMapsTheStoresRefusals(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want func(error) bool
+	}{
+		{entity.ErrStale, func(err error) bool { return errors.Is(err, vfserr.ErrStale) }},
+		{entity.ErrDelay, func(err error) bool {
+			var d *vfserr.Delay
+			return errors.As(err, &d) && d.Cause == vfserr.DelayClone
+		}},
+		{context.Canceled, func(err error) bool { return err == context.Canceled }},
+		{errors.New("disk on fire"), func(err error) bool { return errors.Is(err, vfserr.ErrUnavailable) }},
+	} {
+		t.Run(c.err.Error(), func(t *testing.T) {
+			u := newUnit(t, func(d *engine.Deps) { d.Existence = failingExistence{err: c.err} })
+			if _, err := u.e.Allocation(t.Context(), u.share.ID, entity.NewFileID(), 0); !c.want(err) {
+				t.Errorf("the store's %v answered %v", c.err, err)
+			}
+		})
+	}
 }

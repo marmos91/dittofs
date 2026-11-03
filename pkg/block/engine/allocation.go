@@ -175,9 +175,17 @@ func (a *allocation) runFrom(i int) int64 {
 }
 
 // storeErr is the content methods' answer for an error the store returned:
-// the context's own error as itself, anything else unavailable.
+// its ErrStale, the file gone, as ErrStale; its ErrDelay, which block
+// metadata's reads answer only for an extent a running clone still writes,
+// as a Delay with DelayClone; the context's own error as itself; anything
+// else unavailable.
 func storeErr(err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, entity.ErrStale):
+		return fmt.Errorf("engine: block metadata: %v: %w", err, vfserr.ErrStale)
+	case errors.Is(err, entity.ErrDelay):
+		return &vfserr.Delay{Cause: vfserr.DelayClone}
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
 	return fmt.Errorf("engine: block metadata: %v: %w", err, vfserr.ErrUnavailable)
