@@ -1096,8 +1096,10 @@ func TestAdoptSpareAccountsAtTheCapWithNoMaximumCheck(t *testing.T) {
 	const segCap = 4096
 	s := NewSet(segCap, nil)
 
-	// The footprint already stands three caps above what a lowered maximum
-	// would allow: two spares adopted over a maximum of two and a half caps.
+	// Three spares are adopted over no maximum at all: an adoption checks
+	// none. What follows then lowers the maximum to two caps — below the
+	// four caps a fourth adoption would reach — and both the making and the
+	// adoption of a fourth spare stand on it.
 	if err := s.AdoptSpare(core.SegmentID(1)); err != nil {
 		t.Fatalf("the first AdoptSpare: %v", err)
 	}

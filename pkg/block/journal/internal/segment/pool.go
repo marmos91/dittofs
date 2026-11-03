@@ -84,7 +84,7 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, started, stopped, deviceFull and lastErr sit under
+// decision: ready, held, started, stopped and deviceFull sit under
 // the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O under p.mu,
 // no lock acquired while it is held, and never held across a Maker or a Set
 // call: those take locks of this same domain, and no two locks of one domain
@@ -101,7 +101,6 @@ type Pool struct {
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
-	lastErr    error                         // guarded by mu
 
 	kick chan struct{}
 	done chan struct{}
@@ -161,10 +160,15 @@ func (p *Pool) Adopt(id core.SegmentID, c Class) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// A Stop that raced between the check and here leaves the spare accounted
-	// and on disk in its class, which nothing takes once stopped: the next
-	// open re-adopts it. Refusing here would strand a cap the ledger already
-	// owns with no class holding it.
+	// A Start that raced between the check and the ledger call has reached
+	// its takes without the directory sync the rule above stands on, so this
+	// spare is refused its class: it stays accounted and on disk, and the
+	// next open re-adopts it. Discarding it instead would strand a cap the
+	// ledger already owns, and returning it through DropSpare would unaccount
+	// a file that exists.
+	if p.started {
+		return ErrStarted
+	}
 	p.ready[c] = append(p.ready[c], id)
 	return nil
 }
@@ -232,13 +236,11 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 		if int64(len(p.ready[Content])) > int64(p.held) {
 			id = p.popLocked(Content)
 		}
-	case Headroom:
-		if len(p.ready[Headroom]) > 0 {
-			id = p.popLocked(Headroom)
-		}
-	case Reserve:
-		if len(p.ready[Reserve]) > 0 {
-			id = p.popLocked(Reserve)
+	default:
+		// Headroom and Reserve serve the same ready test: neither is
+		// diminished by a hold, and neither lends to another class.
+		if len(p.ready[c]) > 0 {
+			id = p.popLocked(c)
 		}
 	}
 	p.mu.Unlock()
@@ -280,7 +282,8 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 		missing := int64(n) - (ready - int64(p.held))
 		p.mu.Unlock()
 		if missing > int64(n) {
-			// held outnumbers ready, so the whole hold is short: floored at n.
+			// A replace can leave held above ready, and the refusal never
+			// blames a shortage past the hold it refuses: capped at n.
 			missing = int64(n)
 		}
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
@@ -310,32 +313,27 @@ func (h *Hold) Take() (core.SegmentID, error) {
 	defer h.p.Kick()
 
 	h.p.mu.Lock()
-	if h.closed {
-		h.p.mu.Unlock()
+	closed, stopped, spent := h.closed, h.p.stopped, h.left <= 0
+	h.p.mu.Unlock()
+	if closed || stopped {
 		return 0, core.ErrClosed
 	}
-	if h.left <= 0 {
-		// The hold spent its own spares and turns into an unreserved take.
-		if h.p.stopped {
-			h.p.mu.Unlock()
-			return 0, core.ErrClosed
-		}
-		if int64(len(h.p.ready[Content])) > int64(h.p.held) {
-			id := h.p.popLocked(Content)
-			h.p.mu.Unlock()
-			if err := h.p.m.set.Take(id); err != nil {
-				return 0, fmt.Errorf("segment: the hold took spare %d: %w", uint64(id), err)
-			}
-			return id, nil
-		}
-		h.p.mu.Unlock()
-		return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+	if spent {
+		// The hold spent its own spares and takes as an unreserved one does:
+		// one rule for every unreserved take, kept in one place.
+		return h.p.Take(Content)
 	}
 
-	if int64(len(h.p.ready[Content])) == 0 {
+	h.p.mu.Lock()
+	if h.left <= 0 || int64(len(h.p.ready[Content])) == 0 {
 		h.p.mu.Unlock()
 		return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
 	}
+	// A replace can leave the pool owing more spares than it holds, so this
+	// take tests only that one is ready — not the len > held an unreserved
+	// take is refused under — because the spare it takes is this hold's own
+	// demand, the exact one the replace stands for, taken ahead of every
+	// unreserved write.
 	h.left--
 	h.p.held--
 	id := h.p.popLocked(Content)
@@ -392,11 +390,13 @@ func (p *Pool) Kick() {
 	}
 }
 
-// DeviceFull reports whether the worker's last make failed with ENOSPC and
-// no make has succeeded since — "making a spare failed with ENOSPC" being
-// the state a roll that finds no full-size retired segment to hand answers
-// ENOSPC with. The other half of that state — whether a retirement has since
-// handed one — is the retirement executor's, not the pool's.
+// DeviceFull reports whether a make has failed with ENOSPC and no spare has
+// been made since — "making a spare failed with ENOSPC" being the state a
+// roll that finds no full-size retired segment to hand answers ENOSPC with,
+// until a spare is made again. A failure of another kind after the ENOSPC
+// does not clear it: no full-size spare has appeared. The other half of that
+// state — whether a retirement has since handed one — is the retirement
+// executor's, not the pool's.
 func (p *Pool) DeviceFull() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -487,14 +487,10 @@ func (p *Pool) refill() bool {
 		}
 		p.mu.Unlock()
 
+		// Make owns the pairing: an error returns no id, so the appends
+		// below never see an id of 0 named by a failure.
 		id, err := p.m.Make()
 		p.mu.Lock()
-		if err != nil && id != 0 {
-			// Make owns the pairing: it never returns both an id and an
-			// error, so this branch is unreachable; the guard keeps the fact
-			// readable where the pairing is used.
-			id = 0
-		}
 		if p.stopped {
 			// A made spare stays accounted and on disk; the next open
 			// re-adopts it, so it is appended to the class the pass chose even
@@ -508,8 +504,13 @@ func (p *Pool) refill() bool {
 			return false
 		}
 		if err != nil {
-			p.lastErr = err
-			p.deviceFull = errors.Is(err, syscall.ENOSPC)
+			// The state a roll reads as a full device is set by the ENOSPC
+			// of a failed make and cleared only by a make that succeeds: a
+			// failure of any other kind after it leaves the state standing,
+			// for no spare has been made since the device filled.
+			if errors.Is(err, syscall.ENOSPC) {
+				p.deviceFull = true
+			}
 			p.mu.Unlock()
 
 			// The journal maximum's own refusal is the pool working as
@@ -524,7 +525,6 @@ func (p *Pool) refill() bool {
 		}
 		p.ready[c] = append(p.ready[c], id)
 		p.deviceFull = false
-		p.lastErr = nil
 		p.mu.Unlock()
 	}
 }
