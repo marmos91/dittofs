@@ -1324,9 +1324,12 @@ the service returns included. `Extent` moves with them because while
 `vfs.Extent` aliased the engine's, every adapter importing `pkg/vfs` compiled
 the engine. So the engine imports `vfserr` and never `pkg/vfs`, nor open state
 through it, and `pkg/vfs` re-exports every value as an alias. `vfs.Errors()`
-stays in `pkg/vfs` and returns every sentinel and one value of every typed
-kind, so an adapter's error table can be checked total
+stays in `pkg/vfs` and returns every sentinel an adapter can receive and one
+value of every typed kind, so an adapter's error table can be checked total
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
+It omits a value only the service and the engine exchange, which no adapter
+receives and so no table maps: `ErrFileOpen`, the abort a pending release's
+retry channel yields ([§5.3](#5.3%20Open%20and%20close)).
 How each reaches the wire is
 [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) and the
@@ -2627,7 +2630,7 @@ something the ones above it cannot.
 
 | Tier | What runs | Proves | Runs |
 | --- | --- | --- | --- |
-| unit | `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error | per change |
+| unit | `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error an adapter can receive | per change |
 | unit | `*vfs.Filesystem` from `vfs.New`, with a fake engine (`Content`) and in-memory metadata | §5's orders by what each refusal leaves unchanged (V3) | per change |
 | unit | `*vfs.Gateway` from `vfs.NewGateway`, with a fake `Router` and `Transport` and `vfstest.Record` as the local `Service` | routing, re-routing and resending; that the gateway decides nothing (V41) | per change |
 | integration | `suite.Run` over `vfs.New` with the real engine on a temporary journal, the in-memory store, real open state and a fake clock, and no node | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6; with fault injection below the real components (a key-value store under the metadata store, RFC 16's `KV`; a remote tier and a small journal under the engine, RFC 8; `RecordingCallbacks` that stall or fail; the fake clock); a model of lock, write, open and unlink interleaved under `-race`; the fuzz targets below | per change; 10⁴ interleavings and each fuzz target for 10 minutes nightly |
