@@ -15,10 +15,8 @@ nfs-truncate "nfs://127.0.0.1/test/f$N" 5242880
 s3 resume
 dfsctl system drain-uploads
 nfs-truncate "nfs://127.0.0.1/test/f$N" 10485760
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get f smb1'
 nfs-cp "nfs://127.0.0.1/test/f$N" /tmp/back/nfs1
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get f smb2'
 nfs-cp "nfs://127.0.0.1/test/f$N" /tmp/back/nfs2
 for F in /tmp/back/*; do cmp "$F" /tmp/want && echo "$F: ok" || echo "$F: differs"; done

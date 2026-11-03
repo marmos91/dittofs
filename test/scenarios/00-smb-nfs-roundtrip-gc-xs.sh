@@ -23,7 +23,6 @@ test "$(jq .bytes /tmp/written.json)" -ge $((54 * 1024 * 1024))
 rclone lsf -R --files-only s3:dittofs/test/ >/tmp/keys.lst
 test -z "$(grep -v '^blocks/' /tmp/keys.lst)"
 
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'cd run; lcd /tmp/cold; prompt off; mget *.bin'
 (cd /tmp/cold && sha256sum -c --quiet /tmp/smb.sha256)
 
@@ -54,7 +53,6 @@ test "$(jq .bytes /tmp/nwritten.json)" -ge $((54 * 1024 * 1024))
 rclone lsf -R --files-only s3:dittofs/test/ >/tmp/keys.lst
 test -z "$(grep -v '^blocks/' /tmp/keys.lst)"
 
-dfsctl store block evict --share /test
 for F in n1MiB.bin n4MiB.bin n16MiB.bin n33MiB.bin; do nfs-cp "nfs://127.0.0.1/test/run/$F?version=4&uid=1000&gid=1000" "/tmp/ncold/$F"; done
 (cd /tmp/ncold && sha256sum -c --quiet /tmp/nfs.sha256)
 

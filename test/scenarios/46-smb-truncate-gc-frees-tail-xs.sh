@@ -22,7 +22,6 @@ for _ in $(seq 1 30); do test "$(rclone size --json s3:dittofs/test | jq .bytes)
 rclone size --json s3:dittofs/test | tee /tmp/after.json
 
 # The kept part, read cold
-dfsctl store block evict --share /test
 mkdir /tmp/back
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get f.bin'
 

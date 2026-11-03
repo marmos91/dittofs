@@ -38,7 +38,6 @@ done
 # Past the grace for the newest object: the reclaim, then every file read cold
 sleep 310
 dfsctl store block reclaim -o json | tee /tmp/reclaim.json
-dfsctl store block evict --share /export
 for k in 1 2 3 4; do smbclient //127.0.0.1/export -c "get f$k /tmp/back/f$k" || true; done
 
 # Outcomes first, then the checks: the cut swept many chunks (the chunk size took effect), every

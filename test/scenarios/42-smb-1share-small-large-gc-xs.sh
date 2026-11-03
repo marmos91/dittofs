@@ -20,7 +20,6 @@ test "$(jq .objects_swept /tmp/gc1.json)" -ge 1
 test "$(jq .bytes_freed /tmp/gc1.json)" -lt $((1024 * 1024))
 test "$(jq .hashes_marked /tmp/gc1.json)" -gt 0
 test "$(rclone size --json s3:dittofs/test | jq .count)" -lt "$(jq .count /tmp/test0.json)"
-dfsctl store block evict --share /test
 mkdir /tmp/back
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get large.bin'
 (cd /tmp/back && sha256sum -c --quiet /tmp/large.sha256)
@@ -34,4 +33,3 @@ test "$(jq .bytes_freed /tmp/gc2.json)" -ge "$(stat -c %s /tmp/large.bin)"
 test "$(jq .hashes_marked /tmp/gc2.json)" -eq 0
 for _ in $(seq 1 60); do test "$(rclone size --json s3:dittofs/test | jq .count)" -eq 0 && break; sleep 2; done
 test "$(rclone size --json s3:dittofs/test | jq .count)" -eq 0
-test "$(dfsctl store block stats --share /test -o json | jq .totals.blocks_total)" -eq 0

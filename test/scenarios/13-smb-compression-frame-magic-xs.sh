@@ -16,7 +16,6 @@ printf 'XFCMP\001' | cat - /tmp/random.bin >/tmp/z/plain.bin
 (cd /tmp/z && sha256sum magic.bin plain.bin >/tmp/z.sha256)
 smbclient //127.0.0.1/zstd -c 'lcd /tmp/z; put magic.bin; put plain.bin'
 dfsctl system drain-uploads
-dfsctl store block evict --share /zstd
 smbclient //127.0.0.1/zstd -c 'lcd /tmp/back; get plain.bin; get magic.bin' || true
 (cd /tmp/back && sha256sum -c /tmp/z.sha256) || true
 

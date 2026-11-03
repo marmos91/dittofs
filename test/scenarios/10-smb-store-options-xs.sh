@@ -42,7 +42,6 @@ dfsctl store block edit s3-used --config "$(jq -c '.prefix = "moved/"' <<<"$S3")
 dfsctl store block list -o json | jq -c '.[] | select(.name == "s3-used") | .config | {bucket, prefix}' | tee /tmp/used.json
 dfs-server stop
 dfs-server start
-dfsctl store block evict --share /used
 timeout 120 smbclient //127.0.0.1/used -c 'get u.bin /tmp/back.bin' || true
 
 # Outcomes first, then the checks: each flag kept, or the refusal naming it

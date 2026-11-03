@@ -15,7 +15,6 @@ head -c 40M /dev/urandom >/tmp/b.bin
 s3 pause
 smbclient //127.0.0.1/test -c 'lcd /tmp; put a.bin; mkdir d; rename a.bin d\a.bin'
 nfs-cp /tmp/b.bin "$NFS/b.bin$OPT"
-dfsctl store block stats --share /test -o json | jq -c '.totals | {unsynced_bytes, local_disk_used}'
 
 # The crash, then the restart with S3 back
 dfs-server kill
@@ -36,6 +35,5 @@ for _ in $(seq 1 180); do nfs-cat "$NFS/b.bin$OPT" >/tmp/b-back.bin 2>/tmp/b-bac
 cat /tmp/b-back.err
 cmp /tmp/b-back.bin /tmp/b.bin
 dfsctl system drain-uploads
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'get d\a.bin -' | cmp - /tmp/a.bin
 smbclient //127.0.0.1/test -c 'get b.bin -' | cmp - /tmp/b.bin

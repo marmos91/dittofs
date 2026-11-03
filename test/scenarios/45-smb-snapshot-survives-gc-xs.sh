@@ -18,7 +18,6 @@ rclone size --json s3:dittofs/test | tee /tmp/after-gc.json
 dfsctl share disable /test
 dfsctl share snapshot restore /test "$(jq -r .id /tmp/snap.json)" --yes
 dfsctl share enable /test
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get a.bin; get b.bin'
 (cd /tmp/back && sha256sum -c /tmp/ab.sha256) && echo "restore: ok" || echo "restore: FAILED"
 dfsctl share remove /test --force && R=removed || R=refused

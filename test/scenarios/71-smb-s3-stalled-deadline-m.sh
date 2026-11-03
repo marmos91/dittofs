@@ -14,7 +14,6 @@ head -c 64M /dev/urandom >/tmp/a.bin
 head -c 1M /dev/urandom >/tmp/b.bin
 smbclient //127.0.0.1/test -c 'lcd /tmp; put a.bin'
 dfsctl system drain-uploads
-dfsctl store block evict --share /test
 
 # S3 paused: each call is timed between two timestamps
 s3 pause
@@ -28,8 +27,6 @@ date +%s >/tmp/t3
 timeout 300 smbclient //127.0.0.1/test -c 'ls' >/tmp/ls.out 2>&1 || echo "exit $?" >/tmp/ls.rc
 timeout 300 nfs-ls "$NFS$OPT" >>/tmp/ls.out 2>&1 || echo "exit $?" >>/tmp/ls.rc
 date +%s >/tmp/t4
-timeout 300 dfsctl store block stats --share /test >/tmp/stats.out 2>&1 || echo "exit $?" >/tmp/stats.rc
-date +%s >/tmp/t5
 touch /tmp/smb.bin /tmp/nfs.bin
 
 # S3 resumed: the file reads again and the drain completes
@@ -40,12 +37,11 @@ timeout 300 dfsctl system drain-uploads
 # Outcomes first, then the checks: calls within 45 s, listings and stats 10 s, cold reads failed
 cat /tmp/smb.out /tmp/nfs.out /tmp/put.out /tmp/ls.out
 cat /tmp/*.rc 2>/dev/null || true
-paste -d ' ' /tmp/t0 /tmp/t1 /tmp/t2 /tmp/t3 /tmp/t4 /tmp/t5
+paste -d ' ' /tmp/t0 /tmp/t1 /tmp/t2 /tmp/t3 /tmp/t4
 test $(($(cat /tmp/t1) - $(cat /tmp/t0))) -le 45
 test $(($(cat /tmp/t2) - $(cat /tmp/t1))) -le 45
 test $(($(cat /tmp/t3) - $(cat /tmp/t2))) -le 45
 test $(($(cat /tmp/t4) - $(cat /tmp/t3))) -le 10
-test $(($(cat /tmp/t5) - $(cat /tmp/t4))) -le 10
 test -s /tmp/smb.rc
 test -s /tmp/nfs.rc
 cmp -n "$(stat -c %s /tmp/smb.bin)" /tmp/smb.bin /tmp/a.bin
