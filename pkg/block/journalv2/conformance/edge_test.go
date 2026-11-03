@@ -2229,3 +2229,15 @@ func wantFreed(t *testing.T, f *journalv2test.Fixture, what, name string, before
 		t.Fatalf("%s that recycled a segment accounted at %d moved freed by %d, want nothing it owes above the account", what, allocated, freed)
 	}
 }
+
+// atCapacityMax is atCapacity for a journal whose maximum the caller raised in
+// whole segment caps of capB: the account is not only within two caps of the
+// maximum but also never above it, since spares too book against the maximum,
+// so a refusal there means nothing more could be booked at all.
+func atCapacityMax(t *testing.T, s journalv2.Stats, capB int64) {
+	t.Helper()
+
+	if s.UsedBytes < s.MaxBytes-2*capB || s.UsedBytes > s.MaxBytes {
+		t.Fatalf("UsedBytes = %d after a refusal at a maximum of %d, want within two caps of it and never above it", s.UsedBytes, s.MaxBytes)
+	}
+}
