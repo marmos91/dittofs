@@ -32,10 +32,13 @@ and write the document. That is the whole output.
 
 The units of work are the **epic** and its **subtasks**. No other word names them: not
 task, ticket, story, step, phase, stage, milestone or work item. That holds in headings,
-table columns, ids and prose. A subtask's id is `T<epic>.<n>` (`T4.3`), never `E4-3`,
-`4-3` or `Task 3`. The `T` only marks the id as a subtask's, beside `E`, `S`, `R` and `D`;
-it does not make "task" a word for the unit. A bare `4.3` cited before the prefix existed
-names the same subtask as `T4.3`. (A GitHub milestone names a release, not a unit of
+table columns, ids and prose. A subtask's id is `<epic>.<n>`, never `E4-3`, `4-3` or
+`Task 3`. The `T` prefix is optional and only disambiguates, beside `E`, `S`, `R` and `D`:
+`subtask 4.3` and `subtask T4.3` are both clear, and `T4.3` is the short form. A bare `4.3`
+on its own can read as RFC 4's epic 3 or a §4.3, so give it the word or the prefix. The
+prefix does not make "task" a word for the unit. In the document, subtask headings
+(`### T4.3 …`) and estimate lines (`**Subtask T4.3 estimate: …**`) always carry it,
+because the checks parse them. (A GitHub milestone names a release, not a unit of
 work; only Step 6 touches one, and the document never names a release.) Progress is tracked by mapping pull requests to these
 ids, so they must stay stable:
 
@@ -43,11 +46,11 @@ ids, so they must stay stable:
   for the same work. New subtasks get the next free numbers, after the plan's.
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id may
   have been cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
-- **Never reuse or drop an id that a pull request has cited.** Search first:
-  `gh pr list --state all --search '"T<epic>.<n>" in:title,body'`, since pull requests cite
-  ids in their descriptions too. For an epic whose ids were cited before the prefix, also
-  search `'"<epic>.<n>" in:title,body'`, and discard the hits that only cite an RFC's
-  §<epic>.<n>. If the work moved, say where in §9.
+- **Never reuse or drop an id that a pull request has cited.** Search both forms first,
+  `gh pr list --state all --search '"T<epic>.<n>" in:title,body'` and
+  `'"<epic>.<n>" in:title,body'`, since pull requests cite ids in their descriptions too,
+  and discard the hits that only cite an RFC's §<epic>.<n>. If the work moved, say where
+  in §9.
 
 A **track** (A, B or C, one line of work through the epics) and a **synchronisation point** (S1, S2, …)
 are not units of work and keep their names. A **pull request** groups subtasks (§8 below);
@@ -90,7 +93,7 @@ inputs rather than guess.
     requirement and test rows that name the epic's area, the RFC headings (`rg -n '^#'
     <rfc>`) matching the §5 bullets, and the **Sources** header of an existing document for
     this epic. Show the widened list to the user and have it confirmed before Step 2; it
-    is then the owned sections for every later step, the key-word cross-check included.
+    is then the owned sections for every later step.
     When nobody can confirm it, keep the widened list and name it in the report as an
     assumption;
   - no `**Epic <k> estimate:**` line → report "no plan figure" instead of a comparison;
@@ -110,9 +113,10 @@ This is the step the plan does not do, and the one that matters most. The goal i
 reviewer can check the list against the RFC without rereading it.
 
 **2.1 Read each owned section for its obligations.** Read the owned sections in full and
-list every statement that binds this epic's code. Reading finds what a line-based search
-cannot: a key word wrapped across two lines (`**MUST` at the end of one line, `NOT**` at
-the start of the next), and the rules the RFCs state without any key word. Look for:
+list every statement that binds this epic's code. The markers below are what the RFC's
+author uses to flag a candidate, not proof of an obligation: decide each one from what the
+sentence says (a key word can sit in a heading, an example or a negation such as "is not
+required", and a rule can carry no key word at all). Look for:
 
 - the RFC 2119 key words (MUST, MUST NOT, SHALL, REQUIRED, SHOULD, SHOULD NOT), in capitals
   or in lower case: some RFCs write them only in lower case;
@@ -125,21 +129,9 @@ the start of the next), and the rules the RFCs state without any key word. Look 
   performance targets in tables, and the RFC's test rows (a §9-style table) that name this
   area.
 
-Note each one with its RFC line number in a scratch file, not in the document.
+Note each candidate with its RFC line number in a scratch file, not in the document.
 
-Then cross-check the key words mechanically, so that none is missed. Search the whole file
-and keep each owned section's range afterwards, so the line numbers are the RFC's own:
-
-```bash
-rg -n -U -o -i -w 'must(\**\s+\**not)?|shall(\s+not)?|required|should(\**\s+\**not)?' <rfc> |
-  awk -F: -v from=<from> -v to=<to> '$1+0 >= from && $1+0 <= to'
-```
-
-`-U` lets a match span lines: a wrapped `MUST NOT` prints as two consecutive lines
-(`320:MUST`, `321:NOT`), and it is one hit, a prohibition. Step 2.4 maps every key-word hit;
-the prose words are a reading aid only and need no mapping.
-
-**2.2 Turn the hits into requirements.**
+**2.2 Turn the candidates into requirements.**
 
 - One requirement per obligation. Merge sentences that state the same obligation in two
   places, and cite both sections. Split a sentence that carries two independent ones.
@@ -176,10 +168,9 @@ A number is never reused or renumbered, and a dropped requirement keeps its row,
 
 **2.4 Check coverage, both ways.**
 
-- Every key-word hit of the cross-check in 2.1 maps to an R-number, to another epic, or to
-  "not an obligation" (background, an example). Go through it line by line; an unmapped
-  hit is a gap. A bold lead sentence or prose invariant noted while reading maps the same
-  way, but the prose words of the search need no mapping of their own.
+- Every candidate noted in 2.1 maps to an R-number, to another epic, or to "not an
+  obligation" (background, an example, a negation). Go through the scratch list one by one;
+  an unmapped candidate is a gap.
 - Every R-number has at least one subtask and at least one test that can fail if the
   requirement is broken.
 - Every subtask covers at least one R-number, or says why it covers none (scaffolding that
@@ -232,31 +223,10 @@ The epic total goes in the document header, in the same form the plan uses:
 ```
 
 Numbers are plain multiples of 0.25: no `~`, no ranges, no comma, no unit inside the
-number. Compute the total with this check, never by hand. Save it as `epic-check.awk` in the
-scratchpad and run `awk -f epic-check.awk <epic-doc>`:
+number. Compute the total with the check beside this file, never by hand:
 
-```awk
-/^## /                                   { in6 = ($0 ~ /^## 6\./); cur = "" }
-in6 && /^### /                           { cur = "" }
-in6 && /^### T[0-9]+\.[0-9]+[a-z]? /     { cur = $2; head[$2]++; order[++k] = $2
-                                           if (head[$2] > 1) print "duplicate heading " $2 }
-/(Epic [0-9]+|Subtask T?[0-9]+\.[0-9]+[a-z]?) estimate:/ {
-  if ($0 ~ /^\*\*Subtask T[0-9]+\.[0-9]+[a-z]? estimate: [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
-    est[$2]++; n++; d += $4
-    if ($2 != cur) print "estimate line for " $2 " (line " NR ") sits under " (cur == "" ? "no subtask heading" : "heading " cur)
-  } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
-    if (seen++) print "a second epic estimate line, line " NR
-    else { epic = $2; hn = $4; hd = $6 }
-  } else print "malformed, line " NR ": " $0
-}
-END {
-  for (i = 1; i <= k; i++) if (est[order[i]] != 1) print "subtask " order[i] ": " est[order[i]] + 0 " estimate lines"
-  for (id in est) if (!(id in head)) print "estimate line for " id " has no ### heading in §6"
-  if (seen) for (id in head) if (id !~ "^T" epic "\\.") print "subtask " id " is not an id of epic " epic
-  printf "TOTAL %d subtasks, %g man-days\n", n, d
-  if (!seen) print "no epic estimate line in the header"
-  else if (hn != n || hd != d) printf "header says %d subtasks, %g man-days\n", hn, hd
-}
+```bash
+awk -f .claude/skills/epic-breakdown/epic-check.awk <epic-doc>
 ```
 
 Only the `TOTAL` line may print; write it into the header. Anything else is a defect to fix:
@@ -491,7 +461,7 @@ keeps its title form, so both stay in use; if its body copies the specification 
 | Rationalization | Reality |
 | --- | --- |
 | "The plan already lists the subtasks" | It lists candidates sized for a plan. Without the requirements next to them, nobody can tell which RFC obligation fell through. |
-| "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section, then cross-check the key words and map every hit. |
+| "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section in full, note every candidate, and map each one. |
 | "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim. |
 | "The estimate is close enough to the plan's" | Then the script will say so. Compute it; don't copy the plan's figure. |
 | "Let's create the issues now, it saves a step" | They are created by hand when the team is ready to assign the subtasks, and only on request; their links point at the document on `develop`, which does not exist until its pull request merges. |
@@ -502,9 +472,8 @@ keeps its title form, so both stay in use; if its body copies the specification 
 
 Before handing over, check:
 
-- Every key-word hit of the cross-check is mapped, every bold lead sentence of the owned
-  sections is accounted for, and the R-tables carry `Kind`, `Source` and `Subtasks` on
-  every row.
+- Every candidate of 2.1 (key words, bold lead sentences, invariants, bounds) is mapped,
+  and the R-tables carry `Kind`, `Source` and `Subtasks` on every row.
 - Every R-number has a subtask and a test; every subtask covers an R-number or says why not.
 - No subtask is over 5 man-days without a reason, and none was cut to reach a count.
 - `epic-check.awk` prints only its `TOTAL` line, and the header's `**Epic <k> estimate: …**`
@@ -512,12 +481,14 @@ Before handing over, check:
 - §8's suggested pull requests cover every subtask once, their man-days add up to the
   total, each names what it delivers and leaves nothing half-wired, and the table says the
   grouping is only a suggestion.
-- `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <epic-doc>` finds
-  nothing naming this epic's units.
-- The document never refers to the plan (`rg -n -i "\b(this|the) plan\b|\bplan's\b"
-  <epic-doc>` prints nothing), has no checkboxes or status, and its graphs are Mermaid. A copied rule that
-  names the plan is a defect of the plan: copy it word for word, and report it so the plan
-  is fixed.
+- The epic's units are called epics and subtasks: no other word (task, story, phase,
+  stage, …) names them. Read the document for it; a word search only suggests where to look,
+  since phase, stage and plan are also ordinary words and terms of some RFCs.
+- The document never refers to the plan, has no checkboxes or status, and its graphs are
+  Mermaid. `rg -n -i "\b(this|the) plan\b|\bplan's\b" <epic-doc>` shows where to look; read
+  each hit, since some RFCs use "plan" as a term of their own. A copied rule that refers to
+  the plan is a defect of the plan: copy it word for word, and report it so the plan is
+  fixed.
 - §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
 - §1.3 explains every `E<n>` and `S<n>` the document uses, the copied rules included. This
   prints the ones missing from it, and must print nothing. A token that names something

@@ -18,11 +18,12 @@ No other word names them: not task, ticket, story, step, phase, stage, milestone
 package or work item. That holds in headings, table columns, ids and prose. (A GitHub
 milestone names a release and a roadmap epic is a GitHub issue grouping epics by release;
 neither is a unit of the plan, and the plan names neither.) A subtask's id
-is `T<epic>.<n>` (`T4.3`), never `E4-3`, `4-3` or `T3`. The `T` only marks the id as a
-subtask's, beside `E` for epics, `S` for synchronisation points and `R` for requirements; it
-does not make "task" a word for the unit. Pull requests cite that form, and progress is
-tracked by mapping pull requests to those ids. `T4.3` and a bare `4.3` name the same
-subtask, so ids cited before the prefix existed stay valid.
+is `<epic>.<n>`, never `E4-3`, `4-3` or `T3`. The `T` prefix is optional and only
+disambiguates, beside `E` for epics, `S` for synchronisation points and `R` for
+requirements: `subtask 4.3` and `subtask T4.3` are both clear, and `T4.3` is the short
+form. A bare `4.3` on its own can read as RFC 4's epic 3 or a §4.3, so give it the word or
+the prefix. The prefix does not make "task" a word for the unit. Progress is tracked by
+mapping pull requests to these ids, whichever form they cite.
 
 Two other words keep their own meaning because they are not units of work. A **track** (A, B or C) is
 one line of work through the epics. A **synchronisation point** (S1, S2, …) is where the
@@ -255,39 +256,10 @@ Each epic in §5 opens with exactly one line, on a line of its own, in one of th
 
 Use the second form when some epic is "planned after", and list every such epic. Numbers
 are plain multiples of 0.25: no `~`, no ranges, no `+ E11`, no comma, no unit inside the
-number. Compute the total with this check, never by hand. Save it as `plan-check.awk` in
-the scratchpad and run `awk -f plan-check.awk <plan>`:
+number. Compute the total with the check beside this file, never by hand:
 
-```awk
-/^## /                                   { in5 = ($0 ~ /^## 5\./); cur = "" }
-in5 && /^### /                           { cur = "" }
-in5 && /^### Epic [0-9]+ /               { cur = $3; head[$3]++; order[++k] = $3
-                                           if (head[$3] > 1) print "duplicate heading for epic " $3 }
-/(Epic [0-9]+|Plan) estimate:/ {
-  if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
-    est[$2]++; n += $4; d += $6
-    if ($2 != cur) print "estimate line for epic " $2 " (line " NR ") sits under " (cur == "" ? "no epic heading" : "epic " cur)
-  } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: planned after S[0-9]+[a-z]?\.\*\*$/) {
-    est[$2]++; later[$2] = 1; nl++
-    if ($2 != cur) print "estimate line for epic " $2 " (line " NR ") sits under " (cur == "" ? "no epic heading" : "epic " cur)
-  } else if ($0 ~ /^\*\*Plan estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days(, not counting epics? [0-9]+((, | and )[0-9]+)*)?\.\*\*$/) {
-    if (seen++) { print "a second plan estimate line, line " NR; next }
-    pn = $3; pd = $5
-    clause = $0; sub(/^.*man-days/, "", clause); gsub(/[^0-9]+/, " ", clause)
-    nc = split(clause, c, " "); for (i = 1; i <= nc; i++) if (c[i] != "") listed[c[i]] = 1
-  } else print "malformed, line " NR ": " $0
-}
-END {
-  for (i = 1; i <= k; i++) if (est[order[i]] != 1) print "epic " order[i] ": " est[order[i]] + 0 " estimate lines"
-  for (id in est) if (!(id in head)) print "estimate line for epic " id " has no ### heading in §5"
-  printf "TOTAL %d subtasks, %g man-days", n, d
-  sep = ", not counting epic"; for (i = 1; i <= k; i++) if (order[i] in later) { printf "%s %s", sep, order[i]; sep = "," }
-  print ""
-  if (!seen) { print "no plan estimate line in §2"; exit }
-  if (pn != n || pd != d) printf "plan line says %d subtasks, %g man-days\n", pn, pd
-  for (id in later) if (!(id in listed)) print "plan line does not name epic " id " as not counted"
-  for (id in listed) if (!(id in later)) print "plan line names epic " id ", which has a figure"
-}
+```bash
+awk -f .claude/skills/rfc-to-epic-plan/plan-check.awk <plan>
 ```
 
 Only the `TOTAL` line may print. Anything else is a defect to fix: a malformed line (`21,5`,
@@ -374,8 +346,8 @@ use `epic-breakdown` in the document they are reading:
 >   MUST NOT into numbered requirements, estimates each subtask in man-days and suggests
 >   the pull requests. A human doing it by hand follows the same skill.
 > - **Epic and subtask, nothing else.** The units of work are the epic and its subtasks,
->   with subtask ids `T<epic>.<n>` (`T4.3`). No other word names them: not task, ticket,
->   story, step or phase, in headings, tables, ids or prose.
+>   with subtask ids `<epic>.<n>` (`subtask 4.3`, or `T4.3` for short). No other word names
+>   them: not task, ticket, story, step or phase, in headings, tables, ids or prose.
 > - **The epic stands alone.** Copy the numbered rules below into the epic document word
 >   for word, under their own heading — the rules only, not this instruction, which speaks
 >   of "this plan". The epic document must not refer to this plan, link to it,
@@ -411,21 +383,11 @@ use `epic-breakdown` in the document they are reading:
    component did not just write itself: on-disk records, wire messages, config, API
    payloads. Where E2 has a reference model, also fuzz operation sequences against it.
    The property: an input is either accepted as valid or rejected, never a panic.
-3. **Observability follows RFC 25.** The component takes what RFC 25 §8 says the root
-   builds, as fields of its `Deps`: a `*slog.Logger` (narrowed with
-   `With("component", <prefix>)`), the `*metrics.Registry` and the tracing API's `Tracer`.
-   It implements `health.Source` for the conditions the RFC defines, and each long-running
-   loop takes its `*health.Loop` from the watchdog. Metrics are the counters, gauges and
-   histograms the RFC assigns to the epic's area, named under the RFC's prefix (RFC 25
-   §2.1) with §2.2–§2.6's units, labels and buckets, resolved once at construction and
-   recorded with an atomic add (§2.9); an event is counted once, by the component that
-   decides it (§2.7). Spans follow §6.1 (constant `<prefix>.<Name>` names, a wait is a span
-   event, background work opens a root span), and an unsampled span allocates nothing
-   (§6.3). Logs follow §5, and nothing §5.4 forbids reaches a log, span or metric. Name
-   the metrics, conditions and spans each epic owns. **Exception:** where the RFC itself
-   restricts its dependencies (for example to the standard library) or defines its own
-   observability surface, follow the RFC, state the exception in this rule, and put the
-   bridge to RFC 25's registry, tracer and health evaluator in the integration epic.
+3. **Observability follows RFC 25.** Name the metrics, conditions and spans each epic
+   owns, as RFC 25 defines them. **Exception:** where the RFC itself restricts its
+   dependencies (for example to the standard library) or defines its own observability
+   surface, follow the RFC, state the exception in this rule, and put the bridge to RFC 25's
+   registry, tracer and health evaluator in the integration epic.
 4. **Profiling.** Tests and benchmarks run under E2's profiling harness, and fail on
    goroutine, descriptor or memory leaks and on anomalous resource growth. Name the hot
    paths that carry allocations-per-op assertions.
@@ -445,7 +407,8 @@ use `epic-breakdown` in the document they are reading:
    for pure logic only.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
-   numbers, no CI, runner or OS names, no epic, subtask, plan, phase or decision ids. A
+   numbers, no CI, runner or OS names, no ids from planning documents (epics, subtasks,
+   synchronisation points, decisions). A
    `ponytail:` marker records a knowingly simple implementation, naming its ceiling and the
    upgrade path. A `decision:` marker records deliberate behaviour, naming the rule, why it
    holds and the evidence that would overturn it. Where the RFC carries such a note, its
@@ -484,16 +447,16 @@ use `epic-breakdown` in the document they are reading:
 - The integration epic follows the programme's stages, and an epic waiting on someone
   else's interface says "planned after Sx" and names the point.
 - There is a dashboards epic only if the RFC or the user asked for one.
-- The §1.5 rules cite no section of the plan and never name the plan. This prints the
-  numbered rules' lines that do, skipping the opening instruction, and must print nothing
-  ("plan ids" in rule 9 is a kind of id, not a reference, and does not match):
+- The §1.5 rules cite no section of the plan and never refer to it, so they stand alone
+  once copied into an epic. This shows where to look, skipping the opening instruction;
+  read each hit, since some RFCs use "plan" as a term of their own:
   `awk '/^### 1\.5 /{f=1; next} /^##/{f=0} f && !/^>/' <plan> | rg -n -i "\b(this|the) plan\b|\bplan's\b"`
 - Every Step 0 default and every divergence from an existing plan is listed in the header
   or in §6.
 - No graph is in ASCII art.
-- Units of work are called epics and subtasks everywhere, and subtask ids are `T<epic>.<n>`:
-  `rg -n -i -w 'tasks?|tickets?|stor(y|ies)|phases?|milestones?|work items?' <plan>` turns
-  up nothing that names this plan's units.
+- Units of work are called epics and subtasks everywhere, and subtask ids are
+  `<epic>.<n>`, with or without the `T`. Read the plan for it; a word search only suggests
+  where to look, since phase, stage and milestone are also ordinary words.
 - `plan-check.awk` prints only its `TOTAL` line, which matches the `**Plan estimate: …**`
   line and the §2 total row; every epic without a figure is "planned after Sx" and named
   in the plan estimate line.
