@@ -18,6 +18,7 @@ import (
 type fakeContent struct {
 	mu       sync.Mutex
 	files    map[entity.FileID][]byte
+	shares   map[entity.FileID]entity.ShareID // the share each file was first named with
 	overlays map[entity.FileID]Overlay
 	versions uint64
 	verifier vfs.Verifier
@@ -35,18 +36,42 @@ type fakeContent struct {
 var _ Content = (*fakeContent)(nil)
 
 func newFakeContent() *fakeContent {
-	return &fakeContent{files: map[entity.FileID][]byte{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}}
+	return &fakeContent{files: map[entity.FileID][]byte{}, shares: map[entity.FileID]entity.ShareID{}, overlays: map[entity.FileID]Overlay{}, verifier: vfs.Verifier{1}}
 }
 
-func (c *fakeContent) Draw(ctx context.Context, f entity.FileID) (entity.JournalVersion, error) {
+// placed answers ErrStale, as the engine does for a share with no binding,
+// for a call naming no share or a share other than the one the file was
+// first named with, so a caller passing the wrong share fails its test. The
+// caller holds mu.
+func (c *fakeContent) placed(share entity.ShareID, fs ...entity.FileID) error {
+	if share == (entity.ShareID{}) {
+		return vfs.ErrStale
+	}
+	for _, f := range fs {
+		if was, ok := c.shares[f]; ok && was != share {
+			return vfs.ErrStale
+		}
+		c.shares[f] = share
+	}
+	return nil
+}
+
+func (c *fakeContent) Draw(ctx context.Context, share entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return entity.JournalVersion{}, err
+	}
 	c.versions++
 	return entity.VersionOf(c.versions), nil
 }
 
-func (c *fakeContent) Write(ctx context.Context, f entity.FileID, off int64, p []byte, o WriteOpts) (vfs.Verifier, error) {
+func (c *fakeContent) Write(ctx context.Context, share entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfs.Verifier, error) {
 	c.mu.Lock()
+	if err := c.placed(share, f); err != nil {
+		c.mu.Unlock()
+		return vfs.Verifier{}, err
+	}
 	b := grow(c.files[f], off+int64(len(p)))
 	copy(b[off:], p)
 	c.files[f] = b
@@ -60,15 +85,23 @@ func (c *fakeContent) Write(ctx context.Context, f entity.FileID, off int64, p [
 	return c.verifier, nil
 }
 
-func (c *fakeContent) Commit(ctx context.Context, f entity.FileID, off, n int64) (vfs.Verifier, uint64, error) {
+func (c *fakeContent) Commit(ctx context.Context, share entity.ShareID, f entity.FileID, off, n int64) (vfs.Verifier, uint64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return vfs.Verifier{}, 0, err
+	}
 	return c.verifier, 0, nil
 }
 
-func (c *fakeContent) LossSeq(f entity.FileID) uint64 { return 0 }
+func (c *fakeContent) LossSeq(share entity.ShareID, f entity.FileID) uint64 { return 0 }
 
-func (c *fakeContent) Read(ctx context.Context, f entity.FileID, off int64, dst []byte) (int, error) {
+func (c *fakeContent) Read(ctx context.Context, share entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return 0, err
+	}
 	b := c.files[f]
 	if off >= int64(len(b)) {
 		return 0, nil
@@ -76,7 +109,7 @@ func (c *fakeContent) Read(ctx context.Context, f entity.FileID, off int64, dst 
 	return copy(dst, b[off:]), nil
 }
 
-func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64) error {
+func (c *fakeContent) Truncate(ctx context.Context, share entity.ShareID, f entity.FileID, size int64) error {
 	if c.truncating != nil {
 		c.truncating(f)
 	}
@@ -85,6 +118,9 @@ func (c *fakeContent) Truncate(ctx context.Context, f entity.FileID, size int64)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return err
+	}
 	c.files[f] = grow(c.files[f], size)[:size]
 	o := c.staged(f)
 	o.Size, o.SizeSet = size, true
@@ -102,32 +138,41 @@ func (c *fakeContent) staged(f entity.FileID) Overlay {
 	return o
 }
 
-func (c *fakeContent) Deallocate(ctx context.Context, f entity.FileID, off, n int64) error {
+func (c *fakeContent) Deallocate(ctx context.Context, share entity.ShareID, f entity.FileID, off, n int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.placed(share, f); err != nil {
+		return err
+	}
 	b := c.files[f]
 	clear(b[min(off, int64(len(b))):min(off+n, int64(len(b)))])
 	return nil
 }
 
-func (c *fakeContent) Delete(ctx context.Context, f entity.FileID) error {
+func (c *fakeContent) Delete(ctx context.Context, share entity.ShareID, f entity.FileID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.deleteErr != nil {
 		return c.deleteErr
 	}
+	if err := c.placed(share, f); err != nil {
+		return err
+	}
 	delete(c.files, f)
 	return nil
 }
 
-func (c *fakeContent) Clone(ctx context.Context, src, dst entity.FileID, x vfs.Extent) error {
-	_, err := c.Copy(ctx, src, dst, []vfs.Extent{x})
+func (c *fakeContent) Clone(ctx context.Context, share entity.ShareID, src, dst entity.FileID, x vfs.Extent) error {
+	_, err := c.Copy(ctx, share, src, dst, []vfs.Extent{x})
 	return err
 }
 
-func (c *fakeContent) Copy(ctx context.Context, src, dst entity.FileID, xs []vfs.Extent) (int64, error) {
+func (c *fakeContent) Copy(ctx context.Context, share entity.ShareID, src, dst entity.FileID, xs []vfs.Extent) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.placed(share, src, dst); err != nil {
+		return 0, err
+	}
 	var n int64
 	for _, x := range xs {
 		from := grow(c.files[src], x.SrcOff+x.Len)
@@ -139,18 +184,23 @@ func (c *fakeContent) Copy(ctx context.Context, src, dst entity.FileID, xs []vfs
 	return n, nil
 }
 
-func (c *fakeContent) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
+func (c *fakeContent) Overlay(ctx context.Context, share entity.ShareID, f entity.FileID) (Overlay, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.overlayErr != nil {
 		return Overlay{}, false, c.overlayErr
 	}
+	if err := c.placed(share, f); err != nil {
+		return Overlay{}, false, err
+	}
 	o, ok := c.overlays[f]
 	return o, ok, nil
 }
 
-func (c *fakeContent) Allocation(ctx context.Context, f entity.FileID, off int64) (entity.Span, error) {
-	return entity.Span{}, nil
+func (c *fakeContent) Allocation(ctx context.Context, share entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return entity.Span{}, c.placed(share, f)
 }
 
 // grow is b, extended with zeros to at least n bytes.

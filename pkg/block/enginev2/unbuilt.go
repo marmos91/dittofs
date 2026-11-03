@@ -7,23 +7,26 @@ import (
 	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
-// The content methods, called only by the filesystem service. None is built
-// yet: each answers errUnbuilt, and moves to its own file as it is built.
+// The content methods, called only by the filesystem service. Each names the
+// file's share beside the file, as a FileID carries no shard and the engine
+// keys a file's binding by its share; a share with no binding is to answer
+// ErrStale. None is built yet: each answers errUnbuilt, and moves to its own
+// file as it is built.
 
 // Write stages p at off and answers once the journal holds it.
-func (e *Engine) Write(ctx context.Context, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
+func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
 	return vfserr.Verifier{}, errUnbuilt
 }
 
 // Draw is a version for a change stored outside the journal, drawn under the
 // file's accept lock.
-func (e *Engine) Draw(ctx context.Context, f entity.FileID) (entity.JournalVersion, error) {
+func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {
 	return entity.JournalVersion{}, errUnbuilt
 }
 
 // Commit makes [off, off+n) stable, n 0 the whole file, and answers the
 // verifier and the file's loss sequence.
-func (e *Engine) Commit(ctx context.Context, f entity.FileID, off, n int64) (v vfserr.Verifier, lossSeq uint64, err error) {
+func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (v vfserr.Verifier, lossSeq uint64, err error) {
 	return vfserr.Verifier{}, 0, errUnbuilt
 }
 
@@ -32,45 +35,47 @@ func (e *Engine) Commit(ctx context.Context, f entity.FileID, off, n int64) (v v
 // decision: the stub answers 0 because the signature has no error to carry
 // errUnbuilt. Zero reads as "no loss since any open", so no caller may depend
 // on it until the loss sequence is built.
-func (e *Engine) LossSeq(f entity.FileID) uint64 { return 0 }
+func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 { return 0 }
 
 // Read answers the verified bytes read into dst, then the error.
-func (e *Engine) Read(ctx context.Context, f entity.FileID, off int64, dst []byte) (int, error) {
+func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, dst []byte) (int, error) {
 	return 0, errUnbuilt
 }
 
 // Truncate sets the file's size.
-func (e *Engine) Truncate(ctx context.Context, f entity.FileID, size int64) error {
+func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
 	return errUnbuilt
 }
 
 // Deallocate makes [off, off+n) a hole.
-func (e *Engine) Deallocate(ctx context.Context, f entity.FileID, off, n int64) error {
+func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error {
 	return errUnbuilt
 }
 
 // Delete is the file's release; never the journal's eviction.
-func (e *Engine) Delete(ctx context.Context, f entity.FileID) error { return errUnbuilt }
+func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	return errUnbuilt
+}
 
 // Clone makes x of dst the content of x of src, atomically, answered when done.
-func (e *Engine) Clone(ctx context.Context, src, dst entity.FileID, x vfserr.Extent) error {
+func (e *Engine) Clone(ctx context.Context, s entity.ShareID, src, dst entity.FileID, x vfserr.Extent) error {
 	return errUnbuilt
 }
 
 // Copy copies xs in order as bounded clones, and may answer a short count.
-func (e *Engine) Copy(ctx context.Context, src, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
+func (e *Engine) Copy(ctx context.Context, s entity.ShareID, src, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
 	return 0, errUnbuilt
 }
 
 // Overlay is the file's size, times and version as its uncommitted operations
 // leave them, read from the journal alone; pending false, none is, and the
 // File record answers alone.
-func (e *Engine) Overlay(ctx context.Context, f entity.FileID) (o Overlay, pending bool, err error) {
+func (e *Engine) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o Overlay, pending bool, err error) {
 	return Overlay{}, false, errUnbuilt
 }
 
 // Allocation is the span holding off, the file's uncommitted operations
 // applied.
-func (e *Engine) Allocation(ctx context.Context, f entity.FileID, off int64) (entity.Span, error) {
+func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
 	return entity.Span{}, errUnbuilt
 }

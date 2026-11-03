@@ -41,10 +41,16 @@ func (f *fixture) held(id entity.FileID) bool {
 	return ok
 }
 
-// stored gives f content in the fake engine.
+// stored gives f content in the fake engine, in the fixture's share.
 func (f *fixture) stored(t *testing.T, id entity.FileID) {
 	t.Helper()
-	if _, err := f.engine.Write(t.Context(), id, 0, []byte("content"), WriteOpts{}); err != nil {
+	f.storedIn(t, f.fs.Share.ID, id)
+}
+
+// storedIn gives f content in the fake engine, in share.
+func (f *fixture) storedIn(t *testing.T, share entity.ShareID, id entity.FileID) {
+	t.Helper()
+	if _, err := f.engine.Write(t.Context(), share, id, 0, []byte("content"), WriteOpts{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1176,11 +1182,11 @@ func TestAFailedReconnectIsClosed(t *testing.T) {
 // store bounded by its call's context does.
 type bounded struct{ Content }
 
-func (b bounded) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
+func (b bounded) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (Overlay, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Overlay{}, false, err
 	}
-	return b.Content.Overlay(ctx, f)
+	return b.Content.Overlay(ctx, s, f)
 }
 
 // ending is open state's opens, ending the call's context once a reconnect
@@ -1863,7 +1869,7 @@ func TestAPendingReleaseInASecondShareRunsAfterARestart(t *testing.T) {
 	_, bRoot, h := n.second(t, alice)
 	f, err := n.fs.Store.Files().Get(ctx, n.fs.Admin, h)
 	n.must(t, err)
-	n.stored(t, f.ID)
+	n.storedIn(t, h.Share(), f.ID)
 	if _, err := n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, bRoot, []byte("disk")); err != nil {
 		t.Fatal(err)
 	}
@@ -1960,12 +1966,12 @@ type phaseOne struct {
 	once    sync.Once
 }
 
-func (d *phaseOne) Delete(ctx context.Context, f entity.FileID) error {
+func (d *phaseOne) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	d.once.Do(func() { close(d.entered); <-d.open })
 	d.mu.Lock()
 	d.n[f]++
 	d.mu.Unlock()
-	if err := d.fakeContent.Delete(ctx, f); err != nil {
+	if err := d.fakeContent.Delete(ctx, s, f); err != nil {
 		return err
 	}
 	return d.st.Existence().Remove(ctx, d.share, f, 0, kvstore.RemoveOp{Version: entity.VersionOf(1 << 40), Kind: entity.RemoveRelease}, nil)

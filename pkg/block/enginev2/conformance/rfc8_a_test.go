@@ -17,7 +17,7 @@ import (
 // write writes p at off of file id and returns its verifier.
 func write(t *testing.T, f *enginev2test.Fixture, id entity.FileID, off int64, p []byte) vfserr.Verifier {
 	t.Helper()
-	v, err := f.E.Write(t.Context(), id, off, p, enginev2.WriteOpts{Done: func() {}})
+	v, err := f.E.Write(t.Context(), f.Share.ID, id, off, p, enginev2.WriteOpts{Done: func() {}})
 	if err != nil {
 		t.Fatalf("write %d bytes at %d: %v", len(p), off, err)
 	}
@@ -28,7 +28,7 @@ func write(t *testing.T, f *enginev2test.Fixture, id entity.FileID, off int64, p
 func read(t *testing.T, f *enginev2test.Fixture, id entity.FileID, off int64, n int) []byte {
 	t.Helper()
 	p := make([]byte, n)
-	got, err := f.E.Read(t.Context(), id, off, p)
+	got, err := f.E.Read(t.Context(), f.Share.ID, id, off, p)
 	if err != nil || got != n {
 		t.Fatalf("read %d bytes at %d: %d, %v", n, off, got, err)
 	}
@@ -74,7 +74,7 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 
 	served := func(when string) {
 		t.Helper()
-		sp, err := f.E.Allocation(ctx, id, 0)
+		sp, err := f.E.Allocation(ctx, f.Share.ID, id, 0)
 		if err != nil || sp.Class == entity.Hole || sp.Offset > 0 || sp.Offset+sp.Length < int64(len(p)) {
 			t.Errorf("%s: Allocation(0) = %+v, %v; want data over [0, %d)", when, sp, err, len(p))
 		}
@@ -82,7 +82,7 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 			t.Errorf("%s: read %q, want %q", when, got, p)
 		}
 	}
-	if o, pending, err := f.E.Overlay(ctx, id); err != nil || !pending || o.Size != int64(len(p)) {
+	if o, pending, err := f.E.Overlay(ctx, f.Share.ID, id); err != nil || !pending || o.Size != int64(len(p)) {
 		t.Errorf("before the crash: Overlay = %+v, pending %v, %v; want size %d pending", o, pending, err, len(p))
 	}
 	served("before the crash")
@@ -126,7 +126,7 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 
 	f.FS.Counts.Take()
 	write(t, f, id, 0, p)
-	if _, _, err := f.E.Commit(ctx, id, 0, 0); err != nil {
+	if _, _, err := f.E.Commit(ctx, f.Share.ID, id, 0, 0); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	if c := f.FS.Counts.Take(); c.Sets+c.Deletes > 0 {

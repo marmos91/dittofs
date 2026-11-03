@@ -92,7 +92,7 @@ func (fs *Filesystem) joined(ctx context.Context, f vfs.File) (vfs.File, error) 
 	if !f.IsRegular() && !f.IsStream() {
 		return f, nil
 	}
-	o, pending, err := fs.engine.Overlay(ctx, f.ID)
+	o, pending, err := fs.engine.Overlay(ctx, f.Share, f.ID)
 	if err != nil || !pending {
 		return f, storeErr(err)
 	}
@@ -249,7 +249,7 @@ func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f
 			return storeErr(err)
 		}
 	}
-	return storeErr(fs.engine.Truncate(ctx, f.ID, ch.Size))
+	return storeErr(fs.engine.Truncate(ctx, f.Share, f.ID, ch.Size))
 }
 
 // attrTimes are the attributes that are times.

@@ -199,7 +199,7 @@ func TestTheLastUnlinkReleasesOnlyAFileNoOpenHolds(t *testing.T) {
 	held := n.create(t, n.admin, n.fs.Root, "held", vfs.CreateRegular)
 	free := n.create(t, n.admin, n.fs.Root, "free", vfs.CreateRegular)
 	for _, f := range []vfs.File{held.File, free.File} {
-		_, err := content.Write(ctx, f.ID, 0, []byte("bytes"), WriteOpts{})
+		_, err := content.Write(ctx, f.Share, f.ID, 0, []byte("bytes"), WriteOpts{})
 		n.must(t, err)
 	}
 	smb := n.smbClient(t, "holder", n.fs.Admin.Principal)
