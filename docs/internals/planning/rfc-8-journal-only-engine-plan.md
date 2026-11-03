@@ -908,8 +908,8 @@ Sections owned: RFC 8 §10 (the two measures, as far as repack goes), §10.2, §
   the journal's `Repack` and tested in its conformance (§6 point 8). Also tested: a timer's failed window
   followed by a refusal whose sync takes the window's report, then the file's `Commit`
   fails once.
-- T7.2 The self-fence: the store time of the last write transaction any part of the engine
-  committed; after 30 s with one outstanding or failing, writes and stability points
+- T7.2 The self-fence: the `Clock.Elapsed` at which any part of the engine last committed a
+  write transaction; after 30 s with one outstanding or failing, writes and stability points
   `ErrDelay`, reads continue; cleared by the next commit.
 - T7.3 `Stats` per share and journal, with its counters and conditions (rule 3).
 - T7.4 The §2.7 version-limit stall checks under sustained load and a burst, with epic 6's
