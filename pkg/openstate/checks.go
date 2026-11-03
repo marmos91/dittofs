@@ -24,7 +24,7 @@ const (
 	ChangeAttrs                            // the file's attributes are set
 	ChangeSetID                            // a mode change sets the setuid or setgid bit
 	ChangeSize                             // the file's size changes
-	ChangeTimes                            // the file's times are set
+	ChangeTimes                            // the file's times are set; through an open, on that open's grant (CheckChange)
 	ChangeSecurity                         // the file's owner, group or ACL changes
 	ChangeStreams                          // a named stream of the file is added, removed or written
 	ChangeEnumerate                        // a watch's changes were dropped: its client lists the directory again
@@ -191,6 +191,10 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 // refused ErrAccess while any client's open of it is held, as Windows refuses it.
 // Judge every caller if a protocol is served that removes a name without an
 // open of its own.
+//
+// ChangeTimes through via names a time set made on via's grant, and is
+// refused ErrAccess unless that grant holds write attributes. A caller
+// setting times on its own rights passes no ChangeTimes, or no via.
 func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *OpenRef, what ChangeMask) error {
 	t := v.t
 	sink, err := t.running()
@@ -221,6 +225,12 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 				return ErrNotYours // an open is used only by its opener
 			}
 			own = func(g *grant) bool { return g.heldBy(who.Client, o.lease, o) }
+			// A time set through an open stores the client's times on the
+			// open's grant rather than the caller's own rights, so the
+			// grant must hold write attributes.
+			if what&ChangeTimes != 0 && o.Mode.Access&entity.WriteAttributes == 0 {
+				return ErrAccess
+			}
 		}
 		// decision: a delete-pending directory also refuses an added name,
 		// beyond RFC 14's opens and renames, as Windows answers a create in

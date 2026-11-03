@@ -446,6 +446,27 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	if got := s.record(t, g).Modify; !got.Equal(at) {
 		t.Errorf("the time set through the open left Modify %v, want %v", got, at)
 	}
+	// The open's grant, not the caller's rights on the file, decides: the
+	// same group writer's read-only open of g sets no time it gives, and the
+	// owner's read-only open sets one on the owner's own rights.
+	ro, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, g)), openstate.OpenRequest{Access: entity.ReadData})
+	s.must(t, err)
+	roRef := &openstate.OpenRef{Kind: openstate.RefOpened, State: ro.Open.Ref, Open: ro.Open.ID, Handle: g}
+	if _, err := s.SetAttr(ctx, viaOpen, vfs.Target{H: g, Open: roRef}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at.Add(time.Hour))}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a group writer's time set through a read-only open: %v, want ErrAccess", err)
+	}
+	if got := s.record(t, g).Modify; !got.Equal(at) {
+		t.Errorf("a refused time set through a read-only open left Modify %v, want %v", got, at)
+	}
+	aliceWho := openstate.Caller{Client: id, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	mine, err := s.tab.Opens().Open(ctx, aliceWho, keyOf(s.record(t, g)), openstate.OpenRequest{Access: entity.ReadData})
+	s.must(t, err)
+	alice := proven(s.alice.Principal, inLab)
+	alice.Protocol, alice.Client = entity.ProtocolSMB, id
+	mineRef := &openstate.OpenRef{Kind: openstate.RefOpened, State: mine.Open.Ref, Open: mine.Open.ID, Handle: g}
+	if _, err := s.SetAttr(ctx, alice, vfs.Target{H: g, Open: mineRef}, touch); err != nil {
+		t.Errorf("the owner's time set through her read-only open: %v, want it set on her own rights", err)
+	}
 	res, err = s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData})
 	s.must(t, err)
 	ref = &openstate.OpenRef{Kind: openstate.RefOpened, State: res.Open.Ref, Open: res.Open.ID, Handle: h}

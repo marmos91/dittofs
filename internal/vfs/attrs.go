@@ -139,10 +139,12 @@ var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInv
 // decision: a change through an open is decided against the file, not the
 // open's stored grant, which the store cannot be handed: a truncate through
 // an open whose caller has since lost write on the file is refused. A time
-// set through an open, which RFC 7 §7.7 lets an open holding write
-// attributes make whoever owns the file, is decided the same way, then
-// written as privileged, since the store's owner rule cannot see the open;
-// a change setting anything beside times keeps that rule. Overturned once
+// set through an open by a caller the owner rule refuses, which RFC 7 §7.7
+// lets an open holding write attributes make whoever owns the file, is
+// decided the same way, admitted by open state only when the open's grant
+// holds write attributes, then written as privileged, since the store's
+// owner rule cannot see the open; a change setting anything beside times
+// keeps that rule. Overturned once
 // Authorize takes an open's grant in place of the walk and SetAttrs takes
 // the open.
 func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (vfs.WCC, error) {
@@ -178,7 +180,16 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		}
 	}
 	who, key := a.who(), keyOf(f)
+	// onOpen: times set by a caller the store's owner rule would refuse,
+	// through an open, which open state admits only on a grant holding
+	// write attributes; any other change keeps the caller's own rights.
+	id := a.caller.Identity
+	onOpen := t.Open != nil && ch.Mask&^(attrTimes|entity.AttrSize) == 0 && ch.Mask&attrTimes != 0 &&
+		!id.Privileged && id.Principal != f.Owner
 	if what := changeOf(ch.Attrs); what != 0 {
+		if !onOpen {
+			what &^= openstate.ChangeTimes
+		}
 		if err := fs.checks.CheckChange(ctx, who, key, t.Open, what); err != nil {
 			return vfs.WCC{}, openErr(err)
 		}
@@ -202,8 +213,7 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	rest := ch.Attrs
 	rest.Mask &^= entity.AttrSize
 	if rest.Mask != 0 {
-		id := a.caller.Identity
-		if t.Open != nil && rest.Mask&^attrTimes == 0 {
+		if onOpen {
 			id.Privileged = true
 		}
 		if _, err := fs.meta.Files().SetAttrs(ctx, id, t.H, rest); err != nil {
