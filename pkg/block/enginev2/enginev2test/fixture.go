@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/marmos91/dittofs/pkg/openstate"
 	"github.com/marmos91/dittofs/pkg/sim"
+	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
 // Settings are the engine settings the fixture applies. The existence age is
@@ -285,13 +286,27 @@ type cloneHold struct {
 }
 
 func (h cloneHold) Hold(ctx context.Context, src enginev2.CloneSrc) (entity.OpenID, error) {
-	return h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+	return id, holdErr(err)
 }
 
 func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
 	r, err := h.opens.CloneClose(ctx, o)
 	if r != (openstate.CloseResult{}) {
 		h.t.Errorf("fixture: the clone's close left an orphan: %+v", r)
+	}
+	if errors.Is(err, openstate.ErrBadState) {
+		return nil // the hold is already gone
+	}
+	return holdErr(err)
+}
+
+// holdErr is open state's answer to a clone's hold in the engine's types: a
+// shard not yet served or a table not running holds the clone for a retry.
+func holdErr(err error) error {
+	var delay *openstate.DelayError
+	if errors.As(err, &delay) && delay.Cause == openstate.DelayFrozen || errors.Is(err, openstate.ErrStopped) {
+		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
 	}
 	return err
 }
