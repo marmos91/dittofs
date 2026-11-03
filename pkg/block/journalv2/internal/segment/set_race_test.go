@@ -28,7 +28,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		var logs capturing
 		s := NewSet(segCap, slog.New(&logs))
 		id := core.SegmentID(1)
-		if err := s.AddSpare(id); err != nil {
+		if err := s.AddSpare(id, noMax); err != nil {
 			t.Fatalf("AddSpare: %v", err)
 		}
 		if err := s.Take(id); err != nil {
@@ -77,7 +77,7 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		// The same race between a retire and a recycle over one id: exactly
 		// one of them moves the segment out of the set.
 		s2 := NewSet(segCap, nil) // this half counts errors, not log records
-		if err := s2.AddSpare(id); err != nil {
+		if err := s2.AddSpare(id, noMax); err != nil {
 			t.Fatalf("AddSpare: %v", err)
 		}
 		if err := s2.Take(id); err != nil {
@@ -132,5 +132,54 @@ func TestConcurrentRetireSubtractsOnce(t *testing.T) {
 		if err := s2.Check(); err != nil {
 			t.Fatalf("round %d, retire against recycle: %v", round, err)
 		}
+	}
+}
+
+// TestConcurrentAddSpareAtTheMaximum: 64 goroutines reserve distinct spares at
+// once against a maximum that holds exactly 10 of them; the reservation and
+// the check of the maximum are one critical section under the ledger's mutex,
+// so exactly 10 succeed and every other call is refused by the journal limit
+// with the footprint at the maximum and the ledger consistent — a make that
+// read Counters() first and decided after would let two through.
+func TestConcurrentAddSpareAtTheMaximum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	const makers = 64
+	const kept = 10
+
+	s := NewSet(segCap, nil)
+	var wg sync.WaitGroup
+	var wins atomic.Int32
+	for i := range makers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.AddSpare(core.SegmentID(i+1), kept*segCap)
+			switch err {
+			case nil:
+				wins.Add(1)
+			default:
+				var ns *core.NoSpaceError
+				if !errors.As(err, &ns) || ns.Limit != core.LimitJournal {
+					t.Errorf("a refused AddSpare returned %v, want a *core.NoSpaceError naming the journal limit", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if wins.Load() != kept {
+		t.Fatalf("%d reservations passed the maximum, want exactly %d", wins.Load(), kept)
+	}
+	c := s.Counters()
+	if c.UsedBytes != kept*segCap {
+		t.Fatalf("after the reservations, the footprint is %d, want exactly the maximum %d", c.UsedBytes, kept*segCap)
+	}
+	if c.Spares != kept {
+		t.Fatalf("after the reservations, the ledger holds %d spares, want %d", c.Spares, kept)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the reservations, %v", err)
 	}
 }
