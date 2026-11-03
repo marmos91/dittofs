@@ -39,7 +39,12 @@ type shares struct {
 
 func newShares(t *testing.T, events vfs.Events, audit func(vfs.ShareID) authz.Policy) *shares {
 	t.Helper()
-	f := newFixture(t, events)
+	return startShares(t, newFixture(t, events), audit)
+}
+
+// startShares starts f's filesystem, serving it until the test ends.
+func startShares(t *testing.T, f *fixture, audit func(vfs.ShareID) authz.Policy) *shares {
+	t.Helper()
 	f.authz.Policy = audit
 	if err := f.Start(t.Context()); err != nil {
 		t.Fatal(err)

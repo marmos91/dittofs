@@ -12,52 +12,7 @@ import (
 // not serving, as every call is, and otherwise answered errUnbuilt. Each moves
 // to its own file as it is built.
 
-// Lookup, ReadDir and GetAttr answer a pseudo directory; a file of a share
-// is not built yet.
-
-func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
-	if !pseudofs.IsHandle(dir) {
-		return nil, vfs.File{}, fs.unbuilt(ctx)
-	}
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return nil, vfs.File{}, err
-	}
-	defer done()
-	return fs.pseudoLookup(ctx, c, dir, name)
-}
-
-func (fs *Filesystem) ReadDir(ctx context.Context, c vfs.Call, dir vfs.Handle, after vfs.Cursor, max int, want vfs.EntryFields) (vfs.Page, error) {
-	if !pseudofs.IsHandle(dir) {
-		return vfs.Page{}, fs.unbuilt(ctx)
-	}
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return vfs.Page{}, err
-	}
-	defer done()
-	return fs.pseudoReadDir(ctx, c, dir, after, max, want)
-}
-
-func (fs *Filesystem) Create(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte, a vfs.CreateArgs) (vfs.CreateResult, error) {
-	return vfs.CreateResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Link(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte, target vfs.Handle) (vfs.CreateResult, error) {
-	return vfs.CreateResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Unlink(ctx context.Context, c vfs.Call, dir vfs.Target, name []byte) (vfs.UnlinkResult, error) {
-	return vfs.UnlinkResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Rmdir(ctx context.Context, c vfs.Call, dir vfs.Target, name []byte) (vfs.UnlinkResult, error) {
-	return vfs.UnlinkResult{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Rename(ctx context.Context, c vfs.Call, from vfs.Target, fromName []byte, to vfs.Handle, toName []byte, noReplace bool) (vfs.RenameResult, error) {
-	return vfs.RenameResult{}, fs.unbuilt(ctx)
-}
+// GetAttr answers a pseudo directory; a file of a share is not built yet.
 
 func (fs *Filesystem) GetAttr(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.File, error) {
 	if !pseudofs.IsHandle(h) {
