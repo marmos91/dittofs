@@ -1,6 +1,6 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the "DittoFS v1.0" project with their estimates, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the "DittoFS" project with their estimates and under the RFC's roadmap epic, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
@@ -35,7 +35,8 @@ task, ticket, story, step, phase, stage, milestone or work item. That holds in h
 table columns, ids and prose. A subtask's id is `T<epic>.<n>` (`T4.3`), never `E4-3`,
 `4-3` or `Task 3`. The `T` only marks the id as a subtask's, beside `E`, `S`, `R` and `D`;
 it does not make "task" a word for the unit. A bare `4.3` cited before the prefix existed
-names the same subtask as `T4.3`. Progress is tracked by mapping pull requests to these
+names the same subtask as `T4.3`. (A GitHub milestone names a release, not a unit of
+work; only Step 6 touches one, and the document never names a release.) Progress is tracked by mapping pull requests to these
 ids, so they must stay stable:
 
 - **Keep the plan's ids.** Where the plan's candidate list numbers a subtask, keep its id
@@ -396,7 +397,23 @@ epic issue.
    gh label create rfc-<n>-<slug> --color 5319E7 --description "RFC <n> <component> v2 implementation"
    gh label create rfc-<n>-epic-<k> --color C5DEF5 --description "RFC <n> <component> v2, epic <k>: <title>"
    ```
-2. **The epic issue.** Title `<component> v2, epic <k>: <title>` (as in
+2. **The roadmap epic.** The release an epic ships in is decided by the roadmap epic it
+   sits under, not by the epic: the roadmap epic (labelled `roadmap` and `rfc-<n>-<slug>`)
+   carries the milestone, and GitHub is the only place that says it; no document names a
+   release. The roadmap epic already exists, created by hand or with `rfc-to-epic-plan`;
+   this skill never creates one. If the epic issue already exists, it is already under one.
+   Otherwise find the RFC's:
+   ```bash
+   gh issue list --state open --label roadmap --label rfc-<n>-<slug> --json number,title,milestone
+   ```
+   One → use it, without asking. Several (an RFC split across releases) → **ask the user**
+   which, since that is the decision of when the epic ships. None → **stop** and ask the user
+   to create the RFC's roadmap epic first; do not pick a milestone instead.
+   The epic issue goes under it as a sub-issue (the `sub_issues` call of step 5, the epic
+   issue under the roadmap epic) and carries a copy of its milestone, so the board's filters
+   by milestone find it; every subtask issue copies the same one. The copy is never asked
+   for: it follows the roadmap epic.
+3. **The epic issue.** Title `<component> v2, epic <k>: <title>` (as in
    `journal v2, epic 4: placement index and versions`). Body, and nothing more:
    ```markdown
    Epic <k> of <component> v2 (RFC <n>): <§1's goal, in one sentence>.
@@ -409,9 +426,9 @@ epic issue.
    ```
    ```bash
    gh issue create --title "<component> v2, epic <k>: <title>" \
-     --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --body-file <body.md>
+     --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --milestone <roadmap's milestone> --body-file <body.md>
    ```
-3. **One issue per subtask.** Title `<component> v2, subtask T<k>.<n>: <title>`. Body:
+4. **One issue per subtask.** Title `<component> v2, subtask T<k>.<n>: <title>`. Body:
    ```markdown
    Subtask T<k>.<n> of epic <k> (#<epic-number>): <the subtask's purpose, in one sentence>.
 
@@ -421,14 +438,16 @@ epic issue.
    The anchor is GitHub's for the `### T<k>.<n> <title>` heading: lower case, dots and
    punctuation dropped, spaces as hyphens (`### T3.1 Usage table` → `#t31-usage-table`).
    Open one link to check it. Requirements, acceptance criteria, tests and the estimate are
-   not copied: the document holds the first three, the project's field the last.
-4. **Attach each subtask to the epic as a sub-issue**, not as a checklist in the epic's
+   not copied: the document holds the first three, the project's field the last. Create it
+   with the milestone of the roadmap epic the epic sits under (`--milestone <milestone>`),
+   also when the subtasks come long after the epic issue.
+5. **Attach each subtask to the epic as a sub-issue**, not as a checklist in the epic's
    body. The API wants the subtask issue's numeric `id`, not its number:
    ```bash
    id=$(gh api repos/{owner}/{repo}/issues/<subtask-number> --jq .id)
    gh api -X POST repos/{owner}/{repo}/issues/<epic-number>/sub_issues -F sub_issue_id="$id"
    ```
-5. **Add every issue to the "DittoFS v1.0" project** (`marmos91`, project 3), and set
+6. **Add every issue to the "DittoFS" project** (`marmos91`, project 3), and set
    `Estimate` on each subtask issue to its man-days from §6. The epic issue gets no
    estimate: its sub-issues carry it, and a figure on both would count the epic twice in
    the project's sums. Look the ids up rather than hard-coding them; the token needs the
@@ -440,15 +459,19 @@ epic issue.
    item=$(gh project item-add 3 --owner marmos91 --url <issue-url> --format json --jq .id)
    gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
    ```
-6. **When the document is revised,** the issues follow the revision **after its pull request
+7. **When the document is revised,** the issues follow the revision **after its pull request
    has merged**, never in the same pass: until then `develop` still holds the old document,
    and the issues must agree with it. Merge the revision of the epic document (or of the RFC
    behind it) first, then sync the issues on request: a renamed subtask's title, a changed
-   estimate's field, a new subtask's issue, a withdrawn one closed as not planned. Bodies
+   estimate's field, a new subtask's issue (with its roadmap epic's milestone), a withdrawn one closed as not planned. Bodies
    need no change, because they say nothing the document can contradict; a split subtask
    (T4.3 into T4.3a and T4.3b) gets new issues and the old one is closed. A revision's
    final report says, in one line, that issues exist and need syncing once it merges.
-7. **Report** the epic issue's link and the subtask numbers. Check the result with
+8. **When the epic moves to another release,** move the epic issue under that release's
+   roadmap epic (the user creates it if the RFC has none there yet), and update the milestone
+   copy on the epic issue and its open sub-issues; closed ones keep the release they shipped
+   in.
+9. **Report** the epic issue's link, its roadmap epic and the subtask numbers. Check the result with
    `gh api repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[].title'`.
 
 ## Common rationalizations
@@ -496,8 +519,9 @@ Before handing over, check:
 - No GitHub issue was created or synced unless the user asked, and never before the
   document merged; the report's closing line suggests them and does not offer to create
   them. Issues that were created carry
-  the labels, a pointer body with no copied specification, the sub-issue link, the project
-  and, on subtasks only, the `Estimate` field.
+  the labels, a pointer body with no copied specification, the sub-issue links (subtask under
+  epic, epic under its RFC's roadmap epic), the project, the roadmap epic's milestone and, on
+  subtasks only, the `Estimate` field.
 
 Then report the output path, the requirement count, the subtask count and the man-day total
 (and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,

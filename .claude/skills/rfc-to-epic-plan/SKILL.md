@@ -15,7 +15,9 @@ below is dropped.
 
 The plan has two kinds of unit of work: an **epic**, and the **subtasks** it is split into.
 No other word names them: not task, ticket, story, step, phase, stage, milestone, work
-package or work item. That holds in headings, table columns, ids and prose. A subtask's id
+package or work item. That holds in headings, table columns, ids and prose. (A GitHub
+milestone names a release and a roadmap epic is a GitHub issue grouping epics by release;
+neither is a unit of the plan, and the plan names neither.) A subtask's id
 is `T<epic>.<n>` (`T4.3`), never `E4-3`, `4-3` or `T3`. The `T` only marks the id as a
 subtask's, beside `E` for epics, `S` for synchronisation points and `R` for requirements; it
 does not make "task" a word for the unit. Pull requests cite that form, and progress is
@@ -397,8 +399,9 @@ use `epic-breakdown` in the document they are reading:
 >   nothing: their bodies are a link to its section with a line of context, so a revision
 >   of the document never leaves an issue saying something else. The epic is one issue labelled `epic`. Each subtask is its own
 >   issue, created as a sub-issue of the epic issue rather than as a checklist in its body.
->   All of them join the "DittoFS v1.0" project, each subtask with its man-days in the
->   `Estimate` field.
+>   All of them join the "DittoFS" project, each subtask with its man-days in the
+>   `Estimate` field. The release an epic ships in is set on its epic issue, never in a
+>   document, and its subtask issues take the same release, also when created later.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
@@ -497,7 +500,69 @@ use `epic-breakdown` in the document they are reading:
   rules are copied into each epic, the epic
   stands alone and records decisions rather than progress, subtasks are not pull requests,
   and issues, only when asked for, point at the epic document, with an `epic` label,
-  sub-issues and the project's `Estimate` field.
+  sub-issues, the project's `Estimate` field and a release set on the epic issue that its
+  subtask issues share.
+
+## Roadmap epics: an RFC's release, before its epics have issues
+
+A **roadmap epic** says what of one RFC ships in one milestone. It is an issue that
+collects the RFC's epic issues for that release as sub-issues, and it is the milestone's
+default for the RFC: a unit of the RFC with no epic issue of its own (an epic not yet
+opened, or an estimate built on the RFC's own steps or pieces) ships with it. The burnup
+reads it that way. An RFC normally has one; an RFC split across releases has one per
+release, and every epic that ships in a later one than the first has its own epic issue,
+under that release's roadmap epic. Roadmap epics come first: they exist before any epic issue
+of the RFC is opened, made by hand or by this section when the user asks. Epic issues never
+choose a milestone; they sit under a roadmap epic and copy its.
+
+- Title `roadmap <milestone>: RFC <n> — <RFC title>`, the RFC's title as its `#` heading
+  writes it (`roadmap v1.0: RFC 17 — the filesystem service (VFS)`). One RFC per roadmap
+  epic, so the RFC label alone tells the burnup which RFC it covers.
+- Labels `roadmap` and the RFC's `rfc-<n>-<slug>`, the slug being the RFC file's
+  (`rfc-17-vfs` for `rfc-17-vfs.md`); create a missing one with color `5319E7` and
+  description `RFC <n> <title>`. **Not** `epic`, and never an `rfc-<n>-epic-<k>` label.
+- The milestone: ask the user, never guess. This is the one place a release is chosen.
+- Body, and nothing more:
+  ```markdown
+  Roadmap epic: what of RFC <n> — <title> ships in <milestone>.
+
+  **In this release:** the whole RFC. | the whole RFC except epics <k>, …, which ship in <later milestone> (#<roadmap>). | epics <k> (<title>), …; the rest of the RFC ships in <milestone> (#<roadmap>).
+  **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/{owner}/{repo}/blob/develop/docs/internals/rfcs/rfc-<n>-<slug>.md)
+  **Plan:** [`<plan>.md`](<link on develop>) | none yet.
+
+  The RFC's epic issues for this release are sub-issues of this one, and each carries this milestone. A unit of the RFC with no epic issue of its own ships with this roadmap epic. The plan and the epic documents say what to build; the milestone is the only place that says when.
+  ```
+- Attach each of the RFC's epic issues for that release as a sub-issue (the
+  `sub_issues` call of `epic-breakdown` Step 6), and add the roadmap epic to the "DittoFS"
+  project with no `Estimate`.
+- Moving an epic to another release: move it under that release's roadmap epic (created
+  first if the RFC has none there) and update the milestone copy on it and its open
+  sub-issues.
+
+## Epic issues for a merged plan, on request
+
+When asked, once the plan has merged, give every epic that has none (check with
+`gh issue list --state all --label epic --label rfc-<n>-epic-<k>`) an epic issue before its
+epic document exists, so it can be placed under a roadmap epic now. The roadmap epic's
+milestone is the only place that says when an epic ships; no document names a release.
+
+- Title `<component> v2, epic <k>: <title>`; labels `epic`, `rfc-<n>-<slug>`,
+  `rfc-<n>-epic-<k>` (create a missing one as `epic-breakdown` Step 6 does).
+- Body: one sentence of goal, the "at the end of the epic" bullets condensed from §5,
+  **Depends on:** and **Blocks:** from §3.3, and **Spec:** a link to the plan's
+  `### Epic <k> — <title>` section on `develop`, adding "No epic document yet." When the
+  epic document lands, `epic-breakdown` Step 6 adds its link and the subtask issues.
+- **Roadmap epic:** find the RFC's
+  (`gh issue list --state open --label roadmap --label rfc-<n>-<slug> --json number,title,milestone`).
+  One → use it, without asking; several (the RFC is split across releases) → ask the user
+  which epics go under which; none → stop and ask for one first (by hand, or with the
+  section above when asked). Make the epic issue its sub-issue and give it a copy of the
+  roadmap epic's milestone (`--milestone`), never asked for; subtask issues created later
+  copy the same one.
+- Add each to the "DittoFS" project (`gh project item-add 3 --owner marmos91 --url <url>`),
+  with no `Estimate`: its subtasks will carry it.
+- Report the issue links with their roadmap epics, and any epic placed in an earlier release
+  than an epic it depends on.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
