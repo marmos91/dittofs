@@ -204,13 +204,15 @@ func TestAddSpareAcceptedAtExactlyTheMaximum(t *testing.T) {
 
 // TestAddSpareRefusedBelowItsOwnCap: a maximum below the cap itself refuses
 // every spare without overflows: the overflow-safe form of the check must
-// read it as a refusal, not wrap into an acceptance.
+// read it as a refusal, not wrap into an acceptance. The most negative
+// maxima are the ones that wrap — max - cap overflows to near MaxInt64 —
+// so they carry the refusal no less than the plain small ones do.
 func TestAddSpareRefusedBelowItsOwnCap(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	const segCap = 4096
 	s := NewSet(segCap, nil)
-	for _, max := range []int64{0, -1, segCap - 1} {
+	for _, max := range []int64{0, -1, segCap - 1, math.MinInt64, math.MinInt64 + segCap - 1} {
 		err := s.AddSpare(core.SegmentID(1), max)
 		if !errors.Is(err, core.ErrNoSpace) {
 			t.Fatalf("AddSpare at the maximum %d: %v, want a refusal matching %v", max, err, core.ErrNoSpace)

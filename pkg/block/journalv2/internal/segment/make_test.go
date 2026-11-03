@@ -1,9 +1,11 @@
 package segment_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -49,6 +51,62 @@ func maker(t *testing.T, last core.SegmentID, max int64) (*journalv2test.Seam, *
 	seam := newSeam(t)
 	set := segment.NewSet(segCap, nil)
 	return seam, set, segment.NewMaker(seam.FS(), set, max, last, nil)
+}
+
+// logCapture is a slog Handler keeping every record handed to it, so a test
+// can assert what the Maker logged and at which level. Nothing of the Make
+// runs concurrently once its result has been read, so no mutex is held over
+// the one goroutine that logs.
+type logCapture struct {
+	recs []slog.Record
+}
+
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	c.recs = append(c.recs, r.Clone())
+	return nil
+}
+
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+
+func (c *logCapture) WithGroup(string) slog.Handler { return c }
+
+// warnings returns every record captured at the Warn level.
+func (c *logCapture) warnings() (ws []slog.Record) {
+	for _, r := range c.recs {
+		if r.Level == slog.LevelWarn {
+			ws = append(ws, r)
+		}
+	}
+	return ws
+}
+
+// attrOf returns the value a record carries for key, or nil when it has none.
+func attrOf(rec slog.Record, key string) any {
+	var val any
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val = a.Value.Any()
+			return false
+		}
+		return true
+	})
+	return val
+}
+
+// awaitReached fails t unless the Make parked at hold reaches it: a
+// regression that skips the held step altogether must fail the test on its
+// own assertion, not hang until the whole binary is timed out. Make's
+// result arrives on res instead; whichever comes first wins.
+func awaitReached(t *testing.T, step string, hold *journalv2test.Hold, res <-chan error) {
+	t.Helper()
+
+	select {
+	case <-hold.Reached():
+	case err := <-res:
+		t.Fatalf("the Make returned (%v) without ever reaching its %s step", err, step)
+	}
 }
 
 // classify splits the names a List returned into segment and spare names,
@@ -204,7 +262,7 @@ func TestMakeCrashLeavesTheSpareWholeOrAbsent(t *testing.T) {
 				idc <- id
 				errc <- err
 			}()
-			<-h.Reached()
+			awaitReached(t, tc.op, h, errc)
 
 			if err := seam.Crash(); err != nil {
 				t.Fatalf("Crash at %s: %v", tc.op, err)
@@ -283,7 +341,7 @@ func TestMakeSpareTmpDurableByAnotherSyncBoundsTheNextID(t *testing.T) {
 	h := seam.HoldFirst(t, journalv2test.OpRename, spare)
 	errc := make(chan error, 1)
 	go func() { errc <- errOf(m.Make()) }()
-	<-h.Reached()
+	awaitReached(t, journalv2test.OpRename, h, errc)
 
 	// Another directory sync — not Make's own, which is parked at the rename
 	// — makes the temporary name durable.
@@ -527,7 +585,7 @@ func TestMakeRaisesTheFootprintBeforeTheAllocation(t *testing.T) {
 	h := seam.HoldFirst(t, journalv2test.OpAllocate, spare)
 	errc := make(chan error, 1)
 	go func() { _, err := m.Make(); errc <- err }()
-	<-h.Reached()
+	awaitReached(t, journalv2test.OpAllocate, h, errc)
 
 	c := set.Counters()
 	if c.UsedBytes != before.UsedBytes+segCap {
@@ -688,7 +746,7 @@ func TestFailedMakeReturnsTheReservationAfterTheUnlink(t *testing.T) {
 	h := seam.HoldFirst(t, journalv2test.OpRemove, "*")
 	errc := make(chan error, 1)
 	go func() { _, err := m.Make(); errc <- err }()
-	<-h.Reached()
+	awaitReached(t, journalv2test.OpRemove, h, errc)
 
 	c := set.Counters()
 	if c.UsedBytes != before.UsedBytes+segCap {
@@ -702,6 +760,46 @@ func TestFailedMakeReturnsTheReservationAfterTheUnlink(t *testing.T) {
 	}
 	if c := set.Counters(); c != before {
 		t.Fatalf("after the unlink the counters are %+v, want %+v: the reservation was returned", c, before)
+	}
+}
+
+// TestFailedMakeWarnsAboutTheLeftover checks the plan's leftover log: a
+// spare whose unlink failed is the one case a failed Make leaves in the
+// ledger, and the operator reads of it from a Warn naming the id. Deleting
+// the Warn would stay green against a nil-loggered Maker alone, so here the
+// Maker logs into a capture.
+func TestFailedMakeWarnsAboutTheLeftover(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	var logs logCapture
+	m := segment.NewMaker(seam.FS(), set, noMax, 0, slog.New(&logs))
+
+	spare := format.SpareName(core.SegmentID(1))
+	rules := []journalv2test.Rule{
+		// The remove fails for every call, so the leftover is left whichever
+		// names the cleanup reached.
+		journalv2test.Failing(journalv2test.OpAllocate, spare, 1, syscall.EIO),
+		journalv2test.Failing(journalv2test.OpRemove, "*", 0, syscall.EIO),
+	}
+	if err := seam.Schedule(rules...); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	if _, err := m.Make(); err == nil {
+		t.Fatal("a Make whose cleanup could not unlink: no error")
+	}
+
+	warns := logs.warnings()
+	if len(warns) != 1 {
+		t.Fatalf("the failed Make logged %d Warn records, want exactly one: a leftover is the one case the operator is told of", len(warns))
+	}
+	if id, ok := attrOf(warns[0], "id").(uint64); !ok || id != 1 {
+		t.Fatalf("the leftover Warn carries the id %v, want 1", attrOf(warns[0], "id"))
+	}
+	if spareAttr, _ := attrOf(warns[0], "spare").(string); spareAttr != spare {
+		t.Fatalf("the leftover Warn names the spare %v, want %s", attrOf(warns[0], "spare"), spare)
 	}
 }
 

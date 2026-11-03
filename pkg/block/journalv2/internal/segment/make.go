@@ -187,10 +187,17 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	// berth than its own leftover: the reservation is returned and the
 	// directory is left exactly as the Maker found it.
 	if step == "create" && errors.Is(stepErr, fs.ErrExist) {
-		_, remErr := m.set.DropSpare(id)
-		return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr))
+		_, dropErr := m.set.DropSpare(id)
+		return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, dropErr))
 	}
 
+	// decision: no SyncDir after the cleanup, whichever way the cleanup ends.
+	// No record depends on the unlink's durability; a crash before it leaves
+	// a `.spare.tmp`, which open unlinks, or a `.seg` that is whole (a `.seg`
+	// exists only after a successful file sync), which open may re-adopt.
+	// Adding one here would pay a second directory sync on the failure path
+	// of every step, and hold Make's return on the durability of a removal
+	// the ledger has already returned.
 	var remErr error
 	removed := true
 	for _, remove := range names {
@@ -219,12 +226,5 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	m.log.Warn("segment: a failed make left a spare the unlink could not remove",
 		"id", uint64(id), "spare", spare, "segment", name, "err", remErr)
 
-	// decision: no SyncDir after the cleanup. No record depends on the
-	// unlink's durability; a crash before it leaves a `.spare.tmp`, which
-	// open unlinks, or a `.seg` that is whole (a `.seg` exists only after a
-	// successful file sync), which open may re-adopt. Adding one here would
-	// pay a second directory sync on the failure path of every step, and
-	// hold Make's return on the durability of a removal the ledger has
-	// already returned.
 	return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr))
 }
