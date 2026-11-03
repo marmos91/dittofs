@@ -168,7 +168,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 | 9 Comments | all | the markers of §4, each at its code site; RFC 8 §2.3's per-file bound at the entry map (T3.1) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | all | nothing new is exported: the content methods are E1's; the test hooks live in `export_test.go` |
-| 12 Creates only what it declares | all | the entry's guard, its removal and loss fields and its drop land with epics 4 and 5, their consumers; T3.1's pending-operation kinds for truncate and deallocate land because T3.4 to T3.6 replay them |
+| 12 Creates only what it declares | all | the entry's guard and its removal and loss fields land with epics 4 and 5, their consumers; the drop of an empty entry, marked dead, lands in T3.1, since a refused write leaves its inserted entry empty, and epic 4's commit reuses it (T4.3); T3.1's pending-operation kinds for truncate and deallocate land because T3.4 to T3.6 replay them |
 
 ## 3. Requirements and invariants
 
@@ -335,7 +335,9 @@ test/enginev2/known.yaml  T3.2  its entry
   map behind its own mutex held only to look up, insert or remove; the entry with its own
   mutex and its pending operations, each `{version, kind (write, truncate, deallocate),
   extent, time, setsMtime, done}`; `entryOf(f)` that never inserts and `entryFor(f)` that
-  does; `bindingOf(share)` (D1); the lock-wait series for `area="file_state"`, timed with
+  does; `lockOf(f)` and `lockFor(f)` over them, which retry when the entry they locked is
+  dead; `unlock`, which removes an entry left empty from its shard and marks it dead under
+  its own lock, as a refused write leaves the entry it inserted; `bindingOf(share)` (D1); the lock-wait series for `area="file_state"`, timed with
   `Deps.Clock`; RFC 8 §2.3's `ponytail:` marker on the per-file bound at the map.
   `export_test.go` and the unit composition (D2), with the import allowlist entries.
 - **Acceptance criteria:**

@@ -659,7 +659,15 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   `Overlay` answered before the commit. T4.3 splits it into a modify and a change time,
   applied apart, and the capture fills them from the entry (epic 3's D10). Tested by a
   suspended write the group commit commits over the real `kvstore`: the File record keeps
-  the earlier write's `Mtime` and carries the suspended write's `Ctime`.
+  the earlier write's `Mtime` and carries the suspended write's `Ctime`. The entry's drop
+  once its operations commit marks it dead under its own lock, and `lockFor` and `lockOf`
+  retry on a dead entry; both are already built in T3.1's `file.go` (`unlock` and the
+  `dead` field). Without that, a write that looked the entry up, dropped the shard lock and
+  locked the entry after the commit dropped it would land in an orphan: `Overlay` misses
+  it, no capture takes it, and its `Done` never runs. Tested under `-race` with a hook
+  between `lockFor`'s lookup and its lock, in which the commit drops the entry: the write
+  lands in a live entry, `Overlay` reflects it, the next group commit commits it and its
+  `Done` runs once.
 - T4.4 The split: `Existence.Commit` commits every other file in the same call and returns
   the failing ones in its map, so the engine backs off only the files it names, and halves
   the batch only when the whole call fails; a file failing alone backed off, with a
