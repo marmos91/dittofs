@@ -381,7 +381,7 @@ test/enginev2/known.yaml  T3.2  its entry
   - `Write` makes no `Existence`, `Content` or `Lifecycle` call.
   - The `mtime` passed is the clock's `Now` in nanoseconds, 0 under `TimeModify`.
   - Every accepted write's operation is in the entry before `Write` returns.
-  - A refused write leaves no operation and calls no `Done`.
+  - A refused write leaves no operation, calls no `Done`, and leaves no entry behind.
 - **Tests:** a `Write` with every `Existence` and `Content` call blocked until the test ends,
   which still returns (catches a store call on the write path, R6); the change `Since`
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
@@ -392,8 +392,10 @@ test/enginev2/known.yaml  T3.2  its entry
   and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
   verifier); a
-  write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
-  (catches a leaked `journalv2` error or an early `Done`); `OtherShareError` answered
+  write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation,
+  and `entryOf(f) == nil` for a file with no entry before (catches a leaked `journalv2` error,
+  an early `Done`, or an `unlock` that never drops the entry, which otherwise shows only in
+  T4.3); `OtherShareError` answered
   `ErrCorrupt`; a `WriteAt` answering the context's error returns it as itself, not
   `ErrUnavailable` (catches the catch-all wrapping it); a zero-length write calls `Done` once and stages nothing; 32 concurrent
   writes of distinct files under `-race`, each operation present once.

@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §9.1 (all but the adoption of carved refs, the
 fill and the snapshot cases), §2.3 (`Unbind`'s join of clones), §2.5 (start steps 3 and 4
-for a clone, and stop step 2), §2.6 (`Deps.Holds`, a `CloneHold`), §8.1 (a release held
+for a clone, and stop step 2), §2.6 (`Deps.Holds`, a `CloneHold`, which §2.6 gains: the plan's §6 point 2), §8.1 (a release held
 behind a clone, its retry channel), §12.1 (`Clone`, `Copy` and their errors), §13 (E6, E28,
 E34, E40) and §15.1's §9.1 and §2.5 rows; [RFC 14](../rfcs/rfc-14-open-state.md) §2.2 (the
 clone-kind open), §9.2 (`CloneOpen`, `CloneClose`) and §11.3 (`Recovery.Served`), for the
@@ -680,7 +680,7 @@ A suggestion only: one pull request per subtask works as well.
 
 1. **RFC 8 §9.1 still has the source open taken at admission.** Its rule "the clone holds an
    open on the source, entered in the source's open table at its primary at admission"
-   predates §2.6's `CloneHold`, whose `Hold` takes over the record phase 1 writes and so
+   predates the `CloneHold` §2.6 gains (the plan's §6 point 2), whose `Hold` takes over the record phase 1 writes and so
    cannot run before it. Between admission and `Hold` the registration holds the source
    (R10). §9.1's text is owed the narrowing §2.6 and §8.1 already carry.
 2. **How a call held behind a clone learns it ended.** RFC 8 §9.1 answers a write into the

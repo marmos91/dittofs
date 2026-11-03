@@ -120,8 +120,9 @@ with stage 2:
   `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
-  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is
-  RFC 8 §2.6's `CloneHold`, open state's three clone calls in the engine's own types:
+  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is a
+  `CloneHold` in the engine's own types, which RFC 8 §2.6 gains (§6 point 2), open state's
+  three clone calls:
   `Hold`, RFC 14 §9.2's `CloneOpen`, which takes over the source record the clone's phase 1
   writes and so runs after it, taken before `Content.Resume` runs phase 2; `Release`, its
   `CloneClose`, called once `Resume` returns, whose orphan open state reports through its
@@ -766,7 +767,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   loss reported and T4.7's reservation counter at zero; a stall at the deadline keeps the
   file marked until phase 1 commits, then the channel yields committed; a stall that
   outlasts five retries raises `removal_stalled`, and the abort that ends it clears it. The
-  stopped outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
+  `ErrUnavailable` outcome is tested where `Close` and the restart are built, in T6.8 and T6.5.
   `vfserr` has no value for a release a holder aborted, so T5.4 adds `ErrFileOpen`, the engine's
   own value for open state's `ErrFileOpen`, which it cannot import (RFC 0 I6): the
   service tells it apart from `ErrUnavailable`, clearing the mark for one and keeping it for
@@ -807,14 +808,14 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   marker whose phase 1 a holder aborted settled without its removal and reported as data
   loss by T5.4's routine, so no restart re-applies it, `Settle` with the store's `Applied`; no file served
   before. Tested by asserting the report, and that a second restart reports nothing; and,
-  for T5.4's stopped outcome, a release marker a `Close` left mid-retry settled by the
+  for T5.4's `ErrUnavailable` outcome, a release marker a `Close` left mid-retry settled by the
   restart.
 - T6.6 Start steps 4 and 5: unfinished removals posted to the removal loop; unclaimed tags
   stranded.
 - T6.7 The version limit while serving: the trigger on every version issued, the raise in
   `K`-bounded transactions, `SetVersionLimit` after, the two markers.
 - T6.8 `Close`: refuse, the last group commit, joins within their bounds, close in reverse,
-  nothing closed under a live loop. Tested with T5.4's stopped outcome: a `Close` while the
+  nothing closed under a live loop. Tested with T5.4's `ErrUnavailable` outcome: a `Close` while the
   removal loop retries a release's phase 1 yields `ErrUnavailable` on its channel, with no
   `done(...)`, and leaves the marker for T6.5.
 - T6.9 `Unbind` and `Drop`: admit nothing new, join, `keepHolds` refused; `Close` the handle,
@@ -822,7 +823,12 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
   joins the share's in-flight batch before `Forget`, so no later batch captures one of them,
   then calls `Done` with nothing charged for every write `Forget` dropped, C9's `Forget` leg;
   tested with T4.7's reservation counter, back to zero after a `Drop` under writes, and one
-  `Done` per write with a batch due as `Drop` joins.
+  `Done` per write with a batch due as `Drop` joins. The share's removed and retired states
+  land here with epic 3's D1: a content call naming a share being removed or retired
+  answers `ErrStale`, not `DelayFrozen`, tested by one call per content method. `Drop` ends
+  the removal loop's retry of the share's pending releases as `Close` does: each one's
+  `retry` yields `ErrUnavailable`, with no `done(...)`, the marker left for the next start,
+  tested with T5.4's stall.
 
 ### Epic 7 — Capacity, self-fence and health
 
