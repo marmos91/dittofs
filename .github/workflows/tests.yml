@@ -83,7 +83,7 @@ jobs:
           fetch-depth: 0
 
       # decision: every job here takes its Go release from go.mod's toolchain
-      # line rather than a floating 1.27.x, which resolves to whichever 1.27 the
+      # line rather than a floating 1.26.x, which resolves to whichever 1.26 the
       # machine already has. Each release has a module cache of its own, so a
       # floating version splits the jobs between caches.
       - name: Set up Go

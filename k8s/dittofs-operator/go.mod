@@ -2,7 +2,7 @@ module github.com/cubbit/dittofs/k8s/dittofs-operator
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.26.10
 
 require (
 	github.com/onsi/ginkgo/v2 v2.33.1

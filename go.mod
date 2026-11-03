@@ -2,7 +2,11 @@ module github.com/cubbit/dittofs
 
 go 1.26.0
 
-toolchain go1.27.3
+// Pinned to go1.26.10 until the 1.27 release recovers the throughput that
+// go1.27.3 lost: the nightly benchmark dropped from 60% to 58% on the same
+// code, and the same commit scores 60.5% under go1.26.10 against 57.8% under
+// go1.27.3.
+toolchain go1.26.10
 
 require github.com/rasky/go-xdr v0.0.0-20170124162913-1a41d1a06c93
 

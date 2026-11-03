@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v7
 
       # decision: go.mod's toolchain release, as tests.yml has, rather than a
-      # floating 1.27.x, which resolves to whichever 1.27 the machine already has.
+      # floating 1.26.x, which resolves to whichever 1.26 the machine already has.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
