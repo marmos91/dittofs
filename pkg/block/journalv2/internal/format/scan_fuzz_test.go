@@ -357,15 +357,16 @@ func fuzzAssertInvariants(t *testing.T, mode string, seg []byte, scan Scan, err 
 			if r.End > scan.End {
 				t.Errorf("%s: range %+v ends past the scan's own end %d", mode, r, scan.End)
 			}
-			if r.Kind == RangeZero {
+			switch r.Kind {
+			case RangeZero:
 				if !zero(seg[r.Off:r.End]) {
 					t.Errorf("%s: range %+v is RangeZero holding a byte not zero", mode, r)
 				}
-			} else if r.Kind == RangeBad {
+			case RangeBad:
 				if zero(seg[r.Off:r.End]) {
 					t.Errorf("%s: range %+v is RangeBad holding only zeros", mode, r)
 				}
-			} else {
+			default:
 				t.Errorf("%s: range %+v holds kind %d, want zero or bad", mode, r, r.Kind)
 			}
 			at = r.End
@@ -596,9 +597,9 @@ func sealedTestSegment(f *testing.F) []byte {
 func payloadCopySegment(f *testing.F) []byte {
 	copySeg, _ := scanSegment(f, testIdentity, scanTestRecords()[:2]...)
 	copySeg = AppendSealMarker(copySeg, testIdentity, SealMarker{Segment: testSegment, Offset: int64(len(copySeg))})
-	h, body := scanKindBody(KindWrite)
+	h, _ := scanKindBody(KindWrite)
 	h.Extent = core.Extent{Off: testRecordFileOffset, Len: int64(len(copySeg))}
-	body = RecordBody{MTime: testWriteMTime, Payload: copySeg}
+	body := RecordBody{MTime: testWriteMTime, Payload: copySeg}
 	seg, _ := scanSegment(f, testIdentity, scanTestRecords()[:1]...)
 	seg, _ = scanAppend(f, seg, testIdentity, scanRecord{h: h, body: body})
 	seg, _ = scanAppend(f, seg, testIdentity, scanTestRecords()[1])

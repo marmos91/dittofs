@@ -451,9 +451,9 @@ func TestScanSealMarkerInPayloadDoesNotStopTheScan(t *testing.T) {
 		// payload, so they hold the wrong place wherever they sit and the
 		// write verifies whole with them in it.
 		marker := AppendSealMarker(nil, testIdentity, SealMarker{Segment: testSegment, Offset: int64(testOffset%8*8) + 48})
-		h, body := scanKindBody(KindWrite)
+		h, _ := scanKindBody(KindWrite)
 		h.Extent = core.Extent{Off: testRecordFileOffset, Len: 96}
-		body = RecordBody{MTime: testWriteMTime, Payload: slices.Concat(marker, scanPayload(64))}
+		body := RecordBody{MTime: testWriteMTime, Payload: slices.Concat(marker, scanPayload(64))}
 
 		recs := scanTestRecords()[:2]
 		seg, offs := scanSegment(t, testIdentity, recs...)
@@ -528,9 +528,9 @@ func TestScanJournalBytesInAPayloadAttachNothing(t *testing.T) {
 	copySeal := scanSeal(t, &copySeg, testIdentity, testSegment)
 
 	build := func() ([]byte, []int64, int64, int64) {
-		h, body := scanKindBody(KindWrite)
+		h, _ := scanKindBody(KindWrite)
 		h.Extent = core.Extent{Off: testRecordFileOffset, Len: int64(len(copySeg))}
-		body = RecordBody{MTime: testWriteMTime, Payload: copySeg}
+		body := RecordBody{MTime: testWriteMTime, Payload: copySeg}
 
 		recs := scanTestRecords()[:1]
 		seg, offs := scanSegment(t, testIdentity, recs...)
