@@ -3086,7 +3086,11 @@ the rest drains stays invisible to every sum.
 The engine is one concrete type, `*Engine`; nothing declares it as an
 interface. The filesystem, `*vfs.Filesystem` at the file's primary, is
 the only caller of the content methods ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); adapters never reach
-the engine. The lifecycle, share and control methods are node-local. Their
+the engine. Each content method names the file's share beside the file: a
+`FileID` carries no shard, and the engine keys a file's binding, its journal
+handle and every store call by its share, so the filesystem, which has the
+share from the handle, passes it, as it does to `PreWarm`. A share with no
+binding answers `ErrStale`. The lifecycle, share and control methods are node-local. Their
 callers are the node ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components), [§2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which starts and stops the
 engine, sets and stops shares and runs pre-warm and the upload drain; a share's
 removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)); and the snapshot cut ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
@@ -3165,19 +3169,20 @@ func (e *Engine) Unbind(ctx context.Context, id ShareID, keepHolds bool) error /
 func (e *Engine) Drop(ctx context.Context, id ShareID) error                   // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
 // Content: called only by *vfs.Filesystem, at the file's primary (RFC 17 §2.1).
-func (e *Engine) Write(ctx context.Context, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
-func (e *Engine) Draw(ctx context.Context, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
-func (e *Engine) Commit(ctx context.Context, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
-func (e *Engine) LossSeq(f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1)
-func (e *Engine) Read(ctx context.Context, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
-func (e *Engine) Truncate(ctx context.Context, f FileID, size int64) error
-func (e *Engine) Deallocate(ctx context.Context, f FileID, off, n int64) error
-func (e *Engine) Delete(ctx context.Context, f FileID) error // the file's release (RFC 7 §4.5); never the journal's Release, which evicts
-func (e *Engine) Clone(ctx context.Context, src, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len
-func (e *Engine) Copy(ctx context.Context, src, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline
-func (e *Engine) Overlay(ctx context.Context, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
-func (e *Engine) Allocation(ctx context.Context, f FileID, off int64) (Span, error)      // RFC 6 §2's Span, the journal's uncommitted operations applied (§7.6)
-
+// Every call names the file's share, which the filesystem has from the handle; a
+// share with no binding answers ErrStale, as a removed share does (RFC 16 §2.3.1).
+func (e *Engine) Write(ctx context.Context, s ShareID, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
+func (e *Engine) Draw(ctx context.Context, s ShareID, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
+func (e *Engine) Commit(ctx context.Context, s ShareID, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
+func (e *Engine) LossSeq(s ShareID, f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1); 0 for a share with no binding
+func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
+func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
+func (e *Engine) Deallocate(ctx context.Context, s ShareID, f FileID, off, n int64) error
+func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) error // the file's release (RFC 7 §4.5); never the journal's Release, which evicts
+func (e *Engine) Clone(ctx context.Context, s ShareID, src, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; both files of s, as a clone between shards is refused before it (RFC 17 §5.9)
+func (e *Engine) Copy(ctx context.Context, s ShareID, src, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; both files of s
+func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
+func (e *Engine) Allocation(ctx context.Context, s ShareID, f FileID, off int64) (Span, error)      // RFC 6 §2's Span, the journal's uncommitted operations applied (§7.6)
 // Control: node-local.
 func (e *Engine) PrepareCut(ctx context.Context, shard ShardID) error              // RFC 12 §2.3 prepare, gate open
 func (e *Engine) CommitCut(ctx context.Context, shard ShardID) error               // gate closed: cut points, commit up to them; nothing above until the gate reopens

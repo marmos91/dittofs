@@ -1758,7 +1758,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 		wr.WCC.Before = s.captureBefore(ctx, f) // nil where it cannot be taken (§5.7)
 		// The reservation travels with the staged bytes: the existence commit that
 		// records their charge releases it (step 7), never this function's return.
-		wr.Verifier, err = s.engine.Write(ctx, f, off, src, opts(ref, st, res))
+		wr.Verifier, err = s.engine.Write(ctx, f.Share, f.ID, off, src, opts(ref, st, res))
 		wr.WCC.After = s.overlaid(ctx, f) // same hold, once staged
 	})
 	if retry || err != nil {
@@ -1767,7 +1767,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	}
 	if stable(ref, st) {
 		var v Verifier
-		v, _, err = s.engine.Commit(ctx, f, off, int64(len(src))) // step 7: RFC 8 §5.1
+		v, _, err = s.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src))) // step 7: RFC 8 §5.1
 		if err == nil && v != wr.Verifier { // a loss between staging and the sync may have taken it (§5.8)
 			err = &Delay{Cause: DelayCommit}
 		}
@@ -1872,7 +1872,7 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		return OpenResult{}, false, err
 	}
 	req := toOpenState(r, f)                                       // Name, Stream, Owner, Via, Seqs and the rest of RFC 14's OpenRequest
-	req.Loss = s.engine.LossSeq(f.ID)                              // RFC 14 §8.1: what a flush through this open compares with
+	req.Loss = s.engine.LossSeq(f.Share, f.ID)                     // RFC 14 §8.1: what a flush through this open compares with
 	o, err := s.opens.Open(ctx, c.Who(), keyOf(f), req)            // keyOf: share, shard and file. RFC 14 §6: deny modes; a handle-caching grant over a
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
@@ -1989,7 +1989,7 @@ func (s *Filesystem) unlinkLocked(ctx context.Context, c Caller, dir Target, nam
 		r.Dir.After = s.overlaid(ctx, dir.H)
 	}, fileOf(dir.H), f.ID)
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		err = s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
 	}
 	return r, false, err // the chunks it referenced are dropped by the engine's batches and GC (RFC 8 §8.1)
 }
@@ -2052,7 +2052,7 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 		}
 	}
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		err = s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
 	}
 	return r, err
 }
