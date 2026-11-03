@@ -2,6 +2,7 @@ package core
 
 import (
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -289,13 +290,15 @@ const fallbackDescriptorLimit = 1024
 // process's open-file limit where the platform reports one — the floor at 1
 // covers a limit of 2 or 3, whose quarter rounds away — and the fallback
 // where it does not. The arithmetic runs on the uint64 the limit was read
-// as, so the conversion to int cannot wrap on a platform whose int is
-// narrower than a limit it reports.
+// as, and the quarter is held to what an int represents before the
+// conversion, so it cannot wrap on a platform whose int is narrower than a
+// limit it reports. That bound is a representability guard, not a policy cap:
+// no limit a host reports in practice reaches it.
 func defaultDescriptorLimit() int {
 	cur, known := platformOpenFileLimit()
 	if !known {
 		return fallbackDescriptorLimit
 	}
 
-	return int(max(cur/4, 1))
+	return int(max(min(cur/4, uint64(math.MaxInt)), 1))
 }
