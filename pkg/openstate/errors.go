@@ -27,6 +27,8 @@ var (
 
 	ErrShareViolation = errors.New("openstate: deny mode conflict")
 	ErrDeletePending  = errors.New("openstate: file is delete pending")
+	ErrFileOpen       = errors.New("openstate: file has an open, so it is not released")
+	ErrReleasing      = errors.New("openstate: file is being released") // answered as for a released file, stale
 	ErrAccess         = errors.New("openstate: the open was not granted the access the request needs")
 	ErrLocked         = errors.New("openstate: range locked") // as *LockedError from a lock request, naming the holder
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")

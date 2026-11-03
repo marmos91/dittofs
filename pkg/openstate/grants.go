@@ -129,11 +129,12 @@ type clientKey struct {
 }
 
 // keyUse is the file a client's lease key is held on, and the opens holding
-// it there: a key is held from its first open, granted or not, to its last
-// close, and names one file meanwhile.
+// it there, by principal: a key is held from its first open, granted or not,
+// to its last close, and names one file meanwhile.
 type keyUse struct {
 	file  entity.FileID
 	opens int
+	by    map[entity.Principal]int
 }
 
 // covers reports whether g covers opens: a lease, or an oplock.
@@ -159,6 +160,32 @@ func (g *grant) heldBy(c entity.ClientID, key LeaseKey, o *open) bool {
 		return g.open == o
 	}
 	return true
+}
+
+// joins reports whether who may open under the key u is the use of: no open
+// holds it, or one that does is of who's principal or of one in conn.
+//
+// decision: any principal signed in on an opener's connection joins the
+// lease and may answer its breaks, so on one connection shared by several
+// users, as a terminal server's is, each user's opens share the others'
+// leases; Windows, judging a lease by its client alone, shares more.
+// Withdraw it, judging the caller's principal alone, if such a connection is
+// seen carrying users who must not share caching.
+func (u keyUse) joins(who Caller, conn []entity.Principal) bool {
+	if u.opens == 0 || u.by[who.Principal] > 0 {
+		return true
+	}
+	return slices.ContainsFunc(conn, func(p entity.Principal) bool { return u.by[p] > 0 })
+}
+
+// openedBy reports whether p is the principal of one of the opens g covers.
+func (e *entry) openedBy(g *grant, p entity.Principal) bool {
+	for _, h := range e.opens {
+		if h.Grant == g.id && h.Principal == p {
+			return true
+		}
+	}
+	return false
 }
 
 // public is g as a caller sees it, on e's file.
@@ -643,6 +670,9 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 		g := e.grants[id.Token]
 		if g == nil {
 			return ErrBadState
+		}
+		if g.covers() && !e.openedBy(g, who.Principal) {
+			return ErrNotYours // a lease or oplock is answered only by its openers
 		}
 		inFlight := g.fsm.Recall != nil
 		if !inFlight && g.covers() {

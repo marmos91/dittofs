@@ -174,6 +174,7 @@ type entry struct {
 	// a persistent open, which the timer writes again.
 	pendingUnsaved bool
 	unlinked       bool // an unlink made the opens durable: the file has no entry, and every new open is written durable
+	releasing      bool // the service is releasing the file: every new open is refused
 }
 
 // known is what the table holds of a client's record while it is current

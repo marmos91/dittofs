@@ -291,6 +291,44 @@ func TestUnlinkMakesOpensDurable(t *testing.T) {
 	}
 }
 
+// A file is marked releasing only while it has no open, and the mark refuses
+// every open of it, and a second mark, until done ends it, whether the release
+// committed or aborted.
+func TestReleasingRefusesOpens(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	held := f.mustOpen(t, a, file, OpenRequest{Access: rd})
+	if _, err := f.Opens().Releasing(ctx, file); !errors.Is(err, ErrFileOpen) {
+		t.Fatalf("Releasing a file with an open: %v, want ErrFileOpen", err)
+	}
+	second, err := f.open(a, file, OpenRequest{Access: rd})
+	if err != nil {
+		t.Fatalf("an open after a refused Releasing: %v; the refusal marks nothing", err)
+	}
+	f.close(t, a, held)
+	f.close(t, a, second)
+
+	for _, released := range []bool{false, true} {
+		done, err := f.Opens().Releasing(ctx, file)
+		if err != nil {
+			t.Fatalf("Releasing a file with no open: %v", err)
+		}
+		if _, err := f.open(a, file, OpenRequest{Access: rd}); !errors.Is(err, ErrReleasing) {
+			t.Errorf("an open of a releasing file: %v, want ErrReleasing", err)
+		}
+		if _, err := f.Opens().Releasing(ctx, file); !errors.Is(err, ErrReleasing) {
+			t.Errorf("a second Releasing of a marked file: %v, want ErrReleasing", err)
+		}
+		done(released)
+		o, err := f.open(a, file, OpenRequest{Access: rd})
+		if err != nil {
+			t.Fatalf("an open after done(%v): %v; done ends the mark", released, err)
+		}
+		f.close(t, a, o)
+	}
+}
+
 // An open of a file with no entry is written durable whether or not this
 // table saw the unlink: after the entry was freed with its last open, and
 // after a restart.
@@ -545,18 +583,83 @@ func TestChangeChecks(t *testing.T) {
 	}
 }
 
-// An open of a named stream is an open of its base file for deny
-// modes, and its durable record names the stream.
-func TestStreamOpenIsAnOpenOfItsBase(t *testing.T) {
+// Deny modes are judged per stream: a stream's deny-write refuses neither an
+// open of the base for write nor an anonymous write, which is of the base, nor
+// an open of another stream; it refuses another open of its own stream. A
+// stream's durable record names the stream.
+func TestStreamDenyModesArePerStream(t *testing.T) {
 	f := newFixture(t)
-	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
-	base, stream := anyFile(), entity.NewFileID()
+	s, n, q := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser())), f.caller(t, smb("bob-pc"))
+	base, stream, other := anyFile(), entity.NewFileID(), entity.NewFileID()
 	f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd, Deny: wr})
-	if _, err := f.open(n, base, OpenRequest{Access: wr}); !errors.Is(err, ErrShareViolation) {
-		t.Errorf("a write open of the base under the stream's deny-write: %v, want ErrShareViolation", err)
-	}
 	if recs := f.durable(t, base); len(recs) != 1 || recs[0].File != stream {
 		t.Errorf("the base's durable records %d records, want one naming the stream", len(recs))
+	}
+	if _, err := f.open(n, base, OpenRequest{Access: wr}); err != nil {
+		t.Errorf("a write open of the base beside a stream's deny-write: %v", err)
+	}
+	if err := f.Checks().CheckIO(ctx, Caller{}, base, OpenRef{Kind: RefAnonymous, Handle: handle(base.ID)}, ByteRange{}, true); err != nil {
+		t.Errorf("an anonymous write beside a stream's deny-write: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: other, Access: wr}); err != nil {
+		t.Errorf("a write open of another stream beside a stream's deny-write: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: stream, Access: wr}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("a write open of the same stream under its deny-write: %v, want ErrShareViolation", err)
+	}
+}
+
+// Across a file and its streams only delete is judged: a stream's open not
+// sharing delete refuses an open of the base asking delete, and an NFS remove
+// or rename of the base, but not an open of another stream asking delete; a
+// base open holding delete refuses a stream's open not sharing it. A
+// stream's own delete is judged against neither the base's deny nor another
+// stream's.
+func TestStreamDenyDeleteRefusesTheBasesDelete(t *testing.T) {
+	f := newFixture(t)
+	s, n, q := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser())), f.caller(t, smb("bob-pc"))
+	base, stream := anyFile(), entity.NewFileID()
+	f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd, Deny: del})
+	if _, err := f.open(q, base, OpenRequest{Access: rd | del}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an open of the base asking delete beside a stream's deny-delete: %v, want ErrShareViolation", err)
+	}
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := f.Checks().CheckChange(ctx, n, base, nil, what); !errors.Is(err, ErrShareViolation) {
+			t.Errorf("an NFS change %d of the base beside a stream's deny-delete: %v, want ErrShareViolation", what, err)
+		}
+	}
+	if _, err := f.open(q, base, OpenRequest{Stream: entity.NewFileID(), Access: rd | del}); err != nil {
+		t.Errorf("an open of another stream asking delete beside a stream's deny-delete: %v", err)
+	}
+	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
+		t.Errorf("an open of the base asking no delete beside a stream's deny-delete: %v", err)
+	}
+	held := anyFile()
+	f.mustOpen(t, q, held, OpenRequest{Access: rd | del, Deny: wr | del})
+	if _, err := f.open(s, held, OpenRequest{Stream: entity.NewFileID(), Access: rd, Deny: del}); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("a stream open denying delete beside a base open holding delete: %v, want ErrShareViolation", err)
+	}
+	if _, err := f.open(s, held, OpenRequest{Stream: entity.NewFileID(), Access: rd | wr}); err != nil {
+		t.Errorf("a stream open sharing delete beside a base open holding delete and denying write and delete: %v", err)
+	}
+	// The base's deny is not judged against a stream's delete, in either
+	// order, nor one stream's deny against another stream's delete.
+	fourth := anyFile()
+	b := f.mustOpen(t, q, fourth, OpenRequest{Access: rd | del, Deny: del})
+	if o, err := f.open(s, fourth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del}); err != nil {
+		t.Errorf("a stream open asking delete beside a base open not sharing delete: %v", err)
+	} else {
+		f.close(t, s, o)
+	}
+	f.close(t, q, b)
+	f.mustOpen(t, s, fourth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del})
+	if _, err := f.open(q, fourth, OpenRequest{Access: rd | del, Deny: del}); err != nil {
+		t.Errorf("a base open not sharing delete beside a stream open holding delete: %v", err)
+	}
+	fifth := anyFile()
+	f.mustOpen(t, s, fifth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del, Deny: del})
+	if _, err := f.open(q, fifth, OpenRequest{Stream: entity.NewFileID(), Access: rd | del, Deny: del}); err != nil {
+		t.Errorf("a stream open asking delete and not sharing it beside another stream's open doing the same: %v", err)
 	}
 }
 
@@ -637,8 +740,8 @@ func TestIOThroughAnotherFilesRef(t *testing.T) {
 
 // A named stream's open neither deletes on close nor sets a disposition:
 // either would make the base file delete pending and unlink the base's
-// name. The base stays open to others, and the stream's close unlinks
-// nothing.
+// name. One without delete access is refused a disposition as on any file.
+// The base stays open to others, and the stream's close unlinks nothing.
 func TestStreamOpenDeletesNothing(t *testing.T) {
 	f := newFixture(t)
 	s, q := f.caller(t, smb("alice-pc")), f.caller(t, smb("bob-pc"))
@@ -651,6 +754,14 @@ func TestStreamOpenDeletesNothing(t *testing.T) {
 	yes := true
 	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a disposition set through a named stream's open: %v, want ErrInvalid", err)
+	}
+	no := false
+	if err := f.Opens().Update(ctx, s, o.ID, OpenUpdate{Delete: &no}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a disposition cleared through a named stream's open: %v, want ErrInvalid", err)
+	}
+	ro := f.mustOpen(t, s, base, OpenRequest{Stream: stream, Access: rd})
+	if err := f.Opens().Update(ctx, s, ro.ID, OpenUpdate{Delete: &yes}); !errors.Is(err, ErrAccess) {
+		t.Errorf("a disposition set through a named stream's open without delete access: %v, want ErrAccess", err)
 	}
 	if _, err := f.open(q, base, OpenRequest{Access: rd}); err != nil {
 		t.Errorf("an open of the base beside the stream's open: %v", err)
@@ -776,4 +887,110 @@ func TestDowngradeMayNotWidenDeny(t *testing.T) {
 	if _, err := f.Opens().Downgrade(ctx, n, refOf(o), Seqs{}, rd, wr); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a downgrade to a deny the open does not hold: %v, want ErrInvalid", err)
 	}
+}
+
+// Releasing waits while the file's shard is not begun, whose durable opens
+// are not yet held.
+func TestReleasingInAShardNotBegun(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.Opens().Releasing(ctx, in(9)); delayedFor(err) != DelayFrozen {
+		t.Errorf("Releasing in a shard not begun: %v, want ErrDelay (DelayFrozen)", err)
+	}
+}
+
+// A delegation or a lock state held with no open does not refuse a release.
+// An aborted release ends the mark though they keep the file's entry; a
+// committed one drops them, so neither is used on the released file.
+func TestReleasingWithStateButNoOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
+	file := anyFile()
+	o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
+	if d == nil {
+		t.Fatal("no delegation")
+	}
+	f.close(t, a, o)
+	if _, err := f.lock(a, file, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 1)}}); err != nil {
+		t.Fatalf("a lock with no open: %v", err)
+	}
+
+	done, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing with a delegation and a lock but no open: %v", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("while marked: %v", err)
+	}
+	done(false)
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); err != nil {
+		t.Errorf("a write under the delegation after an aborted release: %v, want it kept", err)
+	}
+	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l == nil {
+		t.Errorf("a lock test after an aborted release: %+v, %v; want a's lock held", l, err)
+	}
+	again, err := f.open(a, file, OpenRequest{Access: rd})
+	if err != nil {
+		t.Fatalf("an open after an aborted release: %v; done ends the mark", err)
+	}
+	f.close(t, a, again)
+
+	if done, err = f.Opens().Releasing(ctx, file); err != nil {
+		t.Fatalf("Releasing again: %v", err)
+	}
+	done(true)
+	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), true); !errors.Is(err, ErrBadState) {
+		t.Errorf("a write under the delegation of a released file: %v, want ErrBadState", err)
+	}
+	if l, err := f.Locks().TestLock(ctx, b, file, owner(b, "lt"), br(0, 1), true); err != nil || l != nil {
+		t.Errorf("a lock test on a released file: %+v, %v; want no lock held", l, err)
+	}
+}
+
+// A committed release ends a callback waiter's wait on the file, not granted:
+// nothing else would end it. A polling waiter is told nothing.
+func TestReleaseEndsCallbackWaiter(t *testing.T) {
+	f := newFixture(t)
+	a := f.host(t, "nlm-a", 1)
+	b := f.host(t, "nlm-b", 1)
+	file := anyFile()
+	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
+	if res := f.mustLock(t, b, file, LockReq{Owner: owner(b, "b"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback}); !res.Waiting {
+		t.Fatal("b is not waiting")
+	}
+	// c polls, so it is told nothing: its next request finds the file gone.
+	c := f.host(t, "nlm-c", 1)
+	if _, err := f.lock(c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{x(0, 10)}, Wait: WaitPoll}); lockedBy(err) != "a" {
+		t.Fatalf("c's polling lock: %v, want locked by a", err)
+	}
+	done, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing: %v", err)
+	}
+	done(true)
+	if ws := f.sink.takeWaits(); len(ws) != 1 || ws[0].granted || string(ws[0].w.Owner.Name) != "b" {
+		t.Errorf("LockWaitOver after a committed release: %+v, want b's, not granted", ws)
+	}
+}
+
+// A release's done ends its own mark only: called again after a later
+// Releasing, it leaves that mark held.
+func TestReleasingDoneEndsOnlyItsMark(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	first, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing: %v", err)
+	}
+	first(false)
+	second, err := f.Opens().Releasing(ctx, file)
+	if err != nil {
+		t.Fatalf("Releasing again: %v", err)
+	}
+	first(false)
+	if _, err := f.open(a, file, OpenRequest{Access: rd}); !errors.Is(err, ErrReleasing) {
+		t.Errorf("an open after the first done's second call: %v, want ErrReleasing", err)
+	}
+	second(false)
 }
