@@ -7,7 +7,7 @@ share's"), §3.1, §3.2, §3.4, §3.6, §3.7, §3.9 (the counters this epic incr
 parts the write and read paths touch: serialised appends, the record's fields, the whole-payload
 check, the header checked against its catalog entry).
 **Track:** B.
-**Epic 8 estimate: 16 subtasks, 53 man-days.**
+**Epic 8 estimate: 14 subtasks, 53 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's public types, error set and
 `Stats`; epic 2's reference model, fixture, profiler and test clock; epic 4's placement index
 (the per-file index, version counters, change version and floor buckets, extent bound, markers,
@@ -56,30 +56,30 @@ format, no recovery and no reclamation.
 - The journal's assembly of the index, the streams and the capacity counters, and the write and
   read paths (T8.1, T8.2).
 - Shares, handles, `Handle.Close`, the version counter's public surface (`Draw`,
-  `SetVersionLimit`, the floor a share raises) and "a file is its share's" (T8.3 to T8.5).
+  `SetVersionLimit`, the floor a share raises) and "a file is its share's" (T8.3, T8.4).
 - Capacity: the reservation counters, the share limit, the index bound's refusal, the order in
   which refusals are named, the headroom's half rule, records without bytes, `Reserve` and
-  `Reservation` (T8.6, T8.7, T8.11).
-- `Fill` and the four removals (T8.8, T8.9).
-- `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles` (T8.10).
+  `Reservation` (T8.5, T8.6, T8.10).
+- `Fill` and the four removals (T8.7, T8.8).
+- `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles` (T8.9).
 - The context rules of RFC 1 §3 across the data path (T8.12).
 - The lock domains and the lock-order recorder, including the locks of epic 4's index and
-  epic 5's segments, which adopt the recorder's types (T8.13).
-- `Stats` aggregation and this epic's counters and spans (T8.14).
-- `Journal.Close` and the refusal of operations after it (T8.15).
+  epic 5's segments, which adopt the recorder's types (T8.11).
+- `Stats` aggregation and this epic's counters and spans (T8.13).
+- `Journal.Close` and the refusal of operations after it (T8.12).
 - The counted checks of RFC 1 §9.7 for `WriteAt`, `ReadAt` and `Stats`, a model-based run of this
-  epic's operations, and the known-failure bookkeeping (T8.16).
+  epic's operations, and the known-failure bookkeeping (T8.14).
 
 ### 1.2 Out of scope
 
 - `Init`, `Open`, `Restamp`, rebuild, torn tails, the scan that finds a file under two tags,
   the version floor read from disk and the rebuild of `DirtyFiles`: epic 7. This epic provides
-  the conflict state those calls set (T8.5) and the list they rebuild (T8.10). The public
+  the conflict state those calls set (T8.4) and the list they rebuild (T8.9). The public
   `Open` is epic 7's; D2 and §9 say what that means for this epic's tests.
 - `Sync`, group commit, the sync policies and timer, failed-sync windows, loss records, the loss
   ring and generation, the read-only state and its probe, and the rule for a record that does
   not verify when it is read: epic 6. This epic calls the rule from `ReadAt` (T8.2) and
-  consults the read-only state before every appending call (T8.6).
+  consults the read-only state before every appending call (T8.5).
 - Byte layouts and checksums: epic 3. Segments, the spare pool, streams, the descriptor cache
   and the read drain, the footprint ledger: epic 5. The index's own structures, bounds and
   counters: epic 4. This epic calls them.
@@ -183,18 +183,18 @@ format, no recovery and no reclamation.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every R-number has a test that can fail. Subtasks use E4's index, E3's codecs, E5's streams over E2's crash-simulating seam, and E2's test clock. They fake no other epic's component: T8.2 (the corruption rule) and T8.9 (durable on return) are ordered after the E6 subtasks they call (§7), so neither needs a stand-in |
-| 2 Fuzz | T8.16 | there is no parser of bytes here: E3 decodes records and E5 reads them. T8.16 fuzz-drives sequences of this epic's operations against E2's reference model (R101). T8.5 fuzz-drives claims from two handles against a one-entry-per-file oracle |
-| 3 Metrics and tracing | T8.1, T8.5, T8.6, T8.7, T8.8, T8.14 | `written_bytes` (T8.1), `TagConflicts` (T8.5), `reservation_refused` and `index_refusals` (T8.6), `headroom_draws` (T8.7), `filled_bytes` and `fill_refused` (T8.8) are incremented at the event with an atomic add and served by `Stats` (T8.14), never from a walk. Spans through E1's `Tracer`: `fill` (T8.8) and `reserve_refused` (T8.6). Open and recovery, sync, offload and repack are other epics' |
-| 4 Profiling | all | every test runs under E2's profiler. T8.1, T8.2 and T8.14 assert allocations per call, outside `-race` (R101). T8.15 is where goroutines could leak: it checks that none outlives `Close` |
-| 5 Public and internals, `-race` | T8.1 to T8.15 | each subtask tests its internal package and the public `Handle` behaviour it enables, at the layer that consumes the value: a version is checked where `ReadAt` returns it, a refusal where the caller sees its `ErrNoSpace`. `-race` runs with two files on two streams and two shares, as RFC 1 §9.3 requires |
-| 6 Known failures | T8.16 | D2: until the public `Open` exists, this epic's tests drive the journal through its internal constructor and no conformance test can pass, so no entry leaves `test/journalv2/known.yaml` here. T8.16 lists, beside the file, the conformance tests this epic's code is the last missing piece for, so the change that makes `Open` work removes exactly those entries. Other subtasks add no entry |
+| 1 Unit tests | all | every R-number has a test that can fail. Subtasks use E4's index, E3's codecs, E5's streams over E2's crash-simulating seam, and E2's test clock. They fake no other epic's component: T8.2 (the corruption rule) and T8.8 (durable on return) are ordered after the E6 subtasks they call (§7), so neither needs a stand-in |
+| 2 Fuzz | T8.14 | there is no parser of bytes here: E3 decodes records and E5 reads them. T8.14 fuzz-drives sequences of this epic's operations against E2's reference model (R101). T8.4 fuzz-drives claims from two handles against a one-entry-per-file oracle |
+| 3 Metrics and tracing | T8.1, T8.4, T8.5, T8.6, T8.7, T8.13 | `written_bytes` (T8.1), `TagConflicts` (T8.4), `reservation_refused` and `index_refusals` (T8.5), `headroom_draws` (T8.6), `filled_bytes` and `fill_refused` (T8.7) are incremented at the event with an atomic add and served by `Stats` (T8.13), never from a walk. Spans through E1's `Tracer`: `fill` (T8.7) and `reserve_refused` (T8.5). Open and recovery, sync, offload and repack are other epics' |
+| 4 Profiling | all | every test runs under E2's profiler. T8.1, T8.2 and T8.13 assert allocations per call, outside `-race` (R101). T8.12 is where goroutines could leak: it checks that none outlives `Close` |
+| 5 Public and internals, `-race` | T8.1 to T8.13 | each subtask tests its internal package and the public `Handle` behaviour it enables, at the layer that consumes the value: a version is checked where `ReadAt` returns it, a refusal where the caller sees its `ErrNoSpace`. `-race` runs with two files on two streams and two shares, as RFC 1 §9.3 requires |
+| 6 Known failures | T8.14 | D2: until the public `Open` exists, this epic's tests drive the journal through its internal constructor and no conformance test can pass, so no entry leaves `test/journalv2/known.yaml` here. T8.14 lists, beside the file, the conformance tests this epic's code is the last missing piece for, so the change that makes `Open` work removes exactly those entries. Other subtasks add no entry |
 | 7 v2 ignores v1 | all | enforced by the import test. Nothing of `pkg/block/journal` is read |
-| 8 Real storage | T8.1, T8.2, T8.6 to T8.11, T8.15 | every test of a record write, a read of stored bytes, a refusal that performs no I/O, or a close runs on a real directory through E2's seam. T8.5's conflict logic, T8.12's context checks and T8.13's recorder are pure logic and test in memory |
-| 9 Comment markers | T8.1, T8.2, T8.6, T8.7, T8.13 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` and `decision:` notes on headroom (half rule, default `journal.headroom_records`) go at the admission table in T8.7, the one on counting pieces as interleaved at the reservation in T8.11, the one on the version limit at the draw in T8.4, and the one on checking the tag per file at the claim in T8.5 |
+| 8 Real storage | T8.1, T8.2, T8.5 to T8.10, T8.12 | every test of a record write, a read of stored bytes, a refusal that performs no I/O, or a close runs on a real directory through E2's seam. T8.4's conflict logic, T8.12's context checks and T8.11's recorder are pure logic and test in memory |
+| 9 Comment markers | T8.1, T8.2, T8.5, T8.6, T8.11 | see §4: each decision names its marker and where it goes. The RFC's `ponytail:` and `decision:` notes on headroom (half rule, default `journal.headroom_records`) go at the admission table in T8.6, the one on counting pieces as interleaved at the reservation in T8.10, the one on the version limit at the draw in T8.3, and the one on checking the tag per file at the claim in T8.4 |
 | 10 A test can fail | all | each test in §6 names the bug it catches |
 | 11 Exports | all | the public package gains no symbol this epic: `Share`, `Handle` and `Reservation` are already declared by E1, and every type this epic adds lives in `internal/datapath`, `internal/capacity` or `internal/lockorder`. `ErrJournalReadOnly` is E6's |
-| 12 Created with its consumer | all | `internal/datapath` lands with T8.1, `internal/capacity` with T8.6, `internal/lockorder` with T8.13. Each file lands with the subtask that uses it |
+| 12 Created with its consumer | all | `internal/datapath` lands with T8.1, `internal/capacity` with T8.5, `internal/lockorder` with T8.11. Each file lands with the subtask that uses it |
 
 ## 3. Requirements and invariants
 
@@ -208,16 +208,16 @@ sections found every one of them below, in §1.2, or in the closing note of this
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The handle's tag is written into every record the share appends. A file belongs to one share for its life | invariant | RFC 1 §3, RFC 28 §2.3 | T8.1, T8.3, T8.5 |
-| R2 | A file's share is given by the handle a call goes through, never derived from its `FileID`: a `FileID` encodes no share | MUST NOT | RFC 1 §2 | T8.3, T8.5 |
+| R1 | The handle's tag is written into every record the share appends. A file belongs to one share for its life | invariant | RFC 1 §3, RFC 28 §2.3 | T8.1, T8.3, T8.4 |
+| R2 | A file's share is given by the handle a call goes through, never derived from its `FileID`: a `FileID` encodes no share | MUST NOT | RFC 1 §2 | T8.3, T8.4 |
 | R3 | `Handle.Close` refuses new calls through the handle and returns once every call already in flight on it has returned. The handle's extents stay held, and a new handle for the same tag reads them | MUST | RFC 1 §3, §9.4 | T8.3 |
-| R4 | Checking a file's tag and claiming it is one step under the file append domain, with the file index held for the write | MUST | RFC 1 §3, §8.2 | T8.5 |
-| R5 | A call that appends a record of a file with no tag claims it for the handle's tag: a write, fill, clone target, truncate, deallocate, delete or release. A read appends nothing and claims nothing | MUST | RFC 1 §3 | T8.5 |
-| R6 | Every call through a handle that names a `FileID` is refused with `ErrOtherShare`, naming both tags, when the file's entry carries another tag, and serves, appends, changes and offers nothing of that file | MUST | RFC 1 §3 | T8.5 |
-| R7 | A file keeps its tag for as long as any segment holds a record of it, even after its index entry is dropped. Once none does, the next appending call claims the file afresh | invariant | RFC 1 §3 | T8.5 |
-| R8 | A `FileID` that recovery rebuilt under two tags is refused on every call through either tag, and named in `Stats` (`TagConflicts`), until one of the two is forgotten | MUST | RFC 1 §3, §3.7 | T8.5, T8.14 |
-| R9 | One journal serves several shares, each through its own handle. `Stats` is the journal's, not a handle's, and is readable before any share attaches | invariant | RFC 1 §3, §3.7 | T8.3, T8.14 |
-| R10 | `Share` raises the journal's version counter above the share's floor before it returns the handle | MUST | RFC 1 §3, §4.3 | T8.4 |
+| R4 | Checking a file's tag and claiming it is one step under the file append domain, with the file index held for the write | MUST | RFC 1 §3, §8.2 | T8.4 |
+| R5 | A call that appends a record of a file with no tag claims it for the handle's tag: a write, fill, clone target, truncate, deallocate, delete or release. A read appends nothing and claims nothing | MUST | RFC 1 §3 | T8.4 |
+| R6 | Every call through a handle that names a `FileID` is refused with `ErrOtherShare`, naming both tags, when the file's entry carries another tag, and serves, appends, changes and offers nothing of that file | MUST | RFC 1 §3 | T8.4 |
+| R7 | A file keeps its tag for as long as any segment holds a record of it, even after its index entry is dropped. Once none does, the next appending call claims the file afresh | invariant | RFC 1 §3 | T8.4 |
+| R8 | A `FileID` that recovery rebuilt under two tags is refused on every call through either tag, and named in `Stats` (`TagConflicts`), until one of the two is forgotten | MUST | RFC 1 §3, §3.7 | T8.4, T8.13 |
+| R9 | One journal serves several shares, each through its own handle. `Stats` is the journal's, not a handle's, and is readable before any share attaches | invariant | RFC 1 §3, §3.7 | T8.3, T8.13 |
+| R10 | `Share` raises the journal's version counter above the share's floor before it returns the handle | MUST | RFC 1 §3, §4.3 | T8.3 |
 
 **Context and cancellation**
 
@@ -228,7 +228,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R13 | Once a call has appended its record it completes and returns its result whatever the context says: a cancelled write is never half made | invariant | RFC 1 §3, §9.4 | T8.12 |
 | R14 | A call past the context check that is refused returns the refusal at once, as itself | invariant | RFC 1 §3 | T8.12 |
 | R15 | A wait for the file append domain is not abandoned when the context is done: the domain is held across one local record write and nothing remote | invariant | RFC 1 §8.2 | T8.1, T8.12 |
-| R16 | `Since` ends its iteration with the context's error when the context is done | invariant | RFC 1 §3 | T8.10 |
+| R16 | `Since` ends its iteration with the context's error when the context is done | invariant | RFC 1 §3 | T8.9 |
 
 **The write path**
 
@@ -236,7 +236,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | --- | --- | --- | --- | --- |
 | R17 | On return with a nil error the written extent is held, Dirty, and survives process death: the record is written before `WriteAt` returns | MUST | RFC 1 §3.1, §5.1 | T8.1 |
 | R18 | `WriteAt` assigns the write's version inside the file's serialised append, so for one file the versions the journal assigns are appended in the order they were assigned | MUST | RFC 1 §3.1, RFC 28 §2.2 | T8.1 |
-| R19 | Writes to one `FileID` are serialised. Writes to different `FileID`s may proceed concurrently, on one stream and across streams | MUST | RFC 28 §2.2, RFC 1 §8.2 | T8.1, T8.13 |
+| R19 | Writes to one `FileID` are serialised. Writes to different `FileID`s may proceed concurrently, on one stream and across streams | MUST | RFC 28 §2.2, RFC 1 §8.2 | T8.1, T8.11 |
 | R20 | A write overlapping a held extent supersedes it wherever its version is newer, which for a version `WriteAt` assigns is everywhere. The newer bytes are served at once and the caller invalidates nothing | MUST, MUST NOT | RFC 1 §3.1 | T8.1 |
 | R21 | A write split at a segment's cap returns only once every piece is written, each piece a record of its own carrying the write's version and its own file offset. A crash between the pieces leaves the write partly held | invariant | RFC 28 §2.2 | T8.1 |
 | R22 | A write record carries the file, the share's tag, the version, a new sequence number and the `mtime` the caller gave, 0 when the open suspended it. No other kind carries a modification time | MUST | RFC 28 §2.3 | T8.1 |
@@ -244,7 +244,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R24 | Publishing does not wait for the record to be durable | MUST NOT | RFC 1 §8.4 | T8.1 |
 | R25 | Content a write supersedes is published as a retained extent, and stays one until the record that superseded it is synced. A read never serves a retained extent. (Epic 6 lifts the retention when the sync completes) | invariant | RFC 1 §3.8 | T8.1 |
 | R26 | A write's record is registered with epic 6's failed-window tracking as it is appended, so a failed window can re-append or fail it. This epic registers; epic 6 decides what a window does | invariant | RFC 1 §5.3 | T8.1 |
-| R27 | While the journal is read-only every call that would append a record fails at once with `ErrJournalReadOnly`, reserves nothing and takes no spare. (Epic 6 owns the state and the error; this epic gates each appending path) | MUST | RFC 1 §5.4 | T8.6, T8.8, T8.9 |
+| R27 | While the journal is read-only every call that would append a record fails at once with `ErrJournalReadOnly`, reserves nothing and takes no spare. (Epic 6 owns the state and the error; this epic gates each appending path) | MUST | RFC 1 §5.4 | T8.5, T8.7, T8.8 |
 
 **The read path**
 
@@ -256,125 +256,125 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R31 | An extent never written, one released and one whose bytes were lost are reported identically, as missing | MUST | RFC 1 §2 | T8.2 |
 | R32 | `held` names the content version of each sub-extent served | invariant | RFC 1 §3.2 | T8.2 |
 | R33 | `asOf` is the file's change version at the moment of the read, taken under the file append domain no later than the read resolves its extents. A read waits out at most one record write of its file | MUST | RFC 1 §3.2, §8.4 | T8.2 |
-| R34 | The offloaded bit is never consulted to answer a read, and the journal exposes it as no answer about whether content is offloaded | MUST NOT | RFC 1 §2 | T8.2, T8.14 |
+| R34 | The offloaded bit is never consulted to answer a read, and the journal exposes it as no answer about whether content is offloaded | MUST NOT | RFC 1 §2 | T8.2, T8.13 |
 | R35 | Before it hands out any byte of a record, a read reads the record's whole payload and verifies its payload checksum. It hands out no part of a record that does not verify | MUST, MUST NOT | RFC 28 §2.3 | T8.2 |
 | R36 | A read checks the record header it finds against the entry that sent it there. A mismatch is corruption | MUST | RFC 28 §2.4 | T8.2 |
 | R37 | A record that fails either check is never served and never replaced by zeros. The extent is handled by epic 6's rule for a record that does not verify, which drops it and reports the loss | MUST NOT | RFC 28 §2.3, §3.3 | T8.2 |
-| R38 | A read resolves under the file index, copies the location and releases the index before it takes the segment reference. No I/O is done while the file index is held | MUST, MUST NOT | RFC 1 §8.3 | T8.2, T8.13 |
+| R38 | A read resolves under the file index, copies the location and releases the index before it takes the segment reference. No I/O is done while the file index is held | MUST, MUST NOT | RFC 1 §8.3 | T8.2, T8.11 |
 | R39 | A read observes the location it resolved, intact, or discovers that it must retry or report the extent missing. It never returns bytes from storage that was freed or reused | MUST | RFC 1 §8.5 | T8.2 |
-| R40 | A read of one file never waits on a write to another file, on a sync, or on the reclamation of a segment it does not read | invariant | RFC 1 §8.1 | T8.2, T8.13 |
+| R40 | A read of one file never waits on a write to another file, on a sync, or on the reclamation of a segment it does not read | invariant | RFC 1 §8.1 | T8.2, T8.11 |
 
 **Fill**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R41 | `Fill` never overwrites any part of an extent the journal already holds. It writes only the sub-extents that are currently absent | MUST NOT, MUST | RFC 1 §3.4 | T8.8 |
-| R42 | `Fill`'s absence check and its write are atomic with respect to a concurrent `WriteAt` on the same file | MUST | RFC 1 §3.4, §8.4 | T8.8 |
-| R43 | A `Fill` older than the file writes nothing and returns `ErrStaleFill`, and `fill_refused` counts it. The comparison is the index's (E4-7); the refusal and its counter are this epic's | MUST | RFC 1 §3.4, §3.9 | T8.8 |
-| R44 | A filled extent's offloaded bit is set | MUST | RFC 1 §3.4 | T8.8 |
-| R45 | A filled record carries `v`, the version of the ref the bytes came from, and a new sequence number. `Fill` draws no version and raises no file's change version | invariant | RFC 1 §3.4, §4.3 | T8.8 |
-| R46 | `Fill` is not a write path: it has its own entry point and is never one entry point with `WriteAt` selected by a parameter. The two share their append machinery. Checked in review, not by a test: a signature that differs is a diff, and nothing a test could assert fails without the diff showing it (rule 10) | MUST NOT, SHOULD, adopted | RFC 1 §3.4 | T8.8 |
+| R41 | `Fill` never overwrites any part of an extent the journal already holds. It writes only the sub-extents that are currently absent | MUST NOT, MUST | RFC 1 §3.4 | T8.7 |
+| R42 | `Fill`'s absence check and its write are atomic with respect to a concurrent `WriteAt` on the same file | MUST | RFC 1 §3.4, §8.4 | T8.7 |
+| R43 | A `Fill` older than the file writes nothing and returns `ErrStaleFill`, and `fill_refused` counts it. The comparison is the index's (E4-7); the refusal and its counter are this epic's | MUST | RFC 1 §3.4, §3.9 | T8.7 |
+| R44 | A filled extent's offloaded bit is set | MUST | RFC 1 §3.4 | T8.7 |
+| R45 | A filled record carries `v`, the version of the ref the bytes came from, and a new sequence number. `Fill` draws no version and raises no file's change version | invariant | RFC 1 §3.4, §4.3 | T8.7 |
+| R46 | `Fill` is not a write path: it has its own entry point and is never one entry point with `WriteAt` selected by a parameter. The two share their append machinery. Checked in review, not by a test: a signature that differs is a diff, and nothing a test could assert fails without the diff showing it (rule 10) | MUST NOT, SHOULD, adopted | RFC 1 §3.4 | T8.7 |
 
 **The removals**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R47 | `Truncate`, `Deallocate`, `Delete` and `CloneTarget` each assign a version inside the file's serialised append, append a record carrying it and leave a removal marker. A truncate and a delete write length 0 and reach to the end of the file | MUST | RFC 1 §3.6, RFC 28 §2.3 | T8.9 |
-| R48 | A `Deallocate` or `CloneTarget` of a zero-length extent is refused with `ErrZeroLength` and appends nothing | MUST | RFC 1 §3.6, RFC 28 §2.3 | T8.9 |
-| R49 | A clone target's record and marker carry its `CloneSpec` unchanged | MUST | RFC 1 §3.6 | T8.9 |
-| R50 | Each removal is durable on return and does not require the affected storage to be reclaimed first | MUST, MUST NOT | RFC 1 §3.6 | T8.9 |
-| R51 | None of them is gated on the offloaded bit | MUST NOT | RFC 1 §3.6 | T8.9 |
-| R52 | A removal never waits on an offload pass of its own file or another's: it takes no lock an offload callback holds | invariant | RFC 1 §8.1 | T8.9, T8.13 |
+| R47 | `Truncate`, `Deallocate`, `Delete` and `CloneTarget` each assign a version inside the file's serialised append, append a record carrying it and leave a removal marker. A truncate and a delete write length 0 and reach to the end of the file | MUST | RFC 1 §3.6, RFC 28 §2.3 | T8.8 |
+| R48 | A `Deallocate` or `CloneTarget` of a zero-length extent is refused with `ErrZeroLength` and appends nothing | MUST | RFC 1 §3.6, RFC 28 §2.3 | T8.8 |
+| R49 | A clone target's record and marker carry its `CloneSpec` unchanged | MUST | RFC 1 §3.6 | T8.8 |
+| R50 | Each removal is durable on return and does not require the affected storage to be reclaimed first | MUST, MUST NOT | RFC 1 §3.6 | T8.8 |
+| R51 | None of them is gated on the offloaded bit | MUST NOT | RFC 1 §3.6 | T8.8 |
+| R52 | A removal never waits on an offload pass of its own file or another's: it takes no lock an offload callback holds | invariant | RFC 1 §8.1 | T8.8, T8.11 |
 
 **Observing changes**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R53 | `Since(id, from)` yields every held extent, every unsettled removal marker and every synced loss record of `id` whose version is strictly above `from`, in version order. An unsynced loss is not yielded | invariant | RFC 1 §3.10 | T8.10 |
-| R54 | A marker that runs to the end of the file is yielded with `Extent.Len = MaxInt64 - Extent.Off`, never with its record's length 0 | invariant | RFC 1 §3.10 | T8.10 |
-| R55 | A held extent is reported as a write, whether `WriteAt` or `Fill` made it. A fill's version is at or below the caller's `applied`, so it is not yielded | invariant | RFC 1 §3.10 | T8.10 |
-| R56 | `Since` reads a consistent view of the file and never blocks writes to it for longer than a read does | MUST NOT | RFC 1 §3.10 | T8.10 |
-| R57 | A write's modification time is read from its record when `Since` yields it, verified like any record read, and is 0 for every other kind | invariant | RFC 28 §2.3, §2.4 | T8.10 |
-| R58 | `Settle(id, v)` drops the markers of `id` at or below `v`. It appends nothing and is not persisted | invariant | RFC 1 §3.10 | T8.10 |
-| R59 | `Files` lists a file with a held extent, an unsettled removal marker or an unsettled synced loss record, in this share. `Extents` lists a file's held extents in offset order and is an answer about what the journal holds, not about what exists | invariant | RFC 1 §3.7 | T8.10 |
-| R60 | `DirtyFiles` is kept as a per-journal list of dirty files keyed by their oldest dirty byte's write time. A write that sets a file's first unset offloaded bit adds it. A removal that leaves a file no held or retained extent with an unset bit drops it, and a retained extent counts. It costs O(dirty files) | MUST | RFC 1 §3.7 | T8.10 |
-| R61 | `DirtyFiles` never walks the placement index and never reads a record | MUST NOT | RFC 1 §3.7 | T8.10 |
+| R53 | `Since(id, from)` yields every held extent, every unsettled removal marker and every synced loss record of `id` whose version is strictly above `from`, in version order. An unsynced loss is not yielded | invariant | RFC 1 §3.10 | T8.9 |
+| R54 | A marker that runs to the end of the file is yielded with `Extent.Len = MaxInt64 - Extent.Off`, never with its record's length 0 | invariant | RFC 1 §3.10 | T8.9 |
+| R55 | A held extent is reported as a write, whether `WriteAt` or `Fill` made it. A fill's version is at or below the caller's `applied`, so it is not yielded | invariant | RFC 1 §3.10 | T8.9 |
+| R56 | `Since` reads a consistent view of the file and never blocks writes to it for longer than a read does | MUST NOT | RFC 1 §3.10 | T8.9 |
+| R57 | A write's modification time is read from its record when `Since` yields it, verified like any record read, and is 0 for every other kind | invariant | RFC 28 §2.3, §2.4 | T8.9 |
+| R58 | `Settle(id, v)` drops the markers of `id` at or below `v`. It appends nothing and is not persisted | invariant | RFC 1 §3.10 | T8.9 |
+| R59 | `Files` lists a file with a held extent, an unsettled removal marker or an unsettled synced loss record, in this share. `Extents` lists a file's held extents in offset order and is an answer about what the journal holds, not about what exists | invariant | RFC 1 §3.7 | T8.9 |
+| R60 | `DirtyFiles` is kept as a per-journal list of dirty files keyed by their oldest dirty byte's write time. A write that sets a file's first unset offloaded bit adds it. A removal that leaves a file no held or retained extent with an unset bit drops it, and a retained extent counts. It costs O(dirty files) | MUST | RFC 1 §3.7 | T8.9 |
+| R61 | `DirtyFiles` never walks the placement index and never reads a record | MUST NOT | RFC 1 §3.7 | T8.9 |
 
 **Versions**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R62 | Every version the journal assigns exceeds every version on disk and the floor given at `Open`, and a share's floor given at `Share`. (The version on disk is epic 7's input; the share's floor is this epic's) | MUST | RFC 1 §4.3 | T8.4 |
-| R63 | `Draw` issues the next version and appends nothing. It takes no accept lock | invariant | RFC 1 §4.3 | T8.4 |
-| R64 | No version is issued at or above the version limit, and none before the first `SetVersionLimit`. A `WriteAt`, `Draw` or version-drawing removal that would reach it fails with `ErrNoSpace` naming the version limit | MUST NOT | RFC 1 §4.3 | T8.4 |
-| R65 | `SetVersionLimit` refuses a mark with a non-zero epoch with `ErrUnknownFormat` and leaves the limit as it was | MUST | RFC 1 §4.3 | T8.4 |
+| R62 | Every version the journal assigns exceeds every version on disk and the floor given at `Open`, and a share's floor given at `Share`. (The version on disk is epic 7's input; the share's floor is this epic's) | MUST | RFC 1 §4.3 | T8.3 |
+| R63 | `Draw` issues the next version and appends nothing. It takes no accept lock | invariant | RFC 1 §4.3 | T8.3 |
+| R64 | No version is issued at or above the version limit, and none before the first `SetVersionLimit`. A `WriteAt`, `Draw` or version-drawing removal that would reach it fails with `ErrNoSpace` naming the version limit | MUST NOT | RFC 1 §4.3 | T8.3 |
+| R65 | `SetVersionLimit` refuses a mark with a non-zero epoch with `ErrUnknownFormat` and leaves the limit as it was | MUST | RFC 1 §4.3 | T8.3 |
 
 **Capacity and refusals**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R66 | `WriteAt` and `Fill` reserve their record bytes before accepting them, against the share's limit and the free space left in their stream's allocated segments, taking the next spare when the current segment cannot hold the record. They fail rather than exceed the configured limit | MUST | RFC 1 §6, §3.1 | T8.6 |
-| R67 | A share's limit bounds the record bytes of its records on disk, counted when a record is written and released when its segment is unlinked or recycled. A header-only record is counted in its share's `UsedBytes` but never reserves against or is refused by the share's limit | invariant | RFC 1 §6 | T8.6, T8.7 |
-| R68 | A reservation is atomic with respect to other reservations. A design that reads a counter and then decides is not conformant | MUST, MUST NOT | RFC 1 §6 | T8.6 |
-| R69 | A refusal fails at once with `ErrNoSpace` carrying the limit that refused it (the share's, the journal's, the index's, the headroom's, the version limit or the spare pool's, each under its own name) and how many bytes or entries were missing | MUST | RFC 1 §6 | T8.6 |
-| R70 | A refusal accepts no bytes past the maximum, does not wait, and performs no I/O | MUST NOT | RFC 1 §6 | T8.6 |
-| R71 | A refusal names `spare` only when no other limit would refuse the write: a write that would also pass the share's limit, the journal's maximum, the index's bound, the headroom's threshold or the version limit is refused naming that limit | invariant | RFC 1 §6 | T8.6 |
-| R72 | A full filesystem (`ENOSPC`) is reported as itself, never as `ErrNoSpace` | invariant | RFC 1 §6, §9.2 | T8.6 |
-| R73 | The journal never evicts to satisfy its own reservation | MUST NOT | RFC 1 §6 | T8.6 |
-| R74 | A write blocked on capacity fails rather than waiting indefinitely and does not hold the file index while it is refused | MUST, MUST NOT | RFC 1 §8.6 | T8.6, T8.13 |
-| R75 | A `WriteAt` or `Fill` that would raise `ExtentCount` above `ExtentLimit` is refused at once, before any I/O, naming the index, and `index_refusals` counts it. A removal that splits a held extent is refused the same way once the count is at or above the limit plus an eighth. (E4-8 holds the predicate; this epic applies it at each call and names the refusal) | MUST | RFC 1 §4.2, §6 | T8.6, T8.9 |
-| R76 | `ReservedBytes` is what in-flight reservations hold and their records have not yet filled. It is released only after the record it covered is written and counted in its share's `UsedBytes` | invariant | RFC 1 §3.7, §6 | T8.6, T8.14 |
-| R77 | Records without bytes (release, truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold, stamp, forget) are never refused with `ErrNoSpace` naming a share's limit, the journal's maximum or the spare pool. What can refuse them is the headroom, the version limit for a record that draws a version, and the index's cap for one that splits a held extent | MUST | RFC 1 §6, §3.6 | T8.7, T8.9 |
-| R78 | A record without bytes draws on the reserved headroom, outside every share's limit, charged at 224 bytes: a 96-byte header, a payload of at most 56 bytes and a 72-byte footer entry | invariant | RFC 1 §6 | T8.7 |
-| R79 | Once the headroom falls below half its size, a content write and a hold, stamp or clone target record are refused with `ErrNoSpace` naming the headroom; an offloaded record is not appended (the bit is set in memory only, which is epic 9's `report`); every other record without bytes draws on what remains | MUST | RFC 1 §6, §3.6 | T8.7 |
-| R80 | A record of the last class that finds the headroom exhausted fails with `ErrNoSpace` naming the headroom rather than overrunning it | MUST | RFC 1 §6 | T8.7 |
-| R81 | `headroom_draws` counts records without bytes appended from the reserved headroom while the journal was at its limit | invariant | RFC 1 §3.9 | T8.7, T8.14 |
-| R82 | A repack copy draws on the repack reserve, outside every share's limit and separate from the headroom, and is never refused by a share's limit. It is accounted to its record's share once the source segment is unlinked. (Epic 9 owns repack; this epic owns the admission class) | MUST | RFC 1 §6 | T8.7 |
+| R66 | `WriteAt` and `Fill` reserve their record bytes before accepting them, against the share's limit and the free space left in their stream's allocated segments, taking the next spare when the current segment cannot hold the record. They fail rather than exceed the configured limit | MUST | RFC 1 §6, §3.1 | T8.5 |
+| R67 | A share's limit bounds the record bytes of its records on disk, counted when a record is written and released when its segment is unlinked or recycled. A header-only record is counted in its share's `UsedBytes` but never reserves against or is refused by the share's limit | invariant | RFC 1 §6 | T8.5, T8.6 |
+| R68 | A reservation is atomic with respect to other reservations. A design that reads a counter and then decides is not conformant | MUST, MUST NOT | RFC 1 §6 | T8.5 |
+| R69 | A refusal fails at once with `ErrNoSpace` carrying the limit that refused it (the share's, the journal's, the index's, the headroom's, the version limit or the spare pool's, each under its own name) and how many bytes or entries were missing | MUST | RFC 1 §6 | T8.5 |
+| R70 | A refusal accepts no bytes past the maximum, does not wait, and performs no I/O | MUST NOT | RFC 1 §6 | T8.5 |
+| R71 | A refusal names `spare` only when no other limit would refuse the write: a write that would also pass the share's limit, the journal's maximum, the index's bound, the headroom's threshold or the version limit is refused naming that limit | invariant | RFC 1 §6 | T8.5 |
+| R72 | A full filesystem (`ENOSPC`) is reported as itself, never as `ErrNoSpace` | invariant | RFC 1 §6, §9.2 | T8.5 |
+| R73 | The journal never evicts to satisfy its own reservation | MUST NOT | RFC 1 §6 | T8.5 |
+| R74 | A write blocked on capacity fails rather than waiting indefinitely and does not hold the file index while it is refused | MUST, MUST NOT | RFC 1 §8.6 | T8.5, T8.11 |
+| R75 | A `WriteAt` or `Fill` that would raise `ExtentCount` above `ExtentLimit` is refused at once, before any I/O, naming the index, and `index_refusals` counts it. A removal that splits a held extent is refused the same way once the count is at or above the limit plus an eighth. (E4-8 holds the predicate; this epic applies it at each call and names the refusal) | MUST | RFC 1 §4.2, §6 | T8.5, T8.8 |
+| R76 | `ReservedBytes` is what in-flight reservations hold and their records have not yet filled. It is released only after the record it covered is written and counted in its share's `UsedBytes` | invariant | RFC 1 §3.7, §6 | T8.5, T8.13 |
+| R77 | Records without bytes (release, truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold, stamp, forget) are never refused with `ErrNoSpace` naming a share's limit, the journal's maximum or the spare pool. What can refuse them is the headroom, the version limit for a record that draws a version, and the index's cap for one that splits a held extent | MUST | RFC 1 §6, §3.6 | T8.6, T8.8 |
+| R78 | A record without bytes draws on the reserved headroom, outside every share's limit, charged at 224 bytes: a 96-byte header, a payload of at most 56 bytes and a 72-byte footer entry | invariant | RFC 1 §6 | T8.6 |
+| R79 | Once the headroom falls below half its size, a content write and a hold, stamp or clone target record are refused with `ErrNoSpace` naming the headroom; an offloaded record is not appended (the bit is set in memory only, which is epic 9's `report`); every other record without bytes draws on what remains | MUST | RFC 1 §6, §3.6 | T8.6 |
+| R80 | A record of the last class that finds the headroom exhausted fails with `ErrNoSpace` naming the headroom rather than overrunning it | MUST | RFC 1 §6 | T8.6 |
+| R81 | `headroom_draws` counts records without bytes appended from the reserved headroom while the journal was at its limit | invariant | RFC 1 §3.9 | T8.6, T8.13 |
+| R82 | A repack copy draws on the repack reserve, outside every share's limit and separate from the headroom, and is never refused by a share's limit. It is accounted to its record's share once the source segment is unlinked. (Epic 9 owns repack; this epic owns the admission class) | MUST | RFC 1 §6 | T8.6 |
 
 **Reserving ahead**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R83 | `Reserve(n, writes)` takes at once, refused as above, everything `writes` writes of `n` record bytes in all need: the bytes against the share's limit and the journal's maximum, a 72-byte footer entry per piece against the maximum and an index entry per piece against `ExtentLimit`, `writes` versions below the version limit, and the spare segments the bytes roll into | MUST | RFC 1 §6 | T8.11 |
-| R84 | Pieces are counted as interleaved with the stream's other writes: `2 × writes` plus one per cap the `n` bytes can cross, spares one per cap they can cross plus one | invariant | RFC 1 §6 | T8.11 |
-| R85 | A reserved write that rolls takes a replacement spare from the pool ahead of every unreserved write, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. A reserved write never meets the no-spare refusal while the pool can be refilled | invariant | RFC 1 §6 | T8.11 |
-| R86 | `(*Reservation).WriteAt` draws a write's share of each held amount, and while the reservation holds enough, none of the limits nor the headroom's half rule refuses it. `Close` returns what is left | invariant | RFC 1 §6 | T8.11 |
-| R87 | A reservation is in memory: a restart drops it | invariant | RFC 1 §6 | T8.11 |
+| R83 | `Reserve(n, writes)` takes at once, refused as above, everything `writes` writes of `n` record bytes in all need: the bytes against the share's limit and the journal's maximum, a 72-byte footer entry per piece against the maximum and an index entry per piece against `ExtentLimit`, `writes` versions below the version limit, and the spare segments the bytes roll into | MUST | RFC 1 §6 | T8.10 |
+| R84 | Pieces are counted as interleaved with the stream's other writes: `2 × writes` plus one per cap the `n` bytes can cross, spares one per cap they can cross plus one | invariant | RFC 1 §6 | T8.10 |
+| R85 | A reserved write that rolls takes a replacement spare from the pool ahead of every unreserved write, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. A reserved write never meets the no-spare refusal while the pool can be refilled | invariant | RFC 1 §6 | T8.10 |
+| R86 | `(*Reservation).WriteAt` draws a write's share of each held amount, and while the reservation holds enough, none of the limits nor the headroom's half rule refuses it. `Close` returns what is left | invariant | RFC 1 §6 | T8.10 |
+| R87 | A reservation is in memory: a restart drops it | invariant | RFC 1 §6 | T8.10 |
 
 **Lock domains and atomicity**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R88 | Every piece of mutable state names the domain that guards it, one of the six: file append, capacity, file index, file map, segment append, storage guard | MUST | RFC 1 §8.2 | T8.13 |
-| R89 | Locks are acquired in one total order: file append, capacity, file index, file map, segment append, storage guard. No other order is used | MUST, MUST NOT | RFC 1 §8.3 | T8.13 |
-| R90 | No two locks of one domain are held at once, so no two files' append locks are ever held together | MUST NOT | RFC 1 §8.3 | T8.13 |
-| R91 | The storage guard is not acquired while the file index is held. A reader copies the resolved location and releases the index first | MUST NOT | RFC 1 §8.3 | T8.2, T8.13 |
-| R92 | No lock is held across the `Offload` callback. (Epic 9 calls it; this epic's recorder asserts it) | MUST NOT | RFC 1 §8.3 | T8.13 |
-| R93 | No I/O is done while the file index is held | MUST NOT | RFC 1 §8.3 | T8.13 |
-| R94 | The file map domain is held only to find, add or remove one entry, and released before anything else is done. Nothing is acquired while it is held | invariant | RFC 1 §8.2 | T8.13 |
-| R95 | The file append domain is the only domain held across I/O, and it guards one file | invariant | RFC 1 §8.2 | T8.1, T8.13 |
+| R88 | Every piece of mutable state names the domain that guards it, one of the six: file append, capacity, file index, file map, segment append, storage guard | MUST | RFC 1 §8.2 | T8.11 |
+| R89 | Locks are acquired in one total order: file append, capacity, file index, file map, segment append, storage guard. No other order is used | MUST, MUST NOT | RFC 1 §8.3 | T8.11 |
+| R90 | No two locks of one domain are held at once, so no two files' append locks are ever held together | MUST NOT | RFC 1 §8.3 | T8.11 |
+| R91 | The storage guard is not acquired while the file index is held. A reader copies the resolved location and releases the index first | MUST NOT | RFC 1 §8.3 | T8.2, T8.11 |
+| R92 | No lock is held across the `Offload` callback. (Epic 9 calls it; this epic's recorder asserts it) | MUST NOT | RFC 1 §8.3 | T8.11 |
+| R93 | No I/O is done while the file index is held | MUST NOT | RFC 1 §8.3 | T8.11 |
+| R94 | The file map domain is held only to find, add or remove one entry, and released before anything else is done. Nothing is acquired while it is held | invariant | RFC 1 §8.2 | T8.11 |
+| R95 | The file append domain is the only domain held across I/O, and it guards one file | invariant | RFC 1 §8.2 | T8.1, T8.11 |
 
 **`Stats`, metrics and shutdown**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R96 | `Stats` is served from maintained counters. It does not walk the placement index or the segment set, and does not block a write. A statistic only a walk can produce is omitted | MUST, MUST NOT | RFC 1 §3.7 | T8.14 |
-| R97 | `Stats` is safe to call concurrently with every operation. It is not a consistent snapshot, and takes no lock a write needs to make it one | MUST, MUST NOT | RFC 1 §3.7 | T8.14 |
-| R98 | `Stats` keeps three inequalities, each by the order in which counters are updated: `DirtyBytes` ≤ `HeldBytes` (a write raises held before dirty, a removal lowers dirty before held), `UsedBytes` ≥ what the segments allocate, and `ReservedBytes` ≥ 0 | MUST | RFC 1 §3.7 | T8.14 |
-| R99 | Everything an operator needs to tell a wedged journal from a slow one is readable from one `Stats` call, and the per-share breakdown names every tag that holds a record | MUST | RFC 1 §3.7, §3.8 | T8.14 |
-| R100 | The counters this epic owns live in `Stats`, reset on open, and are named as RFC 1 §3.9 names them: `written_bytes`, `filled_bytes`, `fill_refused`, `reservation_refused`, `headroom_draws`, `index_refusals` | invariant | RFC 1 §3.9 | T8.14 |
-| R101 | `WriteAt`, `ReadAt` and `Stats` are measured in allocations per call, and an increase fails the check. `Stats` costs grow with the number of shares and never with extents or segments | bound | RFC 1 §9.7, §9.6 | T8.16, T8.14 |
-| R102 | On close the journal stops accepting new operations, lets in-flight ones complete or fail cleanly, and frees no storage a reader may still hold. An operation never observes a partially closed store, and a read that begins after close fails | MUST, MUST NOT | RFC 1 §8.7 | T8.15 |
-| R103 | Background work is stopped and joined before the segments it touches are closed | MUST | RFC 1 §8.7 | T8.15 |
+| R96 | `Stats` is served from maintained counters. It does not walk the placement index or the segment set, and does not block a write. A statistic only a walk can produce is omitted | MUST, MUST NOT | RFC 1 §3.7 | T8.13 |
+| R97 | `Stats` is safe to call concurrently with every operation. It is not a consistent snapshot, and takes no lock a write needs to make it one | MUST, MUST NOT | RFC 1 §3.7 | T8.13 |
+| R98 | `Stats` keeps three inequalities, each by the order in which counters are updated: `DirtyBytes` ≤ `HeldBytes` (a write raises held before dirty, a removal lowers dirty before held), `UsedBytes` ≥ what the segments allocate, and `ReservedBytes` ≥ 0 | MUST | RFC 1 §3.7 | T8.13 |
+| R99 | Everything an operator needs to tell a wedged journal from a slow one is readable from one `Stats` call, and the per-share breakdown names every tag that holds a record | MUST | RFC 1 §3.7, §3.8 | T8.13 |
+| R100 | The counters this epic owns live in `Stats`, reset on open, and are named as RFC 1 §3.9 names them: `written_bytes`, `filled_bytes`, `fill_refused`, `reservation_refused`, `headroom_draws`, `index_refusals` | invariant | RFC 1 §3.9 | T8.13 |
+| R101 | `WriteAt`, `ReadAt` and `Stats` are measured in allocations per call, and an increase fails the check. `Stats` costs grow with the number of shares and never with extents or segments | bound | RFC 1 §9.7, §9.6 | T8.13, T8.14 |
+| R102 | On close the journal stops accepting new operations, lets in-flight ones complete or fail cleanly, and frees no storage a reader may still hold. An operation never observes a partially closed store, and a read that begins after close fails | MUST, MUST NOT | RFC 1 §8.7 | T8.12 |
+| R103 | Background work is stopped and joined before the segments it touches are closed | MUST | RFC 1 §8.7 | T8.12 |
 
 **Test rows of the RFC for this area**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R104 | The edge cases of RFC 1 §9.2 for extent shape (a zero-length write, a write near the largest offset, a three-way split, an overwrite covering several extents, the same extent overwritten many times, a write across a segment boundary, a record that exactly fills a segment, a first held byte far from offset zero), for truncate and deallocate, for `Fill` over partly held, dirty and absent extents, and for capacity (a reservation of exactly the remaining space and one byte over, `ENOSPC` against a refusal, records without bytes at the maximum) | test row | RFC 1 §9.2 | T8.1, T8.6, T8.8, T8.9 |
-| R105 | Journals in tests carry at least two files on two streams and at least two shares, so that locking and per-share accounting are exercised | test row | RFC 1 §9.3 | T8.5, T8.13, T8.16 |
-| R106 | The model-based run draws random sequences of this epic's operations and compares each file's bytes and the removal markers `Since` yields with the reference model after every step | test row | RFC 1 §9.1 | T8.16 |
-| R107 | The rows of RFC 1 §9.4 that name this area, mapped test by test in §6: no zero-fill, fill safety, fill sets the bit, a read's `asOf` against a change in flight, removals survive to `Since`, no resurrection, a file is its share's, an attached share raises the counter, a cancelled call changes nothing or completes, a clone target survives a crash, reservation, reserve ahead, handle close, named refusal, share limit, index bound refuses, records without bytes at the limit, offloaded records below half the headroom, floor buckets, no version repeats, no deadlock, background joined, the wedge is visible, stats are cheap, the named inequalities hold, clean bytes count as occupancy, metrics are reachable | test row | RFC 1 §9.4 | T8.2, T8.4, T8.5, T8.6, T8.7, T8.8, T8.9, T8.11, T8.12, T8.13, T8.14, T8.15 |
+| R104 | The edge cases of RFC 1 §9.2 for extent shape (a zero-length write, a write near the largest offset, a three-way split, an overwrite covering several extents, the same extent overwritten many times, a write across a segment boundary, a record that exactly fills a segment, a first held byte far from offset zero), for truncate and deallocate, for `Fill` over partly held, dirty and absent extents, and for capacity (a reservation of exactly the remaining space and one byte over, `ENOSPC` against a refusal, records without bytes at the maximum) | test row | RFC 1 §9.2 | T8.1, T8.5, T8.7, T8.8 |
+| R105 | Journals in tests carry at least two files on two streams and at least two shares, so that locking and per-share accounting are exercised | test row | RFC 1 §9.3 | T8.4, T8.11, T8.14 |
+| R106 | The model-based run draws random sequences of this epic's operations and compares each file's bytes and the removal markers `Since` yields with the reference model after every step | test row | RFC 1 §9.1 | T8.14 |
+| R107 | The rows of RFC 1 §9.4 that name this area, mapped test by test in §6: no zero-fill, fill safety, fill sets the bit, a read's `asOf` against a change in flight, removals survive to `Since`, no resurrection, a file is its share's, an attached share raises the counter, a cancelled call changes nothing or completes, a clone target survives a crash, reservation, reserve ahead, handle close, named refusal, share limit, index bound refuses, records without bytes at the limit, offloaded records below half the headroom, floor buckets, no version repeats, no deadlock, background joined, the wedge is visible, stats are cheap, the named inequalities hold, clean bytes count as occupancy, metrics are reachable | test row | RFC 1 §9.4 | T8.2, T8.3, T8.4, T8.5, T8.6, T8.7, T8.8, T8.10, T8.11, T8.12, T8.13 |
 
 **Keyword hits that map to another epic or to no obligation.** The search of the owned sections
 also finds: RFC 1 §3's rules on `Init` and `Open` (a refused non-empty or unsuitable directory),
@@ -402,7 +402,7 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   returns the journal's core. Here the state is a fresh, empty one on an empty directory; epic 7's
   `Open` calls the same constructor with the state it rebuilt. This epic's integration tests
   call it directly. Until `Open` works, every conformance test still fails in E2's fixture, so
-  none leaves `known.yaml` here (T8.16, §9). A `decision:` marker at the constructor says it
+  none leaves `known.yaml` here (T8.14, §9). A `decision:` marker at the constructor says it
   never recovers and refuses a directory that holds any entry, and what overturns it: a minimal
   `Init` and `Open` for a fresh directory landing earlier than epic 7's recovery.
 - **D3, a write holds its file's append domain from drawing its version until the index has the
@@ -461,7 +461,7 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
 - **D11, the recorder wraps the locks of every package.** `lockorder` defines the six ranks and
   `Mutex` and `RWMutex` types that take a rank. A recorder pointer is nil in production and set
   by tests; each acquisition costs one atomic load. E4's file index and file map and E5's segment
-  append lock adopt the types, which is an edit in their packages (T8.13). A `ponytail:` marker at
+  append lock adopt the types, which is an edit in their packages (T8.11). A `ponytail:` marker at
   the load names the ceiling, a load on every lock, and the upgrade, a build tag that compiles
   the check out of production, once a profile of J2 shows it.
 - **D12, `DirtyFiles` is a map under a leaf mutex.** The list is a map from `FileID` to its
@@ -495,7 +495,7 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
 
 ```text
 pkg/block/journalv2/
-  journal.go, handle.go, reservation.go   T8.1, T8.3, T8.11   bodies replaced: they delegate to datapath
+  journal.go, handle.go, reservation.go   T8.1, T8.3, T8.10   bodies replaced: they delegate to datapath
   internal/
     datapath/
       core.go          T8.1    the journal's core, New(deps, state) (D2), the take-then-append skeleton
@@ -503,26 +503,26 @@ pkg/block/journalv2/
       write.go         T8.1    WriteAt, the version inside the file append, publish
       read.go          T8.2    ReadAt, the verification, the asOf (D3, D4, D5)
       shares.go        T8.3    the share registry, Handle.Close (D13)
-      versions.go      T8.4    Draw, SetVersionLimit, the floor a share raises
-      tags.go          T8.5    the claim and the refusal, the conflict flag (D10)
-      fill.go          T8.8    Fill
-      removals.go      T8.9    Truncate, Deallocate, Delete, CloneTarget
-      since.go         T8.10   Since, Settle, Extents, Files
-      dirty.go         T8.10   the dirty-file list (D12)
+      versions.go      T8.3    Draw, SetVersionLimit, the floor a share raises
+      tags.go          T8.4    the claim and the refusal, the conflict flag (D10)
+      fill.go          T8.7    Fill
+      removals.go      T8.8    Truncate, Deallocate, Delete, CloneTarget
+      since.go         T8.9   Since, Settle, Extents, Files
+      dirty.go         T8.9   the dirty-file list (D12)
       ctx.go           T8.12   the context rules
-      stats.go         T8.14   aggregation, the counters, the per-share breakdown
-      close.go         T8.15   Journal.Close (D14)
+      stats.go         T8.13   aggregation, the counters, the per-share breakdown
+      close.go         T8.12   Journal.Close (D14)
       *_test.go
     capacity/
-      take.go         T8.6    counters, Take, the order and the names of refusals (D6, D7, D9)
-      headroom.go      T8.7    the headroom classes, the half rule, records without bytes (D8)
-      reserve.go       T8.11   Reserve, Reservation, the grant
+      take.go         T8.5    counters, Take, the order and the names of refusals (D6, D7, D9)
+      headroom.go      T8.6    the headroom classes, the half rule, records without bytes (D8)
+      reserve.go       T8.10   Reserve, Reservation, the grant
     lockorder/
-      lockorder.go     T8.13   the ranks, Mutex, RWMutex, the recorder (D11)
+      lockorder.go     T8.11   the ranks, Mutex, RWMutex, the recorder (D11)
     index/
-      files.go         T8.13   the file index and file map locks adopt lockorder's types
+      files.go         T8.11   the file index and file map locks adopt lockorder's types
     segment/
-      stream.go        T8.13   the segment append lock adopts lockorder's types
+      stream.go        T8.11   the segment append lock adopts lockorder's types
 ```
 
 ## 6. Subtasks
@@ -544,7 +544,7 @@ pkg/block/journalv2/
     the version from E4-4's counter, splits the write at the cap by looping on E5's `Append` (which
     reports how many bytes fit, T5.4b), writes each piece as a write record carrying the tag,
     version, `mtime` and a new sequence number, registers each record with epic 6's ledger through T6.1's `Track` once `Append` returns, and only then publishes the piece's extent in E4's index, with the content it supersedes
-    published as retained until T6.5's drop on sync completion lifts it. It releases the domain after
+    published as retained until T6.4's drop on sync completion lifts it. It releases the domain after
     the last piece is published. It adds the length to `written_bytes`.
 - **Acceptance criteria:**
   - After a nil return the extent is held and Dirty, and a process-death simulation at the seam still has the
@@ -578,7 +578,7 @@ pkg/block/journalv2/
 
 **Subtask T8.2 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.1; E4's span query with exact gaps and the change version (E4-2, E4-7); E5's positioned read and read drain (T5.2, T5.4b); E3's record codec; T6.11's `Corrupt`.
+- **Track:** B. **Depends on:** T8.1; E4's span query with exact gaps and the change version (E4-2, E4-7); E5's positioned read and read drain (T5.2, T5.4b); E3's record codec; T6.8's `Corrupt`.
 - **Covers:** R28–R40, R91, R107.
 - **Deliverables:** `read.go`: `ReadAt(ctx, h, id, off, p)`. It takes the file's append domain
   only long enough to read `asOf` (D3), then the file index shared to resolve the span, copies
@@ -587,8 +587,8 @@ pkg/block/journalv2/
   verifies its payload checksum with E3's codec, compares the header it found with the index
   entry (D5) and copies out only the bytes the caller asked for. It fills `held` with each
   piece's version, leaves the bytes of every missing piece untouched, and never widens
-  `missing`. A record that fails either check is passed to T6.11's `Corrupt`: on `UseCopy` the read continues from the other copy's location, and on `Dropped` it reports the extent missing. A reference the drain has closed makes the read
-  resolve again, or report the extent missing. An I/O error from the read is returned as itself and changes nothing (§9). Until T6.11 has landed (§7), a record that fails a check is reported as `ErrCorrupt` and never served.
+  `missing`. A record that fails either check is passed to T6.8's `Corrupt`: on `UseCopy` the read continues from the other copy's location, and on `Dropped` it reports the extent missing. A reference the drain has closed makes the read
+  resolve again, or report the extent missing. An I/O error from the read is returned as itself and changes nothing (§9). Until T6.8 has landed (§7), a record that fails a check is reported as `ErrCorrupt` and never served.
 - **Acceptance criteria:**
   - A sentinel in `p` survives a read of a never-written extent and of a released one, and both
     appear in `missing` identically.
@@ -614,18 +614,27 @@ pkg/block/journalv2/
   read of file A while a write of file B is held at the seam (R40); the allocation count of a
   warm read, outside `-race`.
 
-### T8.3 Shares and handles
+### T8.3 Shares, handles and the version counter's surface
 
-**Subtask T8.3 estimate: 3 man-days.**
+**Subtask T8.3 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T8.1; E1's `Handle` and `Share` declarations.
-- **Covers:** R1–R3, R9.
-- **Deliverables:** `shares.go`: the registry of shares as a copy-on-write immutable slice (D13);
-  `(*Journal) Share(tag, limit, floor)`, which registers the tag and returns a handle (the floor's
-  effect is T8.4's); a handle that carries its tag into every record it appends; `Handle.Close`,
-  which refuses new calls through the handle and waits for its own calls in flight, leaving its
-  extents held; the public `Handle` methods delegate to the core, with the tag of the handle that
-  was called. The tag of a handle is never taken from a `FileID`.
+- **Track:** B. **Depends on:** T8.1; E1's `Handle` and `Share` declarations; E4's counters and
+  version limit (E4-4).
+- **Covers:** R1–R3, R9, R10, R62–R65, R107.
+- **Deliverables:** `shares.go`: the registry of shares as a copy-on-write immutable slice
+  (D13); `(*Journal) Share(tag, limit, floor)`, which registers the tag and returns a handle
+  (the floor's effect is below); a handle that carries its tag into every record it appends;
+  `Handle.Close`, which refuses new calls through the handle and waits for its own calls in
+  flight, leaving its extents held; the public `Handle` methods delegate to the core, with the
+  tag of the handle that was called. The tag of a handle is never taken from a `FileID`. In
+  `versions.go`: `(*Journal) Draw()`, `(*Journal) SetVersionLimit(mark)` and the floor a share
+  raises. `Share` raises the journal's counter above the share's floor under the counter's own
+  atomicity before it returns the handle (R10). `Draw` issues a version and appends nothing. A
+  draw, a write or a removal that would reach the limit fails with `ErrNoSpace` naming the
+  version limit (the check itself is E4-4's; this epic names the refusal and its missing count
+  in versions, D7). `SetVersionLimit` refuses a mark with a non-zero epoch with
+  `ErrUnknownFormat` and leaves the limit as it was. The RFC's `ponytail:` on the limit goes at
+  the draw.
 - **Acceptance criteria:**
   - Two handles on one journal write different files and read only through their own handle's
     view: each record carries its handle's tag.
@@ -634,42 +643,27 @@ pkg/block/journalv2/
     handle for the same tag.
   - A call through one handle is unaffected by another handle's close.
   - Attaching a share while `Stats` is polled takes no lock `Stats` needs.
-- **Tests:** `TestRFC1B_HandleClose` (R3); the records of two handles read back from the segment
-  with their tags (catches a tag taken from the wrong handle, R1); a `FileID` that two handles
-  name resolving to the same file entry, with the share given by the handle alone (R2); a
-  `-race` run attaching and closing shares while writers run (catches a registry mutated in
-  place, D13); the registry read by a poller that blocks if `Share` holds its mutex (catches R9).
-
-### T8.4 The version counter's surface
-
-**Subtask T8.4 estimate: 1.5 man-days.**
-
-- **Track:** B. **Depends on:** T8.1, T8.3; E4's counters and version limit (E4-4).
-- **Covers:** R10, R62–R65, R107.
-- **Deliverables:** `versions.go`: `(*Journal) Draw()`, `(*Journal) SetVersionLimit(mark)` and the
-  floor a share raises. `Share` raises the journal's counter above the share's floor under the
-  counter's own atomicity before it returns the handle (R10). `Draw` issues a version and
-  appends nothing. A draw, a write or a removal that would reach the limit fails with
-  `ErrNoSpace` naming the version limit (the check itself is E4-4's; this epic names the refusal
-  and its missing count in versions, D7). `SetVersionLimit` refuses a mark with a non-zero epoch
-  with `ErrUnknownFormat` and leaves the limit as it was. The RFC's `ponytail:` on the limit goes
-  at the draw.
-- **Acceptance criteria:**
   - After `Share` with a floor of 9×10⁸ on a journal whose counter stands at 10³, the first
     write through the handle is assigned a version above the floor.
   - `Draw` twice returns two increasing versions and leaves the segments untouched.
   - Nothing is issued before the first `SetVersionLimit`, and a write and a draw at the limit
     each fail naming it and succeed after the limit is raised.
   - A mark with a non-zero epoch is refused and the previous limit still binds.
-- **Tests:** `TestRFC1C_AttachedShareRaisesCounter` (R10, R62); `TestRFC1B_NoVersionRepeats`
-  without the crash half, which is epic 7's (R62, R64); a refusal that names `LimitVersion` read
-  through `errors.As` (catches an error that names the wrong limit, R64); the epoch refusal
-  followed by a write under the old limit (catches a limit changed before the check, R65); two
-  concurrent `Draw` calls and a write returning distinct versions under `-race` (R63).
+- **Tests:** `TestRFC1B_HandleClose` (R3); the records of two handles read back from the segment
+  with their tags (catches a tag taken from the wrong handle, R1); a `FileID` that two handles
+  name resolving to the same file entry, with the share given by the handle alone (R2); a
+  `-race` run attaching and closing shares while writers run (catches a registry mutated in
+  place, D13); the registry read by a poller that blocks if `Share` holds its mutex (catches
+  R9); and for the version surface, `TestRFC1C_AttachedShareRaisesCounter` (R10, R62);
+  `TestRFC1B_NoVersionRepeats` without the crash half, which is epic 7's (R62, R64); a refusal
+  that names `LimitVersion` read through `errors.As` (catches an error that names the wrong
+  limit, R64); the epoch refusal followed by a write under the old limit (catches a limit
+  changed before the check, R65); two concurrent `Draw` calls and a write returning distinct
+  versions under `-race` (R63).
 
-### T8.5 A file is its share's
+### T8.4 A file is its share's
 
-**Subtask T8.5 estimate: 3 man-days.**
+**Subtask T8.4 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T8.1, T8.3; E4's file entry with its tag and the segment ranges
   that say when a tag may be dropped (E4-3, E4-10), and E4's rebuild builder (E4-11) to build a
@@ -703,16 +697,16 @@ pkg/block/journalv2/
   builder, with every call refused through both tags (R8); a `testing.F` target driving claims
   from two handles against a one-owner-per-file oracle (R6).
 
-### T8.6 Capacity: counters, admission and named refusals
+### T8.5 Capacity: counters, admission and named refusals
 
-**Subtask T8.6 estimate: 4.5 man-days.**
+**Subtask T8.5 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T8.1, T8.3; E4's extent bound (E4-8); E5's footprint ledger,
-  per-tag record bytes, pool and roll (T5.1, T5.5, T5.6); T6.9's `Admit`.
+  per-tag record bytes, pool and roll (T5.1, T5.5, T5.6); T6.6's `Admit`.
 - **Covers:** R27, R66–R76, R104, R107.
 - **Deliverables:** `internal/capacity/take.go`: the counters, and `Take(request)` under the
   capacity domain (D9). Before it draws a version or writes a byte, `WriteAt` and `Fill` pass it
-  once; it checks, in D6's order, a read-only journal (T6.9's `Admit`, which returns `ErrJournalReadOnly`, R27) and then
+  once; it checks, in D6's order, a read-only journal (T6.6's `Admit`, which returns `ErrJournalReadOnly`, R27) and then
   the limits, and on success reserves the record bytes against the share's limit, the entries
   against `ExtentLimit` through E4-8's pre-check, and asks E5 whether the current segment holds
   the record, or whether a content spare is ready and one can be made against the journal's
@@ -752,11 +746,11 @@ pkg/block/journalv2/
   point a record is written and before it is counted (R76); a read-only journal at the seam
   (R27).
 
-### T8.7 Headroom and records without bytes
+### T8.6 Headroom and records without bytes
 
-**Subtask T8.7 estimate: 3.5 man-days.**
+**Subtask T8.6 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T8.6; E5's headroom and repack-reserve classes and the roll
+- **Track:** B. **Depends on:** T8.5; E5's headroom and repack-reserve classes and the roll
   that takes them (T5.5, T5.6).
 - **Covers:** R67, R77–R82, R107.
 - **Deliverables:** `headroom.go`: the admission classes for records without bytes. A record
@@ -791,11 +785,11 @@ pkg/block/journalv2/
   admission beside a share at its limit (`TestRFC1B_RepackBesideShareAtLimit`'s admission part,
   R82).
 
-### T8.8 `Fill`
+### T8.7 `Fill`
 
-**Subtask T8.8 estimate: 3 man-days.**
+**Subtask T8.7 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T8.1, T8.5, T8.6; E4's absence query, staleness predicate and
+- **Track:** B. **Depends on:** T8.1, T8.4, T8.5; E4's absence query, staleness predicate and
   floor buckets (E4-2, E4-7).
 - **Covers:** R27, R41–R46, R104, R107.
 - **Deliverables:** `fill.go`: `Fill(ctx, h, id, off, p, asOf, v)`, a separate entry point from
@@ -825,20 +819,20 @@ pkg/block/journalv2/
   (R43); a probe that a fill reserves like a write and a read-only journal
   refuses it (R27).
 
-### T8.9 The removals
+### T8.8 The removals
 
-**Subtask T8.9 estimate: 3.5 man-days.**
+**Subtask T8.8 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T8.5, T8.6, T8.7; E4's markers and removal operations (E4-5); T6.1's `Sync`.
+- **Track:** B. **Depends on:** T8.4, T8.5, T8.6; E4's markers and removal operations (E4-5); T6.1's `Sync`.
 - **Covers:** R27, R47–R52, R75, R77, R104, R107.
 - **Deliverables:** `removals.go`: `Truncate`, `Deallocate`, `Delete` and `CloneTarget`. Each
-  takes the file append domain, claims or checks the tag (T8.5), refuses a zero-length
+  takes the file append domain, claims or checks the tag (T8.4), refuses a zero-length
   `Deallocate` or `CloneTarget` with `ErrZeroLength` before it appends anything (R48), draws a
   version inside the append, appends a record with the header values RFC 28 §2.3's table gives (a
   truncate and a delete write length 0), and publishes the removal through E4-5, leaving a marker
   (R47). A clone target's record and marker carry its `CloneSpec` unchanged (R49). The call
   returns only after T6.1's `Sync` of the file covers the record, and waits for no reclamation (R50). It
-  is admitted as a record without bytes (T8.7): refused by the headroom, the version limit, and the
+  is admitted as a record without bytes (T8.6): refused by the headroom, the version limit, and the
   index's cap for a removal that splits a held extent, which it names with `index_refusals` (R75);
   a clone target below half the headroom is refused naming it. It never reads an offloaded bit
   (R51), and it takes no lock an offload callback holds (R52).
@@ -863,16 +857,16 @@ pkg/block/journalv2/
   drop (R51); a removal issued while a held callback runs, which must return (R52); the index
   cap's refusal with its counter (R75); an ordering test for the headroom's refusal of a removal of content not held (R77); a read-only journal at the seam refusing a removal at once with no version drawn (R27).
 
-### T8.10 `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles`
+### T8.9 `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles`
 
-**Subtask T8.10 estimate: 4 man-days.**
+**Subtask T8.9 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.1, T8.9; E4's `Since` side, markers and file map (E4-3,
-  E4-5); E5's positioned read; T6.3's loss records.
+- **Track:** B. **Depends on:** T8.1, T8.8; E4's `Since` side, markers and file map (E4-3,
+  E4-5); E5's positioned read; T6.2's loss records.
 - **Covers:** R16, R53–R61.
 - **Deliverables:** `since.go`: `Since(ctx, h, id, from)` yields, in version order, every held
   extent as a write, every unsettled marker (a marker to the end of the file with
-  `Len = MaxInt64 - Off`) and every synced loss record of the file, which T6.3's `Lose` registers (§9), above `from`, none
+  `Len = MaxInt64 - Off`) and every synced loss record of the file, which T6.2's `Lose` registers (§9), above `from`, none
   unsynced, from a view the index takes without blocking writes for longer than a read (R53 to
   R56); for a write it reads the record's modification time through E5 and verifies it as a
   read does (R57), and ends with the context's error when the context is done (R16).
@@ -901,11 +895,11 @@ pkg/block/journalv2/
   index walk counted at zero (catches a walk, R60, R61); a cancelled context ending the iteration
   (R16).
 
-### T8.11 `Reserve` and `Reservation`
+### T8.10 `Reserve` and `Reservation`
 
-**Subtask T8.11 estimate: 4 man-days.**
+**Subtask T8.10 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.6, T8.7; E5's pool holding spares for a reservation (T5.5,
+- **Track:** B. **Depends on:** T8.5, T8.6; E5's pool holding spares for a reservation (T5.5,
   T5.6, R80 of E5).
 - **Covers:** R83–R87, R107.
 - **Deliverables:** `reserve.go`: `(*Handle) Reserve(n, writes)`, which takes under the capacity
@@ -937,39 +931,11 @@ pkg/block/journalv2/
   unreserved roll that would leave the reservation short (R85); a `-race` run of reserved and
   plain writers (R86).
 
-### T8.12 Cancellation across the data path
+### T8.11 Lock domains and the lock-order recorder
 
-**Subtask T8.12 estimate: 1.5 man-days.**
+**Subtask T8.11 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.1, T8.6, T8.8, T8.9; T6.1's `Sync`.
-- **Covers:** R11–R15, R107.
-- **Deliverables:** `ctx.go`: one helper every data-path call starts with: it checks the context
-  before any refusal check and before any state change, and returns its error, taking no
-  reservation (R12). A call that has appended its record finishes publishing and returns its
-  result whatever the context says (R13); a wait for the file append domain is not abandoned
-  (R15); a refusal past the check returns at once as itself (R14). The calls that take no
-  context are the ones R11 lists: nothing else gains or loses a context parameter, since E1 declared
-  them.
-- **Acceptance criteria:**
-  - `WriteAt`, a removal and `Fill` called with a done context return the context's error, append
-    no record and a crash and reopen at the seam finds nothing of them.
-  - A `WriteAt` whose context is cancelled at the seam after its record is appended returns its
-    version, and the extent reads back.
-  - A share at its limit called with a done context returns the context's error and takes no
-    reservation.
-  - A write waiting on its file's append domain is not abandoned by a cancelled context.
-- **Tests:** a write held at the seam, with `Extents`, `Files`, `DirtyFiles`, `Settle` and
-  `Stats` each returning while it is held (catches a context-free call that waits, R11);
-  `TestRFC1C_CancelledCallChangesNothingOrCompletes`, in its parts that do not call
-  `Sync` or `Release`, which are epics 6 and 9 (R12, R13); the share-at-its-limit case, which would
-  fail if the context were checked after the refusal (R12, R14); a cancelled waiter on a held file
-  domain that must still be served (R15).
-
-### T8.13 Lock domains and the lock-order recorder
-
-**Subtask T8.13 estimate: 4 man-days.**
-
-- **Track:** B. **Depends on:** T8.1, T8.2, T8.6; E4's file index and file map locks (E4-3);
+- **Track:** B. **Depends on:** T8.1, T8.2, T8.5; E4's file index and file map locks (E4-3);
   E5's segment append lock and read drain (T5.4b, T5.2).
 - **Covers:** R19, R38, R40, R52, R74, R88–R95, R105, R107.
 - **Deliverables:** `internal/lockorder`: the six ranks (file append, capacity, file index, file
@@ -995,14 +961,56 @@ pkg/block/journalv2/
   the recorder does not report it (catches a recorder that records nothing, R89 to R93); a
   `-race` run of two files on two streams (R19, R95); a probe that a read of file A does not take a
   lock a write of file B holds (R40); a removal while a held callback runs (R52); the refused-write
-  probe of T8.6 under the recorder (R74); the read's index release before the segment reference
+  probe of T8.5 under the recorder (R74); the read's index release before the segment reference
   (R38); the recorder asserting that the file map's lock is held only across a lookup, with nothing acquired under it (R94); a journal of two files, two streams and two shares for every run above (R105); the import and domain table check that each piece of state names its domain (R88).
 
-### T8.14 `Stats`
+### T8.12 Cancellation and `Journal.Close`
 
-**Subtask T8.14 estimate: 4 man-days.**
+**Subtask T8.12 estimate: 4 man-days.**
 
-- **Track:** B. **Depends on:** T8.5, T8.6, T8.7, T8.10; E4's counters (E4-8, E4-9); E5's counters (T5.1, T5.2, T5.5, T5.6); epic 6's `Durability.Stats()` and `ReadOnlyState` (T6.1, T6.3, T6.4, T6.9).
+- **Track:** B. **Depends on:** T8.1, T8.3, T8.5, T8.7, T8.8, T8.11; T6.1's `Sync`; E5's close of
+  the set (T5.11).
+- **Covers:** R11–R15, R102, R103, R107.
+- **Deliverables:** `ctx.go`: one helper every data-path call starts with: it checks the context
+  before any refusal check and before any state change, and returns its error, taking no
+  reservation (R12). A call that has appended its record finishes publishing and returns its
+  result whatever the context says (R13); a wait for the file append domain is not abandoned
+  (R15); a refusal past the check returns at once as itself (R14). The calls that take no
+  context are the ones R11 lists: nothing else gains or loses a context parameter, since E1
+  declared them. In `close.go`: `(*Journal) Close()` as D14: a closing flag that fails new calls
+  with `ErrClosed`, a wait for the calls in flight, a stop of every background worker that
+  registered a stop function (E5's idle seal and retirement workers, epic 6's
+  `Durability.Stop()`, which joins its timers and probe, epic 9's passes), in reverse order of
+  registration, and only then the close of E5's set. A read that begins after close fails and no
+  storage a reader may hold is freed first. An operation never observes a half-closed store.
+- **Acceptance criteria:**
+  - `WriteAt`, a removal and `Fill` called with a done context return the context's error, append
+    no record and a crash and reopen at the seam finds nothing of them.
+  - A `WriteAt` whose context is cancelled at the seam after its record is appended returns its
+    version, and the extent reads back.
+  - A share at its limit called with a done context returns the context's error and takes no
+    reservation.
+  - A write waiting on its file's append domain is not abandoned by a cancelled context.
+  - A `WriteAt` and a `ReadAt` held at the seam when `Close` is called finish, and calls made
+    after the flag fail with `ErrClosed`.
+  - With a repack-like worker in flight (a registered stub), `Close` stops it before any segment
+    is closed and nothing runs afterwards.
+  - No goroutine outlives `Close`.
+- **Tests:** a write held at the seam, with `Extents`, `Files`, `DirtyFiles`, `Settle` and
+  `Stats` each returning while it is held (catches a context-free call that waits, R11);
+  `TestRFC1C_CancelledCallChangesNothingOrCompletes`, in its parts that do not call `Sync` or
+  `Release`, which are epics 6 and 9 (R12, R13); the share-at-its-limit case, which would fail
+  if the context were checked after the refusal (R12, R14); a cancelled waiter on a held file
+  domain that must still be served (R15); and for the close, `TestRFC1B_BackgroundJoined` with a
+  registered worker (R103); a read begun after `Close` that must fail, and a read in flight that
+  must finish with its bytes (R102); a leak check under E2's profiler (rule 4); an order test:
+  the set is closed after the last worker's stop returns (catches a join after the close, R103).
+
+### T8.13 `Stats`
+
+**Subtask T8.13 estimate: 4 man-days.**
+
+- **Track:** B. **Depends on:** T8.4, T8.5, T8.6, T8.9; E4's counters (E4-8, E4-9); E5's counters (T5.1, T5.2, T5.5, T5.6); epic 6's `Durability.Stats()` and `ReadOnlyState` (T6.1, T6.2, T6.6).
 - **Covers:** R8, R9, R34, R76, R81, R96–R101, R107.
 - **Deliverables:** `stats.go`: the aggregation of RFC 1 §3.7's table from maintained counters:
   this epic's own (held, dirty, reserved, `OldestDirty`, `Files`, `RemovalMarkers`, the version
@@ -1035,32 +1043,11 @@ pkg/block/journalv2/
   no share attached read for `Shares` and for the tags that hold records (R9, R99); a test that no
   field reports an extent's offloaded bit (R34).
 
-### T8.15 `Journal.Close`
+### T8.14 Counted checks, model run and known-failure bookkeeping
 
-**Subtask T8.15 estimate: 2.5 man-days.**
+**Subtask T8.14 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T8.3, T8.13; E5's close of the set (T5.11).
-- **Covers:** R102, R103, R107.
-- **Deliverables:** `close.go`: `(*Journal) Close()` as D14: a closing flag that fails new calls
-  with `ErrClosed`, a wait for the calls in flight, a stop of every background worker that registered a stop function (E5's idle seal and retirement workers, epic 6's `Durability.Stop()`, which joins its timers and probe, epic 9's passes), in reverse order of registration, and only then the close of E5's set. A read that
-  begins after close fails and no storage a reader may hold is freed first. An operation never
-  observes a half-closed store.
-- **Acceptance criteria:**
-  - A `WriteAt` and a `ReadAt` held at the seam when `Close` is called finish, and calls made
-    after the flag fail with `ErrClosed`.
-  - With a repack-like worker in flight (a registered stub), `Close` stops it before any segment
-    is closed and nothing runs afterwards.
-  - No goroutine outlives `Close`.
-- **Tests:** `TestRFC1B_BackgroundJoined` with a registered worker (R103); a read begun after
-  `Close` that must fail, and a read in flight that must finish with its bytes (R102); a leak
-  check under E2's profiler (rule 4); an order test: the set is closed after the last worker's
-  stop returns (catches a join after the close, R103).
-
-### T8.16 Counted checks, model run and known-failure bookkeeping
-
-**Subtask T8.16 estimate: 3 man-days.**
-
-- **Track:** B. **Depends on:** T8.2, T8.8, T8.9, T8.10, T8.14; E2's reference model.
+- **Track:** B. **Depends on:** T8.2, T8.7, T8.8, T8.9, T8.13; E2's reference model.
 - **Covers:** R101, R105, R106.
 - **Deliverables:** the counted check for `WriteAt`, `ReadAt` and `Stats` allocations per call,
   outside `-race` (R101); a model-based run, `testing.F` operation sequences of this epic's
@@ -1084,12 +1071,12 @@ pkg/block/journalv2/
 ## 7. Order of work
 
 T8.1 comes first and T8.2 straight after it: with E5's minimal stream they are the S3 skeleton,
-8 man-days of this epic's. T8.3, T8.4 and T8.5 then widen the one registered share into shares,
-the version surface and the tag rule, and can run side by side. Capacity (T8.6, then T8.7 and
-T8.11) puts `WriteAt` and `Fill` behind admission. `Fill` and the removals (T8.8, T8.9) follow
-the tag rule and capacity, and T8.9 waits for epic 6's `Sync`. T8.10 and T8.12 close the
-engine's surface. T8.13 to T8.16 are the cross-cutting closers: the lock order, `Stats`, close
-and the counted checks. T8.2 does not wait for T6.11, epic 6's handler for a record that does not verify: until it lands, a record that fails a check is reported as `ErrCorrupt` and never served, and the call to `Corrupt` is a follow-up change under T8.2 once T6.11 has merged.
+8 man-days of this epic's. T8.3 then widens the one registered share into shares and the
+version surface, and T8.4 adds the tag rule on top of them. Capacity (T8.5, then T8.6 and
+T8.10) puts `WriteAt` and `Fill` behind admission. `Fill` and the removals (T8.7, T8.8) follow
+the tag rule and capacity, and T8.8 waits for epic 6's `Sync`. T8.9 closes the
+engine's surface. T8.11 to T8.14 are the cross-cutting closers: the lock order, cancellation
+and close, `Stats` and the counted checks. T8.2 does not wait for T6.8, epic 6's handler for a record that does not verify: until it lands, a record that fails a check is reported as `ErrCorrupt` and never served, and the call to `Corrupt` is a follow-up change under T8.2 once T6.8 has merged.
 
 ```mermaid
 flowchart TD
@@ -1097,41 +1084,40 @@ flowchart TD
   E4(["E4 index and counters"]):::sync --> T1
   E5s(["E5 minimal stream"]):::sync --> T1
   T1 --> T2["T8.2 ReadAt"]
-  T1 --> T3["T8.3 Shares and handles"]
+  T1 --> T3["T8.3 Shares, handles and version surface"]
   T2 --> C1(["after T8.2: S3 half, WriteAt and ReadAt usable"]):::sync
-  T3 --> T4["T8.4 Version surface"]
-  T3 --> T5["T8.5 A file is its share's"]
-  T1 --> T6["T8.6 Capacity and refusals"]
-  T3 --> T6
-  E5p(["E5 pool and roll"]):::sync --> T6
-  T6 --> T7["T8.7 Headroom"]
-  T6 --> T8["T8.8 Fill"]
+  T3 --> T4["T8.4 A file is its share's"]
+  T1 --> T5["T8.5 Capacity and refusals"]
+  T3 --> T5
+  E5p(["E5 pool and roll"]):::sync --> T5
+  T5 --> T6["T8.6 Headroom"]
+  T5 --> T7["T8.7 Fill"]
+  T4 --> T7
+  T4 --> T8["T8.8 Removals"]
   T5 --> T8
-  T5 --> T9["T8.9 Removals"]
-  T6 --> T9
-  T7 --> T9
-  E6s(["E6 Sync"]):::sync --> T9
-  T6 --> T11["T8.11 Reserve"]
-  T7 --> T11
-  T9 --> T10["T8.10 Since, Settle, DirtyFiles"]
-  E6l(["E6 loss records"]):::sync --> T10
-  T1 --> T12["T8.12 Cancellation"]
+  T6 --> T8
+  E6s(["E6 Sync"]):::sync --> T8
+  T5 --> T10["T8.10 Reserve"]
+  T6 --> T10
+  T8 --> T9["T8.9 Since, Settle, DirtyFiles"]
+  E6l(["E6 loss records"]):::sync --> T9
+  T2 --> T11["T8.11 Lock domains and recorder"]
+  T5 --> T11
+  T1 --> T12["T8.12 Cancellation and Close"]
+  T3 --> T12
+  T7 --> T12
   T8 --> T12
-  T9 --> T12
-  T2 --> T13["T8.13 Lock domains and recorder"]
+  T11 --> T12
+  T4 --> T13["T8.13 Stats"]
   T6 --> T13
-  T5 --> T14["T8.14 Stats"]
+  T9 --> T13
+  T2 --> T14["T8.14 Counted checks and model"]
   T7 --> T14
-  T10 --> T14
-  T3 --> T15["T8.15 Close"]
-  T13 --> T15
-  T2 --> T16["T8.16 Counted checks and model"]
-  T8 --> T16
-  T9 --> T16
-  T14 --> T16
-  T7 --> C2(["after T8.7: capacity complete for content and removals"]):::sync
-  T10 --> C3(["after T8.10: the engine's re-apply surface exists"]):::sync
-  T16 --> C4(["after T8.16: the data path is done"]):::sync
+  T8 --> T14
+  T13 --> T14
+  T6 --> C2(["after T8.6: capacity complete for content and removals"]):::sync
+  T9 --> C3(["after T8.9: the engine's re-apply surface exists"]):::sync
+  T14 --> C4(["after T8.14: the data path is done"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -1139,10 +1125,10 @@ Checkpoints:
 
 - After T8.2: `WriteAt` and `ReadAt` run on E5's minimal stream through the internal
   constructor, which is this epic's half of S3.
-- After T8.7: every limit refuses by name, and records without bytes draw on the headroom.
-- After T8.10: the engine can write, fill, remove and re-apply after a crash, which is what
+- After T8.6: every limit refuses by name, and records without bytes draw on the headroom.
+- After T8.9: the engine can write, fill, remove and re-apply after a crash, which is what
   epic 9 and epic 11 build on.
-- After T8.16: the data path meets its counted checks, and what remains for the conformance
+- After T8.14: the data path meets its counted checks, and what remains for the conformance
   tests is the public `Open`.
 
 ## 8. Suggested pull requests
@@ -1150,13 +1136,13 @@ Checkpoints:
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T8.1, T8.2 | 8 | E4, E5's minimal stream, E3 records | the write and the read on the minimal stream: the S3 half this epic owes |
-| 2 | T8.3, T8.4, T8.5 | 7.5 | PR 1 | the registered share becomes shares, the version surface and the tag rule, which all change how a call names its file and its share |
-| 3 | T8.6, T8.7 | 8 | PR 2, E5's pool and roll | capacity and its headroom: one admission rule, one table of refusals |
-| 4 | T8.8, T8.9 | 6.5 | PR 3, E6 `Sync` | the two paths that append beyond a plain write, which share the claim and the admission |
-| 5 | T8.10, T8.12 | 5.5 | PR 4, E6 loss records | the engine's surface for re-applying, and the context rules that every call then obeys |
-| 6 | T8.11 | 4 | PR 3, E5's pool holding spares | reserving ahead, which can be open beside PR 4 |
-| 7 | T8.13, T8.15 | 6.5 | PR 5, PR 6 | the lock order over every package and the close that joins background work, which edit the same locks |
-| 8 | T8.14, T8.16 | 7 | PR 7 | `Stats` over every counter and the counted checks that read it |
+| 2 | T8.3, T8.4 | 7.5 | PR 1 | the registered share becomes shares, the version surface and the tag rule, which all change how a call names its file and its share |
+| 3 | T8.5, T8.6 | 8 | PR 2, E5's pool and roll | capacity and its headroom: one admission rule, one table of refusals |
+| 4 | T8.7, T8.8 | 6.5 | PR 3, E6 `Sync` | the two paths that append beyond a plain write, which share the claim and the admission |
+| 5 | T8.9 | 4 | PR 4, E6 loss records | the engine's surface for re-applying |
+| 6 | T8.10 | 4 | PR 3, E5's pool holding spares | reserving ahead, which can be open beside PR 4 and PR 5 |
+| 7 | T8.11, T8.12 | 8 | PR 5, PR 6 | the lock order over every package, the context rules every call then obeys, and the close that joins background work, which edit the same locks |
+| 8 | T8.13, T8.14 | 7 | PR 7 | `Stats` over every counter and the counted checks that read it |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -1172,21 +1158,21 @@ A suggestion only: one pull request per subtask works as well.
 - **What this epic calls in epic 6, and one thing nobody keeps.** `Track(Written)` after every
   `Append` (T6.1, which epic 6's own open points ask this epic to confirm sits in each appending
   path: T8.1 puts it there, and epic 9 must for its records); `Sync(ctx, ids...)` (T6.1) for the
-  durability of a removal (T8.9); `Admit()` (T6.9), first in every appending call (T8.6); `Corrupt`
-  (T6.11), whose outcomes `Dropped` and `UseCopy` T8.2 handles; and `Durability.Stats()`,
-  `ReadOnlyState` and `Generation()` for `Stats` (T8.14). The gap: `Since` yields, and `Files`
+  durability of a removal (T8.8); `Admit()` (T6.6), first in every appending call (T8.5); `Corrupt`
+  (T6.8), whose outcomes `Dropped` and `UseCopy` T8.2 handles; and `Durability.Stats()`,
+  `ReadOnlyState` and `Generation()` for `Stats` (T8.13). The gap: `Since` yields, and `Files`
   lists, every synced loss record of a file until the caller settles it (RFC 1 §3.10, §3.7),
-  but T6.3's ring is bounded and E4's markers hold removals, not losses. Neither epic keeps
-  the unsettled synced losses per file. Proposed: T6.3's `Lose` registers a synced loss as a
+  but T6.2's ring is bounded and E4's markers hold removals, not losses. Neither epic keeps
+  the unsettled synced losses per file. Proposed: T6.2's `Lose` registers a synced loss as a
   marker of its own kind in E4's marker set, which `Settle` then drops. Decide with epic 4's and
-  epic 6's owners; until then T8.10 yields markers and held extents and a synced loss test
+  epic 6's owners; until then T8.9 yields markers and held extents and a synced loss test
   stays red.
-- **What this epic needs from epic 5 that its subtasks do not state.** `Take` (T8.6) asks the
+- **What this epic needs from epic 5 that its subtasks do not state.** `Take` (T8.5) asks the
   stream whether the current segment holds a record, whether a content spare is ready, and
   whether one could be made against the maximum, without taking either. T5.6 declares the roll
   and its refusals but not that question. Epic 5's own open point asks for the same confirmation
   about the lock domains.
-- **Epic 1's document lags its code.** Its 1.5 lists the handle's calls without a context and `Share` with a sync policy, while RFC 1 §3 and the package on the integration branch take a context first and `Share(tag, limit, floor)`. This breakdown follows the RFC, as does epic 6, whose T6.2 removes the policy and whose T6.9 adds `ErrJournalReadOnly`. Epic 1's document should be revised.
+- **Epic 1's document lags its code.** Its 1.5 lists the handle's calls without a context and `Share` with a sync policy, while RFC 1 §3 and the package on the integration branch take a context first and `Share(tag, limit, floor)`. This breakdown follows the RFC, as does epic 6, whose T6.9 removes the policy and whose T6.6 adds `ErrJournalReadOnly`. Epic 1's document should be revised.
 - **The order in which refusals are named (D6) is this epic's.** RFC 1 §6 fixes only that `spare`
   is named last. Confirm the order with the RFC's author, and put it in the RFC.
 - **What "the headroom" measures (D8) is this epic's reading.** RFC 1 §6 states its size, the
@@ -1196,7 +1182,7 @@ A suggestion only: one pull request per subtask works as well.
   a domain among six, and the dirty list, the file append table and the share registry are none
   of them. Epic 5 raised the same point for the descriptor cache. Confirm that leaf mutexes
   outside the six are acceptable, or name the domain.
-- **The recorder edits locks in E4 and E5 (D11).** T8.13 changes the lock types in
+- **The recorder edits locks in E4 and E5 (D11).** T8.11 changes the lock types in
   `internal/index` and `internal/segment`. Confirm with epic 4's and epic 5's owners that this
   epic may touch them in one change, and which change that is.
 - **A read that fails with `EIO`.** #3440 and the open #3511 decide whether the extent stays held
@@ -1204,7 +1190,7 @@ A suggestion only: one pull request per subtask works as well.
   I/O error as itself and changes nothing. If #3511 merges, T8.2's failure path follows it.
 - **Open RFC changes that touch this epic.** The merged ones (#3509 binds a record header to its
   own offset, which T8.2's header comparison uses; #3512 turns a journal read-only on its first
-  `EROFS`, which T8.6's gate follows) are in the RFCs. Open: #3511, above, and #3502 (a descriptor
+  `EROFS`, which T8.5's gate follows) are in the RFCs. Open: #3511, above, and #3502 (a descriptor
   that has written stays open until a sync covers it), which changes epic 5's cache, not this
   epic's code.
 - **`DirtyFiles` order.** RFC 1 §3.7 keys the list by write time and states no order for the
