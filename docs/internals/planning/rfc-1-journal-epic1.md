@@ -391,8 +391,9 @@ rule, not where the rule came from.
     | `ErrInvalidSetting` | a setting is out of its documented range |
     | `ErrClosed` | a call reaches a closed journal or handle |
     | `ErrHandleOpen` | `Forget` is called while a handle of the tag is open |
-    | `ErrJournalExists` | `Init` finds a `format` file or a segment |
+    | `ErrNotEmpty` | `Init` finds any entry but a `format.tmp`, which an `Init` that crashed before its rename leaves; nothing is written |
     | `ErrNoJournal` | `Open` or `Restamp` finds no journal, and never creates one |
+    | `ErrUnidentified` | `Open` finds a segment and no `format` file; the directory is left as it is |
     | `ErrIdentityMismatch` | the identity on disk is not `expect` |
     | `ErrUnknownFormat` | the format version, a record kind or a non-zero epoch is not recognised |
     | `ErrStaleFill` | a `Fill` is older than the file |

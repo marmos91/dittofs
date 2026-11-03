@@ -1743,7 +1743,7 @@ without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
 state, allocated storage, held bytes, and whether it is damaged (as `DamagedSegments` counts). A damaged
-segment an open emptied and unlinked, or retired before emptying, keeps its row under its old id until the journal closes, marked unlinked, with no
+segment an open emptied and unlinked, or retired before emptying, keeps its row under its old id until the journal closes, marked retired, with no
 storage and no held bytes. `Stats` ([§3.7](#3.7%20State%20introspection)) is the total; this is the breakdown behind it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
@@ -1938,7 +1938,7 @@ for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3
 and only once repack has carried those records forward. **A failed append ends
 its segment the same way** ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)); this rule governs it whole until an
 open ends or seals it. A segment an open ends for a torn header or a torn slot is instead emptied and unlinked there ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), even if its sync
-fails at open, unless the open fails for want of a spare; its emptying reads only records synced before this open, whose clean pages the failed sync did not touch. One whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
+fails at open, unless the open fails before it is unlinked; its emptying reads only records synced before this open, whose clean pages the failed sync did not touch. One whose sync fails at open and that the open does not end is a failed one. For a failed one: its window is resolved below, it becomes a repack candidate only then, and
 the records synced into it before the failure stay held from it until repack
 copies them. For the window, the journal **MUST** do one of two things,
 unless it has turned read-only, which fails the window whole ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)):
@@ -2996,6 +2996,12 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   next; comparisons per reported
   extent **MUST** grow at most 2.5 times between the two, with the same bound
   per descent as the index cost ([§3.3](#3.3%20Offload)).
+
+**Suites.** §9.2's edge cases, §9.4's checks, §9.1's model-based run and §9.7's counted checks run
+in the journal's own conformance suite and group, registered with the v2 journal's code; §9.1's
+other kinds (unit, fault-injection, race and import tests) and the fuzz targets' seed corpora run in
+`unit`, on NTFS in `unit/windows`. No suite runs yet §9.6's benchmarks, the soak, §9.3's other
+filesystems or fuzzing past the seed corpus.
 
 ## 10. Open questions
 

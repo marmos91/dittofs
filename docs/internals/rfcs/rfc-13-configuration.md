@@ -875,6 +875,10 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, a shard override counting as a refinement of share (§3), or "—" with a class of fixed, derived or bootstrap. |
 | [§6](#6.%20Validation) block target range | Set the block target to 512 KiB and to 128 MiB. Assert both refused, naming the field and the range; assert 1 MiB and 64 MiB accepted. |
 
+**Suites.** §9's single-node rows run in `unit`, and the rows that provoke an immutable location's
+lock through RFC 4's fault transport in `integration`. No suite runs yet the rows that need two or
+more nodes.
+
 ## 10. Edits this document asks of other RFCs
 
 Each owning RFC is the authority for what its settings mean; this document is

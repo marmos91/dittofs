@@ -9,12 +9,14 @@ import (
 	"testing"
 )
 
-// docsRepo writes a registry and doc into a new checkout and runs dt there.
+// docsRepo writes a registry, doc and RFC into a new checkout and runs dt
+// there.
 func docsRepo(t *testing.T, doc string) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "test/suites.yaml"), `version: 1
 defaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }
+groups: { g: [a, b] }
 suites:
   a:
     cmd: "run {nfs}"
@@ -29,8 +31,37 @@ suites:
 	writeFile(t, filepath.Join(root, "a.yaml"), "")
 	writeFile(t, filepath.Join(root, "o.yaml"), "")
 	writeFile(t, filepath.Join(root, suitesDoc), doc)
+	writeFile(t, filepath.Join(root, rfcDir, "rfc-1-x.md"), "# RFC 1\n\n**Suites.** `a`, its option\n`a/o` and the group `g`.\n")
 	t.Chdir(root)
 	return filepath.Join(root, suitesDoc)
+}
+
+// Each RFC needs one suites paragraph, and each code span in it, on any of its
+// lines, names a suite, an option or a group. Both dt docs and its check fail
+// otherwise, the write still writing the table, and the index isn't an RFC.
+func TestDocsRFCs(t *testing.T) {
+	for _, c := range []struct{ rfc, want string }{
+		{"# RFC 2\n\nNo suites named.\n", rfcDir + "/rfc-2-x.md: no paragraph starting **Suites.** names the suites"},
+		{"**Suites.** `a` and\n`c`, as `g` does.\n", rfcDir + "/rfc-2-x.md:2: `c` is no suite, group or option"},
+		{"**Suites.** `a`.\n\n**Suites.** `b`.\n", rfcDir + "/rfc-2-x.md: 2 paragraphs start **Suites.**"},
+	} {
+		path := docsRepo(t, suitesBegin+"\n"+suitesEnd+"\n")
+		writeFile(t, filepath.Join(rfcDir, "rfc-index.md"), "no paragraph\n")
+		writeFile(t, filepath.Join(rfcDir, "rfc-2-x.md"), c.rfc)
+		for _, args := range [][]string{nil, {"--check"}} {
+			out, err := docs(args...)
+			if status := exitStatus(0); !errors.As(err, &status) || status != 1 || !strings.Contains(out, c.want) {
+				t.Errorf("dt docs %v with %q: %v, %q; want exit status 1 and %q", args, c.rfc, err, out, c.want)
+			}
+		}
+		if got, _ := os.ReadFile(path); !strings.Contains(string(got), "| `a` |") {
+			t.Errorf("with %q, dt docs didn't write the table", c.rfc)
+		}
+		writeFile(t, filepath.Join(rfcDir, "rfc-2-x.md"), "**Suites.** `b`.\n")
+		if out, err := docs("--check"); err != nil {
+			t.Errorf("check with every RFC naming the registry's suites: %v, %q", err, out)
+		}
+	}
 }
 
 func docs(args ...string) (string, error) {
