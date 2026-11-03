@@ -40,8 +40,15 @@ func laterOf(now, prev time.Time) time.Time {
 // SetAttrs changes the attributes a names. Only a privileged caller changes
 // the owner or the immutable and append-only flags; the owner may change
 // the group to one it is in, the mode and the times, and a caller holding
-// write the ACL the mode's permission bits, never setuid or setgid. A chmod on a file with a stored ACL merges into the
-// ACL, and both are written together.
+// write the ACL the mode's permission bits: never setuid or setgid on a
+// non-directory, and never the sticky bit, which it neither sets nor clears.
+// A chmod on a file with a stored ACL merges into the ACL, and both are
+// written together.
+//
+// decision: a non-owner holding write the ACL may chmod, though RFC 19 §4.1
+// refuses a non-owner's mode set ErrPerm: SetACL already lets it set the
+// permission bits, and the special bits are kept from it as above. Refuse it
+// ErrPerm, or amend RFC 7 §7.4 and RFC 19 §4.1, once one is agreed.
 //
 // A size change is refused: it goes through an existence commit, which
 // needs the write path.
@@ -85,8 +92,14 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		if a.Changes(entity.AttrMode) && !id.Privileged && id.Principal != file.Owner {
 			// A write-ACL holder's chmod sets only the permission bits: one
 			// who is not the owner cannot make a setuid or setgid program
-			// that runs as the owner or the owner's group.
-			next.Mode &^= entity.ModeSetuid | entity.ModeSetgid
+			// that runs as the owner or the owner's group, nor set or clear
+			// the sticky bit that keeps others' entries from it. A directory's
+			// setuid and setgid pass as asked: it runs nothing, and its setgid
+			// names the group new entries take.
+			if !file.IsDir() {
+				next.Mode &^= entity.ModeSetuid | entity.ModeSetgid
+			}
+			next.Mode = next.Mode&^entity.ModeSticky | file.Mode&entity.ModeSticky
 		}
 		if a.Changes(entity.AttrMode) {
 			if b, ok, err := get(tx, aclKey(share, file.ID)); err != nil {
