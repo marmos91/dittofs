@@ -128,6 +128,12 @@ type openCall struct {
 // reach.
 var waiterHook func()
 
+// shutWakeHook is a test hook in Shutdown's wake-to-lock window, where a
+// reclaim can take a reference across the wait's signal: a check parks the
+// Shutdown there to stage that order instead of leaning on the scheduler.
+// nil outside the checks that use it.
+var shutWakeHook func()
+
 // Ref is a reference to a segment's open descriptor. Its methods need no
 // lock of the cache's: the reference holds the descriptor open.
 //
@@ -674,6 +680,9 @@ func (c *Descriptors) Shutdown() error {
 		c.shutDone = done
 		c.mu.Unlock()
 		<-done
+		if shutWakeHook != nil {
+			shutWakeHook()
+		}
 		c.mu.Lock()
 		c.shutDone = nil
 	}

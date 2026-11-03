@@ -59,3 +59,11 @@ func WaiterHook(fn func()) (restore func()) {
 	waiterHook = fn
 	return func() { waiterHook = nil }
 }
+
+// ShutWakeHook installs fn as the hook Shutdown runs between its wait's wake
+// and the lock, so a check parks the Shutdown after the signal while a
+// reclaim takes a reference across it. It returns what restores the nil hook.
+func ShutWakeHook(fn func()) (restore func()) {
+	shutWakeHook = fn
+	return func() { shutWakeHook = nil }
+}
