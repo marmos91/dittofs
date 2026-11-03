@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journal/internal/format"
 	"github.com/marmos91/dittofs/pkg/block/journal/internal/segment"
+	"github.com/marmos91/dittofs/pkg/block/journal/internal/storage"
 	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
 )
@@ -97,7 +100,7 @@ func streamWriteHeader(fid core.FileID, off int64, payload []byte, tag core.Shar
 	return h, body
 }
 
-// streamAppend writes one record through the stream, failing the test on any
+// streamAppendWrite appends one record through the stream, failing the test on any
 // error, and returns where it landed.
 func streamAppendWrite(t *testing.T, e streamEnv, h format.RecordHeader, body format.RecordBody) segment.Placed {
 	t.Helper()
@@ -161,7 +164,7 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 
 	// The first write lands and is synced, so its record carries a
 	// synced-through of zero and the next one has room to name the prefix.
-	h1 := mustWrite(t, e, streamFileID(1), 0, make([]byte, 64), 7, 1)
+	h1 := streamMustWrite(t, e, streamFileID(1), 0, make([]byte, 64), 7, 1)
 	if h1.SyncedThrough != 0 {
 		t.Fatalf("the first record carries SyncedThrough %d, want 0", h1.SyncedThrough)
 	}
@@ -193,7 +196,7 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 				t.Fatalf("Sync between the appends: %v", err)
 			}
 		}
-		payload := mustBody(t, 64)
+		payload := streamTestBody(64, 0x3c)
 		h, body := streamWriteHeader(streamFileID(2), int64(128+64*i), payload, 8, core.Version{Counter: uint64(3 + i)})
 		p := streamAppendWrite(t, e, h, body)
 		got, _ := streamReadRecord(t, e, p.Loc)
@@ -204,9 +207,9 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 	}
 }
 
-// mustWrite appends one record and reads its own header back, so the caller
-// holds the record's decoded header without the ceremony.
-func mustWrite(t *testing.T, e streamEnv, fid core.FileID, off int64, payload []byte, tag core.ShareTag, version uint64) format.RecordHeader {
+// streamMustWrite appends one record and reads its own header back, so the
+// caller holds the record's decoded header without the ceremony.
+func streamMustWrite(t *testing.T, e streamEnv, fid core.FileID, off int64, payload []byte, tag core.ShareTag, version uint64) format.RecordHeader {
 	t.Helper()
 
 	h, body := streamWriteHeader(fid, off, payload, tag, core.Version{Counter: version})
@@ -215,12 +218,12 @@ func mustWrite(t *testing.T, e streamEnv, fid core.FileID, off int64, payload []
 	return got
 }
 
-// mustBody returns a payload of n bytes the writer can use.
-func mustBody(t *testing.T, n int) []byte {
-	t.Helper()
+// streamTestBody returns a payload of n bytes, each a function of its index
+// and the seed, so two records never hold the same bytes.
+func streamTestBody(n int, seed byte) []byte {
 	payload := make([]byte, n)
 	for i := range payload {
-		payload[i] = byte(i)
+		payload[i] = byte(i) ^ seed
 	}
 	return payload
 }
@@ -378,14 +381,13 @@ func TestStreamSixteenConcurrentAppendsCoverTheSegment(t *testing.T) {
 func TestStreamAStraddlingWriteIsSplitAtTheCap(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	// A cap the first record nearly fills: one record of 2048 payload
+	// A cap the first record nearly fills: one record of 1024 payload
 	// bytes, then a straddling write.
 	e := streamOver(t, 4096, func(streamEnv) {}).built(t)
 	defer func() { _ = e.s.Close() }()
 
 	payload1 := make([]byte, 1024)
-	h1, b1 := mustHeader(streamFileID(1), 0, payload1)
-	_ = h1
+	h1, b1 := streamWriteHeaderPair(streamFileID(1), 0, payload1)
 	p1 := streamAppendWrite(t, e, h1, b1)
 	if p1.N != int64(len(payload1)) {
 		t.Fatalf("the first record placed %d bytes, want the whole %d", p1.N, len(payload1))
@@ -456,8 +458,8 @@ func TestStreamAStraddlingWriteIsSplitAtTheCap(t *testing.T) {
 	}
 }
 
-// mustHeader returns the write header and body of payload in one step.
-func mustHeader(fid core.FileID, off int64, payload []byte) (format.RecordHeader, format.RecordBody) {
+// streamWriteHeaderPair returns one write's header and body for payload.
+func streamWriteHeaderPair(fid core.FileID, off int64, payload []byte) (format.RecordHeader, format.RecordBody) {
 	return streamWriteHeader(fid, off, payload, 7, core.Version{Counter: 1})
 }
 
@@ -490,8 +492,7 @@ func TestStreamARecordThatExactlyFillsTheRoomIsOnePiece(t *testing.T) {
 	if p.Loc.Len != recordSize {
 		t.Fatalf("the record's size is %d, want the whole %d", p.Loc.Len, recordSize)
 	}
-	if got, b := streamReadRecord(t, e, p.Loc); !bytes.Equal(b.Payload, payload) {
-		_ = got
+	if _, b := streamReadRecord(t, e, p.Loc); !bytes.Equal(b.Payload, payload) {
 		t.Fatal("the exactly-filling record does not read back byte for byte")
 	}
 
@@ -602,14 +603,25 @@ func TestStreamTheLocationIsReturnedOnlyAfterTheBytesAreWritten(t *testing.T) {
 	e.cacheBuilt(t)
 	defer func() { _ = e.s.Close() }() // before the cache's Shutdown: the stream holds a ref
 
-	// Park the take's header write: the first OpWrite on the segment name
-	// is the header, so the parked append is one that has not landed at all.
+	// Warm the stream first: the take's header and one landed record, so the
+	// parked write below is a record's, with a reservation ahead of it and a
+	// share charge behind it.
+	warm := streamTestBody(64, 0x5a)
+	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
+	warmPlaced := streamAppendWrite(t, e, wh, wbody)
+	warmCharge := warmPlaced.Loc.Len
+	if got := e.set.ShareBytes(7); got != warmCharge {
+		t.Fatalf("the share holds %d bytes after the warm record, want its %d alone", got, warmCharge)
+	}
+
+	// Park the next record's write: one append is now between its
+	// reservation and its bytes.
 	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
 	appended := make(chan segment.Placed, 1)
 	appErr := make(chan error, 1)
 	go func() {
-		payload := make([]byte, 64)
-		hh, body := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 1})
+		payload := streamTestBody(64, 0xc3)
+		hh, body := streamWriteHeader(streamFileID(2), 64, payload, 7, core.Version{Counter: 2})
 		p, err := e.s.Append(hh, body)
 		appended <- p
 		appErr <- err
@@ -622,13 +634,13 @@ func TestStreamTheLocationIsReturnedOnlyAfterTheBytesAreWritten(t *testing.T) {
 
 	select {
 	case p := <-appended:
-		t.Fatalf("the append returned %v while its record write was parked, want it held", p.Loc)
+		t.Fatalf("the append returned %v while its record write was parked, want it held: the location is published only once the bytes are written", p.Loc)
 	case err := <-appErr:
 		t.Fatalf("the append returned %v while its record write was parked", err)
 	default:
 	}
-	if got := e.set.ShareBytes(7); got != 0 {
-		t.Fatalf("the share holds %d bytes while the record write is parked, want 0: the bytes are charged only once written", got)
+	if got := e.set.ShareBytes(7); got != warmCharge {
+		t.Fatalf("the share holds %d bytes while the parked record is unwritten, want the warm record's %d alone: the bytes are charged only once written", got, warmCharge)
 	}
 	// The footprint holds the segment alone, the take's cap.
 	if c := e.set.Counters(); c.UsedBytes != streamCap {
@@ -636,19 +648,21 @@ func TestStreamTheLocationIsReturnedOnlyAfterTheBytesAreWritten(t *testing.T) {
 	}
 
 	h.Release()
+	var parked segment.Placed
 	select {
 	case p := <-appended:
 		if p.Loc.Off == 0 {
 			t.Fatal("the released append placed its record at offset 0, want a record slot")
 		}
+		parked = p
 	case <-time.After(10 * time.Second):
 		t.Fatal("the append did not return after the hold was released")
 	}
 	if err := <-appErr; err != nil {
 		t.Fatalf("the released append failed: %v", err)
 	}
-	if got := e.set.ShareBytes(7); got == 0 {
-		t.Fatal("the share holds nothing after the append returned, want the record charged")
+	if got := e.set.ShareBytes(7); got != warmCharge+parked.Loc.Len {
+		t.Fatalf("the share holds %d bytes after the append returned, want the warm %d plus the parked record's %d", got, warmCharge, parked.Loc.Len)
 	}
 }
 
@@ -779,6 +793,15 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 	if err := e.set.Check(); err != nil {
 		t.Fatalf("the ledger after the failed take: %v", err)
 	}
+	// The failed segment is Ended in the ledger — not Active, which the
+	// counters alone cannot tell: a further record charge on it is
+	// refused, and its retire runs.
+	if err := e.set.AddRecord(1, 7, 8); !errors.Is(err, segment.ErrWrongState) {
+		t.Fatalf("charging a record to the failed take's segment = %v, want ErrWrongState: the segment must be Ended, never Active", err)
+	}
+	if freed, err := e.set.Retire(1); freed != streamCap || err != nil {
+		t.Fatalf("retiring the failed take's segment freed %d, %v, want its cap %d, nil: only a non-Active segment retires", freed, err, streamCap)
+	}
 
 	// The next append retries the take: a fresh segment with a higher id.
 	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(1), 0, syscall.EIO)); err != nil {
@@ -789,9 +812,11 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 	if p.Loc.Segment != 2 {
 		t.Fatalf("the retry landed in segment %d, want a fresh id above the failed take's 1", p.Loc.Segment)
 	}
+	// The retire above took the failed segment out, so the footprint after
+	// the retry holds the new segment's cap alone.
 	c2 := e.set.Counters()
-	if c2.UsedBytes != 2*streamCap {
-		t.Fatalf("the footprint after the retry is %d, want both caps %d", c2.UsedBytes, 2*streamCap)
+	if c2.UsedBytes != streamCap {
+		t.Fatalf("the footprint after the retire and the retry is %d, want the new segment's cap %d", c2.UsedBytes, streamCap)
 	}
 }
 
@@ -1028,7 +1053,7 @@ func TestStreamCloseWaitsOutAnInFlightSync(t *testing.T) {
 
 	// Park the stream's fsync: the descriptor is clean, so a close of it now
 	// is an eviction the seam would show.
-	h := e.seam.HoldFirst(t, journalv2test.OpSync, seg)
+	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
 	select {
@@ -1072,75 +1097,6 @@ func TestStreamCloseWaitsOutAnInFlightSync(t *testing.T) {
 	}
 }
 
-// TestStreamCloseRacingAppendsDoesNotPanicOnTheWaitGroup checks the counting
-// rule Close and the appends share: every in-flight Add happens under the
-// same lock Close sets closed under, so the group is never reused while Close
-// waits on it. Appenders keep arriving while the Close runs — the shape the
-// panic needs — and the run must end with the appenders answered, not with
-// the WaitGroup's reuse panic.
-func TestStreamCloseRacingAppendsDoesNotPanicOnTheWaitGroup(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
-
-	// The reuse window the panic needs is an Add landing while the previous
-	// Wait is still returning, so the rounds restart the appender before
-	// every close rather than settling once.
-	// the round's close runs, so the appender gate is opened fresh before
-	// every close and shut after it. The reuse window the panic needs is an
-	// Add landing while the previous Wait is still returning, so the loop
-	// must keep appending between closes rather than settle once.
-	stop := make(chan struct{})
-	var appends sync.WaitGroup
-	appendRound := func() {
-		appends.Add(1)
-		go func() {
-			defer appends.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				h, body := mustRefusalPair()
-				if _, err := e.s.Append(h, body); err != nil {
-					return // the close reached us: ErrStreamClosed or a fault
-				}
-			}
-		}()
-	}
-
-	// Iterating the race widens the one-shot window the reuse needs into a
-	// window the test owns: a fresh appender before every close, so appends
-	// keep arriving as each Wait returns.
-	for round := 0; round < 20; round++ {
-		appendRound()
-		time.Sleep(time.Duration(round+1) * 100 * time.Microsecond)
-		if err := e.s.Close(); err != nil {
-			t.Errorf("close round %d under racing appends = %v, want nil", round, err)
-		}
-		// A closed stream answers with the refusal.
-		if _, err := e.s.Append(mustRefusalHeader(), format.RecordBody{Payload: make([]byte, 32)}); !errors.Is(err, segment.ErrStreamClosed) {
-			t.Errorf("an append after close round %d = %v, want ErrStreamClosed", round, err)
-		}
-	}
-	close(stop)
-	appends.Wait()
-}
-
-// mustRefusalPair returns one small write's header and body for a round's
-// raced append.
-func mustRefusalPair() (format.RecordHeader, format.RecordBody) {
-	return streamWriteHeader(streamFileID(1), 0, make([]byte, 32), 7, core.Version{Counter: 1})
-}
-
-// mustRefusalHeader returns the same write's header alone, for the refusal
-// the closed stream must answer.
-func mustRefusalHeader() format.RecordHeader {
-	h, _ := mustRefusalPair()
-	return h
-}
-
 // TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic checks the
 // counting rule under the densest shape the reuse needs: one fresh stream per
 // round, eight appenders looping from the first moment, and the Close landing
@@ -1153,7 +1109,7 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 	const rounds = 100
 	payload := make([]byte, 32)
 	for round := 0; round < rounds; round++ {
-		seam, err := journalv2test.NewSeam(t.TempDir())
+		seam, err := journaltest.NewSeam(t.TempDir())
 		if err != nil {
 			t.Fatalf("round %d: the seam could not be made: %v", round, err)
 		}
@@ -1241,7 +1197,7 @@ func TestStreamNoSeamCallUnderTheAppendLock(t *testing.T) {
 	// The first Append drives the take and the header write; the next three
 	// records, then a Sync and a ReadAt, drive everything else.
 	for i := range 3 {
-		payload := mustBody(t, 64)
+		payload := streamTestBody(64, 0x3c)
 		h, body := streamWriteHeader(streamFileID(i+1), int64(i)*64, payload, 7, core.Version{Counter: uint64(i + 1)})
 		if _, err := e.s.Append(h, body); err != nil {
 			t.Fatalf("append %d under the lock fault: %v", i+1, err)
@@ -1286,7 +1242,7 @@ func TestStreamASplitPieceTakesTheWholeRoom(t *testing.T) {
 		{6000, format.KindWrite},
 		{8192, format.KindWrite},
 		{4096, format.KindFill},
-		{4096, format.KindFill},
+		{6000, format.KindFill},
 	} {
 		overhead := int64(format.RecordHeaderSize)
 		if tc.kind == format.KindWrite {
@@ -1344,29 +1300,29 @@ func TestStreamASplitPieceTakesTheWholeRoom(t *testing.T) {
 			// appending one more payload byte than the piece placed is
 			// refused before any write, which pins the largest-fitting
 			// piece from the other side.
-			writes := e.seam.CallsFor(journalv2test.OpWrite, streamSegName(e.sActiveID(t)))
-			oneMore := make([]byte, p.N+8)
+			writes := e.seam.CallsFor(journaltest.OpWrite, streamSegName(e.streamActiveID(t)))
+			oneMore := make([]byte, p.N+1)
 			h2 := format.RecordHeader{
 				Kind:    tc.kind,
 				File:    streamFileID(3),
-				Extent:  core.Extent{Off: 4096, Len: p.N + 8},
+				Extent:  core.Extent{Off: 4096, Len: p.N + 1},
 				Version: core.Version{Counter: 10},
 				Tag:     7,
 			}
 			if _, err := e.s.Append(h2, format.RecordBody{Payload: oneMore}); !errors.Is(err, segment.ErrSegmentFull) {
 				t.Fatalf("an append of %d payload bytes after the piece of %d = %v, want ErrSegmentFull: the piece was not the largest that fits",
-					p.N+8, p.N, err)
+					p.N+1, p.N, err)
 			}
-			if got := e.seam.CallsFor(journalv2test.OpWrite, streamSegName(e.sActiveID(t))); got != writes {
+			if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(e.streamActiveID(t))); got != writes {
 				t.Fatalf("the refusal made %d more writes, want none: the refusal happens before any write", got-writes)
 			}
 		})
 	}
 }
 
-// sActiveID returns the id of the segment the stream is appending to, from
-// the directory: the highest id whose header decodes.
-func (e streamEnv) sActiveID(t *testing.T) core.SegmentID {
+// streamActiveID returns the id of the segment the stream is appending to,
+// from the directory: the highest id whose header decodes.
+func (e streamEnv) streamActiveID(t *testing.T) core.SegmentID {
 	t.Helper()
 
 	names, err := e.seam.List()
@@ -1380,4 +1336,310 @@ func (e streamEnv) sActiveID(t *testing.T) core.SegmentID {
 		}
 	}
 	return top
+}
+
+// TestStreamTheSyncedThroughISReadBeforeTheFsync checks R10 at the stream
+// level: the value a Sync records — and so the value the records after it
+// carry — is the completed prefix the Sync found before its fsync started.
+// Record B completes while the fsync is parked, so it must not be counted:
+// record C, appended after the sync returned, carries a synced-through at or
+// below B's own offset. It catches a Sync that records what the tracker holds
+// after the fsync returns, which would claim durability for bytes no fsync
+// reached.
+func TestStreamTheSyncedThroughISReadBeforeTheFsync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	// Record A lands and is synced.
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	aPlaced := streamAppendWrite(t, e, ah, abody)
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the first Sync: %v", err)
+	}
+
+	// The fsync parks: while it waits, record B lands — after the sync
+	// started, so no value this sync records may count it.
+	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- e.s.Sync() }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fsync never reached the hold")
+	}
+
+	bPayload := streamTestBody(64, 0x55)
+	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
+	bPlaced := streamAppendWrite(t, e, bh, bbody)
+
+	h.Release()
+	select {
+	case err := <-syncErr:
+		if err != nil {
+			t.Fatalf("the parked Sync failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked Sync did not return")
+	}
+
+	// Record C, appended after the sync returned, carries the value that
+	// sync recorded: at or below B's own offset — never B's end, which the
+	// in-flight-at-sync-start record B would have given a Sync that counts
+	// what the tracker holds after the fsync.
+	cPayload := streamTestBody(64, 0x7d)
+	ch, cbody := streamWriteHeader(streamFileID(3), 128, cPayload, 7, core.Version{Counter: 3})
+	cPlaced := streamAppendWrite(t, e, ch, cbody)
+	got, _ := streamReadRecord(t, e, cPlaced.Loc)
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the closing Sync: %v", err)
+	}
+	if got.SyncedThrough > bPlaced.Loc.Off {
+		t.Fatalf("record C carries SyncedThrough %d, want at most record B's own offset %d: the sync counted a record that landed while its fsync ran", got.SyncedThrough, bPlaced.Loc.Off)
+	}
+	_ = aPlaced
+}
+
+// TestStreamAFailedSyncStopsTheValuedSyncCovers checks the failed-window half
+// of R10: a Sync that fails with the platform's error records nothing, and no
+// later successful sync of the same segment may claim the failed window's
+// bytes — RFC 1 §5.3: a second sync can succeed without having written what
+// the first lost. The next record after the failed sync, and the one after a
+// second, successful sync, both carry a synced-through at or below the failed
+// window's first record. It catches a Sync that records the prefix after a
+// failed one, silently claiming durability for bytes no fsync made durable.
+func TestStreamAFailedSyncStopsTheValuedSyncCovers(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	// Record A lands and its sync succeeds, so the stream has a value worth
+	// reading.
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	a := streamAppendWrite(t, e, ah, abody)
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the first Sync: %v", err)
+	}
+
+	// Record B lands; the window [B..] is the failed window. The fault
+	// takes the very next sync of the segment.
+	bPayload := streamTestBody(64, 0x55)
+	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
+	b := streamAppendWrite(t, e, bh, bbody)
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the faulted Sync = %v, want the EIO", err)
+	}
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the sync fault: %v", err)
+	}
+
+	// After the failure, a successful sync covers the failed window too —
+	// but it may not claim it: the bytes the failed fsync left are durable
+	// only when a later window of the durability layer's says so, and the
+	// records after the failure carry the value below the failed window's
+	// start.
+	cPayload := streamTestBody(64, 0x7d)
+	ch, cbody := streamWriteHeader(streamFileID(3), 128, cPayload, 7, core.Version{Counter: 3})
+	c := streamAppendWrite(t, e, ch, cbody)
+	cHeader, _ := streamReadRecord(t, e, c.Loc)
+	if cHeader.SyncedThrough > b.Loc.Off {
+		t.Fatalf("the record after the failed sync carries SyncedThrough %d, want at most the failed window's start %d", cHeader.SyncedThrough, b.Loc.Off)
+	}
+
+	// A second, successful sync does not lift the value past the failed
+	// window either.
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the second Sync: %v", err)
+	}
+	dPayload := streamTestBody(64, 0x13)
+	dh, dbody := streamWriteHeader(streamFileID(4), 192, dPayload, 7, core.Version{Counter: 4})
+	d := streamAppendWrite(t, e, dh, dbody)
+	dHeader, _ := streamReadRecord(t, e, d.Loc)
+	if dHeader.SyncedThrough > b.Loc.Off {
+		t.Fatalf("the record after a sync that followed the failure carries SyncedThrough %d, want it still at or below the failed window's start %d", dHeader.SyncedThrough, b.Loc.Off)
+	}
+	_ = a
+}
+
+// streamShortFS wraps a filesystem's files so the first WriteAt of a given
+// name returns len(p)-8 with a nil error — a platform that lands almost all
+// of a write and still reports success, which the stream must count as a
+// failure. Everything else passes through.
+type streamShortFS struct {
+	storage.FS
+	name  string
+	armed atomic.Bool
+}
+
+type streamShortFile struct {
+	storage.File
+	fs *streamShortFS
+}
+
+func (f *streamShortFile) WriteAt(p []byte, off int64) (int, error) {
+	if f.fs.armed.CompareAndSwap(true, false) && f.Name() == f.fs.name {
+		return len(p) - 8, nil
+	}
+	return f.File.WriteAt(p, off)
+}
+
+func (fs *streamShortFS) Open(name string) (storage.File, error) {
+	f, err := fs.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &streamShortFile{File: f, fs: fs}, nil
+}
+
+// TestStreamAShortWriteCountsAsAFailure checks that a WriteAt that lands all
+// but 8 bytes and reports nil is treated as the failure it is: the Append
+// returns io.ErrShortWrite and no location, its slot's bytes are never
+// counted as synced — the records after it carry a synced-through at or below
+// the short slot's offset — and the share is not charged for it.
+func TestStreamAShortWriteCountsAsAFailure(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	streamFS := &streamShortFS{FS: newSeam(t).FS(), name: seg}
+	e := streamOverFS(t, streamCap, streamFS, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	// One record lands whole and is synced, so the stream has a value.
+	aPayload := streamTestBody(64, 0x42)
+	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
+	a := streamAppendWrite(t, e, ah, abody)
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the first Sync: %v", err)
+	}
+
+	// The next record's write lands short with a nil error.
+	streamFS.armed.Store(true)
+	bPayload := streamTestBody(64, 0x55)
+	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
+	_, err := e.s.Append(bh, bbody)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("the short Append = %v, want io.ErrShortWrite: a write that lands short with a nil error is a failure", err)
+	}
+
+	// The share was not charged for the failed record.
+	if got := e.set.ShareBytes(7); got != a.Loc.Len {
+		t.Fatalf("the share holds %d bytes after the short write, want the landed record's %d alone", got, a.Loc.Len)
+	}
+
+	// The record after the short one carries a synced-through at or below
+	// the short slot's own offset, even past a Sync in between.
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the Sync after the short write: %v", err)
+	}
+	cPayload := streamTestBody(64, 0x7d)
+	ch, cbody := streamWriteHeader(streamFileID(3), 192, cPayload, 7, core.Version{Counter: 3})
+	c := streamAppendWrite(t, e, ch, cbody)
+	cHeader, _ := streamReadRecord(t, e, c.Loc)
+	if cHeader.SyncedThrough > a.Loc.Off+a.Loc.Len {
+		t.Fatalf("the record after the short write carries SyncedThrough %d, want at most the failed slot's offset %d", cHeader.SyncedThrough, a.Loc.Off+a.Loc.Len)
+	}
+	_ = bh
+}
+
+// streamOverFS builds a stream over an explicit filesystem — a wrapper around
+// the seam the checks here need — with the same ledger and cache shape
+// streamOver builds.
+func streamOverFS(t *testing.T, cap int64, fsys storage.FS, setup func(e streamEnv)) streamEnv {
+	t.Helper()
+
+	set := segment.NewSet(cap, nil)
+	maker := segment.NewMaker(fsys, set, streamMax, 0, nil)
+	budget := core.NewDescriptorBudget(64)
+	cache := segment.NewDescriptors(fsys, format.SegmentName, budget)
+
+	e := streamEnv{set: set, maker: maker, cache: cache, budget: budget}
+	setup(e)
+	e.s = segment.NewStream(1, streamIdentity, set, maker, cache)
+	return e
+}
+
+// TestStreamAppendRefusesRecordsItCannotEncode checks the caller bugs the
+// format would panic on mid-append: an unknown kind, a payload on a kind
+// that carries none, a length that differs from the bytes given, and a
+// negative file offset. Each is refused with ErrBadRecord before the lock,
+// leaving the stream exactly as it was: the next good append works, lands at
+// its own place and syncs, so no slot was strandable and no position moved.
+func TestStreamAppendRefusesRecordsItCannotEncode(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+	defer func() { _ = e.s.Close() }()
+
+	// Warm the stream so a refusal can be told from the first-take path.
+	warm := streamTestBody(64, 0x5a)
+	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
+	warmPlaced := streamAppendWrite(t, e, wh, wbody)
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the warm Sync: %v", err)
+	}
+
+	// Every refusal names ErrBadRecord and changes nothing.
+	writes := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1))
+	share := e.set.ShareBytes(7)
+
+	payload := streamTestBody(64, 0x3c)
+	bad := []struct {
+		name string
+		h    format.RecordHeader
+		body format.RecordBody
+	}{
+		{
+			name: "an unknown kind",
+			h:    format.RecordHeader{Kind: format.Kind(0x63), File: streamFileID(9), Tag: 7},
+		},
+		{
+			name: "a payload on a kind that carries none",
+			h:    format.RecordHeader{Kind: format.KindStamp, File: streamFileID(9), Tag: 7},
+			body: format.RecordBody{Payload: payload, Cut: 4},
+		},
+		{
+			name: "a length that differs from the bytes",
+			h: format.RecordHeader{Kind: format.KindWrite, File: streamFileID(9),
+				Extent: core.Extent{Off: 0, Len: 32}, Version: core.Version{Counter: 2}, Tag: 7},
+			body: format.RecordBody{Payload: payload},
+		},
+		{
+			name: "a negative file offset",
+			h: format.RecordHeader{Kind: format.KindWrite, File: streamFileID(9),
+				Extent: core.Extent{Off: -1, Len: 64}, Version: core.Version{Counter: 3}, Tag: 7},
+			body: format.RecordBody{Payload: payload},
+		},
+	}
+	for _, tc := range bad {
+		if _, err := e.s.Append(tc.h, tc.body); !errors.Is(err, segment.ErrBadRecord) {
+			t.Fatalf("%s: Append = %v, want ErrBadRecord", tc.name, err)
+		}
+		if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1)); got != writes {
+			t.Fatalf("%s made a seam write, want the refusal to perform none", tc.name)
+		}
+		if got := e.set.ShareBytes(7); got != share {
+			t.Fatalf("%s moved the share bytes to %d, want the warm record's %d", tc.name, got, share)
+		}
+	}
+
+	// The stream still works: the next good append lands past the warm
+	// record and syncs.
+	good := streamTestBody(64, 0x81)
+	gh, gbody := streamWriteHeader(streamFileID(2), 64, good, 7, core.Version{Counter: 9})
+	p := streamAppendWrite(t, e, gh, gbody)
+	if p.Loc.Off != warmPlaced.Loc.Off+warmPlaced.Loc.Len {
+		t.Fatalf("the append after the refusals landed at %d, want the warm record's end %d: a refusal moved the position", p.Loc.Off, warmPlaced.Loc.Off+warmPlaced.Loc.Len)
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("the Sync after the refusals: %v", err)
+	}
 }

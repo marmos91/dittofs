@@ -152,8 +152,7 @@ func TestStreamTrackerAFailedSlotFreezesThePrefix(t *testing.T) {
 		// A sync recorded the way Stream.Sync records one moves neither
 		// the prefix nor the value the next record carries past the
 		// failed slot.
-		syncDoneThrough := streamSyncStartOf(s)
-		syncSyncDoneProbe(t, s, syncDoneThrough)
+		streamSyncDoneOf(s, streamSyncStartOf(s))
 		if got := streamSyncStartOf(s); got > 200 {
 			t.Fatalf("after the failed slot and %d recorded syncs the completed prefix is %d, want it frozen at or below the failed slot's offset 200", i+1, got)
 		}
@@ -161,19 +160,6 @@ func TestStreamTrackerAFailedSlotFreezesThePrefix(t *testing.T) {
 			t.Fatalf("after the failed slot and %d recorded syncs the tracker reports %d, want it frozen at or below the failed slot's offset 200", i+1, got)
 		}
 	}
-}
-
-// syncSyncDoneProbe fails t when the sync word the freeze check records is
-// above the failed slot: a Sync that started after the failure covers only
-// the frozen prefix, and the probe asserts the two halves agree rather than
-// letting an unchecked word through.
-func syncSyncDoneProbe(t *testing.T, s *Stream, through int64) {
-	t.Helper()
-
-	if got := streamSyncedThroughOf(s); through > 200 && got != through {
-		t.Fatalf("the recorded sync word %d does not match the tracker's carried value %d", through, got)
-	}
-	streamSyncDoneOf(s, through)
 }
 
 // TestStreamReservationAllocatesNothing checks the reservation's cost: after

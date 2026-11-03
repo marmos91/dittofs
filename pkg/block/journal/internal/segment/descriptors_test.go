@@ -2506,8 +2506,17 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 
 	opens := e.seam.Calls(journalv2test.OpOpen)
 	start := time.Now()
-	if _, err := e.c.Acquire(3); !errors.Is(err, segment.ErrNoDescriptor) {
-		t.Fatalf("acquiring segment 3 with every slot dirty = %v, want ErrNoDescriptor", err)
+	r3, err := e.c.Acquire(3)
+	if err != nil {
+		if !errors.Is(err, segment.ErrNoDescriptor) {
+			t.Fatalf("acquiring segment 3 with every slot dirty = %v, want ErrNoDescriptor", err)
+		}
+	} else {
+		// The acquire succeeded where it must not: release it before the
+		// failure is reported, or the cleanup's Shutdown waits on it
+		// forever and the refusal the test exists to raise never surfaces.
+		r3.Release()
+		t.Fatal("acquiring segment 3 with every slot dirty succeeded, want ErrNoDescriptor")
 	}
 	if past := time.Since(start); past > time.Second {
 		t.Fatalf("the refusal took %v, want it at once: a dirty slot is not a queue to wait in", past)
