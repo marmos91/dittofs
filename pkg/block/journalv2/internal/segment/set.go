@@ -13,6 +13,13 @@
 // set, and only in the call that found it there. A spare's leave by
 // DropSpare. A later call of any of these kinds is refused, counted as a
 // double retire and logged at Warn.
+//
+// The package also makes spares (Maker, make.go): a whole segment at the
+// cap, zeroed end to end and durable under its final name, its reservation
+// taken against the journal's maximum before any storage is touched and —
+// on every failure — unlinked before it is given back, or held in the set,
+// End-ed at its cap, for a retirement to unlink. Ids are drawn above every
+// name the directory holds, and a failed drawing is never reused.
 package segment
 
 import (

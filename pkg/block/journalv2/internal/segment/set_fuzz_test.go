@@ -542,8 +542,8 @@ var corpus = []seed{
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 0, 0},
 	{"add a spare past the maximum", slices.Concat(
-		op6(opAddSpare, 1, 0, 0, 4, 0),  // no maximum: the first spare passes
-		op6(opAddSpare, 2, 0, 0, 4, 1),  // maximum one cap: refused, the footprint holds one
+		op6(opAddSpare, 1, 0, 0, 4, 0), // no maximum: the first spare passes
+		op6(opAddSpare, 2, 0, 0, 4, 1), // maximum one cap: refused, the footprint holds one
 		op6(opAddSpare, 3, 0, 0, 4, 1), // and again, still one cap missing
 	), 0, 0, 0, 0, 0},
 	{"add a spare at exactly the maximum", slices.Concat(
