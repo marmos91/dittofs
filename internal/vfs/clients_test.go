@@ -214,7 +214,6 @@ func TestABreakPrefersTheSessionHoldingTheOpen(t *testing.T) {
 // holding nothing is released in open state, and its Callbacks go with it.
 func TestLastDisconnectDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx, as := t.Context(), signedIn(alice.Principal, 1)
 	pc := &vfstest.RecordingCallbacks{}
@@ -265,7 +264,6 @@ func TestLastDisconnectDropsOnlyAReleasedClientsCallbacks(t *testing.T) {
 // and releases it.
 func TestALastDisconnectAtAStaleGenAnswersTheNewer(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx, as := t.Context(), signedIn(alice.Principal, 1)
 	id, first, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
@@ -296,7 +294,6 @@ func TestALastDisconnectAtAStaleGenAnswersTheNewer(t *testing.T) {
 // with Last and that Gen, which unlists the node.
 func TestARelistAfterTheLastDisconnectIsUnlistedByItsOwnGen(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx, as := t.Context(), signedIn(alice.Principal, 1)
 	id, first, err := s.Connect(ctx, as, smb("alice-pc", 1), &vfstest.RecordingCallbacks{})
@@ -381,7 +378,6 @@ func TestAnSMBBreakOfDisconnectedOpensGoesOnlyToAnOpenersSession(t *testing.T) {
 // now, and with no other session of the opener the break is sent nowhere.
 func TestABreakSkipsASessionReauthenticatedAsGuest(t *testing.T) {
 	s := newShares(t, nil, nil)
-	beginShard(t, s)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	pc := &vfstest.RecordingCallbacks{}

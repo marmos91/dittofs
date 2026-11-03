@@ -473,8 +473,8 @@ func TestALogoffRunsADeleteOnClose(t *testing.T) {
 	ctx := t.Context()
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
 	c.Session = vfs.SessionRef{ID: 1}
-	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
-	req.DeleteOnClose = true
+	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
 	r, err := n.Open(ctx, c, req)
 	n.must(t, err)
 	n.stored(t, r.File.ID)
@@ -1340,7 +1340,9 @@ func TestABackupOpensMaximalAccessIsUnprivileged(t *testing.T) {
 	if err != nil || r.MaximalAccess&entity.ReadData != 0 {
 		t.Fatalf("a backup-intent open of a file denying everyone: %v, %v; want granted, its maximal access without read data", r.MaximalAccess, err)
 	}
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	if _, err := n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}); err != nil {
+		t.Fatal(err)
+	}
 	pc.Session = vfs.SessionRef{ID: 2}
 	ref := r.Ref
 	back, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &ref, CreateID: [16]byte{1}})
@@ -1681,7 +1683,9 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("disk")); err != nil {
 		t.Fatal(err)
 	}
-	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	if _, err := n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{}); err != nil {
+		t.Fatal(err)
+	}
 	if !n.held(f.ID) {
 		t.Fatal("released while its durable open waits for a reconnect")
 	}

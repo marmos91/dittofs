@@ -601,7 +601,7 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, g, entity.Attrs{}.WithGroup(staff.Principal))
 	s.must(t, err)
 	at := time.Unix(1_900_000_000, 0)
-	id, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
+	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
 	s.must(t, err)
 	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask) *openstate.OpenRef {
 		t.Helper()
