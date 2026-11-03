@@ -79,6 +79,17 @@ func (ws *watchers) drop(c entity.ClientID, share entity.ShareID) {
 	}
 }
 
+// dropShard ends client c's watches held in shard s.
+func (ws *watchers) dropShard(c entity.ClientID, s openstate.ShardID) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	for id, h := range ws.set {
+		if h.client == c && id.Shard == s {
+			delete(ws.set, id)
+		}
+	}
+}
+
 // Watch sets a watch of w.Dir for the call's client: of its entries'
 // changes that w.Filter names, and with w.Recursive of those below it too.
 // The caller must be granted listing the directory.

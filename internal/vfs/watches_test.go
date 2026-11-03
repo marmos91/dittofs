@@ -116,7 +116,8 @@ func TestAWatchHearsWhatItsHolderMayTraverse(t *testing.T) {
 
 // A watch ended by its share's removal, or its client's revocation,
 // delivers nothing open state raised for it beside its end; one whose
-// client lost a single grant, or a share it is not on, keeps delivering.
+// client lost a single grant, or a share or a shard it is not on, keeps
+// delivering.
 func TestAnEndedWatchDeliversNothing(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -124,25 +125,31 @@ func TestAnEndedWatchDeliversNothing(t *testing.T) {
 	ch := []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("f")}}
 	for _, end := range []struct {
 		name      string
-		end       func()
+		end       func(w vfs.WatchID)
 		delivered bool
 	}{
-		{"a grant revoked", func() {
+		{"a grant revoked", func(vfs.WatchID) {
 			s.Revoked(vfs.Revocation{Client: alice.Client, Reason: openstate.RevokedGrant})
 		}, true},
-		{"the share removed", func() {
+		{"the share removed", func(vfs.WatchID) {
 			s.Revoked(vfs.Revocation{Client: alice.Client, Share: s.share, Reason: openstate.RevokedShare})
 		}, false},
-		{"another share removed", func() {
+		{"another share removed", func(vfs.WatchID) {
 			s.Revoked(vfs.Revocation{Client: alice.Client, Share: entity.NewShareID(), Reason: openstate.RevokedShare})
 		}, true},
-		{"the client revoked", func() {
+		{"its shard's state lost", func(w vfs.WatchID) {
+			s.Revoked(vfs.Revocation{Client: alice.Client, Shard: w.Shard, Reason: openstate.RevokedShardState})
+		}, false},
+		{"another shard's state lost", func(w vfs.WatchID) {
+			s.Revoked(vfs.Revocation{Client: alice.Client, Shard: w.Shard + 1, Reason: openstate.RevokedShardState})
+		}, true},
+		{"the client revoked", func(vfs.WatchID) {
 			s.Revoked(vfs.Revocation{Client: alice.Client, Reason: openstate.RevokedByAdmin})
 		}, false},
 	} {
 		w, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: openstate.ChangeAddEntry})
 		s.must(t, err)
-		end.end()
+		end.end(w)
 		before := len(changes(cb))
 		s.Notify(alice.Client, w, ch)
 		time.Sleep(50 * time.Millisecond)
@@ -341,5 +348,50 @@ func TestAWatchIsHeldByItsClientUntilItEnds(t *testing.T) {
 	s.ClientEnded(alice.Client, nil, openstate.RevokedLeaseExpired)
 	if _, ok := s.watchers.held(alice.Client, w); ok {
 		t.Error("a watch is still held once its client ended")
+	}
+}
+
+// A rename inside a subdirectory under a recursive watch is reported with
+// both names under the subdirectory's path.
+func TestANestedRenameIsReportedByItsPath(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	admin := proven(s.fs.Admin.Principal, inLab)
+	alice, cb := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	sub := s.mkdir(t, s.fs.Root, "sub", 0o755)
+	s.touch(t, sub, "a")
+	_, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Recursive: true, Filter: openstate.ChangeRename})
+	s.must(t, err)
+	_, err = s.Rename(ctx, admin, vfs.Target{H: sub}, []byte("a"), sub, []byte("b"), false)
+	s.must(t, err)
+	if got := notes(t, s.shares, cb, 1); len(got) != 1 || got[0] != "sub/a>sub/b" {
+		t.Errorf("the nested rename was reported %q, want sub/a>sub/b", got)
+	}
+}
+
+// An attribute change the store refuses and a failed deallocate are
+// reported to no watch: the next change heard is a later, committed one.
+func TestAFailedChangeIsReportedNowhere(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	alice, cb := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	s.touch(t, s.fs.Root, "f")
+	o := s.opener(t, alice, "f", entity.ReadData|entity.WriteData|entity.WriteNamedAttrs)
+	x := entity.Xattr{Name: []byte("user.k"), Value: []byte("v")}
+	_, err := s.SetXattr(ctx, alice, vfs.Target{H: o.Handle, Open: &o}, x, vfs.XattrEither)
+	s.must(t, err)
+	_, err = s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
+	s.must(t, err)
+	if _, err := s.SetXattr(ctx, alice, vfs.Target{H: o.Handle, Open: &o}, x, vfs.XattrCreate); err == nil {
+		t.Fatal("an xattr created over an existing one was accepted")
+	}
+	s.engine.deallocErr = errors.New("deallocate refused")
+	if _, err := s.Deallocate(ctx, alice, o, 0, 1); err == nil {
+		t.Fatal("a refused deallocate answered nil")
+	}
+	s.engine.deallocErr = nil
+	s.touch(t, s.fs.Root, "g")
+	if got := notes(t, s.shares, cb, 1); got[0] != "g" {
+		t.Errorf("heard %q first, want the later create of g", got)
 	}
 }

@@ -37,6 +37,8 @@ type fakeContent struct {
 	// writing and dealloc, when set, run as Write and Deallocate are
 	// called, before either stages anything.
 	writing, dealloc func(entity.FileID)
+	// deallocErr, when set, is every Deallocate's answer, staging nothing.
+	deallocErr error
 	// writeErr and commitErr, when set, are every Write's and every
 	// Commit's answer, staging and syncing nothing.
 	writeErr, commitErr error
@@ -228,6 +230,9 @@ func (c *fakeContent) staged(f entity.FileID) Overlay {
 func (c *fakeContent) Deallocate(ctx context.Context, share entity.ShareID, f entity.FileID, off, n int64) error {
 	if c.dealloc != nil {
 		c.dealloc(f)
+	}
+	if c.deallocErr != nil {
+		return c.deallocErr
 	}
 	if off < 0 || n < 0 {
 		return errNegative

@@ -206,13 +206,16 @@ func (fs *Filesystem) RecallAny(c entity.ClientID, keep int) {
 }
 
 // Revoked tells the client its state ended. The watches it ended stop
-// delivering at once: a share's on a removed share's revocation, none on a
-// single grant's, and every one of the client's on any other.
+// delivering at once: a share's on a removed share's revocation, a shard's
+// on its lost state's, none on a single grant's, and every one of the
+// client's on any other.
 func (fs *Filesystem) Revoked(r openstate.Revocation) {
 	switch r.Reason {
 	case openstate.RevokedGrant:
 	case openstate.RevokedShare:
 		fs.watchers.drop(r.Client, r.Share)
+	case openstate.RevokedShardState:
+		fs.watchers.dropShard(r.Client, r.Shard)
 	default:
 		fs.watchers.drop(r.Client, entity.ShareID{})
 	}
