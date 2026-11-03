@@ -1259,3 +1259,125 @@ func TestStreamNoSeamCallUnderTheAppendLock(t *testing.T) {
 		t.Fatal("a seam call was made while the stream's append lock was held: the segment append domain was held across I/O")
 	}
 }
+
+// TestStreamASplitPieceTakesTheWholeRoom checks the split's maximality (the
+// closed form of the record size): for a write and a fill, over several caps
+// and straddling payloads, the piece this Append places is the largest one
+// that fits before the seal's reserve — what remains past the stream's next
+// holds the reserve exactly, with at most the slot's padding left — and a
+// payload one byte more would have been refused. It catches a split that
+// undershoots by the padding or the body overhead, which the old byte-at-a-
+// time search could not do.
+func TestStreamASplitPieceTakesTheWholeRoom(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The warm record is one 64-byte write, so the straddling record meets a
+	// segment holding 48 bytes of header and 168 of it: a next of 216, one
+	// record counted. The payload of each case is the largest its room
+	// takes plus nine, so the whole record cannot fit and the piece is the
+	// room itself.
+	const warmNext = format.SegmentHeaderSize + 160 + 8
+	reserve2 := int64(format.SealMarkerSize) + 2*int64(format.CatalogEntrySize) + int64(format.TrailerSize)
+	for _, tc := range []struct {
+		cap  int64
+		kind format.Kind
+	}{
+		{4096, format.KindWrite},
+		{6000, format.KindWrite},
+		{8192, format.KindWrite},
+		{4096, format.KindFill},
+		{4096, format.KindFill},
+	} {
+		overhead := int64(format.RecordHeaderSize)
+		if tc.kind == format.KindWrite {
+			overhead += 8
+		}
+		payload := ((tc.cap - warmNext - reserve2) &^ 7) - overhead + 9
+		name := fmt.Sprintf("cap %d payload %d %s", tc.cap, payload, tc.kind)
+		t.Run(name, func(t *testing.T) {
+			e := streamOver(t, tc.cap, func(streamEnv) {}).built(t)
+			defer func() { _ = e.s.Close() }()
+
+			// One landed record warms the segment so the next straddles.
+			warm := make([]byte, 64)
+			wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
+			p1 := streamAppendWrite(t, e, wh, wbody)
+			if p1.N != int64(len(warm)) {
+				t.Fatalf("the warm record placed %d bytes, want the whole %d", p1.N, len(warm))
+			}
+
+			body := make([]byte, payload)
+			for i := range body {
+				body[i] = byte(0xa5 ^ i)
+			}
+			h := format.RecordHeader{
+				Kind:    tc.kind,
+				File:    streamFileID(2),
+				Extent:  core.Extent{Off: 4096, Len: payload},
+				Version: core.Version{Counter: 9},
+				Tag:     7,
+			}
+			p, err := e.s.Append(h, format.RecordBody{Payload: body})
+			if err != nil {
+				t.Fatalf("the straddling Append: %v", err)
+			}
+			if p.N == 0 || p.N >= payload {
+				t.Fatalf("the straddling Append placed %d bytes, want a piece in [1, %d)", p.N, payload)
+			}
+
+			// The maximality. After the piece, what remains past next holds
+			// exactly the seal's reserve — the piece left the 8-padded room
+			// with nothing more a record of its kind could take. The cap
+			// and the warm record are aligned on 8, so the reserve takes
+			// the rest with nothing left, not 8 bytes of slack: a piece
+			// undershot by the padding leaves 8 more than the reserve and
+			// one undershot by the body overhead, more still.
+			_, _, count, next := streamScanOf(t, e)
+			reserve := int64(format.SealMarkerSize) + count*int64(format.CatalogEntrySize) + int64(format.TrailerSize)
+			room := tc.cap - next
+			if room != reserve {
+				t.Fatalf("the piece of %d left %d bytes past next against a reserve of %d, want them equal: the split undershot the room",
+					p.N, room, reserve)
+			}
+
+			// The bytes past the one the piece places have nowhere to go:
+			// appending one more payload byte than the piece placed is
+			// refused before any write, which pins the largest-fitting
+			// piece from the other side.
+			writes := e.seam.CallsFor(journalv2test.OpWrite, streamSegName(e.sActiveID(t)))
+			oneMore := make([]byte, p.N+8)
+			h2 := format.RecordHeader{
+				Kind:    tc.kind,
+				File:    streamFileID(3),
+				Extent:  core.Extent{Off: 4096, Len: p.N + 8},
+				Version: core.Version{Counter: 10},
+				Tag:     7,
+			}
+			if _, err := e.s.Append(h2, format.RecordBody{Payload: oneMore}); !errors.Is(err, segment.ErrSegmentFull) {
+				t.Fatalf("an append of %d payload bytes after the piece of %d = %v, want ErrSegmentFull: the piece was not the largest that fits",
+					p.N+8, p.N, err)
+			}
+			if got := e.seam.CallsFor(journalv2test.OpWrite, streamSegName(e.sActiveID(t))); got != writes {
+				t.Fatalf("the refusal made %d more writes, want none: the refusal happens before any write", got-writes)
+			}
+		})
+	}
+}
+
+// sActiveID returns the id of the segment the stream is appending to, from
+// the directory: the highest id whose header decodes.
+func (e streamEnv) sActiveID(t *testing.T) core.SegmentID {
+	t.Helper()
+
+	names, err := e.seam.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var top core.SegmentID
+	for _, n := range names {
+		if kind, i := format.ClassifyName(n); kind == format.NameSegment && i > top {
+			top = i
+		}
+	}
+	return top
+}
