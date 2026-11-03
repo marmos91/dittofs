@@ -1082,3 +1082,95 @@ func TestNewSetPanicsOnABadCap(t *testing.T) {
 		}()
 	}
 }
+
+// TestAdoptSpareAccountsAtTheCapWithNoMaximumCheck: a spare the journal
+// finds at open is accounted at the segment cap and held by the ledger,
+// whatever the maximum the journal is configured with — the file already
+// exists, and every file the journal holds is accounted, so a maximum below
+// the footprint refuses only new spares (AddSpare), never one the directory
+// already holds. It catches an adoption that leaves storage unaccounted, and
+// one that lets a lowered maximum refuse a spare that is already on disk.
+func TestAdoptSpareAccountsAtTheCapWithNoMaximumCheck(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+
+	// The footprint already stands three caps above what a lowered maximum
+	// would allow: two spares adopted over a maximum of two and a half caps.
+	if err := s.AdoptSpare(core.SegmentID(1)); err != nil {
+		t.Fatalf("the first AdoptSpare: %v", err)
+	}
+	if err := s.AdoptSpare(core.SegmentID(2)); err != nil {
+		t.Fatalf("the second AdoptSpare: %v", err)
+	}
+	if err := s.AdoptSpare(core.SegmentID(3)); err != nil {
+		t.Fatalf("the third AdoptSpare, over a maximum it exceeds already: %v", err)
+	}
+
+	c := s.Counters()
+	if c.UsedBytes != 3*segCap {
+		t.Fatalf("after the adoptions the footprint is %d, want three caps %d", c.UsedBytes, 3*segCap)
+	}
+	if c.Spares != 3 {
+		t.Fatalf("after the adoptions the ledger holds %d spares, want 3", c.Spares)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the adoptions: %v", err)
+	}
+
+	// A lowered maximum refuses a spare the pool would make, never one the
+	// directory already holds.
+	if err := s.AddSpare(core.SegmentID(4), 2*segCap); err == nil {
+		t.Fatal("an AddSpare over the lowered maximum succeeded, want the journal limit's refusal")
+	}
+	if err := s.AdoptSpare(core.SegmentID(4)); err != nil {
+		t.Fatalf("the fourth AdoptSpare, over the same lowered maximum: %v", err)
+	}
+	if c := s.Counters(); c.UsedBytes != 4*segCap || c.Spares != 4 {
+		t.Fatalf("after the fourth adoption the counters are %+v, want four caps in four spares", c)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the fourth adoption: %v", err)
+	}
+}
+
+// TestAdoptSpareRefusals: the id that names no segment is refused and the id
+// the ledger already owns is refused, neither changing any counter — the
+// adoption validates its whole argument before it accounts anything, like
+// every operation of the ledger.
+func TestAdoptSpareRefusals(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	if err := s.AdoptSpare(core.SegmentID(1)); err != nil {
+		t.Fatalf("the first AdoptSpare: %v", err)
+	}
+	before := s.Counters()
+
+	if err := s.AdoptSpare(0); !errors.Is(err, ErrBadID) {
+		t.Fatalf("the adoption of the null id: %v, want ErrBadID", err)
+	}
+	if err := s.AddSpare(core.SegmentID(2), noMax); err != nil {
+		t.Fatalf("AddSpare 2: %v", err)
+	}
+	if err := s.AddSpare(core.SegmentID(2), noMax); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("the second AddSpare of 2: %v, want ErrDuplicateID", err)
+	}
+	if err := s.AdoptSpare(core.SegmentID(1)); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("the adoption of the owned id: %v, want ErrDuplicateID", err)
+	}
+	if err := s.AdoptSpare(core.SegmentID(2)); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("the adoption of the spare the set owned before: %v, want ErrDuplicateID", err)
+	}
+
+	after := s.Counters()
+	if after.UsedBytes != before.UsedBytes+segCap || after.Spares != before.Spares+1 {
+		t.Fatalf("the refusals and the one AddSpare moved the counters to %+v, want only the one spare added over %+v",
+			after, before)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the refusals: %v", err)
+	}
+}
