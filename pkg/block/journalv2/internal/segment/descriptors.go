@@ -70,6 +70,9 @@ type Descriptors struct {
 	totalRefs int    // references outstanding across the cache, for Shutdown's wait
 	shut      bool
 	shutDone  chan struct{} // closed by the Release that brings totalRefs to zero after Shutdown
+	// shutFinished is made by the first Shutdown and closed when it returns,
+	// so a concurrent or later Shutdown waits for the files to be closed.
+	shutFinished chan struct{}
 }
 
 // descEntry is one segment's descriptor state: the file, nil when the
@@ -625,7 +628,8 @@ func (c *Descriptors) Forget(id core.SegmentID) {
 // Shutdown closes the cache: new acquires fail, the references outstanding are
 // waited for — without the mutex — and every descriptor the cache holds is
 // closed and its budget slot returned. It returns the join of the close
-// errors. A second Shutdown returns nil.
+// errors. A later or concurrent Shutdown waits for the first to finish, then
+// returns nil.
 //
 // The descriptors stay attached and yieldable while the references drain: a
 // reclaim the budget runs meanwhile — another journal asking this one that is
@@ -637,10 +641,15 @@ func (c *Descriptors) Forget(id core.SegmentID) {
 func (c *Descriptors) Shutdown() error {
 	c.mu.Lock()
 	if c.shut {
+		finished := c.shutFinished
 		c.mu.Unlock()
+		<-finished
 		return nil
 	}
 	c.shut = true
+	finished := make(chan struct{})
+	c.shutFinished = finished
+	defer close(finished)
 
 	// decision: the idle list stays as it is while the wait runs, so a
 	// reclaim the budget makes meanwhile — another journal asking this one

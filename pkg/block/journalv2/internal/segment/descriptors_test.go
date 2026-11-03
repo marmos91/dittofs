@@ -2243,3 +2243,52 @@ func TestDescriptorsCloseKeepsItsSlotUntilTheFileIsClosed(t *testing.T) {
 	}
 	r.Release()
 }
+
+// TestDescriptorsASecondShutdownWaitsForTheFirst checks that a Shutdown that
+// arrives while another is still waiting on references does not return over
+// them: a caller that sees Shutdown return may assume no descriptor of the
+// cache is open.
+func TestDescriptorsASecondShutdownWaitsForTheFirst(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 failed: %v", err)
+	}
+	drop := relRegister(t, r)
+
+	first := make(chan error, 1)
+	go func() { first <- e.c.Shutdown() }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.WaitArmed(e.c); {
+		if time.Now().After(deadline) {
+			t.Fatal("the first Shutdown never armed its wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- e.c.Shutdown() }()
+	select {
+	case err := <-second:
+		t.Fatalf("the second Shutdown returned %v with segment 1's descriptor still open (%d open), want it to wait", err, e.openCount(1))
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	drop()
+	for name, ch := range map[string]chan error{"first": first, "second": second} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("the %s Shutdown = %v, want nil", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the %s Shutdown did not return after the release", name)
+		}
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after Shutdown, want 0", got)
+	}
+}
