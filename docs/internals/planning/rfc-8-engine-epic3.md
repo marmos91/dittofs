@@ -195,7 +195,7 @@ subtasks and tests can cite them.
 | R9 | Until its stability point the journal is the write's authority: its pending operation is in the file's entry, in version order, before `Write` answers, so a `Read`, `Overlay` or `Allocation` that starts after reflects it | invariant | §4.1, E15 | T3.2, T3.4, T3.5, T3.6 |
 | R10 | A `Write` that fails never calls `WriteOpts.Done`; a zero-length `Write` stages nothing, answers the verifier and calls `Done` once, with nothing charged | invariant | §12.1 | T3.2 |
 | R11 | `Draw` issues the next version of the file's journal and no other: above every version staged or drawn on that journal before it, with no version of the engine's or the store's own, and takes no lock (the caller holds the accept lock) | MUST | §4.1, RFC 1 §4.3 | T3.3 |
-| R12 | The content methods return only `vfserr` values and no `journalv2` type: the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` | MUST | §12.1, RFC 1 §4.3 | T3.2, T3.3, T3.5 |
+| R12 | The content methods return only `vfserr` values and no `journalv2` type, the caller's own context error excepted, which passes through as itself for the adapters to map (D4): the journal's `OtherShareError` is `ErrCorrupt`, never retried; a `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is `DelayCommit` | MUST | §12.1, §2.7, RFC 1 §4.3, RFC 17 §4.3 | T3.2, T3.3, T3.5 |
 
 **Overlay**
 
@@ -253,10 +253,13 @@ subtasks and tests can cite them.
   on that lock, and is to be withdrawn if a caller can ever stage two writes of one file at
   once.
 - **D4, the journal's errors at the content boundary.** T3.2 maps them in one function: a
-  `NoSpaceError` of any limit is `ErrDelay` with `DelayCapacity`, including the version
-  limit, which RFC 1 §4.3 says the engine answers `ErrDelay` and names no cause for;
-  `OtherShareError` is `ErrCorrupt`; `ErrClosed` is `ErrUnavailable`; the context's own
-  error passes through; anything else is `ErrUnavailable`, wrapping it, logged at `Error`.
+  `NoSpaceError` is `ErrDelay` with `DelayCapacity`, except the version limit's, which is
+  `DelayCommit` (RFC 8 §2.7, RFC 17 §4.3); `OtherShareError` is `ErrCorrupt`; `ErrClosed` is
+  `ErrUnavailable`; anything else is `ErrUnavailable`, wrapping it, logged at `Error`. The
+  caller's own context error, `ctx.Err()`, whether the journal or the store returned it or
+  the engine saw it, passes through as itself, unwrapped, wherever it ends the call, a
+  re-ask's `ReadAt` included: the adapters map a context error as they map any other, and
+  R12 names it as the one value that is not `vfserr`'s.
   A `decision:` marker on the `NoSpaceError` line says that until the refusal table is
   built every capacity refusal is answered as retry-later, never as a false disk-full, and
   is replaced by epic 7's mapping.
@@ -265,9 +268,12 @@ subtasks and tests can cite them.
   (RFC 8 §7.5). A `decision:` marker at the case names it, and is withdrawn when the fetch
   is built.
 - **D6, the re-ask's deadline.** RFC 8 §7.1 bounds the re-ask by the read's deadline and
-  does not say what answers when it is reached. `Read` re-asks while `ctx` is live and, at
-  its end, fails the read `ErrDelay` with `DelayConflict`: existence kept landing faster
-  than the read. A `decision:` marker names it.
+  does not say what answers when it is reached. Before each re-ask `Read` reads the
+  deadline, `ctx.Deadline()` against `Deps.Clock`: when re-asks have kept finding existence
+  above `asOf` until it, the read fails `ErrDelay` with `DelayConflict`, existence having
+  kept landing faster than the read. A context cancelled between re-asks, or ending inside
+  a `ReadAt` or `Covering` call, answers its own error (D4), not `ErrDelay`. A `decision:`
+  marker names both.
 - **D7, a loss logged once.** The log line of R25 needs to remember which extents it has
   reported, and the file's entry is gone once nothing is pending. The memory is one
   node-wide set of (file, extent) keys, at most 4096, the oldest dropped first, with a
@@ -368,9 +374,10 @@ test/enginev2/known.yaml  T3.2  its entry
   an ignored `Suspend`); a journal wrapper that counts `WriteAt` calls, with
   `sampleVerifier` swapped through `export_test.go` for one that records that count: it reads
   0 (catches sampling after staging, R8, which the zero stand-in alone cannot show); a
-  write refused `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
+  write refused a journal-limit `NoSpaceError`: `ErrDelay` with `DelayCapacity`, no `Done`, no operation
   (catches a leaked `journalv2` error or an early `Done`); `OtherShareError` answered
-  `ErrCorrupt`; a zero-length write calls `Done` once and stages nothing; 32 concurrent
+  `ErrCorrupt`; a `WriteAt` answering the context's error returns it as itself, not
+  `ErrUnavailable` (catches the catch-all wrapping it); a zero-length write calls `Done` once and stages nothing; 32 concurrent
   writes of distinct files under `-race`, each operation present once.
 
 ### T3.3 Draw
@@ -386,7 +393,7 @@ test/enginev2/known.yaml  T3.2  its entry
     entry and creates none.
 - **Tests:** write, draw, write: the three versions strictly increase (catches a version from
   a counter of the engine's own or from the clock); `Draw` at the fake's version limit
-  answers `ErrDelay`, not a `NoSpaceError`.
+  answers `ErrDelay` with `DelayCommit`, not a `NoSpaceError` and not `DelayCapacity`.
 
 ### T3.4 Overlay
 
@@ -434,7 +441,10 @@ test/enginev2/known.yaml  T3.2  its entry
   `kvstore`, with a `Content` wrapper that commits existence through `Existence.Commit`
   between the journal step and `Covering`: an overwrite, a hole fill and a growing write
   each read back, never `ErrLost`; keying the re-ask on overwrite records alone fails the
-  last two (R21, R27); the same with `ctx` ended mid-loop answers `ErrDelay`; a lost extent
+  last two (R21, R27); the same with the test clock past the read's deadline before a
+  re-ask answers `ErrDelay` with `DelayConflict`, with `ctx` cancelled between re-asks
+  `context.Canceled`, and with the deadline reached inside a re-ask's `ReadAt`
+  `context.DeadlineExceeded`, itself and unwrapped (D4, D6); a lost extent
   read, a hole committed over it, then read again reads zeros (catches a kept resolution,
   R18); a pending write the fake journal loses reads `ErrLost`, a gap below a pending
   write past the committed size reads zeros; a pending deallocate inside committed data
@@ -514,5 +524,4 @@ A suggestion only: one pull request per subtask works as well.
 5. **`Allocation`'s type.** RFC 8 §12.1 answers RFC 6 §2's `Span`, while `kvstore`'s
    `Existence.Allocation` answers a run and a hole flag; D11 translates. RFC 6 §10.1 or
    RFC 8 §12.1 should say which.
-6. **Two causes RFC 8 leaves open:** the answer at the re-ask's deadline (D6) and the
-   `DelayCause` of a version-limit refusal (D4).
+6. **A cause RFC 8 leaves open:** the answer at the re-ask's deadline (D6).
