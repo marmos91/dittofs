@@ -1936,7 +1936,8 @@ Offloading the version releases its hold.
   ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), so no ref is ever written for content existence does not record.
 - `Truncate`, `Deallocate`, `Delete` and `Clone` hold the destination file's
   guard across their journal step and their removal's first metadata transaction
-  ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so no offer is captured between the two; a clone holds it over its
+  ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), so no offer is captured between the two, a pending release
+  across its retries of that transaction too; a clone holds it over its
   copies too. A clone does **not** hold its source's guard: it freezes the
   source by an extent registration, which offers and their commits never consult
   ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
@@ -2407,7 +2408,9 @@ which calls the journal's `Delete`, never its `Release`, which evicts
 **Rules.**
 
 - A removal holds the file's guard ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)) across its journal step and its
-  first metadata transaction, and returns once that transaction commits.
+  first metadata transaction, and returns once that transaction commits; a
+  release left pending (below) returns its retry channel first, and keeps the
+  guard until its retried phase 1 commits or it ends.
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence
@@ -2430,14 +2433,22 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   its destination extent, so its condition is unhealthy rather than degraded.
 - A release that cannot finish within its call is pending, not failed: one
   whose phase 1 has not committed at the call's deadline, the journal's
-  `Delete` done, and one held behind a clone past its deadline
+  `Delete` done; one of a clone's destination held behind that clone past its
+  deadline; and one of a clone's source while the clone's registration holds
+  it, answered at once and before the journal's `Delete`, so nothing is dropped
   ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
   `Delete` answers a pending release with a retry channel, not an error, and
-  retries phase 1 from the scheduler with no goroutine of its own. The channel
+  retries phase 1 from the scheduler with no goroutine of its own, keeping the
+  file's guard from the journal's `Delete` until phase 1 commits or the retry
+  ends; a release held behind a clone, answered before its `Delete`, holds no
+  guard while it waits. The channel
   yields the release's outcome once: nil once phase 1 commits, the abort's
-  error, `ErrDelay` once the clone it waited behind is done, so the service
-  runs the release again, or `ErrUnavailable` when `Close` or `Drop` comes first,
-  leaving the marker for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+  error, `ErrDelay` (`DelayClone`) once the clone it waited behind is done, so
+  the service runs the release again, or `ErrUnavailable`: when `Close` comes
+  first or a journal turned read-only undoes the `Delete` (step 1), the file
+  staying marked and the release left for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
+  and when `Drop` does, after which no start runs it, the share being gone
+  ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 
 **Steps.**
 
@@ -2474,7 +2485,8 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A deallocate's phase 1 does write one
    hole: the extent's merged hole, at *v*, under the merged hole's own start key ([§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file)` ([§6.1](#6.1%20The%20work%20queue)),
-   and return.
+   and return. A pending release has returned its retry channel already, and
+   runs this step once its retried phase 1 commits.
 5. Phase 2, from the work queue: batches within the key budget `K` from the
    removal's cursor, a byte offset, until done, each under the metadata deadline
    as Capture and Commit are (O1) ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)).
@@ -2629,9 +2641,13 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   is rebuilt at start, before the source is served, from the source's
   clone-kind open record (below), or from the journal's clone marker before
   phase 1 has written that record.
-- **The source cannot be released mid-clone.** The clone holds an open on the
-  source, entered in the source's open table at its primary at admission, so
-  a last close or an unlink defers the source's release
+- **The source cannot be released mid-clone.** From admission the clone's
+  registration holds it: a release of the source is answered pending before
+  the journal's `Delete`, so nothing is dropped, and its channel yields
+  `ErrDelay` (`DelayClone`) when the registration drops ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
+  From `Hold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), between phase 1 and
+  phase 2, the clone's open is in the source's open table at its primary, so a
+  last close or an unlink defers the source's release
   ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)) until the clone is done. Phase 1 makes it durable: its transaction
   also writes a durable open record for the source at `F‖src‖op‖openID`, the one
   key a release's holder check range-guards ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)), and the batch

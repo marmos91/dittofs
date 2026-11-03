@@ -1001,7 +1001,9 @@ The rules:
   ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so clients resend.
 - **Truncate, deallocate, release and clone are synchronous in their first
   phase**: each commits the file's pending existence and its own existence change
-  in one transaction before it returns; dropping its refs follows in batches
+  in one transaction before it returns; a release still short of it at its
+  deadline is left pending and answered later
+  ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)); dropping its refs follows in batches
   ([§6.2](#6.2%20Truncation%20and%20deallocation)). A clone is answered later still, once its batches are done
   ([§6.6](#6.6%20Clone%20and%20server-side%20copy)).
 - **`applied` only moves forward.** Every write of it is `applied = max(applied,

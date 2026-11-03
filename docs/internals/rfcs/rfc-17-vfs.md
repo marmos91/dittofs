@@ -586,7 +586,11 @@ the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
 `CloneClose` the engine's stop joins, or a timer firing before `Table.Stop` — is
 dropped. A release it would run is a pending release, written with the unlink,
-which the next start's recovery runs (§5.3). A deferred unlink it would run is
+which the next start's recovery runs (§5.3), and so is one a background wait
+still holds: from `Drain` on, the filesystem runs no release again, and `Stop`
+ends each wait on a retry channel without its `done`, so no waiter outlives it
+(V33) or waits on a channel only the engine's later `Close` answers. A
+deferred unlink it would run is
 lost with the process: its delete pending is volatile by then, since a durable
 one's `DeleteRecord` is deleted by the close that leaves the file no persistent
 open ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and a
@@ -594,7 +598,8 @@ volatile one is lost
 ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring)).
 
 > decision: a source's delete-on-close, set through a volatile or a persistent
-> open, is lost when its clone is not done before the filesystem stops: a
+> open, is lost when the clone's hold is the file's last open and the clone is
+> not done before the filesystem stops: a
 > `CloneClose` whose `Sink.Closed` reaches the stopped filesystem is dropped,
 > and a clone the engine's stop cancels resumes after the restart with the mark
 > gone, as a volatile delete-on-close is at any crash
@@ -1947,14 +1952,21 @@ none yet — and marks the file through `Opens.Releasing`, which fails if an ope
 exists; it reports the release's outcome to the `done` that returns, so an
 aborted release clears the mark
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
-A pending release answers a retry channel, not an error
-([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)):
-the call that ran it is answered as if the release were done, so an unlink or a
-rename whose name is gone succeeds, and the service waits on the channel in the
+An unlink or a rename whose name is gone succeeds whatever `Delete` answers:
+the change has committed, and a retry-later for it would send the client's
+retry to `ErrNotFound`. A `Delete` that fails within the call is logged, and
+the release's `F‖id‖rel` record is left for the next start's recovery.
+A release that cannot finish within its call answers a retry channel, not an
+error ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)):
+the call that ran it is answered as if the release were done, and the service
+waits on the channel in the
 background, never inside `Sink.Closed`, keeping the mark meanwhile. The outcome
-decides the rest: committed or aborted, it goes to `done`; `ErrDelay`, the
-service runs the release again; `ErrUnavailable`, it is logged, and the pending
-release is left for the next start's recovery.
+decides the rest: committed or aborted, it goes to `done`; `ErrDelay`
+(`DelayClone`), which comes before the journal's `Delete` has dropped anything,
+to `done(false)`, and the service then runs the release again, marking the file
+anew through `Opens.Releasing`; `ErrUnavailable`, it is logged, and the
+release's `F‖id‖rel` record is left for the next start's recovery, or goes with
+the share after a `Drop`.
 The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
@@ -2015,10 +2027,12 @@ func (s *Filesystem) unlinkLocked(ctx context.Context, c Caller, dir Target, nam
 		r.Dir.After = s.overlaid(ctx, dir.H)
 	}, fileOf(dir.H), f.ID)
 	if err == nil && orphan.File != 0 {
-		var retry <-chan error
-		retry, err = s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
-		if retry != nil {
-			go s.awaitRelease(f.Share, orphan.File, retry) // the name is gone, so the unlink succeeds; the release's outcome is waited on here, retried or logged (§5.3)
+		retry, derr := s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		switch {
+		case retry != nil:
+			go s.awaitRelease(f.Share, orphan.File, retry) // the release's outcome is waited on here, retried or logged until Stop (§2.5, §5.3)
+		case derr != nil:
+			s.log.Warn("release failed", "err", derr) // the name is gone, so the unlink succeeds; F‖id‖rel stays for the next start (§5.3)
 		}
 	}
 	return r, false, err // the chunks it referenced are dropped by the engine's batches and GC (RFC 8 §8.1)
@@ -2082,10 +2096,12 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 		}
 	}
 	if err == nil && orphan.File != 0 {
-		var retry <-chan error
-		retry, err = s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
-		if retry != nil {
-			go s.awaitRelease(dst.Share, orphan.File, retry) // as unlink's: the rename succeeds
+		retry, derr := s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		switch { // as unlink's: the rename succeeds
+		case retry != nil:
+			go s.awaitRelease(dst.Share, orphan.File, retry)
+		case derr != nil:
+			s.log.Warn("release failed", "err", derr)
 		}
 	}
 	return r, err
@@ -2334,7 +2350,10 @@ A call that waits past its `max`, or its deadline, is answered `ErrDelay` with
 metadata store, a remote outage or a restart's wait for space
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing),
 step 4), when it is answered with that cause (`DelayCommit`, `ErrUnavailable` or
-`DelayCapacity`). An open of a destination a restart has not yet served answers
+`DelayCapacity`). A release held there is not answered `ErrDelay`: past its
+hold it answers its retry channel
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)),
+and the call that ran it succeeds (§5.3). An open of a destination a restart has not yet served answers
 `ErrDelay`, with `DelayCapacity` while its clone waits for space and
 `DelayClone` otherwise. Answering at once by default would cost an NFSv3 client
 its fixed retry-later pause, several seconds, for a chunk that ends far sooner;
@@ -2343,8 +2362,10 @@ once per session or connection, is its count, not the service's
 ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The service counts
 nothing about holds.
 
-The clone holds the source open, so a last close or unlink does not release it
-mid-clone. A source run the engine reads as Lost — a source ref whose chunk
+The clone's registration holds the source from admission, and its open from
+`Hold`, so a last close or unlink does not release it mid-clone: a release
+meanwhile is pending
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). A source run the engine reads as Lost — a source ref whose chunk
 record is gone included — is carried to the destination as Lost, never as zeros.
 A clone that is refused leaves the destination's prior content; once begun it is
 not undone but resumed after a crash from its durable spec, and is answered only
