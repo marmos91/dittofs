@@ -894,34 +894,53 @@ func TestPoolHoldCloseReturnsSparesToUnreservedTakes(t *testing.T) {
 	})
 
 	t.Run("a spent hold takes as an unreserved take does", func(t *testing.T) {
-		_, _, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+		_, _, _, p := poolOf(t, segment.Targets{Content: 3}, 3*segCap, 0, nil)
 		p.Start()
-		awaitCounters(t, "the two content spares ready", p,
-			func(c segment.PoolCounters) bool { return c.Spares == 2 })
+		awaitCounters(t, "the three content spares ready", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 3 })
 
 		h, err := p.Hold(1)
 		if err != nil {
-			t.Fatalf("Hold(1) over two ready spares: %v", err)
+			t.Fatalf("Hold(1) over three ready spares: %v", err)
 		}
-		// One spare goes to an unreserved take, one stays for the hold.
+		// One spare goes to an unreserved take, one to the hold itself; one
+		// stays ready for the second hold below.
 		if id, err := p.Take(segment.Content); err != nil || id == 0 {
 			t.Fatalf("the unreserved take beside the hold: (%d, %v)", id, err)
 		}
 		if _, err := h.Take(); err != nil {
 			t.Fatalf("the hold's own take: %v", err)
 		}
-		if c := p.Counters(); c.Spares != 0 || c.Held != 0 {
-			t.Fatalf("after the hold spent its spare the counters are %+v, want the pool empty", c)
+		if c := p.Counters(); c.Spares != 1 || c.Held != 0 {
+			t.Fatalf("after the hold spent its spare the counters are %+v, want 1 ready and none owed", c)
 		}
 
 		// The hold has spent its own spares, so its next take behaves as an
-		// unreserved one: the pool holds none, so it is refused, and the
-		// refusal takes nothing — the counters it would have moved stand.
+		// unreserved one. A second hold owns the one spare still ready, so
+		// the spent hold is refused `spare` exactly as an unreserved take
+		// over it would be — and, like every refusal, takes nothing. A spent
+		// hold that took the reserved branch would steal the other hold's
+		// spare and eat its debt: the counters here are what catch that.
+		h2, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("Hold(1) over the last spare: %v", err)
+		}
+		_, err = h.Take()
+		assertSpareRefusal(t, "the spent hold's take over another hold's spare", err, 1)
+		if c := p.Counters(); c.Spares != 1 || c.Held != 1 {
+			t.Fatalf("after the spent hold's refused take the counters are %+v, want 1 ready spare and 1 owed: the refusal changed nothing", c)
+		}
+
+		// Over an empty pool the spent hold is refused the same way.
+		if id, err := h2.Take(); err != nil || id == 0 {
+			t.Fatalf("the second hold's take: (%d, %v)", id, err)
+		}
 		_, err = h.Take()
 		assertSpareRefusal(t, "the spent hold's take over an empty pool", err, 1)
 		if c := p.Counters(); c.Spares != 0 || c.Held != 0 {
 			t.Fatalf("after the spent hold's refused take the counters are %+v, want the refusal to change nothing", c)
 		}
+		h2.Close()
 
 		// A replacement owed to the spent hold makes the next Hold's
 		// shortage one the pool's own debt doubles: ready stands below held,
