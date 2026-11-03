@@ -252,6 +252,10 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
      reference on a call with no session is `NotYours` (§3.1), a case beside V24 (→10). A stateid
      of a client not confirmed under NFSv4.0 is the NFS adapter's to refuse, before any call
      reaches the filesystem (RFC 21 §5.2 rule 5).
+   - The background waiter on a pending release's retry channel (RFC 17 §5.3; the engine
+     plan's C11 and §6 point 15): it selects on the channel and on the filesystem's stop, and
+     at `Stop` ends with no `done(...)`, the release left to the next start's recovery. V33
+     gains a case: a release stalled across `Stop` leaves no goroutine of the service.
    - The stand-in's run at start (piece 3), after step 1 has served the share's shard, since a
      `ServeShard` after a `DropShare` installs the share's persistent opens again; done when a
      share marked before a restart has no opens, and its holders are told `RevokedShare`, once

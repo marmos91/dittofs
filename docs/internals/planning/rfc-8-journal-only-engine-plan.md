@@ -170,7 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
-| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`. `vfserr.Delay` gains nothing (§6 point 15) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to start step 3's marker; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -749,7 +749,8 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   pending release then running at the next start; the service answers `done(false)` and runs
   the release again on that `ErrDelay`. Either way `err` is nil while `retry` is pending:
   the unlink answers success, and the service waits on `retry` in the background, never
-  inside `Sink.Closed`, and finishes the release with its outcome. That branch reads T8.1's registration, so it is built and
+  inside `Sink.Closed`, and finishes the release with its outcome, or stops waiting at the
+  server's stop with no `done(...)` (C11). That branch reads T8.1's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
   is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
@@ -1100,7 +1101,20 @@ follows the journal's, not this part's (§6 point 7).
     `retry` is T5.4's channel: nil once phase 1 committed, the abort's error, `ErrDelay`
     with `DelayClone` once a clone's registration drops, or `ErrUnavailable`, the marker left
     for start. While it is pending the unlink answers success, and the service waits on it
-    in the background, not inside `Sink.Closed`. The RFC 8 §12.1 and RFC 17 §2.3 text for
+    in the background, not inside `Sink.Closed`. The server stops before the engine
+    (RFC 17 §2.5), so a waiter that ended only on `retry` would block the server's stop on
+    a channel only the engine's later `Close` ends, or leak past it (V33). It selects on the
+    server's stop too:
+
+    ```go
+    select {
+    case err := <-retry: // finish the release with its outcome
+    case <-s.stopping:   // no done(...): start step 3's marker finishes the release
+    }
+    ```
+
+    The VFS plan's piece 7 builds the waiter with the release paths, and V33 gains a case
+    there: a release stalled across `Filesystem.Stop` leaves no goroutine. The RFC 8 §12.1 and RFC 17 §2.3 text for
     it goes in #3608.
 
 **Risks**
