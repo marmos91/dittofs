@@ -864,7 +864,7 @@ var sinkErr error
 // idle list out of the cache's hands. The race detector instruments the locks
 // and atomics, so the count is taken only without it.
 func TestDescriptorsHitAllocatesNothing(t *testing.T) {
-	if descRace {
+	if prof.RaceEnabled {
 		t.Skip("the race detector instruments the locks and atomics; the allocation count is taken without it")
 	}
 	prof.Watch(t, prof.Options{})

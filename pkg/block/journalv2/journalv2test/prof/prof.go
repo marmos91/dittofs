@@ -122,7 +122,7 @@ func Watch(tb testing.TB, opts Options) {
 		slack = defaultHeapSlack
 	}
 	var heapBefore uint64
-	if raceEnabled {
+	if RaceEnabled {
 		logOnce(tb, &heapSkipped, "prof: the race detector changes the heap; the heap check does not run")
 	} else {
 		heapBefore = LiveHeap()
@@ -176,7 +176,7 @@ func Watch(tb testing.TB, opts Options) {
 		if len(fdsLeaked) > 0 {
 			failures = append(failures, fmt.Sprintf("%d descriptor(s) leaked: %s", len(fdsLeaked), strings.Join(fdsLeaked, ", ")))
 		}
-		if !raceEnabled {
+		if !RaceEnabled {
 			if after := LiveHeap(); after > heapBefore && after-heapBefore > slack {
 				failures = append(failures, fmt.Sprintf("live heap grew by %d bytes, over the %d-byte slack", after-heapBefore, slack))
 			}
