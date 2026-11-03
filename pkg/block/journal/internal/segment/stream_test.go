@@ -861,8 +861,11 @@ func TestStreamCloseRefusesAndShutsDownCleanly(t *testing.T) {
 	if _, err := e.s.Append(h2, body2); !errors.Is(err, segment.ErrStreamClosed) {
 		t.Fatalf("the append after Close = %v, want ErrStreamClosed", err)
 	}
-	if err := e.s.Sync(); err != nil {
-		t.Fatalf("Sync after Close = %v, want nil", err)
+	// A sync past the close answers ErrStreamClosed rather than a nil that
+	// would read as "everything acknowledged is durable": Close fsyncs
+	// nothing of what landed before it.
+	if err := e.s.Sync(); !errors.Is(err, segment.ErrStreamClosed) {
+		t.Fatalf("Sync after Close = %v, want ErrStreamClosed", err)
 	}
 
 	// The cache shuts down with nothing held: the shutdown registered by
@@ -1003,4 +1006,256 @@ func streamScanNext(t *testing.T, e streamEnv) int64 {
 
 	_, _, _, next := streamScanOf(t, e)
 	return next
+}
+
+// TestStreamCloseWaitsOutAnInFlightSync checks the in-flight operation Close
+// must not strand: with the stream's fsync parked at a seam hold, Close does
+// not return while it runs — releasing the active segment's ref first would
+// let the cache close the descriptor under the fsync, or strand a dirty
+// entry whose budget slot no reclaim can take — and the cache's Shutdown,
+// behind the close, returns nil. It catches a Sync that borrows the stream's
+// ref without counting itself in-flight.
+func TestStreamCloseWaitsOutAnInFlightSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seg := streamSegName(1)
+	e := streamOver(t, streamCap, func(streamEnv) {})
+	e.cacheBuilt(t)
+
+	payload := make([]byte, 64)
+	wh, wbody := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 1})
+	streamAppendWrite(t, e, wh, wbody)
+
+	// Park the stream's fsync: the descriptor is clean, so a close of it now
+	// is an eviction the seam would show.
+	h := e.seam.HoldFirst(t, journalv2test.OpSync, seg)
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- e.s.Sync() }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fsync never reached the hold")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- e.s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v while a Sync was still in flight, want it to wait the fsync out", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The fsync finishes, and only then does Close return and the cache's
+	// Shutdown run clean behind it.
+	h.Release()
+	select {
+	case err := <-syncErr:
+		if err != nil {
+			t.Fatalf("the parked Sync failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked Sync did not return after the hold was released")
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close after its in-flight Sync = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return after its in-flight Sync finished")
+	}
+	if err := e.cache.Shutdown(); err != nil {
+		t.Fatalf("the cache's Shutdown after the stream's Close = %v, want nil: the wait released the ref under the fsync", err)
+	}
+	if err := e.set.Check(); err != nil {
+		t.Fatalf("the ledger after the raced syncs: %v", err)
+	}
+}
+
+// TestStreamCloseRacingAppendsDoesNotPanicOnTheWaitGroup checks the counting
+// rule Close and the appends share: every in-flight Add happens under the
+// same lock Close sets closed under, so the group is never reused while Close
+// waits on it. Appenders keep arriving while the Close runs — the shape the
+// panic needs — and the run must end with the appenders answered, not with
+// the WaitGroup's reuse panic.
+func TestStreamCloseRacingAppendsDoesNotPanicOnTheWaitGroup(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
+
+	// The reuse window the panic needs is an Add landing while the previous
+	// Wait is still returning, so the rounds restart the appender before
+	// every close rather than settling once.
+	// the round's close runs, so the appender gate is opened fresh before
+	// every close and shut after it. The reuse window the panic needs is an
+	// Add landing while the previous Wait is still returning, so the loop
+	// must keep appending between closes rather than settle once.
+	stop := make(chan struct{})
+	var appends sync.WaitGroup
+	appendRound := func() {
+		appends.Add(1)
+		go func() {
+			defer appends.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				h, body := mustRefusalPair()
+				if _, err := e.s.Append(h, body); err != nil {
+					return // the close reached us: ErrStreamClosed or a fault
+				}
+			}
+		}()
+	}
+
+	// Iterating the race widens the one-shot window the reuse needs into a
+	// window the test owns: a fresh appender before every close, so appends
+	// keep arriving as each Wait returns.
+	for round := 0; round < 20; round++ {
+		appendRound()
+		time.Sleep(time.Duration(round+1) * 100 * time.Microsecond)
+		if err := e.s.Close(); err != nil {
+			t.Errorf("close round %d under racing appends = %v, want nil", round, err)
+		}
+		// A closed stream answers with the refusal.
+		if _, err := e.s.Append(mustRefusalHeader(), format.RecordBody{Payload: make([]byte, 32)}); !errors.Is(err, segment.ErrStreamClosed) {
+			t.Errorf("an append after close round %d = %v, want ErrStreamClosed", round, err)
+		}
+	}
+	close(stop)
+	appends.Wait()
+}
+
+// mustRefusalPair returns one small write's header and body for a round's
+// raced append.
+func mustRefusalPair() (format.RecordHeader, format.RecordBody) {
+	return streamWriteHeader(streamFileID(1), 0, make([]byte, 32), 7, core.Version{Counter: 1})
+}
+
+// mustRefusalHeader returns the same write's header alone, for the refusal
+// the closed stream must answer.
+func mustRefusalHeader() format.RecordHeader {
+	h, _ := mustRefusalPair()
+	return h
+}
+
+// TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic checks the
+// counting rule under the densest shape the reuse needs: one fresh stream per
+// round, eight appenders looping from the first moment, and the Close landing
+// while they are all still arriving. The rounds keep the window open the way
+// a busy writer keeps it, so the run ends answered rather than with the
+// WaitGroup's reuse panic or, under -race, its data race report.
+func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const rounds = 100
+	payload := make([]byte, 32)
+	for round := 0; round < rounds; round++ {
+		seam, err := journalv2test.NewSeam(t.TempDir())
+		if err != nil {
+			t.Fatalf("round %d: the seam could not be made: %v", round, err)
+		}
+		set := segment.NewSet(streamCap, nil)
+		maker := segment.NewMaker(seam.FS(), set, streamMax, 0, nil)
+		budget := core.NewDescriptorBudget(64)
+		cache := segment.NewDescriptors(seam.FS(), format.SegmentName, budget)
+		s := segment.NewStream(1, streamIdentity, set, maker, cache)
+		// The round settles itself, so the next round starts from an empty
+		// heap — a hundred rounds of caches held to the test's end would
+		// read as growth to the profiler.
+		defer func() {
+			_ = s.Close()
+			if err := cache.Shutdown(); err != nil {
+				t.Errorf("round %d: the cache's Shutdown = %v, want nil", round, err)
+			}
+		}()
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					h, body := streamWriteHeader(streamFileID(i), 0, payload, 7, core.Version{Counter: 1})
+					if _, err := s.Append(h, body); err != nil {
+						return // ErrStreamClosed or a fault: the round's close
+					}
+				}
+			}(i)
+		}
+		time.Sleep(500 * time.Microsecond)
+		if err := s.Close(); err != nil {
+			t.Errorf("round %d's Close under dense appends = %v, want nil", round, err)
+		}
+		close(stop)
+		wg.Wait()
+	}
+}
+
+// streamAppendHeldFault fails the test the moment a seam call arrives while
+// the stream's append lock is held: the leaf-lock contract of the segment
+// append domain (R12), the same fault the descriptor cache's own check uses.
+type streamAppendHeldFault struct {
+	s  *segment.Stream
+	ok *bool
+}
+
+func (f *streamAppendHeldFault) At(op string, key []byte) (time.Duration, int, error) {
+	if segment.StreamAppendLockHeld(f.s) {
+		*f.ok = false
+	}
+	return 0, 0, nil
+}
+
+// TestStreamNoSeamCallUnderTheAppendLock checks R12: no storage call — the
+// take's create, allocate, sync, close, rename and directory sync, the
+// descriptor's open, the header's write, a record's write, a read, and the
+// record sync's fsync — runs while the stream's append lock is held, so a
+// fault consulted at every seam call must never find the lock taken. A lock
+// held across I/O makes every appender of the stream wait on the slowest call
+// in flight. It catches a write, a sync or a take moved under appendMu.
+func TestStreamNoSeamCallUnderTheAppendLock(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := streamOver(t, streamCap, func(streamEnv) {})
+	ok := true
+	fault := &streamAppendHeldFault{s: e.s, ok: &ok}
+	e.seam.SetFault(fault)
+	// The cache's Shutdown is registered here too: with the fault installed
+	// it still runs clean, for its own closes also answer the fault.
+	t.Cleanup(func() {
+		if err := e.cache.Shutdown(); err != nil {
+			t.Errorf("the cache's Shutdown under the lock fault = %v, want nil", err)
+		}
+	})
+	defer func() { _ = e.s.Close() }()
+
+	// The first Append drives the take and the header write; the next three
+	// records, then a Sync and a ReadAt, drive everything else.
+	for i := range 3 {
+		payload := mustBody(t, 64)
+		h, body := streamWriteHeader(streamFileID(i+1), int64(i)*64, payload, 7, core.Version{Counter: uint64(i + 1)})
+		if _, err := e.s.Append(h, body); err != nil {
+			t.Fatalf("append %d under the lock fault: %v", i+1, err)
+		}
+	}
+	if err := e.s.Sync(); err != nil {
+		t.Fatalf("Sync under the lock fault: %v", err)
+	}
+	buf := make([]byte, format.RecordHeaderSize)
+	if _, err := e.s.ReadAt(1, buf, format.SegmentHeaderSize); err != nil {
+		t.Fatalf("ReadAt under the lock fault: %v", err)
+	}
+
+	if !ok {
+		t.Fatal("a seam call was made while the stream's append lock was held: the segment append domain was held across I/O")
+	}
 }

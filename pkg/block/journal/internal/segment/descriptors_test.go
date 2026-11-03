@@ -2521,3 +2521,84 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 		}
 	}
 }
+
+// TestDescriptorsAWriteUnderTheParkedSyncStaysUncovered checks the pin's
+// numbering rule from the sync side: the fsync itself is parked at the seam —
+// not the write — while a second reference completes a write that lands
+// before the sync returns. The write is counted once it lands, so a Sync
+// that started before it cannot cover it, and the descriptor stays pinned
+// through reads past the bound; only a sync that starts after the write
+// covers it. It catches a Sync that re-reads the count after its fsync and
+// so marks an in-flight write covered.
+func TestDescriptorsAWriteUnderTheParkedSyncStaysUncovered(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 2)
+	e.stock(t, 3)
+	// Cleanups run last-registered first: the Shutdown registered here runs
+	// after the holds and references below unwind, so a failure on any
+	// assertion reports itself rather than wedging a parked call.
+	shutRegister(t, e.c)
+
+	a, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
+	}
+	h := e.seam.HoldFirst(t, journalv2test.OpSync, name(1))
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- a.Sync() }()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sync never reached the hold")
+	}
+
+	// The fsync runs while this write lands: the sync started first, so no
+	// count it could have loaded includes the write.
+	b, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
+	}
+	if _, err := b.WriteAt(make([]byte, 16), 0); err != nil {
+		t.Fatalf("writing under the parked sync failed: %v", err)
+	}
+	select {
+	case err := <-syncErr:
+		t.Fatalf("the parked sync returned %v with the hold up, want it parked", err)
+	default:
+	}
+	h.Release()
+	select {
+	case err := <-syncErr:
+		if err != nil {
+			t.Fatalf("the released sync failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the released sync did not return")
+	}
+	a.Release()
+	b.Release()
+
+	// The write landed after the sync started, so no sync covers it: the
+	// descriptor is dirty and must not be closed to make room.
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 1 {
+		t.Fatalf("segment 1's descriptor count is %d after reads past the bound, want 1: the sync counted a write that landed while its fsync ran", got)
+	}
+
+	// The pin lifts once a sync that started after the write returned.
+	r, err := e.c.Acquire(1)
+	if err != nil {
+		t.Fatalf("reacquiring segment 1 failed: %v", err)
+	}
+	if err := r.Sync(); err != nil {
+		t.Fatalf("syncing segment 1 failed: %v", err)
+	}
+	r.Release()
+	e.read(t, 2)
+	e.read(t, 3)
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d after a covering sync and reads past the bound, want it evicted", got)
+	}
+}
