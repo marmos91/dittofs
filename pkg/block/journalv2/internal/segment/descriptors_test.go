@@ -523,7 +523,7 @@ func (f *eioFault) At(op string, key []byte) (time.Duration, int, error) {
 }
 
 // TestDescriptorsNoSeamCallUnderTheCacheMutex checks the leaf-lock contract
-// (R69): no storage call — open, read, write, sync or close — runs while the
+// (R69): no storage call — open, read or close — runs while the
 // cache's mutex is held, so a fault consulted at every seam call must never
 // find the mutex taken. A lock held across I/O would make every reader of
 // every segment wait on the slowest operation in flight.
@@ -548,15 +548,6 @@ func TestDescriptorsNoSeamCallUnderTheCacheMutex(t *testing.T) {
 	// A reopen: 1 was evicted when 3 was opened.
 	e.read(t, 1)
 
-	// A write and a sync through the reference.
-	buf := make([]byte, 16)
-	fillPattern(3, buf)
-	if _, err := r.WriteAt(buf, 0); err != nil {
-		t.Fatalf("writing through the reference failed: %v", err)
-	}
-	if err := r.Sync(); err != nil {
-		t.Fatalf("syncing through the reference failed: %v", err)
-	}
 	r.Release()
 
 	// A Close of a segment with its descriptor open, and a Shutdown of the
@@ -574,112 +565,9 @@ func TestDescriptorsNoSeamCallUnderTheCacheMutex(t *testing.T) {
 	}
 }
 
-// TestDescriptorsDirtyDescriptorPinned checks that a descriptor with a write
-// issued through it stays open until a sync through it has covered the write
-// or failed: reclaiming it would drop writeback errors the platform reports
-// only through the open handle. The pinned descriptor is counted by the bound,
-// and a failed sync unpins it, because its writes already failed.
-func TestDescriptorsDirtyDescriptorPinned(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := newCache(t, 4)
-	e.stock(t, 20)
-	defer e.c.Shutdown()
-
-	r, err := e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("acquiring segment 1 failed: %v", err)
-	}
-	buf := make([]byte, 16)
-	if _, err := r.WriteAt(buf, 0); err != nil {
-		t.Fatalf("writing through segment 1's descriptor failed: %v", err)
-	}
-	r.Release()
-
-	// Reading nineteen more segments under a bound of four must not close
-	// segment 1's dirty descriptor.
-	for i := 2; i <= 20; i++ {
-		e.read(t, core.SegmentID(i))
-		if got := e.openCount(1); got != 1 {
-			t.Fatalf("segment 1's descriptor count is %d after reading segment %d, want its dirty descriptor held open", got, i)
-		}
-	}
-
-	// A sync through its descriptor covers the write, so the descriptor
-	// becomes evictable and is closed to make room.
-	r, err = e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("reacquiring segment 1 failed: %v", err)
-	}
-	if err := r.Sync(); err != nil {
-		t.Fatalf("syncing segment 1 failed: %v", err)
-	}
-	r.Release()
-	closeCalls := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]
-	if closeCalls != 0 {
-		t.Fatalf("segment 1's descriptor was closed %d times before its sync, want it held", closeCalls)
-	}
-	for i := 2; i <= 20; i++ {
-		e.read(t, core.SegmentID(i))
-	}
-	if got := e.openCount(1); got != 0 {
-		t.Fatalf("segment 1's descriptor count is %d after a sync and more reads, want it evicted", got)
-	}
-}
-
-// TestDescriptorsFailedSyncUnpins checks the pin's other side: a sync that
-// fails un-pins the descriptor, because its writes already failed and the
-// caller saw it — the bound is not to hold a descriptor open for writes nobody
-// will retry through it.
-func TestDescriptorsFailedSyncUnpins(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := newCache(t, 4)
-	e.stock(t, 20)
-	defer e.c.Shutdown()
-
-	r, err := e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("acquiring segment 1 failed: %v", err)
-	}
-	buf := make([]byte, 16)
-	if _, err := r.WriteAt(buf, 0); err != nil {
-		t.Fatalf("writing through segment 1's descriptor failed: %v", err)
-	}
-	if err := r.Sync(); err != nil {
-		t.Fatalf("syncing segment 1 failed: %v", err)
-	}
-	r.Release()
-
-	// Dirty again, and this time the sync fails.
-	r, err = e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("reacquiring segment 1 failed: %v", err)
-	}
-	if _, err := r.WriteAt(buf, 0); err != nil {
-		t.Fatalf("writing through segment 1's descriptor failed: %v", err)
-	}
-	e.seam.SetFault(&eioFault{op: journalv2test.OpSync, key: name(1), n: 1})
-	if err := r.Sync(); !errors.Is(err, syscall.EIO) {
-		t.Fatalf("syncing segment 1 under the fault = %v, want EIO", err)
-	}
-	e.seam.SetFault(nil)
-	r.Release()
-
-	// The failed sync covered the writes it started at, so the descriptor is
-	// evictable: reads past the bound close it to make room — its pin was
-	// the unsynced write, and the sync's failure is the write's failure too.
-	for i := 2; i <= 20; i++ {
-		e.read(t, core.SegmentID(i))
-	}
-	if got := e.openCount(1); got != 0 {
-		t.Fatalf("segment 1's descriptor count is %d after a failed sync and nineteen reads, want the descriptor evicted: a failed sync must unpin it", got)
-	}
-}
-
-// TestDescriptorsRefusalMakesNoIO checks Acquire's refusal: when every slot the
-// budget allows is pinned by a reference or an unsynced write, the acquire
-// fails with ErrNoDescriptor at once, opens nothing and waits for nothing —
+// TestDescriptorsRefusalMakesNoIO checks Acquire's refusal: when every slot
+// the budget allows is held by a reference, the acquire fails with
+// ErrNoDescriptor at once, opens nothing and waits for nothing —
 // the refusal is the misconfiguration surfacing, not a queue to wait in.
 func TestDescriptorsRefusalMakesNoIO(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -995,82 +883,6 @@ func TestDescriptorsHitAllocatesNothing(t *testing.T) {
 	}
 	if allocs != 0 {
 		t.Fatalf("a warm hit allocated %v per round, want 0: the read path must not run through the allocator", allocs)
-	}
-}
-
-// TestDescriptorsSyncDoesNotCoverAWriteInFlight checks the pin's numbering
-// rule: a write is counted once it has landed, so a Sync that starts while
-// another reference's write is still in flight does not cover it. The
-// group-commit shape — one reference appending, another syncing the same
-// descriptor — otherwise lets the fsync finish before the write lands yet mark
-// it covered, and the descriptor is evicted carrying a writeback error nobody
-// would ever see.
-func TestDescriptorsSyncDoesNotCoverAWriteInFlight(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := newCache(t, 2)
-	e.stock(t, 3)
-	defer e.c.Shutdown()
-
-	a, err := e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
-	}
-	h := e.seam.HoldFirst(t, journalv2test.OpWrite, name(1))
-	written := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 16)
-		_, err := a.WriteAt(buf, 0)
-		written <- err
-	}()
-	select {
-	case <-h.Reached():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the write never reached the hold")
-	}
-
-	// The write is in flight: a Sync through a second reference returns nil,
-	// but it cannot have covered a write that had not reached the file.
-	b, err := e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
-	}
-	select {
-	case err := <-written:
-		t.Fatalf("the held write returned %v with the hold up, want it parked", err)
-	default:
-	}
-	if err := b.Sync(); err != nil {
-		t.Fatalf("the sync through the second reference = %v, want nil: nothing fails it", err)
-	}
-	h.Release()
-	if err := <-written; err != nil {
-		t.Fatalf("the released write failed: %v", err)
-	}
-	a.Release()
-	b.Release()
-
-	// The write landed after the only sync started, so no sync covers it: the
-	// descriptor is dirty and must not be evicted to make room.
-	e.read(t, 2)
-	e.read(t, 3)
-	if got := e.openCount(1); got != 1 {
-		t.Fatalf("segment 1's descriptor count is %d after reads past the bound, want 1: the concurrent Sync covered a write that landed after the fsync", got)
-	}
-
-	// The pin lifts only when a sync that started after the write returned.
-	r, err := e.c.Acquire(1)
-	if err != nil {
-		t.Fatalf("reacquiring segment 1 failed: %v", err)
-	}
-	if err := r.Sync(); err != nil {
-		t.Fatalf("syncing segment 1 failed: %v", err)
-	}
-	r.Release()
-	e.read(t, 2)
-	e.read(t, 3)
-	if got := e.openCount(1); got != 0 {
-		t.Fatalf("segment 1's descriptor count is %d after a covering sync and reads past the bound, want it evicted", got)
 	}
 }
 
@@ -1494,7 +1306,7 @@ func TestDescriptorsShutdownUnregistersFromTheBudget(t *testing.T) {
 
 // TestDescriptorsAIdleJournalYieldsToAnother checks the cross-journal half of
 // the bound: one journal holds every slot of the shared budget in idle
-// descriptors — nothing of its own pinned, nothing dirty — and a second
+// descriptors — nothing of its own held — and a second
 // journal's first read still succeeds, because asking the budget reclaims an
 // idle descriptor from the first journal rather than refusing. A takeSlot
 // that only asked its own cache would answer ErrNoDescriptor and starve every
@@ -1519,7 +1331,7 @@ func TestDescriptorsAIdleJournalYieldsToAnother(t *testing.T) {
 	defer b.c.Shutdown()
 
 	// Journal A fills the whole budget with idle descriptors: four reads of
-	// four distinct segments, each released — nothing pinned, nothing dirty.
+	// four distinct segments, each released — nothing held.
 	for i := 1; i <= 4; i++ {
 		a.read(t, core.SegmentID(i))
 	}

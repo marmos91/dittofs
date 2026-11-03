@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"sync"
-	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
@@ -22,10 +21,10 @@ var (
 	ErrSegmentGone = errors.New("segment: segment is closed for reclamation")
 
 	// ErrNoDescriptor is returned by Acquire when every descriptor the budget
-	// allows is pinned by a reference or an unsynced write, so no descriptor
-	// can be opened for this segment. It is not waited on or retried: the
-	// bound is meant to exceed what the process's journals hold at once, so
-	// it means the bound is set too low.
+	// allows is held by a reference, so no descriptor can be opened for
+	// this segment. It is not waited on or retried: the bound is meant to
+	// exceed what the process's journals hold at once, so it means the
+	// bound is set too low.
 	ErrNoDescriptor = errors.New("segment: descriptor limit reached")
 
 	// ErrCacheClosed is returned by Acquire after Shutdown. Nothing is
@@ -77,16 +76,10 @@ type Descriptors struct {
 // descriptor is closed; the references outstanding on it; and the drain that
 // makes Close(id) wait for them.
 //
-// decision: every field but written and synced is guarded by the owning
-// cache's leaf mutex, the one the Descriptors marker names — including the
-// ones a reader of the entry reaches through its Ref, which are first
-// survivor-checked under the same mutex (refAfterOpen). written and synced
-// are lock-free atomics by design: a write and a sync through the same
-// descriptor run on different references with no lock held, and their
-// ordering carries the covered-write pin, so they are never written under
-// the mutex; their reads (dirty) happen under it, on the last release or in
-// the reclaimer's scan, where no write through the entry can still be in
-// flight to reorder against.
+// decision: every field is guarded by the owning cache's leaf mutex, the
+// one the Descriptors marker names — including the ones a reader of the
+// entry reaches through its Ref, which are first survivor-checked under the
+// same mutex (refAfterOpen).
 type descEntry struct {
 	id       core.SegmentID
 	file     storage.File // nil when the descriptor is closed
@@ -105,13 +98,9 @@ type descEntry struct {
 	drained chan struct{} // set by Close(id) while references remain; closed by the last Release
 
 	// idle is the entry's element in the cache's idle list when the
-	// descriptor is open and clean: a referenced entry stays linked, and the
-	// reclaimer skips it by its refs; a dirty one is unlinked, because the
-	// reclaimer is then not to reach it at all.
+	// descriptor is open: a referenced entry stays linked, and the reclaimer
+	// skips it by its refs.
 	idle *list.Element
-
-	written atomic.Uint64 // writes issued through the descriptor
-	synced  atomic.Uint64 // the highest written value a returned Sync covered, or that failed
 }
 
 // openCall is one in-flight open of a segment: the waiters' rendezvous and
@@ -128,12 +117,6 @@ type openCall struct {
 	done chan struct{} // closed once err is set
 	err  error         // the open's outcome: nil when it yields a descriptor
 }
-
-// dirty reports whether a write issued through the descriptor has not been
-// covered by a sync that returned or failed. A call through the entry's
-// descriptor must not race this read: only Release, which the caller
-// serialises with the last reference's, and reclaimOne, under c.mu, read it.
-func (e *descEntry) dirty() bool { return e.written.Load() > e.synced.Load() }
 
 // Ref is a reference to a segment's open descriptor. Its methods need no
 // lock of the cache's: the reference holds the descriptor open.
@@ -177,9 +160,9 @@ func NewDescriptors(fs storage.FS, name func(core.SegmentID) string, budget *cor
 //
 // It returns ErrSegmentGone when the segment's Close has started or its file
 // no longer exists, ErrCacheClosed after Shutdown, and ErrNoDescriptor when
-// the budget's slots are all pinned by references or unsynced writes and
-// none of the process's caches can close one for this acquire. The refusal
-// performs no I/O and waits for nothing.
+// the budget's slots are all held by references and none of the process's
+// caches can close one for this acquire. The refusal performs no I/O and
+// waits for nothing.
 func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	c.mu.Lock()
 	if c.shut {
@@ -374,8 +357,8 @@ func (c *Descriptors) lastRefLocked(e *descEntry) {
 
 // takeSlot draws one descriptor slot from the budget, reclaiming across every
 // cache the process holds until one yields. It returns false when the
-// budget's slots are all pinned by references or unsynced writes and no cache
-// can close one, which Acquire answers with ErrNoDescriptor.
+// budget's slots are all held by references and no cache can close one,
+// which Acquire answers with ErrNoDescriptor.
 //
 // decision: Acquire refuses rather than waiting when every slot is pinned,
 // because the bound is meant to exceed what the process's journals hold at
@@ -395,35 +378,6 @@ func (c *Descriptors) takeSlot() bool {
 // lock of the cache's.
 func (r Ref) ReadAt(p []byte, off int64) (int, error) {
 	return r.e.file.ReadAt(p, off)
-}
-
-// WriteAt writes len(p) bytes at offset off through the reference's open
-// descriptor. The write numbers the descriptor once it has landed: a Sync
-// whose fsync starts while the write is still in flight loads a count that
-// does not include it, so the write stays uncovered and the descriptor stays
-// pinned until a later sync covers it — the safe direction, never the
-// reverse, where a sync would mark a write covered that no fsync reached.
-func (r Ref) WriteAt(p []byte, off int64) (int, error) {
-	n, err := r.e.file.WriteAt(p, off)
-	r.e.written.Add(1)
-	return n, err
-}
-
-// Sync makes the writes issued through the reference's descriptor durable,
-// covering every write numbered before it: whether the sync returned nil or
-// failed, the covered-or-failed count rises to the write number the sync
-// started at, so the descriptor becomes evictable either way and a failed
-// sync never pins it open forever.
-func (r Ref) Sync() error {
-	g := r.e.written.Load()
-	err := r.e.file.Sync()
-	for {
-		old := r.e.synced.Load()
-		if old >= g || r.e.synced.CompareAndSwap(old, g) {
-			break
-		}
-	}
-	return err
 }
 
 // Release returns the reference. When it is the last one on the segment's
@@ -489,18 +443,13 @@ func (c *Descriptors) reclaimOne() bool {
 	// skipped and never closed or given twice — this scan need not, and must
 	// not, refuse for it.
 
-	// The least recently used idle entry: the list's back. Referenced and
-	// dirty entries are skipped — a referenced one stays linked, so the
-	// scan passes over it — and the reclaimer never takes one of those.
-	// Release also unlinks a dirty entry when its last reference drops, so
-	// the dirty check here is deliberate redundancy, defence in depth on
-	// the leaf-contract rule that keeps a reclaimer and a Release from
-	// disagreeing about a victim: Release may not relink what it unlinked,
-	// and this scan may not take what it skipped.
+	// The least recently used idle entry: the list's back. A referenced
+	// entry stays linked, so the scan passes over it, and the reclaimer
+	// never takes one of those.
 	var victim *descEntry
 	for el := c.idle.Back(); el != nil; el = el.Prev() {
 		e := el.Value.(*descEntry)
-		if e.refs == 0 && e.file != nil && !e.dirty() {
+		if e.refs == 0 && e.file != nil {
 			victim = e
 			break
 		}
