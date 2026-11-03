@@ -26,6 +26,14 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kvstore": {"*"},
 	module + "pkg/openstate":        {"*"},
 	module + "pkg/vfs/vfserr":       {"*"},
+	// The test fixture composes the engine over the real journal, its seam and
+	// profiler, the real store on an in-memory kv.KV, and a test clock.
+	module + "pkg/block/journalv2/journalv2test":      {"enginev2test"},
+	module + "pkg/block/journalv2/journalv2test/prof": {"enginev2test"},
+	module + "pkg/metadata/kv":                        {"enginev2test"},
+	module + "pkg/metadata/kv/badgerkv":               {"enginev2test"},
+	module + "pkg/metadata/kvstore/kvstoretest":       {"enginev2test"},
+	module + "pkg/sim":                                {"enginev2test"},
 }
 
 // TestImportRule walks every package under this directory, test packages

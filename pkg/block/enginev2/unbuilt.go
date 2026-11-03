@@ -28,6 +28,10 @@ func (e *Engine) Commit(ctx context.Context, f entity.FileID, off, n int64) (v v
 }
 
 // LossSeq is the file's loss sequence now, with no sync.
+//
+// decision: the stub answers 0 because the signature has no error to carry
+// errUnbuilt. Zero reads as "no loss since any open", so no caller may depend
+// on it until the loss sequence is built.
 func (e *Engine) LossSeq(f entity.FileID) uint64 { return 0 }
 
 // Read answers the verified bytes read into dst, then the error.
