@@ -145,12 +145,14 @@ func (fs *Filesystem) Create(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 		return vfs.CreateResult{}, errContended
 	}
 	defer unlock()
-	return fs.createLocked(ctx, a, c, vfs.OpCreate, dir, name, ca)
+	return fs.createLocked(ctx, a, c, vfs.OpCreate, dir, name, ca, entity.FileID{})
 }
 
 // creating is the locks a create in dir takes: its admission lock, fold
-// admission and accept lock. The new file needs none: no other call can name
-// it before the create answers.
+// admission and accept lock. A create takes none of the new file's, as it
+// does nothing with the file once its name commits; an open that creates
+// draws the new file's ID first and adds its admission lock to the set, so
+// it is taken in the one order with the directory's.
 func creating(dir vfs.Handle) lockorder.Set {
 	d := lockorder.Key(fileOf(dir))
 	return lockorder.Set{Admit: []lockorder.Key{d}, Enter: []lockorder.Key{d}, Accept: []lockorder.Key{d}}
@@ -158,12 +160,14 @@ func creating(dir vfs.Handle) lockorder.Set {
 
 // createLocked is a create of name in dir for op, holding creating's locks:
 // the add right and open state's refusal of a delete-pending dir, then the
-// store's create.
-func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs) (vfs.CreateResult, error) {
+// store's create of a file with ID id, or one the store draws when id is
+// zero.
+func (fs *Filesystem) createLocked(ctx context.Context, a *admitted, c vfs.Call, op vfs.Op, dir vfs.Handle, name []byte, ca vfs.CreateArgs, id entity.FileID) (vfs.CreateResult, error) {
 	nf, err := newFile(ca)
 	if err != nil {
 		return vfs.CreateResult{}, err
 	}
+	nf.ID = id
 	var r vfs.CreateResult
 	if err := fs.addable(ctx, a, c, op, dir, name, addRight(nf.Type), &r.Dir); err != nil {
 		return r, err

@@ -996,3 +996,38 @@ func TestAShareWhoseServeFailsFailsAlone(t *testing.T) {
 		t.Errorf("an open in the share once its serve succeeds: %v", err)
 	}
 }
+
+// V29: a creating open and an unlink of the name it makes, racing, never
+// wait for each other's locks, whichever of the new file's and the
+// directory's IDs sorts first.
+func TestACreatingOpenTakesItsLocksInOrder(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	for i := range 300 {
+		name := fmt.Sprint("f", i)
+		deadline, cancel := context.WithTimeout(ctx, time.Second)
+		var wg sync.WaitGroup
+		var openErr, unlinkErr error
+		wg.Go(func() {
+			r, err := n.Open(deadline, c, byName(n.fs.Root, name, vfs.OpenOrCreate, entity.ReadData))
+			if openErr = err; err == nil {
+				_, _ = n.Close(ctx, c, r.Ref, vfs.Seqs{})
+			}
+		})
+		wg.Go(func() {
+			for {
+				_, err := n.Unlink(deadline, n.admin, vfs.Target{H: n.fs.Root}, []byte(name))
+				if !errors.Is(err, vfs.ErrNotFound) {
+					unlinkErr = err
+					return
+				}
+			}
+		})
+		wg.Wait()
+		cancel()
+		if openErr != nil || unlinkErr != nil {
+			t.Fatalf("run %d: the open %v, the unlink %v; want neither to wait out its deadline", i, openErr, unlinkErr)
+		}
+	}
+}

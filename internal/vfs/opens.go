@@ -73,10 +73,13 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 
 // openLocked is one attempt of an open by name, seen the file the name named
 // when looked up, nil for none. It holds the directory's admission lock and
-// seen's, or, to create, the directory's create locks, and looks the name up
-// again under them: again is set when it moved.
+// seen's, or, to create, the directory's create locks and the admission lock
+// of the ID the new file will take, and looks the name up again under them:
+// again is set when it moved.
 func (fs *Filesystem) openLocked(ctx context.Context, a *admitted, c vfs.Call, req vfs.OpenRequest, seen *vfs.File) (_ vfs.OpenResult, again bool, _ error) {
+	id := entity.NewFileID()
 	set := creating(req.Dir)
+	set.Admit = append(set.Admit, lockorder.Key(id))
 	if seen != nil {
 		k := lockorder.Key(seen.ID)
 		set = lockorder.Set{Admit: []lockorder.Key{lockorder.Key(fileOf(req.Dir)), k}}
@@ -103,13 +106,10 @@ func (fs *Filesystem) openLocked(ctx context.Context, a *admitted, c vfs.Call, r
 	if !creates(req.Disposition) {
 		return vfs.OpenResult{}, false, vfs.ErrNotFound
 	}
-	cr, err := fs.createLocked(ctx, a, c, vfs.OpOpen, req.Dir, req.Name, req.Create)
+	cr, err := fs.createLocked(ctx, a, c, vfs.OpOpen, req.Dir, req.Name, req.Create, id)
 	if err != nil {
 		return vfs.OpenResult{}, false, err
 	}
-	// The new file's admission lock is taken last, out of the one order:
-	// no other call can name the file yet.
-	defer fs.Admission(cr.File.ID)()
 	r, err := fs.grant(ctx, a, c, req, cr.Handle, cr.File, true)
 	if err == nil {
 		r.Created, r.Dir = true, &cr.Dir
