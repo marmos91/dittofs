@@ -1003,8 +1003,11 @@ func TestEachClientCallReachesOpenState(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
 	for name, err := range map[string]error{
-		"AddSession":       func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
-		"Disconnect":       func() error { _, err := s.Disconnect(ctx, c, gone, vfs.SessionRef{}, vfs.SessionEnd{Last: true}); return err }(),
+		"AddSession": func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
+		"Disconnect": func() error {
+			_, err := s.Disconnect(ctx, c, gone, vfs.SessionRef{}, vfs.SessionEnd{Last: true})
+			return err
+		}(),
 		"Renew":            func() error { _, err := s.Renew(ctx, c, gone); return err }(),
 		"ReclaimComplete":  s.ReclaimComplete(ctx, c, gone, nil),
 		"ReleaseLockOwner": s.ReleaseLockOwner(ctx, c, gone, vfs.LockOwner{Client: gone, Name: []byte("pid 1")}),
