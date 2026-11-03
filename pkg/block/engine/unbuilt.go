@@ -15,11 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Write stages p at off and answers once the journal holds it.
-func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
-	return vfserr.Verifier{}, errUnbuilt
-}
-
 // Draw is a version for a change stored outside the journal, drawn under the
 // file's accept lock.
 func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {

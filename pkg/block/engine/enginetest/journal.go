@@ -12,22 +12,28 @@ import (
 )
 
 // wrapJournal returns j as the engine's Journal. The handles its Share
-// returns are the engine's Handle, and their Reserve returns the engine's
-// Reservation.
-func wrapJournal(j *journal.Journal) engine.Journal { return wrappedJournal{j} }
+// returns are the engine's Handle, each handed to opened, and their Reserve
+// returns the engine's Reservation.
+func wrapJournal(j *journal.Journal, opened func(journal.ShareTag, engine.Handle)) engine.Journal {
+	return wrappedJournal{j, opened}
+}
 
 var (
 	_ engine.Handle      = handle{}
 	_ engine.Reservation = (*journal.Reservation)(nil)
 )
 
-type wrappedJournal struct{ *journal.Journal }
+type wrappedJournal struct {
+	*journal.Journal
+	opened func(journal.ShareTag, engine.Handle)
+}
 
 func (j wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version, policy journal.SyncPolicy) (engine.Handle, error) {
 	h, err := j.Journal.Share(tag, limit, floor, policy)
 	if err != nil {
 		return nil, err
 	}
+	j.opened(tag, handle{h})
 	return handle{h}, nil
 }
 

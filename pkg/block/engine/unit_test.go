@@ -31,9 +31,10 @@ type unit struct {
 	fs    *kvstoretest.FS
 	clock *sim.TestClock
 	share engine.Share
+	h     engine.Handle // the share's handle on the fake journal
 }
 
-func newUnit(t *testing.T) *unit {
+func newUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 	u := &unit{j: enginetest.NewFakeJournal(), clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))}
@@ -45,7 +46,7 @@ func newUnit(t *testing.T) *unit {
 		tb.Cleanup(func() { _ = db.Close() })
 		return db
 	})
-	e, err := engine.New(engine.Deps{
+	d := engine.Deps{
 		Devices: []string{"unit"},
 		Open: func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
 			return u.j, nil
@@ -59,8 +60,17 @@ func newUnit(t *testing.T) *unit {
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {}
 		},
-	})
+	}
+	for _, o := range opts {
+		o(&d)
+	}
+	e, err := engine.New(d)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The version limit start raises; the fake refuses every version below
+	// none.
+	if err := u.j.SetVersionLimit(journal.Version{Counter: 1 << 40}); err != nil {
 		t.Fatal(err)
 	}
 	u.share = engine.Share{ID: u.fs.Share.ID, Tag: 1, Limit: 1 << 30, State: engine.Serving}
@@ -69,6 +79,7 @@ func newUnit(t *testing.T) *unit {
 		t.Fatal(err)
 	}
 	e.BindForTest(u.share, u.j, h)
+	u.h = h
 	u.e = e
 	return u
 }

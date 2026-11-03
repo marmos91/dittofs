@@ -3,7 +3,9 @@ package engine
 import (
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
 // Bind installs a binding of s over j and h, copying the share table as a
@@ -80,3 +82,29 @@ func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() 
 
 // PendingOpType is the pending operation's type, for a check of its fields.
 type PendingOpType = pendingOp
+
+// SetSample replaces how a write samples its verifier.
+func (e *Engine) SetSample(f func() vfserr.Verifier) { e.sample = f }
+
+// PendingView is one pending operation as a test reads it.
+type PendingView struct {
+	Version   journal.Version
+	Off, Len  int64
+	At        time.Time
+	SetsMtime bool
+	HasDone   bool
+}
+
+// Pending is f's pending operations, in the entry's order.
+func (e *Engine) Pending(f entity.FileID) []PendingView {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return nil
+	}
+	defer e.files.unlock(f, fe)
+	var out []PendingView
+	for _, op := range fe.ops {
+		out = append(out, PendingView{op.version, op.extent.Off, op.extent.Len, op.at, op.setsMtime, op.done != nil})
+	}
+	return out
+}
