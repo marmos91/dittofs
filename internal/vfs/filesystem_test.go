@@ -28,9 +28,10 @@ import (
 // its Sink and Admission as its Order.
 type fixture struct {
 	*Filesystem
-	tab   *openstate.Table
-	fs    *kvstoretest.FS
-	clock *sim.TestClock
+	tab    *openstate.Table
+	fs     *kvstoretest.FS
+	clock  *sim.TestClock
+	engine *fakeContent
 }
 
 func memKV(tb testing.TB) kv.KV {
@@ -66,7 +67,8 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.Meta, d.Open, d.Engine = fs.Store, tab, newFakeContent()
+	engine := newFakeContent()
+	d.Meta, d.Open, d.Engine = fs.Store, tab, engine
 	s, err := New(d)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +77,7 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock}
+	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock, engine: engine}
 }
 
 // newFilesystem is a serving filesystem, drained and stopped when the test

@@ -3,68 +3,12 @@ package vfs
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/vfs/pseudofs"
-
 	"github.com/marmos91/dittofs/pkg/vfs"
 )
 
 // The calls below are not built yet: each is refused while the filesystem is
 // not serving, as every call is, and otherwise answered errUnbuilt. Each moves
 // to its own file as it is built.
-
-// GetAttr answers a pseudo directory; a file of a share is not built yet.
-
-func (fs *Filesystem) GetAttr(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.File, error) {
-	if !pseudofs.IsHandle(h) {
-		return vfs.File{}, fs.unbuilt(ctx)
-	}
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return vfs.File{}, err
-	}
-	defer done()
-	t, err := fs.tree(ctx)
-	if err != nil {
-		return vfs.File{}, err
-	}
-	n, ok := t.Node(h)
-	if !ok {
-		return vfs.File{}, vfs.ErrStale
-	}
-	return pseudoFile(t, n), nil
-}
-
-func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, a vfs.AttrChange) (vfs.WCC, error) {
-	return vfs.WCC{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.ACL, error) {
-	return vfs.ACL{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) SetACL(ctx context.Context, c vfs.Call, t vfs.Target, acl vfs.ACL) (vfs.WCC, error) {
-	return vfs.WCC{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Xattrs(ctx context.Context, c vfs.Call, h vfs.Handle) ([]vfs.Xattr, error) {
-	return nil, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) SetXattr(ctx context.Context, c vfs.Call, t vfs.Target, x vfs.Xattr, m vfs.XattrMode) (vfs.WCC, error) {
-	return vfs.WCC{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) RemoveXattr(ctx context.Context, c vfs.Call, t vfs.Target, name []byte) (vfs.WCC, error) {
-	return vfs.WCC{}, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Streams(ctx context.Context, c vfs.Call, h vfs.Handle) ([]vfs.File, error) {
-	return nil, fs.unbuilt(ctx)
-}
-
-func (fs *Filesystem) Access(ctx context.Context, c vfs.Call, h vfs.Handle, parent vfs.Handle, want vfs.Access) (vfs.Access, error) {
-	return 0, fs.unbuilt(ctx)
-}
 
 func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest) (vfs.OpenResult, error) {
 	return vfs.OpenResult{}, fs.unbuilt(ctx)

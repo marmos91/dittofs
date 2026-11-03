@@ -39,8 +39,9 @@ func laterOf(now, prev time.Time) time.Time {
 
 // SetAttrs changes the attributes a names. Only a privileged caller changes
 // the owner or the immutable and append-only flags; the owner may change
-// the group to one it is in, the mode and the times. A chmod on a file with
-// a stored ACL merges into the ACL, and both are written together.
+// the group to one it is in, the mode and the times, and a caller holding
+// write the ACL the mode. A chmod on a file with a stored ACL merges into the
+// ACL, and both are written together.
 //
 // A size change is refused: it goes through an existence commit, which
 // needs the write path.
@@ -127,6 +128,16 @@ func mayChange(r kv.Reader, id entity.Identity, f entity.File, a entity.Attrs) e
 		return nil
 	}
 	owner := id.Principal == f.Owner
+	if a.Changes(entity.AttrMode) && !owner {
+		// A chmod asks write the ACL, which the owner holds implicitly and
+		// an entry can grant to another.
+		if err := authorize(r, id, f, entity.WriteACL); err != nil {
+			return err
+		}
+		if a.Mask &^= entity.AttrMode; a.Mask == 0 {
+			return nil
+		}
+	}
 	switch {
 	case a.Changes(entity.AttrOwner) && a.Owner != f.Owner:
 		return merrs.NewPrivilegeRequiredError("change owner")
@@ -160,6 +171,38 @@ func mayChange(r kv.Reader, id entity.Identity, f entity.File, a entity.Attrs) e
 // times are the attributes a non-owner may set with write attributes from
 // an ACL entry.
 const times = entity.AttrBirth | entity.AttrAccess | entity.AttrModify
+
+// ClearSetID clears setuid and setgid on a regular file, as an unprivileged
+// caller's write clears them, and changes nothing else: unlike a chmod, it
+// merges nothing into a stored ACL. It asks write data, the right of the
+// write that clears them. A file with neither bit is left as it is.
+func (f Files) ClearSetID(ctx context.Context, id entity.Identity, h entity.Handle) (entity.File, error) {
+	var out entity.File
+	err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		share, _, err := h.Parse()
+		if err != nil {
+			return err
+		}
+		_, file, err := resolveIn(tx, share, h)
+		if err != nil {
+			return err
+		}
+		if err := authorize(tx, id, file, entity.WriteData); err != nil {
+			return err
+		}
+		out = file
+		m := file.ClearSetID()
+		if m == file.Mode {
+			return nil
+		}
+		was := file.Version
+		file.Mode = m
+		changed(tx, &file)
+		out = file
+		return putFile(tx, was, file)
+	})
+	return out, err
+}
 
 // ACL is the file's access-control list: the stored one, or the one its
 // mode implies.
