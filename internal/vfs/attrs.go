@@ -188,6 +188,15 @@ func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	id := a.caller.Identity
 	onOpen := t.Open != nil && ch.Mask&^(attrTimes|entity.AttrSize) == 0 && ch.Mask&attrTimes != 0 &&
 		!id.Privileged && id.Principal != f.Owner
+	// decision: open state is asked, and a delete-on-close mark is set,
+	// before the store's ownership rules judge the change's values, so a
+	// chown or chgrp the store then refuses has still recalled other
+	// clients' grants, and a delete-on-close sent with it stays marked
+	// though the call answers the refusal. The recall costs a later grant
+	// only; no protocol sends a disposition with an owner change in one
+	// call. Judge the values first, through a read-only owner check the
+	// store exposes, once a client is seen sending both together or a
+	// recall storm is traced to refused chowns.
 	if what := changeOf(ch.Attrs); what != 0 {
 		if !onOpen {
 			what &^= openstate.ChangeTimes
