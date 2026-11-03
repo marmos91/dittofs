@@ -18,7 +18,7 @@ import (
 
 // expectOpen fails t unless log is exactly one createFile of path, with read
 // and write access, sharing reads, writes and deletes, with the disposition
-// createmode, whose handle is h.
+// createmode and no flag, whose handle is h.
 func expectOpen(t *testing.T, log []call, path string, createmode uint32, h windows.Handle) {
 	t.Helper()
 
@@ -34,6 +34,10 @@ func expectOpen(t *testing.T, log []call, path string, createmode uint32, h wind
 
 	if c.createmode != createmode {
 		t.Fatalf("%v: want the disposition %d", c, createmode)
+	}
+
+	if c.attrs != windows.FILE_ATTRIBUTE_NORMAL {
+		t.Fatalf("%v: want FILE_ATTRIBUTE_NORMAL and no flag, such as write-through", c)
 	}
 
 	if c.handle != h {
