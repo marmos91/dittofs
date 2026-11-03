@@ -2,6 +2,7 @@ package journalv2test
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -1188,5 +1189,69 @@ func TestTornEndRefusesACutPastTheWrite(t *testing.T) {
 	crash(t, s, TornEnd("seg", 4))
 	if got := onDisk(t, s, "seg"); got != "" {
 		t.Fatalf("seg holds %q after its only write was cut whole, want nothing", got)
+	}
+}
+
+// TestShuffleListPermutesTheListing pins that ShuffleList permutes the order
+// List returns, deterministically per seed, while keeping every name, and that
+// zero restores the directory's own order.
+func TestShuffleListPermutesTheListing(t *testing.T) {
+	s := newSeam(t)
+	for i := range 8 {
+		f := create(t, s, fmt.Sprintf("seg-%02d", i))
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plain, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorted := slices.Clone(plain)
+	slices.Sort(sorted)
+	if !slices.Equal(plain, sorted) {
+		t.Fatalf("the plain listing %v is not sorted", plain)
+	}
+
+	s.ShuffleList(1)
+	got, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Equal(got, plain) {
+		t.Fatalf("seed 1 left the listing %v in the directory's own order", got)
+	}
+	sortedGot := slices.Clone(got)
+	slices.Sort(sortedGot)
+	if !slices.Equal(sortedGot, plain) {
+		t.Fatalf("the shuffled listing %v is not a permutation of %v", got, plain)
+	}
+
+	s.ShuffleList(1)
+	sameSeed, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sameSeed, got) {
+		t.Fatalf("seed 1 gave %v and then %v; the same seed must give the same order", got, sameSeed)
+	}
+
+	s.ShuffleList(2)
+	otherSeed, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Equal(otherSeed, got) {
+		t.Fatalf("seed 2 gave %v, the very order seed 1 gave", otherSeed)
+	}
+
+	s.ShuffleList(0)
+	restored, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(restored, plain) {
+		t.Fatalf("zero gave %v, want the plain directory order back %v", restored, plain)
 	}
 }

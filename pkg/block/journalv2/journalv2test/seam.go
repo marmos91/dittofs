@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,6 +69,10 @@ type Seam struct {
 	// make durable, so undoing dirLog no longer gives the durable names. Nil
 	// otherwise.
 	dirSnap map[string]*node
+
+	// shuffle seeds the permutation List serves the names in; zero is none,
+	// so List returns the directory's own order, which os.ReadDir sorts.
+	shuffle uint64
 
 	open     map[*seamFile]struct{}
 	calls    map[string]int
@@ -489,7 +494,29 @@ func (s *Seam) listFrom(epoch uint64) ([]string, error) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
+	if s.shuffle != 0 {
+		r := rand.NewPCG(s.shuffle, s.shuffle)
+		rand.New(r).Shuffle(len(names), func(i, j int) { names[i], names[j] = names[j], names[i] })
+	}
 	return names, nil
+}
+
+// ShuffleList makes every later List, through any view, return the names in
+// an order permuted deterministically by seed; ShuffleList(0) restores the
+// directory's own order, which every List of a storage.FS may sort, as
+// os.ReadDir does. The same seed always gives the same order, and List keeps
+// naming every file.
+//
+// decision: the shuffled order comes from the listing rather than from
+// renaming the files. A segment header's id is the one in its name, so a
+// renamed segment is damage a correct journal must refuse, and a recovery
+// that depends on listing order would never be run against it. Permuting
+// the listing alone leaves every segment intact while hiding the order the
+// real filesystem hands them over in, which is what the check needs.
+func (s *Seam) ShuffleList(seed uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shuffle = seed
 }
 
 func (s *Seam) SyncDir() error { return s.FS().SyncDir() }
