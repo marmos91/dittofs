@@ -121,8 +121,7 @@ with stage 2:
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
   `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is a
-  `CloneHold` in the engine's own types, which RFC 8 §2.6 gains (§6 point 2), open state's
-  three clone calls:
+  RFC 8 §2.6's `CloneHold`, open state's three clone calls in the engine's own types:
   `Hold`, RFC 14 §9.2's `CloneOpen`, which takes over the source record the clone's phase 1
   writes and so runs after it, taken before `Content.Resume` runs phase 2; `Release`, its
   `CloneClose`, called once `Resume` returns, whose orphan open state reports through its
@@ -171,7 +170,7 @@ the rest:
 | C8 | `ErrLost` | residency **Lost** and a flush across a loss | `vfs.ErrLost` | one sentinel for both meanings, confirmed |
 | C9 | `WriteOpts.Done` | called by the existence commit that records the write's usage | same | kept, and called exactly once for every write `Write` accepted: by the existence commit that records its usage, the group commit's or a removal's phase 1; by the engine with nothing charged for a write dropped before any commit (a failed window, `Forget`, an aborted release, or a journal device lost whole; a node ceasing to serve its shard is the cluster's); and by the loss-record commit (epics 4, 5 and 6). After a restart nothing is reserved, and nothing waits on a `Done` (RFC 8 §5.1, as #3547 words it) |
 | C10 | request ID | each mutation's ctx carries it | nothing | unused on a single node; the ctx key is RFC 15's to declare (§6 point 3) |
-| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, `vfserr.ErrFileOpen` for an abort (which T5.4 adds), or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to start step 3's marker; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
+| C11 | a delayed `Delete`'s retry | `Delete(ctx, f) error`; how a delayed release learns its retry is not said | `Delete(ctx, f) error`; `vfserr.Delay` holds `Cause`, `Until`, `Moved` | `Delete(ctx, s, f) (retry <-chan error, err error)`: `retry` is T5.4's channel, non-nil only when the release is pending, and yields its outcome once, `vfserr.ErrFileOpen` for an abort (which T5.4 adds), or `ErrUnavailable` at `Close` or `Drop`; the unlink answers success meanwhile, and the service waits on `retry` in the background, not inside `Sink.Closed`, until the server's stop (`Filesystem.Stop`), where the waiter ends with no `done(...)`, the release left to the next start's recovery; the VFS plan's piece 7 builds the waiter. `vfserr.Delay` gains nothing (§6 point 15) |
 
 ### 1.4 What epic 2 must deliver
 
@@ -604,8 +603,8 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
 
 A file's bytes in and out. The per-file entry (guard, pending existence, overlay) is one
-map entry sharded by file, kept while the file has pending existence, a removal in flight or
-a loss entry above the floor (RFC 8 §2.3's ponytail); the guard orders a removal against a
+map entry sharded by file, kept while the file has pending existence, a removal in flight,
+a loss entry above the floor (RFC 8 §2.3's ponytail), or a clone's registration or done spec (epic 8); the guard orders a removal against a
 capture, and correctness never rests on it (E17). A **carved** run cannot arise, since no
 code of this part writes a ref; met anyway it means a store written by something else, and
 it fails `ErrUnavailable`, transient and distinguishable from **Lost**, never zeros (E9).
@@ -919,9 +918,9 @@ source run uncarved and not held is carried as uncarved and reads **Lost**. Sect
 RFC 8 §9.1 (all but adoption and the snapshot cases), §5.1's clone in a pre-cut commit
 excluded. Spans: a clone's batches as root spans.
 
-- T8.1 Admission: overlap, `clone_max_len`, namespace, an incomplete source; the source
-  extent's registration, waiting for writes already admitted, and `ErrDelay` for writes and
-  removals into it.
+- T8.1 Admission: overlap, `clone_max_len`, namespace (an incomplete source is the
+  service's, RFC 17 §5.9); the source extent's registration, waiting for writes already
+  admitted and a removal in flight, and `ErrDelay` for writes and removals into it.
 - T8.2 `Reserve` for the bytes to copy, `CloneTarget`, the copies through the reservation,
   the sync, phase 1 through `Existence.Clone`, which writes the source's clone-kind open
   record; the uncarved carry. Until the clone is done, T8.1's registration holds the
@@ -966,11 +965,12 @@ excluded. Spans: a clone's batches as root spans.
 - T8.4 The destination held until done; removals of it held; a retry joining a running
   clone; `ErrDelay` at the deadline, success once done.
 - T8.5 `Copy` as 64 MiB bounded clones with a short count, the chunk's `decision:` marker.
-- T8.6 Rebuild at start: the registration from the source's clone-kind open record when
-  phase 1 wrote it, otherwise from the journal's clone marker, holding the source until the
+- T8.6 Rebuild at start: the registration from the destination's clone `Removal` record
+  when phase 1 wrote it, whose spec holds what the source's clone-kind open record does,
+  otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
-  `Hold`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
-  13). A source unlinked before the restart is reported by neither of T8.3's paths: the
+  `Hold`. The "source registration rebuilt" row of §1.4 holds in substance, its
+  wording ("from its clone-kind open record") in a cluster (epic 8's open point 6). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
   it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
@@ -1043,10 +1043,7 @@ follows the journal's, not this part's (§6 point 7).
    Owed beside them, though #3543 did not settle it: RFC 6 §10.1 puts `Clone` on `Content`,
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
    §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
-   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); RFC 8 §2.6 gains
-   `Holds`, a `CloneHold` with `Hold`, `Release` and `Served` over open state's `CloneOpen`,
-   `CloneClose` and `Recovery.Served`, the orphan `Release` leaves reported by open state's
-   own `Sink.Closed`; §8.1's "the engine reads and writes no open state" narrows to a
+   §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); §8.1's "the engine reads and writes no open state" narrows to a
    release; and §9.1's clone open "entered in the source's open table at its primary at
    admission" becomes the engine's, taken before phase 2, with the registration holding the
    source until the clone is done and a release it delayed run again when it drops (point
@@ -1109,7 +1106,7 @@ follows the journal's, not this part's (§6 point 7).
     Until the clone is done, the source is held by the registration, not the open, and a
     release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
     takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
-    view of it" narrows to releases, and §2.6 gains the member (§6 point 2).
+    view of it" narrows to releases (§6 point 2).
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
     someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
     adapts it.

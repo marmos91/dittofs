@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §9.1 (all but the adoption of carved refs, the
 fill and the snapshot cases), §2.3 (`Unbind`'s join of clones), §2.5 (start steps 3 and 4
-for a clone, and stop step 2), §2.6 (`Deps.Holds`, a `CloneHold`, which §2.6 gains: the plan's §6 point 2), §8.1 (a release held
+for a clone, and stop step 2), §2.6 (`Deps.Holds`, a `CloneHold`), §8.1 (a release held
 behind a clone, its retry channel), §12.1 (`Clone`, `Copy` and their errors), §13 (E6, E28,
 E34, E40) and §15.1's §9.1 and §2.5 rows; [RFC 14](../rfcs/rfc-14-open-state.md) §2.2 (the
 clone-kind open), §9.2 (`CloneOpen`, `CloneClose`) and §11.3 (`Recovery.Served`), for the
@@ -277,15 +277,15 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R35 | Failure leaves the destination, adapted: a refused reservation leaves the prior content; crashes after the journal step, the copies, phase 1 and between two batches each finish from the spec, the source written at each restart answering `ErrDelay`; the source part dirty and part a hole or uncarved, not carved | test row | §15.1 | T8.2, T8.6 |
 | R36 | Removals of a cloning destination: a punch, a truncate, a clone onto it and an unlink held until done, then applied; the release's prune keeps the clone `Removal`; the last batch deletes the source's clone-kind open | test row | §15.1 | T8.3, T8.4 |
 | R37 | Source registration rebuilt: stopped between two batches with the files in two shares, the source's registration is rebuilt before it is served (D10) | test row | §15.1 | T8.6 |
-| R38 | Clone never waits, adapted: no remote is composed; writes into either extent answer `ErrDelay` until done; power cut after the answer, the destination reads the source | test row | §15.1 | T8.1, T8.2 |
+| R38 | Clone never waits, adapted: no remote is composed; writes into either extent answer `ErrDelay` until done; power cut after the answer, the destination reads the source | test row | §15.1 | T8.1, T8.2, T8.6 |
 | R39 | Refusals, adapted: two namespaces `ErrCross`; one byte over `clone_max_len` `ErrInvalid`; a `Copy` of 1 GiB with a writer of the source answered within one chunk's time once the service retries, and a deadline mid-copy answering a short count a continued copy completes. The NFSv3 client's view is the integration epic's | test row | §15.1 | T8.1, T8.5 |
 | R40 | Clone resumed at a full limit, adapted: crash after the copies synced, before phase 1, on a share at its journal limit; restart re-makes no copy, reserves nothing, serves every other file and finishes the clone. The remote outage is the second part's | test row | §15.1 | T8.6 |
 
 ## 4. Decisions this epic takes
 
 - **D1, the two shares.** `Clone` and `Copy` take `srcShare` and `dstShare` beside the files
-  (RFC 8 §12.1 as #3608 words it; the declared signatures with #3609, already on the
-  engine's stubs). Each is resolved through epic 3's `bindingOf`; either one unbound answers
+  (RFC 8 §12.1 as #3608 words it). The engine's stubs change with #3609: on this base
+  `unbuilt.go` still declares the one-share `Clone(ctx, src, dst FileID, x)`. Each is resolved through epic 3's `bindingOf`; either one unbound answers
   `DelayFrozen`. The source is read through its share's handle and the copies are written
   through the destination's, which may be another journal. On one node a clone between two
   shares of one namespace is a clone between two shards, which RFC 8 §9.1 refuses only in a
@@ -349,8 +349,9 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   §9.2). A context
   cancelled, not past its deadline, answers its own error, as epic 3's content methods do.
 - **D7, a done clone's memory.** RFC 8 §9.1 answers a retry of a finished clone at once when
-  neither extent changed. A done clone leaves its spec in both files' entries until a write
-  or removal overlapping either extent drops it, and a node-wide FIFO keeps at most 1024,
+  neither extent changed. A done clone leaves its spec in both files' entries, which keeps
+  each entry alive as a registration does (D4), until a write or removal overlapping either
+  extent drops it, and a node-wide FIFO keeps at most 1024,
   dropping the oldest. A retry finding its spec answers success at once; one finding none
   runs the clone again, which yields the same bytes. A `ponytail:` marker: the memory is
   lost at restart and after 1024 later clones, so a client retrying across a restart re-runs
@@ -398,7 +399,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   of kind clone at *v*, `{extent, size raised to the extent's end}`, and each copy a pending
   write above it with no `Done`, since no client write is charged. T3.4's replay applies it,
   so `Overlay` answers the size phase 1 will commit, and phase 1 hands every pending
-  operation of the file to `Existence.Clone`. No marker: it is the replay's rule extended.
+  operation of the file to `Existence.Clone`.
 - **D14, a `Hold` that fails.** In the loop's item, `ErrDelay` with `DelayFrozen`, which the
   root's adapter answers for a shard not yet served, and `ErrStopped`, a table not running,
   hold phase 2 before `Resume`, retried with the removal loop's backoff and counted toward no
@@ -430,7 +431,7 @@ pkg/block/enginev2/
   share.go          T8.4  Unbind's join of clones
   engine.go         T8.4  Close's cancel and join of clones
   start.go          T8.6  a clone rebuilt from its marker or its Removal record (D10), its Served wait (D11)
-  export_test.go    T8.1  hooks: the registrations, the admitted count; T8.4 the done memory
+  export_test.go    T8.1  hooks: the registrations, the admitted count; T8.2 the faked done signal; T8.4 the done memory
   enginev2test/
     fake.go         T8.2  CloneTarget, Reserve, Reservation, Since's clone marker
 ```
@@ -507,7 +508,9 @@ pkg/block/enginev2/
     `applied` after it is at or above it.
   - A source run neither held nor a hole reads **Lost** in the destination after the
     clone, never zeros.
-- **Tests:** a reservation refused by the fake: the clone fails with the mapped error, both
+- **Tests:** the done signal is T8.3's, so here an `export_test.go` hook fakes it, dropping
+  the registrations and raising it once phase 1 returns; the stall between two batches is
+  T8.4's, and the power cut after the answer T8.6's. A reservation refused by the fake: the clone fails with the mapped error, both
   registrations are gone (a write into the source extent is served), the destination reads
   its prior content, and the journal saw no `CloneTarget` (R4, R35's first case); a clone
   whose source extent ends past the source's end at `asOf`: `ErrInvalid`, the journal sees no
@@ -600,11 +603,14 @@ pkg/block/enginev2/
   destination extent, a truncate of the destination, a clone onto it and an unlink with no
   open each answer `DelayClone` or pending, and once the clone is done each applies, the
   punched range reading zeros, never cloned bytes (catches a removal admitted mid-clone,
-  R23, R36); a second `Clone` with the same spec while the first runs: one `CloneTarget` in
+  R23, R36); the clone `Removal` is listed, not done, until the last batch though the unlink
+  came first, and the unlink's release prunes it only once done (catches the release run
+  mid-clone, whose prune deletes the record, R36); a second `Clone` with the same spec while the first runs: one `CloneTarget` in
   the journal's log and both answered once done (catches a second clone, R27); the first
   called with a deadline the held loop outlasts answers `ErrDelay`, and a later retry
   answers once done (R25); after it, the same retry answers success with no journal call
-  (D7), and after a write into the destination extent it runs the clone again; `Unbind` of
+  (D7), and after a write into the destination extent, or into the source extent above
+  `asOf`, it runs the clone again (catches a spec kept past either change); `Unbind` of
   the source's share while the loop holds the clone returns only after the clone is done
   (catches a join of the destination's share alone, R28); `Close` with a clone mid-copy
   leaves no goroutine for `prof.Watch` and a marker a restart finishes (T8.6); `Close` with
@@ -642,7 +648,7 @@ pkg/block/enginev2/
 
 - **Track:** A. **Depends on:** T8.3; epic 6's T6.5 (clone markers from `Since`) and T6.6
   (unfinished removals posted to the loop).
-- **Covers:** R9, R21, R26, R31, R32, R35, R37, R40.
+- **Covers:** R9, R21, R26, R31, R32, R35, R37, R38, R40.
 - **Deliverables:** in `start.go`, a clone marker above `applied` handed by start step 3
   rebuilt as a clone: both registrations before either file is served, the destination's
   copies kept (its held extents above *v*), only the source's held runs they do not cover
@@ -665,7 +671,8 @@ pkg/block/enginev2/
   reading zeros or **Lost**; one keeping the registration in memory only clones a source
   written since; R31, R35); the files in two shares, stopped between two batches: after
   the restart a write into the source extent answers `ErrDelay` before any other call
-  (R37); a crash after the copies synced on a share at its journal limit: the restart's
+  (R37); a power cut right after the clone's answer: the destination reads the source (catches
+  an answer before the destination's copies are synced and phase 1 committed, R38); a crash after the copies synced on a share at its journal limit: the restart's
   reservation asks for nothing, every other file is served, and the clone finishes (catches
   a restart re-making the copies, which the full limit refuses, R40); a `Served` stub that
   returns only when released: no `Resume` before it, `clone_waiting_served` names the
@@ -709,7 +716,7 @@ A suggestion only: one pull request per subtask works as well.
 
 1. **RFC 8 §9.1 still has the source open taken at admission.** Its rule "the clone holds an
    open on the source, entered in the source's open table at its primary at admission"
-   predates the `CloneHold` §2.6 gains (the plan's §6 point 2), whose `Hold` takes over the record phase 1 writes and so
+   predates §2.6's `CloneHold`, whose `Hold` takes over the record phase 1 writes and so
    cannot run before it. Between admission and `Hold` the registration holds the source
    (R10). §9.1's text is owed the narrowing §2.6 and §8.1 already carry.
 2. **How a call held behind a clone learns it ended.** RFC 8 §9.1 answers a write into the
@@ -729,20 +736,18 @@ A suggestion only: one pull request per subtask works as well.
 4. **`CloneSrc.AsOf` holds *v*** (D9): RFC 14's `CloneSource.Version` and the engine's field
    name say `asOf`, while the record `kvstore` writes and `CloneOpen` matches carries the
    clone's version. One of the three should change.
-5. **`Share.Namespace`** (D2): settled. RFC 8 §12.1's `Share` already has it, so E1's gains
-   it in T8.1; the node fills it at `Bind`.
-6. **`Reserve`'s `n`.** RFC 1 §6 says "`n` record bytes in all", RFC 8 §9.1 "their bytes". The
+5. **`Reserve`'s `n`.** RFC 1 §6 says "`n` record bytes in all", RFC 8 §9.1 "their bytes". The
    engine passes the copies' payload bytes; if the journal counts record headers in `n`, it
    should say so in RFC 1 §6, and the engine adds them.
-7. **The "source registration rebuilt" row** asserts the registration is rebuilt "from its
+6. **The "source registration rebuilt" row** asserts the registration is rebuilt "from its
    clone-kind open record". On one node D10 rebuilds the same registration from the
    destination's clone `Removal` record, written and ended in the same transactions; the
    row holds in substance, its wording in a cluster.
-8. **RFC 8 §15.1's "one source state" row** is in no epic: its offload of the source during
+7. **RFC 8 §15.1's "one source state" row** is in no epic: its offload of the source during
    the clone is the second part's, but its registration half (writes into the source extent
    `ErrDelay` between two batches, the destination equal to the source at the clone's start,
    a same-file disjoint clone completing, the source released only after the clone) runs in
    this part. T8.1, T8.3 and T8.4 test each piece; E2's catalogue could carry it adapted.
-9. **No row over the real journal turns green in this epic.** `journalv2`'s `CloneTarget`,
+8. **No row over the real journal turns green in this epic.** `journalv2`'s `CloneTarget`,
    `Reserve` and `Reservation` answer `ErrNotImplemented`, and E2's fixture composes the
    engine through `Start`. R33 to R40 leave `known.yaml` once the journal builds them.
