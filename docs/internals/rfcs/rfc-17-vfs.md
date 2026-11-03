@@ -1947,6 +1947,14 @@ none yet — and marks the file through `Opens.Releasing`, which fails if an ope
 exists; it reports the release's outcome to the `done` that returns, so an
 aborted release clears the mark
 ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
+A pending release answers a retry channel, not an error
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)):
+the call that ran it is answered as if the release were done, so an unlink or a
+rename whose name is gone succeeds, and the service waits on the channel in the
+background, never inside `Sink.Closed`, keeping the mark meanwhile. The outcome
+decides the rest: committed or aborted, it goes to `done`; `ErrDelay`, the
+service runs the release again; `ErrUnavailable`, it is logged, and the pending
+release is left for the next start's recovery.
 The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
@@ -2007,7 +2015,11 @@ func (s *Filesystem) unlinkLocked(ctx context.Context, c Caller, dir Target, nam
 		r.Dir.After = s.overlaid(ctx, dir.H)
 	}, fileOf(dir.H), f.ID)
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		var retry <-chan error
+		retry, err = s.engine.Delete(ctx, f.Share, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		if retry != nil {
+			go s.awaitRelease(f.Share, orphan.File, retry) // the name is gone, so the unlink succeeds; the release's outcome is waited on here, retried or logged (§5.3)
+		}
 	}
 	return r, false, err // the chunks it referenced are dropped by the engine's batches and GC (RFC 8 §8.1)
 }
@@ -2070,7 +2082,11 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 		}
 	}
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		var retry <-chan error
+		retry, err = s.engine.Delete(ctx, dst.Share, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		if retry != nil {
+			go s.awaitRelease(dst.Share, orphan.File, retry) // as unlink's: the rename succeeds
+		}
 	}
 	return r, err
 }

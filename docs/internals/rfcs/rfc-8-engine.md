@@ -2428,6 +2428,16 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   removal's kind, cleared by its next batch that commits; the count is kept by
   file in the binding's policy state, as O6's is. A stalled clone holds writes to
   its destination extent, so its condition is unhealthy rather than degraded.
+- A release that cannot finish within its call is pending, not failed: one
+  whose phase 1 has not committed at the call's deadline, the journal's
+  `Delete` done, and one held behind a clone past its deadline
+  ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
+  `Delete` answers a pending release with a retry channel, not an error, and
+  retries phase 1 from the scheduler with no goroutine of its own. The channel
+  yields the release's outcome once: nil once phase 1 commits, the abort's
+  error, `ErrDelay` once the clone it waited behind is done, so the service
+  runs the release again, or `ErrUnavailable` when `Close` or `Drop` comes first,
+  leaving the marker for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 **Steps.**
 
@@ -2651,7 +2661,8 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
 - **Nothing removes from the destination while its clone runs.** A truncate,
   deallocate or clone of the destination file, and its release, are held until
   its clone is done, as those of the source extent are, and answer `ErrDelay`
-  only past their own deadline: a batch applies refs with no removal check, so
+  only past their own deadline, a release its retry channel instead
+  ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): a batch applies refs with no removal check, so
   a later removal whose phase 2 had passed an offset would see the clone write
   an older ref there that nothing drops. A release that finds an unfinished
   clone `Removal` of its file waits for it, and its prune never deletes one
@@ -3049,7 +3060,7 @@ Only what the engine adds to [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%
 | --- | --- |
 | Remote unavailable | keeps accepting writes while capacity allows; backs off offloads; fails **Remote** reads distinguishably ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) |
 | Journal at capacity | runs [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) |
-| Metadata unwritable, or stalled | **The one rule for a store that commits nothing**, which [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) cites: writes are still staged and acknowledged; a stability point or stable write that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered `ErrDelay` (retry-later), never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). Truncate, deallocate, release and clone fail at their deadline. A phase-2 batch or a prune fails at the metadata deadline and backs off ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). Offload fails and reports the offload condition ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). |
+| Metadata unwritable, or stalled | **The one rule for a store that commits nothing**, which [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) cites: writes are still staged and acknowledged; a stability point or stable write that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered `ErrDelay` (retry-later), never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). Truncate, deallocate and clone fail at their deadline; a release is pending, answering its retry channel ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), once the journal's `Delete` is done. A phase-2 batch or a prune fails at the metadata deadline and backs off ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). Offload fails and reports the offload condition ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). |
 | No write transaction committed for 30 s | **The engine owns the self-fence.** It records the store time of the last write transaction any of its components committed; once a write transaction is outstanding or failing and none has committed for 30 s — the default request deadline ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — it fences the node: writes and stability points answer `ErrDelay`, reads continue, and a health condition names the store. It counts commits, not answers, so a store whose writes fail at once while its reads complete — device full, read-only remount — trips it as one that answers nothing does. The first write transaction to commit clears it, with no new node epoch and no grace. On a single node this is a local fault, never a lease loss ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); **(cluster)** a node that cannot renew its lease fences at half the lease instead ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)). |
 | Metadata store lost | the single node's embedded store gone with its host, or found unreadable: the engine serves no share until [RFC 26](rfc-26-catalog-backups.md)'s recovery import has run, files revert to the last catalog backup, and GC does not run until an operator acknowledges the import ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). |
 | Journal sync fails | the journal fails or re-appends the window; a failed window is reported once to the next `Sync` of each file with a write in it, and raises that file's loss sequence and the journal's loss generation ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). A journal turned read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)) fails every write with `ErrJournalReadOnly`. The engine answers by the error that entered the state ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)): `EROFS`, a remount only an operator clears, at once as [RFC 17](rfc-17-vfs.md)'s `ErrReadOnly`, which [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) never answers retry-later; any other, a device failing that may come back, retry-later (`ErrDelay`). That answer comes before the self-fence's, since the write never reaches the store. It raises `journal_read_only`; reads continue, and once the journal reports a spare made and its checks passed, the engine closes and reopens it. The reopen runs as [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) gives; one refused for any cause but a missing or foreign journal leaves writes, and reads of content only the journal held, answered retry-later, and is retried ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)) |
@@ -3192,7 +3203,7 @@ func (e *Engine) LossSeq(s ShareID, f FileID) uint64                            
 func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
 func (e *Engine) Deallocate(ctx context.Context, s ShareID, f FileID, off, n int64) error
-func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) error // the file's release (RFC 7 §4.5); never the journal's Release, which evicts
+func (e *Engine) Delete(ctx context.Context, s ShareID, f FileID) (retry <-chan error, err error) // the file's release (RFC 7 §4.5), never the journal's Release, which evicts; retry non-nil only when the release is pending: it yields the release's outcome once, or ErrUnavailable at Close or Drop (§8.1)
 func (e *Engine) Clone(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, x Extent) error            // atomic, answered when done, at most clone_max_len; the shares differ for a clone between two shares of one namespace (§9.1)
 func (e *Engine) Copy(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; the shares as for Clone
 func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
