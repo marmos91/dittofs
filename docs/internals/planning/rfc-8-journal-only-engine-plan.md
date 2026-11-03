@@ -1109,8 +1109,8 @@ follows the journal's, not this part's (§6 point 7).
     service its orphan through its own `Sink.Closed`.
     Until the clone is done, the source is held by the registration, not the open, and a
     release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
-    takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
-    view of it" narrows to releases (§6 point 2).
+    takes no open. RFC 8 §8.1 already says a release reads and writes no open state, and that
+    the one open the engine holds is a clone's, through `Deps.Holds`.
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
     someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
     adapts it.
