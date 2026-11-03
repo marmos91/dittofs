@@ -147,7 +147,7 @@ func assertWhole(t *testing.T, seam *journalv2test.Seam, name string) {
 	if err != nil {
 		t.Fatalf("whole %s: Open: %v", name, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	size, err := f.Size()
 	if err != nil {
@@ -827,7 +827,7 @@ func TestMakeNeverRemovesANameItDidNotCreate(t *testing.T) {
 	if _, err := f.WriteAt([]byte{0x5a}, 0); err != nil {
 		t.Fatalf("the pre-existing spare: WriteAt: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	var rec recording
 	seam.SetFault(&rec)
@@ -842,7 +842,7 @@ func TestMakeNeverRemovesANameItDidNotCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the existing %s after the failed Make: Open: %v, want it still in place", spare, err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	var one [1]byte
 	if _, err := g.ReadAt(one[:], 0); err != nil {
 		t.Fatalf("the existing %s: ReadAt: %v", spare, err)
@@ -903,7 +903,7 @@ func TestFailedMakeNeverRemovesASegmentNameItDidNotCreate(t *testing.T) {
 			if _, err := f.WriteAt([]byte{0x5a}, 0); err != nil {
 				t.Fatalf("the pre-existing segment: WriteAt: %v", err)
 			}
-			f.Close()
+			_ = f.Close()
 
 			// The schedule fails the step on the spare's temporary name —
 			// the file the make itself creates — which it shares with no
@@ -922,7 +922,7 @@ func TestFailedMakeNeverRemovesASegmentNameItDidNotCreate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the existing %s after the failed Make: Open: %v, want it still in place", seg, err)
 			}
-			defer g.Close()
+			defer func() { _ = g.Close() }()
 			var one [1]byte
 			if _, err := g.ReadAt(one[:], 0); err != nil {
 				t.Fatalf("the existing %s: ReadAt: %v", seg, err)

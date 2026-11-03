@@ -156,8 +156,8 @@ func TestConcurrentAddSpareAtTheMaximum(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			err := s.AddSpare(core.SegmentID(i+1), kept*segCap)
-			switch {
-			case err == nil:
+			switch err {
+			case nil:
 				wins.Add(1)
 			default:
 				var ns *core.NoSpaceError
