@@ -191,7 +191,7 @@ func TestALastCloseReleasesAnUnlinkedFile(t *testing.T) {
 	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
-	if n.held(r.File.ID) {
+	if !n.released(r.File.ID, 0) {
 		t.Error("an unlinked file's content is held after its last close")
 	}
 }
@@ -366,13 +366,19 @@ func TestAMaximalOpenGetsDeleteThroughItsParent(t *testing.T) {
 	if err != nil || r.MaximalAccess&entity.Delete == 0 {
 		t.Errorf("a maximal open in alice's directory: %v, %v; want delete through it", r.MaximalAccess, err)
 	}
+	// The open itself holds delete, so an open denying delete is refused.
+	denying := byName(d, "f", vfs.OpenExisting, entity.ReadData)
+	denying.Deny = entity.Delete
+	if _, err := n.Open(ctx, n.smbClient(t, "build01", n.fs.Admin.Principal), denying); !errors.Is(err, vfs.ErrShareViolation) {
+		t.Errorf("an open denying delete beside the maximal open: %v, want ErrShareViolation", err)
+	}
 	_, err = files.SetAttrs(ctx, n.fs.Admin, d, entity.Attrs{}.WithOwner(bob.Principal))
 	n.must(t, err)
 	r, err = n.Open(ctx, asAlice, maximal)
 	if err != nil || r.MaximalAccess&entity.Delete != 0 {
 		t.Errorf("a maximal open once the directory is bob's: %v, %v; want no delete", r.MaximalAccess, err)
 	}
-	doc := maximal
+	doc := byName(d, "f", vfs.OpenExisting, vfs.MaximumAllowed|entity.Delete)
 	doc.DeleteOnClose = true
 	if _, err := n.Open(ctx, asAlice, doc); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a delete-on-close open once the directory is bob's: %v, want ErrAccess", err)
@@ -430,8 +436,8 @@ func TestDeleteOnCloseRunsAtTheLastClose(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
-	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
-	req.DeleteOnClose = true
+	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
 	r, err := n.Open(ctx, c, req)
 	n.must(t, err)
 	n.stored(t, r.File.ID)
@@ -456,8 +462,9 @@ func TestDeleteOnCloseRunsAtTheLastClose(t *testing.T) {
 // everyone, by a share admin, and an EA set through it, succeed; once the
 // admin grant is gone, so the DACL excludes its caller, its delete still runs
 // at the close, under the privilege the open was granted. With the directory
-// made immutable before the close, or with no backup intent asked, the
-// deferred unlink is refused, counted, and the file keeps its name.
+// made immutable before the close the deferred unlink is refused, counted,
+// and the file keeps its name; with no backup intent asked, the admin's open
+// is decided without privilege, and refused.
 func TestABackupDeleteOnCloseAndItsRefusal(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -470,9 +477,15 @@ func TestABackupDeleteOnCloseAndItsRefusal(t *testing.T) {
 		h, _ := n.fs.Create(t, n.fs.Admin, dir, "f", kvstore.Regular(0o644))
 		_, err := n.fs.Store.Files().SetACL(ctx, n.fs.Admin, h, locked)
 		n.must(t, err)
-		req := byName(dir, "f", vfs.OpenExisting, entity.ReadData|entity.WriteNamedAttrs)
+		req := byName(dir, "f", vfs.OpenExisting, entity.ReadData|entity.WriteNamedAttrs|entity.Delete)
 		req.DeleteOnClose, req.Backup = true, tc.backup
 		r, err := n.Open(ctx, c, req)
+		if !tc.backup {
+			if !errors.Is(err, vfs.ErrAccess) {
+				t.Errorf("an admin's open with delete on close of a file denying everyone, without backup intent: %v, want ErrAccess", err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("an admin's open with delete on close of a file denying everyone: %v", err)
 		}
@@ -543,7 +556,7 @@ func TestADeleteOnCloseTakesTheDirectoryAfterTheFile(t *testing.T) {
 			_, err := n.Link(ctx, n.admin, dir.Handle, []byte(name), f.Handle)
 			n.must(t, err)
 		}
-		req := byName(dir.Handle, "a", vfs.OpenExisting, entity.ReadData)
+		req := byName(dir.Handle, "a", vfs.OpenExisting, entity.ReadData|entity.Delete)
 		req.DeleteOnClose = true
 		r, err := n.Open(ctx, c, req)
 		n.must(t, err)
@@ -771,14 +784,18 @@ func TestADelegationOnNoSessionIsNotYours(t *testing.T) {
 }
 
 // delaying is open state's checks, answering a removal ErrDelay, as a recall
-// under way does, while hold is set.
+// under way does, or refuse when set, while hold is set.
 type delaying struct {
 	openstate.Checks
-	hold atomic.Bool
+	hold   atomic.Bool
+	refuse error
 }
 
 func (d *delaying) CheckChange(ctx context.Context, who openstate.Caller, f openstate.FileKey, via *openstate.OpenRef, k openstate.ChangeMask) error {
 	if k&openstate.ChangeRemove != 0 && d.hold.Load() {
+		if d.refuse != nil {
+			return d.refuse
+		}
 		return &openstate.DelayError{Cause: openstate.DelayRecall}
 	}
 	return d.Checks.CheckChange(ctx, who, f, via, k)
@@ -791,8 +808,8 @@ func TestADelayedDeleteOnCloseRunsOnceTheRecallEnds(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
-	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
-	doc.DeleteOnClose = true
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
 	r, err := n.Open(ctx, c, doc)
 	n.must(t, err)
 	d := &delaying{Checks: n.checks}
@@ -824,8 +841,8 @@ func TestAFailedReleaseAfterADeleteOnCloseIsNoRefusal(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
-	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
-	doc.DeleteOnClose = true
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
 	r, err := n.Open(ctx, c, doc)
 	n.must(t, err)
 	n.marks = &failMark{err: errors.New("mark lost")}
@@ -988,8 +1005,8 @@ func TestAShareWhoseServeFailsFailsAlone(t *testing.T) {
 	if _, err := n.Open(ctx, pc, byName(n.fs.Root, "disk", vfs.OpenExisting, entity.ReadData)); err != nil {
 		t.Errorf("an open in a share served: %v", err)
 	}
-	if _, err := n.Open(ctx, pc, byName(bRoot, "disk", vfs.OpenExisting, entity.ReadData)); err == nil {
-		t.Error("an open in the share whose serve fails was granted")
+	if _, err := n.Open(ctx, pc, byName(bRoot, "disk", vfs.OpenExisting, entity.ReadData)); !errors.Is(err, vfs.ErrUnavailable) {
+		t.Errorf("an open in the share whose serve fails: %v, want ErrUnavailable", err)
 	}
 	rec.set(nil, nil)
 	if _, err := n.Open(ctx, pc, byName(bRoot, "disk", vfs.OpenExisting, entity.ReadData)); err != nil {
@@ -1029,5 +1046,492 @@ func TestACreatingOpenTakesItsLocksInOrder(t *testing.T) {
 		if openErr != nil || unlinkErr != nil {
 			t.Fatalf("run %d: the open %v, the unlink %v; want neither to wait out its deadline", i, openErr, unlinkErr)
 		}
+	}
+}
+
+// An open whose answer fails once open state recorded it is closed again:
+// its deny modes refuse no later open.
+func TestAnOpenWhoseAnswerFailsIsClosed(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	h, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o666))
+	n.engine.overlayErr = errors.New("overlay lost")
+	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Deny: entity.ReadData | entity.WriteData | entity.Delete}
+	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), req); err == nil {
+		t.Fatal("an open whose file cannot be read was answered")
+	}
+	n.engine.overlayErr = nil
+	other := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
+	if _, err := n.Open(ctx, n.smbClient(t, "build01", n.fs.Admin.Principal), other); err != nil {
+		t.Errorf("another client's open after the failed one: %v, want granted", err)
+	}
+}
+
+// An open asking delete on close without delete is refused ErrInvalid, and
+// a creating one makes nothing.
+func TestADeleteOnCloseWithoutDeleteIsInvalid(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData)
+	doc.DeleteOnClose = true
+	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), doc); !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("an open asking delete on close without delete: %v, want ErrInvalid", err)
+	}
+	if _, _, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("the refused open's name: %v, want ErrNotFound", err)
+	}
+}
+
+// A creating open asking system security is refused a caller other than an
+// admin, and makes nothing; an admin's is granted.
+func TestACreatingOpenAsksSystemSecurityOfAnAdmin(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	d, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "d", kvstore.Dir(0o777))
+	req := byName(d, "f", vfs.CreateNew, entity.ReadData|entity.SystemSecurity)
+	if _, err := n.Open(ctx, n.smbClient(t, "pc", alice.Principal), req); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("alice's creating open asking system security: %v, want ErrAccess", err)
+	}
+	if _, _, err := n.Lookup(ctx, n.admin, d, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("the refused open's name: %v, want ErrNotFound", err)
+	}
+	if _, err := n.Open(ctx, n.smbClient(t, "build01", n.fs.Admin.Principal), req); err != nil {
+		t.Errorf("an admin's creating open asking system security: %v", err)
+	}
+}
+
+// An SMB admin's open with backup intent of a file whose DACL denies
+// everyone answers the maximal access it holds without privilege, and so
+// does its reconnect.
+func TestABackupOpensMaximalAccessIsUnprivileged(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	h, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+	locked := entity.ACL{Entries: []entity.ACE{{Type: entity.ACEDeny, Mask: entity.EntryRights, Who: entity.Everyone}}}
+	_, err := n.fs.Store.Files().SetACL(ctx, n.fs.Admin, h, locked)
+	n.must(t, err)
+	pc := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	pc.Session = vfs.SessionRef{ID: 1}
+	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Backup: true}
+	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
+	r, err := n.Open(ctx, pc, req)
+	if err != nil || r.MaximalAccess&entity.ReadData != 0 {
+		t.Fatalf("a backup-intent open of a file denying everyone: %v, %v; want granted, its maximal access without read data", r.MaximalAccess, err)
+	}
+	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	pc.Session = vfs.SessionRef{ID: 2}
+	ref := r.Ref
+	back, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &ref, CreateID: [16]byte{1}})
+	if err != nil || back.MaximalAccess&entity.ReadData != 0 {
+		t.Errorf("its reconnect: %v, %v; want its maximal access without read data", back.MaximalAccess, err)
+	}
+}
+
+// An SMB admin's delete on close asked without backup intent unlinks
+// without privilege: once the directory denies everyone, it is refused at
+// the close.
+func TestADeleteOnCloseWithoutIntentIsUnprivileged(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	d := n.create(t, n.admin, n.fs.Root, "d", vfs.CreateDir).Handle
+	n.fs.Create(t, n.fs.Admin, d, "f", kvstore.Regular(0o644))
+	doc := byName(d, "f", vfs.OpenExisting, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose = true
+	r, err := n.Open(ctx, c, doc)
+	n.must(t, err)
+	locked := entity.ACL{Entries: []entity.ACE{{Type: entity.ACEDeny, Mask: entity.EntryRights, Who: entity.Everyone}}}
+	_, err = n.fs.Store.Files().SetACL(ctx, n.fs.Admin, d, locked)
+	n.must(t, err)
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = n.Lookup(ctx, n.admin, d, []byte("f"))
+	if refused := testutil.ToFloat64(n.refusals) - before; err != nil || refused != 1 {
+		t.Errorf("after the close: %v, %v refusals; want f kept and one refusal", err, refused)
+	}
+}
+
+// cancelling is a releaser that ends the call's context as the release
+// begins, as a client dropping does, and fails a release on an ended
+// context, as a store bounded by its context does.
+type cancelling struct {
+	releaser
+	cancel context.CancelFunc
+}
+
+func (m *cancelling) Releasing(ctx context.Context, f openstate.FileKey) (func(bool), bool, error) {
+	m.cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	return m.releaser.Releasing(ctx, f)
+}
+
+// A last close's release outlives its call: the client dropping as the
+// release begins leaves the unlinked file released all the same.
+func TestALastClosesReleaseOutlivesItsCall(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	r, err := n.Open(ctx, c, byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData))
+	n.must(t, err)
+	n.stored(t, r.File.ID)
+	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+		t.Fatal(err)
+	}
+	call, cancel := context.WithCancel(ctx)
+	defer cancel()
+	n.marks = &cancelling{releaser: n.marks, cancel: cancel}
+	if _, err := n.Close(call, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	if !n.released(r.File.ID, 0) {
+		t.Error("an unlinked file whose last close's client dropped mid-release is still held")
+	}
+}
+
+// A deferred unlink met by grace is tried again until the grace ends: the
+// name goes then, and nothing is counted refused.
+func TestADeleteOnCloseMetByGraceRunsOnceItEnds(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
+	r, err := n.Open(ctx, c, doc)
+	n.must(t, err)
+	d := &delaying{Checks: n.checks, refuse: openstate.ErrGrace}
+	d.hold.Store(true)
+	n.checks = d
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	d.hold.Store(false)
+	for range 300 {
+		if _, _, err = n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); err != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if refused := testutil.ToFloat64(n.refusals) - before; !errors.Is(err, vfs.ErrNotFound) || refused != 0 {
+		t.Errorf("f once the grace ends: %v, %v refusals; want gone and none", err, refused)
+	}
+}
+
+// A close open state makes itself, a durable open timing out after its
+// session ended, releases the unlinked file it held, found in its own share
+// though another share is listed first. The shard's grace has ended first,
+// so pending release recovery does not run it instead.
+func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	n.second(t, alice) // "b", listed before "data"
+	h, f := n.fs.Create(t, n.fs.Admin, n.fs.Root, "disk", kvstore.Regular(0o666))
+	n.stored(t, f.ID)
+	pc := n.smbClient(t, "alice-pc", alice.Principal)
+	pc.Session = vfs.SessionRef{ID: 1}
+	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
+	req.Durability, req.Timeout = entity.DurabilityDurable, time.Minute
+	_, err := n.Open(ctx, pc, req)
+	n.must(t, err)
+	_, x := n.fs.Create(t, n.fs.Admin, n.fs.Root, "x", kvstore.Regular(0o644))
+	n.stored(t, x.ID)
+	_, err = n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, n.fs.Root, []byte("x"))
+	n.must(t, err)
+	if !n.released(x.ID, 11*time.Second) {
+		t.Fatal("the shard's grace never ended")
+	}
+	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("disk")); err != nil {
+		t.Fatal(err)
+	}
+	n.must(t, n.Disconnect(ctx, pc, pc.Client, pc.Session))
+	if !n.held(f.ID) {
+		t.Fatal("released while its durable open waits for a reconnect")
+	}
+	if !n.released(f.ID, 11*time.Second) {
+		t.Error("an unlinked file whose durable open timed out is still held")
+	}
+}
+
+// L29: each start serves the shard under the grace instance it raised, so
+// a client that held state there owes a completion in each new grace.
+func TestEachStartsGraceWaitsForANewCompletion(t *testing.T) {
+	f := newFixture(t, nil)
+	s := &shares{fixture: f, cp: f.fs.Store.ControlPlane(), share: f.fs.Share.ID}
+	f.must(t, f.Start(t.Context()))
+	ctx := t.Context()
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	c := s.nfs41(t, "host", 1000, 1)
+	h, _ := f.fs.Create(t, f.fs.Admin, f.fs.Root, "f", kvstore.Regular(0o666))
+	_, err := f.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData})
+	f.must(t, err)
+	g := f
+	for want := uint64(2); want <= 3; want++ {
+		g = g.restart(t)
+		g.must(t, g.Start(ctx))
+		st, err := g.Renew(ctx, c, c.Client)
+		if err != nil || !st.ReclaimNeeded || len(st.Reclaim) != 1 || st.Reclaim[0].Instance != want {
+			t.Fatalf("after start %d: %+v, %v; want grace instance %d owed", want, st, err, want)
+		}
+		g.must(t, g.ReclaimComplete(ctx, c, c.Client, st.Reclaim))
+	}
+}
+
+// An overwriting open asks write data: a caller who may only read the file
+// is refused, and nothing is truncated.
+func TestAnOverwritingOpenAsksWriteData(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+	truncated := false
+	n.engine.truncating = func(entity.FileID) { truncated = true }
+	c := n.smbClient(t, "pc", alice.Principal)
+	if _, err := n.Open(ctx, c, byName(n.fs.Root, "f", vfs.Overwrite, entity.ReadData)); !errors.Is(err, vfs.ErrAccess) || truncated {
+		t.Errorf("an overwriting open by a caller who may only read: %v, truncated %v; want ErrAccess and nothing truncated", err, truncated)
+	}
+}
+
+// A backup intent is a privilege only for a caller holding it: a share
+// user's backup-intent open with delete on close, who loses write on the
+// directory before the close, has its deferred unlink refused.
+func TestABackupIntentWithoutThePrivilegeGrantsNone(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	d, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "d", kvstore.Dir(0o777))
+	n.fs.Create(t, n.fs.Admin, d, "f", kvstore.Regular(0o666))
+	c := n.smbClient(t, "pc", alice.Principal)
+	req := byName(d, "f", vfs.OpenExisting, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	_, err = n.fs.Store.Files().SetAttrs(ctx, n.fs.Admin, d, entity.Attrs{}.WithMode(0o755))
+	n.must(t, err)
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = n.Lookup(ctx, n.admin, d, []byte("f"))
+	if refused := testutil.ToFloat64(n.refusals) - before; err != nil || refused != 1 {
+		t.Errorf("after the close: %v, %v refusals; want f kept and one refusal", err, refused)
+	}
+}
+
+// An open that creates its file is granted what it asks: a create asking
+// write with a mode granting none is granted, its maximal access the new
+// file's own.
+func TestACreatingOpenIsGrantedWhatItAsks(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	d, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "d", kvstore.Dir(0o777))
+	c := n.smbClient(t, "pc", alice.Principal)
+	req := byName(d, "ro", vfs.CreateNew, entity.ReadData|entity.WriteData)
+	req.Create.Attrs = entity.Attrs{}.WithMode(0o444)
+	r, err := n.Open(ctx, c, req)
+	if err != nil || !r.Created || r.MaximalAccess&entity.WriteData != 0 {
+		t.Errorf("a create asking write with mode 444: %v, %v; want granted, its maximal access without write data", r.MaximalAccess, err)
+	}
+}
+
+// Each disposition opens, creates or truncates as its name says, CreateNew
+// of an existing file refused by name and by handle.
+func TestEachDispositionOpensCreatesOrTruncates(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	for _, tc := range []struct {
+		d                  vfs.Disposition
+		truncates, creates bool
+	}{
+		{vfs.OpenExisting, false, false}, {vfs.CreateNew, false, true}, {vfs.OpenOrCreate, false, true},
+		{vfs.Overwrite, true, false}, {vfs.OverwriteOrCreate, true, true}, {vfs.Supersede, true, true},
+	} {
+		name := fmt.Sprint("f", tc.d)
+		h, f := n.fs.Create(t, n.fs.Admin, n.fs.Root, name, kvstore.Regular(0o644))
+		n.stored(t, f.ID)
+		r, err := n.Open(ctx, c, byName(n.fs.Root, name, tc.d, entity.ReadData))
+		switch {
+		case tc.d == vfs.CreateNew:
+			if !errors.Is(err, vfs.ErrExist) {
+				t.Errorf("disposition %d of an existing name: %v, want ErrExist", tc.d, err)
+			}
+			if _, err := n.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: tc.d, Access: entity.ReadData}); !errors.Is(err, vfs.ErrExist) {
+				t.Errorf("disposition %d by handle: %v, want ErrExist", tc.d, err)
+			}
+		case err != nil || r.Created || (r.File.Size == 0) != tc.truncates:
+			t.Errorf("disposition %d of an existing file: size %d, created %v, %v; want truncated %v", tc.d, r.File.Size, r.Created, err, tc.truncates)
+		}
+		missing := fmt.Sprint("new", tc.d)
+		r, err = n.Open(ctx, c, byName(n.fs.Root, missing, tc.d, entity.ReadData))
+		if tc.creates != (err == nil && r.Created) || !tc.creates && !errors.Is(err, vfs.ErrNotFound) {
+			t.Errorf("disposition %d of a missing name: created %v, %v; want created %v", tc.d, r.Created, err, tc.creates)
+		}
+	}
+}
+
+// An open in the pseudo-filesystem is refused: ErrReadOnly for one that may
+// create a name there, ErrIsDir otherwise.
+func TestAnOpenInThePseudoFilesystemIsRefused(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	root, _, err := n.Root(ctx, n.admin, vfs.ShareRef{})
+	n.must(t, err)
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	if _, err := n.Open(ctx, c, byName(root, "x", vfs.OpenOrCreate, entity.ReadData)); !errors.Is(err, vfs.ErrReadOnly) {
+		t.Errorf("a creating open in the pseudo-root: %v, want ErrReadOnly", err)
+	}
+	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: root, Disposition: vfs.OpenExisting, Access: entity.ReadData}); !errors.Is(err, vfs.ErrIsDir) {
+		t.Errorf("an open of the pseudo-root: %v, want ErrIsDir", err)
+	}
+}
+
+// V17: a rename over a file no open holds releases the file it replaced.
+func TestARenameOverAFileReleasesIt(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "a", kvstore.Regular(0o644))
+	_, dst := n.fs.Create(t, n.fs.Admin, n.fs.Root, "b", kvstore.Regular(0o644))
+	n.stored(t, dst.ID)
+	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("a"), n.fs.Root, []byte("b"), false); err != nil {
+		t.Fatal(err)
+	}
+	if n.held(dst.ID) {
+		t.Error("the file a rename replaced is held, with no name and no open")
+	}
+}
+
+// A delete on close whose name came to name another file removes nothing:
+// the file now under the name keeps it.
+func TestADeleteOnCloseLeavesANameThatMoved(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
+	r, err := n.Open(ctx, c, doc)
+	n.must(t, err)
+	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
+		t.Fatal(err)
+	}
+	_, other := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); err != nil || got.ID != other.ID {
+		t.Errorf("the name after the close: %v, %v; want the new file %v kept", got.ID, err, other.ID)
+	}
+}
+
+// A delete on close on a share narrowed to read-only after the open is
+// refused at the close: the name stays and the refusal is counted.
+func TestADeleteOnCloseOnAShareMadeReadOnlyIsRefused(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
+	r, err := n.Open(ctx, c, doc)
+	n.must(t, err)
+	n.must(t, n.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: n.share, ReadOnly: true}))
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = n.Lookup(ctx, n.admin, n.fs.Root, []byte("f"))
+	if refused := testutil.ToFloat64(n.refusals) - before; err != nil || refused != 1 {
+		t.Errorf("after the close on a read-only share: %v, %v refusals; want f kept and one refusal", err, refused)
+	}
+}
+
+// A deferred unlink still delayed when the filesystem stops is refused and
+// counted.
+func TestADelayedDeleteOnCloseIsRefusedAtStop(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	doc := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	doc.DeleteOnClose, doc.Backup = true, true
+	r, err := n.Open(ctx, c, doc)
+	n.must(t, err)
+	d := &delaying{Checks: n.checks}
+	d.hold.Store(true)
+	n.checks = d
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatal(err)
+	}
+	n.must(t, n.Drain(ctx))
+	n.must(t, n.Stop())
+	if refused := testutil.ToFloat64(n.refusals) - before; refused != 1 {
+		t.Errorf("a deferred unlink delayed when the filesystem stopped: %v refusals, want 1", refused)
+	}
+}
+
+// V17: a pending release in a second share's shard runs when that shard's
+// grace ends after a restart.
+func TestAPendingReleaseInASecondShareRunsAfterARestart(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	_, bRoot, h := n.second(t, alice)
+	f, err := n.fs.Store.Files().Get(ctx, n.fs.Admin, h)
+	n.must(t, err)
+	n.stored(t, f.ID)
+	if _, err := n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, bRoot, []byte("disk")); err != nil {
+		t.Fatal(err)
+	}
+	g := n.restart(t)
+	g.must(t, g.Start(ctx))
+	if !g.released(f.ID, 11*time.Second) {
+		t.Error("a pending release in the second share's shard never ran")
+	}
+}
+
+// A file with setuid or setgid set is offered no write caching, as a write
+// must still clear the bits; one without is.
+func TestASetIDFileIsOfferedNoWriteCaching(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	n.user(t, "alice", "1000", n.share, entity.AccessReadWrite)
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "plain", kvstore.Regular(0o666))
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "prog", kvstore.Regular(0o4777))
+	c := n.nfs41(t, "a-host", 1000, 1)
+	for name, want := range map[string]bool{"plain": true, "prog": false} {
+		q := byName(n.fs.Root, name, vfs.OpenExisting, entity.ReadData|entity.WriteData)
+		q.Want = vfs.GrantRead | vfs.GrantWrite
+		r, err := n.Open(ctx, c, q)
+		if got := r.Grant != nil && r.Grant.Kind&vfs.GrantWrite != 0; err != nil || got != want {
+			t.Errorf("%s: write caching offered %v, %v; want %v", name, got, err, want)
+		}
+	}
+}
+
+// A share added while serving has its shard served by the first call to see
+// the share list move, though that call is into another share.
+func TestAnAddedShareIsServedByTheFirstCallThatSeesIt(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
+	pc := n.smbClient(t, "alice-pc", alice.Principal)
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "disk", kvstore.Regular(0o666))
+	rec := &failRecovery{Recovery: n.recovery, served: map[entity.ShareID]int{}}
+	n.recovery = rec
+	b, _, _ := n.second(t, alice)
+	if _, err := n.Open(ctx, pc, byName(n.fs.Root, "disk", vfs.OpenExisting, entity.ReadData)); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	got := rec.served[b]
+	rec.mu.Unlock()
+	if got != 1 {
+		t.Errorf("share b served %d times after a call into another share saw it, want 1", got)
 	}
 }

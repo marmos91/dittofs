@@ -26,6 +26,8 @@ type fakeContent struct {
 	truncating func(entity.FileID)
 	// truncErr, when set, is every Truncate's answer, staging nothing.
 	truncErr error
+	// overlayErr, when set, is every Overlay's answer.
+	overlayErr error
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -135,6 +137,9 @@ func (c *fakeContent) Copy(ctx context.Context, src, dst entity.FileID, xs []vfs
 func (c *fakeContent) Overlay(ctx context.Context, f entity.FileID) (Overlay, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.overlayErr != nil {
+		return Overlay{}, false, c.overlayErr
+	}
 	o, ok := c.overlays[f]
 	return o, ok, nil
 }

@@ -193,14 +193,15 @@ func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send fun
 
 // background runs run on a goroutine of its own, which Stop ends and waits
 // for, under a context ending at Stop; once the filesystem is stopped it runs
-// nothing.
-func (fs *Filesystem) background(run func(ctx context.Context)) {
+// nothing, answering false.
+func (fs *Filesystem) background(run func(ctx context.Context)) bool {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	if fs.state == stopped {
-		return
+		return false
 	}
 	fs.sending.Go(func() { run(fs.stop) })
+	return true
 }
 
 // latest is a path for deliver: client c's latest path as it is now, a
