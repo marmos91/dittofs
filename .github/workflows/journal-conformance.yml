@@ -22,7 +22,7 @@ env:
 
 # The journal's conformance checks, run by dt as the journal-conformance suite of
 # test/suites.yaml. Every check that fails is graded against
-# test/journalv2/known.yaml: the job is green while each failure is a listed one,
+# test/journal/known.yaml: the job is green while each failure is a listed one,
 # and red on a failure that is not listed or on a listed check that passes, whose
 # entry the change that made it pass must remove.
 jobs:

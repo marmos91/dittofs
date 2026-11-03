@@ -404,8 +404,8 @@ merge as its tier says:
 
 | Suite | Protocol | Profiles | Variants | Tier | Known failures and skips |
 |---|---|---|---|---|---|
-| `journal-conformance` | none | none | none | `pr` | [`test/journalv2/known.yaml`](../../test/journalv2/known.yaml) |
-| `engine-conformance` | none | none | none | `pr` | [`test/enginev2/known.yaml`](../../test/enginev2/known.yaml) |
+| `journal-conformance` | none | none | none | `pr` | [`test/journal/known.yaml`](../../test/journal/known.yaml) |
+| `engine-conformance` | none | none | none | `pr` | [`test/engine/known.yaml`](../../test/engine/known.yaml) |
 | `pjdfstest` | NFS | `badger-s3` | nfs: `3`, `4`, `4.1` | `pr` | [`test/posix/known.yaml`](../../test/posix/known.yaml) |
 | `pynfs` | NFS | `badger-s3` | minor: `0`, `1` | `pr` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
 | `pynfs/knfsd` | NFS | none | minor: `0`, `1` | `manual` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |

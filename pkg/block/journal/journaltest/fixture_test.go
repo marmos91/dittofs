@@ -1,0 +1,200 @@
+package journaltest
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/sim"
+)
+
+// fatalRecorder is a testing.TB whose Fatal stops the calling goroutine and
+// keeps the message instead of failing the test. Everything else reaches the
+// real test, so cleanups and the profiler run as they would.
+type fatalRecorder struct {
+	testing.TB
+	fatal string
+}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.fatal = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+func (r *fatalRecorder) Fatal(args ...any) {
+	r.fatal = fmt.Sprint(args...)
+	runtime.Goexit()
+}
+
+// TestFixtureReportsItsOwnFailures pins that a journal the fixture cannot
+// set up fails the test as the fixture's failure, never as the check's.
+func TestFixtureReportsItsOwnFailures(t *testing.T) {
+	eio := errors.New("injected EIO")
+	fault, err := sim.NewSchedule(1, nil, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: eio}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		newFixture(r, fault, true, FixtureSegmentCap, nil)
+	}()
+	<-done
+
+	if !strings.HasPrefix(r.fatal, "fixture: ") {
+		t.Fatalf("a journal whose every storage call fails was reported as %q, want a message starting %q", r.fatal, "fixture: ")
+	}
+}
+
+// errorRecorder is a testing.TB that keeps what Errorf reports instead of
+// failing the test.
+type errorRecorder struct {
+	testing.TB
+	errors []string
+}
+
+func (r *errorRecorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+// TestAbandonLeavesTheJournalUnclosed pins that an abandoned fixture's
+// cleanup calls nothing on its journal or handles, so a call blocked in them
+// cannot hang it.
+func TestAbandonLeavesTheJournalUnclosed(t *testing.T) {
+	r := &errorRecorder{TB: t}
+	f := &Fixture{tb: r, J: &journal.Journal{}, handles: map[int]*journal.Handle{0: {}}}
+
+	f.Abandon()
+	f.close()
+
+	if len(r.errors) != 0 || len(f.handles) != 0 {
+		t.Fatalf("an abandoned fixture's cleanup reported %q and kept %d handles, want it to touch nothing", r.errors, len(f.handles))
+	}
+}
+
+// The calls that may be made on a fixture with no journal in its directory,
+// each checked for what it leaves behind on both of its outcomes, so the
+// checks hold with the journal stubbed and once it exists.
+
+// TestShutdownOnNoJournalIsIdle pins that shutting down a journal that is not
+// open changes nothing and makes no call on the seam.
+func TestShutdownOnNoJournalIsIdle(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	f.Shutdown()
+	f.Shutdown()
+
+	if f.J != nil {
+		t.Fatalf("a shut fixture has a journal: %v", f.J)
+	}
+	for _, op := range []string{OpClose, OpSync, OpSyncDir} {
+		if n := f.Seam.Calls(op); n != 0 {
+			t.Fatalf("shutting down with no journal made %d %s calls", n, op)
+		}
+	}
+}
+
+// TestTryReopenAsKeepsTheIdentity pins that an open that fails leaves the
+// journal shut and the fixture's identity as it was: on an empty directory
+// every open fails, whatever identity it expects.
+func TestTryReopenAsKeepsTheIdentity(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	for _, expect := range []journal.JournalID{{}, {1}} {
+		if err := f.TryReopenAs(expect); err == nil {
+			t.Fatalf("opening an empty directory as %x succeeded", expect)
+		}
+		if f.J != nil {
+			t.Fatalf("a failed open left a journal: %v", f.J)
+		}
+		if f.ID() != (journal.JournalID{}) {
+			t.Fatalf("a failed open as %x changed the fixture's identity to %x", expect, f.ID())
+		}
+	}
+	if err := f.TryReopen(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory with the fixture's identity: error %v, journal %v", err, f.J)
+	}
+}
+
+// TestTryInitRecordsOnSuccessOnly pins that TryInit makes its identity the
+// fixture's only when Init succeeded, and opens nothing either way.
+func TestTryInitRecordsOnSuccessOnly(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	id, err := f.TryInit()
+
+	switch {
+	case err != nil && f.ID() != (journal.JournalID{}):
+		t.Fatalf("Init failed (%v) and the fixture's identity is %x, want it unchanged", err, f.ID())
+	case err == nil && (id == (journal.JournalID{}) || f.ID() != id):
+		t.Fatalf("Init returned identity %x and the fixture's is %x, want the same and not zero", id, f.ID())
+	}
+	if f.J != nil {
+		t.Fatalf("TryInit opened a journal: %v", f.J)
+	}
+}
+
+// TestTryRestampLeavesTheJournalShut pins that a restamp opens nothing and,
+// on an empty directory, fails as an open does.
+func TestTryRestampLeavesTheJournalShut(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	if err := f.TryRestamp(journal.InstallationID{1}); err == nil {
+		t.Fatalf("restamping an empty directory succeeded")
+	}
+	if f.J != nil {
+		t.Fatalf("TryRestamp left a journal open: %v", f.J)
+	}
+}
+
+// TestTryCrashReturnsTheRefusalOrTheOpensError pins that a crash the seam
+// refuses, and an open that fails after one it made, come back as errors
+// with the journal shut.
+func TestTryCrashReturnsTheRefusalOrTheOpensError(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	file, err := f.Seam.Create("seg")
+	if err != nil {
+		t.Fatalf("create a file: %v", err)
+	}
+
+	// A crash keeping a write with none unsynced is refused by the seam, and
+	// a refused crash changes nothing: the file created is still open.
+	if err := f.TryCrash(Keeping(1)); !errors.Is(err, ErrCrashRefused) {
+		t.Fatalf("TryCrash of a crash the seam refuses returned %v, want the seam's refusal", err)
+	}
+
+	if _, err := file.WriteAt([]byte("a"), 0); err != nil {
+		t.Fatalf("a write after the refused crash: %v; the refusal crashed the storage", err)
+	}
+
+	if err := f.TryCrash(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory after a crash: error %v, journal %v", err, f.J)
+	}
+}
+
+// TestTryKillReturnsTheOpensError pins that an open that fails after the
+// process was killed comes back as an error with the journal shut.
+func TestTryKillReturnsTheOpensError(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	if err := f.TryKill(); err == nil || f.J != nil {
+		t.Fatalf("opening an empty directory after a kill: error %v, journal %v", err, f.J)
+	}
+}
+
+// TestTryKillEndsTheOldProcess pins that a kill closes the files the old
+// process held, so a write through one fails from then on.
+func TestTryKillEndsTheOldProcess(t *testing.T) {
+	f := bareFixture(t, nil, FixtureSegmentCap, nil)
+	file, err := f.Seam.Create("seg")
+	if err != nil {
+		t.Fatalf("create a file: %v", err)
+	}
+
+	_ = f.TryKill() // the open fails for want of a format file; the kill is what is checked
+
+	if _, err := file.WriteAt([]byte("a"), 0); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a write through the killed process's file returned %v, want an error matching fs.ErrClosed", err)
+	}
+}
