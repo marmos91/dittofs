@@ -60,9 +60,3 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
 	return 0, errUnbuilt
 }
-
-// Allocation is the span holding off, the file's uncommitted operations
-// applied.
-func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
-	return entity.Span{}, errUnbuilt
-}
