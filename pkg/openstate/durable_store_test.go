@@ -139,6 +139,22 @@ func TestWaiterOfParkedOpenGoes(t *testing.T) {
 	}
 }
 
+// A parked open is listed among its lease's openers with no session: the
+// one it was opened on has ended, so a break goes to none of its.
+func TestOpenersListAParkedOpenWithNoSession(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	res, err := f.Opens().Open(ctx, a, anyFile(), keep(OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh}, entity.DurabilityDurable, s1, time.Minute, 1))
+	if err != nil || res.Grant == nil {
+		t.Fatalf("the durable open: %+v, %v", res.Grant, err)
+	}
+	f.disconnect(t, a, s1)
+	opens, err := f.Grants().Openers(ctx, res.Grant.ID)
+	if err != nil || len(opens) != 1 || opens[0].Session != (entity.SessionRef{}) {
+		t.Errorf("the parked open's openers %+v, %v; want it listed with no session", opens, err)
+	}
+}
+
 // A durable open whose lease a break took handle caching from is closed at
 // its disconnect.
 func TestDurableWithoutHandleClosesAtDisconnect(t *testing.T) {

@@ -541,6 +541,30 @@ func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
 	}
 }
 
+// nowhere is Callbacks whose adapter sends every recall nowhere, finding
+// no session to send it on.
+type nowhere struct{ *vfstest.RecordingCallbacks }
+
+func (n nowhere) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
+	_, err := n.RecordingCallbacks.RecallGrant(ctx, s, openers, g, to)
+	return false, err
+}
+
+// A recall sent nowhere at first is counted once, however often it is
+// asked again.
+func TestARecallSentNowhereAtFirstIsCountedOnce(t *testing.T) {
+	fastRetry(t)
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	cb := &vfstest.RecordingCallbacks{}
+	id := laptop(t, s, nowhere{cb})
+	s.RecallGrant(delegate(t, s, id))
+	calls(t, cb, 3)
+	if n := testutil.ToFloat64(s.callbackErrors.WithLabelValues("RecallGrant")); n != 1 {
+		t.Errorf("vfs_callback_errors_total{kind=RecallGrant} is %v, want 1", n)
+	}
+}
+
 // valueCallbacks is Callbacks of a type that is not comparable, as an
 // adapter's value type holding a func or a map is.
 type valueCallbacks struct {
