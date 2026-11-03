@@ -698,6 +698,23 @@ func TestAReleaseIsMarkedFirst(t *testing.T) {
 	}
 }
 
+// The release mark is open state's: a release run while the table holds an
+// open of the file finds it held and leaves its content, as the engine's own
+// re-check of the holders is not relied on.
+func TestAReleaseOfAnOpenFileFindsItHeld(t *testing.T) {
+	n := newNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	_, f := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+	n.stored(t, f.ID)
+	_, err := n.Open(ctx, c, byName(n.fs.Root, "f", vfs.OpenExisting, entity.ReadData))
+	n.must(t, err)
+	n.must(t, n.releaseAlone(ctx, f.Share, f.ID))
+	if !n.held(f.ID) {
+		t.Error("a release of a file open in the table deleted its content")
+	}
+}
+
 // A failed start leaves the filesystem built, with nothing of its own
 // running, and a start that then succeeds serves; L29: each start raises the
 // shard's incarnation, so each grace is a new instance.

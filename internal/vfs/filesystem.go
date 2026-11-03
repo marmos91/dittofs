@@ -181,7 +181,7 @@ func New(d Deps) (*Filesystem, error) {
 		removed:   map[entity.ShareID]bool{},
 		served:    map[entity.ShareID]bool{},
 		events:    d.Events,
-		marks:     noMark{},
+		marks:     openMark{d.Open.Opens()},
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",

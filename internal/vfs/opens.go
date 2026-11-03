@@ -511,19 +511,19 @@ type releaser interface {
 	Releasing(ctx context.Context, f openstate.FileKey) (done func(released bool), held bool, err error)
 }
 
-// noMark is the releaser until open state marks releases.
-//
-// ponytail: marks nothing and finds no open, so an open landing between a
-// release and the engine's Delete is not refused, and a pending release run
-// at grace's end deletes the content of a file a reconnected persistent open
-// holds; the engine's release transaction re-checks the holders the store
-// records, which only the real engine does. Replace it with open state's
-// Opens.Releasing, built on fix/openstate-stream-deny, its ErrFileOpen and
-// ErrReleasing answered as held, once that branch lands on storage-v2.
-type noMark struct{}
+// openMark is the releaser over open state's Opens.Releasing: a file open,
+// a clone's hold included, or already being released is held.
+type openMark struct{ opens openstate.Opens }
 
-func (noMark) Releasing(context.Context, openstate.FileKey) (func(bool), bool, error) {
-	return func(bool) {}, false, nil
+func (m openMark) Releasing(ctx context.Context, f openstate.FileKey) (func(bool), bool, error) {
+	done, err := m.opens.Releasing(ctx, f)
+	switch {
+	case errors.Is(err, openstate.ErrFileOpen), errors.Is(err, openstate.ErrReleasing):
+		return nil, true, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return done, false, nil
 }
 
 // release runs the release of the file key names, holding its admission
