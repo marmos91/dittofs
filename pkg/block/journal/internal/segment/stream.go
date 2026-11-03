@@ -2,6 +2,7 @@ package segment
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -22,6 +23,15 @@ var ErrSegmentFull = errors.New("segment: no room for the record before the seal
 // ErrStreamClosed is returned by Append after Close: the stream publishes no
 // further location, so every caller stops writing.
 var ErrStreamClosed = errors.New("segment: stream closed")
+
+// ErrBadRecord is returned by Append for a record the format could not have
+// encoded: an unknown kind, or a write or fill whose payload length differs
+// from the extent the header names. The refusal happens before the stream
+// takes its lock, so one such call leaves nothing behind — no reserved
+// position, no slot, no bytes on the way to storage. Encode errors that
+// survive it still panic, as the format's own panics do: they name caller
+// bugs the checks here cannot spell.
+var ErrBadRecord = errors.New("segment: the record cannot be encoded")
 
 // sealRoom is the bytes a segment's tail must keep for the seal that may
 // close it once it holds n records: the marker, one footer entry per record,
@@ -77,7 +87,9 @@ type tslot struct {
 // record was written." — RFC 28 §2.3. "A stream's synced-through offset never
 // advances past a slot whose write failed or has not completed." — §2.2. So
 // the prefix stops at the first slot that has not completed, and a slot whose
-// write failed freezes it: nothing after the failure moves it.
+// write failed freezes it: nothing after the failure moves it. A sync that
+// failed freezes the recorded value, for no later sync of the segment may
+// claim what the failure left (RFC 1 §5.3).
 //
 // decision: every field is guarded by the owning stream's append mutex, the
 // segment append domain. Nothing else may touch the tracker.
@@ -99,9 +111,10 @@ type tracker struct {
 	// in order and pops advance the head.
 	headSlot uint64
 
-	completed int64 // the end of the well-completed prefix
-	synced    int64 // the highest completed value a returned Sync covered
-	freeze    bool  // a slot's write failed: the prefix never moves again
+	completed  int64 // the end of the well-completed prefix
+	synced     int64 // the highest completed value a returned Sync covered
+	freeze     bool  // a slot's write failed: the prefix never moves again
+	syncFailed bool  // a sync of the segment failed: no later sync may claim anything
 }
 
 // The failed slot's own offset needs no field of its own: slots are
@@ -117,6 +130,7 @@ func (t *tracker) reset(first int64) {
 	t.completed = first
 	t.synced = 0
 	t.freeze = false
+	t.syncFailed = false
 }
 
 // reserve takes the slot for the record at [off, end) and returns its
@@ -191,10 +205,28 @@ func (t *tracker) syncStart() int64 {
 // syncDone records that a returned Sync covered up to through. The freeze needs
 // no clamp of its own: through is what syncStart named, and a frozen prefix
 // never names an offset past the failed slot.
+//
+// decision: a sync that failed owns its window from here on, so a later
+// successful sync of the same segment may not claim what the failure left: RFC
+// 1 §5.3's failed window is exactly the case where "a second sync can succeed
+// without having written them", and a value that moved past the failure would
+// name bytes durable that no fsync made so. The window's records are the
+// durability layer's to reissue; the segment they sit in belongs to the
+// failure handling that ends it.
 func (t *tracker) syncDone(through int64) {
+	if t.syncFailed {
+		return
+	}
 	if through > t.synced {
 		t.synced = through
 	}
+}
+
+// syncFail freezes the value a failed sync left behind: no later sync of the
+// segment claims anything. The value that stood when the failure returned is
+// the last truth this segment's records carry.
+func (t *tracker) syncFail() {
+	t.syncFailed = true
 }
 
 // Stream is one append stream of a journal: it takes segments from the Maker,
@@ -325,6 +357,27 @@ func (s *Stream) endTaken(id core.SegmentID, ref Ref, err error) error {
 // or a kind with no payload that does not fit at all — answers ErrSegmentFull
 // with nothing reserved and nothing written.
 func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, error) {
+	// The caller bugs the format would panic on mid-append are answered
+	// here, before the lock: a panic with appendMu held would strand every
+	// later appender on a lock nobody releases, and a panic after the
+	// reservation would strand a slot no bytes will ever complete. Only a
+	// write and a fill carry a payload, and for them the length must name
+	// exactly the bytes given.
+	if h.Kind < format.KindWrite || h.Kind > format.KindForget {
+		return Placed{}, fmt.Errorf("%w: kind %d is not one this format encodes", ErrBadRecord, uint8(h.Kind))
+	}
+	if h.Kind == format.KindWrite || h.Kind == format.KindFill {
+		if int64(len(body.Payload)) != h.Extent.Len {
+			return Placed{}, fmt.Errorf("%w: %s carries %d payload bytes against a length of %d", ErrBadRecord, h.Kind, len(body.Payload), h.Extent.Len)
+		}
+	} else if len(body.Payload) != 0 {
+		return Placed{}, fmt.Errorf("%w: kind %d carries a payload, want none", ErrBadRecord, uint8(h.Kind))
+	}
+	if h.Extent.Off < 0 {
+		// The format panics on this one too, so it lands here for the same
+		// reason the unknown kind does.
+		return Placed{}, fmt.Errorf("%w: file offset %d is below 0", ErrBadRecord, h.Extent.Off)
+	}
 	s.appendMu.Lock()
 	if s.closed {
 		s.appendMu.Unlock()
@@ -409,10 +462,15 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 			overhead := int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize()
 			fit := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) - overhead
 			switch {
-			case hasPayload && fit >= payload:
-				// The whole record fits after all: the padded form of the
-				// reserve check above is the one that judged it.
 			case hasPayload && fit >= 1:
+				// The whole record does not fit, so the payload cannot
+				// either: the record's own padded size is a multiple of 8
+				// no smaller than the room the fit was drawn from, so a
+				// fit that reached the payload would mean the record
+				// fitted and the check above misjudged it.
+				if fit >= payload {
+					panic("segment: the split found the whole record fitting after the reserve check refused it")
+				}
 				h.Extent.Len = fit
 				size, placed = h.Size(), fit
 			default:
@@ -530,8 +588,12 @@ func (s *Stream) Sync() error {
 
 	if err := ref.Sync(); err != nil {
 		// The failure belongs to the durability layer's failed window: the
-		// tracker keeps the prefix the failed fsync reached, and the caller
-		// owns the records the window holds.
+		// caller owns the records the window holds, and no later sync of
+		// this segment claims what the failure left — the value stands where
+		// the failure found it.
+		s.appendMu.Lock()
+		s.tracker.syncFail()
+		s.appendMu.Unlock()
 		return err
 	}
 	s.appendMu.Lock()

@@ -88,9 +88,9 @@ type Descriptors struct {
 // are lock-free atomics by design: a write and a sync through the same
 // descriptor run on different references with no lock held, and their
 // ordering carries the covered-write pin, so they are never written under
-// the mutex; dirty, their one read, runs under it, on the last release and
-// in the reclaimer's scan, where no write through the entry can still be in
-// flight to reorder against.
+// the mutex; dirty, their one read, runs in the reclaimer's scan alone,
+// under it, behind the refs == 0 check — where no write through the entry can
+// still be in flight to reorder against.
 type descEntry struct {
 	id       core.SegmentID
 	file     storage.File // nil when the descriptor is closed
@@ -119,9 +119,9 @@ type descEntry struct {
 }
 
 // dirty reports whether a write issued through the descriptor has not been
-// covered by a sync that returned or failed. Only Release, on the last
-// reference, and reclaimOne, in its scan, read it — both under c.mu, where no
-// write through the entry can still be in flight.
+// covered by a sync that returned or failed. The reclaimer's scan, behind
+// its refs == 0 check, is its only read — under c.mu, where no write through
+// the entry can still be in flight.
 func (e *descEntry) dirty() bool { return e.written.Load() > e.synced.Load() }
 
 // openCall is one in-flight open of a segment: the waiters' rendezvous and
