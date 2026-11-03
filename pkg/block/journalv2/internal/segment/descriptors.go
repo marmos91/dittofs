@@ -525,10 +525,19 @@ func (c *Descriptors) reclaimOne() bool {
 	victim.file = nil
 	c.idleRemove(victim)
 	c.open--
+	// The close runs with no lock held, so a Close of this very segment can
+	// reach the entry meanwhile and see no file. The reference taken here is
+	// what makes that Close wait: the drain it starts sleeps until this close
+	// and the slot's return are done, and only then may the caller free the
+	// segment's storage. Shutdown's walk sees the same thing and skips the
+	// file this reference still owes a close to.
+	victim.refs++
+	c.totalRefs++
 	c.mu.Unlock()
 
 	_ = file.Close()
 	c.budget.Give()
+	c.dropRef(victim)
 	return true
 }
 
@@ -686,15 +695,24 @@ func (c *Descriptors) Shutdown() error {
 	// outside the mutex. Whichever holder reached a file first under the
 	// mutex owns it: taking only the attached ones is what keeps every file
 	// closed, and every slot given, exactly once.
+	// The files close with the mutex released, so a Close of any of these
+	// segments can reach its entry meanwhile and see no file — the same gap
+	// the reclaimer closes with a reference. Each walk entry takes its
+	// segment's reference under the mutex and drops it once its close and
+	// slot are settled.
 	var errs []error
 	var files []storage.File
+	var entries []*descEntry
 	for _, e := range c.entries {
 		if e.file == nil {
 			continue
 		}
 		files = append(files, e.file)
+		entries = append(entries, e)
 		e.file = nil
 		c.open--
+		e.refs++
+		c.totalRefs++
 	}
 	c.mu.Unlock()
 
@@ -703,11 +721,12 @@ func (c *Descriptors) Shutdown() error {
 		c.unregister()
 	}
 
-	for _, f := range files {
+	for i, f := range files {
 		if err := f.Close(); err != nil {
 			errs = append(errs, err)
 		}
 		c.budget.Give()
+		c.dropRef(entries[i])
 	}
 	return errors.Join(errs...)
 }

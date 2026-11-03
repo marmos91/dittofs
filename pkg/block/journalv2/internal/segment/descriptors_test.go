@@ -1683,3 +1683,136 @@ func TestDescriptorsShutdownDoesNotPinItsIdleDescriptors(t *testing.T) {
 		t.Fatalf("the budget holds %d descriptors after both journals settled, want 0", got)
 	}
 }
+
+// TestDescriptorsCloseWaitsAReclaimClosingThatSegment checks the window the
+// reclaimer leaves: a close of a descriptor runs with the cache's mutex
+// released, so a Close of the same segment can otherwise see the entry with
+// no file and return while the descriptor is still being closed — its caller
+// would unlink the file under an open handle. The reclaim must hold a
+// reference for the length of its close, so Close's drain waits for it.
+func TestDescriptorsCloseWaitsAReclaimClosingThatSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 1)
+	e.stock(t, 2)
+	defer e.c.Shutdown()
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	e.read(t, 1)
+
+	// The read of 2 evicts 1: the reclaimer is inside segment 1's close, held
+	// at the seam — the exact window.
+	evicted := make(chan error, 1)
+	go func() {
+		r, err := e.c.Acquire(2)
+		if err == nil {
+			r.Release()
+		}
+		evicted <- err
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reclaim's close never reached the hold")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- e.c.Close(1) }()
+	for deadline := time.Now().Add(10 * time.Second); !segment.EntryGone(e.c, 1); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close(1) never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Close(1) returned %v while the reclaim's close of that segment was still in flight, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close(1) after the reclaim's close returned = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close(1) did not return after the reclaim's close ended")
+	}
+	if err := <-evicted; err != nil {
+		t.Fatalf("the acquire of segment 2 under the evicting close = %v, want nil", err)
+	}
+	if got := e.openCount(1); got != 0 {
+		t.Fatalf("segment 1's descriptor count is %d, want 0", got)
+	}
+}
+
+// TestDescriptorsCloseWaitsAShutdownClosingThatSegment checks the same window
+// on Shutdown's side: the shutdown's close walk collects the files under the
+// mutex and closes them with it released, so a Close of a segment whose file
+// that walk holds can otherwise return while the file is still being closed,
+// green-lighting an unlink under an open handle. The walk must hold a
+// reference per file for the length of its close, so the Close waits too.
+func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 2)
+
+	e.read(t, 1)
+	held, err := e.c.Acquire(2)
+	if err != nil {
+		t.Fatalf("acquiring segment 2 failed: %v", err)
+	}
+
+	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- e.c.Shutdown() }()
+	// Shutdown has started once its rejects answer shut.
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		_, err := e.c.Acquire(9)
+		if errors.Is(err, segment.ErrCacheClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Shutdown never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	held.Release()
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the shutdown's close never reached the hold")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- e.c.Close(1) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close(1) returned %v while the shutdown was still closing that segment's file, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	h.Release()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close(1) after the shutdown's close returned = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close(1) did not return after the shutdown's close ended")
+	}
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the close ended")
+	}
+	if closes := e.seam.CallsFor(journalv2test.OpClose, name(2)) - e.stocked[2]; closes != 1 {
+		t.Fatalf("segment 2's file was closed %d times, want once", closes)
+	}
+}
