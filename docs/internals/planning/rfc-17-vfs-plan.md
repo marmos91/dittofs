@@ -282,7 +282,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
 11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after the engine's
     S3 (#3546), not all of stage 3: against the fake, `Copy` is a memcpy whose tests can only
     pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
-    open through `Deps.Opens` (#3546 §6 point 13).
+    open through `Deps.Holds`, a `CloneHold` the root adapts from open state (#3546 §6 point 13).
     Done when: V22, V26, V29, V30, V31 pass.
 
 ## 4. The engine contract

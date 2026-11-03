@@ -233,13 +233,12 @@ subtasks and tests can cite them.
 
 ## 4. Decisions this epic takes
 
-- **D1, a file's binding.** The content methods name only a `FileID`, yet the handle a
-  write goes through and every `Existence` and `Content` call need the file's share, and
-  `kvstore` keys a file's records under it. RFC 8 does not say how the engine finds it
-  (§9, point 1). T3.1 puts the lookup in one unexported function, `bindingOf(f)`, which
-  answers the only bound share; with more than one bound it refuses the call. A
-  `decision:` marker there names the ceiling, one share per engine, and is withdrawn when
-  the content interface names the share.
+- **D1, a file's binding.** Every content method takes the file's `ShareID` beside its
+  `FileID`, as `PreWarm` does: the filesystem has it from the handle, and the engine keys
+  its binding on it. A share with no binding answers `ErrStale`, as a removed share does.
+  T3.1 adds `bindingOf(share)`, a read of the copy-on-write share table. The parameter
+  lands in RFC 8 §12.1 and RFC 17 §2.3's `Content`, and in `pkg/block/enginev2`'s
+  declared signatures, ahead of T3.1, as #3547's review settled.
 - **D2, the unit composition.** `Bind` and `Start` are epic 6's, so a unit test cannot bind
   a share through them. T3.1 adds `export_test.go`, in package `enginev2`, with a hook that
   installs one binding over a `Journal` and a `Handle`, and a helper in the engine's test
@@ -327,14 +326,14 @@ test/enginev2/known.yaml  T3.2  its entry
   map behind its own mutex held only to look up, insert or remove; the entry with its own
   mutex and its pending operations, each `{version, kind (write, truncate, deallocate),
   extent, time, setsMtime, done}`; `entryOf(f)` that never inserts and `entryFor(f)` that
-  does; `bindingOf(f)` (D1); the lock-wait series for `area="file_state"`, timed with
+  does; `bindingOf(share)` (D1); the lock-wait series for `area="file_state"`, timed with
   `Deps.Clock`; RFC 8 §2.3's `ponytail:` marker on the per-file bound at the map.
   `export_test.go` and the unit composition (D2), with the import allowlist entries.
 - **Acceptance criteria:**
   - A shard's lock is never held while an entry's lock is waited on, nor across any call
     out of the package.
   - A lookup for a file with no entry allocates nothing and creates nothing.
-  - With two shares bound, `bindingOf` refuses the call rather than guess.
+  - A call naming a share with no binding answers `ErrStale` and touches no journal.
 - **Tests:** one file's entry lock held through the hook while a second file in the same
   shard is looked up, inserted and released (catches a shard lock held across an entry
   wait, or a striped entry); the `-race` run with writers on 64 files over the composition;
@@ -343,8 +342,7 @@ test/enginev2/known.yaml  T3.2  its entry
   no slice or array of bytes (catches a payload copy, R4); the lock-wait series records the
   test clock's advance while a holder keeps the lock (catches it unrecorded); one file
   saturated by writers while another file's writes record no lock wait (R5's property
-  across files, which D1 allows; its row across shares waits for open point 1 and
-  epic 6).
+  across files; its row across shares waits for epic 6, which binds a second share).
 
 ### T3.2 Write
 
@@ -491,12 +489,7 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-1. **A file's share.** RFC 8 §12.1's content methods, and RFC 17 §2.3's `Content`, name only
-   the file, while the engine needs the file's share for its handle and for every store
-   call. The service has it (`shareOf(h)`). Either the content methods take the share, or
-   the engine learns a file's share from a store lookup; D1 serves one bound share until
-   then. It must be settled before epic 6 binds a second share, and the change touches
-   the surface frozen at S1.
+1. **A file's share.** Settled: the content methods take the share (D1).
 2. **The verifier's edge.** T3.2 returns the verifier T4.1 derives, an edge from epic 4 into
    epic 3 that the dependency graph between epics does not draw. This document breaks it
    with a stand-in (D12) so epic 3 waits for nothing of epic 4; the graph between epics

@@ -148,10 +148,10 @@ with stage 2:
   standard-library types only, as `journalv2` declares its own.
 - The types at the boundary: the engine takes `entity.FileID` and `entity.JournalVersion`
   and converts once, at its journal interface; no `journalv2` type crosses `Content`.
-  `Opens` and `Closed` take `openstate`'s `FileKey`, `CloneSource` and `CloseResult` as they
-  are, since Go matches a method by type identity, and the engine reads open state's answers
-  by its `DelayError` (`DelayFrozen`) and `ErrBadState`, so it imports `pkg/openstate` for
-  those types and values and calls nothing of it but `Deps.Opens`.
+  A clone's hold on its source is `Deps.Holds`, a `CloneHold` (`Hold`, `Release`, `Served`)
+  in the engine's own types (`CloneSrc`), which the root adapts from open state, so the
+  engine imports no `pkg/openstate` (RFC 0 I6). An orphan a clone's `Release` leaves
+  reaches the filesystem through open state's own `Sink.Closed`.
 
 `Content` is declared by stage 2 in `internal/vfs/filesystem.go` (#3534), over `pkg/vfs`
 (#3533), and matches RFC 8 §12.1: C1, C2 and C5 to C7 landed with them, as #3543 answered
@@ -379,7 +379,7 @@ harness (`journalv2test/prof`) wired to the fixture.
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 12.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 9 | 24.75 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 4 | 12.5 | C | 9 |
-| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Opens`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
+| 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 6 | 19 | A | 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
 | | **Total** | | **60** | **162** | | |
@@ -580,7 +580,7 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   `docs/internals/testing.md`'s suite table regenerated with `dt docs`.
 - T2.2 The fixture: the engine over the real journal on a temporary directory, `kvstore` on
   an in-memory `kv.KV`, the real open-state table over the same `kv.KV` with `ServeShard`
-  called for each bound share's own shard and passed as `Deps.Opens`, `sim.TestClock`, the journal's crash seam,
+  called for each bound share's own shard and adapted as `Deps.Holds`, `sim.TestClock`, the journal's crash seam,
   and the journal's profiling harness wired to it, one `prof.Watch` call. T4.7, T5.4, T5.5's
   crash, T6.5, T7.1 and T8.3 test over it rather than build a second fixture; every test over
   it sits behind `engine_conformance`, listed in `known.yaml` until the journal calls it needs
@@ -884,10 +884,11 @@ excluded. Spans: a clone's batches as root spans.
   when the registration drops (T8.3); the service answers `done(false)` and runs the release
   again then. T5.4's `ErrDelay` branch is built and tested here, where the registration is.
 - T8.3 The clone-kind open and phase 2. Before `Content.Resume`, which runs every batch of
-  phase 2 in one call and whose last batch deletes the record, `Deps.Opens.CloneOpen` with
+  phase 2 in one call and whose last batch deletes the record, `Deps.Holds.Hold` with
   the destination and the version `CloneTarget` drew, which takes over the record, or finds
-  the hold `install` made when the shard began. Once `Resume` returns, `CloneClose`, whose
-  orphan report goes to `Deps.Closed`: an unlink after `CloneOpen` finds the hold in the
+  the hold `install` made when the shard began. Once `Resume` returns, `Release`, whose
+  orphan open state reports through its own `Sink.Closed`; a clone rebuilt at start waits on
+  `Served` for its source's shard first: an unlink after `CloneOpen` finds the hold in the
   table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and only that
   report runs it. Then the registration drops, which yields retry on T5.4's channel to every
   release it answered `ErrDelay`: an unlink before `CloneOpen` leaves the table no entry,
@@ -914,7 +915,7 @@ excluded. Spans: a clone's batches as root spans.
   between phase 1 and `CloneOpen`, held there by `DelayFrozen`, keeps its content, the
   release answered `ErrDelay` with no byte dropped, and runs again once the registration
   drops, the source's bytes then gone; the source unlinked during `Resume` keeps its
-  content until `Deps.Closed` gets the orphan and the release runs; a `CloneOpen` that fails
+  content until `Sink.Closed` reports the orphan and the release runs; a `Hold` that fails
   other than `DelayFrozen` or `ErrStopped` leaves phase 2 to finish.
 - T8.4 The destination held until done; removals of it held; a retry joining a running
   clone; `ErrDelay` at the deadline, success once done.
@@ -1052,12 +1053,12 @@ follows the journal's, not this part's (§6 point 7).
     release waits for a start, the upgrade its own `decision:` names.
 12. **A throwaway front end** (a CLI or FUSE) before stage 5's adapters: not planned; the
     integration tier is how the part is used before then.
-13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Opens`, not the
+13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Holds`, not the
     service's: `CloneOpen` takes over the source record the clone's phase 1 writes, matched
     on the version `CloneTarget` draws, so nothing can call it before phase 1; the engine
     takes it before `Content.Resume` runs phase 2, and calls `CloneClose` once `Resume`
-    returns, as RFC 14 §9.2 has it follow the clone's last batch, handing the service its
-    orphan through `Deps.Closed`.
+    returns, as RFC 14 §9.2 has it follow the clone's last batch; open state hands the
+    service its orphan through its own `Sink.Closed`.
     Until the clone is done, the source is held by the registration, not the open, and a
     release the registration delayed runs again when it drops (T8.3). Stage 2's clone path calls `Clone` and
     takes no open. RFC 8 §8.1's "the engine reads and writes no open state: `Deps` holds no
@@ -1129,6 +1130,6 @@ follows the journal's, not this part's (§6 point 7).
 | RFC 16 §3 (`Lifecycle`), §4.2 (`J‖journal`, `S‖id‖vl`) | 6 (T6.1) |
 | RFC 17 §2.3 (`Content`), §4.3 (errors, `pkg/vfs/vfserr`) | 1 |
 | RFC 17 §6 V19, V20, V22, V25, V26; §8 integration tier | 9 |
-| RFC 14 §2.2 (clone-kind open), §9.1 (`Releasing`), §9.2 (`CloneOpen`, `CloneClose`) | 8 (the engine takes and closes the clone-kind open through `Deps.Opens` and hands its orphan to `Deps.Closed`; T8.3, T8.6), 5 (the service marks a release; T5.4) |
+| RFC 14 §2.2 (clone-kind open), §9.1 (`Releasing`), §9.2 (`CloneOpen`, `CloneClose`) | 8 (the engine takes and closes the clone-kind open through `Deps.Holds`, its orphan reported by open state's `Sink.Closed`; T8.3, T8.6), 5 (the service marks a release; T5.4) |
 | RFC 25 §2.1, §3.9, §8 | rule 3; 9 (spans and conditions through the composition) |
 | RFC 29 §4.9, R11 | 2 (T2.1) |
