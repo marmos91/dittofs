@@ -305,7 +305,8 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.UnlinkResult{}, false, err
 	}
 	r.Dir.After = fs.attrs(ctx, a, dir.H)
-	return r, false, fs.releaseOrphan(ctx, f, orphan)
+	fs.releaseOrphan(ctx, f, orphan)
+	return r, false, nil
 }
 
 // Rename moves the entry fromName in from to toName in to, both of one
@@ -445,9 +446,9 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 		fs.log.Warn("vfs: open names not moved with a rename", "file", src.ID, "err", err)
 	}
 	if replaces {
-		err = fs.releaseOrphan(ctx, *dst, orphan)
+		fs.releaseOrphan(ctx, *dst, orphan)
 	}
-	return r, false, err
+	return r, false, nil
 }
 
 // admitChange admits a change to h, a directory or a file: ErrReadOnly for a
@@ -509,26 +510,20 @@ func (fs *Filesystem) unlinkDurable(ctx context.Context, f vfs.File, remove func
 }
 
 // releaseOrphan runs f's release when a change left it orphan, with no name
-// and no open, holding f's admission lock. Its failure is a releaseFailed:
-// the change has committed.
-func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvstore.Orphaned) error {
+// and no open, holding f's admission lock. The change has committed, so the
+// call succeeds whatever the release answers (RFC 17 §5.3): a failure is
+// logged, and f's pending release is left for the next start's recovery.
+func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvstore.Orphaned) {
 	if orphan.File.IsZero() {
-		return nil
+		return
 	}
 	// The release outlives the call's end, as a last close's does.
 	ctx, cancel := fs.detached(ctx)
 	defer cancel()
 	if err := fs.release(ctx, keyOf(f)); err != nil {
-		return releaseFailed{err}
+		fs.log.Warn("vfs: a release after a name's removal failed", "file", f.ID, "err", err)
 	}
-	return nil
 }
-
-// releaseFailed is a release's failure after the change that left its file
-// orphan committed.
-type releaseFailed struct{ error }
-
-func (e releaseFailed) Unwrap() error { return e.error }
 
 // before is dir's attributes as a WCC's Before, read under its accept lock:
 // nil over NFSv3, which never reports a directory's, and where the caller

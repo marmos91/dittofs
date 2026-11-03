@@ -28,6 +28,8 @@ type fakeContent struct {
 	truncErr error
 	// overlayErr, when set, is every Overlay's answer.
 	overlayErr error
+	// deleteErr, when set, is every Delete's answer, dropping nothing.
+	deleteErr error
 }
 
 var _ Content = (*fakeContent)(nil)
@@ -111,6 +113,9 @@ func (c *fakeContent) Deallocate(ctx context.Context, f entity.FileID, off, n in
 func (c *fakeContent) Delete(ctx context.Context, f entity.FileID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	delete(c.files, f)
 	return nil
 }

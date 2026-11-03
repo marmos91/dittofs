@@ -506,15 +506,11 @@ var unlinkRetry, unlinkWait = 50 * time.Millisecond, 2 * time.Second
 // answers the directory's WCC when it ran. One delayed is retried in the
 // background, answering nil. One refused, or delayed past unlinkRetries, is
 // logged at Warn and counted, and f keeps its name: its client has closed,
-// and no reply reaches it. A release failing once the unlink has committed
-// is logged as a failed release; the unlink ran.
+// and no reply reaches it.
 func (fs *Filesystem) unlinkClosed(ctx context.Context, share entity.ShareID, f entity.FileID, d entity.DeleteRecord, try int) *vfs.WCC {
 	r, err := fs.deferredUnlink(ctx, share, f, d)
-	var failed releaseFailed
 	var delay *vfs.Delay
 	switch {
-	case errors.As(err, &failed):
-		fs.log.Warn("vfs: a release after a deferred unlink failed", "file", f, "err", err)
 	case errors.As(err, &delay) && try < unlinkRetries, errors.Is(err, vfs.ErrGrace):
 		next, wait := try+1, min(unlinkRetry<<min(try, 6), unlinkWait)
 		if errors.Is(err, vfs.ErrGrace) {
