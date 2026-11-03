@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
 )
+
+// noMax is the journal maximum a spare's reservation is checked against
+// where the maximum is not under test: a limit no footprint adds up to.
+const noMax = math.MaxInt64
 
 // capturing is a slog Handler that keeps every record handed to it, so a test
 // can assert what the ledger logged, at which level and carrying which
@@ -63,7 +68,7 @@ func TestRetireTwiceSubtractsOnce(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"AddSpare", func() error { return s.AddSpare(id) }},
+		{"AddSpare", func() error { return s.AddSpare(id, noMax) }},
 		{"Take", func() error { return s.Take(id) }},
 		{"Seal", func() error { return s.Seal(id, true) }},
 	} {
@@ -123,6 +128,99 @@ func TestRetireTwiceSubtractsOnce(t *testing.T) {
 	}
 }
 
+// TestAddSpareRefusedOneShortOfTheMaximum: a spare's cap is reserved against
+// the journal's maximum atomically with the ledger's UsedBytes, so a maximum
+// one byte short of the footprint plus the cap refuses the spare with a
+// NoSpaceError naming the journal limit, exactly one byte missing and the
+// bytes unit — catching an off-by-one and a wrong unit — while changing no
+// counter, no spare and the check's verdict: the refusal is not a double
+// retire either.
+func TestAddSpareRefusedOneShortOfTheMaximum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	first := core.SegmentID(1)
+	if err := s.AddSpare(first, noMax); err != nil {
+		t.Fatalf("the first spare: %v", err)
+	}
+	before := s.Counters()
+	if err := s.Check(); err != nil {
+		t.Fatalf("before the refusal, %v", err)
+	}
+
+	err := s.AddSpare(core.SegmentID(2), segCap+segCap-1)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("the refusal: %v, want a *core.NoSpaceError", err)
+	}
+	if ns.Limit != core.LimitJournal {
+		t.Fatalf("the refusal named the %s limit, want %s", ns.Limit, core.LimitJournal)
+	}
+	if ns.Missing != 1 {
+		t.Fatalf("the refusal said %d missing, want 1", ns.Missing)
+	}
+	if ns.Unit != core.UnitBytes {
+		t.Fatalf("the refusal counted %s, want %s", ns.Unit, core.UnitBytes)
+	}
+
+	after := s.Counters()
+	if after != before {
+		t.Fatalf("the refusal changed the counters: %v, still want %v", after, before)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the refusal, %v", err)
+	}
+}
+
+// TestAddSpareAcceptedAtExactlyTheMaximum: a maximum that holds the footprint
+// plus exactly one more cap takes the spare: the bound is on what the journal
+// holds, not on what it holds minus one.
+func TestAddSpareAcceptedAtExactlyTheMaximum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	if err := s.AddSpare(core.SegmentID(1), noMax); err != nil {
+		t.Fatalf("the first spare: %v", err)
+	}
+	if err := s.AddSpare(core.SegmentID(2), 2*segCap); err != nil {
+		t.Fatalf("the spare at exactly the maximum: %v", err)
+	}
+	c := s.Counters()
+	if c.UsedBytes != 2*segCap || c.Spares != 2 {
+		t.Fatalf("after the spare at the maximum, the footprint is %d with %d spares, want %d and 2",
+			c.UsedBytes, c.Spares, 2*segCap)
+	}
+	if err := s.AddSpare(core.SegmentID(3), 2*segCap); err == nil {
+		t.Fatal("the spare past the full maximum was taken, want a refusal")
+	} else if !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("the spare past the full maximum: %v, want a refusal matching %v", err, core.ErrNoSpace)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the maximum, %v", err)
+	}
+}
+
+// TestAddSpareRefusedBelowItsOwnCap: a maximum below the cap itself refuses
+// every spare without overflows: the overflow-safe form of the check must
+// read it as a refusal, not wrap into an acceptance.
+func TestAddSpareRefusedBelowItsOwnCap(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	for _, max := range []int64{0, -1, segCap - 1} {
+		err := s.AddSpare(core.SegmentID(1), max)
+		if !errors.Is(err, core.ErrNoSpace) {
+			t.Fatalf("AddSpare at the maximum %d: %v, want a refusal matching %v", max, err, core.ErrNoSpace)
+		}
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the refusals, %v", err)
+	}
+}
+
 // TestRecycleAfterRetireAddsNoSpare: recycling a segment a retire already
 // unlinked must neither resurrect its cap as a spare nor change any counter:
 // storage that left the footprint cannot come back through the recycle path.
@@ -138,7 +236,7 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"AddSpare", func() error { return s.AddSpare(old) }},
+		{"AddSpare", func() error { return s.AddSpare(old, noMax) }},
 		{"Take", func() error { return s.Take(old) }},
 		{"Seal", func() error { return s.Seal(old, true) }},
 	} {
@@ -193,7 +291,7 @@ func TestRecycleKeepsFootprint(t *testing.T) {
 	old, fresh := core.SegmentID(1), core.SegmentID(2)
 	tagA, tagB := core.ShareTag(1), core.ShareTag(2)
 
-	if err := s.AddSpare(old); err != nil {
+	if err := s.AddSpare(old, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(old); err != nil {
@@ -255,7 +353,7 @@ func TestFailedMakeReservationIsReturned(t *testing.T) {
 	var logs capturing
 	s := NewSet(segCap, slog.New(&logs))
 	id := core.SegmentID(7)
-	if err := s.AddSpare(id); err != nil {
+	if err := s.AddSpare(id, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if c := s.Counters(); c.UsedBytes != segCap || c.Spares != 1 {
@@ -287,7 +385,7 @@ func TestFailedMakeReservationIsReturned(t *testing.T) {
 	// the set with Take and ended — the state a failure leaves, never sealed
 	// — and stays accounted until a later retire takes it.
 	stuck := core.SegmentID(8)
-	if err := s.AddSpare(stuck); err != nil {
+	if err := s.AddSpare(stuck, noMax); err != nil {
 		t.Fatalf("AddSpare of the leftover that cannot be unlinked: %v", err)
 	}
 	if err := s.Take(stuck); err != nil {
@@ -328,7 +426,7 @@ func TestDropSpareRefusals(t *testing.T) {
 	s := NewSet(segCap, slog.New(&logs))
 	spare, seg, absent := core.SegmentID(1), core.SegmentID(2), core.SegmentID(3)
 	for _, id := range []core.SegmentID{spare, seg} {
-		if err := s.AddSpare(id); err != nil {
+		if err := s.AddSpare(id, noMax); err != nil {
 			t.Fatalf("AddSpare %d: %v", id, err)
 		}
 	}
@@ -387,7 +485,7 @@ func TestRetireOfASpareIsRefused(t *testing.T) {
 	var logs capturing
 	s := NewSet(segCap, slog.New(&logs))
 	id := core.SegmentID(3)
-	if err := s.AddSpare(id); err != nil {
+	if err := s.AddSpare(id, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	before := s.Counters()
@@ -431,7 +529,7 @@ func TestAnEarlySealIsNeverRecycled(t *testing.T) {
 	s := NewSet(segCap, nil)
 	id, fresh := core.SegmentID(1), core.SegmentID(2)
 	tag := core.ShareTag(2)
-	if err := s.AddSpare(id); err != nil {
+	if err := s.AddSpare(id, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(id); err != nil {
@@ -497,7 +595,7 @@ func TestAFullSealKeepsItsCap(t *testing.T) {
 	s := NewSet(segCap, nil)
 	full, early := core.SegmentID(1), core.SegmentID(2)
 	for _, id := range []core.SegmentID{full, early} {
-		if err := s.AddSpare(id); err != nil {
+		if err := s.AddSpare(id, noMax); err != nil {
 			t.Fatalf("AddSpare %d: %v", id, err)
 		}
 		if err := s.Take(id); err != nil {
@@ -548,7 +646,7 @@ func TestReleaseAfterRetireChangesNothing(t *testing.T) {
 	const segCap = 4096
 	s := NewSet(segCap, nil)
 	retired := core.SegmentID(1)
-	if err := s.AddSpare(retired); err != nil {
+	if err := s.AddSpare(retired, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(retired); err != nil {
@@ -580,7 +678,7 @@ func TestReleaseAfterRetireChangesNothing(t *testing.T) {
 
 	// A claim is held only on a segment no stream can still append to.
 	stillActive := core.SegmentID(2)
-	if err := s.AddSpare(stillActive); err != nil {
+	if err := s.AddSpare(stillActive, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(stillActive); err != nil {
@@ -617,7 +715,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	const segCap = 4096
 	s := NewSet(segCap, nil)
 	sealedEarly := core.SegmentID(1)
-	if err := s.AddSpare(sealedEarly); err != nil {
+	if err := s.AddSpare(sealedEarly, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(sealedEarly); err != nil {
@@ -645,7 +743,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	// An ended segment keeps its cap until it is unlinked: the failure
 	// strands the storage, not the accounting.
 	ended := core.SegmentID(2)
-	if err := s.AddSpare(ended); err != nil {
+	if err := s.AddSpare(ended, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(ended); err != nil {
@@ -676,7 +774,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	// A torn-tail cut of an ended segment is the one shrink that applies to
 	// it: the cut size is what the retire returns afterwards.
 	torn := core.SegmentID(3)
-	if err := s.AddSpare(torn); err != nil {
+	if err := s.AddSpare(torn, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(torn); err != nil {
@@ -699,7 +797,7 @@ func TestShrinkAtSealAndEndedKeepsCap(t *testing.T) {
 	// The size bounds, on one sealed segment: a shrink may keep the size or
 	// lower it, never grow it and never empty it.
 	growing := core.SegmentID(4)
-	if err := s.AddSpare(growing); err != nil {
+	if err := s.AddSpare(growing, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(growing); err != nil {
@@ -746,7 +844,7 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	s := NewSet(segCap, nil)
 	one, two := core.SegmentID(1), core.SegmentID(2)
 	for _, id := range []core.SegmentID{one, two} {
-		if err := s.AddSpare(id); err != nil {
+		if err := s.AddSpare(id, noMax); err != nil {
 			t.Fatalf("AddSpare %d: %v", id, err)
 		}
 		if err := s.Take(id); err != nil {
@@ -802,7 +900,7 @@ func TestRetireActiveRefused(t *testing.T) {
 	const segCap = 4096
 	s := NewSet(segCap, nil)
 	id := core.SegmentID(1)
-	if err := s.AddSpare(id); err != nil {
+	if err := s.AddSpare(id, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(id); err != nil {
@@ -851,7 +949,7 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	s := NewSet(segCap, nil)
 	id := core.SegmentID(1)
 	tag := core.ShareTag(2)
-	if err := s.AddSpare(id); err != nil {
+	if err := s.AddSpare(id, noMax); err != nil {
 		t.Fatalf("AddSpare: %v", err)
 	}
 	if err := s.Take(id); err != nil {
@@ -913,7 +1011,7 @@ func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
 		s := NewSet(segCap, nil)
 		spares := []core.SegmentID{1, 2}
 		for _, id := range spares {
-			if err := s.AddSpare(id); err != nil {
+			if err := s.AddSpare(id, noMax); err != nil {
 				t.Fatalf("AddSpare %d: %v", id, err)
 			}
 		}

@@ -180,14 +180,28 @@ func (s *Set) ownsLocked(id core.SegmentID) bool {
 	return ok
 }
 
-// AddSpare carries the step that reserves cap for a fresh spare, raising
-// UsedBytes before the allocation it accounts for happens. It is called
-// before the spare's creation; the allocation itself is the caller's, and a
-// spare whose making fails is returned by DropSpare once its unlink has
-// happened, so the raise always comes first. A leftover the unlink cannot
-// remove is carried into the set with Take and ended instead — a spare
-// cannot go back to being one — and a later retire takes it.
-func (s *Set) AddSpare(id core.SegmentID) error {
+// AddSpare carries the step that reserves cap for a fresh spare against the
+// journal's maximum, max, raising UsedBytes before the allocation it accounts
+// for happens. The reservation and the check of the maximum are one critical
+// section under the ledger's mutex, so two makes near the maximum never both
+// pass — the answer is not a read of Counters followed by a decision outside
+// the lock. A refusal returns the NoSpaceError the maximum owes — Limit
+// LimitJournal, Missing what the reservation lacked, Unit bytes — and changes
+// nothing: no counter, no spare, and it is not counted a double retire.
+//
+// AddSpare is called before the spare's creation; the allocation itself is
+// the caller's, and a spare whose making fails is returned by DropSpare once
+// its unlink has happened, so the raise always comes first. A leftover the
+// unlink cannot remove is carried into the set with Take and ended instead —
+// a spare cannot go back to being one — and a later retire takes it.
+//
+// decision: the maximum is checked against the footprint the ledger holds,
+// and a reservation held against the maximum outside the ledger counts only
+// once it moves into this critical section, never by being read beside it.
+// A max <= 0 therefore refuses every spare, with no special case. Overturn
+// this only if a caller must reserve against the maximum without a spare,
+// which would need a call of its own rather than a read of UsedBytes.
+func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -196,6 +210,16 @@ func (s *Set) AddSpare(id core.SegmentID) error {
 	}
 	if s.ownsLocked(id) {
 		return ErrDuplicateID
+	}
+	// The overflow-safe form of UsedBytes+cap > max: a max below the cap
+	// refuses here without any wraparound, and Missing reads what the
+	// reservation lacked whatever the figures.
+	if s.cap > max || s.c.UsedBytes > max-s.cap {
+		return &core.NoSpaceError{
+			Limit:   core.LimitJournal,
+			Missing: s.c.UsedBytes + s.cap - max,
+			Unit:    core.UnitBytes,
+		}
 	}
 	s.spares[id] = struct{}{}
 	s.c.UsedBytes += s.cap

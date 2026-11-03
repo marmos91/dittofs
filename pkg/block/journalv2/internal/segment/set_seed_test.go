@@ -32,7 +32,7 @@ func TestSeedReplay(t *testing.T) {
 				var got error
 				switch op.kind {
 				case opAddSpare:
-					got = s.AddSpare(op.id)
+					got = s.AddSpare(op.id, op.max)
 				case opTake:
 					got = s.Take(op.id)
 					if got == nil {
