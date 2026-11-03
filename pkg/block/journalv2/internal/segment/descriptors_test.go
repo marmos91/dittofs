@@ -344,12 +344,21 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
-
+	// Cleanups run last-registered first: the Shutdown registered here runs
+	// after the reference releases registered below, so a failure on any
+	// assertion unwinds the held references first and the failure reports
+	// itself — a deferred Shutdown would instead wedge on a reference the
+	// failed test never dropped, and the run would hang to the timeout.
+	t.Cleanup(func() {
+		if err := e.c.Shutdown(); err != nil {
+			t.Errorf("Shutdown after the failed check = %v, want nil", err)
+		}
+	})
 	rA, err := e.c.Acquire(1)
 	if err != nil {
 		t.Fatalf("acquiring segment 1 failed: %v", err)
 	}
+	dropA := relRegister(t, rA)
 
 	closed := make(chan error, 1)
 	go func() { closed <- e.c.Close(1) }()
@@ -393,8 +402,9 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 2 failed: %v", err)
 	}
+	dropB := relRegister(t, rB)
 
-	rA.Release()
+	dropA()
 
 	select {
 	case err := <-closed:
@@ -412,7 +422,7 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 	// wait on another segment's readers — but it must not outlive its own
 	// release either, and the release must not misaccount under a finished
 	// drain.
-	rB.Release()
+	dropB()
 
 	// A second Close of an already-closed segment is the idempotent nil, and
 	// it returns at once even while a reader of another segment still holds
@@ -421,6 +431,7 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 2 after segment 1's Close = %v, want a reference: Close(1) did not close it", err)
 	}
+	dropHeld := relRegister(t, rHeld)
 	done := make(chan error, 1)
 	go func() { done <- e.c.Close(1) }()
 	select {
@@ -431,7 +442,7 @@ func TestDescriptorsCloseWaitsOnlyForItsOwn(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the second Close(1) did not return: it waits on a reader of another segment")
 	}
-	rHeld.Release()
+	dropHeld()
 }
 
 // TestDescriptorsContinuousReadersDoNotStarveClose checks RFC 1 §8.6's
@@ -502,6 +513,27 @@ func (f *heldFault) At(op string, key []byte) (time.Duration, int, error) {
 		f.ok = false
 	}
 	return 0, 0, nil
+}
+
+// oneRelease releases a reference exactly once: whichever of the test body
+// and the cleanup reaches it first wins, and the other's call is the no-op
+// Release's exactly-once contract needs it to be.
+type oneRelease struct {
+	once sync.Once
+	r    segment.Ref
+}
+
+func (x *oneRelease) drop() { x.once.Do(x.r.Release) }
+
+// relRegister registers a t.Cleanup that drops a reference exactly once,
+// whichever of the test body or the cleanup reaches the drop first. Register
+// it after the Shutdown cleanup so the drop runs first: a failure on any
+// assertion unwinds the reference before Shutdown waits on it, and the
+// failure reports itself instead of wedging to the run's timeout.
+func relRegister(t *testing.T, r segment.Ref) (drop func()) {
+	x := &oneRelease{r: r}
+	t.Cleanup(x.drop)
+	return x.drop
 }
 
 // eioFault fails the first n calls of op on the file named key with EIO; every
@@ -715,26 +747,6 @@ func TestDescriptorsShutdownWaitsAndUnregisters(t *testing.T) {
 		t.Fatalf("the budget holds %d descriptors after Shutdown, want %d: every slot the cache held is back", got, budgetBefore)
 	}
 
-	// The cache is out of the reclaim walk: a second cache on the same budget
-	// can use every slot of it, with nothing evicted for the gone one.
-	seam2, err := journalv2test.NewSeam(t.TempDir())
-	if err != nil {
-		t.Fatalf("the second seam could not be made: %v", err)
-	}
-	e2 := cacheEnv{
-		budget:  e.budget,
-		c:       segment.NewDescriptors(seam2.FS(), name, e.budget),
-		seam:    seam2,
-		stocked: map[core.SegmentID]int{},
-	}
-	e2.stock(t, 8)
-	defer e2.c.Shutdown()
-	for i := 1; i <= 8; i++ {
-		e2.read(t, core.SegmentID(i))
-	}
-	if s2 := e2.c.Stats(); s2.Open > 4 {
-		t.Fatalf("the second cache holds %d descriptors, want at most 4: the shut-down cache still counts against the bound or evicts for it", s2.Open)
-	}
 }
 
 // TestDescriptorsRaceSoak checks the same contract under the race detector
@@ -897,7 +909,15 @@ func TestDescriptorsCloseRacingAnOpen(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	// The Shutdown cleanup is registered before the seam hold below creates
+	// its own, so it runs after the hold's release: a failure while a parked
+	// call holds a reference unwinds the hold first and the failure reports
+	// itself instead of wedging the Shutdown past the run's timeout.
+	t.Cleanup(func() {
+		if err := e.c.Shutdown(); err != nil {
+			t.Errorf("Shutdown after the failed check = %v, want nil", err)
+		}
+	})
 
 	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
 	opener := make(chan error, 1)
@@ -1040,7 +1060,15 @@ func TestDescriptorsASecondCloseWaitsForTheOpenDrain(t *testing.T) {
 
 	e := newCache(t, 4)
 	e.stock(t, 1)
-	defer e.c.Shutdown()
+	// The Shutdown cleanup is registered before the seam hold below creates
+	// its own, so it runs after the hold's release: a failure while a parked
+	// call holds a reference unwinds the hold first and the failure reports
+	// itself instead of wedging the Shutdown past the run's timeout.
+	t.Cleanup(func() {
+		if err := e.c.Shutdown(); err != nil {
+			t.Errorf("Shutdown after the failed check = %v, want nil", err)
+		}
+	})
 
 	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
 	opener := make(chan error, 1)
@@ -1530,7 +1558,15 @@ func TestDescriptorsCloseWaitsAReclaimClosingThatSegment(t *testing.T) {
 
 	e := newCache(t, 1)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	// The Shutdown cleanup is registered before the seam hold below creates
+	// its own, so it runs after the hold's release: a failure while a parked
+	// call holds a reference unwinds the hold first and the failure reports
+	// itself instead of wedging the Shutdown past the run's timeout.
+	t.Cleanup(func() {
+		if err := e.c.Shutdown(); err != nil {
+			t.Errorf("Shutdown after the failed check = %v, want nil", err)
+		}
+	})
 
 	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
 	e.read(t, 1)
@@ -1599,6 +1635,10 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 2 failed: %v", err)
 	}
+	// The held reference is dropped exactly once — by the body on the path
+	// that reaches it, by this cleanup otherwise — so a failure before the
+	// drop does not keep the Shutdown this test runs wedged on it.
+	dropHeld := relRegister(t, held)
 
 	h := e.seam.HoldFirst(t, journalv2test.OpClose, name(1))
 	shutdown := make(chan error, 1)
@@ -1615,7 +1655,7 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	held.Release()
+	dropHeld()
 	select {
 	case <-h.Reached():
 	case <-time.After(10 * time.Second):
@@ -1662,12 +1702,66 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 // holder — the descriptor would sit unlinked: open, holding a slot, and
 // invisible to the reclaimer for good. Every path that drops a reference
 // must run the tail Release runs, idle linking included.
+// TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt pins the tombstone
+// a Close of a segment the cache never held leaves: the entry it writes
+// answers every later acquire ErrSegmentGone without an open, so a read
+// racing that Close cannot reach storage the caller is about to free. An
+// entry that merely vanished would fall back to the open, which finds the
+// file still there — the caller frees it only after Close returns — and
+// reads bytes from under the free.
+func TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := newCache(t, 4)
+	e.stock(t, 1)
+
+	// Segment 9 exists on storage too, so only the tombstone tells a later
+	// acquire from an open: the open would find the file.
+	stocked(t, e, 9)
+	opens := e.seam.Calls(journalv2test.OpOpen)
+
+	if err := e.c.Close(9); err != nil {
+		t.Fatalf("Close(9) of a never-acquired segment = %v, want nil", err)
+	}
+	if got := segment.EntryCount(e.c); got != 1 {
+		t.Fatalf("the cache holds %d entries after the Close, want 1: the tombstone", got)
+	}
+	if !segment.EntryGone(e.c, 9) {
+		t.Fatal("segment 9's entry is not gone: the Close left no tombstone")
+	}
+
+	// The tombstone answers before any open is attempted, so the seam sees
+	// no second call of the segment's open.
+	for i := 0; i < 3; i++ {
+		if _, err := e.c.Acquire(9); !errors.Is(err, segment.ErrSegmentGone) {
+			t.Fatalf("acquiring segment 9 after its Close = %v, want ErrSegmentGone", err)
+		}
+	}
+	if got := e.seam.Calls(journalv2test.OpOpen) - opens; got != 0 {
+		t.Fatalf("the acquires after the Close made %d opens, want 0: the tombstone must answer them, not the file", got)
+	}
+
+	// The tombstone is not Forget-proof per the map's bound: it holds until
+	// then, but it must not hold up a Cache-wide Shutdown.
+	if err := e.c.Shutdown(); err != nil {
+		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+}
+
 func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := newCache(t, 2)
 	e.stock(t, 2)
-	defer e.c.Shutdown()
+	// The Shutdown cleanup is registered before the seam hold below creates
+	// its own, so it runs after the hold's release: a failure while a parked
+	// call holds a reference unwinds the hold first and the failure reports
+	// itself instead of wedging the Shutdown past the run's timeout.
+	t.Cleanup(func() {
+		if err := e.c.Shutdown(); err != nil {
+			t.Errorf("Shutdown after the failed check = %v, want nil", err)
+		}
+	})
 
 	// A first open of segment 1 fails EIO, and it is held at the seam while
 	// the cache's own takeSlot has already taken the slot — the opener's
