@@ -6,10 +6,10 @@ who has the file open, who locked which bytes, what each client may cache, and w
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
-**Status:** draft for review. Piece 1 has merged (#3256), and so has the store's first PR (#3329);
-pieces 2–8 are in review (#3330, #3336, #3341, #3344, #3363, #3400; piece 8 as #3456, #3457, #3458,
-#3417 and #3459), with the store's side in
-#3335, #3362 and #3399. The RFC 14, 17 and 22 edits this plan names go in #3414.
+**Status:** draft for review. These have merged into `feat/storage-v2`:
+piece 1 (#3256) and the store's first PR (#3329), pieces 2 to 8 (#3330, #3336, #3341, #3344,
+#3363, #3400; piece 8 as #3456, #3457, #3458, #3417 and #3459), and the store's side (#3335,
+#3362 and #3399). The RFC 14, 17 and 22 edits this plan names merged in #3414.
 The RFCs cited are `develop`'s, since #3142 merged; `feat/storage-v2` needs `develop` merged in
 before these links resolve to them.
 
