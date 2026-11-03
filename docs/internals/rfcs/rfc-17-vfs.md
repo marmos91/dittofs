@@ -581,7 +581,8 @@ them, and a mutation cancelled there may still have applied, as RFC 20 §3.1
 says of an abandoned request. Draining revokes nothing: open state is left to
 the next start's grace, and a recall in flight is neither forced nor revoked.
 
-**Stop.** Stops the timers. It closes nothing it was handed: the node closes
+**Stop.** Stops the timers, and ends and joins the waiters on pending releases'
+retry channels, which call no `done` (§5.3). It closes nothing it was handed: the node closes
 the engine, then stops open state (`Table.Stop`), then closes the store, after
 it. A `Sink.Closed` that reaches a stopped filesystem — a clone batch's
 `CloneClose` the engine's stop joins, the serving a `CloneClose` left to run
@@ -1969,12 +1970,13 @@ error ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%
 the call that ran it is answered as if the release were done, and the service
 waits on the channel in the
 background, never inside `Sink.Closed`, keeping the mark meanwhile. The outcome
-decides the rest: committed or aborted, it goes to `done`; `ErrDelay`
-(`DelayClone`), which comes before the journal's `Delete` has dropped anything,
+decides the rest: committed, or aborted (`ErrFileOpen`), it goes to `done`;
+`ErrDelay` (`DelayClone`), which comes before the journal's `Delete` has dropped anything,
 to `done(false)`, and the service then runs the release again, marking the file
 anew through `Opens.Releasing`; `ErrUnavailable`, it is logged, and the
 release's `F‖id‖rel` record is left for the next start's recovery, or goes with
-the share after a `Drop`.
+the share after a `Drop`. `Stop` ends the wait the same way, with no `done`
+(§2.5).
 The release transaction re-checks its holders itself
 ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
 so a release begun on a stale view aborts and loses nothing.
