@@ -294,7 +294,8 @@ func changeOf(a vfs.Attrs) openstate.ChangeMask {
 	return what
 }
 
-// GetACL is h's ACL: the stored one, or the one its mode implies.
+// GetACL is h's ACL: the stored one, or the one its mode implies, its audit
+// list left out for a caller other than an admin.
 func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs.ACL, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -316,6 +317,12 @@ func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs
 		return vfs.ACL{}, storeErr(err)
 	}
 	acl, err := fs.meta.Files().ACL(ctx, a.caller.Identity, h)
+	if !a.caller.Admin {
+		// Reading the audit list needs system security, which only an admin
+		// holds; another caller's read-edit-write then sets the access
+		// entries alone, which SetACL takes and which keeps the stored list.
+		acl.Audit = nil
+	}
 	return acl, storeErr(err)
 }
 

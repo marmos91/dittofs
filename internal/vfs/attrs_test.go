@@ -478,9 +478,10 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	}
 }
 
-// Only an admin writes the audit list: the owner's set carrying audit
-// entries is ErrAccess, and one carrying none keeps the file's.
-func TestOnlyAnAdminWritesTheAuditList(t *testing.T) {
+// Only an admin reads or writes the audit list: the owner reads none back,
+// her set carrying audit entries is ErrAccess, and one carrying none, what
+// she read back included, keeps the file's.
+func TestOnlyAnAdminReadsOrWritesTheAuditList(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	admin, alice := proven(s.fs.Admin.Principal, inLab), proven(s.alice.Principal, inLab)
@@ -494,9 +495,16 @@ func TestOnlyAnAdminWritesTheAuditList(t *testing.T) {
 	if _, err := s.SetACL(ctx, alice, vfs.Target{H: h}, audited); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("the owner's set carrying audit entries: %v, want ErrAccess", err)
 	}
-	plain := entity.ACL{Entries: audited.Entries}
+	plain, err := s.GetACL(ctx, alice, h)
+	s.must(t, err)
+	if len(plain.Audit) != 0 {
+		t.Errorf("the owner read the audit list: %+v", plain.Audit)
+	}
+	if got, err := s.GetACL(ctx, admin, h); err != nil || len(got.Audit) != 1 {
+		t.Errorf("the admin's read of the audit list: %+v, %v", got.Audit, err)
+	}
 	if _, err := s.SetACL(ctx, alice, vfs.Target{H: h}, plain); err != nil {
-		t.Errorf("the owner's set of the access entries alone: %v", err)
+		t.Errorf("the owner's set of what she read back: %v", err)
 	}
 	if got, _ := s.fs.Store.Files().ACL(ctx, s.fs.Admin, h); len(got.Audit) != 1 {
 		t.Errorf("the owner's set erased the audit list: %+v", got.Audit)
