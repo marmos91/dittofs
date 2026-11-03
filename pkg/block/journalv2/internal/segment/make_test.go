@@ -17,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/format"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/segment"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/journalv2test/prof"
 )
@@ -107,6 +108,35 @@ func awaitReached(t *testing.T, step string, hold *journalv2test.Hold, res <-cha
 	case err := <-res:
 		t.Fatalf("the Make returned (%v) without ever reaching its %s step", err, step)
 	}
+}
+
+// renameApplier is a storage.FS whose Rename calls through and then fails:
+// the rename-half-done case the seam's own failing rule cannot spell, since
+// a rule it applies refuses the call before anything moves. Everything
+// except Rename the seam's view answers untouched. removeFails drives the
+// wrapped Remove's refusal, for the leftover half of the case.
+type renameApplier struct {
+	storage.FS
+	removeFails bool
+}
+
+func (a *renameApplier) Rename(oldName, newName string) error {
+	if err := a.FS.Rename(oldName, newName); err != nil {
+		return err
+	}
+	// decision: the EIO is returned after the rename applied, not instead of
+	// it, because that is the case this wrapper exists to spell: storage that
+	// moved the file and still reported a failure leaves the file under the
+	// new name, so the cleanup must try both names. A refusal before
+	// anything moved is the seam's own failing rule, already in the matrix.
+	return syscall.EIO
+}
+
+func (a *renameApplier) Remove(name string) error {
+	if a.removeFails {
+		return syscall.EIO
+	}
+	return a.FS.Remove(name)
 }
 
 // classify splits the names a List returned into segment and spare names,
@@ -608,9 +638,9 @@ func TestMakeRaisesTheFootprintBeforeTheAllocation(t *testing.T) {
 // reservation returned; a remove that fails leaves the spare in the set,
 // End-ed at its cap, for a retirement to unlink — and the sparing engine
 // never unlinks a name it failed to create. It catches a Make that returns
-// the reservation before the unlink has happened, one that forgets the
-// second name after a rename-half-done, and one that removes a name an
-// earlier failure kept.
+// the reservation before the unlink has happened, and one that removes a
+// name an earlier failure kept. The rename that applied and still failed
+// is TestFailedMakeUnlinksBothNamesAfterTheAppliedRename's, not a rule's.
 func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -724,6 +754,66 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 			}
 		}
 	}
+
+	// The close of a failed attempt can fail of its own accord, joined onto
+	// the step that broke the sequence first. Whichever call failed first
+	// keeps its label: the error names the step that acted, not the one that
+	// followed. This row fails allocate and close together; the sync row
+	// fails sync and close, and the close-alone case is already in the table.
+	t.Run("allocate and close failing together", func(t *testing.T) {
+		seam, set, m := maker(t, 0, noMax)
+		before := set.Counters()
+
+		spare := format.SpareName(core.SegmentID(1))
+		rules := []journalv2test.Rule{
+			journalv2test.Failing(journalv2test.OpAllocate, spare, 1, syscall.EIO),
+			journalv2test.Failing(journalv2test.OpClose, spare, 1, syscall.EIO),
+		}
+		if err := seam.Schedule(rules...); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+
+		_, err := m.Make()
+		if err == nil {
+			t.Fatal("a Make with both allocate and close failing: no error")
+		}
+		if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("a Make with both failing returned %v, want the EIO in it", err)
+		}
+		if wantMsg := "segment: making 1: allocate: "; !strings.HasPrefix(err.Error(), wantMsg) {
+			t.Fatalf("a Make whose allocate failed first is named %q, want it to begin %q: the close that failed after it cannot claim the label", err.Error(), wantMsg)
+		}
+		if _, spares := classify(listNames(t, seam)); len(spares) != 0 {
+			t.Fatalf("the failed Make left the spares %v, want none", spares)
+		}
+		if c := set.Counters(); c != before {
+			t.Fatalf("after the failed Make the counters are %+v, want %+v", c, before)
+		}
+	})
+	t.Run("sync and close failing together", func(t *testing.T) {
+		seam, set, m := maker(t, 0, noMax)
+		before := set.Counters()
+
+		spare := format.SpareName(core.SegmentID(1))
+		rules := []journalv2test.Rule{
+			journalv2test.Failing(journalv2test.OpSync, spare, 1, syscall.EIO),
+			journalv2test.Failing(journalv2test.OpClose, spare, 1, syscall.EIO),
+		}
+		if err := seam.Schedule(rules...); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+
+		_, err := m.Make()
+		if err == nil {
+			t.Fatal("a Make with both sync and close failing: no error")
+		}
+		if wantMsg := "segment: making 1: sync: "; !strings.HasPrefix(err.Error(), wantMsg) {
+			t.Fatalf("a Make whose sync failed first is named %q, want it to begin %q: the close that failed after it cannot claim the label", err.Error(), wantMsg)
+		}
+		if c := set.Counters(); c != before {
+			t.Fatalf("after the failed Make the counters are %+v, want %+v", c, before)
+		}
+	})
 }
 
 // TestFailedMakeReturnsTheReservationAfterTheUnlink checks the R52 tail of a
@@ -763,44 +853,151 @@ func TestFailedMakeReturnsTheReservationAfterTheUnlink(t *testing.T) {
 	}
 }
 
+// TestFailedMakeUnlinksBothNamesAfterTheAppliedRename checks the cleanup's
+// second name at the one step that can leave a file under it without the
+// rename having reported success: a storage Rename that moved the file and
+// still failed. The seam's own failing rule refuses the call before anything
+// moves, which the matrix already rows over; this test drives the applier
+// wrapper, whose Rename calls through first. The cleanup must remove under
+// both names before the reservation returns, and with the remove failing the
+// leftover is the `.seg` — a whole segment, held at its cap in the ledger
+// until a retirement unlinks it — never storage the ledger accounts for
+// nothing.
+func TestFailedMakeUnlinksBothNamesAfterTheAppliedRename(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, removeFails := range []bool{false, true} {
+		name := fmt.Sprintf("removeFails=%v", removeFails)
+		t.Run(name, func(t *testing.T) {
+			seam := newSeam(t)
+			set := segment.NewSet(segCap, nil)
+			applier := &renameApplier{FS: seam.FS(), removeFails: removeFails}
+			m := segment.NewMaker(applier, set, noMax, 0, nil)
+			before := set.Counters()
+
+			id, err := m.Make()
+			if err == nil || !errors.Is(err, syscall.EIO) {
+				t.Fatalf("the Make whose rename applied and failed returned (%d, %v), want the rename's EIO", id, err)
+			}
+			if id != 0 {
+				t.Fatalf("the failed Make returned id %d, want 0", id)
+			}
+			if !strings.HasPrefix(err.Error(), "segment: making 1: rename: ") {
+				t.Fatalf("the failed Make's error is %q, want it to begin %q", err.Error(),
+					"segment: making 1: rename: ")
+			}
+			if set.Check() != nil {
+				t.Fatalf("after the failed Make: %v", set.Check())
+			}
+
+			segs, spares := classify(listNames(t, seam))
+			id1 := core.SegmentID(1)
+			seg, spare := format.SegmentName(id1), format.SpareName(id1)
+
+			if removeFails {
+				// The `.seg` is the leftover: the rename put the file under
+				// it, and the removal of both names failed.
+				c := set.Counters()
+				if c.UsedBytes != before.UsedBytes+segCap {
+					t.Fatalf("the leftover: the footprint is %d, want the cap %d held to the retirement", c.UsedBytes, before.UsedBytes+segCap)
+				}
+				if c.Segments != before.Segments+1 || c.Spares != before.Spares {
+					t.Fatalf("the leftover: the set holds %d segments and %d spares, want the spare End-ed as a segment and no spares", c.Segments, c.Spares)
+				}
+				if err := set.Take(id1); err == nil {
+					t.Fatal("a failed spare was taken: it must never be")
+				}
+				freed, rerr := set.Retire(id1)
+				if freed != segCap || rerr != nil {
+					t.Fatalf("the leftover's retire freed %d, %v, want the whole cap %d, nil", freed, rerr, segCap)
+				}
+				// The retirement unlinked the leftover under exactly the
+				// name it sat under.
+				if !slices.Contains(segs, seg) || len(segs) != 1 || len(spares) != 0 {
+					t.Fatalf("while the remove was failing the directory held %v and %v, want the renamed %s alone", segs, spares, seg)
+				}
+				return
+			}
+
+			if len(segs) != 0 || len(spares) != 0 {
+				t.Fatalf("the failed Make left the segments %v and the spares %v, want nothing under either %s or %s", segs, spares, seg, spare)
+			}
+			if c := set.Counters(); c != before {
+				t.Fatalf("after the failed Make the counters are %+v, want %+v: the reservation was returned only after both names went", c, before)
+			}
+			if freed, rerr := set.Retire(id1); freed != 0 || !errors.Is(rerr, segment.ErrNotInSet) {
+				t.Fatalf("after the returned reservation a retire of %d freed %d, %v, want nothing and %v", id1, freed, rerr, segment.ErrNotInSet)
+			}
+		})
+	}
+}
+
 // TestFailedMakeWarnsAboutTheLeftover checks the plan's leftover log: a
 // spare whose unlink failed is the one case a failed Make leaves in the
-// ledger, and the operator reads of it from a Warn naming the id. Deleting
-// the Warn would stay green against a nil-loggered Maker alone, so here the
-// Maker logs into a capture.
+// ledger, and the operator reads of it from a Warn naming the id and the
+// names the cleanup actually tried — never a name it never reached, which
+// would point the operator at a file that is not there. Deleting the Warn
+// would stay green against a nil-loggered Maker alone, so here the Maker
+// logs into a capture.
 func TestFailedMakeWarnsAboutTheLeftover(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seam := newSeam(t)
-	set := segment.NewSet(segCap, nil)
-	var logs logCapture
-	m := segment.NewMaker(seam.FS(), set, noMax, 0, slog.New(&logs))
+	t.Run("before the rename, the spare's own name alone", func(t *testing.T) {
+		seam := newSeam(t)
+		set := segment.NewSet(segCap, nil)
+		var logs logCapture
+		m := segment.NewMaker(seam.FS(), set, noMax, 0, slog.New(&logs))
 
-	spare := format.SpareName(core.SegmentID(1))
-	rules := []journalv2test.Rule{
-		// The remove fails for every call, so the leftover is left whichever
-		// names the cleanup reached.
-		journalv2test.Failing(journalv2test.OpAllocate, spare, 1, syscall.EIO),
-		journalv2test.Failing(journalv2test.OpRemove, "*", 0, syscall.EIO),
-	}
-	if err := seam.Schedule(rules...); err != nil {
-		t.Fatalf("Schedule: %v", err)
-	}
+		spare := format.SpareName(core.SegmentID(1))
+		rules := []journalv2test.Rule{
+			// The remove fails for every call, so the leftover is left under
+			// the one name the cleanup reached for.
+			journalv2test.Failing(journalv2test.OpAllocate, spare, 1, syscall.EIO),
+			journalv2test.Failing(journalv2test.OpRemove, "*", 0, syscall.EIO),
+		}
+		if err := seam.Schedule(rules...); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
 
-	if _, err := m.Make(); err == nil {
-		t.Fatal("a Make whose cleanup could not unlink: no error")
-	}
+		if _, err := m.Make(); err == nil {
+			t.Fatal("a Make whose cleanup could not unlink: no error")
+		}
 
-	warns := logs.warnings()
-	if len(warns) != 1 {
-		t.Fatalf("the failed Make logged %d Warn records, want exactly one: a leftover is the one case the operator is told of", len(warns))
-	}
-	if id, ok := attrOf(warns[0], "id").(uint64); !ok || id != 1 {
-		t.Fatalf("the leftover Warn carries the id %v, want 1", attrOf(warns[0], "id"))
-	}
-	if spareAttr, _ := attrOf(warns[0], "spare").(string); spareAttr != spare {
-		t.Fatalf("the leftover Warn names the spare %v, want %s", attrOf(warns[0], "spare"), spare)
-	}
+		warns := logs.warnings()
+		if len(warns) != 1 {
+			t.Fatalf("the failed Make logged %d Warn records, want exactly one: a leftover is the one case the operator is told of", len(warns))
+		}
+		if id, ok := attrOf(warns[0], "id").(uint64); !ok || id != 1 {
+			t.Fatalf("the leftover Warn carries the id %v, want 1", attrOf(warns[0], "id"))
+		}
+		got, ok := attrOf(warns[0], "names").([]string)
+		if !ok || !slices.Equal(got, []string{spare}) {
+			t.Fatalf("the leftover Warn names %v, want the one name the cleanup tried, %s", attrOf(warns[0], "names"), spare)
+		}
+	})
+
+	t.Run("after the applied rename, both names", func(t *testing.T) {
+		seam := newSeam(t)
+		set := segment.NewSet(segCap, nil)
+		var logs logCapture
+		applier := &renameApplier{FS: seam.FS(), removeFails: true}
+		m := segment.NewMaker(applier, set, noMax, 0, slog.New(&logs))
+
+		if _, err := m.Make(); err == nil {
+			t.Fatal("a Make whose cleanup could not unlink: no error")
+		}
+
+		warns := logs.warnings()
+		if len(warns) != 1 {
+			t.Fatalf("the failed Make logged %d Warn records, want exactly one: a leftover is the one case the operator is told of", len(warns))
+		}
+		id1 := core.SegmentID(1)
+		seg, spare := format.SegmentName(id1), format.SpareName(id1)
+		got, ok := attrOf(warns[0], "names").([]string)
+		if !ok || !slices.Equal(got, []string{spare, seg}) {
+			t.Fatalf("the leftover Warn names %v, want both names the cleanup tried, %s and %s", attrOf(warns[0], "names"), spare, seg)
+		}
+	})
 }
 
 // TestMakeNeverRemovesANameItDidNotCreate checks the one remove the failure

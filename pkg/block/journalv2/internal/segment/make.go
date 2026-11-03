@@ -223,8 +223,12 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	if err := m.set.End(id); err != nil {
 		remErr = errors.Join(remErr, err)
 	}
+	// The Warn names the names the cleanup actually tried, not the pair of
+	// format names for the id: a failure before the rename never tried the
+	// segment's, and a name the operator is sent to look under must be one a
+	// file can be under.
 	m.log.Warn("segment: a failed make left a spare the unlink could not remove",
-		"id", uint64(id), "spare", spare, "segment", name, "err", remErr)
+		"id", uint64(id), "names", names, "err", remErr)
 
 	return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr))
 }
