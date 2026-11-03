@@ -331,12 +331,11 @@ func (o *oracle) apply(op op) (err error) {
 // the same missing count and the same unit: a NoSpaceError that matches
 // another under errors.Is alone could be off by the whole missing figure.
 func sameErrClass(got, want error) bool {
-	switch {
-	case got == nil && want == nil:
+	if got == nil && want == nil {
 		return true
-	case got == nil || want == nil:
+	}
+	if got == nil || want == nil {
 		return false
-	default:
 	}
 	// Two reservation refusals compare by their three fields, not by the
 	// sentinel both match: a NoSpaceError matches another *NoSpaceError under

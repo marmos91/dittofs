@@ -93,8 +93,8 @@ func (m *Maker) Make() (core.SegmentID, error) {
 	if err := m.set.AddSpare(id, m.max); err != nil {
 		return 0, fmt.Errorf("segment: making %d: reserve: %w", id, err)
 	}
-	if ferr := m.make(id); ferr.err != nil {
-		return 0, fmt.Errorf("segment: making %d: %w", id, ferr)
+	if err := m.make(id); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -103,100 +103,97 @@ func (m *Maker) Make() (core.SegmentID, error) {
 // steps are ordered so the spare appears under its final name only once it
 // is whole and durable: create under the temporary name, allocate the whole
 // cap, sync, close, rename into place, sync the directory. A failure at any
-// of them is cleaned up by fail; the step's own error is what the caller
-// sees, named with the step that returned it.
-func (m *Maker) make(id core.SegmentID) stepFailure {
+// of them is cleaned up by fail, which names the failing step in the error
+// it returns. The file is closed before fail runs, whatever failed, so no
+// descriptor of this attempt outlives the making; a close error joins the
+// step's own error rather than replacing it.
+func (m *Maker) make(id core.SegmentID) error {
 	spare := format.SpareName(id)
 	name := format.SegmentName(id)
 
-	f, err := m.fs.Create(spare)
-	if err == nil {
-		// decision: Make writes no zeros of its own. The platform's Allocate
-		// zero-fills where RFC 28 Appendix A requires it (on Linux, because
-		// fallocate alone leaves unwritten extents whose conversion would
-		// force a filesystem-journal commit on every later sync, so the fill
-		// buys RFC 1 §5.2's one flush per Sync) and only preallocates and
-		// sets the size on macOS; the fill is paid only when the pool grows,
-		// since a recycled segment needs none. Withdraw the fill if J1's
-		// Sync-per-write row, run with and without it, shows the conversion
-		// costing less, as the RFC says — the wording platform/alloc_linux.go
-		// carries for its own call.
-		if aerr := f.Allocate(0, m.set.cap); aerr == nil {
+	// The step that failed, for the error fail names. The file steps run
+	// in order, so the label names whichever call first broke the sequence.
+	step := "create"
+	var err error
+
+	// decision: Make writes no zeros of its own. The platform's Allocate
+	// zero-fills where RFC 28 Appendix A requires it (on Linux, because
+	// fallocate alone leaves unwritten extents whose conversion would force
+	// a filesystem-journal commit on every later sync, so the fill buys
+	// RFC 1 §5.2's one flush per Sync) and only preallocates and sets the
+	// size on macOS; the fill is paid only when the pool grows, since a
+	// recycled segment needs none. Withdraw the fill if J1's Sync-per-write
+	// row, run with and without it, shows the conversion costing less, as
+	// the RFC says — the wording platform/alloc_linux.go carries for its own
+	// call.
+	if f, cerr := m.fs.Create(spare); cerr == nil {
+		if aerr := f.Allocate(0, m.set.cap); aerr != nil {
+			step, err = "allocate", aerr
+		} else if serr := f.Sync(); serr != nil {
 			// The sync comes before the close, so no descriptor that wrote
 			// into the file is closed over unsynced writes.
-			if serr := f.Sync(); serr != nil {
-				err = serr
+			step, err = "sync", serr
+		}
+		// The close releases the handle whether or not it succeeds; its
+		// error is a failed step too, joined with the one before it.
+		if clerr := f.Close(); clerr != nil {
+			if err == nil {
+				step = "close"
 			}
-		} else {
-			err = aerr
+			err = errors.Join(err, clerr)
 		}
-		if cerr := f.Close(); cerr != nil {
-			// The close releases the handle whether or not it succeeds; its
-			// error is a failed step too, joined with the one before it.
-			err = errors.Join(err, cerr)
-		}
+	} else {
+		step, err = "create", cerr
 	}
+
 	if err != nil {
-		return m.fail(id, "create", err)
+		return m.fail(id, step, err)
 	}
-
-	if err := m.fs.Rename(spare, name); err != nil {
-		return m.fail(id, "rename", err)
+	if rerr := m.fs.Rename(spare, name); rerr != nil {
+		return m.fail(id, "rename", rerr)
 	}
-	if err := m.fs.SyncDir(); err != nil {
-		return m.fail(id, "sync_dir", err)
+	if derr := m.fs.SyncDir(); derr != nil {
+		return m.fail(id, "sync_dir", derr)
 	}
-	return stepFailure{}
+	return nil
 }
 
-// stepFailure is a failed make's step: the name of the step that failed and
-// everything the failure joined to its own error.
-type stepFailure struct {
-	step string
-	err  error
-}
-
-// Error names the step beside everything the failure joined to it.
-func (s stepFailure) Error() string {
-	return fmt.Sprintf("segment: making: %s: %v", s.step, s.err)
-}
-
-// Unwrap hands the joined chain to errors.Is and errors.As, so the class of
-// the step's own error — ENOSPC, EIO — survives the naming.
-func (s stepFailure) Unwrap() error { return s.err }
-
-// fail cleans up after a failed step of one spare's making. A spare whose
-// making fails is never taken, so whatever the attempt left is unlinked under
-// both its names, and only after the unlink has happened is the reservation
-// returned. A leftover that cannot be unlinked stays in the set, End-ed and
-// accounted at its cap, until a retirement unlinks it.
-//
-// decision: a create that found the name existing means the Maker drew an id
-// the directory already held — a caller bug of the seed, or a file nothing of
-// the journal owns. Removing that name could unlink a live segment, so only
-// the create step's refusal of an existing name removes nothing: the
-// reservation is returned and the directory is left exactly as the Maker
-// found it. Any other step has created the name itself, so unlinking both
-// names is safe.
-func (m *Maker) fail(id core.SegmentID, step string, stepErr error) stepFailure {
+// fail cleans up after a failed step of one spare's making and returns the
+// step's error, named with the step that failed. A spare whose making fails
+// is never taken, so whatever the attempt left is unlinked and only after
+// the unlink has happened is the reservation returned. A leftover that
+// cannot be unlinked stays in the set, End-ed and accounted at its cap,
+// until a retirement unlinks it.
+func (m *Maker) fail(id core.SegmentID, step string, stepErr error) error {
 	spare := format.SpareName(id)
 	name := format.SegmentName(id)
 
-	if step == "create" && errors.Is(stepErr, fs.ErrExist) {
-		// decision: a DropSpare that refuses a reservation the ledger does
-		// not hold is a Make/Set split this step cannot heal; the accounting
-		// rules the ledger upholds for it, so the refusal joins the step's
-		// own error and the caller hears both.
-		_, remErr := m.set.DropSpare(id)
-		return stepFailure{step: step, err: errors.Join(stepErr, remErr)}
+	// The names this attempt may have put a file under: the spare's own,
+	// always, and the segment's only from the rename on — a failure before
+	// it, or at it, may still find the file under the old name alone, while
+	// a `.seg` that exists by then is one this make either renamed into
+	// place or replaced, both of which it may unlink. A rename that failed
+	// may have left the file under either name; only storage knows which.
+	names := []string{spare}
+	if step == "rename" || step == "sync_dir" {
+		names = append(names, name)
 	}
 
-	// Both names, whatever the failing step was: a rename that failed may
-	// have either left the file where it was or moved it, and only storage
-	// knows which. A remove that misses its name is as good as a removal.
+	// decision: a create refused with fs.ErrExist means the Maker drew an id
+	// the directory already held — a caller bug of the seed, or a file
+	// nothing of the journal owns. The refusal covers Create's own error
+	// alone, which the step label names exactly; removing that name could
+	// unlink a live segment, so the failure path gives the name a wider
+	// berth than its own leftover: the reservation is returned and the
+	// directory is left exactly as the Maker found it.
+	if step == "create" && errors.Is(stepErr, fs.ErrExist) {
+		_, remErr := m.set.DropSpare(id)
+		return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr))
+	}
+
 	var remErr error
 	removed := true
-	for _, remove := range []string{spare, name} {
+	for _, remove := range names {
 		if err := m.fs.Remove(remove); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			removed = false
 			remErr = errors.Join(remErr, err)
@@ -204,10 +201,10 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) stepFailure 
 	}
 
 	if removed {
-		// Only after both removals have returned is the reservation given
+		// Only after the removals have returned is the reservation given
 		// back: the footprint never runs below the storage in use.
 		_, err := m.set.DropSpare(id)
-		return stepFailure{step: step, err: errors.Join(stepErr, remErr, err)}
+		return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr, err))
 	}
 
 	// A leftover that could not be unlinked stays in the set, in the segment
@@ -229,5 +226,5 @@ func (m *Maker) fail(id core.SegmentID, step string, stepErr error) stepFailure 
 	// pay a second directory sync on the failure path of every step, and
 	// hold Make's return on the durability of a removal the ledger has
 	// already returned.
-	return stepFailure{step: step, err: errors.Join(stepErr, remErr)}
+	return fmt.Errorf("segment: making %d: %s: %w", id, step, errors.Join(stepErr, remErr))
 }

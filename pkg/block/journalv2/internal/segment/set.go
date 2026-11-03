@@ -218,9 +218,10 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 	if s.ownsLocked(id) {
 		return ErrDuplicateID
 	}
-	// The overflow-safe form of UsedBytes+cap > max: a max below the cap
-	// refuses here without any wraparound, and Missing reads what the
-	// reservation lacked whatever the figures.
+	// The overflow-safe form of UsedBytes+cap > max over every max the
+	// callers reach: NewMaker refuses a max <= 0, so max-s.cap and the
+	// Missing below cannot wrap on this side. A max below the cap refuses
+	// here without any wraparound of its own.
 	if s.cap > max || s.c.UsedBytes > max-s.cap {
 		return &core.NoSpaceError{
 			Limit:   core.LimitJournal,

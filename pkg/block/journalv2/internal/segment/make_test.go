@@ -404,14 +404,12 @@ func TestMakerDrawsAscendingIDs(t *testing.T) {
 
 		seam, _, m := maker(t, 0, int64(makes)*segCap)
 		ids := make(chan core.SegmentID, makes)
-		var errs []error
+		errs := make(chan error, makes)
 		for range makes {
 			go func() {
 				id, err := m.Make()
 				ids <- id
-				if err != nil {
-					errs = append(errs, err)
-				}
+				errs <- err
 			}()
 		}
 
@@ -426,8 +424,10 @@ func TestMakerDrawsAscendingIDs(t *testing.T) {
 			}
 			seen[id] = true
 		}
-		for _, err := range errs {
-			t.Errorf("a concurrent Make: %v", err)
+		for range makes {
+			if err := <-errs; err != nil {
+				t.Errorf("a concurrent Make: %v", err)
+			}
 		}
 
 		segs, _ := classify(listNames(t, seam))
@@ -557,21 +557,32 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	type step struct {
-		op  string
-		key string // the spare's name, except the directory sync's own key
+		op   string
+		key  string // the spare's name, except the directory sync's own key
+		name string // the step's own name the error carries
+		errs []error
 	}
+
+	// The create step takes no EEXIST: a create refused with it is a
+	// different path — a name the attempt does not own, never removed
+	// (TestMakeNeverRemovesANameItDidNotCreate) — while the steps with a
+	// file of their own must unlink it even when the refusal the platform
+	// hands them is an exists-class one.
+	storageErrs := []error{syscall.ENOSPC, syscall.EIO}
+	withExist := []error{syscall.ENOSPC, syscall.EIO, syscall.EEXIST}
+
 	spare := format.SpareName(core.SegmentID(1))
 	steps := []step{
-		{journalv2test.OpCreate, spare},
-		{journalv2test.OpAllocate, spare},
-		{journalv2test.OpSync, spare},
-		{journalv2test.OpClose, spare},
-		{journalv2test.OpRename, spare},
-		{journalv2test.OpSyncDir, "*"},
+		{journalv2test.OpCreate, spare, "create", storageErrs},
+		{journalv2test.OpAllocate, spare, "allocate", withExist},
+		{journalv2test.OpSync, spare, "sync", withExist},
+		{journalv2test.OpClose, spare, "close", withExist},
+		{journalv2test.OpRename, spare, "rename", storageErrs},
+		{journalv2test.OpSyncDir, "*", "sync_dir", storageErrs},
 	}
 
 	for _, st := range steps {
-		for _, failWith := range []error{syscall.ENOSPC, syscall.EIO} {
+		for _, failWith := range st.errs {
 			for _, removeFails := range []bool{false, true} {
 				name := fmt.Sprintf("%s under %v removeFails=%v", st.op, failWith, removeFails)
 				t.Run(name, func(t *testing.T) {
@@ -594,6 +605,16 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 					}
 					if !errors.Is(err, failWith) {
 						t.Fatalf("a Make failed at %s with %v, want the step's %v in it", st.op, err, failWith)
+					}
+					// The error names the step that failed, so the pool's
+					// log says which call to act on; the plan's format, one
+					// prefix, one step, no repeats.
+					wantMsg := fmt.Sprintf("segment: making 1: %s: ", st.name)
+					if !strings.HasPrefix(err.Error(), wantMsg) {
+						t.Fatalf("a Make failed at %s with %q, want it to begin %q", st.op, err.Error(), wantMsg)
+					}
+					if n := strings.Count(err.Error(), "segment: making"); n != 1 {
+						t.Fatalf("a Make failed at %s with %q, the prefix appears %d times, want once", st.op, err.Error(), n)
 					}
 					if id != 0 {
 						t.Fatalf("a failed Make returned id %d, want 0", id)
@@ -688,7 +709,8 @@ func TestFailedMakeReturnsTheReservationAfterTheUnlink(t *testing.T) {
 // path must never make: an existing `<id>.spare.tmp` means the id the Maker
 // drew is one the directory already held, so removing it could unlink a live
 // file. The Make fails, the file is untouched under its name, the reservation
-// is returned and no remove is issued at all.
+// is returned — to the counters, not merely out of a retire's reach — and no
+// remove is issued at all.
 func TestMakeNeverRemovesANameItDidNotCreate(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -737,8 +759,10 @@ func TestMakeNeverRemovesANameItDidNotCreate(t *testing.T) {
 			t.Fatalf("the failed Make removed %s: a name it did not create must never be unlinked", spare)
 		}
 	}
-	if freed, err := set.Retire(last + 1); freed != 0 {
-		t.Fatalf("the failed Make left a reservation in the set: a retire of %d freed %d, %v", last+1, freed, err)
+	// The reservation is returned, not merely unretirable: a spare still
+	// held would show in the counters, whatever a retire of it says.
+	if c := set.Counters(); c != (segment.Counters{}) {
+		t.Fatalf("after the failed Make the counters are %+v, want the empty ledger: the reservation was returned", c)
 	}
 }
 
@@ -748,10 +772,89 @@ func recOpOf(call string) string {
 	return op
 }
 
+// TestFailedMakeNeverRemovesASegmentNameItDidNotCreate checks the `.seg` half
+// of the never-remove rule: a failure at create, allocate, sync or close runs
+// before the rename, so under that name the attempt owns nothing — a segment
+// file the directory already holds there, with an id above the seed, is a
+// live segment exactly as the `.spare.tmp` one in this test's twin is, and
+// the cleanup must not unlink it. It catches a `fail` that removes both names
+// whatever the failing step was.
+func TestFailedMakeNeverRemovesASegmentNameItDidNotCreate(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, st := range []struct{ op, step string }{
+		{journalv2test.OpCreate, "create"},
+		{journalv2test.OpAllocate, "allocate"},
+		{journalv2test.OpSync, "sync"},
+		{journalv2test.OpClose, "close"},
+	} {
+		t.Run(st.op, func(t *testing.T) {
+			seam := newSeam(t)
+			set := segment.NewSet(segCap, nil)
+
+			// A foreign segment under the name the make never reaches unless
+			// it renames: the `.seg` name of the id the Maker draws over a
+			// zero seed.
+			const last = core.SegmentID(0)
+			seg := format.SegmentName(last + 1)
+			spare := format.SpareName(last + 1)
+			f, err := seam.Create(seg)
+			if err != nil {
+				t.Fatalf("the pre-existing segment: Create: %v", err)
+			}
+			if _, err := f.WriteAt([]byte{0x5a}, 0); err != nil {
+				t.Fatalf("the pre-existing segment: WriteAt: %v", err)
+			}
+			f.Close()
+
+			// The schedule fails the step on the spare's temporary name —
+			// the file the make itself creates — which it shares with no
+			// foreign file.
+			if err := seam.Schedule(journalv2test.Failing(st.op, spare, 1, syscall.EIO)); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+			m := makerOver(t, seam, set, last)
+
+			if _, err := m.Make(); err == nil {
+				t.Fatalf("the Make over the existing %s did not fail at %s, want the failing step", seg, st.op)
+			}
+
+			// The segment is untouched: it was never this attempt's to unlink.
+			g, err := seam.Open(seg)
+			if err != nil {
+				t.Fatalf("the existing %s after the failed Make: Open: %v, want it still in place", seg, err)
+			}
+			defer g.Close()
+			var one [1]byte
+			if _, err := g.ReadAt(one[:], 0); err != nil {
+				t.Fatalf("the existing %s: ReadAt: %v", seg, err)
+			}
+			if one[0] != 0x5a {
+				t.Fatalf("the existing %s holds %#x at 0, want the marker byte %#x it held before", seg, one[0], 0x5a)
+			}
+
+			// And the spare this make did create is gone.
+			if _, spares := classify(listNames(t, seam)); len(spares) != 0 {
+				t.Fatalf("the failed Make left the spares %v, want none: its own file is unlinked", spares)
+			}
+			if c := set.Counters(); c.UsedBytes != 0 || c.Spares != 0 {
+				t.Fatalf("after the failed Make the ledger holds %d bytes in %d spares, want none",
+					c.UsedBytes, c.Spares)
+			}
+		})
+	}
+}
+
+// makerOver builds a Maker directly on a seam and set the test prepared,
+// seeded with the id the directory's names stop at, as open will.
+func makerOver(t *testing.T, seam *journalv2test.Seam, set *segment.Set, last core.SegmentID) *segment.Maker {
+	t.Helper()
+	return segment.NewMaker(seam.FS(), set, noMax, last, nil)
+}
+
 // TestNewMakerRefusesItsArguments checks the caller bugs NewMaker names as
 // panics, as NewSet does: no storage, no ledger, a maximum that is not a
-// size, and an id the ledger already owns. A nil logger, by contrast, is a
-// Maker that simply logs nothing.
+// size. A nil logger, by contrast, is a Maker that simply logs nothing.
 func TestNewMakerRefusesItsArguments(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
