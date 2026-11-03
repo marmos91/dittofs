@@ -61,13 +61,6 @@ func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 	return 0, errUnbuilt
 }
 
-// Overlay is the file's size, times and version as its uncommitted operations
-// leave them, read from the journal alone; pending false, none is, and the
-// File record answers alone.
-func (e *Engine) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o Overlay, pending bool, err error) {
-	return Overlay{}, false, errUnbuilt
-}
-
 // Allocation is the span holding off, the file's uncommitted operations
 // applied.
 func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {

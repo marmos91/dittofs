@@ -55,10 +55,10 @@ const (
 type pendingOp struct {
 	version   journal.Version
 	kind      opKind
-	extent    journal.Extent
-	at        time.Time // the clock's time when staged: the file's change time
-	setsMtime bool      // the operation moves the file's modification time
-	done      func()    // the write's WriteOpts.Done, called once its existence commits or it is dropped
+	extent    journal.Extent // a truncate's Off is the size it sets, its Len zero
+	at        time.Time      // the clock's time when staged: the file's change time
+	setsMtime bool           // the operation moves the file's modification time
+	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
 // fileEntry is one file's state: its pending operations in version order.
