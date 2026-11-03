@@ -896,29 +896,53 @@ func (v opens) CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entit
 // restart is not known so: its pending release, written with the unlink,
 // runs at the next start instead. Have the last batch report the orphan if
 // such releases are seen waiting for a start.
-func (v opens) CloneClose(ctx context.Context, id entity.OpenID) (CloseResult, error) {
+func (v opens) CloneClose(ctx context.Context, id entity.OpenID) error {
 	t := v.t
-	if _, err := t.running(); err != nil {
-		return CloseResult{}, err
+	sink, err := t.running()
+	if err != nil {
+		return err
 	}
 	t.idx.Lock()
 	k, ok := t.byID[id]
 	f := t.refs[k].file
 	t.idx.Unlock()
 	if !ok {
-		return CloseResult{}, ErrBadState
+		return ErrBadState
 	}
-	var res CloseResult
-	err := t.step(f, func(e *entry) error {
+	out := outbox{timer: true} // the engine holds no admission lock: the file's waiters are served under it, after the clone is answered
+	err = t.step(f, func(e *entry) error {
 		o := e.opens[k.token]
 		if o == nil || o.ID != id || o.Clone == nil {
 			return ErrBadState
 		}
-		t.dropOpen(e, o)
-		res.Orphan = e.unlinked && len(e.opens) == 0
+		r := CloseResult{Unlink: t.closeOpen(ctx, e, o, &out)}
+		r.Orphan = e.unlinked && len(e.opens) == 0
+		out.close(f, r)
 		return nil
 	})
-	return res, err
+	if err != nil {
+		return err
+	}
+	out.raise(t, sink)
+	t.serveLater(ctx, f)
+	return nil
+}
+
+// serveLater serves f's waiters as serveFiles does, on a goroutine Stop
+// joins, so the call returns at once: CloneClose returns once its own step
+// has closed the hold, and the file is served under its admission lock once
+// the clone is answered and the clone's call lets that lock go (RFC 14
+// §11.2, RFC 8 §9.1 step 6). After Stop it serves nothing; the next start's
+// grace does.
+func (t *Table) serveLater(ctx context.Context, f entity.FileID) {
+	ctx = context.WithoutCancel(ctx)
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	sink := t.sink
+	if sink == nil {
+		return
+	}
+	t.later.Go(func() { t.serveFiles(ctx, sink, []entity.FileID{f}) })
 }
 
 // decision: a sequence exactly 0x8000 from the open's is stale on either

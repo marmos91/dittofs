@@ -717,7 +717,7 @@ func TestStartAndStop(t *testing.T) {
 		"Unwatch":     func() error { return g.Watches().Unwatch(ctx, Caller{Client: id}, WatchID{}) },
 		"DropShare":   func() error { return g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}) },
 		"CloneOpen":   func() error { _, err := g.Opens().CloneOpen(ctx, file, CloneSource{}); return err },
-		"CloneClose":  func() error { _, err := g.Opens().CloneClose(ctx, 1); return err },
+		"CloneClose":  func() error { return g.Opens().CloneClose(ctx, 1) },
 		"Channel":     func() error { _, _, err := g.Opens().Channel(ctx, Caller{Client: id}, 1, 0, false); return err },
 		"Disconnect":  func() error { _, err := g.Disconnect(ctx, id, entity.SessionRef{}, SessionEnd{}); return err },
 		"ChannelDown": func() error { return g.ChannelDown(ctx, id) },

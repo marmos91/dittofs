@@ -73,13 +73,15 @@ type Table struct {
 	fenced  map[entity.ClientID]time.Duration // the Elapsed reading until which each client is offered no grant
 	adopted map[entity.ClientID]struct{}      // the clients install made known here, until they come back or hold nothing
 	shards  map[ShardID]*served
-	sink    Sink   // nil before Start and after Stop
-	epoch   uint64 // the node epoch Start raised: a Reach.Sessions entry under an earlier one counts as absent
+	shardUp chan struct{} // closed, then cleared, as ServeShard installs a shard; nil while no Served waits
+	sink    Sink          // nil before Start and after Stop
+	epoch   uint64        // the node epoch Start raised: a Reach.Sessions entry under an earlier one counts as absent
 	stopped bool
 	stop    func()
 
 	order Order          // set by Start, before the timer runs
 	timer sync.WaitGroup // the timer and the steps it starts
+	later sync.WaitGroup // the serving each CloneClose leaves to run after its clone is answered
 }
 
 // capped is a kind of state each client holds a bounded count of here.
@@ -309,12 +311,13 @@ func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 			}
 		}
 	})
-	t.sink, t.stop = sink, func() { cancel(); t.timer.Wait() }
+	t.sink, t.stop = sink, func() { cancel(); t.timer.Wait(); t.later.Wait() }
 	return nil
 }
 
-// Stop stops the timer, and waits for the steps it started. Open state is left as it is, for the next
-// start's grace.
+// Stop stops the timer, and waits for the steps it started and for the
+// serving each CloneClose left to run after its clone is answered. Open state
+// is left as it is, for the next start's grace.
 //
 // decision: Stop waits for the timer, not for calls already past running():
 // such a call still finishes and may raise ClientEnded after Stop returns.
