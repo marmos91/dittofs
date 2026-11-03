@@ -121,8 +121,9 @@ func TestFakeRemovalsLeaveMarkersUntilSettled(t *testing.T) {
 }
 
 // A loss stops holding the extent, is reported by Since at the version it
-// dropped and joins the loss ring; a corrupt loss raises the generation and a
-// stale one does not; a loss of nothing held records nothing.
+// dropped and joins the loss ring; a corrupt loss and a failed window's raise
+// the generation and a stale one does not; a failed window's, never synced,
+// is not reported by Since; a loss of nothing held records nothing.
 func TestFakeLossRingAndGeneration(t *testing.T) {
 	j, h := fake(t, 0)
 	v := write(t, h, fileA, 0, "abcd")
@@ -145,6 +146,13 @@ func TestFakeLossRingAndGeneration(t *testing.T) {
 	j.Lose(fileA, ext(2, 1), journalv2.LossStale)
 	if s := j.Stats(); s.LossGeneration != 1 || len(s.Losses) != 2 {
 		t.Errorf("after a stale loss: generation %d, ring %+v; want generation 1, two losses", s.LossGeneration, s.Losses)
+	}
+	j.Lose(fileA, ext(3, 1), journalv2.LossFailedWindow)
+	if s := j.Stats(); s.LossGeneration != 2 || len(s.Losses) != 3 {
+		t.Errorf("after a failed window's loss: generation %d, ring %+v; want generation 2, three losses", s.LossGeneration, s.Losses)
+	}
+	if got := changes(t, h, fileA, journalv2.Version{}); len(got) != 2 || got[1].Extent != ext(2, 1) {
+		t.Errorf("Since after a failed window's loss = %+v; want the two synced losses, the stale one last", got)
 	}
 }
 

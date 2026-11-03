@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +62,9 @@ type Fixture struct {
 	dir    string
 	logger *slog.Logger
 	starts uint64 // the processes started, each serving the shard under a new grace instance
+	// crashed fences the running engine's existence and content views: once
+	// set, by Crash, that engine's closing changes nothing in the store.
+	crashed *atomic.Bool
 }
 
 // New creates the journal and the store, then starts a process over them: the
@@ -114,6 +118,7 @@ func (f *Fixture) Restart() {
 // variants.
 func (f *Fixture) Crash(opts ...journalv2test.CrashOption) {
 	f.t.Helper()
+	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	if err := f.Seam.Crash(opts...); err != nil {
 		f.t.Fatalf("fixture: crash: %v", err)
 	}
@@ -146,6 +151,7 @@ func (f *Fixture) start() {
 	t.Helper()
 	ctx := t.Context()
 
+	f.crashed = new(atomic.Bool)
 	var err error
 	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
 	if err != nil {
@@ -168,8 +174,8 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j), nil
 		},
-		Existence: f.FS.Store.Existence(),
-		Content:   f.FS.Store.Content(),
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed},
+		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: unbuiltLifecycle{},
 		Holds:     cloneHold{opens: f.Opens.Opens(), t: t},
 		Clock:     f.Clock,
@@ -228,9 +234,9 @@ var errNoLifecycle = errors.New("fixture: the store's Lifecycle view is not buil
 // store does not have yet: every call is refused.
 //
 // ponytail: refusing every call holds only while no row reaches the engine's
-// start past the journal's Init. T6.1, which builds the store's Lifecycle
-// view, replaces it in the fixture, with Fixture.Journal recorded for the
-// fixture's directory.
+// start past the journal's Init. The store's Lifecycle view, once built,
+// replaces it here, with Fixture.Journal recorded for the fixture's
+// directory.
 type unbuiltLifecycle struct{}
 
 func (unbuiltLifecycle) JournalID(context.Context, string) ([16]byte, error) {
@@ -291,3 +297,56 @@ func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
 }
 
 func (cloneHold) Served(context.Context, entity.ShardID) error { return nil }
+
+// errCrashed answers a store change the crashed process's engine makes.
+var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")
+
+// fencedExistence is the store's existence view, refusing every change once
+// crashed is set: a crashed process's engine closing must not commit what
+// only recovery may, or a row after the crash would pass without recovery.
+type fencedExistence struct {
+	enginev2.Existence
+	crashed *atomic.Bool
+}
+
+func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence) (map[entity.FileID]error, error) {
+	if x.crashed.Load() {
+		return nil, errCrashed
+	}
+	return x.Existence.Commit(ctx, pending)
+}
+
+func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	if x.crashed.Load() {
+		return errCrashed
+	}
+	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+}
+
+func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+	if x.crashed.Load() {
+		return errCrashed
+	}
+	return x.Existence.Clone(ctx, op, pending)
+}
+
+// fencedContent is the store's content view, refusing its changes once
+// crashed is set, as fencedExistence does.
+type fencedContent struct {
+	enginev2.Content
+	crashed *atomic.Bool
+}
+
+func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+	if c.crashed.Load() {
+		return errCrashed
+	}
+	return c.Content.Resume(ctx, share, file)
+}
+
+func (c fencedContent) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
+	if c.crashed.Load() {
+		return errCrashed
+	}
+	return c.Content.PruneRemovals(ctx, share, file, atOrBelow)
+}
