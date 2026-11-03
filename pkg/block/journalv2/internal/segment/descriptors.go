@@ -331,24 +331,44 @@ func (c *Descriptors) dropRef(e *descEntry) {
 	c.mu.Unlock()
 }
 
-// dropRefLocked is dropRef with the cache's mutex held.
+// dropRefLocked is dropRef with the cache's mutex held. It ends with the
+// shared tail the last reference runs: what lastRefLocked does, so a
+// reference dropped by a failed open's unwind leaves the entry exactly as
+// released one does.
 func (c *Descriptors) dropRefLocked(e *descEntry) {
 	e.refs--
 	c.totalRefs--
 	if e.refs == 0 {
-		if e.drained != nil {
-			close(e.drained)
-			e.drained = nil
-		}
-		if c.shut && c.totalRefs == 0 && c.shutDone != nil {
-			close(c.shutDone)
-		}
-		if e.absent {
-			// The file was proven gone while it was being opened, and no
-			// reference is left that parked on that open: the entry drops, so
-			// a stray acquire of a retired segment leaves no trace in the map.
-			delete(c.entries, e.id)
-		}
+		c.lastRefLocked(e)
+	}
+}
+
+// lastRefLocked runs the tail every path that takes a entry's reference
+// count to zero must share: signal a drain Close is waiting on and a
+// Shutdown that is waiting on the cache's count, drop an entry whose file
+// was proven gone, and make the descriptor evictable when it is still
+// cached and no drain owns its close. The caller holds c.mu.
+func (c *Descriptors) lastRefLocked(e *descEntry) {
+	draining := e.drained != nil
+	if draining {
+		close(e.drained)
+		e.drained = nil
+	}
+	if c.shut && c.totalRefs == 0 && c.shutDone != nil {
+		close(c.shutDone)
+	}
+	if e.absent {
+		// The file was proven gone while it was being opened, and no
+		// reference is left that parked on that open: the entry drops, so a
+		// stray acquire of a retired segment leaves no trace in the map.
+		delete(c.entries, e.id)
+		return
+	}
+	if e.file != nil && !draining {
+		// A cache whose Shutdown has begun relinks too: its wait is not a
+		// reason to hold the descriptor out of the reclaimer's reach, and
+		// Shutdown takes only the files still attached once the wait ends.
+		c.idlePushFront(e)
 	}
 }
 
@@ -407,51 +427,20 @@ func (r Ref) Sync() error {
 }
 
 // Release returns the reference. When it is the last one on the segment's
-// descriptor, the descriptor becomes evictable — pushed to the idle list's
-// front when it is clean, kept open with a slot when it is dirty — and the
-// drain Close(id) started, or the Shutdown of the cache, is signalled. It
-// performs no I/O.
-//
-// decision: a descriptor with an unsynced write is not closed to make room
-// under the bound until a sync through it has covered its writes or failed,
-// because a reopened descriptor may never see a writeback error the platform
-// dropped along with the file's in-memory state; so the bound counts such
-// descriptors, and Acquire refuses with ErrNoDescriptor rather than evicting
-// one. A failed Sync raises the covered count too, so the descriptor does
-// not stay pinned by writes the caller already saw fail.
+// descriptor, the descriptor becomes evictable — it enters the idle list —
+// and the drain Close(id) started, or the Shutdown of the cache, is
+// signalled. It performs no I/O.
 func (r Ref) Release() {
 	c, e := r.c, r.e
 
 	c.mu.Lock()
 	e.refs--
 	c.totalRefs--
-	if e.refs > 0 {
-		c.mu.Unlock()
-		return
-	}
-
-	// The last reference: signal the drain or Shutdown, then make the
-	// descriptor evictable if it is still cached, open and clean. A dirty one
-	// is unlinked, so the reclaimer cannot reach it while its writes are
-	// uncovered, and a draining entry is left unlinked: Close, which is
-	// waiting on the drain signal, closes the descriptor itself. A cache
-	// whose Shutdown has begun relinks too: its wait is not a reason to
-	// hold the descriptor out of the reclaimer's reach, and Shutdown takes
-	// only the files still attached once the wait ends.
-	draining := e.drained != nil
-	if draining {
-		close(e.drained)
-		e.drained = nil
-	}
-	if c.shut && c.totalRefs == 0 && c.shutDone != nil {
-		close(c.shutDone)
-	}
-	if e.file != nil && !draining {
-		if e.dirty() {
-			c.idleRemove(e)
-		} else {
-			c.idlePushFront(e)
-		}
+	if e.refs == 0 {
+		// The last reference runs the same tail every drop of a last
+		// reference runs: a failed open's unwind must leave the entry as
+		// settled as a released one, an evictable descriptor included.
+		c.lastRefLocked(e)
 	}
 	c.mu.Unlock()
 }
