@@ -19,6 +19,10 @@ type op struct {
 	fresh core.SegmentID
 	tag   core.ShareTag
 	n     int64
+	// max is the journal maximum an AddSpare reserves against, drawn by
+	// byte 5 — the one already-decoded size byte opAddSpare's own shape
+	// ignores: 0 means no maximum, k else k caps. Only opAddSpare reads it.
+	max int64
 	// full is the seal's own word for itself: byte 5, which only the size
 	// shapes read elsewhere, draws it for a seal.
 	full bool
@@ -71,6 +75,16 @@ func decode(data []byte, segCap int64) []op {
 			o.n = 1 + (int64(data[5]) % segCap)
 		}
 		o.full = data[5]%2 == 0
+		// The maximum an AddSpare draws: byte 5 itself, so a spare whose
+		// kind byte says AddSpare can draw one past what the footprint
+		// holds, exactly on it, or none at all. k caps with k the byte's
+		// value, and 0 no maximum, so every multiple of the cap up to 255
+		// of them is reachable.
+		if data[5] == 0 {
+			o.max = noMax
+		} else {
+			o.max = int64(data[5]) * segCap
+		}
 		data = data[6:]
 		ops = append(ops, o)
 	}
@@ -156,6 +170,16 @@ func (o *oracle) apply(op op) (err error) {
 		}
 		if _, ok := o.spares[op.id]; ok {
 			return ErrDuplicateID
+		}
+		// The maximum is checked against the footprint the oracle holds,
+		// in the overflow-safe form the ledger's own check uses; the
+		// refusal mirrors the ledger's, field for field.
+		if op.max < o.segCap || o.usedBytes() > op.max-o.segCap {
+			return &core.NoSpaceError{
+				Limit:   core.LimitJournal,
+				Missing: o.usedBytes() + o.segCap - op.max,
+				Unit:    core.UnitBytes,
+			}
 		}
 		o.spares[op.id] = struct{}{}
 		return nil
@@ -302,18 +326,31 @@ func (o *oracle) apply(op op) (err error) {
 
 // sameErrClass reports whether the ledger's error and the oracle's refusal
 // name the same rule. The oracle returns the sentinel itself, so the class is
-// errors.Is — in either direction, since the ledger may wrap its reasons.
+// errors.Is — in either direction, since the ledger may wrap its reasons. Two
+// reservation refusals are the same rule only when they name the same limit,
+// the same missing count and the same unit: a NoSpaceError that matches
+// another under errors.Is alone could be off by the whole missing figure.
 func sameErrClass(got, want error) bool {
-	switch {
-	case got == nil && want == nil:
+	if got == nil && want == nil {
 		return true
-	case got == nil || want == nil:
-		return false
-	case errors.Is(got, want):
-		return true
-	default:
-		return errors.Is(want, got)
 	}
+	if got == nil || want == nil {
+		return false
+	}
+	// Two reservation refusals compare by their three fields, not by the
+	// sentinel both match: a NoSpaceError matches another *NoSpaceError under
+	// errors.Is only through the ErrNoSpace everyone carries.
+	var gn, wn *core.NoSpaceError
+	if errors.As(got, &gn) && errors.As(want, &wn) {
+		return *gn == *wn
+	}
+	if errors.As(got, &gn) || errors.As(want, &wn) {
+		return false
+	}
+	if errors.Is(got, want) {
+		return true
+	}
+	return errors.Is(want, got)
 }
 
 // op6 spells one six-byte op of the fuzz's input: kind, segment id, fresh
@@ -503,6 +540,16 @@ var corpus = []seed{
 		op6(opShrink, 1, 0, 0, 4, 199), // accepted: the cut lands on the bytes held
 		op6(opRetire, 1, 0, 0, 4, 0),
 	), 1, 0, 1, 0, 0},
+	{"add a spare past the maximum", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), // no maximum: the first spare passes
+		op6(opAddSpare, 2, 0, 0, 4, 1), // maximum one cap: refused, the footprint holds one
+		op6(opAddSpare, 3, 0, 0, 4, 1), // and again, still one cap missing
+	), 0, 0, 0, 0, 0},
+	{"add a spare at exactly the maximum", slices.Concat(
+		op6(opAddSpare, 1, 0, 0, 4, 0), // no maximum: passes
+		op6(opAddSpare, 2, 0, 0, 4, 2), // maximum two caps: accepted, exactly on it
+		op6(opTake, 2, 0, 0, 4, 0),
+	), 0, 0, 1, 0, 0},
 }
 
 // FuzzSet drives the segment set against its oracle: the same operation
@@ -529,7 +576,7 @@ func FuzzSet(f *testing.F) {
 			var got error
 			switch op.kind {
 			case opAddSpare:
-				got = s.AddSpare(op.id)
+				got = s.AddSpare(op.id, op.max)
 			case opTake:
 				got = s.Take(op.id)
 			case opSeal:
