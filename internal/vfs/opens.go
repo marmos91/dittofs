@@ -186,6 +186,12 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 		}
 	}
 	who := a.who()
+	// decision: the request's Conn is left empty, as vfs.Call carries no
+	// principals of the other sessions signed in on the caller's connection:
+	// an SMB open joins an existing lease only when its own principal is one
+	// of the lease's openers', and any other is granted no grant. That fails
+	// closed, costing a second user on one connection the shared cache.
+	// Fill Conn once Call carries those principals.
 	o, err := fs.opens.Open(ctx, who, keyOf(f), openstate.OpenRequest{
 		Unlinked: f.Nlink == 0 && !f.IsDir(), Via: fileOf(via), Name: req.Name,
 		Privileged: req.Backup && a.caller.Privileged, Access: access, Deny: req.Deny, DeleteOnClose: req.DeleteOnClose,
