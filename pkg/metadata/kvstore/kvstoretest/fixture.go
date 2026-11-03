@@ -21,7 +21,12 @@ type FS struct {
 
 // NewFS makes an FS over a fresh store from open, with names compared as
 // given.
-func NewFS(t *testing.T, open Opener) *FS { return newFS(t, open, entity.FoldIdentity).export() }
+func NewFS(t *testing.T, open Opener) *FS { return NewFoldFS(t, open, entity.FoldIdentity) }
+
+// NewFoldFS is NewFS with the share's names compared under fold.
+func NewFoldFS(t *testing.T, open Opener, fold entity.FoldRule) *FS {
+	return newFS(t, open, fold).export()
+}
 
 // Held holds a store's next Update between its snapshot and its commit,
 // which makes a race between two operations deterministic.

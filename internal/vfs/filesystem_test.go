@@ -50,7 +50,12 @@ func newFixture(t *testing.T, events vfs.Events) *fixture {
 // newFixtureOf is newFixture over d's Events and Metrics.
 func newFixtureOf(t *testing.T, d Deps) *fixture {
 	t.Helper()
-	fs := kvstoretest.NewFS(t, memKV)
+	return newFixtureOver(t, d, kvstoretest.NewFS(t, memKV))
+}
+
+// newFixtureOver is newFixtureOf over fs.
+func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
+	t.Helper()
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
 	if err := fs.Store.ControlPlane().PutUser(t.Context(), entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}); err != nil {

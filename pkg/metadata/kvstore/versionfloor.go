@@ -90,6 +90,12 @@ func (s *Store) VersionFloor(ctx context.Context, shares []entity.ShareID) (floo
 	return floor, err
 }
 
+// VersionFloor is the store's VersionFloor, through block metadata's content
+// view.
+func (c Content) VersionFloor(ctx context.Context, shares []entity.ShareID) (entity.JournalVersion, error) {
+	return c.s.VersionFloor(ctx, shares)
+}
+
 func versionLimitKey(share entity.ShareID) []byte { return shareKey(share, keys.SVl) }
 
 // VersionLimit is the share's version limit: its journal issues versions

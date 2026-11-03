@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,7 @@ type Deps struct {
 	Events  vfs.Events                     // never blocks, and counts what it drops; nil: the null sink
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
+	Logger  *slog.Logger                   // nil: slog.Default()
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
@@ -115,6 +117,10 @@ var errUnbuilt = fmt.Errorf("vfs: call not built yet: %w", vfs.ErrUnavailable)
 type Filesystem struct {
 	meta   *kvstore.Store
 	open   *openstate.Table
+	engine Content
+	checks openstate.Checks
+	opens  openstate.Opens
+	log    *slog.Logger
 	authz  authz.Authz
 	events vfs.Events
 	locks  lockorder.Locks
@@ -179,6 +185,10 @@ func New(d Deps) (*Filesystem, error) {
 	}
 	if fs.events == nil {
 		fs.events = noEvents{}
+	}
+	fs.engine, fs.checks, fs.opens, fs.log = d.Engine, d.Open.Checks(), d.Open.Opens(), d.Logger
+	if fs.log == nil {
+		fs.log = slog.Default()
 	}
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
