@@ -17,7 +17,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal/internal/segment"
 	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/journal/journaltest/prof"
-	"github.com/marmos91/dittofs/pkg/sim"
 )
 
 // streamCap is the cap of the sets these tests build, small enough that a
@@ -152,26 +151,12 @@ func streamFileID(i int) core.FileID {
 func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	// A synced record, then a failed one: the fault fires on the third
-	// OpWrite of the segment name only — the first is the take's header,
-	// the second the first record's write — so the first record lands and
-	// syncs while the second one fails, and the records after it must carry
-	// a synced-through at or below the failed slot's offset.
+	// One synced record, then a failed one: the fault is armed once the
+	// first record has landed and been synced — Failing fires from a rule's
+	// first matching call on, so arming it after the first record's write
+	// makes the very next write of the segment the failed one.
 	seg := streamSegName(1)
-	e := streamOver(t, streamCap, func(e streamEnv) {
-		rule := journaltest.Rule{
-			Op:    journaltest.OpWrite,
-			Key:   seg,
-			From:  3,
-			Count: 1,
-			Action: sim.FaultAction{
-				Err: syscall.EIO,
-			},
-		}
-		if err := e.seam.Schedule(rule); err != nil {
-			t.Fatalf("Schedule: %v", err)
-		}
-	}).built(t)
+	e := streamOver(t, streamCap, func(streamEnv) {}).built(t)
 	defer func() { _ = e.s.Close() }()
 
 	// The first write lands and is synced, so its record carries a
@@ -184,11 +169,19 @@ func TestStreamAFailedWriteBoundsTheSyncedThroughOfTheRecordsAfterIt(t *testing.
 		t.Fatalf("Sync: %v", err)
 	}
 
-	// The second write fails: the fault's EIO, and no location.
+	// The second write fails: the fault's EIO, and no location. Armed now,
+	// the rule fires on this write and this write alone.
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
 	payload2 := make([]byte, 64)
 	h2, b2 := streamWriteHeader(streamFileID(1), 64, payload2, 7, core.Version{Counter: 2})
 	if _, err := e.s.Append(h2, b2); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the faulted Append = %v, want the EIO", err)
+	}
+	// The fault has spent its one round; later appends must land.
+	if err := e.seam.Schedule(); err != nil {
+		t.Fatalf("disarming the write fault: %v", err)
 	}
 
 	// The failed slot's offset is the first record's end. The next two
