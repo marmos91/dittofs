@@ -1766,7 +1766,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), want); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
-	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, charge(f, off, src)) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
+	res, err := s.quota.Reserve(ctx, c.Identity, chargeOf(f), Usage{Bytes: charge(f, off, src)}) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
 	if err != nil {
 		return wr, false, err
 	}
@@ -2173,43 +2173,52 @@ The service is the one enforcer of quotas. Neither the metadata store nor the
 engine refuses a write for quota.
 
 ```go
+// Charge is what a reservation charges: the share, the owner and group the
+// user and group scopes charge, the project, and the file the reservation is
+// kept under, zero for a create's inode before the file exists.
+type Charge struct {
+	Share        ShareID
+	Owner, Group Principal // the file's, or for a create the new file's: the resolved caller after squashing (RFC 7 §7.4), never the parent directory's
+	Project      uint64
+	File         FileID
+}
+
 // Reserve, at step 4 of a write, a create (one inode) or a copy's destination.
-// owner is whom the user and group scopes charge: the file's owner, or for a
-// create the owner the new file will have — the resolved caller after
-// squashing (RFC 7 §7.4) — never the parent directory's.
-// scopes are the scopes checked and held; none means all four.
-func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
+// writer is the caller a quota event names; add is the bytes and inodes
+// reserved, and a zero add reserves nothing. scopes are the scopes checked and
+// held; none means all four.
+func (q *Quota) Reserve(ctx context.Context, writer Identity, c Charge, add Usage, scopes ...Scope) (*Reservation, error) {
 	if len(scopes) == 0 {
 		scopes = []Scope{QuotaShare, QuotaProject, QuotaUser, QuotaGroup} // §4.3's order
 	}
 	for _, s := range scopes {
-		lim, ok := q.limit(ctx, s, owner, f) // a principal's own quota, else the share's default for its kind
+		lim, ok := q.limit(ctx, s, c) // a principal's own quota, else the share's default for its kind
 		if !ok {
 			continue
 		}
-		used := q.committed(ctx, s, owner, f) + q.unfolded(ctx, s, owner, f) // committed totals plus unfolded deltas (RFC 16 §4.4)
-		if used+q.reserved(s, owner, f)+bytes > lim.Hard(q.clock) {         // soft limit as hard once its grace has run
-			q.events.Quota(ctx, QuotaEvent{ /* hard refusal */ })
+		used := q.committed(ctx, s, c) + q.unfolded(ctx, s, c) // committed totals plus unfolded deltas (RFC 16 §4.4)
+		if exceeds(used+q.reserved(s, c)+add, lim.Hard(q.clock)) { // bytes or inodes; soft limit as hard once its grace has run
+			q.events.Quota(ctx, QuotaEvent{ /* hard refusal, naming writer */ })
 			return nil, &QuotaError{Scope: s}
 		}
 	}
-	return q.add(owner, f, bytes, scopes), nil // kept under f; released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
+	return q.add(c, add, scopes), nil // kept under c.File; released by the write's Done, called exactly once (RFC 8 §5.1), or on failure
 }
 
 // Rehome, for a SetAttr changing owner or group (§5.5), under the file's
-// admission lock. owner is the new owner and group, each the current one
-// where it does not change; scopes are QuotaUser for a new owner and
-// QuotaGroup for a new group. bytes is the file's Charged plus one inode.
-func (q *Quota) Rehome(ctx context.Context, c Caller, owner Owner, f File, bytes int64, scopes ...Scope) (*Reservation, error) {
-	used := q.used(ctx, owner, f, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
-	q.mu.Lock()                           // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
+// admission lock. c names the new owner and group, each the current one where
+// it does not change; scopes are QuotaUser for a new owner and QuotaGroup for
+// a new group. add is the file's Charged plus one inode.
+func (q *Quota) Rehome(ctx context.Context, writer Identity, c Charge, add Usage, scopes ...Scope) (*Reservation, error) {
+	used := q.used(ctx, c, scopes) // the scopes' limits, committed totals and unfolded deltas, read before q.mu: no store read holds it, so no Done waits on one
+	q.mu.Lock()                    // the tracker's own mutex, which every Done takes too: no Done lands between the read of byFile, the check and the move
 	defer q.mu.Unlock()
-	writes := q.byFile[f.ID] // step 4's reservations of f not yet Done
-	if err := q.checkUsed(used, owner, f, bytes+sum(writes), scopes); err != nil { // Reserve's check, in memory
+	writes := q.byFile[c.File] // step 4's reservations of the file not yet Done
+	if err := q.checkUsed(used, c, add+sum(writes), scopes); err != nil { // Reserve's check, in memory
 		return nil, err
 	}
-	q.move(writes, owner, scopes)              // each still released once, by its write's Done, from wherever it then is
-	return q.add(owner, f, bytes, scopes), nil // released after the store's commit; on failure, Release takes q.mu, re-reads q.byFile[f.ID] and moves back only the writes still there
+	q.move(writes, c, scopes)          // each still released once, by its write's Done, from wherever it then is
+	return q.add(c, add, scopes), nil // released after the store's commit; on failure, Release takes q.mu, re-reads q.byFile[c.File] and moves back only the writes still there
 }
 ```
 
@@ -2451,7 +2460,7 @@ func (s *Filesystem) createLocked(ctx context.Context, c Caller, dir Handle, nam
 	// exclusive create's retry with the file it made, or ErrExist — reserves
 	// nothing; the parent's locks keep the name from appearing between the
 	// lookup and the create.
-	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
+	res, err := s.quota.Reserve(ctx, c.Identity, newCharge(c, a), Usage{Files: 1}) // one inode, charged to the new file's owner and group (§5.6)
 	if err != nil {
 		return CreateResult{}, err
 	}
