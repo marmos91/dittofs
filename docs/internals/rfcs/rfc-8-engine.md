@@ -2482,8 +2482,10 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   file's guard from the journal's `Delete` until phase 1 commits or the retry
   ends; a release held behind a clone, answered before its `Delete`, holds no
   guard while it waits. The channel
-  yields the release's outcome once: nil once phase 1 commits, the abort's
-  error, `ErrDelay` (`DelayClone`) once the clone it waited behind is done, so
+  yields the release's outcome once: nil once phase 1 commits, `ErrFileOpen`
+  when a holder aborts it, a value of its own so that the service, which clears
+  the mark for an abort and keeps it for `ErrUnavailable`, never takes one for
+  the other, `ErrDelay` (`DelayClone`) once the clone it waited behind is done, so
   the service runs the release again, or `ErrUnavailable`: when `Close` comes
   first or a journal turned read-only undoes the `Delete` (step 1), the file
   staying marked and the release left for the next start ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
