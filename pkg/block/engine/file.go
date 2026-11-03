@@ -27,15 +27,16 @@ type binding struct {
 type bindings = map[entity.ShareID]*binding
 
 // bindingOf is the binding of share s, read from the share table without a
-// lock; a share with no binding is ErrStale, as a removed share is, and no
-// journal is touched.
+// lock; a share with no binding is a Delay with DelayFrozen, its binding
+// still to come, and no journal is touched. A share being removed never
+// reaches it unbound, as admission answers ErrStale from the removal mark.
 func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
 	if t := e.shares.Load(); t != nil {
 		if b := (*t)[s]; b != nil {
 			return b, nil
 		}
 	}
-	return nil, vfserr.ErrStale
+	return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
 }
 
 // opKind is what a pending operation does to its file.

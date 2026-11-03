@@ -105,10 +105,15 @@ func (e *Engine) journalErr(err error) error {
 	var other *journal.OtherShareError
 	switch {
 	case errors.As(err, &noSpace):
-		// decision: every capacity refusal, the version limit's included, is
-		// answered as retry-later, never as a full disk, as the refusal table
-		// that tells a lasting shortage from a passing one is not built.
-		// Answer each limit as that table rules once it is.
+		// decision: every space refusal is answered as retry-later, never as
+		// a full disk, as the refusal table that tells a lasting shortage
+		// from a passing one is not built. The version limit is DelayCommit,
+		// as it is raised only once a metadata commit records a higher one;
+		// every other limit is DelayCapacity. Answer each limit as that table rules
+		// once it is.
+		if noSpace.Limit == journal.LimitVersion {
+			return &vfserr.Delay{Cause: vfserr.DelayCommit}
+		}
 		return &vfserr.Delay{Cause: vfserr.DelayCapacity}
 	case errors.As(err, &other):
 		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrCorrupt)

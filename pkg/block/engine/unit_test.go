@@ -89,15 +89,16 @@ func newUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 type noLifecycle struct{ engine.Lifecycle }
 type noHolds struct{ engine.CloneHold }
 
-// A share with no binding is ErrStale, as a removed one is, and the bound
-// share is found.
-func TestAnUnboundShareIsStale(t *testing.T) {
+// A share with no binding is ErrDelay with DelayFrozen, its binding still to
+// come, and the bound share is found.
+func TestAnUnboundShareIsFrozen(t *testing.T) {
 	u := newUnit(t)
 	if err := u.e.BindingOf(u.share.ID); err != nil {
 		t.Errorf("the bound share: %v", err)
 	}
-	if err := u.e.BindingOf(entity.NewShareID()); !errors.Is(err, vfserr.ErrStale) {
-		t.Errorf("a share with no binding: %v, want ErrStale", err)
+	var d *vfserr.Delay
+	if err := u.e.BindingOf(entity.NewShareID()); !errors.As(err, &d) || d.Cause != vfserr.DelayFrozen {
+		t.Errorf("a share with no binding: %v, want ErrDelay(DelayFrozen)", err)
 	}
 }
 

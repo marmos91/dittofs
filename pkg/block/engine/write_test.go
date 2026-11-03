@@ -71,18 +71,24 @@ func (h *countingHandle) WriteAt(ctx context.Context, id journal.FileID, off int
 	return h.Handle.WriteAt(ctx, id, off, p, mtime)
 }
 
-// A write samples its verifier before it is staged.
+// A write samples its verifier once, before it is staged, and answers it.
 func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
 	u := newUnit(t)
 	h := &countingHandle{Handle: u.h}
 	u.e.BindForTest(u.share, u.j, h)
 	var staged int64 = -1
-	u.e.SetSample(func() vfserr.Verifier { staged = h.n.Load(); return vfserr.Verifier{} })
-	if _, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("abc"), engine.WriteOpts{Done: func() {}}); err != nil {
+	sampled := 0
+	want := vfserr.Verifier{7, 1, 2}
+	u.e.SetSample(func() vfserr.Verifier { staged = h.n.Load(); sampled++; return want })
+	v, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("abc"), engine.WriteOpts{Done: func() {}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if staged != 0 || h.n.Load() != 1 {
-		t.Errorf("the verifier was sampled after %d stagings, of %d; want before the one", staged, h.n.Load())
+	if sampled != 1 || staged != 0 || h.n.Load() != 1 {
+		t.Errorf("the verifier was sampled %d times, the last after %d stagings, of %d; want once, before the one", sampled, staged, h.n.Load())
+	}
+	if v != want {
+		t.Errorf("the write answered verifier %v, want the sampled %v", v, want)
 	}
 }
 
@@ -122,7 +128,8 @@ func TestARefusedWriteLeavesNothing(t *testing.T) {
 }
 
 // A zero-length write stages nothing and calls Done once; a negative offset
-// is ErrInvalid; a write of an unbound share is ErrStale and calls no Done.
+// is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
+// calls no Done.
 func TestAWriteOfNothing(t *testing.T) {
 	u := newUnit(t)
 	h := &countingHandle{Handle: u.h}
@@ -138,8 +145,9 @@ func TestAWriteOfNothing(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, -1, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.Is(err, vfserr.ErrInvalid) {
 		t.Errorf("a negative offset: %v, want ErrInvalid", err)
 	}
-	if _, err := u.e.Write(t.Context(), entity.NewShareID(), f, 0, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.Is(err, vfserr.ErrStale) {
-		t.Errorf("a write of an unbound share: %v, want ErrStale", err)
+	var d *vfserr.Delay
+	if _, err := u.e.Write(t.Context(), entity.NewShareID(), f, 0, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.As(err, &d) || d.Cause != vfserr.DelayFrozen {
+		t.Errorf("a write of an unbound share: %v, want ErrDelay(DelayFrozen)", err)
 	}
 	if n != 1 || h.n.Load() != 0 {
 		t.Errorf("refused writes called Done %d times and staged %d", n-1, h.n.Load())
@@ -170,8 +178,8 @@ func TestConcurrentWritesOfDistinctFiles(t *testing.T) {
 }
 
 // Draw issues the journal's next version: write, draw, write strictly
-// increase, and a draw creates no entry. At the version limit it is ErrDelay,
-// no journal type.
+// increase, and a draw creates no entry. At the version limit it is ErrDelay
+// with DelayCommit, no journal type.
 func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 	u := newUnit(t)
 	f, g := entity.NewFileID(), entity.NewFileID()
@@ -199,7 +207,7 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 	_, err = u.e.Draw(t.Context(), u.share.ID, g)
 	var delay *vfserr.Delay
 	var noSpace *journal.NoSpaceError
-	if !errors.As(err, &delay) || errors.As(err, &noSpace) {
-		t.Errorf("a draw at the version limit: %v, want ErrDelay with no journal type", err)
+	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {
+		t.Errorf("a draw at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
 	}
 }
