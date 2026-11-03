@@ -906,7 +906,12 @@ type Deps struct {
 
 // CloneHold is the part of open state a clone calls, in the engine's own
 // types, so the engine imports no open state (RFC 0 I6); the root adapts
-// *openstate.Table to it (RFC 23 §2.1).
+// *openstate.Table to it (RFC 23 §2.1), errors included: open state's
+// DelayFrozen and a table not started answer vfserr's ErrDelay (DelayFrozen),
+// so the clone holds phase 2 and retries; Release of an open that names no
+// record answers nil, since the hold is already gone; any other error is
+// passed on as is, and the clone takes it as a store error (§9.1): the clone
+// does not fail, and its request is never answered with that error.
 type CloneHold interface {
 	Hold(ctx context.Context, src CloneSrc) (OpenID, error) // RFC 14 CloneOpen: takes over the source open phase 1 wrote
 	Release(ctx context.Context, o OpenID) error             // RFC 14 CloneClose, after the last batch; an orphan it leaves reaches the filesystem through open state's Sink.Closed
