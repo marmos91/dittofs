@@ -403,12 +403,10 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 		// so a refusal costs the same as a fit.
 		placed := payload
 		if size+sealRoom(s.count+1) > s.set.cap-s.next {
-			// The bytes of body a piece takes besides its payload: a write
-			// its modification time, and nothing for a fill.
-			overhead := int64(format.RecordHeaderSize)
-			if h.Kind == format.KindWrite {
-				overhead += 8
-			}
+			// The bytes of body a piece takes besides its payload, named by
+			// the format's own body-size table: a write its modification
+			// time, and nothing for a fill.
+			overhead := int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize()
 			fit := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) - overhead
 			switch {
 			case hasPayload && fit >= payload:

@@ -545,6 +545,14 @@ func (c *Descriptors) reclaimOne() bool {
 	// dirty entries stay linked, so the scan passes over them, and the
 	// reclaimer never takes one of those: a dirty descriptor is the rule
 	// here, not defence in depth — the pin is this one check.
+	//
+	// ponytail: a reclaim walks past every dirty entry before it reaches a
+	// clean one, O(dirty) per scan, for dirty entries are pinned at the
+	// list's two ends by use rather than gathered in a class of their own.
+	// The ceiling is the bound itself, so the walk cannot outrun the
+	// process's whole descriptor budget; upgrade to a clean list and a
+	// dirty list, moved between on the covering or failed Sync, when a
+	// reclaim-heavy profile shows scans dominated by pinned entries.
 	var victim *descEntry
 	for el := c.idle.Back(); el != nil; el = el.Prev() {
 		e := el.Value.(*descEntry)
