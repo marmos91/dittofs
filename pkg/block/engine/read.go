@@ -272,7 +272,9 @@ func (s *readSeries) record(c readClass, d time.Duration) {
 }
 
 // reportLoss logs a lost or corrupt extent of f at Error, the first time it
-// is reported.
+// is reported. The extent is keyed as the read saw it, the part it clipped
+// or a corrupt read's whole window, so one lost extent read through two
+// different windows logs twice.
 func (e *Engine) reportLoss(f entity.FileID, off, n int64, what string) {
 	if e.lost.first(lostKey{f, off, n}) {
 		e.d.Logger.Error("read failed: content "+what, "file", f, "off", off, "len", n)
@@ -291,7 +293,9 @@ const lostLogMax = 4096
 //
 // ponytail: one node-wide set of the last 4096 extents reported, the oldest
 // forgotten first, so an extent read again after 4096 later losses logs
-// again. Key it per file, in the file's entry, if logs show repeats.
+// again; and each is keyed as the read clipped it, so one lost extent read
+// through two different windows logs twice. Key it per file, in the file's
+// entry, by the journal's lost extent, if logs show repeats.
 type lostLog struct {
 	mu    sync.Mutex
 	seen  map[lostKey]struct{}

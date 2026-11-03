@@ -20,10 +20,12 @@ import (
 )
 
 // stubContent answers each covering lookup with cover's spans, numbering the
-// calls from 1. Every other content call panics.
+// calls from 1, and call fail, when set, with an error alone. Every other
+// content call panics.
 type stubContent struct {
 	engine.Content
 	cover func(call int, off, n int64) []entity.Span
+	fail  int
 	mu    sync.Mutex
 	calls int
 }
@@ -33,6 +35,9 @@ func (c *stubContent) Covering(_ context.Context, _ entity.ShareID, _ entity.Fil
 	c.calls++
 	call := c.calls
 	c.mu.Unlock()
+	if call == c.fail {
+		return func(yield func(entity.Span, error) bool) { yield(entity.Span{}, errors.New("store down")) }
+	}
 	spans := c.cover(call, off, n)
 	return func(yield func(entity.Span, error) bool) {
 		for _, s := range spans {
@@ -484,5 +489,118 @@ func TestAPendingWriteKeepsTheOverwriteOverIt(t *testing.T) {
 	u.lose(f, 0, 4*kib)
 	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, make([]byte, 4*kib)); !errors.Is(err, vfserr.ErrLost) || c.calls != 2 {
 		t.Errorf("Read: %v after %d covering lookups; want ErrLost after 2", err, c.calls)
+	}
+}
+
+// writeAfterRead is a journal handle that runs hook once, after its first
+// ReadAt answers.
+type writeAfterRead struct {
+	engine.Handle
+	once *sync.Once
+	hook func()
+}
+
+func (h writeAfterRead) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+	n, m, held, v, err := h.Handle.ReadAt(ctx, id, off, p)
+	h.once.Do(h.hook)
+	return n, m, held, v, err
+}
+
+// A write staged after the journal answered a read is not applied to it: a
+// hole the read saw stays zeros, not data the journal does not hold.
+func TestAWriteAfterTheJournalAnsweredIsNotApplied(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "f")
+	u.write(t, f, 12*kib, fill(4*kib, 'a'))
+	u.commit(t, f)
+	u.e.BindForTest(u.share, u.j, writeAfterRead{u.h, &sync.Once{}, func() { u.write(t, f, 0, fill(4*kib, 'b')) }})
+	dst := fill(4*kib, 0xFF)
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 4*kib || err != nil || !zeros(dst) {
+		t.Errorf("Read = %d, %v, zeros %v; want 4 KiB of zeros", n, err, zeros(dst))
+	}
+}
+
+// A part asked again that comes back short or failed counts the bytes before
+// it and those its second ask read: a hole, then a part whose applied is
+// above asOf, answered on its second ask with 2 KiB of hole and then the end
+// of file or a lost run.
+func TestAPartAskedAgainCountsTheBytesBeforeIt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		tail entity.Class
+		err  error
+	}{{"short", 0, nil}, {"failed", entity.Uncarved, vfserr.ErrLost}} {
+		t.Run(c.name, func(t *testing.T) {
+			st := &stubContent{cover: func(call int, off, n int64) []entity.Span {
+				if call == 1 {
+					return []entity.Span{
+						{Extent: entity.Extent{Offset: 0, Length: 4 * kib}, Class: entity.Hole},
+						{Extent: entity.Extent{Offset: 4 * kib, Length: 4 * kib}, Class: entity.Uncarved, Applied: entity.VersionOf(5)},
+					}
+				}
+				spans := []entity.Span{{Extent: entity.Extent{Offset: off, Length: 2 * kib}, Class: entity.Hole}}
+				if c.tail != 0 {
+					spans = append(spans, entity.Span{Extent: entity.Extent{Offset: off + 2*kib, Length: n - 2*kib}, Class: c.tail})
+				}
+				return spans
+			}}
+			u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+			n, err := u.e.Read(t.Context(), u.share.ID, entity.NewFileID(), 0, make([]byte, 8*kib))
+			if n != 6*kib || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) || st.calls != 2 {
+				t.Errorf("Read = %d, %v after %d lookups; want 6 KiB, %v after 2", n, err, st.calls, c.err)
+			}
+		})
+	}
+}
+
+// A covering lookup failing part-way through a read answers the bytes before
+// the extent it was asked for: a hole, then bytes the journal holds, then a
+// lookup that fails.
+func TestAStoreFailureAnswersTheBytesBefore(t *testing.T) {
+	st := &stubContent{fail: 2, cover: func(_ int, off, n int64) []entity.Span {
+		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Hole}}
+	}}
+	u := newUnit(t, func(d *engine.Deps) { d.Content = st })
+	f := entity.NewFileID()
+	u.write(t, f, 4*kib, fill(4*kib, 'a'))
+	dst := make([]byte, 12*kib)
+	n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst)
+	if n != 8*kib || !errors.Is(err, vfserr.ErrUnavailable) || !bytes.Equal(dst[4*kib:8*kib], fill(4*kib, 'a')) {
+		t.Errorf("Read = %d, %v; want 8 KiB, the journal's bytes last, and ErrUnavailable", n, err)
+	}
+}
+
+// Pending operations make holes inside committed data: a pending deallocate
+// inside it reads as zeros, not lost, and so does the gap a pending truncate
+// leaves below a pending write past it.
+func TestPendingOperationsMakeHolesInCommittedData(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "f")
+	u.write(t, f, 0, fill(12*kib, 'a'))
+	u.commit(t, f)
+	u.lose(f, 0, 12*kib)
+	v, err := u.h.Deallocate(t.Context(), journal.NewFileID(f), journal.Extent{Off: 4 * kib, Len: 4 * kib})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.e.AddOp(f, v.Counter, false, 4*kib, 4*kib)
+	dst := fill(4*kib, 0xFF)
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 4*kib, dst); n != 4*kib || err != nil || !zeros(dst) || u.e.Reads("hole") != 1 {
+		t.Errorf("a pending deallocate: Read = %d, %v, zeros %v, counted hole %d; want 4 KiB of zeros, counted hole", n, err, zeros(dst), u.e.Reads("hole"))
+	}
+
+	g := u.create(t, "g")
+	u.write(t, g, 0, fill(8*kib, 'a'))
+	u.commit(t, g)
+	u.lose(g, 0, 8*kib)
+	v, err = u.h.Truncate(t.Context(), journal.NewFileID(g), 4*kib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.e.AddOp(g, v.Counter, true, 4*kib, 0)
+	u.write(t, g, 50*kib, fill(4*kib, 'b'))
+	dst = fill(46*kib, 0xFF)
+	if n, err := u.e.Read(t.Context(), u.share.ID, g, 4*kib, dst); n != 46*kib || err != nil || !zeros(dst) {
+		t.Errorf("below a write past a pending truncate: Read = %d, %v, zeros %v; want 46 KiB of zeros", n, err, zeros(dst))
 	}
 }
