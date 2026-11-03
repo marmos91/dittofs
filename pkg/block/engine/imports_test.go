@@ -30,12 +30,18 @@ var allowed = map[string][]string{
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock.
 	module + "pkg/block/journal/journaltest":      {"enginetest"},
-	module + "pkg/block/journal/journaltest/prof": {"enginetest"},
-	module + "pkg/metadata/kv":                    {"enginetest"},
-	module + "pkg/metadata/kv/badgerkv":           {"enginetest"},
-	module + "pkg/metadata/kvstore/kvstoretest":   {"enginetest"},
-	module + "pkg/sim":                            {"enginetest"},
+	module + "pkg/block/journal/journaltest/prof": {"enginetest", unitTests},
+	module + "pkg/metadata/kv":                    {"enginetest", unitTests},
+	module + "pkg/metadata/kv/badgerkv":           {"enginetest", unitTests},
+	module + "pkg/metadata/kvstore/kvstoretest":   {"enginetest", unitTests},
+	module + "pkg/sim":                            {"enginetest", unitTests},
 }
+
+// unitTests names the engine's external test package, whose unit
+// composition runs the engine over the fake journal, the real store on an
+// in-memory kv.KV, a test clock and the profiler. The engine's own files,
+// tests in its package included, import none of them.
+const unitTests = "._test"
 
 // TestImportRule walks every package under this directory, test packages
 // included, and fails on any import the engine may not have: anything but
@@ -52,9 +58,15 @@ func TestImportRule(t *testing.T) {
 			return filepath.SkipDir
 		}
 		rel := filepath.ToSlash(dir)
-		for _, imp := range packageImports(t, dir) {
+		imports, xtest := packageImports(t, dir)
+		for _, imp := range imports {
 			if why := forbidden(rel, imp); why != "" {
 				t.Errorf("%s: forbidden import %q: %s", rel, imp, why)
+			}
+		}
+		for _, imp := range xtest {
+			if why := forbidden(rel+"_test", imp); why != "" {
+				t.Errorf("%s_test: forbidden import %q: %s", rel, imp, why)
 			}
 		}
 		checked++
@@ -120,9 +132,10 @@ func within(path, root string) bool {
 }
 
 // packageImports returns every import of the package in dir: its files built
-// for this platform, its test files, and its files built only for another
-// platform, which go/build would otherwise leave unlisted.
-func packageImports(t *testing.T, dir string) []string {
+// for this platform, its test files in the package, and its files built only
+// for another platform, which go/build would otherwise leave unlisted; and,
+// apart, those of its external test package.
+func packageImports(t *testing.T, dir string) (imports, xtest []string) {
 	t.Helper()
 	pkg, err := build.ImportDir(dir, 0)
 	if err != nil {
@@ -131,7 +144,7 @@ func packageImports(t *testing.T, dir string) []string {
 			t.Fatalf("build.ImportDir %s: %v", dir, err)
 		}
 	}
-	imports := append(append(append([]string{}, pkg.Imports...), pkg.TestImports...), pkg.XTestImports...)
+	imports = append(append([]string{}, pkg.Imports...), pkg.TestImports...)
 	fset := token.NewFileSet()
 	for _, name := range pkg.IgnoredGoFiles {
 		f, err := parser.ParseFile(fset, filepath.Join(pkg.Dir, name), nil, parser.ImportsOnly)
@@ -146,5 +159,19 @@ func packageImports(t *testing.T, dir string) []string {
 			imports = append(imports, p)
 		}
 	}
-	return imports
+	return imports, pkg.XTestImports
+}
+
+// TestImportRuleKeepsTheCompositionInTests pins that the unit composition's
+// store, clock and profiler are allowed in the engine's external test
+// package and refused in the engine itself.
+func TestImportRuleKeepsTheCompositionInTests(t *testing.T) {
+	for _, path := range []string{module + "pkg/sim", module + "pkg/metadata/kv/badgerkv", module + "pkg/metadata/kvstore/kvstoretest"} {
+		if forbidden(".", path) == "" {
+			t.Errorf("the engine may import %s", path)
+		}
+		if why := forbidden(unitTests, path); why != "" {
+			t.Errorf("the unit composition may not import %s: %s", path, why)
+		}
+	}
 }
