@@ -117,18 +117,18 @@ with stage 2:
 - `Engine`, `New(Deps)`, `Apply(Settings)`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`,
   `Stats` and the twelve content methods, with RFC 8 §12.1's signatures and stub bodies.
 - `Deps` (§2.6) narrowed to this part: `Devices`, `Open`, `Existence`, `Content`, `Lifecycle`,
-  `Opens`, `Closed`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
+  `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
-  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Opens` is open
-  state's two clone calls, as RFC 14 §9.2 names them: `CloneOpen`, which takes over the
-  source record the clone's phase 1 writes and so runs after it, taken before
-  `Content.Resume` runs phase 2, and `CloneClose`, called once `Resume` returns (epic 8). `Closed` is open
-  state's `Sink.Closed` as a function, `func(entity.FileID, openstate.CloseResult)`: the
-  engine hands it what `CloneClose` leaves, an orphan whose release only the service can
-  run. The service implements `Sink` already and is built after the engine, so the root
-  passes a closure over it. A release's mark stays the service's (epic 5). Each
-  interface holds exactly the methods this part calls: `Opens`' `CloneOpen` and `CloneClose`; the journal's `Share`,
+  `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is
+  RFC 8 §2.6's `CloneHold`, open state's three clone calls in the engine's own types:
+  `Hold`, RFC 14 §9.2's `CloneOpen`, which takes over the source record the clone's phase 1
+  writes and so runs after it, taken before `Content.Resume` runs phase 2; `Release`, its
+  `CloneClose`, called once `Resume` returns, whose orphan open state reports through its
+  own `Sink.Closed`, so the engine hands the service nothing; and `Served`, its
+  `Recovery.Served`, which a clone rebuilt at start waits on for its source's shard (epic
+  8). A release's mark stays the service's (epic 5). Each
+  interface holds exactly the methods this part calls: `Holds`' `Hold`, `Release` and `Served`; the journal's `Share`,
   `Forget`, `Strand`, `Stats`, `Draw`, `SetVersionLimit`, `Repack` (`journalv2` declares it
   on `*Journal`, scoped by its argument, and sealing a share scope's active segments itself
   once RFC 1 §7.2 says so), `Close`, and §6 point 8's per-segment unreclaimed figure once
@@ -555,7 +555,7 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 - T1.1 The package, `Engine`, `New(Deps)` refusing a missing capability by name, `Apply`
   validating `Settings`, lifecycle and share method stubs.
 - T1.2 `Deps` and its declared interfaces (`Journal`, `Handle`, `Reservation`, `Existence`,
-  `Content`, `Lifecycle`, `Opens`, `Clock`) holding exactly §1.3's calls, and the boundary
+  `Content`, `Lifecycle`, `CloneHold`, `Clock`) holding exactly §1.3's calls, and the boundary
   conversions of `entity.FileID` and `entity.JournalVersion` to the journal's types, one
   line each over `journalv2`'s converters, which their own round-trip tests cover.
 - T1.3 The content method stubs and their types: `WriteOpts`, `Overlay` in C1's form,
@@ -711,7 +711,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   commit paths, tested with T4.7's reservation counter.
 - T5.2 `Deallocate`'s merged hole in phase 1; no zeros staged.
 - T5.3 The removal loop: phase 2 through `Resume`, the prune through `PruneRemovals`, a
-  fixed backoff, `removal_stalled` after five failed batches. A clone's `CloneOpen` answered
+  fixed backoff, `removal_stalled` after five failed batches. A clone's `Holds.Hold` answered
   `DelayFrozen` or `ErrStopped` is retried with the same backoff and counts toward none of
   the five (T8.3).
 - T5.4 A release's contract with the service: `Delete` answers one of four outcomes. Phase
@@ -887,15 +887,15 @@ excluded. Spans: a clone's batches as root spans.
   phase 2 in one call and whose last batch deletes the record, `Deps.Holds.Hold` with
   the destination and the version `CloneTarget` drew, which takes over the record, or finds
   the hold `install` made when the shard began. Once `Resume` returns, `Release`, whose
-  orphan open state reports through its own `Sink.Closed`; a clone rebuilt at start waits on
-  `Served` for its source's shard first: an unlink after `CloneOpen` finds the hold in the
-  table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and only that
-  report runs it. Then the registration drops, which yields retry on T5.4's channel to every
-  release it answered `ErrDelay`: an unlink before `CloneOpen` leaves the table no entry,
+  orphan open state reports through its own `Sink.Closed`: an unlink after `Hold` finds the
+  hold in the table, so `Releasing` refuses its release (`ErrFileOpen`, RFC 14 §9.1) and
+  only that report runs it. A clone rebuilt at start waits on `Served` for its source's
+  shard before its batches run. Then the registration drops, which yields retry on T5.4's channel to every
+  release it answered `ErrDelay`: an unlink before `Hold` leaves the table no entry,
   so no orphan, and the service runs that release again. Both paths can meet the
   registration only before it drops, and both then hold the channel, so neither loses the
-  release. The service takes no open. `CloneOpen`'s
-  `FileKey` names the source share's own shard, which `Bind` gave the engine in `Share`
+  release. The service takes no open. `Hold`'s
+  `CloneSrc.Shard` names the source share's own shard, which `Bind` gave the engine in `Share`
   (§1.3), so a clone in a second share is never answered `DelayFrozen` for a shard the
   fixture does not serve:
 
@@ -909,10 +909,10 @@ excluded. Spans: a clone's batches as root spans.
   `Start` and `ServeShard` from the service's, after it, and `ErrStopped`, the table not
   started yet, hold phase 2 before `Resume`, which the loop retries with its backoff,
   counted toward no `removal_stalled` (T5.3); no step of `Start` waits on it. Any other
-  failure of `CloneOpen` is logged and holds nothing: `Resume` runs, its last batch drops
-  the record, and no `CloneClose` follows. `ErrBadState` from `CloneClose` is success, since
+  failure of `Hold` is logged and holds nothing: `Resume` runs, its last batch drops
+  the record, and no `Release` follows. `ErrBadState` from `Release` is success, since
   a restart before `install` drops the hold. Tested over T2.2's fixture: the source unlinked
-  between phase 1 and `CloneOpen`, held there by `DelayFrozen`, keeps its content, the
+  between phase 1 and `Hold`, held there by `DelayFrozen`, keeps its content, the
   release answered `ErrDelay` with no byte dropped, and runs again once the registration
   drops, the source's bytes then gone; the source unlinked during `Resume` keeps its
   content until `Sink.Closed` reports the orphan and the release runs; a `Hold` that fails
@@ -923,10 +923,10 @@ excluded. Spans: a clone's batches as root spans.
 - T8.6 Rebuild at start: the registration from the source's clone-kind open record when
   phase 1 wrote it, otherwise from the journal's clone marker, holding the source until the
   clone is done; the open is T8.3's, taken before `Resume`, so no start step calls
-  `CloneOpen`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
+  `Hold`. The "source registration rebuilt" row of §1.4 holds as written (§6 point
   13). A source unlinked before the restart is reported by neither of T8.3's paths: the
   hold `install` makes carries no unlink, so `Releasing` refuses the pending release while
-  it stands and `CloneClose` reports no orphan. Its bytes stay until the next start, the
+  it stands and `Release` reports no orphan. Its bytes stay until the next start, the
   ceiling `openstate`'s `decision:` on `CloneClose` names (§6 point 11).
 
 ### Epic 9 — Integration: the filesystem service over the engine
@@ -998,8 +998,9 @@ follows the journal's, not this part's (§6 point 7).
    while `kvstore` has it on `Existence` (`clone.go`), which T1.2 and T8.2 follow, so RFC 6
    §10.1 moves it to `Existence`. Owed too: §5.1's list of writes the engine drops, and
    §12.1's `Done` comment, gain those an aborted release drops (C9, T5.4); RFC 8 §2.6 gains
-   `Opens`, open state's `CloneOpen` and `CloneClose`, and `Closed`, for the orphan
-   `CloneClose` leaves; §8.1's "the engine reads and writes no open state" narrows to a
+   `Holds`, a `CloneHold` with `Hold`, `Release` and `Served` over open state's `CloneOpen`,
+   `CloneClose` and `Recovery.Served`, the orphan `Release` leaves reported by open state's
+   own `Sink.Closed`; §8.1's "the engine reads and writes no open state" narrows to a
    release; and §9.1's clone open "entered in the source's open table at its primary at
    admission" becomes the engine's, taken before phase 2, with the registration holding the
    source until the clone is done and a release it delayed run again when it drops (point
@@ -1054,9 +1055,9 @@ follows the journal's, not this part's (§6 point 7).
 12. **A throwaway front end** (a CLI or FUSE) before stage 5's adapters: not planned; the
     integration tier is how the part is used before then.
 13. **The clone-kind open is the engine's** (T8.3, T8.6), through `Deps.Holds`, not the
-    service's: `CloneOpen` takes over the source record the clone's phase 1 writes, matched
+    service's: `Hold`, open state's `CloneOpen`, takes over the source record the clone's phase 1 writes, matched
     on the version `CloneTarget` draws, so nothing can call it before phase 1; the engine
-    takes it before `Content.Resume` runs phase 2, and calls `CloneClose` once `Resume`
+    takes it before `Content.Resume` runs phase 2, and calls `Release`, its `CloneClose`, once `Resume`
     returns, as RFC 14 §9.2 has it follow the clone's last batch; open state hands the
     service its orphan through its own `Sink.Closed`.
     Until the clone is done, the source is held by the registration, not the open, and a
