@@ -250,6 +250,10 @@ func (v clients) Disconnect(ctx context.Context, c entity.ClientID, s entity.Ses
 	return t.leaveReach(ctx, c, nodeOf(s), end.Gen)
 }
 
+// leaveReachHook, set only by tests, runs in leaveReach between its Reach
+// write and its delete, where a listing outside the client step can land.
+var leaveReachHook func()
+
 // leaveReach takes node's entry at gen, and every entry under an earlier
 // epoch, out of c's Reach.Sessions, under the client step; an entry at
 // another Gen was listed again since, and stays, and its Gen is returned.
@@ -281,8 +285,15 @@ func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.N
 		return kept, nil
 	}
 	// A parked open is held, so a durable open's Timeout still running
-	// keeps the record too.
-	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+	// keeps the record too. A session listed since, which its listing does
+	// outside the client step, keeps it as well, and the Gen it listed this
+	// node at is returned.
+	if leaveReachHook != nil {
+		leaveReachHook()
+	}
+	if cur, err := t.d.Records.Clients().DeleteUnreached(ctx, c); errors.Is(err, ErrRecordChanged) {
+		return cur.Reach.GenOf(node), nil
+	} else if err != nil {
 		return 0, staleIfGone(err)
 	}
 	t.cmu.Lock()

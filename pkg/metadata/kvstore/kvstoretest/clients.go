@@ -181,6 +181,34 @@ func testClientAddSession(t *testing.T, kvo Opener) {
 	}
 }
 
+// RFC 14 §2.1: DeleteUnreached keeps a record a node is listed in,
+// returning it with ErrRecordChanged, and deletes one no node is, its name
+// row included.
+func testClientDeleteUnreached(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cs := s.Clients()
+	cl := entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolSMB, Name: []byte("h")}
+	must(t, cs.Create(ctx, cl))
+	n := entity.ReachNode{Node: entity.NodeID{15: 1}, Epoch: 1}
+	_, err := cs.AddSession(ctx, cl.ID, n, nil, nil)
+	must(t, err)
+	if cur, err := cs.DeleteUnreached(ctx, cl.ID); !errors.Is(err, kvstore.ErrRecordChanged) || cur.Reach.GenOf(n.Node) != 1 {
+		t.Errorf("a delete of a listed client: %+v, %v; want ErrRecordChanged with the record", cur, err)
+	}
+	got, err := cs.Get(ctx, cl.ID)
+	must(t, err)
+	next := got
+	next.Reach.Sessions = nil
+	_, err = cs.Put(ctx, got, next)
+	must(t, err)
+	if _, err := cs.DeleteUnreached(ctx, cl.ID); err != nil {
+		t.Fatalf("a delete of an unlisted client: %v", err)
+	}
+	if _, err := cs.ByName(ctx, entity.ProtocolSMB, []byte("h")); !merrs.IsNotFoundError(err) {
+		t.Errorf("an unlisted client after its delete: %v, want it gone", err)
+	}
+}
+
 // RFC 14 §4.4 and §5.3: a client's shard marks hold each shard's Done, are
 // listed in shard order with the record, and are updated in place; a revoke
 // drops every one. Only MarkShard writes one: a create's Shards are not

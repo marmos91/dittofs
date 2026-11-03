@@ -231,6 +231,24 @@ func (c Clients) Delete(ctx context.Context, id entity.ClientID) error {
 	})
 }
 
+// DeleteUnreached deletes a client record as Delete does, but only while its
+// Reach.Sessions is empty, read in the delete's own transaction; a record a
+// node is listed in is kept and ErrRecordChanged returned with it. So a
+// session listed after the caller decided to delete is not lost with the
+// record.
+func (c Clients) DeleteUnreached(ctx context.Context, id entity.ClientID) (cur entity.ClientRecord, err error) {
+	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if cur, err = clientIn(tx, id); err != nil {
+			return err
+		}
+		if len(cur.Reach.Sessions) > 0 {
+			return ErrRecordChanged
+		}
+		return dropClient(tx, cur, true)
+	})
+	return cur, err
+}
+
 // ByShard lists every client with a mark in shard s, its marks included:
 // the clients a shard beginning grace tells to reclaim. A record deleted, or
 // its mark dropped, between the scan and its read is skipped.

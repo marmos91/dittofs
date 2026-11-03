@@ -582,6 +582,37 @@ func TestALastDisconnectAtAStaleGenKeepsTheEntry(t *testing.T) {
 	}
 }
 
+// A second session's listing, which Connect writes outside the client step,
+// landing between a last Disconnect's unlisting and its release keeps the
+// record: the Disconnect returns the new entry's Gen.
+func TestALastDisconnectRacingAListingKeepsTheRecord(t *testing.T) {
+	f := newFixture(t)
+	id, first, err := f.Connect(ctx, smb("pc-a"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second uint64
+	leaveReachHook = func() {
+		leaveReachHook = nil
+		rec, err := f.Record(ctx, id)
+		if err == nil {
+			rec, err = f.AddSession(ctx, id, entity.NodeID{}, rec.Adapter, rec.Adapter)
+		}
+		if err != nil {
+			t.Fatalf("the racing listing: %v", err)
+		}
+		second = rec.Reach.GenOf(entity.NodeID{})
+	}
+	t.Cleanup(func() { leaveReachHook = nil })
+	this := entity.SessionRef{ID: 1}
+	if gen, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: first}); err != nil || gen == 0 || gen != second {
+		t.Fatalf("a last Disconnect racing a listing: Gen %d, %v; want the listed Gen %d", gen, err, second)
+	}
+	if rec, err := f.Record(ctx, id); err != nil || rec.Reach.GenOf(nodeOf(this)) != second {
+		t.Errorf("after the race: sessions %v, %v; want the record kept with the new entry", rec.Reach.Sessions, err)
+	}
+}
+
 // An entry removed and listed again takes a Gen above every one the record
 // gave, so a repeat of the Disconnect that removed it cannot remove the new
 // entry.

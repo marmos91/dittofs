@@ -90,6 +90,7 @@ func Run(t *testing.T, open Opener) {
 		{"Clients", testClients},
 		{"ClientPut", testClientPut},
 		{"ClientAddSession", testClientAddSession},
+		{"ClientDeleteUnreached", testClientDeleteUnreached},
 		{"ClientShards", testClientShards},
 		{"ClientReboot", testClientReboot},
 		{"ClientNameRace", testClientNameRace},
