@@ -89,13 +89,14 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 		t.Errorf("chmod 2660 by a member of the file's group holding write the ACL: %o, %v, want 660 with setgid dropped", got.Mode, err)
 	}
 	// On alice's directories bob, holding write the ACL, keeps a directory's
-	// setgid, and neither clears nor sets the sticky bit.
+	// setuid and setgid, and neither clears nor sets the sticky bit.
 	for _, tc := range []struct {
 		name      string
 		mode, set uint32
 		want      uint32
 	}{
 		{"setgid", 0o2775, 0o2770, 0o2770},
+		{"setuid", 0o4775, 0o4770, 0o4770},
 		{"sticky", 0o1777, 0o777, 0o1777},
 		{"plain", 0o777, 0o1777, 0o777},
 	} {
