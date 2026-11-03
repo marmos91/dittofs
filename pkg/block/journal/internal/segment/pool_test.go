@@ -1042,3 +1042,48 @@ func TestPoolDeviceFullOnlyAMadeSpareClears(t *testing.T) {
 	awaitDeviceFull(t, false, p)
 	p.Stop()
 }
+
+// TestPoolSpentHoldTakesAnUnowedSpare: a spent hold takes exactly as an
+// unreserved take does, including succeeding: over a spare no hold owes, the
+// spent hold returns it and the counters drop as an unreserved take's do. It
+// catches a spent hold that always refuses, whose reservation would lose the
+// spares the unreserved takes around it are free to take.
+func TestPoolSpentHoldTakesAnUnowedSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The journal's maximum holds exactly the content target, so the counts
+	// below stand on the takes alone and no refill races them.
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+	p.Start()
+	awaitCounters(t, "the two content spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over two ready spares: %v", err)
+	}
+	// The hold spends its own spare; one ready spare remains, owed to no one.
+	if id, err := h.Take(); err != nil || id == 0 {
+		t.Fatalf("the hold's own take: (%d, %v)", id, err)
+	}
+	if c := p.Counters(); c.Spares != 1 || c.Held != 0 {
+		t.Fatalf("after the hold spent its spare the counters are %+v, want 1 ready and none owed", c)
+	}
+
+	// The spent hold takes the unowed spare as an unreserved take would.
+	id, err := h.Take()
+	if err != nil || id == 0 {
+		t.Fatalf("the spent hold's take over an unowed spare: (%d, %v), want the spare", id, err)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.Held != 0 {
+		t.Fatalf("after the spent hold's take the counters are %+v, want the pool empty", c)
+	}
+	if c := set.Counters(); c.Segments != 2 || c.Spares != 0 {
+		t.Fatalf("after both takes the ledger holds %d segments and %d spares, want 2 and 0", c.Segments, c.Spares)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the takes: %v", err)
+	}
+	h.Close()
+	p.Stop()
+}
