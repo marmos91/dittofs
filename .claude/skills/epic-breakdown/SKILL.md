@@ -376,8 +376,7 @@ it delivers.
 
 **Do not create issues, and do not offer to.** The user creates them, by asking for this
 step, once the plan and the epic document are confirmed and the team chooses to start
-assigning the epic's subtasks. The final report only suggests it, in one line: create the
-issues when the plan is confirmed and the document has merged.
+assigning the epic's subtasks.
 
 Issues let the team assign and follow subtasks. They never copy the specification: an
 issue's body is a pointer to its section of the epic document, with a few lines of context,
@@ -386,8 +385,15 @@ one place that says what to build.
 
 The links point at the document on `develop`, so issues are created only **once the epic
 document's pull request has merged**, never during the breakdown. If the epic issue already
-exists (Step 0 #4), add only the missing subtask issues to it, and never create a second
-epic issue.
+exists (Step 0 #4), never create a second one, and match its sub-issues before creating any:
+```bash
+gh api repos/{owner}/{repo}/issues/<epic-number>/sub_issues --jq '.[] | "\(.number) \(.state) \(.title)"'
+```
+A sub-issue matches a subtask by its id, in either title form: `subtask T4.1: …` (this skill's)
+or `epic 4.1: …` (issues created before subtask ids carried the `T`, such as
+`journal v2, epic 4.1: …`). Create issues only for the subtasks with no match. An older issue
+keeps its title form, so both stay in use; if its body copies the specification (`Covers:`,
+`Done when`, a checklist), the first sync rewrites it to the pointer form of item 4.
 
 1. **Labels.** The epic issue carries `epic`, the RFC's label (`rfc-<n>-<slug>`, for example
    `rfc-1-journal`) and the epic's label (`rfc-<n>-epic-<k>`). Subtask issues carry the
@@ -420,6 +426,7 @@ epic issue.
 
    **Specification:** [Epic <k>: <title>](https://github.com/{owner}/{repo}/blob/develop/docs/internals/planning/<file>.md)
    **Sources:** RFC <n> §…; **Track:** <A|B|C>.
+   **Depends on:** epics <j> and <k> (or a sync point, as `S2`, or "every earlier epic").
 
    The document is the specification: requirements, subtasks, acceptance criteria and
    tests live there, not here. Each subtask is a sub-issue.
@@ -436,7 +443,8 @@ epic issue.
    **Depends on:** #<subtask-number>, … (or the sync point, as `S2`).
    ```
    The anchor is GitHub's for the `### T<k>.<n> <title>` heading: lower case, dots and
-   punctuation dropped, spaces as hyphens (`### T3.1 Usage table` → `#t31-usage-table`).
+   punctuation other than hyphens dropped, spaces as hyphens (`### T3.1 Usage table` →
+   `#t31-usage-table`).
    Open one link to check it. Requirements, acceptance criteria, tests and the estimate are
    not copied: the document holds the first three, the project's field the last. Create it
    with the milestone of the roadmap epic the epic sits under (`--milestone <milestone>`),
@@ -460,13 +468,17 @@ epic issue.
    gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
    ```
 7. **When the document is revised,** the issues follow the revision **after its pull request
-   has merged**, never in the same pass: until then `develop` still holds the old document,
-   and the issues must agree with it. Merge the revision of the epic document (or of the RFC
-   behind it) first, then sync the issues on request: a renamed subtask's title, a changed
-   estimate's field, a new subtask's issue (with its roadmap epic's milestone), a withdrawn one closed as not planned. Bodies
-   need no change, because they say nothing the document can contradict; a split subtask
-   (T4.3 into T4.3a and T4.3b) gets new issues and the old one is closed. A revision's
-   final report says, in one line, that issues exist and need syncing once it merges.
+   has merged**, never in the same pass: until then the links still show the old document,
+   and the issues must agree with it. Accepting a change to the document and updating the
+   issues are two separate actions: the first merges the revision, the second syncs the
+   issues, on request: a renamed subtask's title, a changed estimate's field, a new
+   subtask's issue (with its roadmap epic's milestone), a withdrawn one closed as not
+   planned, and a `**Depends on:**` line the revision changed, on the epic issue (from the
+   plan's dependency graph) or on a subtask (from §7). That line is the one part of a body
+   that copies the documents, kept because release tracking reads it: an epic whose
+   milestone is due before that of an epic it depends on is a conflict to report. Otherwise
+   bodies need no change, because they say nothing the document can contradict; a split
+   subtask (T4.3 into T4.3a and T4.3b) gets new issues and the old one is closed.
 8. **When the epic moves to another release,** move the epic issue under that release's
    roadmap epic (the user creates it if the RFC has none there yet), and update the milestone
    copy on the epic issue and its open sub-issues; closed ones keep the release they shipped
@@ -517,8 +529,8 @@ Before handing over, check:
                  rg -N -o -w 'E[0-9]+|S[0-9]+[a-z]?' | sort -u)
   ```
 - No GitHub issue was created or synced unless the user asked, and never before the
-  document merged; the report's closing line suggests them and does not offer to create
-  them. Issues that were created carry
+  document merged. An existing epic's sub-issues were matched by id, in either title form,
+  before any was created. Issues that were created carry
   the labels, a pointer body with no copied specification, the sub-issue links (subtask under
   epic, epic under its RFC's roadmap epic), the project, the roadmap epic's milestone and, on
   subtasks only, the `Estimate` field.
@@ -528,4 +540,6 @@ Then report the output path, the requirement count, the subtask count and the ma
 the suggested pull requests, the subtasks whose
 estimate is least certain, and the open points, in a few lines. End with one line
 suggesting that the GitHub issues be created, with Step 6, once the plan is confirmed and
-the document's pull request has merged.
+the document's pull request has merged; for a revision of an epic that already has issues,
+the line says instead that they need syncing once the revision merges. The report never
+offers to create or sync them.
