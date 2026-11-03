@@ -1653,16 +1653,6 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 	}
 }
 
-// TestDescriptorsAFailedOpensDropLeavesTheEvictable checks the failed-open
-// paths' tail: the opener of a failed open and the waiters parked on it drop
-// their reference through a path that never links the entry's descriptor
-// into the idle list. When such a drop is the one that takes a clean,
-// unreferenced, open descriptor's reference count to zero — a first open
-// fails EIO while a waiter is parked on it, and a concurrent acquire of the
-// same segment releases first, leaving the failed waiter as the last
-// holder — the descriptor would sit unlinked: open, holding a slot, and
-// invisible to the reclaimer for good. Every path that drops a reference
-// must run the tail Release runs, idle linking included.
 // TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt pins the tombstone
 // a Close of a segment the cache never held leaves: the entry it writes
 // answers every later acquire ErrSegmentGone without an open, so a read
@@ -1978,20 +1968,24 @@ func TestDescriptorsShutdownWaitsOutACloseStillRunning(t *testing.T) {
 	}
 }
 
+// TestDescriptorsAFailedOpensDropLeavesTheEvictable checks the failed-open
+// path's drop against a descriptor the cache already holds: another acquire
+// opens and releases the segment while a failed waiter still holds its
+// reference, so the descriptor is open, unreferenced and clean when the
+// waiter's drop runs — through dropRefLocked, on a wake, not through
+// Release. A drop path that never relinks strands the descriptor off the
+// idle list: open, holding its slot, and invisible to the reclaimer for
+// good. Every path that drops a reference must run the tail Release runs,
+// the idle linking included.
 func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	e := newCache(t, 2)
 	e.stock(t, 2)
-	// The Shutdown cleanup is registered before the seam hold below creates
-	// its own, so it runs after the hold's release: a failure while a parked
-	// call holds a reference unwinds the hold first and the failure reports
-	// itself instead of wedging the Shutdown past the run's timeout.
 	shutRegister(t, e.c)
 
-	// A first open of segment 1 fails EIO, and it is held at the seam while
-	// the cache's own takeSlot has already taken the slot — the opener's
-	// Acquire is inside fs.Open. A waiter parks on that in-flight open.
+	// A first open of segment 1 fails EIO, held at the seam while the
+	// cache's slot is taken: the opener's Acquire is inside fs.Open.
 	e.seam.SetFault(&eioFault{op: journalv2test.OpOpen, key: name(1), n: 1})
 	h := e.seam.HoldFirst(t, journalv2test.OpOpen, name(1))
 	opener := make(chan error, 1)
@@ -2004,7 +1998,20 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the opening acquire never reached the hold")
 	}
-	// The parking waiter: its reference is held from before its wait.
+
+	// The waiter parks on the in-flight open, its reference held from
+	// before its wait — and parks again, later, at the hook between its
+	// wake and refAfterOpen's lock, which is where the staging below opens
+	// the segment against its outstanding reference. The hook window sits
+	// inside refAfterOpen, where no seam call runs, so the check reaches it
+	// through the probe instead.
+	waiterAtHook := make(chan struct{})
+	letWaiterThrough := make(chan struct{})
+	restore := segment.WaiterHook(func() {
+		waiterAtHook <- struct{}{}
+		<-letWaiterThrough
+	})
+	defer restore()
 	waiter := make(chan error, 1)
 	go func() {
 		_, err := e.c.Acquire(1)
@@ -2017,29 +2024,37 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	// A third acquire releases the fault's hold on the seam: the first open
-	// fails EIO, the waiter is woken and answered EIO, and both references
-	// drop through the failed-open path. This is the drop that must leave
-	// the entry ready: no file, no error state, retryable — and, when a
-	// later open succeeds and releases, evictable through the idle list.
+	// The held open fails EIO; the waiter wakes into the hook and parks
+	// there, holding the last reference on an entry with no file.
 	h.Release()
 	if err := <-opener; !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the opening acquire = %v, want the fault's EIO", err)
 	}
-	if err := <-waiter; !errors.Is(err, syscall.EIO) {
-		t.Fatalf("the waiting acquire = %v, want the open's EIO carried to it", err)
+	select {
+	case <-waiterAtHook:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the waiting acquire never woke into the hook")
 	}
 	e.seam.SetFault(nil)
 
-	// A later open succeeds and releases at once: the descriptor ends open,
-	// unreferenced and clean. The state that follows must be Release's: in
-	// the idle list. Fill the budget with segment 2 — both slots taken —
-	// and acquire a third: the reclaimer must find segment 1's idle
-	// descriptor and close it, not refuse.
+	// The staging the case turns on: another acquire opens the segment
+	// successfully and releases at once, so the descriptor is open and
+	// unreferenced — the failed waiter's reference still the one
+	// outstanding on the entry.
 	stocked(t, e, 3)
 	e.read(t, 1)
 	if s := e.c.Stats(); s.Open != 1 {
-		t.Fatalf("the cache holds %d descriptors after the retry, want 1", s.Open)
+		t.Fatalf("the cache holds %d descriptors after the retry, want 1", s)
+	}
+	close(letWaiterThrough)
+
+	// The waiter's drop runs now, against an open, clean, unreferenced
+	// descriptor, and it must leave the entry exactly as Release would: in
+	// the idle list. Fill the budget with segment 2 — both slots taken —
+	// and acquire a third: the reclaimer must find segment 1's idle
+	// descriptor and close it, not refuse.
+	if err := <-waiter; !errors.Is(err, syscall.EIO) {
+		t.Fatalf("the waiting acquire = %v, want the open's EIO carried to it", err)
 	}
 	e.read(t, 2)
 	r3, err := e.c.Acquire(3)
@@ -2052,13 +2067,13 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	// descriptor this cache ever held, so the victim is named not by
 	// openCount but by which file the reclaim closed: segment 1's close
 	// count reaches its second — the stocking's and the reclaim's — while
-	// segment 2's keeps its stocking's alone. The least recently used idle
-	// descriptor is 1's; an entry the failed-open drop never linked leaves 2
-	// as the only victim the reclaimer finds.
+	// segment 2's keeps its stocking's alone. A drop path that skipped the
+	// idle linking under this staging leaves 2 as the only victim the
+	// reclaimer finds.
 	if got := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; got != 1 {
-		t.Fatalf("segment 1's descriptor was closed %d times by the reclaim, want 1: the failed-open drop left it out of the idle list", got)
+		t.Fatalf("segment 1's descriptor was closed %d times by the reclaim, want 1: the failed waiter's late drop left it out of the idle list", got)
 	}
 	if got := e.seam.CallsFor(journalv2test.OpClose, name(2)) - e.stocked[2]; got != 0 {
-		t.Fatalf("segment 2's descriptor was closed %d times by the reclaim, want 0: it is the more recently used idle one", got)
+		t.Fatalf("segment 2's descriptor was closed %d times, want 0: segment 1 was the least recently used idle one", got)
 	}
 }

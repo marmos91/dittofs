@@ -50,3 +50,12 @@ func WaitArmed(c *Descriptors) bool {
 	defer c.mu.Unlock()
 	return c.shutDone != nil
 }
+
+// WaiterHook installs fn as the hook refAfterOpen runs between a waiter's
+// wake and the lock — a window no seam call sits in, so a check that stages
+// another acquire's open against a failed waiter's late drop parks it there.
+// It returns what restores the nil hook.
+func WaiterHook(fn func()) (restore func()) {
+	waiterHook = fn
+	return func() { waiterHook = nil }
+}

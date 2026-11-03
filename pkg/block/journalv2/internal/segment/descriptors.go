@@ -118,6 +118,13 @@ type openCall struct {
 	err  error         // the open's outcome: nil when it yields a descriptor
 }
 
+// waiterHook is a test hook in refAfterOpen's wake-to-lock window: a null
+// func outside the check that stages a failed waiter's late drop. It lives
+// on the cache's package rather than in a test file only because the window
+// it parks the waiter in is inside refAfterOpen, which no test file can
+// reach.
+var waiterHook func()
+
 // Ref is a reference to a segment's open descriptor. Its methods need no
 // lock of the cache's: the reference holds the descriptor open.
 //
@@ -283,6 +290,12 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 // descriptor the waiter can use. An open that raced a newer one does not
 // read the newer's state: its outcome is its own.
 func (c *Descriptors) refAfterOpen(e *descEntry, op *openCall) (Ref, error) {
+	// waiterHook, a test hook, runs between this waiter's wake and the lock,
+	// so a check can stage another acquire's open against it. nil outside
+	// the one check that uses it.
+	if waiterHook != nil {
+		waiterHook()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
