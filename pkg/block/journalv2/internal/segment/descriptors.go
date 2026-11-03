@@ -535,7 +535,7 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		// The segment was never acquired, or is already forgotten: a
 		// tombstone marks it gone, so a read racing this Close cannot open
 		// its descriptor and read storage about to be freed.
-		e = &descEntry{gone: true}
+		e = &descEntry{id: id, gone: true}
 		c.entries[id] = e
 		c.mu.Unlock()
 		return nil
