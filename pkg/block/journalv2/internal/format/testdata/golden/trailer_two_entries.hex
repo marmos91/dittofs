@@ -1,0 +1,40 @@
+# trailer golden: two catalog entries then the trailer, 176 bytes (RFC 28
+# section 2.5). The seal marker sits at 240 before a live footer: entry A's
+# record runs 48..144, entry B's 144..240, so the marker is at 240 and
+# footerOffset is 272, the marker's offset plus 32.
+#
+# entry A: a release at record offset 48, ending at 144
+a0 a1 a2 a3 a4 a5 a6 a7     # [0,16)  FileID 0xa0..0xaf
+a8 a9 aa ab ac ad ae af
+30 31 32 33 34 35 36 37     # [16,24) file offset 0x3736353433323130
+30 00 00 00                 # [24,28) recordOffset 48
+40 41 42 43 44 45 46 47     # [28,36) length 0x4746454443424140
+50 51 52 53 54 55 56 57     # [36,44) sequence number 0x5756555453525150
+00 00 00 00 00 00 00 00     # [44,52) version epoch, always zero in this format
+60 61 62 63 64 65 66 67     # [52,60) version counter 0x6766656463626160
+03                          # [60]    kind 3, release
+00 00 00                    # [61,64) reserved
+70 71 72 73                 # [64,68) share tag 0x73727170
+00 00 00 00                 # [68,72) reserved
+# entry B: an unmark at record offset 144, ending at 240
+d0 d1 d2 d3 d4 d5 d6 d7     # [0,16)  FileID 0xd0..0xdf
+d8 d9 da db dc dd de df
+10 11 12 13 14 15 16 17     # [16,24) file offset 0x1716151413121110
+90 00 00 00                 # [24,28) recordOffset 144
+28 29 2a 2b 2c 2d 2e 2f     # [28,36) length 0x2f2e2d2c2b2a2928
+58 59 5a 5b 5c 5d 5e 5f     # [36,44) sequence number 0x5f5e5d5c5b5a5958
+00 00 00 00 00 00 00 00     # [44,52) version epoch, always zero in this format
+78 79 7a 7b 7c 7d 7e 7f     # [52,60) version counter 0x7f7e7d7c7b7a7978
+09                          # [60]    kind 9, unmark
+00 00 00                    # [61,64) reserved
+84 85 86 87                 # [64,68) share tag 0x87868584
+00 00 00 00                 # [68,72) reserved
+# trailer: the file's last 32 bytes
+44 4a 54 31                 # [0,4)   magic "DJT1"
+01 00                       # [4,6)   catalog layout version 1
+00 00                       # [6,8)   flags, none defined
+10 01 00 00 00 00 00 00     # [8,16)  footerOffset 272, the seal marker at 240 plus 32
+02 00 00 00                 # [16,20) entryCount 2
+33 d8 e7 09                 # [20,24) CRC32C over the 144 footer bytes, 0x09e7d833
+00 00 00 00                 # [24,28) reserved
+0c ea a1 2a                 # [28,32) CRC32C over [0,28), 0x2aa1ea0c

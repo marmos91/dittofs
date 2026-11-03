@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -48,6 +49,44 @@ func testSetAttrsRights(t *testing.T, kvo Opener) {
 		Attrs: entity.Attrs{}.WithOwner(alice.Principal).WithGroup(finance)})
 	if got, err := files.SetAttrs(ctx, alice, g, entity.Attrs{}.WithMode(0o2755)); err != nil || got.Mode != 0o755 {
 		t.Errorf("chmod 2755 by a non-member: mode %o, %v", got.Mode, err)
+	}
+}
+
+// A chmod asks write the ACL: a non-owner granted it changes the mode, one
+// granted write attributes alone does not; and a write's clear of setuid and
+// setgid changes the mode alone, never the stored ACL a chmod would merge
+// into.
+func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	alice := f.member("alice", entity.Principal{})
+	bob := f.member("bob", entity.Principal{})
+	carol := f.member("carol", entity.Principal{})
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	h, _ := f.create(alice, pub, "prog", regular(0o644))
+	acl := entity.ACLFromMode(0o644)
+	acl.Entries = append(acl.Entries,
+		entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: bob.Principal},
+		entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.WriteAttributes, Who: carol.Principal})
+	must(t, errOf(files.SetACL(ctx, alice, h, acl)))
+	if _, err := files.SetAttrs(ctx, carol, h, entity.Attrs{}.WithMode(0o666)); !isDenied(err) {
+		t.Errorf("chmod by a non-owner holding write attributes: %v", err)
+	}
+	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o4660)); err != nil || got.Mode&0o7777 != 0o4660 {
+		t.Errorf("chmod by a non-owner holding write the ACL: %o, %v", got.Mode, err)
+	}
+	before, err := files.ACL(ctx, f.admin, h)
+	must(t, err)
+	if got, err := files.ClearSetID(ctx, carol, h); err != nil || got.Mode&0o7777 != 0o660 {
+		t.Errorf("ClearSetID by a writer: %o, %v", got.Mode, err)
+	}
+	after, err := files.ACL(ctx, f.admin, h)
+	must(t, err)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("ClearSetID changed the stored ACL:\n before %+v\n after  %+v", before, after)
+	}
+	if _, err := files.ClearSetID(ctx, bob, h); !isDenied(err) {
+		t.Errorf("ClearSetID by a caller without write data: %v", err)
 	}
 }
 

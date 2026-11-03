@@ -170,7 +170,7 @@ rfc1 / 9.4 / C / "stranded tag salvaged after serving":
   reason: 'needs the store, a recovery import, salvage.path and the master key'
 rfc1 / 9.4 / C / "clone target survives a crash":
   pending: 2.11
-rfc1 / 9.4 / C / "header-only records are never failed":
+rfc1 / 9.4 / C / "header-only records are re-appended outside a read-only journal":
   pending: 2.11
 rfc1 / 9.4 / C / "a loss survives restart":
   pending: 2.11
@@ -202,87 +202,85 @@ rfc1 / 9.4 / D / "verification reports":
   tests: [TestRFC1D_VerificationReports]
 
 rfc28 / 4.2 / A / "corrupt, dirty":
-  pending: 2.13b
+  tests: [TestRFC28A_CorruptDirty]
 rfc28 / 4.2 / A / "corrupt, offloaded":
-  pending: 2.13b
+  tests: [TestRFC28A_CorruptOffloaded]
 rfc28 / 4.2 / A / "directory entry survives":
-  pending: 2.13b
+  tests: [TestRFC28A_DirectoryEntrySurvives]
 rfc28 / 4.2 / A / "footer is not authoritative":
-  pending: 2.13b
+  tests: [TestRFC28A_FooterIsNotAuthoritative]
 rfc28 / 4.2 / A / "unmark clears":
-  pending: 2.13b
+  tests: [TestRFC28A_UnmarkClears]
 rfc28 / 4.2 / A / "write carries its mtime":
-  pending: 2.13b
+  tests: [TestRFC28A_WriteCarriesItsMtime]
 rfc28 / 4.2 / A / "unproven tail verified at open":
-  pending: 2.13b
-rfc28 / 4.2 / A / "failed directory sync is a failed window":
-  pending: 2.13b
+  tests: [TestRFC28A_UnprovenTailVerifiedAtOpen]
 rfc28 / 4.2 / A / "directory flush on NTFS":
   owner: parked
   reason: 'epic 3 parks it: no host has real NTFS and a power cut'
 rfc28 / 4.2 / A / "a zero slot is not the end":
-  pending: 2.13b
+  tests: [TestRFC28A_AZeroSlotIsNotTheEnd]
 rfc28 / 4.2 / B / "segment reclaimable":
-  pending: 2.13b
+  tests: [TestRFC28B_SegmentReclaimable]
 rfc28 / 4.2 / C / "rebuild":
-  pending: 2.13b
+  tests: [TestRFC28C_Rebuild]
 rfc28 / 4.2 / C / "sources agree":
-  pending: 2.13b
+  tests: [TestRFC28C_SourcesAgree]
 rfc28 / 4.2 / C / "synced damage is not a torn tail":
-  pending: 2.13b
+  tests: [TestRFC28C_SyncedDamageIsNotATornTail]
 rfc28 / 4.2 / C / "bits survive restart":
-  pending: 2.13b
+  tests: [TestRFC28C_BitsSurviveRestart]
 rfc28 / 4.2 / C / "reseed by version":
-  pending: 2.13b
+  tests: [TestRFC28C_ReseedByVersion]
 rfc28 / 4.2 / C / "trailer torn":
-  pending: 2.13b
+  tests: [TestRFC28C_TrailerTorn]
 rfc28 / 4.2 / C / "truncated sealed segment":
-  pending: 2.13b
+  tests: [TestRFC28C_TruncatedSealedSegment]
 rfc28 / 4.2 / C / "foreign segment":
-  pending: 2.13b
+  tests: [TestRFC28C_ForeignSegment]
 rfc28 / 4.2 / C / "version floor":
-  pending: 2.13b
+  tests: [TestRFC28C_VersionFloor]
 rfc28 / 4.2 / C / "stale extent":
-  pending: 2.13b
+  tests: [TestRFC28C_StaleExtent]
 rfc28 / 4.2 / C / "unidentified directory":
-  pending: 2.13b
+  tests: [TestRFC28C_UnidentifiedDirectory]
 rfc28 / 4.2 / C / "journal gone":
-  pending: 2.13b
+  tests: [TestRFC28C_JournalGone]
 rfc28 / 4.2 / C / "spares are re-adopted":
-  pending: 2.13b
+  tests: [TestRFC28C_SparesAreReAdopted]
 rfc28 / 4.2 / C / "a spare is whole or absent":
-  pending: 2.13b
+  tests: [TestRFC28C_SpareIsWholeOrAbsent]
 rfc28 / 4.2 / C / "retired segments are recycled":
-  pending: 2.13b
+  tests: [TestRFC28C_RetiredSegmentsAreRecycled]
 rfc28 / 4.2 / C / "a recycled segment's old catalog is never read":
-  pending: 2.13b
+  tests: [TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead]
 rfc28 / 4.2 / C / "interrupted `Init`":
-  pending: 2.13b
+  tests: [TestRFC28C_InterruptedInit]
 rfc28 / 4.2 / C / "unknown version":
-  pending: 2.13b
+  tests: [TestRFC28C_UnknownVersion]
 rfc28 / 4.2 / C / "neighbours survive":
-  pending: 2.13b
+  tests: [TestRFC28C_NeighboursSurvive]
 rfc28 / 4.2 / C / "a scan resynchronises":
-  pending: 2.13b
+  tests: [TestRFC28C_ScanResynchronises]
 rfc28 / 4.2 / C / "torn tail cut off":
-  pending: 2.13b
+  tests: [TestRFC28C_TornTailCutOff]
 rfc28 / 4.2 / C / "a bad copy does not mask a good one":
-  pending: 2.13b
+  tests: [TestRFC28C_BadCopyDoesNotMaskAGoodOne]
 rfc28 / 4.2 / C / "record layout":
   owner: epic 3
   reason: 'golden vectors of the encoders'
 rfc28 / 4.2 / C / "kind values":
+  tests: [TestRFC28C_KindValuesRefused]
   owner: epic 3
   reason: 'the encoding half: golden vectors of the encoders, compared with raw'
-  pending: 2.13b
 rfc28 / 4.2 / C / "segment header and seal marker":
+  tests: [TestRFC28C_ForeignHeaderIsForeignNotDamaged, TestRFC28C_SealMarkerCopiedIntoAPayload]
   owner: epic 3
   reason: 'the encoding half: golden vectors of the encoders, compared with raw'
-  pending: 2.13b
 rfc28 / 4.2 / C / "`format` file":
+  tests: [TestRFC28C_FormatFile]
   owner: epic 3
   reason: 'the encoding half: golden vectors of the encoders, compared with raw'
-  pending: 2.13b
 rfc28 / 4.2 / C / "trailer":
   owner: epic 3
   reason: 'golden vectors of the encoders'
@@ -317,29 +315,29 @@ rfc1 / 9.7 / "report cost":
   reason: 'needs offload over the index''s counters'
 
 rfc28 / 4.4 / "Bit corruption":
-  pending: 2.13b
+  tests: [TestDamage_BitFlip]
 rfc28 / 4.4 / "Crashes":
-  pending: 2.13b
+  tests: [TestDamage_LostWrites, TestDamage_TornWrites, TestDamage_ReorderedWrites]
 rfc28 / 4.4 / "Edits from outside":
-  pending: 2.13b
+  tests: [TestRFC28C_NeighboursSurvive, TestDamage_SegmentDeleted, TestRFC28C_FormatFile, TestRFC28C_UnidentifiedDirectory, TestRFC28C_JournalGone, TestDamage_UnnamedFileLeftAlone, TestRFC28C_TruncatedSealedSegment, TestRFC28C_ForeignSegment, TestDamage_DirectoryRestored, TestRFC28C_StaleExtent]
 rfc28 / 4.4 / edit / "bytes of a record changed":
-  pending: 2.13b
+  tests: [TestRFC28C_NeighboursSurvive]
 rfc28 / 4.4 / edit / "a segment deleted":
-  pending: 2.13b
+  tests: [TestDamage_SegmentDeleted]
 rfc28 / 4.4 / edit / "the `format` file removed or changed":
-  pending: 2.13b
+  tests: [TestRFC28C_FormatFile, TestRFC28C_UnidentifiedDirectory]
 rfc28 / 4.4 / edit / "the whole directory deleted, emptied or replaced":
-  pending: 2.13b
+  tests: [TestRFC28C_JournalGone]
 rfc28 / 4.4 / edit / "a file the journal did not name added":
-  pending: 2.13b
+  tests: [TestDamage_UnnamedFileLeftAlone]
 rfc28 / 4.4 / edit / "a sealed segment truncated":
-  pending: 2.13b
+  tests: [TestRFC28C_TruncatedSealedSegment]
 rfc28 / 4.4 / edit / "a valid segment copied in from another journal":
-  pending: 2.13b
+  tests: [TestRFC28C_ForeignSegment]
 rfc28 / 4.4 / edit / "the whole directory restored from an old copy":
-  pending: 2.13b
+  tests: [TestDamage_DirectoryRestored]
 rfc28 / 4.4 / edit / "one old segment of this journal restored":
-  pending: 2.13b
+  tests: [TestRFC28C_StaleExtent]
 
 rfc1 / 9.1 / "Model-based":
   tests: [TestModel]
@@ -352,3 +350,9 @@ rfc8 / 15 / "one clock":
   tests: [TestClock_WallJumpMovesNoTimer]
   owner: epic 11
   reason: 'the node half: two TestClocks across every component of a node; the journal''s half is the test'
+rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
+  pending: 2.7
+rfc1 / 9.4 / B / "read-only stops the drain":
+  pending: 2.10
+rfc28 / 4.2 / C / "an ended segment is emptied once":
+  pending: 2.13b

@@ -28,7 +28,11 @@ const (
 //   - the standard library and the journal's own packages are allowed
 //     everywhere, except that the conformance checks reach the journal only
 //     through its public package and the test components, so a check tests
-//     the surface a caller has and not the implementation behind it;
+//     the surface a caller has and not the implementation behind it, and
+//     that journalv2test and the packages below it are imported by test
+//     files only, and journalv2test/raw imports no package of the journal at
+//     all, so it stays an account of the bytes that shares no code with the
+//     codecs it checks;
 //   - golang.org/x/sys is allowed in internal/platform only;
 //   - the set's clock package is allowed in journalv2test only, and its
 //     test-clock and fault package in journalv2test and conformance, whose
@@ -56,7 +60,7 @@ func TestImportRule(t *testing.T) {
 		}
 		rel := filepath.ToSlash(dir)
 		for _, imp := range packageImports(t, dir) {
-			if reason := forbidden(rel, imp.path); reason != "" {
+			if reason := forbidden(rel, imp.kind, imp.path); reason != "" {
 				t.Errorf("%s: forbidden %s %q: %s", rel, imp.kind, imp.path, reason)
 			}
 		}
@@ -113,7 +117,11 @@ func packageImports(t *testing.T, dir string) []importRef {
 			if err != nil {
 				t.Fatalf("unquote %s in %s: %v", spec.Path.Value, name, err)
 			}
-			refs = append(refs, importRef{"other-platform import", path})
+			kind := "other-platform import"
+			if strings.HasSuffix(name, "_test.go") {
+				kind = "other-platform test import"
+			}
+			refs = append(refs, importRef{kind, path})
 		}
 	}
 
@@ -134,11 +142,19 @@ func packageImports(t *testing.T, dir string) []importRef {
 }
 
 // forbidden returns why the package at rel, a slash-separated path relative to
-// this directory, may not import path, or "" when it may.
-func forbidden(rel, path string) string {
+// this directory, may not import path as an import of the given kind, or ""
+// when it may.
+func forbidden(rel, kind, path string) string {
 	switch {
 	case within(path, journalv1Path):
 		return "the journal must not depend on the previous journal package"
+	case within(rel, "journalv2test/raw") && !isStdlib(path):
+		return "journalv2test/raw may import the standard library only, so it shares no code with what it checks"
+	case within(path, journalv2Path+"/journalv2test") && !within(rel, "journalv2test"):
+		if strings.Contains(kind, "test import") {
+			return ""
+		}
+		return "journalv2test and the packages below it are test helpers: only test files import them"
 	case within(path, journalv2Path):
 		if within(rel, "conformance") && path != journalv2Path && !within(path, journalv2Path+"/journalv2test") {
 			return "the conformance checks may import the journal's public package and its test components only"
@@ -195,7 +211,7 @@ func TestImportRuleScopesSim(t *testing.T) {
 		{"conformance", clockPath, false},
 		{"journalv2test", clockPath, true},
 	} {
-		if got := forbidden(c.rel, c.path) == ""; got != c.allowed {
+		if got := forbidden(c.rel, "test import", c.path) == ""; got != c.allowed {
 			t.Errorf("%s importing %s: allowed %v, want %v", c.rel, c.path, got, c.allowed)
 		}
 	}
@@ -217,8 +233,41 @@ func TestImportRuleKeepsConformanceOnThePublicSurface(t *testing.T) {
 		{"journalv2test", journalv2Path + "/internal/core", true},
 		{"internal/index", journalv2Path + "/internal/core", true},
 	} {
-		if got := forbidden(c.rel, c.path) == ""; got != c.allowed {
+		if got := forbidden(c.rel, "test import", c.path) == ""; got != c.allowed {
 			t.Errorf("%s importing %s: allowed %v, want %v", c.rel, c.path, got, c.allowed)
+		}
+	}
+}
+
+// TestForbidden pins the rules that no package of the tree breaks today, so
+// the walk above cannot pass because a rule matches nothing.
+func TestForbidden(t *testing.T) {
+	const (
+		raw    = journalv2Path + "/journalv2test/raw"
+		format = journalv2Path + "/internal/format"
+		core   = journalv2Path + "/internal/core"
+	)
+
+	for _, c := range []struct {
+		name            string
+		rel, kind, path string
+		forbidden       bool
+	}{
+		{"production code imports raw", "internal/format", "import", raw, true},
+		{"production code of another platform imports raw", "internal/format", "other-platform import", raw, true},
+		{"a test imports raw", "internal/format", "test import", raw, false},
+		{"an external test imports raw", "internal/format", "external test import", raw, false},
+		{"a test of another platform imports raw", "internal/format", "other-platform test import", raw, false},
+		{"raw imports the codec", "journalv2test/raw", "import", format, true},
+		{"a test of raw imports the codec", "journalv2test/raw", "test import", format, true},
+		{"raw imports core", "journalv2test/raw", "import", core, true},
+		{"raw imports the standard library", "journalv2test/raw", "import", "hash/crc32", false},
+		{"journalv2test imports raw", "journalv2test", "import", raw, false},
+		{"production code imports the codec", "journalv2test", "import", format, false},
+		{"the root package imports journalv2test", ".", "import", journalv2Path + "/journalv2test", true},
+	} {
+		if got := forbidden(c.rel, c.kind, c.path) != ""; got != c.forbidden {
+			t.Errorf("%s: forbidden(%q, %q, %q) = %t, want %t", c.name, c.rel, c.kind, c.path, got, c.forbidden)
 		}
 	}
 }

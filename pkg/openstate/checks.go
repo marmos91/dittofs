@@ -96,14 +96,15 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		return t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) }, others, &out)
 	}
 	// unopened is I/O through no open: anonymous, or through a delegation
-	// own holds, which its holder's own deny modes do not refuse.
+	// own holds, which its holder's own deny modes do not refuse. It is I/O
+	// of the base file, so only the base's opens are judged, not its streams'.
 	unopened := func(e *entry, own func(*grant) bool) error {
 		if e.file != f.ID {
 			return ErrBadState
 		}
 		var hs []*open
 		for _, h := range e.opens {
-			if o.Kind == RefDelegated && h.Client == who.Client {
+			if !h.Stream.IsZero() || o.Kind == RefDelegated && h.Client == who.Client {
 				continue
 			}
 			if !conflict.Shares(want, 0, h.Mode.Access, h.Mode.Deny) {
@@ -206,7 +207,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	smb := who.Protocol == entity.ProtocolSMB
 	var out outbox
 	err = t.step(f.ID, func(e *entry) error {
-		own := func(g *grant) bool { return g.client == who.Client }
+		own := func(g *grant) bool { return g.client == who.Client && (!g.covers() || e.openedBy(g, who.Principal)) }
 		if via != nil {
 			_, k, err := t.findOpen(who, *via)
 			if err != nil {
@@ -215,6 +216,9 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 			o := e.opens[k.token]
 			if o == nil {
 				return ErrBadState
+			}
+			if !t.mayUse(o, who) {
+				return ErrNotYours // an open is used only by its opener
 			}
 			own = func(g *grant) bool { return g.heldBy(who.Client, o.lease, o) }
 		}
@@ -233,6 +237,8 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 			}
 		}
 		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
+			// Every open is judged, a named stream's too: a remove or rename
+			// of the base is its delete.
 			var hs []*open
 			for _, h := range e.opens {
 				if !conflict.Shares(entity.Delete, 0, h.Mode.Access, h.Mode.Deny) {

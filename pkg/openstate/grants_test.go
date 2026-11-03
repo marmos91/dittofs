@@ -1311,6 +1311,183 @@ func TestDelegationIOPassesItsHoldersDeny(t *testing.T) {
 	}
 }
 
+// openers is the opens g covers on file, as held now.
+func (f *fixture) openers(t *testing.T, file FileKey, g GrantID) []Open {
+	t.Helper()
+	var os []Open
+	if err := f.step(file.ID, func(e *entry) error {
+		for _, h := range e.opens {
+			if h.Grant == g {
+				os = append(os, h.Open)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return os
+}
+
+// A lease key joins its lease only for a principal among the lease's
+// openers', or one signed in on the caller's connection. Another user's
+// session of the same client presenting the key breaks the lease as another
+// key would, and is granted its open with no grant and under no key, which a
+// replay of its create answers again. Once the
+// opener's persistent open is disconnected, a break of the lease covers that
+// open alone, so it routes to no session of the other user; the other user's
+// answer to it is ErrNotYours, and a change it makes with no open is not the
+// lease's own.
+func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
+	k := LeaseKey{7}
+	for _, tc := range []struct {
+		name string
+		conn bool
+	}{{"another user", false}, {"another user beside an opener", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			alice := f.caller(t, smbMachine("pc"))
+			bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+			file, _ := f.fileIn(t, "doc")
+			_, g := f.grantOpen(t, alice, file, keep(OpenRequest{Access: rd | wr, Lease: k, Want: rwh}, entity.DurabilityPersistent, s1, time.Minute, 1))
+			if g == nil || g.Kind != rwh {
+				t.Fatalf("alice's lease %+v, want RWH", g)
+			}
+			r := keep(OpenRequest{Access: rd, Lease: k, Want: rwh}, entity.DurabilityNone, s2, 0, 2)
+			if tc.conn {
+				r.Conn = []entity.Principal{entity.NewUser(), alice.Principal}
+			} else {
+				// Not joining, bob's open breaks alice's write caching, as
+				// another key's would, and her answer is her own.
+				if _, err := f.open(bob, file, r); delayedFor(err) != DelayRecall {
+					t.Fatalf("bob's open under alice's key: %v, want ErrDelay(DelayRecall)", err)
+				}
+				rs := f.sink.takeRecalls()
+				if len(rs) != 1 || rs[0].g.ID != g.ID {
+					t.Fatalf("recalls %+v, want alice's lease", rs)
+				}
+				if err := f.ack(alice, g, rs[0].to); err != nil {
+					t.Fatalf("alice's answer: %v", err)
+				}
+			}
+			res, err := f.Opens().Open(ctx, bob, file, r)
+			if err != nil {
+				t.Fatalf("bob's open under alice's key: %v, want it granted", err)
+			}
+			ob, gb := res.Open, res.Grant
+			var who []entity.Principal
+			for _, o := range f.openers(t, file, g.ID) {
+				who = append(who, o.Principal)
+			}
+			held := f.kept().keys[clientKey{alice.Client, k}].opens
+			if tc.conn {
+				if gb == nil || gb.ID != g.ID || ob.Grant != g.ID || len(who) != 2 || held != 2 {
+					t.Fatalf("bob's open beside alice: grant %+v, covered by %v, openers %v, key held by %d; want alice's lease, joined", gb, ob.Grant, who, held)
+				}
+				return
+			}
+			if gb != nil || ob.Grant != (GrantID{}) || !slices.Equal(who, []entity.Principal{alice.Principal}) || held != 1 {
+				t.Fatalf("bob's open: grant %+v, covered by %v, openers %v, key held by %d; want no grant, alice the only opener, the key hers alone", gb, ob.Grant, who, held)
+			}
+			r.Replay = true
+			if again, err := f.Opens().Open(ctx, bob, file, r); err != nil || !again.Replayed || again.Open.ID != ob.ID || again.Grant != nil {
+				t.Fatalf("a replay of bob's create: %+v, %v; want his open, Replayed, with no grant", again, err)
+			}
+			f.disconnect(t, alice, s1)
+			c := f.caller(t, smb("pc-c"))
+			if _, err := f.open(c, file, OpenRequest{Access: rd, Deny: wr}); delayedFor(err) != DelayRecall {
+				t.Fatalf("a conflicting open: %v, want ErrDelay(DelayRecall)", err)
+			}
+			rs := f.sink.takeRecalls()
+			if len(rs) != 1 || rs[0].g.ID != g.ID {
+				t.Fatalf("recalls %+v, want alice's lease", rs)
+			}
+			for _, o := range f.openers(t, file, g.ID) {
+				if o.Session != s1 || o.Principal != alice.Principal {
+					t.Errorf("the lease covers %+v; its break would route past alice's session", o)
+				}
+			}
+			if err := f.ack(bob, g, rs[0].to); !errors.Is(err, ErrNotYours) {
+				t.Errorf("bob's answer to the break: %v, want ErrNotYours", err)
+			}
+			if got := f.grantNow(t, file, g.ID); got.Recall == nil {
+				t.Errorf("bob's answer ended the break: %+v", got)
+			}
+			if err := f.Checks().CheckChange(ctx, bob, file, nil, ChangeRename); delayedFor(err) != DelayRecall {
+				t.Errorf("bob's rename through no open, alice's lease recalling: %v, want ErrDelay(DelayRecall)", err)
+			}
+		})
+	}
+}
+
+// A change through an open is the caller's own only when the caller may use
+// that open: another user of the opener's client naming it is refused, and
+// alice's lease stays as it was.
+func TestChangeThroughAnotherUsersOpen(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	oa, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{7}, Want: rwh})
+	if g == nil || g.Kind != rwh {
+		t.Fatalf("alice's lease %+v, want RWH", g)
+	}
+	if err := f.Checks().CheckChange(ctx, bob, file, ptr(refOf(oa)), ChangeRename); !errors.Is(err, ErrNotYours) {
+		t.Errorf("bob's rename through alice's open: %v, want ErrNotYours", err)
+	}
+	if got := f.grantNow(t, file, g.ID); got.Kind != rwh || got.Recall != nil {
+		t.Errorf("alice's lease after bob's rename: %+v, want RWH, unrecalled", got)
+	}
+}
+
+// A caller refused a lease's key is offered nothing in its place, not even
+// the oplock its request would be offered with no key.
+func TestRefusedLeaseKeyOffersNoOplock(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
+		t.Fatal("alice was offered no lease")
+	}
+	// bob's connection carries another user's session, but no opener's.
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead, Conn: []entity.Principal{entity.NewUser()}}); g != nil {
+		t.Errorf("bob's open under alice's key: offered %+v, want nothing", g)
+	}
+}
+
+// Another user of the client under a key of its own takes its own lease
+// beside one it may not join.
+func TestOwnKeyBesideAnothersLease(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
+		t.Fatal("alice was offered no lease")
+	}
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{8}, Want: GrantRead}); g == nil || g.Key != (LeaseKey{8}) {
+		t.Errorf("bob's open under his own key: offered %+v, want his own lease", g)
+	}
+}
+
+// A change through no open is its client's own against the client's
+// delegation, as no NFSv4 server breaks a delegation for its own client.
+func TestOwnChangeKeepsOwnDelegation(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+	file := anyFile()
+	_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw})
+	if d == nil {
+		t.Fatal("no delegation")
+	}
+	if err := f.Checks().CheckChange(ctx, a, file, nil, ChangeAttrs); err != nil {
+		t.Errorf("the holder's own change through no open: %v", err)
+	}
+	if got := f.grantNow(t, file, d.ID); got.Recall != nil {
+		t.Errorf("the holder's delegation after its own change: %+v, want unrecalled", got)
+	}
+}
+
 // Openers lists the opens a lease covers, each with its session and opener,
 // and none of another key's; a delegation covers none, and a grant of
 // another client is not the caller's to read.
@@ -1321,7 +1498,7 @@ func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
 	s1, s2 := entity.SessionRef{ID: 1}, entity.SessionRef{ID: 2}
 	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s1})
 	b := Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}
-	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s2})
+	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s2, Conn: []entity.Principal{a.Principal}})
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh, Session: s1})
 
 	opens, err := f.Grants().Openers(ctx, a, g.ID)
@@ -1343,5 +1520,144 @@ func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
 	_, d := f.grantOpen(t, n, anyFile(), OpenRequest{Access: rd, Want: GrantRead})
 	if opens, err := f.Grants().Openers(ctx, n, d.ID); err != nil || len(opens) != 0 {
 		t.Errorf("a delegation's openers %v, %v; want none", opens, err)
+	}
+}
+
+// A user who opens first under another's key on another file does not
+// refuse her open of her own file under it: she is none of the key's
+// openers, so she is granted it uncached, under no key.
+func TestAnothersKeyOnAnotherFileRefusesNoOpen(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	f.grantOpen(t, bob, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	res, err := f.Opens().Open(ctx, alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	if err != nil {
+		t.Fatalf("alice's open of her file under her key, held by bob on another: %v", err)
+	}
+	if res.Grant != nil {
+		t.Errorf("alice's open beside bob's hold on her key: offered %+v, want nothing", res.Grant)
+	}
+}
+
+// One of a key's openers is refused it on another file while it names one.
+func TestOwnKeyOnAnotherFileIsInvalid(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	f.grantOpen(t, alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
+	if _, err := f.open(alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("alice's second file under her key: %v, want ErrInvalid", err)
+	}
+}
+
+// A joiner's close forgets its principal while another opener holds the key:
+// it joins no more, and the key keeps no principal that holds none of its
+// opens.
+func TestClosedJoinerLeavesTheKey(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	file := anyFile()
+	f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh})
+	o, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh, Conn: []entity.Principal{alice.Principal}})
+	if g == nil {
+		t.Fatal("bob did not join through alice's connection")
+	}
+	f.close(t, bob, o)
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+	if _, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh}); g != nil {
+		t.Errorf("bob's open under alice's key after his close: offered %+v, want nothing", g)
+	}
+}
+
+// Two users' first creates under one key at once each get their open, and
+// only one is offered the key's lease: the one that mints second is none of
+// the key's openers then, so it is granted its open under no key rather than
+// refused the key on another file. The race is not steered, so it is run
+// often enough that a refusal shows.
+func TestConcurrentFirstCreatesUnderOneKey(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	var refused [2]int
+	both := 0
+	for i := range 500 {
+		k := LeaseKey{1, byte(i), byte(i >> 8)}
+		var wg sync.WaitGroup
+		var leased [2]bool
+		for j, who := range []Caller{alice, bob} {
+			wg.Go(func() {
+				res, err := f.Opens().Open(ctx, who, anyFile(), OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+				if err != nil {
+					refused[j]++
+				}
+				leased[j] = res.Grant != nil
+			})
+		}
+		wg.Wait()
+		if leased == [2]bool{true, true} {
+			both++
+		}
+	}
+	if refused != [2]int{} {
+		t.Errorf("first creates refused, alice's and bob's: %v of 500, want none", refused)
+	}
+	if both != 0 {
+		t.Errorf("both first creates offered the key's lease, on two files: %d of 500, want none", both)
+	}
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+}
+
+// Another user opening and closing a file under alice's key while she
+// creates others under it never refuses one of her creates: whenever his
+// open holds the key, she is none of its openers and is granted hers under
+// no key.
+func TestAnothersOpenCloseUnderTheKeyRefusesNoCreate(t *testing.T) {
+	f := newFixture(t)
+	alice := f.caller(t, smb("pc"))
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	k := LeaseKey{7}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var bobErr error
+	bobRefused := 0
+	wg.Go(func() {
+		file := anyFile()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			o, err := f.open(bob, file, OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+			if err == nil {
+				_, err = f.Opens().Close(ctx, bob, refOf(o), Seqs{})
+			}
+			if err != nil {
+				bobErr = err
+				bobRefused++
+			}
+		}
+	})
+	refused := 0
+	for range 1000 {
+		o, err := f.open(alice, anyFile(), OpenRequest{Access: rd, Lease: k, Want: GrantRead})
+		if err != nil {
+			refused++
+			continue
+		}
+		f.close(t, alice, o)
+	}
+	close(stop)
+	wg.Wait()
+	if refused != 0 {
+		t.Errorf("alice's creates under her key beside bob's open and close: %d of 1000 refused, want none", refused)
+	}
+	if bobErr != nil {
+		t.Errorf("bob's opens and closes under the key: %d refused, the last %v; want none", bobRefused, bobErr)
 	}
 }

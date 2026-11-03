@@ -2,6 +2,7 @@ package openstate
 
 import (
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"reflect"
 	"sync"
@@ -66,6 +67,7 @@ func (t *Table) kept() indexes {
 		x.granted[k] = v
 	}
 	for k, v := range t.keys {
+		v.by = maps.Clone(v.by)
 		x.keys[k] = v
 	}
 	for k, v := range t.held {
@@ -95,7 +97,11 @@ func (t *Table) rebuild() indexes {
 			x.count(o.Client, cappedOpens, 1)
 			if o.lease != (LeaseKey{}) {
 				u := x.keys[clientKey{o.Client, o.lease}]
+				if u.by == nil {
+					u.by = map[entity.Principal]int{}
+				}
 				u.file, u.opens = e.file, u.opens+1
+				u.by[o.Principal]++
 				x.keys[clientKey{o.Client, o.lease}] = u
 			}
 		}
@@ -120,7 +126,11 @@ func (t *Table) rebuild() indexes {
 		for _, w := range e.waiters {
 			x.count(w.Owner.Client, cappedWaiters, 1)
 		}
-		if n := len(e.opens) + len(e.lstates) + len(e.grants) + len(e.watches); n > 0 {
+		n := len(e.opens) + len(e.lstates) + len(e.grants) + len(e.watches)
+		if e.releasing {
+			n++ // the mark keeps the entry
+		}
+		if n > 0 {
 			x.states[e.file] = n
 		}
 	})

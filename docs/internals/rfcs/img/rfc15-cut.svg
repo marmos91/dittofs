@@ -19,7 +19,7 @@
     <marker id="k" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b08a3e"/></marker>
   </defs>
   <rect width="960" height="640" fill="#ffffff"/>
-  <text x="16" y="26" class="t">The cut is vfs.Service: the gateway forwards, the server at the primary decides</text>
+  <text x="16" y="26" class="t">The cut is vfs.Service: the gateway forwards, the filesystem at the primary decides</text>
 
   <!-- clients -->
   <rect x="40" y="42" width="300" height="30" rx="15" class="ext"/>
@@ -61,7 +61,7 @@
 
   <!-- server (shared by both paths) -->
   <rect x="40" y="454" width="904" height="62" rx="6" class="node"/>
-  <text x="54" y="474" class="h">vfs.Server at the primary — decides everything (RFC 17)</text>
+  <text x="54" y="474" class="h">vfs.Filesystem at the primary — decides everything (RFC 17)</text>
   <text x="54" y="492" class="s">admission to the share · identity resolution · flavour and squash · ordering</text>
   <text x="54" y="507" class="s">calls open state (RFC 14), the metadata store's views (RFC 16) and the engine (RFC 8): all on this one node</text>
 
@@ -74,12 +74,12 @@
   <text x="774" y="356" class="s">objects (RFC 4)</text>
   <path d="M652,452 L652,370" class="kv"/>
   <path d="M852,452 L852,370" class="kv"/>
-  <text x="560" y="410" class="al">only vfs.Server's components call these</text>
+  <text x="560" y="410" class="al">only vfs.Filesystem's components call these</text>
 
   <!-- legend -->
   <rect x="16" y="532" width="928" height="96" rx="6" class="ext"/>
   <text x="32" y="552" class="l"><tspan font-weight="700">Why here, not under the VFS:</tspan> open state lives in one place; a WRITE is one forwarded call, not several engine calls;</text>
-  <text x="32" y="570" class="l">the engine interface is chatty; and one epoch fences everything the server does for the call.</text>
-  <text x="32" y="592" class="l"><tspan font-weight="700">Every node is alike</tspan>: each runs the adapters, vfs.Gateway, vfs.Serve and vfs.Server; it is the gateway for its clients and primary of its shards.</text>
-  <text x="32" y="614" class="l"><tspan font-weight="700">Single node:</tspan> the adapters call vfs.Server directly; no vfs.Gateway, no vfs.Serve, no envelope.</text>
+  <text x="32" y="570" class="l">the engine interface is chatty; and one epoch fences everything the filesystem does for the call.</text>
+  <text x="32" y="592" class="l"><tspan font-weight="700">Every node is alike</tspan>: each runs the adapters, vfs.Gateway, vfs.Serve and vfs.Filesystem; it is the gateway for its clients and primary of its shards.</text>
+  <text x="32" y="614" class="l"><tspan font-weight="700">Single node:</tspan> the adapters call vfs.Filesystem directly; no vfs.Gateway, no vfs.Serve, no envelope.</text>
 </svg>

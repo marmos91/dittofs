@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -117,12 +118,13 @@ type OpenRequest struct {
 	Loss          uint64    // the file's loss sequence as the service read it before the call: the open has seen every loss up to it
 	Owner         LockOwner // the owner of opens, of the caller's client, which numbers its requests in Seqs; zero: the protocol has none
 	Seqs          Seqs
-	Lease         LeaseKey  // the key of the lease to cover it; zero: none
-	Parent        LeaseKey  // a v2 lease request's parent key, kept with a new lease for the adapter; zero: none
-	Epoch         *uint16   // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
-	Want          GrantKind // the grant kind asked for; none: no grant
-	SetID         bool      // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
-	Reclaim       bool      // the open is one the client held before its shard lost its state
+	Lease         LeaseKey           // the key of the lease to cover it; zero: none
+	Conn          []entity.Principal // SMB: the principals of the other sessions signed in on the open's connection; one among an existing lease's openers lets the caller join it
+	Parent        LeaseKey           // a v2 lease request's parent key, kept with a new lease for the adapter; zero: none
+	Epoch         *uint16            // a v2 lease request's epoch, which a new lease starts from; nil: a v1 lease or an oplock; an existing lease keeps its own
+	Want          GrantKind          // the grant kind asked for; none: no grant
+	SetID         bool               // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
+	Reclaim       bool               // the open is one the client held before its shard lost its state
 
 	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
 	Durable    DurableKeys
@@ -252,6 +254,16 @@ type Opens interface {
 	// records; only then does the table hold the opens durable. It holds f's
 	// admission lock throughout.
 	Durable(ctx context.Context, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error)
+	// Releasing marks f as being released, before the service removes its
+	// bytes: ErrFileOpen while the table holds an open of f, a clone's hold
+	// included, and ErrReleasing while f is already marked, either changing
+	// nothing. While marked, an open of f is ErrReleasing, which the service
+	// answers as for a released file, stale. The service calls done once,
+	// true when the release committed, false when it aborted, and either
+	// ends the mark. It holds f's admission lock from Releasing to done, so
+	// no open lands between the check and the removal. The mark is not
+	// written: after a restart the stored pending release is run again.
+	Releasing(ctx context.Context, f FileKey) (done func(released bool), err error)
 	// CloneOpen holds src for the clone c names in the table: the durable
 	// open of no client the clone's first phase wrote in its transaction,
 	// which keeps src from release, holds no access, denies nothing, and
@@ -280,9 +292,21 @@ func (t *Table) Opens() Opens { return opens{t} }
 // open is an Open and what the table holds beside it.
 type open struct {
 	Open
-	share   entity.ShareID
-	lease   LeaseKey // the lease key it was opened under; zero: none
-	durable bool     // its record is in the store
+	share entity.ShareID
+	lease LeaseKey // the lease key it was opened under; zero: none
+	// asked is the lease key its create presented, kept where the key was
+	// refused, so a replay of the create is answered.
+	//
+	// ponytail: asked is not written in the open's record, so after a
+	// restart a durable open's reconnect and then a replay of its
+	// refused-key create is answered ErrNotYours. Write it as a record field,
+	// which costs a field in every store's open encoding, if a client is seen
+	// failing such a replay.
+	asked LeaseKey
+	// conn is a new open's Conn, the principals its key is joined through
+	// at its mint; nil for an installed open.
+	conn    []entity.Principal
+	durable bool // its record is in the store
 	// unlinking: an unlink's records list it, and its commit has yet to run;
 	// a close by the table meanwhile leaves late for the commit to raise.
 	unlinking bool
@@ -402,7 +426,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	r.Owner.Name = slices.Clone(r.Owner.Name)
-	o := &open{share: f.Share, lease: r.Lease, Open: Open{
+	o := &open{share: f.Share, lease: r.Lease, asked: r.Lease, conn: r.Conn, Open: Open{
 		ID: id, Client: who.Client, Principal: who.Principal, File: f.ID, Stream: r.Stream, Via: r.Via, Name: slices.Clone(r.Name), Owner: r.Owner,
 		Mode: OpenMode{Access: r.Access, Deny: r.Deny, Privileged: r.Privileged}, LossSeen: r.Loss,
 		Durability: r.Durability, Session: r.Session, Durable: r.Durable, Channel: Channel{Seq: r.Channel},
@@ -421,17 +445,44 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		if r.Reclaim && !grace {
 			return t.reclaimHeld(e, who, r, &res)
 		}
+		if e.releasing {
+			return ErrReleasing
+		}
 		if e.pending != nil {
 			return ErrDeletePending
 		}
 		if r.Lease != (LeaseKey{}) {
-			// Refused early, before breakHandles and recallOthers queue
-			// recalls; mintOpen is the rule.
+			// Judged early, before breakHandles and recallOthers queue
+			// recalls, and judged again in mintOpen, which decides.
+			//
+			// A key travels in clear, and joining makes the caller one of
+			// the lease's openers, whose breaks it may then answer: a caller
+			// whose principal, and every one of Conn, is none of the key's
+			// openers' is granted the open with no grant, under no key, on
+			// whichever file the key names. Only one of its openers is
+			// refused the key on another file.
+			//
+			// decision: the first principal to open under a key owns it
+			// until its last opener closes, and a key travels in clear, so
+			// another user of the client who opens first under alice's key
+			// keeps her from caching under it, on that file or any other:
+			// she is granted her open uncached. A stranger can deny caching
+			// under the key, never an open, data or another's breaks: a
+			// stranger's open minted on another file after this check makes
+			// her none of the key's openers at her mint, which then mints her
+			// open under no key. Bind a key to the principal that chose it,
+			// as an adapter-signed key would, if a user is seen pre-empting
+			// another's keys.
 			t.idx.Lock()
-			u, held := t.keys[clientKey{who.Client, r.Lease}]
+			u := t.keys[clientKey{who.Client, r.Lease}]
+			joins := u.joins(who, r.Conn)
 			t.idx.Unlock()
-			if held && u.file != f.ID {
+			if joins && u.opens > 0 && u.file != f.ID {
 				return ErrInvalid // a key names one grant, on one file
+			}
+			if !joins {
+				r.Lease, r.Parent, r.Epoch, r.Want = LeaseKey{}, LeaseKey{}, nil, GrantNone
+				o.lease = LeaseKey{}
 			}
 		}
 		// A new open past its client's cap, or whose shard its client's
@@ -466,13 +517,16 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		own := func(g *grant) bool { return g.heldBy(who.Client, r.Lease, granted) }
 		var hs []*open
 		for _, h := range e.opens {
-			if h != granted && !conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny) {
+			if h != granted && !sharesStream(r.Stream, access, deny, h) {
 				hs = append(hs, h)
 			}
 		}
 		if err := t.breakHandles(ctx, e, hs, own, out); err != nil {
 			return err
 		}
+		// ponytail: a stream's open recalls the base's and other streams'
+		// grants as if it were theirs, which recalls more than it must. Judge
+		// a grant against an open of its own stream once grants are per stream.
 		if err := t.recallOthers(ctx, e, own, func(g *grant) GrantKind { return conflict.GrantKeeps(access, deny, g.key != (LeaseKey{})) }, out); err != nil {
 			return err
 		}
@@ -482,6 +536,9 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 			}
 		} else if err := t.addOpen(ctx, e, f, o, r); err != nil {
 			return err
+		} else if o.lease != r.Lease {
+			// mintOpen found the caller none of the key's openers.
+			r.Lease, r.Parent, r.Epoch, r.Want = LeaseKey{}, LeaseKey{}, nil, GrantNone
 		}
 		confirmed := t.ownerConfirmed(r)
 		res.Confirm = !confirmed && !r.Reclaim // a reclaimed owner confirmed itself before the loss
@@ -584,7 +641,7 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 		switch {
 		case !r.Replay || o.parked != 0 || o.Session != r.Session:
 			return true, ErrCreateInUse
-		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease:
+		case !t.mayUse(o, who), r.Lease != (LeaseKey{}) && o.lease != r.Lease && o.asked != r.Lease:
 			return true, ErrNotYours
 		}
 		*res = OpenResult{Open: o.Open, Grant: e.grantOf(o), Replayed: true}
@@ -705,6 +762,28 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 	return nil
 }
 
+// sharesStream reports whether an open of stream s, zero for the base file,
+// asking access and denying deny can be held beside h. Deny modes are judged
+// per stream, as MS-FSA judges sharing: in full between opens of one stream,
+// and across a file and its streams only for the base's delete, which a stream
+// open not sharing delete refuses, whichever of the two came first.
+//
+// decision: a stream's own delete access is judged against no other stream's
+// or the base's opens, and one stream's open never refuses another stream's;
+// only the base's delete, which would remove every stream, is judged across.
+// Judge a stream's delete too once a stream can be deleted on its own.
+func sharesStream(s entity.FileID, access, deny entity.AccessMask, h *open) bool {
+	switch {
+	case h.Stream == s:
+		return conflict.Shares(access, deny, h.Mode.Access, h.Mode.Deny)
+	case s.IsZero():
+		return conflict.Shares(access&entity.Delete, 0, h.Mode.Access, h.Mode.Deny)
+	case h.Stream.IsZero():
+		return conflict.Shares(access, deny, h.Mode.Access&entity.Delete, 0)
+	}
+	return true
+}
+
 // openOf is owner's open of e's file, or of its stream s, on e; nil for none
 // or for a protocol with no owner of opens.
 func (e *entry) openOf(owner LockOwner, s entity.FileID) *open {
@@ -738,7 +817,9 @@ func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, d
 // its step, if o's client is current here; the check and the mint share the
 // index lock, so an expiry that drops the client either sees the open or
 // refuses it. An open under a lease key holds the key on e's file, and one
-// whose key is held on another file is ErrInvalid.
+// whose key is held on another file is ErrInvalid. A new open whose caller
+// is, as the key stands at the mint, none of its openers is minted under no
+// key, so the check and the hold are one step under the index lock.
 func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 	ref, err := t.mintUnder(e, o.Client, s, StateOpen, func(ref StateRef) error {
 		if o.Clone == nil && !t.current(o.Client) {
@@ -754,6 +835,9 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 		}
 		ck := clientKey{o.Client, o.lease}
 		u := t.keys[ck]
+		if o.lease != (LeaseKey{}) && o.parked == 0 && !u.joins(Caller{Principal: o.Principal}, o.conn) {
+			o.lease, ck, u = LeaseKey{}, clientKey{}, keyUse{}
+		}
 		if o.lease != (LeaseKey{}) && u.opens > 0 && u.file != e.file {
 			return ErrInvalid
 		}
@@ -764,7 +848,11 @@ func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
 			_ = t.chargeLocked(o.Client, cappedOpens, 1, false)
 		}
 		if o.lease != (LeaseKey{}) {
+			if u.by == nil {
+				u.by = map[entity.Principal]int{}
+			}
 			u.file, u.opens = e.file, u.opens+1
+			u.by[o.Principal]++
 			t.keys[ck] = u
 		}
 		if o.ID != 0 {
@@ -805,6 +893,9 @@ func (t *Table) dropOpen(e *entry, o *open) {
 			delete(t.keys, ck)
 		} else {
 			u.opens--
+			if u.by[o.Principal]--; u.by[o.Principal] <= 0 {
+				delete(u.by, o.Principal)
+			}
 			t.keys[ck] = u
 		}
 	}
@@ -1047,11 +1138,11 @@ func (v opens) Update(ctx context.Context, who Caller, id entity.OpenID, u OpenU
 		return err
 	}
 	return t.withOpen(who, OpenRef{Kind: RefOpened, Open: id}, nil, seqOther, func(e *entry, o *open) error {
-		if u.Delete != nil && !o.Stream.IsZero() {
-			return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
-		}
 		if u.Delete != nil && o.Mode.Access&entity.Delete == 0 {
 			return ErrAccess
+		}
+		if u.Delete != nil && !o.Stream.IsZero() {
+			return ErrInvalid // a stream's disposition, as its delete on close: see grantOpen
 		}
 		was := o.Suspended
 		o.Suspended = was&^u.Resume | u.Suspend
@@ -1267,6 +1358,67 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 		}
 	}
 	return recs, commit, nil
+}
+
+// decision: a second Releasing of a marked file is refused rather than
+// answered as the first, so the two never share one mark that either's done
+// would end under the other. Answer it idempotently if the service is found
+// to call it twice for one release.
+func (v opens) Releasing(ctx context.Context, f FileKey) (func(bool), error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return nil, err
+	}
+	if _, begun := t.instance(f.Shard); !begun {
+		return nil, &DelayError{DelayFrozen} // its durable opens are not yet held
+	}
+	err := t.step(f.ID, func(e *entry) error {
+		switch {
+		case e.releasing:
+			return ErrReleasing
+		case len(e.opens) > 0:
+			return ErrFileOpen
+		}
+		e.releasing = true
+		e.states++ // the mark keeps the entry
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// A committed release drops the file from the table: a delegation or a
+	// lock state held with no open names a file that is gone, and a callback
+	// waiter is told its wait ended, not granted. done ends its own mark
+	// once: a second call never ends a later Releasing's.
+	end := func(released bool) {
+		var out outbox
+		_ = t.step(f.ID, func(e *entry) error {
+			if !e.releasing {
+				return nil
+			}
+			e.releasing = false
+			e.states--
+			if released {
+				for _, w := range e.waiters {
+					if w.Wait == WaitCallback {
+						out.over = append(out.over, waitOver{*w, false})
+					}
+				}
+				for _, g := range e.grants {
+					t.dropGrant(e, g)
+				}
+				for _, ls := range e.lstates {
+					t.dropLockState(e, ls)
+				}
+			}
+			return nil
+		})
+		if sink, err := t.running(); err == nil {
+			out.raise(t, sink)
+		}
+	}
+	var once sync.Once
+	return func(released bool) { once.Do(func() { end(released) }) }, nil
 }
 
 // nameByID indexes o by the ID it took for its record, so the record is

@@ -2,6 +2,7 @@ package enginev2
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/openstate"
+	"github.com/marmos91/dittofs/pkg/vfs/vfserr"
 )
 
 // fullDeps is a Deps with every member present. The interfaces are left
@@ -87,7 +89,9 @@ func TestApplyRefusesInvalidAndKeepsLast(t *testing.T) {
 		{"existence_age", func(s *Settings) { s.ExistenceAge = 0 }},
 		{"existence_age", func(s *Settings) { s.ExistenceAge = -time.Second }},
 		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = 0 }},
+		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = -1 }},
 		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = 0 }},
+		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = -1 }},
 	} {
 		s := good
 		s.ExistenceAge, s.GroupCommitMaxFiles, s.CloneMaxLen = 2*time.Second, 128, 1<<20
@@ -106,5 +110,17 @@ func TestApplyRefusesInvalidAndKeepsLast(t *testing.T) {
 	}
 	if got := *e.settings.Load(); got != next {
 		t.Fatalf("settings %+v after Apply, want %+v", got, next)
+	}
+}
+
+// An unbuilt call answers one of the filesystem's errors, which its caller
+// already maps, never one of the engine's own.
+func TestUnbuiltIsUnavailable(t *testing.T) {
+	e, err := New(fullDeps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(context.Background(), nil); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("Start = %v; want vfserr.ErrUnavailable", err)
 	}
 }

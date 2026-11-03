@@ -22,6 +22,7 @@ func Run(t *testing.T, open Opener) {
 		fn   func(*testing.T, Opener)
 	}{
 		{"SetAttrsRights", testSetAttrsRights},
+		{"WriteACLAndClearSetID", testWriteACLAndClearSetID},
 		{"CommitRefusesRepeatedChunk", testCommitRefusesRepeatedChunk},
 		{"PrivilegedReadOnlyGrant", testPrivilegedReadOnlyGrant},
 		{"Times", testTimes},

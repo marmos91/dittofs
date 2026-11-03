@@ -518,7 +518,8 @@ func TestStartAndStop(t *testing.T) {
 			_, err := g.Opens().Close(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
 			return err
 		},
-		"Durable": func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
+		"Durable":   func() error { _, _, err := g.Opens().Durable(ctx, file); return err },
+		"Releasing": func() error { _, err := g.Opens().Releasing(ctx, file); return err },
 		"ConfirmOpen": func() error {
 			_, err := g.Opens().ConfirmOpen(ctx, Caller{Client: id}, OpenRef{Kind: RefOpened, Open: 1}, Seqs{})
 			return err

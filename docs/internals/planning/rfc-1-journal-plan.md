@@ -115,10 +115,11 @@ Epic 2 makes "done" measurable before any implementation exists, following
   stage-3 composition root (epic 11).
 - **Crash-simulating storage seam.** It wraps a **real** filesystem and records every
   write, allocation and truncate since each file's last sync, and every create, rename and
-  unlink since the last directory sync. A simulated crash discards exactly those
-  operations. The seam can also fail, delay, tear or reorder any single call, including
-  sync, directory sync and the uncached (direct I/O) read. Killing the process is never
-  used as a stand-in.
+  unlink since the last directory sync. A simulated crash decides which of those survive:
+  none, part of one, or any subset (RFC 28 §4.4). The seam can also fail or delay any
+  single call, including sync, directory sync and the uncached (direct I/O) read, tear a
+  write, and lose a write, a sync or a directory sync; reordering is the crash's, never a
+  call's (RFC 1 §1.3). Killing the process is never used as a stand-in.
 - **Reference model.** A pure in-memory model of the journal: each file's bytes, each
   extent's offloaded bit, removal markers, and what `Since` yields. The model-based test
   and the e2e assertions compare against it after every step. A failing seed is kept and
@@ -158,7 +159,7 @@ Epic 2 makes "done" measurable before any implementation exists, following
   existing `e2e` suite and its framework already start a real `dfs` and mount NFS and SMB,
   and the fixtures specific to the journal land with the first test that uses them (epic
   2, D11). Epic 2 keeps the catalogue, split by the tier each row runs at: the filesystem
-  service's integration tier (`vfs.Server` over the real engine, no kernel client) or a
+  service's integration tier (`vfs.Filesystem` over the real engine, no kernel client) or a
   real `dfs` with kernel clients (epic 2, §7). **Epic 10 writes the start-check
   refusals**, which need no engine, and **epic 11 writes the rest**, listed as known
   failures. Epic 12 turns them green.
@@ -331,8 +332,8 @@ everything before it.
   the RFC 16 metadata store of [#3120](https://github.com/marmos91/dittofs/pull/3120) must
   be on `feat/storage-v2`, because E10's initialisation and E11's engine work both rely
   on it. **The protocol rows have a second one:** a `dfs` serving NFS or SMB on v2 needs
-  the filesystem service, `vfs.Server` (#3119 stage 2, RFC 17), and the adapters moved onto
-  it, not only E11. The write-verifier row is `vfs.Server` behaviour (RFC 17 §5.8). The
+  the filesystem service, `vfs.Filesystem` (#3119 stage 2, RFC 17), and the adapters moved onto
+  it, not only E11. The write-verifier row is `vfs.Filesystem` behaviour (RFC 17 §5.8). The
   rows that need no kernel client (several shares per journal, capacity, cold reads,
   lifecycle) run at the filesystem service's integration tier once E11 and stage 2's
   `vfs.New` exist (epic 2, §7). E12 then burns down the known-failure list.
@@ -479,11 +480,12 @@ failure.
 
 **Scenario catalogue (component level):**
 
-- **RFC 1 §9.4 Group A, silent data loss** (35 checks):
+- **RFC 1 §9.4 Group A, silent data loss** (36 checks):
   - no zero-fill;
   - a write during offload;
   - an offer stopping at `through`, and a lost stamp still offered;
   - fill safety and fill setting the offloaded bit;
+  - a read's `asOf` against a change still in flight;
   - release refusal;
   - partial release keeps the record whole;
   - repack copies only the live part, including across a crash;
@@ -496,8 +498,9 @@ failure.
   - offered bytes and repack sources are verified;
   - retained extents survive repack;
   - no pin on a segment under repack.
-- **Group B, wedging and unbounded use** (29 checks):
+- **Group B, wedging and unbounded use** (30 checks):
   - reservations, reserve-ahead, handle close;
+  - a journal that cannot write turns read-only instead of draining its spares;
   - named refusals, share limits, repack at capacity;
   - descriptor bound, coalescing, index bound;
   - headroom is allocated, and the below-half rule;
@@ -524,7 +527,7 @@ failure.
   - forget leaves nothing to settle;
   - stranded tag reported, then salvaged;
   - clone target survives a crash;
-  - header-only records are never failed;
+  - header-only records are re-appended outside a read-only journal;
   - a loss survives a restart.
 - **Group D, observability** (11 checks): wedge visible, accounting follows the cap,
   generation never repeats, `Stats` is cheap and keeps its inequalities, backlog age,
@@ -632,8 +635,8 @@ rule 12), and places epic 1's D6 `decision:` marker (`golang.org/x/sys` in
   - thin-provisioning detection.
 
 This epic carries the main fuzz targets, one per parser, and golden vectors checked into
-`testdata`. Metrics: the scanner returns the `torn_tails` and `scan_resyncs`
-contributions, and epic 7 folds them into `Stats`.
+`testdata`. Metrics: the scanner returns the `scan_resyncs` contribution, and epic 7
+folds it into `Stats`; `torn_tails` is epic 7's, decided at recovery (epic 3's P8).
 
 **Conformance tests that land here.** These need `internal/format` or `internal/platform`,
 so they cannot compile before this epic creates the packages, and they move here from
@@ -693,7 +696,6 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - fixed cap, allocated whole;
   - ids rising above every id on disk;
   - several append streams;
-  - the file-append serialisation point;
   - writes split at the cap.
 - **Spare pool:**
   - `.spare.tmp`, then rename, then directory sync;
@@ -701,6 +703,7 @@ Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment
   - headroom and repack-reserve spares kept apart;
   - an immediate `spare` refusal and `spare_refusals`.
 - **Seal and catalog:**
+  - a seal waits for every append reserved below its marker; one that fails ends the segment instead;
   - seal marker, footer and trailer, written durably and at most once;
   - an early seal truncates the free tail, a full seal keeps the cap;
   - idle seal.
@@ -759,6 +762,10 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   - foreign segments are reported and left alone.
 - **Rebuild:**
   - by catalog or by scan, giving **identical** indexes;
+  - a record wholly covered by a release, a removal or a synced loss that outranks it, or
+    of a forgotten tag, is not held, and recovery neither verifies nor reports its payload
+    (RFC 28 §2.3);
+  - no second durable index or log of the catalog (RFC 28 §2.1, §2.4);
   - in any segment order, concurrently;
   - markers start unsettled;
   - retained extents rebuilt from hold, unhold, stamp and offloaded records;
@@ -779,7 +786,8 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`.
   a report-only verification. Repair is a separate, explicit action.
 
 Metrics: `Recovery` (catalog vs scan count and duration), `RejectedSegments`,
-`DamagedSegments`, `corrupt_extents{outcome}`, `stale_extents`. Span: `open`, with child
+`DamagedSegments`, `corrupt_extents{outcome}`, `stale_extents`, `torn_tails`, and the
+scanner's `scan_resyncs` folded into `Stats`. Span: `open`, with child
 spans per phase. Also the J6, J7 and J9 benchmark harnesses (RFC 28 §4.3), recorded but
 not gated.
 
@@ -800,10 +808,16 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
 - **Core operations:**
   - `WriteAt`: the version is assigned inside the file append, and an extent is published
     only after its record is written;
-  - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`;
+  - `ReadAt`: an exact `missing` list, an untouched buffer, `held` versions, `asOf`; a
+    payload that fails its check is never served (RFC 28 §2.3), and the record header a
+    read finds is checked against the catalog entry that sent it there (RFC 28 §2.4);
   - `Fill`: the absence check is atomic with the write, it refuses when older than the
     file or its bucket, and it sets the offloaded bit. It is **not** a write path, so it
     has a separate entry point;
+  - `asOf`: a write holds its file's append domain from drawing its version until the
+    index has it, and a read takes its `asOf` under that domain, no later than it
+    resolves its extents (RFC 1 §8.4), so a `Fill` from that read is refused over a
+    change it did not see;
   - `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, with markers;
   - `Since` and `Settle`;
   - `Extents`, `Files`, `DirtyFiles` (O(dirty files), no walk).
@@ -815,6 +829,8 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
   - the repack reserve;
   - immediate, named, I/O-free refusals.
 - **Concurrency:**
+  - the file append domain: writes to one `FileID` are serialised (RFC 28 §2.2), from the
+    version draw until the index has the extent, over epic 5's append streams;
   - the five lock domains and their total order, with a lock-order recorder in tests;
   - no I/O under the file index;
   - shutdown.
@@ -850,6 +866,8 @@ Epic 9 implements RFC 1 §3.3, §3.5, §3.11, §7.1–§7.2, and the tag lifecyc
   - copies get a new sequence number, carried header-only records keep theirs;
   - drop decisions per extent by version, decided after the pass's copies;
   - ordering: copy, then sync, then repoint, then unlink;
+  - a removal record whose retention counted a segment is kept until that segment's
+    unlink is durable (RFC 28 §2.2);
   - copies draw on the reserve;
   - divisible and not starved;
   - `freed` reported only once durable.
@@ -1041,7 +1059,7 @@ explicit, recorded decision.
 - **E11 waits on S4a.** It is not estimated, and is planned only once the engine interface
   is agreed with rif (stage 2 of #3119).
 - **The system scenarios wait on stage 2 too.** Under route B, NFS and SMB reach v2 only
-  through `vfs.Server` and the adapters moved onto it, so E11 alone turns no protocol
+  through `vfs.Filesystem` and the adapters moved onto it, so E11 alone turns no protocol
   scenario green (S5).
 - **E10 and E11 depend on #3120.** The metadata RFC 1 assumes (installation ID, share tags,
   the durable version limit, the derived version floor, `Applied`) comes from RFC 16's

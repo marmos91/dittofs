@@ -28,9 +28,10 @@ import (
 // its Sink and Admission as its Order.
 type fixture struct {
 	*Filesystem
-	tab   *openstate.Table
-	fs    *kvstoretest.FS
-	clock *sim.TestClock
+	tab    *openstate.Table
+	fs     *kvstoretest.FS
+	clock  *sim.TestClock
+	engine *fakeContent
 }
 
 func memKV(tb testing.TB) kv.KV {
@@ -50,7 +51,12 @@ func newFixture(t *testing.T, events vfs.Events) *fixture {
 // newFixtureOf is newFixture over d's Events and Metrics.
 func newFixtureOf(t *testing.T, d Deps) *fixture {
 	t.Helper()
-	fs := kvstoretest.NewFS(t, memKV)
+	return newFixtureOver(t, d, kvstoretest.NewFS(t, memKV))
+}
+
+// newFixtureOver is newFixtureOf over fs.
+func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
+	t.Helper()
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
 	if err := fs.Store.ControlPlane().PutUser(t.Context(), entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}); err != nil {
@@ -61,7 +67,8 @@ func newFixtureOf(t *testing.T, d Deps) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.Meta, d.Open, d.Engine = fs.Store, tab, newFakeContent()
+	engine := newFakeContent()
+	d.Meta, d.Open, d.Engine = fs.Store, tab, engine
 	s, err := New(d)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +77,7 @@ func newFixtureOf(t *testing.T, d Deps) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock}
+	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock, engine: engine}
 }
 
 // newFilesystem is a serving filesystem, drained and stopped when the test

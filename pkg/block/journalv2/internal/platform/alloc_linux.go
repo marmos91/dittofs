@@ -101,11 +101,19 @@ func (f *file) allocate(fd int, off, n int64) (string, error) {
 	// volume makes) is allocated by the zero writes alone, which RFC 28 §2.2
 	// allows ("with the platform's allocation call or by writing zeros").
 	// Both share ext4's magic, and an ext3 volume can be mounted as ext4, so
-	// the directory check cannot refuse them. The fallback is safe only
-	// because that check refuses unlisted copy-on-write filesystems, such as
-	// ZFS, where written zeros may not allocate blocks: on every filesystem
-	// it accepts, EOPNOTSUPP means ext2 or an ext3 file without extents,
-	// where the written zeros allocate every block. On XFS, fallocate is what
+	// the directory check cannot refuse them. There the written zeros
+	// allocate every block. That is all the fallback guarantees: the
+	// directory check passes a filesystem RFC 28 Appendix A does not list,
+	// and on ZFS with compression on, its default (ZIO_COMPRESS_DEFAULT in
+	// include/sys/zio.h, zfs 2.3.0), neither call allocates. OpenZFS's
+	// fallocate without flags only checks the free space and sets the size,
+	// reserving no blocks, or returns EOPNOTSUPP when
+	// zfs_fallocate_reserve_percent is 0 (zpl_fallocate_common in
+	// module/os/linux/zfs/zpl_file.c, zfs 2.3.0), and with compression on a
+	// block of zeros is written as a hole (zio_write_compress in
+	// module/zfs/zio.c, zfs 2.3.0). A write into a segment allocated there
+	// can fail with ENOSPC, and the headroom of RFC 1 §6 does not hold; no
+	// data is lost, since the error is returned. On XFS, fallocate is what
 	// rules out speculative allocation past the end (RFC 28 Appendix A), so
 	// withdraw this fallback if XFS is ever seen returning EOPNOTSUPP.
 	if err != nil && !errors.Is(err, unix.EOPNOTSUPP) {
