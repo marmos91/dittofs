@@ -84,7 +84,7 @@ type PoolCounters struct {
 // ready to be taken by a roll that costs no I/O, and the worker that keeps
 // each class at its target by making spares off the write path.
 //
-// decision: ready, held, started, stopped and deviceFull sit under
+// decision: ready, held, pending, started, stopped and deviceFull sit under
 // the capacity domain of RFC 1 §8.2 — store-wide counters, no I/O under p.mu,
 // no lock acquired while it is held, and never held across a Maker or a Set
 // call: those take locks of this same domain, and no two locks of one domain
@@ -98,6 +98,7 @@ type Pool struct {
 	mu         sync.Mutex
 	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
 	held       int                           // spares owed to open holds; guarded by mu
+	pending    int                           // spares a refused Hold still asks, demand the refill makes up; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
@@ -277,17 +278,25 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 		p.mu.Unlock()
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
 	}
+	// The spare refusal is the one that clears on its own: a Hold that falls
+	// short records its shortfall as the demand the refill makes up, so the
+	// retry finds it served. Held spares ride above the content target
+	// rather than inside it — the target exists so every stream can roll
+	// once without waiting for a spare — so the refill is what keeps an open
+	// reservation from consuming the spares the unreserved rolls need.
 	ready := int64(len(p.ready[Content]))
 	if ready-int64(p.held) < int64(n) {
 		missing := int64(n) - (ready - int64(p.held))
-		p.mu.Unlock()
 		if missing > int64(n) {
 			// A replace can leave held above ready, and the refusal never
 			// blames a shortage past the hold it refuses: capped at n.
 			missing = int64(n)
 		}
+		p.pending += int(missing)
+		p.mu.Unlock()
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
 	}
+	p.pending = 0
 	p.held += n
 	p.mu.Unlock()
 	return &Hold{p: p, left: n}, nil
@@ -312,37 +321,43 @@ type Hold struct {
 func (h *Hold) Take() (core.SegmentID, error) {
 	defer h.p.Kick()
 
+	// One critical section decides the whole take: the sections are never
+	// released between the guards and the pop, so neither a Stop nor a
+	// concurrent Close of this hold can land inside the take and change what
+	// the first guard read. All the guards that matter to the answer run
+	// under the one hold of the lock.
 	h.p.mu.Lock()
-	closed, stopped, spent := h.closed, h.p.stopped, h.left <= 0
-	h.p.mu.Unlock()
-	if closed || stopped {
+	if h.closed || h.p.stopped {
+		h.p.mu.Unlock()
 		return 0, core.ErrClosed
 	}
-	if spent {
-		// The hold spent its own spares and takes as an unreserved one does:
-		// one rule for every unreserved take, kept in one place.
-		return h.p.Take(Content)
-	}
-
-	h.p.mu.Lock()
-	if h.left <= 0 || int64(len(h.p.ready[Content])) == 0 {
+	if h.left > 0 && len(h.p.ready[Content]) > 0 {
+		// A replace can leave the pool owing more spares than it holds, so
+		// this take tests only that one is ready — not the len > held an
+		// unreserved take is refused under — because the spare it takes is
+		// this hold's own demand, the exact one the replace stands for, taken
+		// ahead of every unreserved write.
+		h.left--
+		h.p.held--
+		id := h.p.popLocked(Content)
 		h.p.mu.Unlock()
-		return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+
+		if err := h.p.m.set.Take(id); err != nil {
+			return 0, fmt.Errorf("segment: the hold took spare %d: %w", uint64(id), err)
+		}
+		return id, nil
 	}
-	// A replace can leave the pool owing more spares than it holds, so this
-	// take tests only that one is ready — not the len > held an unreserved
-	// take is refused under — because the spare it takes is this hold's own
-	// demand, the exact one the replace stands for, taken ahead of every
-	// unreserved write.
-	h.left--
-	h.p.held--
-	id := h.p.popLocked(Content)
+	spent := h.left <= 0
 	h.p.mu.Unlock()
 
-	if err := h.p.m.set.Take(id); err != nil {
-		return 0, fmt.Errorf("segment: the hold took spare %d: %w", uint64(id), err)
+	if spent {
+		// The hold spent its own spares and takes as an unreserved one does:
+		// one rule for every unreserved take, kept in one place — and the
+		// unreserved take rechecks the stopped flag this take released the
+		// lock before.
+		return h.p.Take(Content)
 	}
-	return id, nil
+	return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
 }
 
 // Replace returns one spare to the hold: its reserved write was rolled short
@@ -479,7 +494,10 @@ func (p *Pool) refill() bool {
 			c = Headroom
 		case len(p.ready[Reserve]) < p.t.Reserve:
 			c = Reserve
-		case len(p.ready[Content]) < p.t.Content:
+		case len(p.ready[Content]) < p.t.Content+p.held+p.pending:
+			// Content fills above its target by what holds demand and what a
+			// refused Hold asked: held spares are beside the target, not
+			// inside it.
 			c = Content
 		default:
 			p.mu.Unlock()
@@ -524,6 +542,11 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.ready[c] = append(p.ready[c], id)
+		if c == Content && len(p.ready[Content]) > p.t.Content+p.held {
+			// A content spare above the target and every hold's demand pays
+			// down the shortfall a refused Hold asked for.
+			p.pending--
+		}
 		p.deviceFull = false
 		p.mu.Unlock()
 	}
