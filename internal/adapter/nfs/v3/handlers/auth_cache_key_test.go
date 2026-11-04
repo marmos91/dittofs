@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestAuthCacheKey_DistinguishesPrincipalsSharingNumericTriple pins that the

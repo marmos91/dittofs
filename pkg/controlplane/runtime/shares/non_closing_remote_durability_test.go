@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	adaptercommon "github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	adaptercommon "github.com/cubbit/dittofs/internal/adapter/common"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestNonClosingRemote_DelegatesDurable is the regression guard for #1274:

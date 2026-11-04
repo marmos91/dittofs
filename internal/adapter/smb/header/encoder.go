@@ -3,7 +3,7 @@ package header
 import (
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // Encode serializes the header to wire format (little-endian).

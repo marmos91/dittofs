@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // =============================================================================

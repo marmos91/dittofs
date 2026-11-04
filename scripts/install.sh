@@ -1,9 +1,9 @@
 #!/bin/sh
 # Install DittoFS (dfs + dfsctl) binaries
-# Usage: curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
+# Usage: curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh | sh
 set -e
 
-REPO="marmos91/dittofs"
+REPO="cubbit/dittofs"
 INSTALL_DIR="/usr/local/bin"
 
 # Detect OS

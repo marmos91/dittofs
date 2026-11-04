@@ -3,7 +3,7 @@ package keyprovider
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // retiredKeyLoader resolves one configured retired-key reference (a file

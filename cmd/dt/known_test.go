@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // A suite's lists per version are imported one by one, each with --where,

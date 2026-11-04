@@ -7,7 +7,7 @@ import (
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestUpdateWithConflictRetry_ClassifiesExhaustedConflict pins the two retry

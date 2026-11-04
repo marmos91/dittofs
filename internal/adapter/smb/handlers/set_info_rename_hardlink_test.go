@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // encodeFileRenameInfoWire serialises a FILE_RENAME_INFORMATION blob. MS-FSCC

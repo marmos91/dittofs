@@ -183,7 +183,7 @@ sudo systemctl enable --now dfs
 ### Windows (Scoop)
 
 ```powershell
-scoop bucket add marmos91 https://github.com/marmos91/scoop-bucket
+scoop bucket add cubbit https://github.com/cubbit/scoop-bucket
 scoop install dfs       # server daemon
 scoop install dfsctl    # client CLI
 ```
@@ -395,7 +395,7 @@ dfs stop
 
 If you installed the Homebrew formula instead of the cask (the README
 command, without `--cask`), use
-`brew uninstall marmos91/tap/dfs marmos91/tap/dfsctl`.
+`brew uninstall cubbit/tap/dfs cubbit/tap/dfsctl`.
 
 > **Note:** removing the `.deb` also removes `/usr/local/bin` if it is left
 > empty. Recreate it with `sudo mkdir -p /usr/local/bin` if other tools need it.
@@ -411,7 +411,7 @@ sudo apt update
 sudo rm /etc/yum.repos.d/dfs.repo
 
 # Scoop
-scoop bucket rm marmos91
+scoop bucket rm cubbit
 ```
 
 ### 3. Remove data (optional)

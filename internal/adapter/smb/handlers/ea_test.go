@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // encodeOneEAEntry builds a single FILE_FULL_EA_INFORMATION entry (last in a

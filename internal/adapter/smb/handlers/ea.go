@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ============================================================================

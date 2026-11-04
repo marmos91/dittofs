@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
+	"github.com/cubbit/dittofs/pkg/discovery/hostinfo"
 )
 
 // DiscoveryNameKey is the system-settings key holding the instance-wide name

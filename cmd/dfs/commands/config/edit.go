@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/spf13/cobra"
 )
 

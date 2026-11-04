@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // MetadataPort is the TCP port for the WS-Transfer metadata exchange. Windows

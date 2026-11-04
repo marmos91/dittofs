@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // LeaseState tracks the lease timer for a single NFSv4 client.

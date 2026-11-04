@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // DelegationType represents the type of delegation (read or write).

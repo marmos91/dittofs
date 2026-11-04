@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // BlockStoreStats is the wire-shape for block store statistics returned by

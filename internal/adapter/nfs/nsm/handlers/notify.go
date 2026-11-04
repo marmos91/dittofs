@@ -5,10 +5,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/xdr"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // Notify handles NSM NOTIFY (X/Open NSM, SM procedure 6).

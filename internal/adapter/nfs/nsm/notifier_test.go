@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/handlers"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 	"github.com/stretchr/testify/require"
 )
 

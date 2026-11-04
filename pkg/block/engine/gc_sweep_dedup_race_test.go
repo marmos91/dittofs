@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // reclaimHook runs before delegating to the wrapped reclaimer, which places it

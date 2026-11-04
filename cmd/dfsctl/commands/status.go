@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/credentials"
-	"github.com/marmos91/dittofs/internal/cli/health"
-	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/internal/cli/timeutil"
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/internal/cli/health"
+	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/internal/cli/timeutil"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 

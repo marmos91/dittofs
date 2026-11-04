@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // tracker answers the calls Post makes as GitHub's REST API does: it lists
@@ -321,7 +321,7 @@ func TestTestIssueErrorsDontStopThePost(t *testing.T) {
 	g, c := newTracker(t)
 	g.add("unit pkg TestLocked fails on develop", "open")
 	g.issues[0].locked = true
-	pkg := "github.com/marmos91/dittofs/pkg/block/engine"
+	pkg := "github.com/cubbit/dittofs/pkg/block/engine"
 	long := "TestLong/" + strings.Repeat("a_case_", 40)
 	cell := report.Cell{Name: "unit", Result: report.Failed, Tests: []report.Test{
 		{Name: "TestLocked", Suite: []string{"pkg"}, Status: report.Failed, Grade: report.New},
@@ -405,7 +405,7 @@ func TestStatusIssueKeepsItsBodyInBounds(t *testing.T) {
 	g, c := newTracker(t)
 	cell := report.Cell{Name: "unit", Result: report.Failed}
 	for i := 299; i >= 0; i-- {
-		cell.Tests = append(cell.Tests, report.Test{Name: "Test" + strconv.Itoa(1000+i) + "/" + strings.Repeat("x", 200), Suite: []string{"github.com/marmos91/dittofs/pkg/block/engine"}, Status: report.Failed, Grade: report.New})
+		cell.Tests = append(cell.Tests, report.Test{Name: "Test" + strconv.Itoa(1000+i) + "/" + strings.Repeat("x", 200), Suite: []string{"github.com/cubbit/dittofs/pkg/block/engine"}, Status: report.Failed, Grade: report.New})
 	}
 	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-ddddddd1", "merge", cell)}, nil, io.Discard); err != nil {
 		t.Fatal(err)
@@ -444,12 +444,12 @@ func TestFromEnv(t *testing.T) {
 		t.Error("no token accepted")
 	}
 	t.Setenv("GITHUB_TOKEN", "tok")
-	if c, err := FromEnv(); err != nil || c != (Client{API: "https://api.github.com", Repo: "marmos91/dittofs", Token: "tok"}) {
+	if c, err := FromEnv(); err != nil || c != (Client{API: "https://api.github.com", Repo: "cubbit/dittofs", Token: "tok"}) {
 		t.Errorf("%+v, %v", c, err)
 	}
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 	t.Setenv("GITHUB_RUN_ID", "42")
-	if c, err := FromEnv(); err != nil || c.Run != "42" || c.Log != "https://github.com/marmos91/dittofs/actions/runs/42" {
+	if c, err := FromEnv(); err != nil || c.Run != "42" || c.Log != "https://github.com/cubbit/dittofs/actions/runs/42" {
 		t.Errorf("%+v, %v", c, err)
 	}
 }

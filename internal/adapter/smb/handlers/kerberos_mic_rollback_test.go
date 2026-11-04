@@ -3,10 +3,10 @@ package handlers
 import (
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/adapter/smb/auth"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	gokrb5types "github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // TestBuildKerberosAcceptResponse_MicFailureDeletesFreshSession pins that a

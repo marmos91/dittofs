@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newNilRemoteStoreEnv creates a test environment with nil remoteStore (local-only mode).

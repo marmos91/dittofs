@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
 // expectedNFS3 is the full per-protocol expectation table: one entry per

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
+	"github.com/cubbit/dittofs/internal/controlplane/api/auth"
 )
 
 // Context key type for storing claims

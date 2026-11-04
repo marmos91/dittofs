@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
-	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/rpc"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // Share state: cached shares, share security descriptors, durable-handle

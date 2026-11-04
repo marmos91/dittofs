@@ -5,10 +5,10 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/lease"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // TestOplockBreakAck_LeaseNotBoundToSession_Rejected pins the ownership check

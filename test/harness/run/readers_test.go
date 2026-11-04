@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // fakeTAP has the tap format read by read until the test ends, so a test of

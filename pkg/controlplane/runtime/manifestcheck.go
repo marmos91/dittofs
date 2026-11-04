@@ -3,8 +3,8 @@ package runtime
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/internal/logger"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // CheckManifests runs the metadata-only manifest-coverage scan for the named

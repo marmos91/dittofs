@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/pending"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // createDRC and cachedCreate name this package's instantiation of the

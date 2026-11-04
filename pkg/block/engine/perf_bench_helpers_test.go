@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // silenceLoggerForBench drops log level to ERROR for the duration of a

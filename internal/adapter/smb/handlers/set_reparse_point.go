@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/changenotify"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // handleSetReparsePoint handles FSCTL_SET_REPARSE_POINT [MS-FSCC] 2.3.81 (FSCTL_SET_REPARSE_POINT Request) — the

@@ -3,7 +3,7 @@ package metadata
 import (
 	"errors"
 
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/cubbit/dittofs/pkg/metadata/acl"
 )
 
 // Permission represents filesystem permission flags.

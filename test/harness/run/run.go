@@ -25,12 +25,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/test/harness/fixture"
-	"github.com/marmos91/dittofs/test/harness/known"
-	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/plan"
-	"github.com/marmos91/dittofs/test/harness/registry"
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/fixture"
+	"github.com/cubbit/dittofs/test/harness/known"
+	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/plan"
+	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // Report is a whole run.

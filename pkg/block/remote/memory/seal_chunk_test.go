@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/remote"
 )
 
 // TestStore_SealChunk_Identity pins the base in-memory store's SealChunk as the

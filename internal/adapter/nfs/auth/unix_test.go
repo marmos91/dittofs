@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/auth"
+	"github.com/cubbit/dittofs/pkg/auth"
 )
 
 // encodeUnixAuth builds XDR-encoded AUTH_UNIX credentials (RFC 1831 9.2).

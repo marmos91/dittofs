@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // fakeS3 is an S3 service holding its buckets and objects in memory, which

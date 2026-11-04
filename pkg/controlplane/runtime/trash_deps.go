@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/trash"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // trashReapInterval is the cadence of the recycle-bin reaper (retention +

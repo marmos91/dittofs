@@ -3,8 +3,8 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // panicWhenReserved panics on the first runtime call made while the replay

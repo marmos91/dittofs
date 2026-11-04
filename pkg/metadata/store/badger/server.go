@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================

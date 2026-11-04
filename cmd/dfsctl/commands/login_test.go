@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // newTokenServer returns an httptest server that answers login with the given

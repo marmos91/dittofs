@@ -3,7 +3,7 @@ package v3
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

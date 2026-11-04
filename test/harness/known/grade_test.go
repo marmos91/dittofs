@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // results are a cell's results, each written as "name status", or

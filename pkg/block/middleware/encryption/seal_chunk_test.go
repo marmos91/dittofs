@@ -7,9 +7,9 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/remote"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestSealChunk_SealedAndReadChunkInverse proves the encryption decorator's

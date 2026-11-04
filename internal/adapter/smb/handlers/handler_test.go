@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // =============================================================================

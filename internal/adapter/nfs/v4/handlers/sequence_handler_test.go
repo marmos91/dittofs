@@ -5,9 +5,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/cubbit/dittofs/internal/adapter/nfs/v4/v41/handlers"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // encodeSequenceArgs encodes SEQUENCE4args for testing.

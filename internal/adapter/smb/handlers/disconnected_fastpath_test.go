@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // countingDurableStore counts the per-file lookups the purge scans perform, so

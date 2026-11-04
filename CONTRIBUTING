@@ -42,7 +42,7 @@ DittoFS is an NFSv3 server implementation in pure Go. Before contributing, famil
 
 ```bash
 # Clone the repository
-git clone https://github.com/marmos91/dittofs.git
+git clone https://github.com/cubbit/dittofs.git
 cd dittofs
 
 # Install dependencies

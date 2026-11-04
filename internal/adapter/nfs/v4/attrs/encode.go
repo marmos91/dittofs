@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	v4types "github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/cubbit/dittofs/pkg/adapter/nfs/identity"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ============================================================================

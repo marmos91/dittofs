@@ -31,11 +31,11 @@ import (
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	"github.com/marmos91/dittofs/pkg/auth/kerberos"
-	dconfig "github.com/marmos91/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
+	"github.com/cubbit/dittofs/pkg/adapter/nfs/identity"
+	"github.com/cubbit/dittofs/pkg/auth/kerberos"
+	dconfig "github.com/cubbit/dittofs/pkg/config"
 )
 
 const (

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/health"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // Healthcheck returns the share's overall health by combining the

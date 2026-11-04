@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/storetest"
+	"github.com/cubbit/dittofs/pkg/metadata/storetest"
 )
 
 // newSyncedHashTestStore opens a fresh Badger store in a temp dir for the

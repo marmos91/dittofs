@@ -8,12 +8,12 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newLocatorFetchSyncer builds a RemoteSync over an in-memory local store, remote

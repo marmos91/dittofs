@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/logger"
+	dconfig "github.com/cubbit/dittofs/pkg/config"
 	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
-	"github.com/marmos91/dittofs/internal/logger"
-	dconfig "github.com/marmos91/dittofs/pkg/config"
 )
 
 // Provider manages Kerberos keytab, krb5.conf, and service principal state.

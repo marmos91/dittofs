@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================

@@ -3,8 +3,8 @@ package handlers_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers"
+	handlertesting "github.com/cubbit/dittofs/internal/adapter/nfs/v3/handlers/testing"
 )
 
 // BenchmarkBuildAuthContext_Uncached measures the per-RPC cost of rebuilding

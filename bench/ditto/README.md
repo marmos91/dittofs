@@ -123,7 +123,7 @@ grep -v '^D,' trend.csv >trend.csv.new && mv trend.csv.new trend.csv
 As root, on Linux:
 
 ```sh
-git clone https://github.com/marmos91/dittofs /srv/perf/dittofs
+git clone https://github.com/cubbit/dittofs /srv/perf/dittofs
 /srv/perf/dittofs/bench/ditto/setup.sh            # packages, user, directories
 SMOKE=yes /srv/perf/dittofs/bench/ditto/night.sh  # a few minutes, one point of each kind
 /srv/perf/dittofs/bench/ditto/setup.sh cron       # the cron file, in calibration mode

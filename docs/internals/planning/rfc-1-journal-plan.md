@@ -43,7 +43,7 @@ There are 12 epics:
 - **Epic 10** is the journal's share of starting and initialising an installation: the
   start check, journal init inside the initialisation step, and the wipe of devices left
   by an interrupted step.
-- **Epic 11** is stage 3 of [#3119](https://github.com/marmos91/dittofs/issues/3119): the
+- **Epic 11** is stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119): the
   engine (journal, carver, syncer, remote) rebuilt on the RFC 16 store, behind the
   filesystem-service engine interface. It is planned once that interface is agreed (S4a).
 - **Epic 12** turns the e2e suite green.
@@ -129,7 +129,7 @@ Epic 2 makes "done" measurable before any implementation exists, following
   fails is graded as expected. **A listed test that passes fails the run**
   ([RFC index, harness requirement 6](../rfcs/rfc-index.md)), so a test that turns green
   forces its entry out of the list. An entry also names the failure it expects, once
-  `dt` can match one ([#3391](https://github.com/marmos91/dittofs/issues/3391), an
+  `dt` can match one ([#3391](https://github.com/cubbit/dittofs/issues/3391), an
   optional `message:` in RFC 29 §4.7), so a test failing for a new reason is graded new
   rather than known (epic 2, D4).
 - **Profiling harness.** A helper wrapped around each test and benchmark that snapshots
@@ -329,7 +329,7 @@ everything before it.
   2, §7).
 - **S5. Wired** (end of E11). The engine runs on v2 and the RFC 16 store, and the system
   e2e suite, written in E10 and E11, runs against it. **S5 has an external dependency:**
-  the RFC 16 metadata store of [#3120](https://github.com/marmos91/dittofs/pull/3120) must
+  the RFC 16 metadata store of [#3120](https://github.com/cubbit/dittofs/pull/3120) must
   be on `feat/storage-v2`, because E10's initialisation and E11's engine work both rely
   on it. **The protocol rows have a second one:** a `dfs` serving NFS or SMB on v2 needs
   the filesystem service, `vfs.Filesystem` (#3119 stage 2, RFC 17), and the adapters moved onto
@@ -986,7 +986,7 @@ they are deleted with the rest of v1 at the cutover (stage 7 of #3119).
   `J‖journal` records written idempotently, and the wipe of devices left by an
   interrupted step (below).
 - **Metadata it relies on**, from RFC 16's store
-  ([#3120](https://github.com/marmos91/dittofs/pull/3120)), with no control-plane fields
+  ([#3120](https://github.com/cubbit/dittofs/pull/3120)), with no control-plane fields
   of its own:
   - `entity.Installation`, the installation ID;
   - the `J‖journal` record, keyed by journal identity, naming the node and device a
@@ -1050,7 +1050,7 @@ them as it depends on #3120.
 
 ### Epic 11 — Engine on the RFC 16 store 🔀 (planned after S4a, team)
 
-Stage 3 of [#3119](https://github.com/marmos91/dittofs/issues/3119) is ours. The engine
+Stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119) is ours. The engine
 (journal, carver, syncer, remote) is rebuilt on the RFC 16 store behind the
 filesystem-service engine interface. There is no bridge into the v1 engine. Epic 11 is
 broken down into subtasks and estimated only once that interface is agreed with rif
@@ -1072,7 +1072,7 @@ broken down into subtasks and estimated only once that interface is agreed with 
 - **The remaining configuration:** share-to-device placement, per-share limit and
   `sync.policy`, `ExtentLimit`, `DescriptorLimit`, `headroom_records`, `salvage.path`.
 - **Metadata the journal relies on**, from RFC 16's store
-  ([#3120](https://github.com/marmos91/dittofs/pull/3120)), with no control-plane fields
+  ([#3120](https://github.com/cubbit/dittofs/pull/3120)), with no control-plane fields
   of its own:
   - `Share.Tag`, minted from the installation's tag counter and never reused;
   - `VersionLimit` and `RaiseVersionLimit`, the durable per-share version limit
@@ -1157,7 +1157,7 @@ explicit, recorded decision.
   scenario green (S5).
 - **E10 and E11 depend on #3120.** The metadata RFC 1 assumes (installation ID, share tags,
   the durable version limit, the derived version floor, `Applied`) comes from RFC 16's
-  store, which [#3120](https://github.com/marmos91/dittofs/pull/3120) implements. Neither
+  store, which [#3120](https://github.com/cubbit/dittofs/pull/3120) implements. Neither
   can finish before it lands on `feat/storage-v2` (S5).
 - **There is no upgrade from v1.** Storage v2 serves new installations only. A migration
   tool, if demand calls for one, needs its own RFC (E10, "No upgrade from v1").

@@ -3,8 +3,8 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // TestLockOwnerOf verifies the OwnerID derivation matches the lock package's

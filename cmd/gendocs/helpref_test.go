@@ -31,8 +31,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	dfs "github.com/marmos91/dittofs/cmd/dfs/commands"
-	dfsctl "github.com/marmos91/dittofs/cmd/dfsctl/commands"
+	dfs "github.com/cubbit/dittofs/cmd/dfs/commands"
+	dfsctl "github.com/cubbit/dittofs/cmd/dfsctl/commands"
 )
 
 // roots maps a binary name to its command tree.

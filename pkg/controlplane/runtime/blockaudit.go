@@ -4,8 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
+	"github.com/cubbit/dittofs/internal/logger"
+	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // AuditRefcounts runs the CAS manifest-consistency audit for the named

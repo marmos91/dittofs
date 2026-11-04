@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/test/e2e/framework"
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/test/e2e/framework"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 )
 
 // TestSMBShareSquash checks that a share's squash maps an SMB session's

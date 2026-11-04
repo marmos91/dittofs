@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // SendNotify sends an SM_NOTIFY callback to a registered client.

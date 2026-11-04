@@ -3,8 +3,8 @@ package handlers
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/attrs"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // TestReadDir_ArgumentValidation covers the READDIR arguments RFC 7530

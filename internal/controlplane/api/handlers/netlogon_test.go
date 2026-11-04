@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
 )
 
 // TestNewNetlogonHandler_NilController verifies the constructor returns nil when

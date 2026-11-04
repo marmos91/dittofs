@@ -5,9 +5,9 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/smb/lease"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // Tests for Wave 1 C1 of issue #470 — directory-lease grant gate:

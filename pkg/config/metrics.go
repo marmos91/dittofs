@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
 )
 
 // MetricsConfig configures the Prometheus metrics endpoint.

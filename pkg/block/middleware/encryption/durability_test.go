@@ -3,8 +3,8 @@ package encryption
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 )
 
 // TestEncryptedRemote_Durable_DelegatesToInner verifies the encryption decorator

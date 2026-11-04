@@ -48,10 +48,10 @@ flowchart TB
 
 ```bash
 # 1. Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
+kubectl apply -f https://raw.githubusercontent.com/cubbit/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 
 # 2. Install operator
-kubectl apply -k 'https://github.com/marmos91/dittofs//k8s/dittofs-operator/config/default?ref=main'
+kubectl apply -k 'https://github.com/cubbit/dittofs//k8s/dittofs-operator/config/default?ref=main'
 
 # 3. Create secrets (JWT and admin password)
 kubectl create secret generic dittofs-jwt-secret \

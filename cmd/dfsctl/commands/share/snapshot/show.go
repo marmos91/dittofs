@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/bytesize"
-	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/internal/bytesize"
+	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 

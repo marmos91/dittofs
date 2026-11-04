@@ -10,11 +10,11 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/marmos91/dittofs/internal/dfsbench/backend"
-	"github.com/marmos91/dittofs/internal/dfsbench/config"
-	"github.com/marmos91/dittofs/internal/dfsbench/exec"
-	"github.com/marmos91/dittofs/internal/dfsbench/fio"
-	"github.com/marmos91/dittofs/internal/dfsbench/report"
+	"github.com/cubbit/dittofs/internal/dfsbench/backend"
+	"github.com/cubbit/dittofs/internal/dfsbench/config"
+	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/internal/dfsbench/fio"
+	"github.com/cubbit/dittofs/internal/dfsbench/report"
 )
 
 // isInteractive reports whether w is a terminal. On a non-terminal (pipe, file,

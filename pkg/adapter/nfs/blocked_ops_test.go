@@ -3,7 +3,7 @@ package nfs
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // TestIsOperationBlocked_UsesCachedSet verifies that the NFSv3 dispatch path

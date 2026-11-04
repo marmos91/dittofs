@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // BlockStoreRegistry is the narrow interface satisfied implicitly by

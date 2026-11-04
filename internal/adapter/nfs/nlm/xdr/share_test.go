@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
 )
 
 func TestEncodeDecodeShareArgs_Roundtrip(t *testing.T) {

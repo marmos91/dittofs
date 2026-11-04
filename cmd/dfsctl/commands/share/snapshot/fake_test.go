@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // fakeClient is a snapshotClient implementation backed by in-memory maps

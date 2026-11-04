@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 func resetCreateFlags() {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // RevalidateAuthorization re-runs the authorization decisions that SESSION_SETUP

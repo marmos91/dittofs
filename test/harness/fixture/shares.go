@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // shareFlags sets, for each dfsctl share create flag a shares file may name,

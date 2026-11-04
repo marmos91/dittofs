@@ -3,8 +3,8 @@ package identity
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // ShareInfo contains the share fields required for identity mapping.

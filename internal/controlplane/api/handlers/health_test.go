@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/testruntime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/health"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // mockAdapter implements runtime.ProtocolAdapter for testing

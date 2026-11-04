@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // GetIdentityMapping returns an identity mapping by provider and principal.

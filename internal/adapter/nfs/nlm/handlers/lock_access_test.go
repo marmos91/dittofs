@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/auth"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/nlm/types"
+	metaerrors "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // deniedLockService stands in for a lock service whose access gate refuses the

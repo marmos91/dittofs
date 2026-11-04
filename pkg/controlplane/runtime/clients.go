@@ -1,6 +1,6 @@
 package runtime
 
-import "github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
+import "github.com/cubbit/dittofs/pkg/controlplane/runtime/clients"
 
 // Type aliases for the clients sub-service, re-exported so callers can use
 // the runtime package directly.

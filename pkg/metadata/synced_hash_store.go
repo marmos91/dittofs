@@ -17,7 +17,7 @@ package metadata
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // SyncedHashStore persists per-hash remote-mirror state: "has this CAS chunk

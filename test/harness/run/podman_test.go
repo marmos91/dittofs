@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/cubbit/dittofs/test/harness/report"
 )
 
 // A cell that needs podman, on a machine whose podman is older than the

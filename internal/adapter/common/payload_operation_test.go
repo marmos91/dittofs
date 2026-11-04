@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // A read or write queued behind an exclusive payload scope, the scope a CLONE

@@ -3,8 +3,8 @@ package common
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // recordingInvalidator captures InvalidateFile calls so tests can assert

@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
 // =============================================================================

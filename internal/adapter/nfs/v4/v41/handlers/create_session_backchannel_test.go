@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // TestHandleCreateSession_AutoBindDirection covers the connection CREATE_SESSION

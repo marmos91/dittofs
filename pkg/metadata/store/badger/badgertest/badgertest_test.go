@@ -3,10 +3,10 @@ package badgertest_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
-	"github.com/marmos91/dittofs/pkg/metadata/storetest"
+	"github.com/cubbit/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/storetest"
 )
 
 // The conformance suites run over the in-memory mode here; the on-disk mode

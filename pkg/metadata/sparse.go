@@ -3,8 +3,8 @@ package metadata
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // sparse.go holds the metadata side of the NFSv4.2 sparse-file operations

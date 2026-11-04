@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRestoreRollback_QuiescesRollupBeforeReset is the #8 H3 regression. The

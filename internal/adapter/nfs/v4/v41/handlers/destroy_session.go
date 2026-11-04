@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	v4state "github.com/cubbit/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // HandleDestroySession implements the DESTROY_SESSION operation (RFC 8881 Section 18.37).

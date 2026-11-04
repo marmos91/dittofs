@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // ReadDirPage represents one page of directory entries returned by ReadDirectory.

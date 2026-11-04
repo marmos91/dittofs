@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/test/e2e/helpers"
+	"github.com/cubbit/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

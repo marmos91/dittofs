@@ -3,7 +3,7 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // handlePutRootFH implements the PUTROOTFH operation (RFC 7530 Section 16.24).

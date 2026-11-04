@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // fakeAdapterStore is a minimal in-memory store.AdapterStore. Only the CRUD

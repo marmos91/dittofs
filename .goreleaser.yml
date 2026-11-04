@@ -107,7 +107,7 @@ nfpms:
     package_name: dfs
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     vendor: Marco Moschettini
-    homepage: https://github.com/marmos91/dittofs
+    homepage: https://github.com/cubbit/dittofs
     maintainer: Marco Moschettini <marco@marmos91.dev>
     description: DittoFS server daemon — modular virtual filesystem with pluggable storage backends
     license: MIT
@@ -126,7 +126,7 @@ nfpms:
     package_name: dfsctl
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     vendor: Marco Moschettini
-    homepage: https://github.com/marmos91/dittofs
+    homepage: https://github.com/cubbit/dittofs
     maintainer: Marco Moschettini <marco@marmos91.dev>
     description: DittoFS CLI client — remote management for DittoFS servers
     license: MIT
@@ -192,8 +192,8 @@ dockers_v2:
     labels:
       "org.opencontainers.image.title": "DittoFS"
       "org.opencontainers.image.description": "Modular virtual filesystem with pluggable storage backends"
-      "org.opencontainers.image.url": "https://github.com/marmos91/dittofs"
-      "org.opencontainers.image.source": "https://github.com/marmos91/dittofs"
+      "org.opencontainers.image.url": "https://github.com/cubbit/dittofs"
+      "org.opencontainers.image.source": "https://github.com/cubbit/dittofs"
       "org.opencontainers.image.version": "{{ .Version }}"
       "org.opencontainers.image.created": "{{ .Date }}"
       "org.opencontainers.image.revision": "{{ .FullCommit }}"
@@ -208,14 +208,14 @@ homebrew_casks:
       - dfs
     directory: Casks
     repository:
-      owner: marmos91
+      owner: cubbit
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_msg_template: "Brew cask update for dfs version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    homepage: "https://github.com/marmos91/dittofs"
+    homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
     skip_upload: auto
 
@@ -226,14 +226,14 @@ homebrew_casks:
       - dfsctl
     directory: Casks
     repository:
-      owner: marmos91
+      owner: cubbit
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_msg_template: "Brew cask update for dfsctl version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    homepage: "https://github.com/marmos91/dittofs"
+    homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
     skip_upload: auto
 
@@ -243,14 +243,14 @@ scoops:
     ids:
       - dfs-archive
     repository:
-      owner: marmos91
+      owner: cubbit
       name: scoop-bucket
       token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
     commit_msg_template: "Scoop update for dfs version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    homepage: "https://github.com/marmos91/dittofs"
+    homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
     license: "MIT"
     skip_upload: auto
@@ -259,21 +259,21 @@ scoops:
     ids:
       - dfsctl-archive
     repository:
-      owner: marmos91
+      owner: cubbit
       name: scoop-bucket
       token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
     commit_msg_template: "Scoop update for dfsctl version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    homepage: "https://github.com/marmos91/dittofs"
+    homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
     license: "MIT"
     skip_upload: auto
 
 release:
   github:
-    owner: marmos91
+    owner: cubbit
     name: dittofs
 
   # Prerelease detection
@@ -289,14 +289,14 @@ release:
 
     **Quick install (macOS / Linux):**
     ```bash
-    curl -fsSL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/install.sh | sh
+    curl -fsSL https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/install.sh | sh
     ```
 
     **Homebrew (macOS/Linux):**
     ```bash
-    brew tap marmos91/tap
-    brew install marmos91/tap/dfs      # Server daemon
-    brew install marmos91/tap/dfsctl   # Client CLI
+    brew tap cubbit/tap
+    brew install cubbit/tap/dfs      # Server daemon
+    brew install cubbit/tap/dfsctl   # Client CLI
     ```
 
     **Debian/Ubuntu (APT):**
@@ -316,14 +316,14 @@ release:
 
     **Arch Linux:**
     ```bash
-    curl -fsSLO https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_amd64.pkg.tar.zst
+    curl -fsSLO https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_amd64.pkg.tar.zst
     sudo pacman -U dfs_{{ .Version }}_amd64.pkg.tar.zst
     sudo systemctl enable --now dfs
     ```
 
     **Scoop (Windows):**
     ```powershell
-    scoop bucket add marmos91 https://github.com/marmos91/scoop-bucket
+    scoop bucket add cubbit https://github.com/cubbit/scoop-bucket
     scoop install dfs       # Server daemon
     scoop install dfsctl    # Client CLI
     ```
@@ -342,10 +342,10 @@ release:
     **Binary Download:**
     ```bash
     # dfs (server daemon)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+    curl -sfL https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
 
     # dfsctl (client CLI)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+    curl -sfL https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
     ```
   extra_files:
     - glob: scripts/install.sh
@@ -353,7 +353,7 @@ release:
   footer: |
     ---
 
-    **Full Changelog**: https://github.com/marmos91/dittofs/compare/{{ .PreviousTag }}...{{ .Tag }}
+    **Full Changelog**: https://github.com/cubbit/dittofs/compare/{{ .PreviousTag }}...{{ .Tag }}
 
     ### Verifying Checksums
 
@@ -369,7 +369,7 @@ release:
     cosign verify-blob \
       --bundle checksums.txt.sigstore.json \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      --certificate-identity-regexp '^https://github\.com/marmos91/dittofs/\.github/workflows/release\.yml@refs/tags/' \
+      --certificate-identity-regexp '^https://github\.com/cubbit/dittofs/\.github/workflows/release\.yml@refs/tags/' \
       checksums.txt
     ```
 

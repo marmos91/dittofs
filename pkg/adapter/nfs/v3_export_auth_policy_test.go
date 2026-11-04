@@ -6,12 +6,12 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	nfs_types "github.com/cubbit/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/metadata"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newV3PolicyFixture builds an NFS adapter over a runtime holding one share,

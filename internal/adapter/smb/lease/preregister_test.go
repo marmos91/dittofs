@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // TestRequestLease_FailedGrant_RestoresPreviousBinding pins the compare-and-swap

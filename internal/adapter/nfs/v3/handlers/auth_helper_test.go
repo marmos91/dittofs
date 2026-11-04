@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/types"
 )
 
 // TestAuthDenialStatus verifies that a share-permission denial maps to

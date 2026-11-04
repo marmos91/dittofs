@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"sync"
 
-	smb "github.com/marmos91/dittofs/internal/adapter/smb"
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	smb "github.com/cubbit/dittofs/internal/adapter/smb"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/lock"
 )
 
 // transportNotifier implements lease.LeaseBreakNotifier by sending

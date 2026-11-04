@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block"
 )
 
 // Snapshotable is an optional capability that metadata store backends may

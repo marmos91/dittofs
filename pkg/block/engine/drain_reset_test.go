@@ -5,10 +5,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/journal"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
 
-	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
+	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newDrainResetFixture builds a full engine.Store over an fs local

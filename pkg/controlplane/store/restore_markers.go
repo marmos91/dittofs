@@ -6,7 +6,7 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // PutRestoreMarker upserts the per-share restore marker. The marker is keyed

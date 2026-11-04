@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // TestRestoreCrashRecovery exercises issue #810: a crash mid-RestoreSnapshot

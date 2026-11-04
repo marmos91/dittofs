@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
+import "github.com/cubbit/dittofs/internal/adapter/smb/smbenc"
 
 // Apple SMB2 "AAPL" CREATE context [Apple SMB2 extensions, as implemented by
 // Samba's vfs_fruit]. macOS clients send an AAPL context on the first CREATE

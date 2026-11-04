@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/cubbit/dittofs/pkg/health"
 )
 
 // newRuntimeForSkipStatus builds the smallest Runtime that can answer a share

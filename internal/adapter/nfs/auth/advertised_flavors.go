@@ -1,9 +1,9 @@
 package auth
 
 import (
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 )
 
 // krb5Pseudoflavors pairs each Kerberos pseudoflavor (RFC 2623 §2.1) with the

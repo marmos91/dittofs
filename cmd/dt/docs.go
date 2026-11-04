@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // The documentation's suite table sits between these markers in suitesDoc,

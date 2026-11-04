@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
 
 // GetSnapshotPolicy returns the snapshot policy for a share, or

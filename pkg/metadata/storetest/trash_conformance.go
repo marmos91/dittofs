@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // trashStubPolicy is a fixed-config TrashPolicy: it enables trash for the test

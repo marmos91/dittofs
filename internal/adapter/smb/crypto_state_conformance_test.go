@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/adapter/smb/header"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 )
 
 // TestPreauthHashConformance_NegotiateRequest replays the MS-SMB2 official test

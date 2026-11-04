@@ -3,8 +3,8 @@ package smb
 import (
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
+	"github.com/cubbit/dittofs/internal/logger"
 )
 
 // DispatchHook is called before or after handler execution for a specific command.

@@ -12,11 +12,11 @@ import (
 	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
-	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/identity/ldap"
+	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/pkg/controlplane/models"
+	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
+	"github.com/cubbit/dittofs/pkg/controlplane/store"
+	"github.com/cubbit/dittofs/pkg/identity/ldap"
 )
 
 // IdentityProviderHandler serves the admin-only identity-provider configuration
