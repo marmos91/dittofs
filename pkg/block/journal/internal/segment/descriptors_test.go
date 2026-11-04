@@ -2341,7 +2341,7 @@ func TestDescriptorsDirtyDescriptorPinned(t *testing.T) {
 		t.Fatalf("syncing segment 1 failed: %v", err)
 	}
 	r.Release()
-	if closeCalls := e.seam.CallsFor(journalv2test.OpClose, name(1)) - e.stocked[1]; closeCalls != 0 {
+	if closeCalls := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; closeCalls != 0 {
 		t.Fatalf("segment 1's descriptor was closed %d times before its sync, want it held", closeCalls)
 	}
 	for i := 2; i <= 20; i++ {
@@ -2380,7 +2380,7 @@ func TestDescriptorsFailedSyncUnpins(t *testing.T) {
 	if _, err := r.WriteAt(buf, 0); err != nil {
 		t.Fatalf("writing through segment 1's descriptor a second time failed: %v", err)
 	}
-	if err := e.seam.Schedule(journalv2test.Failing(journalv2test.OpSync, name(1), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, name(1), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if err := r.Sync(); !errors.Is(err, syscall.EIO) {
@@ -2422,7 +2422,7 @@ func TestDescriptorsSyncDoesNotCoverAWriteInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
 	}
-	h := e.seam.HoldFirst(t, journalv2test.OpWrite, name(1))
+	h := e.seam.HoldFirst(t, journaltest.OpWrite, name(1))
 	written := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 16)
@@ -2504,7 +2504,7 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 		r.Release()
 	}
 
-	opens := e.seam.Calls(journalv2test.OpOpen)
+	opens := e.seam.Calls(journaltest.OpOpen)
 	start := time.Now()
 	r3, err := e.c.Acquire(3)
 	if err != nil {
@@ -2521,7 +2521,7 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 	if past := time.Since(start); past > time.Second {
 		t.Fatalf("the refusal took %v, want it at once: a dirty slot is not a queue to wait in", past)
 	}
-	if got := e.seam.Calls(journalv2test.OpOpen); got != opens {
+	if got := e.seam.Calls(journaltest.OpOpen); got != opens {
 		t.Fatalf("the seam saw %d opens after the refusal, want still %d: the refusal performs no I/O", got, opens)
 	}
 	for _, id := range []core.SegmentID{1, 2} {
@@ -2553,7 +2553,7 @@ func TestDescriptorsAWriteUnderTheParkedSyncStaysUncovered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
 	}
-	h := e.seam.HoldFirst(t, journalv2test.OpSync, name(1))
+	h := e.seam.HoldFirst(t, journaltest.OpSync, name(1))
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- a.Sync() }()
 	select {
