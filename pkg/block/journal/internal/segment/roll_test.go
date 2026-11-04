@@ -1735,6 +1735,97 @@ func TestRollARecordTooLargeForAnEmptySegmentIsRefused(t *testing.T) {
 	}
 }
 
+// TestRollAHeaderOnlyRecordWhoseOverheadEqualsTheEmptyRoomIsPlaced checks the
+// empty-room guard's floor: a kind with no payload whose record takes exactly
+// the whole room of an empty segment — its size equal to the floor of what
+// remains past the header and the seal's one-entry reserve — is placed there,
+// not refused as too large. It catches the guard's off-by-one on a no-payload
+// record, which demanded a byte the record never carries.
+func TestRollAHeaderOnlyRecordWhoseOverheadEqualsTheEmptyRoomIsPlaced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// A cap whose empty room equals a stamp's padded size exactly: the
+	// header, the marker, one catalog entry and the trailer, with room for
+	// the stamp's own 104 bytes past the segment header and no more.
+	tinyCap := int64(format.SegmentHeaderSize) +
+		int64(format.RecordHeaderSize) + 8 +
+		int64(format.SealMarkerSize) + int64(format.CatalogEntrySize) + int64(format.TrailerSize)
+
+	e := rollPin(t, tinyCap, segment.Targets{Content: 2}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// The stamp exactly fills what remains: it is placed whole, at the first
+	// slot, with its whole size.
+	hh := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(1), Version: core.Version{Counter: 1}, Tag: 7}
+	p, err := e.s.AppendRoll(hh, format.RecordBody{Cut: 4}, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the stamp whose size equals the empty room = %v, want it placed", err)
+	}
+	if p.Loc.Off != format.SegmentHeaderSize {
+		t.Fatalf("the stamp landed at %d, want the first slot %d", p.Loc.Off, format.SegmentHeaderSize)
+	}
+	if want := int64(format.RecordHeaderSize) + 8; p.Loc.Len != want {
+		t.Fatalf("the stamp's whole size is %d, want %d", p.Loc.Len, want)
+	}
+
+	// The next append rolls: nothing more fits beside the stamp.
+	hdr2 := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(2), Version: core.Version{Counter: 2}, Tag: 7}
+	p2, err := e.s.AppendRoll(hdr2, format.RecordBody{Cut: 4}, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the stamp after the exact fill: %v", err)
+	}
+	if p2.Loc.Segment == p.Loc.Segment {
+		t.Fatalf("the stamp after the exact fill stayed in segment %d, want a rolled-to new one", p2.Loc.Segment)
+	}
+}
+
+// TestRollAWriteOfNoBytesWhoseOverheadEqualsTheEmptyRoomIsPlaced checks the
+// same floor for a payload kind that carries none: a write of zero payload
+// bytes whose record takes exactly the whole room of an empty segment is
+// placed there whole, not refused as demanding a payload byte it does not
+// carry. It catches the guard's off-by-one read of "not even one payload byte"
+// on a record with no payload byte to place.
+func TestRollAWriteOfNoBytesWhoseOverheadEqualsTheEmptyRoomIsPlaced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The same cap as the header-only check: the room past the segment
+	// header and the seal's one-entry reserve equals a write record's own
+	// 104 bytes with nothing after them.
+	tinyCap := int64(format.SegmentHeaderSize) +
+		int64(format.RecordHeaderSize) + 8 +
+		int64(format.SealMarkerSize) + int64(format.CatalogEntrySize) + int64(format.TrailerSize)
+
+	e := rollPin(t, tinyCap, segment.Targets{Content: 2}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, body := streamWriteHeader(streamFileID(1), 0, nil, 7, core.Version{Counter: 1})
+	p, err := e.s.AppendRoll(h, body, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the write of no bytes whose record equals the empty room = %v, want it placed", err)
+	}
+	if p.N != 0 {
+		t.Fatalf("the write of no bytes placed %d, want 0", p.N)
+	}
+	if want := int64(format.RecordHeaderSize) + 8; p.Loc.Len != want {
+		t.Fatalf("the write's whole size is %d, want %d", p.Loc.Len, want)
+	}
+	if p.Loc.Off != format.SegmentHeaderSize {
+		t.Fatalf("the write landed at %d, want the first slot %d", p.Loc.Off, format.SegmentHeaderSize)
+	}
+
+	// The next write rolls: nothing more fits beside it.
+	h2, body2 := streamWriteHeader(streamFileID(2), 4096, nil, 7, core.Version{Counter: 2})
+	p2, err := e.s.AppendRoll(h2, body2, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the write after the exact fill: %v", err)
+	}
+	if p2.Loc.Segment == p.Loc.Segment {
+		t.Fatalf("the write after the exact fill stayed in segment %d, want a rolled-to new one", p2.Loc.Segment)
+	}
+}
+
 // TestRollASealRunningUnderARollIsWaitedOut checks the roll's word for a
 // segment another seal was already closing: the append whose record needs
 // the room parks while the seal runs, and once the seal settles the roll it

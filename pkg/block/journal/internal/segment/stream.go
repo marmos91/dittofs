@@ -598,9 +598,11 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		}
 
 		// The one refusal the roll cannot answer, checked before anything
-		// is taken: a record that cannot place even one payload byte — or
-		// any byte at all, for a kind with no payload — anywhere in an
-		// empty segment, the largest room a stream hands out. A write or
+		// is taken: a record that cannot place even one payload byte —
+		// of the ones it carries: a no-payload kind, or a write or fill of
+		// no payload bytes, has no piece to size but its whole record,
+		// which fits exactly when its size equals the room — anywhere in
+		// an empty segment, the largest room a stream hands out. A write or
 		// fill whose payload alone exceeds a segment is not refused but
 		// split, piece by piece, segment after segment (RFC 28 §2.2); the
 		// refusal is for the record whose own overhead leaves the room no
@@ -610,7 +612,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// where it was.
 		emptyRoom := ((s.set.cap - format.SegmentHeaderSize - sealRoom(1)) &^ 7) -
 			(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize())
-		if emptyRoom < 1 {
+		if emptyRoom < 0 || len(body.Payload) > 0 && emptyRoom < 1 {
 			s.appendMu.Unlock()
 			return Placed{}, ErrSegmentFull
 		}
