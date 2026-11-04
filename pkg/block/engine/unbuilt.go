@@ -15,11 +15,6 @@ import (
 // from the removal mark. None is built yet: each answers errUnbuilt, and moves
 // to its own file as it is built.
 
-// Truncate sets the file's size.
-func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
-	return errUnbuilt
-}
-
 // Deallocate makes [off, off+n) a hole.
 func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error {
 	return errUnbuilt

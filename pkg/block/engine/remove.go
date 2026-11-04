@@ -1,0 +1,319 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// removal is one removal of a file between its guard's taking and its
+// release: its share, its file, the extent it removes and, once the journal
+// has removed it, the version the journal gave it.
+type removal struct {
+	b    *binding
+	f    entity.FileID
+	x    extent
+	kind entity.RemovalKind
+	v    journal.Version
+	at   time.Time
+}
+
+// guard takes file f's guard for a removal of x and marks x in flight,
+// waiting, within ctx, for a removal of f already holding it. A truncate or
+// deallocate into a clone's registration is answered at once, with nothing
+// taken: one overlapping a source extent, or of a file holding a destination
+// extent, is delayClone(). The guard keeps the entry alive.
+//
+// decision: the registration check and the in-flight mark sit in one
+// section under the entry's lock. A removal that checked before a clone
+// registered could otherwise drop the bytes the clone is to read, and a clone
+// registering while the mark is set waits until the removal's phase 1 ends.
+// Withdraw it only with a clone that reads the source through the journal's
+// own snapshot.
+func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind entity.RemovalKind, x extent) (*removal, error) {
+	fe := e.files.lockFor(f)
+	for fe.guardDone != nil {
+		ch := fe.guardDone
+		e.files.unlock(f, fe)
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		fe = e.files.lockFor(f)
+	}
+	if kind != entity.RemoveRelease {
+		for _, r := range fe.regs {
+			if r.dst || r.overlaps(x.off, x.end) {
+				e.files.unlock(f, fe)
+				return nil, delayClone()
+			}
+		}
+	}
+	fe.guardDone = make(chan struct{})
+	fe.guarded.Store(true)
+	fe.removing = &x
+	e.files.unlock(f, fe)
+	return &removal{b: b, f: f, x: x, kind: kind, at: e.d.Clock.Now()}, nil
+}
+
+// guardOf is the channel closed when f's guard is released, nil when no
+// removal holds it.
+func (e *Engine) guardOf(f entity.FileID) <-chan struct{} {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return nil
+	}
+	defer e.files.unlock(f, fe)
+	if fe.guardDone == nil {
+		return nil
+	}
+	return fe.guardDone
+}
+
+// release ends r's hold on its file: the in-flight mark is cleared, the guard
+// released and its waiters woken. Then, once its phase 1 committed, the
+// journal is settled through it, and the file, if it still holds operations,
+// is noted for the group commit, in that order. A removal whose phase 1 did
+// not commit leaves its marker for recovery.
+func (e *Engine) release(r *removal, settle bool) {
+	fe := e.files.lockFor(r.f)
+	fe.removing = nil
+	fe.guarded.Store(false)
+	close(fe.guardDone)
+	fe.guardDone = nil
+	var oldest time.Time
+	if len(fe.ops) > 0 {
+		oldest = fe.ops[0].at
+	}
+	e.files.unlock(r.f, fe)
+	if settle {
+		r.b.h.Settle(fileID(r.f), r.v)
+	}
+	if !oldest.IsZero() {
+		_ = r.b.gc.note(r.b, r.f, oldest) // refused only once closed or lost, when nothing commits
+	}
+}
+
+// Truncate sets file f's size. At or above the size its operations leave, it
+// is a grow: the journal's Truncate gives it its version and the group commit
+// commits it, with no phase 1. Below, it is a removal: the guard is held
+// across the journal's Truncate and phase 1, which commits the file's pending
+// existence below the truncate with it, and it answers once phase 1 commits.
+//
+// decision: a grow needs no phase 1, since it masks nothing: it is one more
+// pending operation, the store's OpGrow, committed like a write. Revisit if
+// a grow ever has to drop records.
+func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID, size int64) error {
+	if size < 0 {
+		return vfserr.ErrInvalid
+	}
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	r, err := e.guard(ctx, b, f, entity.RemoveTruncate, extent{size, entity.EndOfFile})
+	if err != nil {
+		return err
+	}
+	if err := e.waitBatch(ctx, f); err != nil {
+		e.release(r, false)
+		return err
+	}
+	committed, err := e.d.Existence.Size(ctx, s, f)
+	if err != nil {
+		e.release(r, false)
+		return e.storeErr(err)
+	}
+	grow, err := e.stage(ctx, r, func(fe *fileEntry) (journal.Version, error) {
+		return b.h.Truncate(ctx, fileID(f), size)
+	}, opTruncate, journal.Extent{Off: size}, func(fe *fileEntry) bool {
+		return size >= replaySize(committed, fe.ops)
+	})
+	if err != nil || grow {
+		e.release(r, false)
+		return err
+	}
+	e.staged()
+	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveTruncate, Extent: entity.ExtentOf(size, entity.EndOfFile)})
+}
+
+// stage runs the journal's removal j under f's entry lock and inserts its
+// pending operation before the lock is released, answering whether grow,
+// asked under the same lock, made it a grow rather than a removal.
+//
+// decision: the entry's lock is held across the journal's Truncate or
+// Deallocate and the insert of its operation, unlike a write's, as the
+// journal stops holding the extent at once and a read between the two would
+// find it missing with no pending removal and read it lost. Reads of the
+// file wait out one journal removal. Withdraw it if the journal hands back a
+// removal's version before it stops holding the extent.
+func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (journal.Version, error), kind opKind, x journal.Extent, grow func(*fileEntry) bool) (bool, error) {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	// A write the journal staged before the removal is in the entry before
+	// the removal decides or is staged: a write admitted and not yet inserted
+	// is waited out, as a clone's registration waits it out, while no new
+	// write is admitted, since the entry's lock is held between waits.
+	if len(fe.writing) > 0 {
+		stop := context.AfterFunc(ctx, func() {
+			fe.mu.Lock()
+			fe.staged.Broadcast()
+			fe.mu.Unlock()
+		})
+		for len(fe.writing) > 0 && ctx.Err() == nil {
+			fe.staged.Wait()
+		}
+		stop()
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
+	g := grow != nil && grow(fe)
+	v, err := j(fe)
+	if err != nil {
+		return false, e.journalErr(err)
+	}
+	r.v = v
+	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g})
+	return g, nil
+}
+
+// replaySize is the size the file's operations leave over committed: a
+// truncate sets it, a write raises it to its end.
+func replaySize(committed int64, ops []pendingOp) int64 {
+	size := committed
+	for _, op := range ops {
+		switch {
+		case op.dropped:
+		case op.kind == opTruncate:
+			size = op.extent.Off
+		case op.kind == opWrite:
+			size = max(size, opEnd(op.extent))
+		}
+	}
+	return size
+}
+
+// phase1 is the removal r's first metadata transaction, op at r's version,
+// run once the caller waited out a batch in flight on the file: it claims the file's pending
+// operations below the removal, syncs the file, and hands them to the
+// store's Remove with the removal. Once that commits, the claimed operations
+// and the removal's own leave the entry and their Dones run, and the guard
+// is released; a failure releases the claim and answers the store's error,
+// a conflict at ctx's end DelayConflict.
+//
+// decision: phase 1 claims only the operations below the removal's version.
+// One staged between the journal's removal and phase 1 is above it and stays
+// pending: the store's Remove skips a removal at or below the version the
+// file has applied, so committing an operation above it first would lose the
+// removal. Withdraw it if the store ever applies a removal below applied.
+func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) error {
+	op.Version, op.Time = entity.JournalVersion(r.v.Bytes()), r.at
+	e.claimBelow(r)
+	if err := e.sync(ctx, r.b, fileID(r.f)); err != nil {
+		e.unclaim(r)
+		e.release(r, false)
+		return e.journalErr(err)
+	}
+	err := e.d.Existence.Remove(ctx, r.b.share.ID, r.f, 0, op, e.claimed(r))
+	if err != nil {
+		e.unclaim(r)
+		e.release(r, false)
+		if errors.Is(err, kvstore.ErrConflict) {
+			return &vfserr.Delay{Cause: vfserr.DelayConflict}
+		}
+		return e.storeErr(err)
+	}
+	dones := e.committed(r)
+	e.release(r, true)
+	for _, d := range dones {
+		d()
+	}
+	return nil
+}
+
+// claimBelow claims r's file's live operations below r's version, writes and
+// grows, for phase 1. The guard keeps every batch off the file, so none is
+// claimed already.
+func (e *Engine) claimBelow(r *removal) {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	for i := range fe.ops {
+		op := &fe.ops[i]
+		if op.version.Compare(r.v) >= 0 {
+			break
+		}
+		if !op.dropped {
+			op.claimed = true
+		}
+	}
+}
+
+// claimed is r's claimed operations as the store commits them, read after
+// the sync, so a loss its drain marked commits lost.
+func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	var out []kvstore.PendingOp
+	for _, op := range fe.ops {
+		if !op.claimed || op.dropped {
+			continue
+		}
+		var mtime time.Time
+		if op.setsMtime {
+			mtime = op.at
+		}
+		out = append(out, storeOp(op, mtime))
+	}
+	return out
+}
+
+// unclaim releases r's claim after a failed phase 1: the operations stay
+// pending.
+func (e *Engine) unclaim(r *removal) {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	for i := range fe.ops {
+		fe.ops[i].claimed = false
+	}
+}
+
+// committed removes from r's file's entry, after its phase 1 committed, the
+// operations it claimed and its own, before the guard is released, so no
+// batch captures either: it answers the claimed writes' Dones. A claimed
+// write a failed window dropped leaves too, its Done having run then.
+func (e *Engine) committed(r *removal) (dones []func()) {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	kept := fe.ops[:0]
+	for _, op := range fe.ops {
+		switch {
+		case op.claimed:
+			if !op.dropped {
+				if op.done != nil {
+					dones = append(dones, op.done)
+				}
+				e.pendingApplied.Add(1)
+			}
+		case op.version == r.v:
+		default:
+			kept = append(kept, op)
+		}
+	}
+	clear(fe.ops[len(kept):])
+	fe.ops = kept
+	return dones
+}
+
+// staged runs a test's seam between a removal's journal step and its phase 1.
+func (e *Engine) staged() {
+	if h := e.hooks.staged.Load(); h != nil {
+		(*h)()
+	}
+}

@@ -102,13 +102,18 @@ func TestTruncate(t *testing.T) {
 	f.exist(file, write(7, 3*mib, mib))
 	f.want(file, "a write into the regrown extent", "carved[0,3) uncarved[3,4) hole[4,5) uncarved[5,6) hole[6,12)")
 
-	// A replay changes nothing; a truncate up is not a removal.
+	// A replay changes nothing.
 	f.remove(file, truncate(4, 3*mib))
 	f.resume(file)
-	if err := f.s.Existence().Remove(context.Background(), f.share, file, 0, truncate(8, 20*mib), nil); !isInvalid(err) {
-		t.Errorf("truncate up through Remove: %v", err)
-	}
 	f.want(file, "replay", "carved[0,3) uncarved[3,4) hole[4,5) uncarved[5,6) hole[6,12)")
+	// A truncate above the size through Remove sets it whichever way, the
+	// gap a hole joined with the one it touches, and records no removal.
+	charged := f.get(file).Charged
+	f.remove(file, truncate(8, 20*mib))
+	f.want(file, "a truncate above the size", "carved[0,3) uncarved[3,4) hole[4,5) uncarved[5,6) hole[6,20)")
+	if got := f.get(file); got.Size != 20*mib || got.Charged != charged {
+		t.Errorf("after it: size %d charged %d, want %d and %d", got.Size, got.Charged, 20*mib, charged)
+	}
 	f.checkCounts()
 }
 

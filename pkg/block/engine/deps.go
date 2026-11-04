@@ -77,6 +77,7 @@ type Existence interface {
 	Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error)
 	Overwrites(ctx context.Context, share entity.ShareID, file entity.FileID, runs []entity.Extent) (bool, error)
 	Applied(ctx context.Context, share entity.ShareID, file entity.FileID) (entity.JournalVersion, error)
+	Size(ctx context.Context, share entity.ShareID, file entity.FileID) (int64, error)
 	Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (run entity.Extent, hole bool, err error)
 	Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error
 	Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error
