@@ -1,6 +1,6 @@
 # DittoFS Configuration for POSIX Compliance Testing
 # Stores, shares, and adapters are managed via the API.
-# Use test/posix/setup-posix.sh to configure them.
+# dt's fixture configures them (test/suites.yaml); dfsctl does by hand (test/posix/README.md).
 #
 # The database and cache paths can be overridden via environment variables:
 #   DITTOFS_DATABASE_SQLITE_PATH - SQLite database path

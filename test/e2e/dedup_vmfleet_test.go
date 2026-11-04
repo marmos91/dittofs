@@ -33,8 +33,7 @@
 //
 // Run:
 //
-//	cd test/e2e && DITTOFS_E2E_NIGHTLY=1 sudo ./run-e2e.sh \
-//	    --s3 --test TestDEDUP03_VMFleet40Pct
+//	DITTOFS_E2E_NIGHTLY=1 test/harness/bin/dt run e2e TestDEDUP03_VMFleet40Pct
 //
 // Headline outcome: >=40% storage-reduction gate; the achieved ratio
 // is emitted at slog INFO for nightly trend tracking.
@@ -83,7 +82,7 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 	}
 
 	if !framework.CheckLocalstackAvailable(t) {
-		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
+		t.Skip("Skipping: Localstack (S3) not available: start it with dt services up localstack")
 	}
 
 	lsHelper := framework.NewLocalstackHelper(t)

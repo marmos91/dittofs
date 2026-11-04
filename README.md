@@ -308,8 +308,8 @@ Full docs live in [`docs/`](docs/), split by audience.
 go test ./...                    # unit + integration
 go test -race ./...              # with the race detector
 
-# E2E (needs sudo + a kernel NFS client)
-cd test/e2e && sudo ./run-e2e.sh
+# E2E (Linux, a kernel NFS client and passwordless sudo)
+test/harness/bin/dt run e2e
 ```
 
 See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)) and [docs/internals/contributing.md](docs/internals/contributing.md).

@@ -994,8 +994,8 @@ A failed fixture step is never retried (§9): DittoFS starts inside the fixture,
 hide its flakiness. The cell is reported as not run, and someone re-runs it by hand. A test is
 never retried on a pull request (§4.7).
 
-`dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
-machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
+`dt` stops only the processes it started. `teardown-posix.sh`, which it replaced, killed every
+`dfs start` on the machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
 `dt` that is killed, since the signal that ends a child with its parent doesn't cross `sudo`; it
 holds the port until it is stopped by hand. Each cell's results go to its `{out}`, the same layout
 for every suite, where today five workflow steps look for the newest directory with `ls -td`, and
