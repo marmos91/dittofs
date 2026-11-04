@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -32,6 +34,7 @@ type groupCommit struct {
 	returned chan struct{} // closed, and replaced, each time a batch returns
 	nextAt   time.Time     // when the loop's timer fires; zero, none is set
 	losses   losses
+	failing  map[entity.FileID]*failure
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
@@ -53,6 +56,32 @@ type dueFile struct {
 	now       bool      // a stability point, recovery or a clone asked for it
 	notBefore time.Time // a failed commit's retry, not taken before this
 }
+
+// failure is a file whose existence commit failed: retried alone in the next
+// batch, then, failing alone, backed off by itself.
+type failure struct {
+	alone    bool          // it failed beside other files: its next batch holds it alone
+	backoff  time.Duration // its last backoff, once it failed alone
+	conflict bool          // its last failure was a metadata conflict
+	raised   bool          // existence_commit_failing names it
+}
+
+// Its stability points answer this while it fails: DelayConflict for a
+// conflict, else DelayCommit.
+func (f *failure) cause() vfserr.DelayCause {
+	if f.conflict {
+		return vfserr.DelayConflict
+	}
+	return vfserr.DelayCommit
+}
+
+// ponytail: a file failing alone is retried on a fixed doubling schedule,
+// 100 ms to 30 s, not the shared scheduler's offload.retry_min and
+// offload.retry_max. Move it onto that scheduler when offload brings one.
+const (
+	backoffMin = 100 * time.Millisecond
+	backoffMax = 30 * time.Second
+)
 
 // captured is one file of a batch: its share and the operations the capture
 // claimed, the entry's first n, which stay there until the batch returns.
@@ -247,6 +276,7 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 		f      entity.FileID
 		now    bool
 		oldest time.Time
+		alone  bool
 	}
 	var ready []cand
 	wait = -1
@@ -257,7 +287,7 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 		}
 		at = later(at, d.notBefore)
 		if (d.now || age >= 0) && !at.After(now) {
-			ready = append(ready, cand{f, d.now, d.oldest})
+			ready = append(ready, cand{f, d.now, d.oldest, g.failing[f] != nil && g.failing[f].alone})
 			continue
 		}
 		if d.now || age >= 0 {
@@ -267,6 +297,12 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 		}
 	}
 	slices.SortFunc(ready, func(a, b cand) int {
+		if a.alone != b.alone { // a file to retry alone goes first, in a batch of its own
+			if a.alone {
+				return -1
+			}
+			return 1
+		}
 		if a.now != b.now {
 			if a.now {
 				return -1
@@ -275,7 +311,13 @@ func (g *groupCommit) take() (batch []taken, wait time.Duration) {
 		}
 		return a.oldest.Compare(b.oldest)
 	})
+	if len(ready) > 0 && ready[0].alone {
+		maxFiles = 1
+	}
 	for _, c := range ready[:min(len(ready), maxFiles)] {
+		if c.alone && len(batch) > 0 {
+			break
+		}
 		batch = append(batch, taken{c.f, g.due[c.f].b})
 		delete(g.due, c.f)
 	}
@@ -309,6 +351,11 @@ func (g *groupCommit) commit(ctx context.Context, files []taken) {
 		switch {
 		case ok:
 			batch = append(batch, c)
+		case !held:
+			// Its writes left another way, dropped or committed by another
+			// path, so no failure of it is left to report. A file released
+			// while it holds pending writes is cleared by its removal.
+			g.clearFailing(t.f)
 		case held:
 			g.mu.Lock()
 			if g.due[t.f] == nil {
@@ -320,15 +367,11 @@ func (g *groupCommit) commit(ctx context.Context, files []taken) {
 	if h := g.e.hooks.captured.Load(); h != nil {
 		(*h)()
 	}
-	failed, err := g.e.syncAndCommit(ctx, batch)
-	retry := g.e.d.Clock.Now().Add(commitRetry)
+	failed, alone := g.e.syncAndCommit(ctx, batch)
 	var dones []func()
 	for _, c := range batch {
-		ok := err == nil && failed[c.f] == nil
-		dones = append(dones, g.e.settle(g, c, ok, retry)...)
-	}
-	if err != nil {
-		g.e.d.Logger.Warn("group commit failed; its files are retried", "files", len(batch), "err", err)
+		retry := g.outcome(c.f, failed[c.f], len(batch) == 1 || alone[c.f])
+		dones = append(dones, g.e.settle(g, c, failed[c.f] == nil, retry)...)
 	}
 	g.mu.Lock()
 	g.inFlight = false
@@ -343,13 +386,66 @@ func (g *groupCommit) commit(ctx context.Context, files []taken) {
 	}
 }
 
-// commitRetry is how long a file whose batch failed waits before it is
-// taken again.
-//
-// ponytail: every failed file waits a fixed 100 ms, which a stalled store
-// turns into a retry loop at that pace. Back each failing file off alone,
-// doubling to 30 s, when the split that isolates it is built.
-const commitRetry = 100 * time.Millisecond
+// outcome records f's commit in a batch of one file or more: a success clears
+// its failure; a failure beside other files has it retried alone in the next
+// batch, and one alone backs it off by itself and raises
+// existence_commit_failing naming it. It answers when f may be taken again.
+func (g *groupCommit) outcome(f entity.FileID, err error, alone bool) (retry time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	fl := g.failing[f]
+	if err == nil {
+		g.clearFailingLocked(f)
+		return time.Time{}
+	}
+	if fl == nil {
+		fl = &failure{}
+		if g.failing == nil {
+			g.failing = map[entity.FileID]*failure{}
+		}
+		g.failing[f] = fl
+	}
+	fl.conflict = errors.Is(err, kvstore.ErrConflict)
+	if !alone {
+		fl.alone = true
+		return time.Time{}
+	}
+	fl.backoff = min(max(2*fl.backoff, backoffMin), backoffMax)
+	if !fl.raised {
+		fl.raised = true
+		g.e.d.Logger.Warn("existence_commit_failing", "file", f, "err", err)
+	}
+	return g.e.d.Clock.Now().Add(fl.backoff)
+}
+
+// clearFailing forgets f's failure, clearing existence_commit_failing.
+func (g *groupCommit) clearFailing(f entity.FileID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.clearFailingLocked(f)
+}
+
+// clearFailingLocked is clearFailing; the caller holds g.mu.
+func (g *groupCommit) clearFailingLocked(f entity.FileID) {
+	if fl := g.failing[f]; fl != nil {
+		delete(g.failing, f)
+		if fl.raised {
+			g.e.d.Logger.Warn("existence_commit_failing cleared", "file", f)
+		}
+	}
+}
+
+// failCause is the delay f's stability points answer while it fails: its
+// failure's cause, or DelayCommit when it has none.
+func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
+	g := b.gc
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if fl := g.failing[f]; fl != nil {
+		return fl.cause()
+	}
+	return vfserr.DelayCommit
+}
 
 // capture claims f's leading writes in place under its entry's lock and marks
 // the entry in-batch: the operations stay in the entry, so Overlay and Read
@@ -381,9 +477,10 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 // then commits their existence in one Existence.Commit, which splits by the
 // key budget itself. A sync that fails fails the batch: nothing is committed
 // that the journal did not make recoverable.
-func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (map[entity.FileID]error, error) {
+func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (failed map[entity.FileID]error, alone map[entity.FileID]bool) {
+	failed, alone = map[entity.FileID]error{}, map[entity.FileID]bool{}
 	if len(batch) == 0 {
-		return nil, nil
+		return failed, alone
 	}
 	byShare := map[*binding][]journal.FileID{}
 	for _, c := range batch {
@@ -391,7 +488,10 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (map[entit
 	}
 	for b, ids := range byShare {
 		if err := e.sync(ctx, b, ids...); err != nil {
-			return nil, err
+			for _, c := range batch {
+				failed[c.f] = err
+			}
+			return failed, alone
 		}
 	}
 	pending := make([]kvstore.PendingExistence, len(batch))
@@ -399,10 +499,69 @@ func (e *Engine) syncAndCommit(ctx context.Context, batch []captured) (map[entit
 		pending[i] = e.pending(c)
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	failed, err := e.d.Existence.Commit(ctx, pending)
-	end(err)
-	return failed, err
+	e.commitSplit(ctx, pending, failed, alone)
+	end(nil)
+	return failed, alone
 }
+
+// commitSplit commits pending's existence, recording in failed each file that
+// failed: those the store names in its map, the others having committed in
+// the same call, and, for an error of the whole call that is not store-wide,
+// each file the halves leave failing alone, which alone records as already
+// failed alone. Each call
+// to the store is bounded by conflictBound, past which a conflict the store
+// keeps retrying is answered as one. A conflict or any other failure of one
+// file therefore fails no other, and no conflict holds the journal's batches.
+//
+// ponytail: the split is checked by its table of failure shapes rather than
+// fuzzed: it parses nothing, and its inputs are the store's answers. Fuzz it
+// if the store's failure shapes grow beyond a file in the map and a whole
+// call.
+func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, failed map[entity.FileID]error, alone map[entity.FileID]bool) {
+	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	m, err := e.d.Existence.Commit(cctx, pending)
+	cancel()
+	if err == nil {
+		for f, ferr := range m {
+			if ferr != nil {
+				failed[f] = ferr
+				alone[f] = len(pending) == 1
+			}
+		}
+		return
+	}
+	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
+		for _, p := range pending {
+			failed[p.File] = err
+			alone[p.File] = len(pending) == 1
+		}
+		return
+	}
+	e.splits.Add(1)
+	mid := len(pending) / 2
+	e.commitSplit(ctx, pending[:mid], failed, alone)
+	e.commitSplit(ctx, pending[mid:], failed, alone)
+}
+
+// storeWide reports that err fails every file alike, so halving the batch
+// would only repeat it: the store closed, or a call that ran out its bound
+// with no conflict, as a store that answers nothing does. Any other error of
+// the whole call, a conflict or one file's record the store cannot decode, is
+// split until the file it belongs to stands alone.
+func storeWide(err error) bool {
+	return errors.Is(err, kvstore.ErrClosed) ||
+		(errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, kvstore.ErrConflict))
+}
+
+// conflictBound bounds each existence commit, so a conflict the store keeps
+// retrying is answered to the group commit as one.
+//
+// ponytail: one bound, a second, for every commit, a slow one's included.
+// Make it a setting, or derive it from the store's transaction limits, when a
+// healthy commit is seen to take near it.
+var conflictBound atomic.Value // time.Duration
+
+func init() { conflictBound.Store(time.Second) }
 
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
@@ -435,7 +594,9 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 			g.due[c.f] = d
 		}
 		if !ok {
-			d.notBefore = retry
+			// A failed file is retried as soon as its backoff allows, not
+			// once its age comes round again.
+			d.now, d.notBefore = true, retry
 		}
 		g.mu.Unlock()
 	}
@@ -570,6 +731,7 @@ func (e *Engine) dropShare(ctx context.Context, j Journal, s entity.ShareID) err
 		for f, d := range g.due {
 			if d.b.share.ID == s {
 				delete(g.due, f)
+				g.clearFailingLocked(f)
 			}
 		}
 		inFlight, returned := g.inFlight && !g.closed, g.returned
