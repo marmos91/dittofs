@@ -314,7 +314,8 @@ everything before it.
 - **S3. Walking skeleton** (mid E5 / mid E6 / mid E8). E5's append streams with the spare
   pool, the seal, the roll and the end event (its T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7
   and T5.10), E6's T6.1 to T6.4 and T6.7, and E8's `WriteAt`, `ReadAt` and a minimal `Init`
-  and `Open` of a directory with no segment (its T8.1, T8.2 and T8.15), on top of E4's index.
+  and `Open` of a directory with no segment, with `Share` for their handles (its T8.1, T8.2, T8.3
+  and T8.15), on top of E4's index.
   The skeleton therefore includes durability tracking (`Sync`, group commit and the sync
   bound), the retained-extent drop on sync, failed-window resolution, and the read-time
   corruption rule, so `WriteAt` and `ReadAt` are built against the durability they ship with
@@ -800,10 +801,10 @@ Epic 7 implements RFC 28 §3 and RFC 1's `Init`, `Open` and `Restamp`. Epic 8 de
 `Init` and an `Open` of a directory with no segment before S3 (its T8.15); epic 7 extends `Open`
 with recovery and owns the rules below that need a segment on disk.
 
-- **Identity and attach rules:**
-  - `Init` refuses a non-empty directory, not counting a `format.tmp`; `Open` ignores one
-    (RFC 28 §2.1);
-  - `Init` and `Open` refuse what epic 3's Appendix A probes reject;
+- **Identity and attach rules** (the ones that need no segment on disk, `Init`'s refusal of a
+  non-empty directory, the platform refusals and `Open`'s `expect` checks among them, are epic
+  8's T8.15; epic 7 keeps them working once `Open` recovers):
+  - `Open` ignores a `format.tmp` (RFC 28 §2.1);
   - open fails on a `format` file that does not verify or whose version it does not
     recognise, a segment whose version it does not recognise or that is newer than its
     `format` file, and a verifying header of a kind its format version does not define, in
@@ -897,8 +898,11 @@ not gated.
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
 
-- **A minimal `Init` and `Open`** for S3: `Init` of an empty directory, and `Open` of one that
-  holds a `format` file and no segment, so the conformance suite runs on the public API from S3.
+- **A minimal `Init` and `Open`** for S3: `Init` of an empty directory (refusing a non-empty one,
+  a `format.tmp` aside, and what epic 3's Appendix A probes reject), and `Open` of one that holds
+  a `format` file and no segment (refusing `expect` zero, another identity, and a directory with
+  neither a `format` file nor a segment), so the conformance suite runs on the public API from
+  S3.
 
 - **Journal and handles:**
   - `Share`, which raises the counter above the share's floor;

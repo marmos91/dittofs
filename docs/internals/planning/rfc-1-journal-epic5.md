@@ -98,7 +98,8 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 - **S2**, red suite in CI: E2's suite runs in CI from every pull request.
 - **S3**, walking skeleton: this epic's streams with the spare pool, the seal, the roll and the
   end event, epic 6's `Sync`, failed-window resolution and corruption handler, which need them,
-  and E8's `WriteAt`, `ReadAt` and minimal `Open`, so the first conformance tests turn green.
+  and E8's `WriteAt`, `ReadAt`, `Share` and minimal `Open`, so the first conformance tests turn
+  green.
   **T5.1, T5.2, T5.4a, T5.4b, T5.5, T5.6, T5.7 and T5.10 are this epic's half, 26.75 man-days.**
 - **S4**, core complete: E3–E9 done.
 
@@ -200,7 +201,7 @@ below or in §1.2.
 | R12 | Of the lock domains only the file append domain is held across I/O. Reserving a position in a segment takes the segment append domain for the reservation alone, and the record write happens outside it | invariant | RFC 1 §8.2 | T5.4b |
 | R87 | Records, once written, are immutable: a record is written once at its reserved slot and never rewritten, and a recycle's zeroing touches only a retired segment's header and trailer slots | invariant | RFC 28 §2.2 | T5.4b, T5.9 |
 | R88 | Every record `Append` writes, whatever path appended it, is registered once with the durability sink (epic 6's ledger), after its bytes are written and before `Append` returns its location; every completed sync of a segment, a seal's and a roll's included, is reported to the same sink with the offset it covered. The sink may be called with the file append domain or the segment append domain held, so it takes no lock of this epic's and never blocks: epic 6 hands the event to its own per-stream worker. (Added with the breakdown of epics 6 and 8: epic 6 owns what the sink does) | invariant | RFC 1 §5.2, §5.3, §8.3 | T5.4b, T5.7 |
-| R89 | While the journal is read-only, the pool's refill worker makes no spare, the idle seal writes nothing and retirement unlinks nothing: each asks the read-only check epic 6 registers (its `Admit`) before it creates, writes or unlinks a file. The check is a function each of the three takes in its own constructor (the pool, the idle seal, the retirement executor), nil meaning writable; the set does not take it. Epic 8's constructor passes the same function to all three. (Added with the breakdown of epics 6 and 8: epic 6 owns the state) | MUST | RFC 1 §5.4, §9.4 B | T5.5, T5.8, T5.9 |
+| R89 | While the journal is read-only, the pool's refill worker makes no spare, the idle seal writes nothing and retirement unlinks nothing: each asks the read-only check epic 6 registers (its `Admit`) before it creates, writes or unlinks a file. The check is a function each of the three takes in its own constructor (the pool, the idle seal, the retirement executor), nil meaning writable; the set does not take it. Epic 8's constructor passes the same function to all three. (Added with the breakdown of epics 6 and 8: epic 6 owns the state.) The refill is RFC 1 §5.4's "takes no spare"; stopping the idle seal and the unlinks is this breakdown's decision, with a `decision:` marker at each: a read-only journal writes nothing it need not | MUST, decision | RFC 1 §5.4, §9.4 B | T5.5, T5.8, T5.9 |
 
 **The spare pool**
 
