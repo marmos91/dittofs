@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // Share represents the runtime state of a configured share.
@@ -509,12 +510,12 @@ func (s *Service) CountShares() int {
 // metadata.Service.SetXattrStreamReader, which surfaces a named stream's content
 // as an xattr value. A zero-size stream yields an empty value; any other
 // stream's content lives in the content store and answers
-// block.ErrNoContentStore.
+// block.ErrNoContentStore in the I/O row, as every data operation does.
 func (s *Service) XattrStreamReader() metadata.StreamContentReader {
 	return func(_ context.Context, _ metadata.FileHandle, attr *metadata.FileAttr) ([]byte, error) {
 		if attr == nil || attr.Size == 0 || attr.PayloadID == "" {
 			return []byte{}, nil
 		}
-		return nil, block.ErrNoContentStore
+		return nil, &merrs.StoreError{Code: merrs.ErrIOError, Message: block.ErrNoContentStore.Error(), Cause: block.ErrNoContentStore}
 	}
 }

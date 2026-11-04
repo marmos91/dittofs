@@ -41,8 +41,11 @@ var (
 	// decision: no content store is wired until the filesystem service serves
 	// the adapters, so reads and writes answer unavailable. Metadata-only
 	// operations keep working against the metadata service. The protocol
-	// error mappers carry no row for this sentinel, so it reaches clients as
-	// each protocol's generic I/O error. Overturned by the cutover that wires
+	// error mappers carry no row for this sentinel, so a data operation returns
+	// it inside a metadata StoreError with Code ErrIOError
+	// (common.ErrNoContentStore in the adapters), which each protocol maps to
+	// its generic I/O error; returned bare, it maps to the server-fault default
+	// (NFS4ERR_SERVERFAULT, STATUS_INTERNAL_ERROR). Overturned by the cutover that wires
 	// the engine (pkg/block/engine) through vfs.Service and routes the adapters'
 	// data operations to it; delete this sentinel then.
 	ErrNoContentStore = errors.New("no content store is wired")
