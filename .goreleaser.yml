@@ -216,7 +216,7 @@ homebrew_casks:
       name: goreleaserbot
       email: bot@goreleaser.com
     homepage: "https://github.com/cubbit/dittofs"
-    description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
+    description: "DittoFS server daemon: modular virtual filesystem with pluggable storage"
     skip_upload: auto
 
   - name: dfsctl
